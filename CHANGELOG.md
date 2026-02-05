@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/Gaisberg/streamnzb/compare/v0.3.0...v0.4.0) (2026-02-05)
+
+
+### Features
+
+* **ui:** install on stremio button ([f4ea16d](https://github.com/Gaisberg/streamnzb/commit/f4ea16d0ace287c5e06dc7f751d8032f7694e042))
+
+
+### Bug Fixes
+
+* default config path to /app/data if folder exists ([226bd79](https://github.com/Gaisberg/streamnzb/commit/226bd79b665f6592b65e697107651d85d8336889))
+
 ## [0.3.0](https://github.com/Gaisberg/streamnzb/compare/v0.2.0...v0.3.0) (2026-02-05)
 
 
