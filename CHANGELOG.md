@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/Gaisberg/streamnzb/compare/v0.2.0...v0.3.0) (2026-02-05)
+
+
+### Features
+
+* **frontend:** implement ui ([e8b80d2](https://github.com/Gaisberg/streamnzb/commit/e8b80d2272a9e6d32e2508155a923016649703e5))
+
+
+### Bug Fixes
+
+* ensure config saves to loaded path and support /app/data ([a62a7b5](https://github.com/Gaisberg/streamnzb/commit/a62a7b52c153d0108c1dd81bd7c4f65133555a75))
+* session keep-alive to show active streams correctly ([32b612a](https://github.com/Gaisberg/streamnzb/commit/32b612ab5ff2db75186448b2f0f6f740d58d5156))
+
+
+### Performance Improvements
+
+* **backend:** actually utilize multiple connections for streaming ([e8b80d2](https://github.com/Gaisberg/streamnzb/commit/e8b80d2272a9e6d32e2508155a923016649703e5))
+
 ## [0.2.0](https://github.com/Gaisberg/streamnzb/compare/v0.1.0...v0.2.0) (2026-02-04)
 
 
