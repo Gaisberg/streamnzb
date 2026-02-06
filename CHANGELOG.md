@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Gaisberg/streamnzb/compare/v0.4.0...v0.5.0) (2026-02-06)
+
+
+### Features
+
+* console ui component, included more ui configurations, include nntp proxy in metrics ([0b86f67](https://github.com/Gaisberg/streamnzb/commit/0b86f670bd71afa55e3d7ac27aaea3dc68a720a2))
+
 ## [0.4.0](https://github.com/Gaisberg/streamnzb/compare/v0.3.0...v0.4.0) (2026-02-05)
 
 
