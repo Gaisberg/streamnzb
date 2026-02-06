@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/Gaisberg/streamnzb/compare/v0.5.1...v0.6.0) (2026-02-06)
+
+
+### Features
+
+* **search:** implement tmdb integration and optimize validation ([27453a5](https://github.com/Gaisberg/streamnzb/commit/27453a5ebeaf01b3ea8dc6d17af75c615661a19b))
+
+
+### Performance Improvements
+
+* optimize 7z streaming ([4cab433](https://github.com/Gaisberg/streamnzb/commit/4cab433d00bf30d5eb80f58dc4e97452ace5962a))
+
 ## [0.5.1](https://github.com/Gaisberg/streamnzb/compare/v0.5.0...v0.5.1) (2026-02-06)
 
 
