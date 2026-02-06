@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1](https://github.com/Gaisberg/streamnzb/compare/v0.5.0...v0.5.1) (2026-02-06)
+
+
+### Bug Fixes
+
+* load correct log level after boot from config ([b1fcbab](https://github.com/Gaisberg/streamnzb/commit/b1fcbabb6be3455899cd3080c61755f166458c04))
+
+
+### Performance Improvements
+
+* **indexer:** optimize availability checks and implement load balancing ([516d688](https://github.com/Gaisberg/streamnzb/commit/516d68869eeab5f7c50826445958a95ba9a47b84))
+
 ## [0.5.0](https://github.com/Gaisberg/streamnzb/compare/v0.4.0...v0.5.0) (2026-02-06)
 
 
