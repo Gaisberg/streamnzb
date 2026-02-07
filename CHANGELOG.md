@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/Gaisberg/streamnzb/compare/v0.6.1...v0.6.2) (2026-02-07)
+
+
+### Miscellaneous Chores
+
+* release 0.6.2 ([e20fd8d](https://github.com/Gaisberg/streamnzb/commit/e20fd8d4ee0748b838384f68c97d252922fd0ab8))
+
 ## [0.6.1](https://github.com/Gaisberg/streamnzb/compare/v0.6.0...v0.6.1) (2026-02-07)
 
 
