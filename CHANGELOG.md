@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Gaisberg/streamnzb/compare/v0.6.0...v0.6.1) (2026-02-07)
+
+
+### Performance Improvements
+
+* various performance improvement and clarifications, prefer most grabbed releases ([52c2d69](https://github.com/Gaisberg/streamnzb/commit/52c2d690ef92f1bf7aa8a0c54ed03522cc118df0))
+
 ## [0.6.0](https://github.com/Gaisberg/streamnzb/compare/v0.5.1...v0.6.0) (2026-02-06)
 
 
