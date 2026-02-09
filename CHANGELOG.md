@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/Gaisberg/streamnzb/compare/v0.6.2...v0.7.0) (2026-02-09)
+
+
+### Features
+
+* filtering with ptt attributes ([6319ac4](https://github.com/Gaisberg/streamnzb/commit/6319ac49c2dc6f0355b9683dc896a673fcf9e5c1))
+* **triage:** add release deduplication to eliminate duplicate search results ([83bd249](https://github.com/Gaisberg/streamnzb/commit/83bd24951e83db0da22e8d0e45c6d8eff17b6a8b))
+* **ui:** reorganize settings page with tabbed interface, add sorting and max streams ([83bd249](https://github.com/Gaisberg/streamnzb/commit/83bd24951e83db0da22e8d0e45c6d8eff17b6a8b))
+
+
+### Bug Fixes
+
+* max streams ([739321f](https://github.com/Gaisberg/streamnzb/commit/739321f5dc99e832954135f07845f58c70a742bc))
+* **nzbhydra:** resolve actual indexer GUID from internal API ([d15e0bb](https://github.com/Gaisberg/streamnzb/commit/d15e0bb604a6079e77278feb8de6fd14a1032a69))
+* **stremio:** ensure failed prevalidations don't prevent trying more releases ([83bd249](https://github.com/Gaisberg/streamnzb/commit/83bd24951e83db0da22e8d0e45c6d8eff17b6a8b))
+* **stremio:** show 'Size Unknown' for missing indexer file sizes ([da6c87b](https://github.com/Gaisberg/streamnzb/commit/da6c87b82989cf5ff46810439b9864a3db3b2dd6))
+* **triage:** reject unknown resolution/codec when filters are configured ([da6c87b](https://github.com/Gaisberg/streamnzb/commit/da6c87b82989cf5ff46810439b9864a3db3b2dd6))
+
 ## [0.6.2](https://github.com/Gaisberg/streamnzb/compare/v0.6.1...v0.6.2) (2026-02-07)
 
 
