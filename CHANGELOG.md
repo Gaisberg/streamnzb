@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/Gaisberg/streamnzb/compare/v1.0.0...v1.0.1) (2026-02-13)
+
+
+### Bug Fixes
+
+* install button after auth changes ([f60510a](https://github.com/Gaisberg/streamnzb/commit/f60510a71da3db58fedb878b98611297b4768e6f))
+* serve embedded failure video instead of big buck bunny ([a7ae387](https://github.com/Gaisberg/streamnzb/commit/a7ae3871e6a566323daea602ee87814fe072bac3))
+* use tvdb then tmdb as fallback to enhance queries ([dba103f](https://github.com/Gaisberg/streamnzb/commit/dba103f0aae3b7c88f8525ac1f8e7d6bd8f6d517))
+
 ## [1.0.0](https://github.com/Gaisberg/streamnzb/compare/v0.7.0...v1.0.0) (2026-02-13)
 
 
