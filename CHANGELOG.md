@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.0](https://github.com/Gaisberg/streamnzb/compare/v0.7.0...v1.0.0) (2026-02-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* login auth, device management with seperate filters and sorting
+
+### Features
+
+* add Easynews indexer support (experimental) ([df3c92a](https://github.com/Gaisberg/streamnzb/commit/df3c92a6ed9b60f9e173e952c92c61aba622f9fa))
+* add NZBHydra2 indexer discovery ([df3c92a](https://github.com/Gaisberg/streamnzb/commit/df3c92a6ed9b60f9e173e952c92c61aba622f9fa))
+* enforce indexer limits and add persistent provider usage tracking ([7bfa5e8](https://github.com/Gaisberg/streamnzb/commit/7bfa5e874399bd6964e5298ce79490c72edebfe1))
+* improve visual tagging filtering (3D) ([82a3b44](https://github.com/Gaisberg/streamnzb/commit/82a3b44658809b66e84a017c697d23505afa42f0))
+* **indexer:** internal newznab indexers ([aa24293](https://github.com/Gaisberg/streamnzb/commit/aa242936053be2cd7bfaf2552ea1f3c9137eb42d))
+* login auth, device management with seperate filters and sorting ([d6666ed](https://github.com/Gaisberg/streamnzb/commit/d6666ed28fba6a8d3a21b6ee159c6b6feb44f243))
+* **ui:** seperate indexer tab, tracking, ui improvements for providers ([aa24293](https://github.com/Gaisberg/streamnzb/commit/aa242936053be2cd7bfaf2552ea1f3c9137eb42d))
+
+
+### Bug Fixes
+
+* **config:** clear legacy indexer fields when migrated indexers are removed ([211dece](https://github.com/Gaisberg/streamnzb/commit/211dece03246f09f1e2f2dfa8d0dd124889b138a))
+* disable auto-scroll to logs section on homepage ([df3c92a](https://github.com/Gaisberg/streamnzb/commit/df3c92a6ed9b60f9e173e952c92c61aba622f9fa))
+* migrated prowlarr url ([70c6b71](https://github.com/Gaisberg/streamnzb/commit/70c6b71857b67dae0078754d518e4c3ab60002ad))
+* pass admin token to created stream url ([0a521af](https://github.com/Gaisberg/streamnzb/commit/0a521aff9ab7723c576a71c6e612e05f4ea13510))
+* respect limits for hydra and prowlarr as well ([6361cb0](https://github.com/Gaisberg/streamnzb/commit/6361cb0c01f262004ba9c448cecb19ee4f7a72c2))
+* respect TZ env variable ([d6666ed](https://github.com/Gaisberg/streamnzb/commit/d6666ed28fba6a8d3a21b6ee159c6b6feb44f243))
+* **session:** pass context around to stop hanging sessions when closing ([aa24293](https://github.com/Gaisberg/streamnzb/commit/aa242936053be2cd7bfaf2552ea1f3c9137eb42d))
+* **validation:** add timeouts to prevent instance hangs ([211dece](https://github.com/Gaisberg/streamnzb/commit/211dece03246f09f1e2f2dfa8d0dd124889b138a))
+
 ## [0.7.0](https://github.com/Gaisberg/streamnzb/compare/v0.6.2...v0.7.0) (2026-02-09)
 
 
