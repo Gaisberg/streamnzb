@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/Gaisberg/streamnzb/compare/v1.0.2...v1.0.3) (2026-02-15)
+
+
+### Bug Fixes
+
+* nzbhydra and prowlarr indexers ([cd34c58](https://github.com/Gaisberg/streamnzb/commit/cd34c586907644b433b59039ebf9890672b66649))
+
 ## [1.0.2](https://github.com/Gaisberg/streamnzb/compare/v1.0.1...v1.0.2) (2026-02-15)
 
 
