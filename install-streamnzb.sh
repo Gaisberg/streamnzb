@@ -705,7 +705,18 @@ esac
 
 print_section "System Update"
 apt-get update
-apt-get upgrade -y
+
+printf "${YELLOW}Run full system upgrade? (recommended but may take a while) [y/N]: ${NC}"
+read DO_UPGRADE
+case "$DO_UPGRADE" in
+    y|Y|yes|YES)
+        print_info "Running system upgrade..."
+        apt-get upgrade -y
+        ;;
+    *)
+        print_info "Skipping system upgrade."
+        ;;
+esac
 
 print_section "Installing Dependencies"
 apt-get install -y \
@@ -797,7 +808,7 @@ ${DOMAIN} {
     header {
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
-        X-XSS-Protection "1; mode=block"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         Referrer-Policy strict-origin-when-cross-origin
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         -Server
@@ -879,7 +890,7 @@ ${DOMAIN} {
     header {
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
-        X-XSS-Protection "1; mode=block"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         Referrer-Policy strict-origin-when-cross-origin
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         -Server
@@ -1085,9 +1096,17 @@ docker compose pull
 docker compose up -d
 
 printf "${YELLOW}Waiting for containers to start...${NC}\n"
-sleep 15
+sleep 5
 
-if docker compose ps | grep -q "running"; then
+# Check if containers are running (check both possible status formats)
+CONTAINERS_RUNNING=false
+if docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | grep -qiE "(up|running)"; then
+    CONTAINERS_RUNNING=true
+elif docker compose ps 2>/dev/null | grep -qiE "(up|running)"; then
+    CONTAINERS_RUNNING=true
+fi
+
+if [ "$CONTAINERS_RUNNING" = true ]; then
     print_success "Containers are running!"
     
     # Wait a bit more for certificate generation
@@ -1096,7 +1115,13 @@ if docker compose ps | grep -q "running"; then
         sleep 30
     fi
 else
-    print_error "Error during startup. Check: docker compose logs"
+    print_warning "Could not verify container status. Checking manually..."
+    sleep 5
+    if docker ps | grep -q "streamnzb"; then
+        print_success "Containers are running!"
+    else
+        print_error "Error during startup. Check: docker compose logs"
+    fi
 fi
 
 #===============================================================================
