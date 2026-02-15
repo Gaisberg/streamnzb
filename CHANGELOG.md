@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.2](https://github.com/Gaisberg/streamnzb/compare/v1.0.1...v1.0.2) (2026-02-15)
+
+
+### Bug Fixes
+
+* availnzb changes, much faster results for reported releases ([d5fe21f](https://github.com/Gaisberg/streamnzb/commit/d5fe21ffaae89780704b9fa5a9b1ec3c7cf459cd))
+* cleanup() deadlock when expiring a session (pkg/session/manager.go) — fixed (likely root cause) ([41a1316](https://github.com/Gaisberg/streamnzb/commit/41a13168ff96b782a009bd5dfe7c902cb4606c33))
+* **loader:** add maximum timeout for segment downloads to prevent worker exhaustion ([387bd54](https://github.com/Gaisberg/streamnzb/commit/387bd540f651714db16bc5539232bc9b2e711465))
+* **loader:** add timeout wrapper for decode.DecodeToBytes to prevent blocking ([c784b1f](https://github.com/Gaisberg/streamnzb/commit/c784b1fc71f90bdde64fd513bfbea386bf3dd26c))
+* **loader:** cancel downloads for cleared segments to release connections promptly ([8d82f82](https://github.com/Gaisberg/streamnzb/commit/8d82f826512999b183b0cde017645bf3aa7a150a))
+* **loader:** discard NNTP client on decode timeout to avoid connection reuse panic ([4fc3653](https://github.com/Gaisberg/streamnzb/commit/4fc3653969db3922a246ced12cd33397f31e37e6))
+* **loader:** improve condition variable wait with periodic context checks ([38300cb](https://github.com/Gaisberg/streamnzb/commit/38300cbe0e8a3247a2ea1bbc15c41be55bec41b3))
+* **loader:** prevent deadlock and memory leak in SmartStream when paused ([aa339de](https://github.com/Gaisberg/streamnzb/commit/aa339de07c8e82da0a8f24480b105c69855efaee))
+* more possible hanging fixes ([47e9e8a](https://github.com/Gaisberg/streamnzb/commit/47e9e8a6bcf3cd5189786f1b79c05a92b16ac742))
+* **nntp:** add deadline to body reads to prevent indefinite blocking ([69ba448](https://github.com/Gaisberg/streamnzb/commit/69ba4484f07c2cc064dcfa5e78d6cbcb1fee6817))
+* persist env vars on ui changes ([6eab92b](https://github.com/Gaisberg/streamnzb/commit/6eab92ba8a177c0e2fb6a28dc92b9dca597bb6d1))
+* prevent hangs and resource exhaustion during long runs ([0ab5bfd](https://github.com/Gaisberg/streamnzb/commit/0ab5bfd8cc335f71d866224196df599ec05415d5))
+* **session:** prevent cleanup of sessions with active playback ([abf7c61](https://github.com/Gaisberg/streamnzb/commit/abf7c6194c57bbacf8a24ee11e010ceeafb0240c))
+* **stremio:** cancel session context when HTTP request is cancelled ([629861e](https://github.com/Gaisberg/streamnzb/commit/629861ed2b72f1673096f79bbe2f612e3b4ea109))
+* **stremio:** implement StreamMonitor.Close() to properly close underlying stream ([1ae7722](https://github.com/Gaisberg/streamnzb/commit/1ae77221ab56f404637d208c67afd8ae2cdd9390))
+* various stuff ([560aade](https://github.com/Gaisberg/streamnzb/commit/560aadea27358e9a397742e5a9d7705f4cda89aa))
+
 ## [1.0.1](https://github.com/Gaisberg/streamnzb/compare/v1.0.0...v1.0.1) (2026-02-13)
 
 
