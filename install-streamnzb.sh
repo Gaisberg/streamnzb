@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #===============================================================================
-# StreamNZB VPS Installation Script v2.2
+# StreamNZB VPS Installation Script v2.3
 # With SSL/TLS via Cloudflare DNS API (Full Strict) or Let's Encrypt
 #
 # Features:
@@ -36,7 +36,7 @@ CONFIG_FILE="${INSTALL_DIR}/.install-config"
 print_banner() {
     printf "${CYAN}"
     printf "╔═══════════════════════════════════════════════════════════════════╗\n"
-    printf "║           StreamNZB VPS Installation Script v2.2                 ║\n"
+    printf "║           StreamNZB VPS Installation Script v2.3                 ║\n"
     printf "║     End-to-End SSL via Cloudflare DNS API or Let's Encrypt       ║\n"
     printf "╚═══════════════════════════════════════════════════════════════════╝\n"
     printf "${NC}\n"
@@ -276,7 +276,6 @@ save_config() {
 # Created: $(date)
 DOMAIN="${DOMAIN}"
 EMAIL="${EMAIL}"
-SECURITY_TOKEN="${SECURITY_TOKEN}"
 TIMEZONE="${TIMEZONE}"
 SSL_MODE="${SSL_MODE}"
 CF_API_TOKEN="${CF_API_TOKEN}"
@@ -324,7 +323,6 @@ if check_existing_installation; then
         print_info "Saved configuration:"
         printf "  Domain:         ${GREEN}${DOMAIN}${NC}\n"
         printf "  Email:          ${GREEN}${EMAIL}${NC}\n"
-        printf "  Security Token: ${GREEN}${SECURITY_TOKEN}${NC}\n"
         printf "  SSL Mode:       ${GREEN}${SSL_MODE:-caddy}${NC}\n"
         printf "  Installed on:   ${GREEN}${INSTALL_DATE:-unknown}${NC}\n"
     fi
@@ -380,7 +378,7 @@ if [ "$INSTALL_MODE" = "update" ]; then
     
     if docker compose ps | grep -q "running"; then
         print_success "Update successful!"
-        printf "\n${GREEN}StreamNZB is running at: https://${DOMAIN}/${SECURITY_TOKEN}/${NC}\n\n"
+        printf "\n${GREEN}StreamNZB is running at: https://${DOMAIN}/${NC}\n\n"
     else
         print_error "Error during startup. Check with: docker compose logs"
     fi
@@ -439,13 +437,11 @@ print_section "Configuration"
 if [ "$INSTALL_MODE" = "reinstall" ] && [ -n "$DOMAIN" ]; then
     DEFAULT_DOMAIN="$DOMAIN"
     DEFAULT_EMAIL="$EMAIL"
-    DEFAULT_TOKEN="$SECURITY_TOKEN"
     DEFAULT_TZ="$TIMEZONE"
     DEFAULT_CF_TOKEN="$CF_API_TOKEN"
 else
     DEFAULT_DOMAIN=""
     DEFAULT_EMAIL=""
-    DEFAULT_TOKEN=""
     DEFAULT_TZ="UTC"
     DEFAULT_CF_TOKEN=""
 fi
@@ -567,26 +563,6 @@ if [ "$SSL_MODE" = "cloudflare" ]; then
     fi
 fi
 
-# Ask for security token
-printf "\n"
-if [ -n "$DEFAULT_TOKEN" ]; then
-    printf "${YELLOW}Security Token [${DEFAULT_TOKEN}]: ${NC}"
-else
-    printf "${YELLOW}Security Token (empty = auto-generate): ${NC}"
-fi
-read INPUT_TOKEN
-
-if [ -z "$INPUT_TOKEN" ]; then
-    if [ -n "$DEFAULT_TOKEN" ]; then
-        SECURITY_TOKEN="$DEFAULT_TOKEN"
-    else
-        SECURITY_TOKEN=$(openssl rand -hex 16)
-        print_success "Generated token: ${SECURITY_TOKEN}"
-    fi
-else
-    SECURITY_TOKEN="$INPUT_TOKEN"
-fi
-
 # Ask for timezone
 printf "\n"
 printf "${YELLOW}Timezone [${DEFAULT_TZ}]: ${NC}"
@@ -667,7 +643,6 @@ print_section "Summary"
 
 printf "  Domain:         ${GREEN}${DOMAIN}${NC}\n"
 printf "  Email:          ${GREEN}${EMAIL}${NC}\n"
-printf "  Security Token: ${GREEN}${SECURITY_TOKEN}${NC}\n"
 printf "  Timezone:       ${GREEN}${TIMEZONE}${NC}\n"
 printf "  SSL Mode:       ${GREEN}${SSL_MODE}${NC}\n"
 if [ "$SSL_MODE" = "cloudflare" ]; then
@@ -808,10 +783,7 @@ EOF
     
     print_section "Docker Compose (Cloudflare DNS API)"
     
-    # We need caddy with cloudflare plugin - use custom build
     cat > "${INSTALL_DIR}/docker-compose.yml" << EOF
-version: '3.8'
-
 services:
   streamnzb:
     image: ghcr.io/gaisberg/streamnzb:latest
@@ -819,7 +791,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=${TIMEZONE}
-      - SECURITY_TOKEN=${SECURITY_TOKEN}
     volumes:
       - ${DATA_DIR}:/app/data
     networks:
@@ -895,8 +866,6 @@ EOF
     print_section "Docker Compose (Let's Encrypt)"
     
     cat > "${INSTALL_DIR}/docker-compose.yml" << EOF
-version: '3.8'
-
 services:
   streamnzb:
     image: ghcr.io/gaisberg/streamnzb:latest
@@ -904,7 +873,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=${TIMEZONE}
-      - SECURITY_TOKEN=${SECURITY_TOKEN}
     volumes:
       - ${DATA_DIR}:/app/data
     networks:
@@ -1019,15 +987,18 @@ cat > "${INSTALL_DIR}/INFO.txt" << EOF
 ===============================================================================
 
 Installation:     $(date)
-Version:          Script v2.2
+Version:          Script v2.3
 SSL Mode:         ${SSL_MODE}
 
 ACCESS DETAILS
 -------------------------------------------------------------------------------
-Web UI:           https://${DOMAIN}/${SECURITY_TOKEN}/
-Manifest URL:     https://${DOMAIN}/${SECURITY_TOKEN}/manifest.json
-Security Token:   ${SECURITY_TOKEN}
+Web UI:           https://${DOMAIN}/
 NNTP Proxy:       ${DOMAIN}:1119
+
+Default Login:
+  Username:       admin
+  Password:       admin
+  (Change this immediately after first login!)
 
 DIRECTORIES
 -------------------------------------------------------------------------------
@@ -1041,7 +1012,7 @@ COMMANDS
 Status:           systemctl status streamnzb
 Logs:             cd ${INSTALL_DIR} && docker compose logs -f
 Restart:          systemctl restart streamnzb
-Update:           bash install-streamnzb.sh (choose option 1)
+Update:           bash install.sh (choose option 1)
 
 EOF
 
@@ -1115,25 +1086,30 @@ if [ "$SSL_MODE" = "cloudflare" ]; then
     printf "\n"
 fi
 
-printf "${CYAN}StreamNZB URLs:${NC}\n"
-printf "  Web UI:    ${GREEN}https://${DOMAIN}/${SECURITY_TOKEN}/${NC}\n"
-printf "  Manifest:  ${GREEN}https://${DOMAIN}/${SECURITY_TOKEN}/manifest.json${NC}\n"
+printf "${CYAN}StreamNZB:${NC}\n"
+printf "  Web UI:    ${GREEN}https://${DOMAIN}/${NC}\n"
 printf "\n"
-printf "${CYAN}Security Token:${NC} ${GREEN}${SECURITY_TOKEN}${NC}\n"
-printf "${CYAN}NNTP Proxy:${NC}     ${GREEN}${DOMAIN}:1119${NC}\n"
-printf "${CYAN}Info file:${NC}      ${GREEN}${INSTALL_DIR}/INFO.txt${NC}\n"
+printf "${CYAN}Default Login:${NC}\n"
+printf "  Username:  ${GREEN}admin${NC}\n"
+printf "  Password:  ${GREEN}admin${NC}\n"
+printf "  ${YELLOW}(Change this immediately after first login!)${NC}\n"
+printf "\n"
+printf "${CYAN}NNTP Proxy:${NC}  ${GREEN}${DOMAIN}:1119${NC}\n"
+printf "${CYAN}Info file:${NC}   ${GREEN}${INSTALL_DIR}/INFO.txt${NC}\n"
 printf "\n"
 printf "${BOLD}Next steps:${NC}\n"
 if [ "$SSL_MODE" = "cloudflare" ]; then
     printf "  1. Configure Cloudflare SSL to Full (Strict)\n"
-    printf "  2. Open the Web UI\n"
+    printf "  2. Open the Web UI and login\n"
+    printf "  3. Change the default password!\n"
+    printf "  4. Add a Usenet provider\n"
+    printf "  5. Add NZBHydra2 or Prowlarr as indexer\n"
+    printf "  6. Install the addon in Stremio\n"
+else
+    printf "  1. Open the Web UI and login\n"
+    printf "  2. Change the default password!\n"
     printf "  3. Add a Usenet provider\n"
     printf "  4. Add NZBHydra2 or Prowlarr as indexer\n"
     printf "  5. Install the addon in Stremio\n"
-else
-    printf "  1. Open the Web UI\n"
-    printf "  2. Add a Usenet provider\n"
-    printf "  3. Add NZBHydra2 or Prowlarr as indexer\n"
-    printf "  4. Install the addon in Stremio\n"
 fi
 printf "\n"
