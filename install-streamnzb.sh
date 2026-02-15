@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #===============================================================================
-# StreamNZB VPS Installation Script v2.3
+# StreamNZB VPS Installation Script v2.4
 # With SSL/TLS via Cloudflare DNS API (Full Strict) or Let's Encrypt
 #
 # Features:
@@ -10,6 +10,7 @@
 #   - Better validation (Email, Domain)
 #   - Cloudflare DNS API support (Full Strict SSL - most secure)
 #   - End-to-end encryption
+#   - Secure .env file for sensitive credentials
 #===============================================================================
 
 set -e
@@ -28,6 +29,7 @@ INSTALL_DIR="/opt/streamnzb"
 DATA_DIR="${INSTALL_DIR}/data"
 CADDY_DIR="${INSTALL_DIR}/caddy"
 CONFIG_FILE="${INSTALL_DIR}/.install-config"
+ENV_FILE="${INSTALL_DIR}/.env"
 
 #===============================================================================
 # Helper Functions
@@ -36,7 +38,7 @@ CONFIG_FILE="${INSTALL_DIR}/.install-config"
 print_banner() {
     printf "${CYAN}"
     printf "╔═══════════════════════════════════════════════════════════════════╗\n"
-    printf "║           StreamNZB VPS Installation Script v2.3                 ║\n"
+    printf "║           StreamNZB VPS Installation Script v2.4                 ║\n"
     printf "║     End-to-End SSL via Cloudflare DNS API or Let's Encrypt       ║\n"
     printf "╚═══════════════════════════════════════════════════════════════════╝\n"
     printf "${NC}\n"
@@ -269,7 +271,7 @@ load_existing_config() {
     return 1
 }
 
-# Save configuration
+# Save configuration (non-sensitive data only)
 save_config() {
     cat > "$CONFIG_FILE" << EOF
 # StreamNZB Installation Config
@@ -278,10 +280,30 @@ DOMAIN="${DOMAIN}"
 EMAIL="${EMAIL}"
 TIMEZONE="${TIMEZONE}"
 SSL_MODE="${SSL_MODE}"
-CF_API_TOKEN="${CF_API_TOKEN}"
 INSTALL_DATE="$(date +%Y-%m-%d)"
 EOF
     chmod 600 "$CONFIG_FILE"
+}
+
+# Create secure .env file for sensitive credentials
+create_env_file() {
+    cat > "$ENV_FILE" << EOF
+# StreamNZB Environment Variables
+# Created: $(date)
+# WARNING: This file contains sensitive credentials. Do not share!
+
+TZ=${TIMEZONE}
+EOF
+
+    # Add Cloudflare token only if using Cloudflare mode
+    if [ "$SSL_MODE" = "cloudflare" ] && [ -n "$CF_API_TOKEN" ]; then
+        echo "CF_API_TOKEN=${CF_API_TOKEN}" >> "$ENV_FILE"
+    fi
+
+    # Set restrictive permissions (owner read/write only)
+    chmod 600 "$ENV_FILE"
+    
+    print_success "Secure .env file created with restricted permissions (600)"
 }
 
 #===============================================================================
@@ -293,7 +315,7 @@ print_banner
 # Root check
 if [ "$(id -u)" -ne 0 ]; then 
     print_error "Please run as root:"
-    printf "  ${YELLOW}sudo bash install-streamnzb.sh${NC}\n"
+    printf "  ${YELLOW}sudo bash install.sh${NC}\n"
     exit 1
 fi
 
@@ -438,12 +460,16 @@ if [ "$INSTALL_MODE" = "reinstall" ] && [ -n "$DOMAIN" ]; then
     DEFAULT_DOMAIN="$DOMAIN"
     DEFAULT_EMAIL="$EMAIL"
     DEFAULT_TZ="$TIMEZONE"
-    DEFAULT_CF_TOKEN="$CF_API_TOKEN"
 else
     DEFAULT_DOMAIN=""
     DEFAULT_EMAIL=""
     DEFAULT_TZ="UTC"
-    DEFAULT_CF_TOKEN=""
+fi
+
+# Try to load existing CF token from .env file
+DEFAULT_CF_TOKEN=""
+if [ -f "$ENV_FILE" ]; then
+    DEFAULT_CF_TOKEN=$(grep "^CF_API_TOKEN=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2)
 fi
 
 # Ask for domain
@@ -741,6 +767,13 @@ save_config
 print_success "Configuration saved."
 
 #===============================================================================
+# Create Secure .env File
+#===============================================================================
+
+print_section "Creating Secure Environment File"
+create_env_file
+
+#===============================================================================
 # Create Docker Compose and Config based on SSL Mode
 #===============================================================================
 
@@ -789,8 +822,8 @@ services:
     image: ghcr.io/gaisberg/streamnzb:latest
     container_name: streamnzb
     restart: unless-stopped
-    environment:
-      - TZ=${TIMEZONE}
+    env_file:
+      - .env
     volumes:
       - ${DATA_DIR}:/app/data
     networks:
@@ -804,8 +837,8 @@ services:
     image: slothcroissant/caddy-cloudflaredns:latest
     container_name: caddy
     restart: unless-stopped
-    environment:
-      - CF_API_TOKEN=${CF_API_TOKEN}
+    env_file:
+      - .env
     ports:
       - "80:80"
       - "443:443"
@@ -871,8 +904,8 @@ services:
     image: ghcr.io/gaisberg/streamnzb:latest
     container_name: streamnzb
     restart: unless-stopped
-    environment:
-      - TZ=${TIMEZONE}
+    env_file:
+      - .env
     volumes:
       - ${DATA_DIR}:/app/data
     networks:
@@ -886,6 +919,8 @@ services:
     image: caddy:2-alpine
     container_name: caddy
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - "80:80"
       - "443:443"
@@ -987,7 +1022,7 @@ cat > "${INSTALL_DIR}/INFO.txt" << EOF
 ===============================================================================
 
 Installation:     $(date)
-Version:          Script v2.3
+Version:          Script v2.4
 SSL Mode:         ${SSL_MODE}
 
 ACCESS DETAILS
@@ -1006,6 +1041,7 @@ Installation:     ${INSTALL_DIR}
 Data:             ${DATA_DIR}
 Caddy:            ${CADDY_DIR}
 Logs:             ${INSTALL_DIR}/logs
+Environment:      ${ENV_FILE} (contains sensitive credentials)
 
 COMMANDS
 -------------------------------------------------------------------------------
