@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Gaisberg/streamnzb/compare/v1.0.3...v1.1.0) (2026-02-16)
+
+
+### Features
+
+* configurable admin account (may result in broken manifests, so reinstall the addon) ([3b2dbd4](https://github.com/Gaisberg/streamnzb/commit/3b2dbd44593869efc4b09f4eaa2129163eaeac7e))
+
 ## [1.0.3](https://github.com/Gaisberg/streamnzb/compare/v1.0.2...v1.0.3) (2026-02-15)
 
 
