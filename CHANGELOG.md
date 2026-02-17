@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.2.0](https://github.com/Gaisberg/streamnzb/compare/v1.1.0...v1.2.0) (2026-02-17)
+
+
+### Features
+
+* max streams per resolution ([5a111d3](https://github.com/Gaisberg/streamnzb/commit/5a111d314af1a227c3728bc396982199a1d1fdba))
+* provider priority support ([a2ad009](https://github.com/Gaisberg/streamnzb/commit/a2ad0093e186f2383d20a7d2987abdd94da94101))
+
+
+### Bug Fixes
+
+* lets not support rar for now ([13ac20f](https://github.com/Gaisberg/streamnzb/commit/13ac20f39e4a0e92695d99b8eef96266e5d1711c))
+* preserve ldflags values ([1cc1f8b](https://github.com/Gaisberg/streamnzb/commit/1cc1f8b564a9b2fa18b4cbe891a273c9c90219e8))
+
+
+### Performance Improvements
+
+* greatly improve seeking performance with binary search instead of linear search with archived releases ([344d2e4](https://github.com/Gaisberg/streamnzb/commit/344d2e48227a5444b611a675925d3c00902a5014))
+* overall stream performance improvements, code quality improvements ([d3a6d3e](https://github.com/Gaisberg/streamnzb/commit/d3a6d3e14de0c56ed2b3e0e6bf7389f1b34f816e))
+
 ## [1.1.0](https://github.com/Gaisberg/streamnzb/compare/v1.0.3...v1.1.0) (2026-02-16)
 
 
