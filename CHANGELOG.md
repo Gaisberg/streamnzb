@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/Gaisberg/streamnzb/compare/v1.2.0...v1.3.0) (2026-02-18)
+
+
+### Features
+
+* configurable user agents (see .env.example) ([11aac28](https://github.com/Gaisberg/streamnzb/commit/11aac288c7a50c848bdac08eb1f669c829785b01))
+* text query support ([d87f19b](https://github.com/Gaisberg/streamnzb/commit/d87f19be20a4d5b198d936fc179853127d71df17))
+
+
+### Bug Fixes
+
+* device sorting and filtering defaults ([9aa8969](https://github.com/Gaisberg/streamnzb/commit/9aa8969e100f0e1ac77f5602baebc8831a187491))
+
 ## [1.2.0](https://github.com/Gaisberg/streamnzb/compare/v1.1.0...v1.2.0) (2026-02-17)
 
 
