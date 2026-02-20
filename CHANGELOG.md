@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.0.0](https://github.com/Gaisberg/streamnzb/compare/v1.3.0...v2.0.0) (2026-02-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove nzbhydra and prowlarr
+
+### Features
+
+* add extended BODY+yEnc probe to AvailNZB cache warming ([f60a88d](https://github.com/Gaisberg/streamnzb/commit/f60a88da01b3dd1dc7e02f52bc4169e55f8ff28a))
+* **env:** default User-Agent StreamNZB/version for indexer requests (nzbfinder ping required user-agent) ([07f7966](https://github.com/Gaisberg/streamnzb/commit/07f79662401757c1fb72b5fb384367a49b9a5810))
+* **indexer:** add possibility to disabled indexers ([07f7966](https://github.com/Gaisberg/streamnzb/commit/07f79662401757c1fb72b5fb384367a49b9a5810))
+* rar is back, report all providers as bad etc... ([d3eee06](https://github.com/Gaisberg/streamnzb/commit/d3eee063e4b64f84c8f7da05ecfa23f61e2a2bfc))
+* remove nzbhydra and prowlarr ([86a5442](https://github.com/Gaisberg/streamnzb/commit/86a5442aa63f3c0dcebd4e7683ce4ef31708b977))
+
+
+### Bug Fixes
+
+* daily indexer usage reset doubling counts for unlimited accounts ([484aed1](https://github.com/Gaisberg/streamnzb/commit/484aed16e14b299e18d5962e1f5d79556dd2bb5d))
+* improve validation scanning, slower streams but better overall quality ([871a0e2](https://github.com/Gaisberg/streamnzb/commit/871a0e2a86e0f15e472112d8f600a180f38970d4))
+* **nzb:** fall back to poster when subject is empty for CompressionType ([181e26f](https://github.com/Gaisberg/streamnzb/commit/181e26f4cf671fa54bca5480cda0696aba7eadd1))
+* **unpack:** use exact rardecode PackedSize for RAR continuation volumes ([3de3699](https://github.com/Gaisberg/streamnzb/commit/3de3699145d66cabae4766bbd54e591f7d3fa0f8))
+
 ## [1.3.0](https://github.com/Gaisberg/streamnzb/compare/v1.2.0...v1.3.0) (2026-02-18)
 
 
