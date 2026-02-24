@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.1.0](https://github.com/Gaisberg/streamnzb/compare/v2.0.0...v2.1.0) (2026-02-24)
+
+
+### Features
+
+* **availnzb:** use backbones API and status/url, status/imdb, status/tvdb ([21462f0](https://github.com/Gaisberg/streamnzb/commit/21462f03ef88a149146902e4cce8902bf6d2e2b2))
+* **indexer:** newznab search feedback fixes (t=search, ID-only q, S01E01, season/ep option) ([b92b9cf](https://github.com/Gaisberg/streamnzb/commit/b92b9cf1a57164d3dc98fb14833aa218ff32764f))
+* **indexer:** per-indexer and per-device-per-indexer search settings ([4d8fde1](https://github.com/Gaisberg/streamnzb/commit/4d8fde13a5b90a9b8e6a071286c6fee03d764c9a))
+* **search:** add Newznab CAPS discovery, per-indexer categories, and search query terms ([1b3cf47](https://github.com/Gaisberg/streamnzb/commit/1b3cf476c689208646c932d22ed43946fc9ad163))
+
+
+### Bug Fixes
+
+* comma seperated inputs were not working ([2b14276](https://github.com/Gaisberg/streamnzb/commit/2b1427668de8a5144462b280bb9315817c26d516))
+* **search:** make allowed_languages filter work with parser and indexer formats ([d91d03d](https://github.com/Gaisberg/streamnzb/commit/d91d03d3c57ffe34704d5fbe4e1addee135b371e))
+* **search:** strict series title filter to avoid wrong show matches ([6ef470c](https://github.com/Gaisberg/streamnzb/commit/6ef470c882edcd6a61a59f9150cb0cb804d23f85))
+* **search:** stricter movie text filter by phrase and year ([0be7206](https://github.com/Gaisberg/streamnzb/commit/0be720661121c5b6ef9bed632836a6251bf85ae7))
+
 ## [2.0.0](https://github.com/Gaisberg/streamnzb/compare/v1.3.0...v2.0.0) (2026-02-20)
 
 
