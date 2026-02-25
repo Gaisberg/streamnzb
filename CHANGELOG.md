@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.0](https://github.com/Gaisberg/streamnzb/compare/v2.1.0...v2.2.0) (2026-02-25)
+
+
+### Features
+
+* auto failover configuration option ([a9f62f4](https://github.com/Gaisberg/streamnzb/commit/a9f62f4e9fce8b01f7ef13d53b81f9e740ae1283))
+* fallback to next possible stream instead of error ([bcec24b](https://github.com/Gaisberg/streamnzb/commit/bcec24b6b101e7b564ab9209ddfff25ff45dc3e7))
+* password protected archive support ([ca4a9de](https://github.com/Gaisberg/streamnzb/commit/ca4a9deafe9beb67b59cb2dc8b4c8dfa9d7b8adc))
+
+
+### Bug Fixes
+
+* **stremio:** set req.IMDbID when resolving IMDb from TMDB for movie requests ([8996409](https://github.com/Gaisberg/streamnzb/commit/8996409bb7837032f4a909aeccb61f20bf1ab831))
+
 ## [2.1.0](https://github.com/Gaisberg/streamnzb/compare/v2.0.0...v2.1.0) (2026-02-24)
 
 
