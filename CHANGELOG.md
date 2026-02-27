@@ -1,5 +1,40 @@
 # Changelog
 
+## [3.0.0](https://github.com/Gaisberg/streamnzb/compare/v2.2.0...v3.0.0) (2026-02-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* Introducing streams, automatic failover dont sweat when choosing over a release
+
+### Features
+
+* aiostreams support ([2417210](https://github.com/Gaisberg/streamnzb/commit/241721039d0e3cefdfae8032d0e20c5eece497dc))
+* Introducing streams, automatic failover dont sweat when choosing over a release ([b92b4dc](https://github.com/Gaisberg/streamnzb/commit/b92b4dcd54f6b638ae4f05da6bafd1ceefe2b477))
+* **seek:** experimental seek after failover ([4ba6297](https://github.com/Gaisberg/streamnzb/commit/4ba62979956dc8785b8986f0138c0cd217947fc2))
+* show all streams mode for streams ([ebeadf6](https://github.com/Gaisberg/streamnzb/commit/ebeadf63986775b5120e99b7fe223be0095e8dc1))
+* **ui:** profile page ([6111940](https://github.com/Gaisberg/streamnzb/commit/6111940a79267b3cde10c8a9ef0531cbdbe9c736))
+* **ui:** search page, availnzb changes ([af7733b](https://github.com/Gaisberg/streamnzb/commit/af7733be01cbd8679ccbb7e1fe223d14bff658ac))
+
+
+### Bug Fixes
+
+* **availnzb:** send NNTP hostnames to AvailNZB, not provider display names ([5c02b85](https://github.com/Gaisberg/streamnzb/commit/5c02b85e438620e413c3ed609d64d8ff8c7f3977))
+* **frontend:** normalize checkboxes persist when unchecked ([18622ec](https://github.com/Gaisberg/streamnzb/commit/18622ec0d4e13fb313a55dfd6c1b7ca58bbb07a8))
+* **media:** wait for prefetch drain in Seek before returning ([b3e0595](https://github.com/Gaisberg/streamnzb/commit/b3e0595bdfab11cf1b5bc1cccf89fd75b69d4e3a))
+* priority overrides availnzb ([8adc873](https://github.com/Gaisberg/streamnzb/commit/8adc8737b9b0d56f052a07edc777af6a5d48abba))
+* **search:** filter ID search results by content title/year ([2781f84](https://github.com/Gaisberg/streamnzb/commit/2781f8476177f18e2230cc572ebcb8ee8091e7f1))
+* **search:** match titles by letters/digits only in FilterResults ([ec2eb12](https://github.com/Gaisberg/streamnzb/commit/ec2eb1234149a563f8407643d9612ef7aaa21058))
+* **stremio:** hide stream configs with no candidates after filtering ([3f5cfd1](https://github.com/Gaisberg/streamnzb/commit/3f5cfd1bce2d0b3a01318344643e70585ccab26a))
+* **stremio:** set QuerySource=id for AvailNZB releases so triage doesn't push them to bottom ([4586c02](https://github.com/Gaisberg/streamnzb/commit/4586c02d3a4fda061ccee367d0a5b3bf146a8e32))
+* string search as t=search instead of tvsearch as per api specs ([a8613d0](https://github.com/Gaisberg/streamnzb/commit/a8613d01b6fea4a7fa7799cd81e25372d086dc48))
+* **triage:** whole-word release group match; paste comma list in UI ([de37698](https://github.com/Gaisberg/streamnzb/commit/de376984231bedb31c15b437b6b4dcc52fa05303))
+
+
+### Performance Improvements
+
+* improve playback with a buffered response ([8578af6](https://github.com/Gaisberg/streamnzb/commit/8578af6d2e6979656924f8e9e18e4cb5ea9db6cf))
+
 ## [2.2.0](https://github.com/Gaisberg/streamnzb/compare/v2.1.0...v2.2.0) (2026-02-25)
 
 
