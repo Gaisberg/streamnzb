@@ -1,5 +1,32 @@
 # Changelog
 
+## [3.1.0](https://github.com/Gaisberg/streamnzb/compare/v3.0.0...v3.1.0) (2026-03-03)
+
+
+### Features
+
+* nzbhydra and prowlarr are back baby ([5ac0d41](https://github.com/Gaisberg/streamnzb/commit/5ac0d41e46ba363f39e2a5dbf5f663a6b09a1eff))
+* **stremio:** STAT first segment before play for faster 430 failover ([5d6f455](https://github.com/Gaisberg/streamnzb/commit/5d6f45594e0f9ab36ad678d674f1681681af90ec))
+
+
+### Bug Fixes
+
+* **7z:** properly sort 7z volumes passing filenames through ExtractFilename ([18ec2c1](https://github.com/Gaisberg/streamnzb/commit/18ec2c158c9dde02d6d6607ff592565c52c80bb9))
+* **aiostreams:** handle failoverorder request from aiostreams ([d5ae1f9](https://github.com/Gaisberg/streamnzb/commit/d5ae1f9e8359530dfa4cb96b23a0e236fbc69128))
+* **aiostreams:** user failoverId now correctly maps aiostreams results to streamnzb results ([71535d4](https://github.com/Gaisberg/streamnzb/commit/71535d4093e5835ad568a16785a3ec527b586348))
+* remove max size from aiostreams config for now ([ddc5462](https://github.com/Gaisberg/streamnzb/commit/ddc54625a22e9b52641604a9ab82d7ddbbc58b4e))
+* **stremio:** include device token in redirect path after fallback ([eb24de9](https://github.com/Gaisberg/streamnzb/commit/eb24de99c04cb51cf4fa36d47e163440a96a8973))
+* **stremio:** only add in-range slots to session fallback list ([697c2a2](https://github.com/Gaisberg/streamnzb/commit/697c2a2c7719c5102e81df9d2d7d91d72efc6b83))
+* **stremio:** use accurate mime types for fallback streams instead of forced mp4 ([1b2c108](https://github.com/Gaisberg/streamnzb/commit/1b2c108b2fdcfb4085dbd966d5156fc348b4c00c))
+
+
+### Performance Improvements
+
+* improve failover performance ([7ba6137](https://github.com/Gaisberg/streamnzb/commit/7ba613759c7cf4006d9d4359d3c2b595bea4a1a1))
+* **streaming:** parallel first-segment probe for segment 0 ([5808ec4](https://github.com/Gaisberg/streamnzb/commit/5808ec4a6931c4ae459131a664c66436fbe1b5e9))
+* **stremio:** prefetch next fallback NZB in background during play ([2739d0e](https://github.com/Gaisberg/streamnzb/commit/2739d0ec05a5cc8c17b5b0dc997c79f6a8b0e012))
+* **unpack:** avoid pre-calling EnsureSegmentMap for all volumes in full RAR scan ([c86f231](https://github.com/Gaisberg/streamnzb/commit/c86f23120d05ab4fa5b275fe09d17dd2799110ad))
+
 ## [3.0.0](https://github.com/Gaisberg/streamnzb/compare/v2.2.0...v3.0.0) (2026-02-27)
 
 
