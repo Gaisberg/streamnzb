@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.2.0](https://github.com/Gaisberg/streamnzb/compare/v3.1.0...v3.2.0) (2026-03-04)
+
+
+### Features
+
+* **logging:** rotate to streamnzb.log and add keep-log-files setting ([e2f183b](https://github.com/Gaisberg/streamnzb/commit/e2f183b20da9944c7d91bc4ae92bc46335126f6b))
+
+
+### Bug Fixes
+
+* fix memory leak, configurable memory limit (512mb default) ([eba23d8](https://github.com/Gaisberg/streamnzb/commit/eba23d8fcd9ee80e4654860273f45897ec86bea8))
+* improve search matching using fuzzy matching ([304d78f](https://github.com/Gaisberg/streamnzb/commit/304d78f3508f633f187eba03a0c8d08112845af8))
+* **memory:** cap segment cache and expire slotFailedDuringPlayback ([3a44fe0](https://github.com/Gaisberg/streamnzb/commit/3a44fe06123bc8f022c81dc47404d68be730a546))
+* **memory:** expire failover order (24h TTL), cap segment size estimator ([65cacbc](https://github.com/Gaisberg/streamnzb/commit/65cacbcf476fd29e040d2fe19ee07d5d0462c92a))
+* **session:** evict sessions after max playback duration (Phase 2) ([5a79017](https://github.com/Gaisberg/streamnzb/commit/5a79017999b90917faf799208c09abd6c2c5d4c0))
+
 ## [3.1.0](https://github.com/Gaisberg/streamnzb/compare/v3.0.0...v3.1.0) (2026-03-03)
 
 
