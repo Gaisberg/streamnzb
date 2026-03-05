@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.3.0](https://github.com/Gaisberg/streamnzb/compare/v3.2.0...v3.3.0) (2026-03-05)
+
+
+### Features
+
+* **availnzb:** add configuration option ([72f0bd6](https://github.com/Gaisberg/streamnzb/commit/72f0bd61f2e7963155d4d22aaf50a4071aad0ca0))
+* configurable per device streams ([b852f24](https://github.com/Gaisberg/streamnzb/commit/b852f240ed1d1c52b4797e417822f57f2f0b1dc7))
+* nzb history, sqlite persistence, failover race condition fix ([0a48c42](https://github.com/Gaisberg/streamnzb/commit/0a48c424731e8704376fc00dc0d913f3401cb510))
+
+
+### Bug Fixes
+
+* **search:** tighten fuzzy title match so companion titles don't match main title ([0f54b41](https://github.com/Gaisberg/streamnzb/commit/0f54b41f1532daa71b8ba8a90693c754f8bf3326))
+
+
+### Performance Improvements
+
+* cap stremio prefetchs ([b2ffd43](https://github.com/Gaisberg/streamnzb/commit/b2ffd437440f5a49e875cae2ada198461ac29010))
+* improve failover performance ([0f54b41](https://github.com/Gaisberg/streamnzb/commit/0f54b41f1532daa71b8ba8a90693c754f8bf3326))
+
 ## [3.2.0](https://github.com/Gaisberg/streamnzb/compare/v3.1.0...v3.2.0) (2026-03-04)
 
 
