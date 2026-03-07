@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.4.0](https://github.com/Gaisberg/streamnzb/compare/v3.3.0...v3.4.0) (2026-03-07)
+
+
+### Features
+
+* episode pack support ([89716d0](https://github.com/Gaisberg/streamnzb/commit/89716d0946dd6afdae2b7166d0d6c35a8a43eecf))
+* redact sensitive information from logger ([6b2eda1](https://github.com/Gaisberg/streamnzb/commit/6b2eda179af2666bf2604a8bea987ad7cc086d1f))
+
+
+### Bug Fixes
+
+* improve search matching even more ([11cd359](https://github.com/Gaisberg/streamnzb/commit/11cd3594c35cbe2d59758124ff3020da7140507c))
+* improve search performance some more ([b834342](https://github.com/Gaisberg/streamnzb/commit/b8343420377d46b6a85b56f5e05824a22dff4acd))
+* **loader:** prevent seek from canceling active segment reads ([5ab93c2](https://github.com/Gaisberg/streamnzb/commit/5ab93c25048786c61ff91a2d5f38778bc9de4562))
+
+
+### Performance Improvements
+
+* improve playback and seek performance ([2531fad](https://github.com/Gaisberg/streamnzb/commit/2531fadcd1c53e1758148092da82d60dc1f345eb))
+* improve series matching ([e8964e1](https://github.com/Gaisberg/streamnzb/commit/e8964e13034bfa3bc1292413701e94b4a7f1dd7b))
+
 ## [3.3.0](https://github.com/Gaisberg/streamnzb/compare/v3.2.0...v3.3.0) (2026-03-05)
 
 
