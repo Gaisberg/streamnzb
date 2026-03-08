@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.5.0](https://github.com/Gaisberg/streamnzb/compare/v3.4.0...v3.5.0) (2026-03-08)
+
+
+### Features
+
+* **indexers:** add configurable per-indexer request timeouts ([d733fd9](https://github.com/Gaisberg/streamnzb/commit/d733fd9c5aac637439734ee826a001889f541ec9))
+* **troubleshooting:** add log download and bad match report actions ([500f32d](https://github.com/Gaisberg/streamnzb/commit/500f32de5252c9f7fe213c75e4b0241d7f54010a))
+
+
+### Bug Fixes
+
+* **config:** validate unresolved prowlarr indexer placeholder ([8c3cc1f](https://github.com/Gaisberg/streamnzb/commit/8c3cc1f2076311cbe24690ce34565c1dbb91bfd5))
+
 ## [3.4.0](https://github.com/Gaisberg/streamnzb/compare/v3.3.0...v3.4.0) (2026-03-07)
 
 
