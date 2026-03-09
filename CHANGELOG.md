@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.5.1](https://github.com/Gaisberg/streamnzb/compare/v3.5.0...v3.5.1) (2026-03-09)
+
+
+### Bug Fixes
+
+* availnzb update ([4c35fcf](https://github.com/Gaisberg/streamnzb/commit/4c35fcf5dafe4df17c76a040017f984ce3923fdf))
+* **loader:** use actual last segment size for decoded mapping ([e9bc649](https://github.com/Gaisberg/streamnzb/commit/e9bc6494c848130796d7027220ff91e8bae56646))
+* **newznab:** authenticate deferred NZB downloads from keyless grab urls ([0bf62d0](https://github.com/Gaisberg/streamnzb/commit/0bf62d01f777434a542f5957d135f611daba6fea))
+* reset daily usage correctly ([1a2bf32](https://github.com/Gaisberg/streamnzb/commit/1a2bf323dfd1a196d93005815f96f78582753607))
+
 ## [3.5.0](https://github.com/Gaisberg/streamnzb/compare/v3.4.0...v3.5.0) (2026-03-08)
 
 
