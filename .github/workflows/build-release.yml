@@ -85,7 +85,7 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64
-	        LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
           # Build for Linux AMD64 (for Docker and Release)
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/linux_amd64/streamnzb ./cmd/streamnzb
           # Build for Linux ARM64 (for Docker and Release)
