@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.5.2](https://github.com/Gaisberg/streamnzb/compare/v3.5.1...v3.5.2) (2026-03-10)
+
+
+### Bug Fixes
+
+* **availnzb:** make API key registration fail-open during startup ([c6dedbc](https://github.com/Gaisberg/streamnzb/commit/c6dedbcd98980d6af869d898ef8c047195348cc9))
+
+
+### Performance Improvements
+
+* **unpack:** avoid per-volume segment detection for split 7z parts ([c0612b9](https://github.com/Gaisberg/streamnzb/commit/c0612b905dcbcf293119abfeb4f04e8a9e40cfcf))
+* **unpack:** avoid per-volume segment detection when aggregating RAR continuations ([578207b](https://github.com/Gaisberg/streamnzb/commit/578207bb2d003a2c5100f9863400c0387fc94757))
+
 ## [3.5.1](https://github.com/Gaisberg/streamnzb/compare/v3.5.0...v3.5.1) (2026-03-09)
 
 
