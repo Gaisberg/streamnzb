@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.3](https://github.com/Gaisberg/streamnzb/compare/v3.5.2...v3.5.3) (2026-03-10)
+
+
+### Bug Fixes
+
+* remove save button from devices that would overwrite config ([f83e96f](https://github.com/Gaisberg/streamnzb/commit/f83e96f5b5d17e9f3c95332ae7a52262e387ad6a))
+
 ## [3.5.2](https://github.com/Gaisberg/streamnzb/compare/v3.5.1...v3.5.2) (2026-03-10)
 
 
