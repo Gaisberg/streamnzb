@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.5.4](https://github.com/Gaisberg/streamnzb/compare/v3.5.3...v3.5.4) (2026-03-11)
+
+
+### Bug Fixes
+
+* fail closed when pack playback cannot match requested episode ([01451ce](https://github.com/Gaisberg/streamnzb/commit/01451ce626bb1856c70fd503870c62ff08ed1c0e))
+* logging for production ([a41c14d](https://github.com/Gaisberg/streamnzb/commit/a41c14de93496be6bb4f807a6dc28771ca74efaa))
+* **search:** matched hyphens better ( gotta catch em all ) ([b15e677](https://github.com/Gaisberg/streamnzb/commit/b15e6778dd80124257615988f4f6e8ca422f82d6))
+* serialize db writes through on shared lock ([d35e0f9](https://github.com/Gaisberg/streamnzb/commit/d35e0f94f9da704ffdcd3ee67f187c7c8c283582))
+
 ## [3.5.3](https://github.com/Gaisberg/streamnzb/compare/v3.5.2...v3.5.3) (2026-03-10)
 
 
