@@ -70,7 +70,6 @@ type Server struct {
 	recordedPreloadSessionIDs sync.Map // session ID -> struct{}; record preload only once per session lifetime
 	recordedFailureSessionIDs sync.Map // session ID -> struct{}; record failure only once per session lifetime (prevents concurrent goroutines from inserting duplicate rows)
 	nextReleaseIndex          sync.Map // key: deviceToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
-	webHandler                http.Handler
 	apiHandler                http.Handler
 	attemptRecorder           *persistence.StateManager
 	onAttemptRecorded         func()
@@ -155,10 +154,6 @@ func (s *Server) CheckPort(port int) error {
 	return nil
 }
 
-func (s *Server) SetWebHandler(h http.Handler) {
-	s.webHandler = h
-}
-
 func (s *Server) SetAPIHandler(h http.Handler) {
 	s.apiHandler = h
 }
@@ -182,19 +177,18 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		deviceManager := s.deviceManager
-		webHandler := s.webHandler
 		apiHandler := s.apiHandler
 		s.mu.RUnlock()
 
 		path := r.URL.Path
 		var authenticatedDevice *auth.Device
 
-		if path == "/error/failure.mp4" && webHandler != nil {
-			webHandler.ServeHTTP(w, r)
+		if path == "/error/failure.mp4" {
+			serveFailureVideo(w, r)
 			return
 		}
 
-		isStremioRoute := path == "/manifest.json" || path == FailoverOrderPath || strings.HasPrefix(path, "/stream/") || strings.HasPrefix(path, "/play/") || strings.HasPrefix(path, "/next/") || strings.HasPrefix(path, "/debug/play")
+		// isStremioRoute := path == "/manifest.json" || path == FailoverOrderPath || strings.HasPrefix(path, "/stream/") || strings.HasPrefix(path, "/play/") || strings.HasPrefix(path, "/next/") || strings.HasPrefix(path, "/debug/play")
 
 		trimmedPath := strings.TrimPrefix(path, "/")
 		parts := strings.SplitN(trimmedPath, "/", 2)
@@ -220,25 +214,27 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 					if strings.Contains(r.Header.Get("User-Agent"), "AIOStreams") {
 						s.sessionManager.SetAIOStreamsDevice(device.Token)
 					}
-				} else if isStremioRoute {
+					// } else if isStremioRoute {
 
-					logger.Error("Unauthorized request - invalid device token", "path", path, "remote", r.RemoteAddr)
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-					return
+					// 	logger.Error("Unauthorized request - invalid device token", "path", path, "remote", r.RemoteAddr)
+					// 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					// 	return
 				}
 
 			}
-		} else if isStremioRoute {
+			// } else if isStremioRoute {
 
-			logger.Error("Unauthorized request - Stremio route requires device token", "path", path, "remote", r.RemoteAddr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+			// 	logger.Error("Unauthorized request - Stremio route requires device token", "path", path, "remote", r.RemoteAddr)
+			// 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			// 	return
 		}
 
 		if path == "/manifest.json" {
 			s.handleManifest(w, r)
 		} else if strings.HasPrefix(path, "/stream/") {
 			s.handleStream(w, r, authenticatedDevice)
+		} else if strings.HasPrefix(path, "/resolve/play/") {
+			s.handleResolvePlay(w, r, authenticatedDevice)
 		} else if strings.HasPrefix(path, "/play/") {
 			s.handlePlay(w, r, authenticatedDevice)
 		} else if strings.HasPrefix(path, "/next/") {
@@ -257,11 +253,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 				http.NotFound(w, r)
 			}
 		} else {
-			if webHandler != nil {
-				webHandler.ServeHTTP(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			http.NotFound(w, r)
 		}
 	})
 
@@ -1945,6 +1937,72 @@ type playbackSourceOpenResult struct {
 	err    error
 }
 
+// handleResolvePlay serves resolve-created sessions without next-slot redirects or fallback switching.
+func (s *Server) handleResolvePlay(w http.ResponseWriter, r *http.Request, _ *auth.Device) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/resolve/play/")
+	if sessionID == "" || !strings.HasPrefix(sessionID, "resolve-") {
+		http.Error(w, "Invalid resolve session", http.StatusBadRequest)
+		return
+	}
+	logger.Info("Resolve play request", "session", sessionID)
+
+	sess, err := s.sessionManager.GetSession(sessionID)
+	if err != nil {
+		logger.Debug("Resolve play: session not found", "session", sessionID, "err", err)
+		http.Error(w, "Session expired or not found", http.StatusNotFound)
+		return
+	}
+
+	_, hasTimeOffset := seek.ParseTSeconds(r.URL.Query().Get("t"))
+	wantTimeOffset := r.Header.Get("Range") == "" && hasTimeOffset
+
+	mergedCtx, mergedCancel := context.WithCancel(r.Context())
+	go func(sess *session.Session, done <-chan struct{}, cancel context.CancelFunc) {
+		select {
+		case <-done:
+			return
+		case <-sess.Done():
+			logger.Debug("resolve playback aborted: session closed", "session", sess.ID)
+			cancel()
+		}
+	}(sess, mergedCtx.Done(), mergedCancel)
+
+	if _, alreadyPreloaded := s.recordedPreloadSessionIDs.LoadOrStore(sessionID, struct{}{}); !alreadyPreloaded {
+		s.recordPreloadAttempt(sess)
+		go func(id string, done <-chan struct{}) {
+			<-done
+			s.recordedPreloadSessionIDs.Delete(id)
+		}(sessionID, sess.Done())
+	}
+
+	preparedStream, prepareErr := s.preparePlaybackStream(mergedCtx, sess, sessionID, sessionID, wantTimeOffset)
+	if prepareErr != nil {
+		mergedCancel()
+		if isPlayPrepareCancellation(prepareErr) {
+			logger.Debug("resolve play prepare canceled", "session", sessionID, "err", prepareErr)
+			return
+		}
+		if errors.Is(prepareErr, ErrPlaybackStartupTimeout) {
+			logger.Warn("Resolve playback startup timed out", "session", sessionID, "err", prepareErr)
+		}
+		if (isSegmentUnavailableErr(prepareErr) || isDataCorruptErr(prepareErr)) && s.availReporter != nil {
+			s.availReporter.ReportBad(sess, prepareErr.Error())
+		}
+		if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(sessionID, struct{}{}); !alreadyFailed {
+			s.recordAttempt(sess, false, prepareErr.Error())
+			go func(id string, done <-chan struct{}) {
+				<-done
+				s.recordedFailureSessionIDs.Delete(id)
+			}(sessionID, sess.Done())
+		}
+		s.sessionManager.DeleteSession(sessionID)
+		forceDisconnect(w, s.baseURL)
+		return
+	}
+
+	s.servePreparedPlayback(w, r, sess, sessionID, sessionID, preparedStream, mergedCtx, mergedCancel, false)
+}
+
 // handlePlay: resolve session (by slot path or existing), optionally redirect if slot previously failed,
 // then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
 func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth.Device) {
@@ -1952,12 +2010,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 	requestedSessionID := sessionID
 	logger.Info("Play request", "session", sessionID)
 
-	var (
-		sess   *session.Session
-		stream io.ReadSeekCloser
-		name   string
-		size   int64
-	)
+	var sess *session.Session
 
 	var err error
 	sess, err = s.sessionManager.GetSession(sessionID)
@@ -1995,14 +2048,13 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 		return
 	}
 
-	tSec, hasTimeOffset := seek.ParseTSeconds(r.URL.Query().Get("t"))
+	_, hasTimeOffset := seek.ParseTSeconds(r.URL.Query().Get("t"))
 	wantTimeOffset := r.Header.Get("Range") == "" && hasTimeOffset
-	var startupInfo seek.StreamStartInfo
-	var haveStartupInfo bool
-	streamMode := ""
 
 	var mergedCtx context.Context
 	var mergedCancel context.CancelFunc
+	var preparedStream preparedPlaybackStream
+	var prepareErr error
 	// No response (headers or body) is sent until we pass the probe below and call ServeContent. That way we can fail over without the client having seen any response.
 	for {
 		// Skip slots we've already marked as failed; use cache so we never try them.
@@ -2041,7 +2093,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 			}(sessionID, sess.Done())
 		}
 
-		preparedStream, prepareErr := s.preparePlaybackStream(mergedCtx, sess, requestedSessionID, sessionID, wantTimeOffset)
+		preparedStream, prepareErr = s.preparePlaybackStream(mergedCtx, sess, requestedSessionID, sessionID, wantTimeOffset)
 		if prepareErr != nil {
 			mergedCancel()
 			if isPlayPrepareCancellation(prepareErr) {
@@ -2076,16 +2128,23 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 			forceDisconnect(w, s.baseURL)
 			return
 		}
-
-		stream = preparedStream.Stream
-		name = preparedStream.Spec.Name
-		size = preparedStream.Spec.Size
-		startupInfo = preparedStream.StartupInfo
-		haveStartupInfo = preparedStream.HasStartupInfo
-		streamMode = preparedStream.Mode
 		break
 	}
+	s.servePreparedPlayback(w, r, sess, requestedSessionID, sessionID, preparedStream, mergedCtx, mergedCancel, true)
+}
+
+func (s *Server) servePreparedPlayback(w http.ResponseWriter, r *http.Request, sess *session.Session, requestedSessionID, sessionID string, preparedStream preparedPlaybackStream, mergedCtx context.Context, mergedCancel context.CancelFunc, markSlotFailed bool) {
 	defer mergedCancel()
+
+	stream := preparedStream.Stream
+	name := preparedStream.Spec.Name
+	size := preparedStream.Spec.Size
+	startupInfo := preparedStream.StartupInfo
+	haveStartupInfo := preparedStream.HasStartupInfo
+	streamMode := preparedStream.Mode
+	tSec, hasTimeOffset := seek.ParseTSeconds(r.URL.Query().Get("t"))
+	wantTimeOffset := r.Header.Get("Range") == "" && hasTimeOffset
+
 	servedSessionID := sessionID
 	requestedRange := r.Header.Get("Range")
 	requestedTimeOffset := r.URL.Query().Get("t")
@@ -2107,7 +2166,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 		closeStream("playback canceled")
 	}(mergedCtx.Done())
 
-	// After internal failover we serve a different file; don't apply the original request's Range or t= to it.
 	failedOver := sessionID != requestedSessionID
 	if failedOver {
 		r.Header.Del("Range")
@@ -2127,28 +2185,19 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 	var endPlaybackOnce sync.Once
 	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
-	// When client cancels (e.g. stop in Stremio), request context is cancelled; end playback so we stop downloading and session can be evicted.
 	go func() {
 		<-r.Context().Done()
 		endPlaybackOnce.Do(endPlayback)
 	}()
 
-	// serveFailureRecorded is set to true when onReadError records a failure for the
-	// currently-served session. The success defer checks this flag so it never
-	// overwrites a Failure with an OK (the "flip-flop" bug).
 	serveFailureRecorded := false
 	onReadError := func(playbackSessionID string, readErr error) {
-		// Trigger slot failover for any permanent mid-stream error:
-		//   - 430 No Such Article (segment missing on all providers)
-		//   - yEnc decode failure (data corruption)
-		//   - ErrTooManyZeroFills (too many segments failed across all providers)
-		// All three mean the slot is unrecoverable. SetSlotFailedDuringPlayback marks it so the
-		// existing redirect logic at the top of handlePlay redirects the player to the next slot
-		// on reconnect, without requiring the user to manually switch in Stremio.
 		if !isSegmentUnavailableErr(readErr) && !isDataCorruptErr(readErr) && !errors.Is(readErr, unpack.ErrTooManyZeroFills) {
 			return
 		}
-		s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
+		if markSlotFailed {
+			s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
+		}
 		if errSess, _ := s.sessionManager.GetSession(playbackSessionID); errSess != nil {
 			errSess.ResetPlaybackStream()
 			if s.availReporter != nil {
@@ -2242,10 +2291,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 		)
 	}()
 
-	// Report good only after serving, so bytes-read threshold can be met (StreamMonitor tracks bytes).
-	// Record success at most once per session: multiple HTTP requests (e.g. range/seek) for the same stream
-	// would otherwise each run this defer and create duplicate "OK" entries in NZB history.
-	// If onReadError already recorded a failure for this session, skip — we must not flip it back to OK.
 	defer func() {
 		if serveFailureRecorded {
 			return
@@ -2273,7 +2318,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 		}
 		if _, already := s.recordedSuccessSessionIDs.LoadOrStore(sessionID, struct{}{}); !already {
 			s.recordAttempt(sess, true, "")
-			// When session is gone, allow recording success again for a future play of the same release.
 			go func() {
 				<-sess.Done()
 				s.recordedSuccessSessionIDs.Delete(sessionID)
@@ -2911,6 +2955,12 @@ func forceDisconnect(w http.ResponseWriter, baseURL string) {
 	w.Header().Set("Connection", "close")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	http.Redirect(w, &http.Request{Method: "GET"}, errorVideoURL, http.StatusTemporaryRedirect)
+}
+
+func serveFailureVideo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	http.ServeContent(w, r, "failure.mp4", time.Time{}, bytes.NewReader(nil))
 }
 
 func (s *Server) Reload(opts *ServerOptions) {

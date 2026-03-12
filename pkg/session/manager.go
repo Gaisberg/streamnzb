@@ -1139,7 +1139,7 @@ type ActiveSessionInfo struct {
 }
 
 func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
-	logger.Trace("session GetActiveSessions start")
+	// logger.Trace("session GetActiveSessions start")
 	m.mu.RLock()
 	snapshot := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
@@ -1185,7 +1185,7 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 		}
 		s.mu.Unlock()
 	}
-	logger.Trace("session GetActiveSessions done", "sessions", len(snapshot), "active", len(result))
+	// logger.Trace("session GetActiveSessions done", "sessions", len(snapshot), "active", len(result))
 	return result
 }
 

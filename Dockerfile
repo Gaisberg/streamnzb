@@ -9,5 +9,4 @@ ARG TARGETARCH
 COPY dist/linux_${TARGETARCH}/streamnzb .
 
 EXPOSE 7000
-EXPOSE 119
 CMD ["./streamnzb"]

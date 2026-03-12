@@ -3,17 +3,46 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg)](https://buymeacoffee.com/gaisberg)
 [![Discord](https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&logoColor=white)](https://snzb.stream/discord)
 
-StreamNZB is a Stremio/Nuvio addon that streams from Usenet via your indexers. You see one row per **stream** (e.g. Global, 1080p)—each a named set of filters and sorting. No upfront NZB validation: we build an ordered list of releases from indexer + [AvailNZB](https://check.snzb.stream), try the first on play, and on failure report bad and fail over to the next. One app: addon, NNTP proxy, and indexer aggregation behind a single IP. No extra containers—just Usenet provider(s) and indexer(s).
+StreamNZB is an API-first Stremio/Nuvio addon runtime that streams from Usenet via your indexers. The canonical `streamnzb` build now targets the Next discovery/playback service under `pkg/next/*`, exposing the addon manifest plus `/stream`, `/resolve`, and `/play`. The old bundled frontend/admin UI is no longer part of the default build.
 
 
 ## What it does
 
 - **Stremio & Nuvio addon** – Add the manifest URL in [Stremio](https://www.stremio.com) or [Nuvio](https://nuvioapp.space). Open a title and you get one row per **stream config** (e.g. “Global”, “1080p”). Each row shows “StreamNZB [availNZB]” when the top release is known good, or “X possible releases”. Play uses that stream’s ordered list; if playback fails we report to AvailNZB and try the next release.
-- **Streams** – In **Settings → Streams** you define multiple streams (name + filters + sorting). The **Global** stream is always first; others appear in stable order. Each stream gets its own play list for every title (same indexer/AvailNZB fetch, different filter/sort per stream). Optional “Next release” row per stream lets you advance through the list.
-- **Devices** – **Settings → Devices** creates tokens (one manifest URL per token) for auth. All devices see the same stream list; streams are not per-device.
-- **NNTP proxy** – Standard NNTP (default port 119) for SABnzbd or NZBGet. Same provider pool as the addon.
+- **Discovery + playback API** – `/stream` returns candidate NZB-backed streams, `/resolve` performs playback preflight, and `/play` starts or resumes the prepared playback session.
 - **AvailNZB** – Reuse others’ availability checks and report your own so the shared DB stays useful. Bad releases are skipped when building play lists; good/bad is reported on play.
-- **Single binary** – Docker image or native Windows/Linux/macOS. No other containers required.
+- **Single binary** – Docker image or native Windows/Linux/macOS binary with the default HTTP listen port on `7000`.
+
+
+## Rewrite status: playback / unpacking
+
+The shipped `streamnzb` / `streamnzb.exe` binary now builds from `cmd/streamnzb-next`. The runtime is still not at full legacy parity yet, but this README now refers to that Next API-first service rather than the old bundled frontend/admin flow.
+
+What the rewrite already covers:
+
+- selected-NZB playback via `POST /api/v1/service/play` and `GET /play/{sessionID}`
+- deferred session creation and lazy NZB download on play
+- normalized download URLs and indexer API key injection
+- episode-aware media selection via `unpack.GetMediaStreamForEpisode(...)`
+- basic HTTP streaming and bytes-read tracking
+- basic AvailNZB playback success/failure reporting
+
+What still only exists in the legacy playback path today:
+
+- startup probing / startup metadata caching
+- startup timeout handling and expected-stream reopening
+- `t=` time-offset handling and more nuanced `HEAD` / range behavior
+- probe-like request classification to avoid false playback reports
+- first-segment availability checks and richer corruption/failure classification
+- fallback-to-next-release orchestration and related session state
+- attempt recording / failure persistence / dedupe around playback
+
+The migration plan for this area is to:
+
+1. harden single-stream playback reliability in the rewrite
+2. verify real client `HEAD` / range / `t=` behavior
+3. explicitly decide which legacy fallback behavior should **not** be ported
+4. validate the result with real-client smoke tests before retiring legacy paths
 
 
 ## Release types we don’t support
@@ -36,19 +65,18 @@ services:
     restart: unless-stopped
     ports:
       - "7000:7000"
-      - "119:119"
     volumes:
       - /path/to/config:/app/data
 ```
 
 Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/releases) page (Windows, Linux, macOS). See `.env.example` for config via environment variables.
 
-**First use:** Open `http://localhost:7000`. Default login is `admin` / `admin`; you’ll be asked to change the password. In **Settings** add at least one Usenet provider and one indexer. The default **Global** stream (Settings → Streams) is enough to start; you can add more streams (e.g. “1080p”, “4K”) with different filters and sorting. Create devices under **Settings → Devices** and use each device’s manifest URL in Stremio—all devices see the same stream list (Global first, then your other streams).
+**First use:** Configure providers/indexers in `config.json` or via environment variables, start the service, then point your client at `http://localhost:7000/manifest.json`. The current shipped runtime is API-first and does not include the old admin frontend.
 
 
 ## AvailNZB
 
-[AvailNZB](https://check.snzb.stream) is a community availability database. We don’t download or validate NZBs before showing results—we build an ordered play list from indexer search plus AvailNZB (skipping releases already reported bad), then try on play. StreamNZB reports success/failure so the shared DB stays current. Official builds can utilize the project’s AvailNZB instance, but you can change the mode in **Settings → AvailNZB**.
+[AvailNZB](https://check.snzb.stream) is a community availability database. We don’t download or validate NZBs before showing results—we build an ordered play list from indexer search plus AvailNZB (skipping releases already reported bad), then try on play. StreamNZB reports success/failure so the shared DB stays current. Official builds can utilize the project’s AvailNZB instance, and the URL/API key can be configured through env/config.
 
 
 ## Troubleshooting

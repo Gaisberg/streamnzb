@@ -19,7 +19,6 @@ import (
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/api"
 	"streamnzb/pkg/server/stremio"
-	"streamnzb/pkg/server/web"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/stream"
@@ -263,7 +262,6 @@ func main() {
 		}()
 	}
 
-	stremioServer.SetWebHandler(web.Handler())
 	stremioServer.SetAPIHandler(apiServer.Handler())
 	stremioServer.SetOnAttemptRecorded(apiServer.BroadcastNZBAttemptsUpdate)
 

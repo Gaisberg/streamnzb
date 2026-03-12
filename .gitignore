@@ -10,3 +10,4 @@ state.json
 .augment
 streamnzb.db*
 releasepipeline
+streamnzb-next.exe

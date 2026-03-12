@@ -1,7 +1,6 @@
 .git
 .github
 .env
+streamnzb
 streamnzb.exe
-frontend/node_modules
-frontend/dist
-pkg/web/static/*
+streamnzb-next.exe

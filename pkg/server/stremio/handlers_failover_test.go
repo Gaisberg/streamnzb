@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/session"
@@ -23,6 +25,25 @@ func initFailoverTestLogger() {
 		logger.Init("ERROR")
 	})
 }
+
+type countingResolvePlayIndexer struct {
+	downloadCalls atomic.Int32
+}
+
+func (*countingResolvePlayIndexer) Search(indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	return nil, nil
+}
+
+func (i *countingResolvePlayIndexer) DownloadNZB(context.Context, string) ([]byte, error) {
+	i.downloadCalls.Add(1)
+	return nil, errors.New("download failed")
+}
+
+func (*countingResolvePlayIndexer) Ping() error { return nil }
+
+func (*countingResolvePlayIndexer) Name() string { return "resolve-play-test" }
+
+func (*countingResolvePlayIndexer) GetUsage() indexer.Usage { return indexer.Usage{} }
 
 func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 	initFailoverTestLogger()
@@ -91,6 +112,32 @@ func TestForceDisconnectRedirectsToErrorVideo(t *testing.T) {
 	}
 }
 
+func TestSetupRoutesServesFailureVideoWithoutLegacyWebHandler(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{}
+	mux := http.NewServeMux()
+	server.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/error/failure.mp4", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	resp := rr.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want %q", got, "video/mp4")
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
+		t.Fatalf("Cache-Control = %q, want %q", got, "no-cache, no-store, must-revalidate")
+	}
+	if body := rr.Body.Len(); body != 0 {
+		t.Fatalf("body length = %d, want 0", body)
+	}
+}
+
 func TestClassifyPlaybackStartupErrWrapsOwnTimeout(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
@@ -121,5 +168,40 @@ func TestClassifyPlaybackStartupErrPreservesParentCancellation(t *testing.T) {
 	}
 	if !isPlayPrepareCancellation(err) {
 		t.Fatalf("expected canceled prepare error to stay classified as cancellation, got %v", err)
+	}
+}
+
+func TestHandleResolvePlayAttemptsPlaybackWithoutFailoverRedirect(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	manager := session.NewManager(nil, nil, time.Minute, nil)
+	t.Cleanup(manager.Shutdown)
+	idx := &countingResolvePlayIndexer{}
+	server := &Server{
+		config:         &config.Config{},
+		baseURL:        "http://localhost:11470",
+		sessionManager: manager,
+	}
+	const sessionID = "resolve-test-session"
+	if _, err := manager.CreateDeferredSession(sessionID, "https://example.invalid/file.nzb", nil, idx, nil, "movie", "tt123"); err != nil {
+		t.Fatalf("CreateDeferredSession: %v", err)
+	}
+	manager.SetSlotFailedDuringPlayback(sessionID)
+
+	req := httptest.NewRequest(http.MethodGet, "/resolve/play/"+sessionID, nil)
+	rr := httptest.NewRecorder()
+
+	server.handleResolvePlay(rr, req, nil)
+
+	if got := idx.downloadCalls.Load(); got != 1 {
+		t.Fatalf("DownloadNZB calls = %d, want 1", got)
+	}
+	resp := rr.Result()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTemporaryRedirect)
+	}
+	if got := resp.Header.Get("Location"); got != "http://localhost:11470/error/failure.mp4" {
+		t.Fatalf("Location = %q, want %q", got, "http://localhost:11470/error/failure.mp4")
 	}
 }
