@@ -11,3 +11,4 @@ state.json
 streamnzb.db*
 releasepipeline
 streamnzb-next.exe
+**.dat

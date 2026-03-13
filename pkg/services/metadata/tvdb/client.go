@@ -7,31 +7,37 @@ import (
 	"net/http"
 	"strconv"
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/persistence"
 	"time"
 )
 
 const (
 	baseURL        = "https://api4.thetvdb.com/v4"
-	stateKey       = "tvdb_token"
-	tokenKey       = "token"
-	createdAtKey   = "created_at"
-	statusKey      = "status"
 	successVal     = "success"
 	tokenValidDays = 25
 )
 
-type Client struct {
-	apiKey     string
-	dataDir    string
-	client     *http.Client
-	tokenCache string
+// TokenStore is the interface the TVDB client uses to persist/restore its
+// bearer token. The concrete implementation lives in the caller (e.g. backed
+// by the .dat data store).
+type TokenStore interface {
+	// LoadToken returns the stored token and its creation time.
+	// Return ("", time.Time{}) if nothing is stored.
+	LoadToken() (token string, createdAt time.Time)
+	// SaveToken persists the token and its creation time.
+	SaveToken(token string, createdAt time.Time)
 }
 
-func NewClient(apiKey, dataDir string) *Client {
+type Client struct {
+	apiKey     string
+	client     *http.Client
+	tokenCache string
+	store      TokenStore
+}
+
+func NewClient(apiKey string, store TokenStore) *Client {
 	return &Client{
-		apiKey:  apiKey,
-		dataDir: dataDir,
+		apiKey: apiKey,
+		store:  store,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -60,11 +66,6 @@ type searchRemoteIDResponse struct {
 	} `json:"data"`
 }
 
-type tokenState struct {
-	Token     string `json:"token"`
-	CreatedAt string `json:"created_at"`
-}
-
 func (c *Client) ensureToken() (string, error) {
 	if c.apiKey == "" {
 		return "", fmt.Errorf("TVDB API key not configured")
@@ -74,16 +75,11 @@ func (c *Client) ensureToken() (string, error) {
 		return c.tokenCache, nil
 	}
 
-	manager, err := persistence.GetManager(c.dataDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to get state manager: %w", err)
-	}
-	var stored tokenState
-	if found, _ := manager.Get(stateKey, &stored); found && stored.Token != "" {
-		if created, err := time.Parse(time.RFC3339, stored.CreatedAt); err == nil {
+	if c.store != nil {
+		if tok, created := c.store.LoadToken(); tok != "" {
 			age := time.Since(created)
 			if age < tokenValidDays*24*time.Hour {
-				c.tokenCache = stored.Token
+				c.tokenCache = tok
 				return c.tokenCache, nil
 			}
 			logger.Debug("TVDB token expired, refreshing", "age_days", int(age.Hours()/24))
@@ -95,12 +91,8 @@ func (c *Client) ensureToken() (string, error) {
 		return "", err
 	}
 
-	state := tokenState{
-		Token:     token,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := manager.Set(stateKey, state); err != nil {
-		logger.Warn("Failed to save TVDB token to state", "err", err)
+	if c.store != nil {
+		c.store.SaveToken(token, time.Now().UTC())
 	}
 	c.tokenCache = token
 	return token, nil

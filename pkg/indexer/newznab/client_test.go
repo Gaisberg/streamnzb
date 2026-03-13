@@ -7,46 +7,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
-	"sync"
 	"testing"
 	"time"
 )
 
 func init() {
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-var (
-	newznabUsageManagerOnce sync.Once
-	newznabUsageManager     *indexer.UsageManager
-	newznabUsageManagerErr  error
-)
-
-func testNewznabUsageManager(t *testing.T) *indexer.UsageManager {
-	t.Helper()
-
-	newznabUsageManagerOnce.Do(func() {
-		tempDir, err := os.MkdirTemp("", "streamnzb-newznab-usage-")
-		if err != nil {
-			newznabUsageManagerErr = err
-			return
-		}
-		stateMgr, err := persistence.GetManager(tempDir)
-		if err != nil {
-			newznabUsageManagerErr = err
-			return
-		}
-		newznabUsageManager, newznabUsageManagerErr = indexer.GetUsageManager(stateMgr)
-	})
-	if newznabUsageManagerErr != nil {
-		t.Fatalf("GetUsageManager: %v", newznabUsageManagerErr)
-	}
-	return newznabUsageManager
 }
 
 func TestNewznabSearch(t *testing.T) {
@@ -89,7 +58,7 @@ func TestNewznabSearch(t *testing.T) {
 		Name:   "MockIndexer",
 		URL:    server.URL,
 		APIKey: "test-api-key",
-	}, nil)
+	})
 	req := indexer.SearchRequest{
 		Cat:    "2000",
 		Query:  "Test Movie",
@@ -148,7 +117,7 @@ func TestNewznabPagination(t *testing.T) {
 		Name:   "MockIndexer",
 		URL:    server.URL,
 		APIKey: "test-api-key",
-	}, nil)
+	})
 	req := indexer.SearchRequest{
 		Limit: 2,
 	}
@@ -182,7 +151,7 @@ func TestNewznabPing(t *testing.T) {
 		Name:   "MockIndexer",
 		URL:    server.URL,
 		APIKey: "test-api-key",
-	}, nil)
+	})
 	err := client.Ping()
 	if err != nil {
 		t.Errorf("Ping failed: %v", err)
@@ -214,7 +183,7 @@ func TestNewClientUsesEffectiveTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.cfg, nil)
+			client := NewClient(tt.cfg)
 			if got := client.client.Timeout; got != tt.want {
 				t.Fatalf("client timeout = %v, want %v", got, tt.want)
 			}
@@ -251,7 +220,7 @@ func TestNormalizeDownloadURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient(tt.cfg, nil)
+			client := NewClient(tt.cfg)
 			if got := client.normalizeDownloadURL(tt.rawURL); got != tt.want {
 				t.Fatalf("normalizeDownloadURL() = %q, want %q", got, tt.want)
 			}
@@ -276,7 +245,7 @@ func TestDownloadNZBUsesNormalizedURL(t *testing.T) {
 		Name:   "MockIndexer",
 		URL:    server.URL,
 		APIKey: "test-api-key",
-	}, nil)
+	})
 
 	data, err := client.DownloadNZB(context.Background(), server.URL+"/api?t=get&guid=guid-123")
 	if err != nil {
@@ -293,62 +262,4 @@ func TestDownloadNZBUsesNormalizedURL(t *testing.T) {
 	}
 }
 
-func TestGetUsageRefreshesDailyCountersAfterRollover(t *testing.T) {
-	usageManager := testNewznabUsageManager(t)
-	name := "newznab-rollover-usage"
-	usageData := usageManager.GetIndexerUsage(name)
-	usageData.LastResetDay = time.Now().Format("2006-01-02")
-	usageData.APIHitsUsed = 10
-	usageData.DownloadsUsed = 5
-	usageData.AllTimeAPIHitsUsed = 40
-	usageData.AllTimeDownloadsUsed = 15
 
-	client := NewClient(config.IndexerConfig{
-		Name:         name,
-		APIHitsDay:   10,
-		DownloadsDay: 5,
-	}, usageManager)
-
-	usageData.LastResetDay = time.Now().Add(-24 * time.Hour).Format("2006-01-02")
-	usageData.APIHitsUsed = 10
-	usageData.DownloadsUsed = 5
-
-	usage := client.GetUsage()
-	if usage.APIHitsUsed != 0 || usage.DownloadsUsed != 0 {
-		t.Fatalf("expected refreshed daily usage to reset, got hits=%d downloads=%d", usage.APIHitsUsed, usage.DownloadsUsed)
-	}
-	if usage.APIHitsRemaining != 10 || usage.DownloadsRemaining != 5 {
-		t.Fatalf("expected refreshed remaining counts, got api=%d downloads=%d", usage.APIHitsRemaining, usage.DownloadsRemaining)
-	}
-	if usage.AllTimeAPIHitsUsed != 40 || usage.AllTimeDownloadsUsed != 15 {
-		t.Fatalf("expected all-time usage unchanged, got hits=%d downloads=%d", usage.AllTimeAPIHitsUsed, usage.AllTimeDownloadsUsed)
-	}
-}
-
-func TestLimitChecksRefreshDailyUsageAfterRollover(t *testing.T) {
-	usageManager := testNewznabUsageManager(t)
-	name := "newznab-rollover-limits"
-	usageData := usageManager.GetIndexerUsage(name)
-	usageData.LastResetDay = time.Now().Format("2006-01-02")
-	usageData.APIHitsUsed = 10
-	usageData.DownloadsUsed = 5
-
-	client := NewClient(config.IndexerConfig{
-		Name:         name,
-		APIHitsDay:   10,
-		DownloadsDay: 5,
-	}, usageManager)
-
-	usageData.LastResetDay = time.Now().Add(-24 * time.Hour).Format("2006-01-02")
-	usageData.APIHitsUsed = 10
-	usageData.DownloadsUsed = 5
-	usageData.AllTimeAPIHitsUsed = 50
-	usageData.AllTimeDownloadsUsed = 20
-
-	if err := client.checkAPILimit(); err != nil {
-		t.Fatalf("checkAPILimit() error = %v, want nil after rollover refresh", err)
-	}
-	if err := client.checkDownloadLimit(); err != nil {
-		t.Fatalf("checkDownloadLimit() error = %v, want nil after rollover refresh", err)
-	}
-}

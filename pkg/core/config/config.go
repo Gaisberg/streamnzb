@@ -1,22 +1,14 @@
 package config
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/paths"
 )
 
 const (
-	defaultAdminPasswordHash               = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 	DefaultInternalIndexerTimeoutSeconds   = 5
 	DefaultAggregatorIndexerTimeoutSeconds = 10
 )
@@ -127,67 +119,35 @@ func (ic IndexerConfig) EffectiveTimeout() time.Duration {
 }
 
 type Config struct {
-	Indexers []IndexerConfig `json:"indexers"`
+	Indexers []IndexerConfig
 
-	AddonPort    int    `json:"addon_port"`
-	AddonBaseURL string `json:"addon_base_url"`
-	LogLevel     string `json:"log_level"`
+	AddonPort    int
+	AddonBaseURL string
+	LogLevel     string
 
-	AdminUsername           string `json:"admin_username"`
-	AdminPasswordHash       string `json:"admin_password_hash"`
-	AdminMustChangePassword bool   `json:"admin_must_change_password"`
-	AdminToken              string `json:"admin_token"`
+	Providers []Provider
 
-	Providers []Provider `json:"providers"`
+	ProxyPort     int
+	ProxyHost     string
+	ProxyAuthUser string
+	ProxyAuthPass string
 
-	ProxyPort     int    `json:"proxy_port"`
-	ProxyHost     string `json:"proxy_host"`
-	ProxyAuthUser string `json:"proxy_auth_user"`
-	ProxyAuthPass string `json:"proxy_auth_pass"`
-
-	AvailNZBURL    string `json:"-"`
-	AvailNZBAPIKey string `json:"-"`
-
-	TMDBAPIKey string `json:"-"`
-
-	TVDBAPIKey string `json:"-"`
-
-	Devices map[string]*DeviceEntry `json:"devices,omitempty"`
-
-	Streams []*StreamEntry `json:"streams,omitempty"`
+	AvailNZBURL    string
+	AvailNZBAPIKey string
+	TMDBAPIKey     string
+	TVDBAPIKey     string
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
-	// When set, segment cache is automatically 80% of this limit.
-	// Use this to stop memory climbing; the runtime will GC more aggressively to stay under the limit.
-	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
+	MemoryLimitMB int
 
 	// KeepLogFiles is how many log files to keep (current streamnzb.log + rotated streamnzb-*.log). Default 9.
-	KeepLogFiles int `json:"keep_log_files,omitempty"`
+	KeepLogFiles int
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "" or "full"        – fetch availability status AND report playback results (default).
 	// "status_only"       – fetch availability status but never report back (leeching).
 	// "disabled"          – disable AvailNZB entirely (no GET, no POST).
-	AvailNZBMode string `json:"availnzb_mode,omitempty"`
-
-	LoadedPath string `json:"-"`
-}
-
-type DeviceEntry struct {
-	Username         string                         `json:"username"`
-	Token            string                         `json:"token"`
-	IndexerOverrides map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
-	StreamIDs        []string                       `json:"stream_ids,omitempty"`
-}
-
-type StreamEntry struct {
-	ID                string                         `json:"id"`
-	Name              string                         `json:"name"`
-	Filters           FilterConfig                   `json:"filters"`
-	Sorting           SortConfig                     `json:"sorting"`
-	IndexerOverrides  map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
-	ShowAllStream     bool                           `json:"show_all_stream"`
-	PriorityGridAdded []string                       `json:"priority_grid_added,omitempty"`
+	AvailNZBMode string
 }
 
 func (c *Config) GetIncludeYearInSearch() bool { return true }
@@ -304,292 +264,75 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 	return out
 }
 
-func (c *Config) GetAdminUsername() string {
-	if c != nil && c.AdminUsername != "" {
-		return c.AdminUsername
-	}
-	return "admin"
-}
-
-func Load() (*Config, error) {
-
-	dataDir := paths.GetDataDir()
-	configPath := filepath.Join(dataDir, "config.json")
-
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		logger.Warn("Failed to create data directory", "dir", dataDir, "err", err)
-	}
+// Load reads configuration entirely from environment variables.
+func Load() *Config {
+	v := env.ReadConfig()
 
 	cfg := &Config{
-
-		AddonPort:     7000,
-		AddonBaseURL:  "http://localhost:7000",
-		LogLevel:      "INFO",
-		AdminUsername: "admin",
-		ProxyPort:     119,
-		ProxyHost:     "0.0.0.0",
-		MemoryLimitMB: 512,
-		KeepLogFiles:  9,
-		LoadedPath:    configPath,
+		AddonPort:      v.AddonPort,
+		AddonBaseURL:   v.AddonBaseURL,
+		LogLevel:       v.LogLevel,
+		KeepLogFiles:   v.KeepLogFiles,
+		ProxyPort:      v.ProxyPort,
+		ProxyHost:      v.ProxyHost,
+		ProxyAuthUser:  v.ProxyAuthUser,
+		ProxyAuthPass:  v.ProxyAuthPass,
+		AvailNZBURL:    v.AvailNZBURL,
+		AvailNZBAPIKey: v.AvailNZBAPIKey,
+		TMDBAPIKey:     v.TMDBAPIKey,
+		TVDBAPIKey:     v.TVDBAPIKey,
+		MemoryLimitMB:  v.MemoryLimitMB,
+		AvailNZBMode:   v.AvailNZBMode,
 	}
 
-	if err := cfg.LoadFile(configPath); err != nil {
-		if os.IsNotExist(err) {
-			logger.Info("No config found, creating new one", "path", configPath)
+	// Convert env providers → config providers
+	for i, p := range v.Providers {
+		var priority *int
+		var enabled *bool
+		if p.Priority != nil {
+			priority = p.Priority
 		} else {
-			logger.Warn("Failed to load config, using defaults", "path", configPath, "err", err)
+			pri := i + 1
+			priority = &pri
 		}
-	} else {
-		logger.Info("Loaded configuration", "path", configPath)
-	}
-	if cfg.KeepLogFiles < 1 {
-		cfg.KeepLogFiles = 9
-	}
-
-	overrides, keys := env.ReadConfigOverrides()
-	ApplyEnvOverrides(cfg, overrides, keys)
-
-	cfg.MigrateLegacyIndexers()
-
-	needSave := cfg.ApplyProviderDefaults()
-
-	if cfg.AdminToken == "" {
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err == nil {
-			hash := sha256.Sum256(bytes)
-			cfg.AdminToken = hex.EncodeToString(hash[:])
-			needSave = true
+		if p.Enabled != nil {
+			enabled = p.Enabled
+		} else {
+			e := true
+			enabled = &e
 		}
-	}
-	if cfg.AdminPasswordHash == "" {
-		cfg.AdminPasswordHash = defaultAdminPasswordHash
-		cfg.AdminMustChangePassword = true
-		needSave = true
-	}
-	if needSave {
-		logger.Info("Set default admin token/password in config")
+		cfg.Providers = append(cfg.Providers, Provider{
+			Name:        p.Name,
+			Host:        p.Host,
+			Port:        p.Port,
+			Username:    p.Username,
+			Password:    p.Password,
+			Connections: p.Connections,
+			UseSSL:      p.UseSSL,
+			Priority:    priority,
+			Enabled:     enabled,
+		})
 	}
 
-	if err := cfg.Save(); err != nil {
-		logger.Warn("Failed to save config on startup", "err", err)
-	} else {
-		logger.Info("Saved merged configuration", "path", configPath)
+	// Convert env indexers → config indexers
+	for _, idx := range v.Indexers {
+		enabled := true
+		if idx.Enabled != nil {
+			enabled = *idx.Enabled
+		}
+		cfg.Indexers = append(cfg.Indexers, IndexerConfig{
+			Name:    idx.Name,
+			URL:     idx.URL,
+			APIKey:  idx.APIKey,
+			APIPath: idx.APIPath,
+			Type:    idx.Type,
+			Enabled: &enabled,
+		})
 	}
 
 	if len(cfg.Providers) == 0 {
-		logger.Warn("No NNTP providers configured. Add some via the web UI")
+		logger.Warn("No NNTP providers configured — set PROVIDER_1_HOST etc. in .env")
 	}
 
-	return cfg, nil
-}
-
-func (c *Config) LoadFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(c); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Config) ApplyProviderDefaults() bool {
-	changed := false
-	for i := range c.Providers {
-		p := &c.Providers[i]
-
-		if p.Priority == nil {
-			priority := i + 1
-			p.Priority = &priority
-			enabled := true
-			p.Enabled = &enabled
-			changed = true
-		} else if p.Enabled == nil {
-
-			enabled := true
-			p.Enabled = &enabled
-			changed = true
-		}
-
-	}
-	return changed
-}
-
-func (c *Config) MigrateLegacyIndexers() {
-	for i := range c.Indexers {
-		if c.Indexers[i].Enabled == nil {
-			enabled := true
-			c.Indexers[i].Enabled = &enabled
-		}
-	}
-}
-
-func (c *Config) Save() error {
-	path := c.LoadedPath
-	if path == "" {
-		path = "config.json"
-	}
-	return c.SaveFile(path)
-}
-
-func (c *Config) SaveFile(path string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(c)
-}
-
-func keySet(list []string, s string) bool {
-	for _, k := range list {
-		if k == s {
-			return true
-		}
-	}
-	return false
-}
-
-func ApplyEnvOverrides(cfg *Config, o env.ConfigOverrides, keys []string) {
-	if keySet(keys, env.KeyAddonPort) {
-		cfg.AddonPort = o.AddonPort
-	}
-	if keySet(keys, env.KeyAddonBaseURL) {
-		cfg.AddonBaseURL = o.AddonBaseURL
-	}
-	if keySet(keys, env.KeyLogLevel) {
-		cfg.LogLevel = o.LogLevel
-	}
-	if keySet(keys, env.KeyKeepLogFiles) {
-		cfg.KeepLogFiles = o.KeepLogFiles
-	}
-	if keySet(keys, env.KeyProxyPort) {
-		cfg.ProxyPort = o.ProxyPort
-	}
-	if keySet(keys, env.KeyProxyHost) {
-		cfg.ProxyHost = o.ProxyHost
-	}
-	if keySet(keys, env.KeyProxyAuthUser) {
-		cfg.ProxyAuthUser = o.ProxyAuthUser
-	}
-	if keySet(keys, env.KeyProxyAuthPass) {
-		cfg.ProxyAuthPass = o.ProxyAuthPass
-	}
-	if keySet(keys, env.KeyAdminUsername) {
-		cfg.AdminUsername = o.AdminUsername
-	}
-	if keySet(keys, env.KeyProviders) {
-		cfg.Providers = make([]Provider, len(o.Providers))
-		for i, p := range o.Providers {
-			var priority *int
-			var enabled *bool
-			if p.Priority != nil {
-				priority = p.Priority
-			}
-			if p.Enabled != nil {
-				enabled = p.Enabled
-			}
-			cfg.Providers[i] = Provider{
-				Name:        p.Name,
-				Host:        p.Host,
-				Port:        p.Port,
-				Username:    p.Username,
-				Password:    p.Password,
-				Connections: p.Connections,
-				UseSSL:      p.UseSSL,
-				Priority:    priority,
-				Enabled:     enabled,
-			}
-		}
-	}
-	if keySet(keys, env.KeyIndexers) {
-		cfg.Indexers = make([]IndexerConfig, len(o.Indexers))
-		for i, idx := range o.Indexers {
-			enabled := true
-			if idx.Enabled != nil {
-				enabled = *idx.Enabled
-			}
-			cfg.Indexers[i] = IndexerConfig{
-				Name:    idx.Name,
-				URL:     idx.URL,
-				APIKey:  idx.APIKey,
-				Type:    "newznab",
-				Enabled: &enabled,
-			}
-		}
-	}
-}
-
-func GetEnvOverrideKeys() []string {
-	return env.OverrideKeys()
-}
-
-func (c *Config) RedactForAPI() Config {
-	out := *c
-	out.AdminPasswordHash = ""
-	out.AdminToken = ""
-	return out
-}
-
-func CopyEnvOverridesFrom(src, dst *Config) {
-	if src == nil || dst == nil {
-		return
-	}
-	keys := env.OverrideKeys()
-	for _, k := range keys {
-		switch k {
-		case env.KeyAddonPort:
-			dst.AddonPort = src.AddonPort
-		case env.KeyAddonBaseURL:
-			dst.AddonBaseURL = src.AddonBaseURL
-		case env.KeyLogLevel:
-			dst.LogLevel = src.LogLevel
-		case env.KeyKeepLogFiles:
-			dst.KeepLogFiles = src.KeepLogFiles
-		case env.KeyProxyPort:
-			dst.ProxyPort = src.ProxyPort
-		case env.KeyProxyHost:
-			dst.ProxyHost = src.ProxyHost
-		case env.KeyProxyAuthUser:
-			dst.ProxyAuthUser = src.ProxyAuthUser
-		case env.KeyProxyAuthPass:
-			dst.ProxyAuthPass = src.ProxyAuthPass
-		case env.KeyAdminUsername:
-			dst.AdminUsername = src.AdminUsername
-		case env.KeyProviders:
-			dst.Providers = make([]Provider, len(src.Providers))
-			for i, p := range src.Providers {
-				var priority *int
-				var enabled *bool
-				if p.Priority != nil {
-					priorityVal := *p.Priority
-					priority = &priorityVal
-				}
-				if p.Enabled != nil {
-					enabledVal := *p.Enabled
-					enabled = &enabledVal
-				}
-				dst.Providers[i] = Provider{
-					Name:        p.Name,
-					Host:        p.Host,
-					Port:        p.Port,
-					Username:    p.Username,
-					Password:    p.Password,
-					Connections: p.Connections,
-					UseSSL:      p.UseSSL,
-					Priority:    priority,
-					Enabled:     enabled,
-				}
-			}
-		case env.KeyIndexers:
-			dst.Indexers = make([]IndexerConfig, len(src.Indexers))
-			copy(dst.Indexers, src.Indexers)
-		}
-	}
+	return cfg
 }

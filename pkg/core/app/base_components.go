@@ -1,21 +1,18 @@
-package initialization
+package app
 
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"sort"
+	"strings"
+
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/paths"
-	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
-	"strings"
-	"sync"
 )
 
 type InitializedComponents struct {
@@ -27,25 +24,6 @@ type InitializedComponents struct {
 	UsenetPool           *pool.Pool
 	SegmentCacheBudget   *pool.SegmentCacheBudget
 	AvailNZBIndexerHosts []string
-	IndexerCaps          map[string]*indexer.Caps
-}
-
-func WaitForInputAndExit(err error) {
-	logger.Error("CRITICAL ERROR", "err", err)
-	fmt.Println("\nPress Enter to exit...")
-	var input string
-	fmt.Scanln(&input)
-	os.Exit(1)
-}
-
-func Bootstrap() (*InitializedComponents, error) {
-
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("configuration error: %w", err)
-	}
-
-	return BuildComponents(cfg)
 }
 
 func hostFromIndexerURL(rawURL string) string {
@@ -58,21 +36,13 @@ func hostFromIndexerURL(rawURL string) string {
 }
 
 func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
 
 	var indexers []indexer.Indexer
 	var availNzbHosts []string
 	seenHost := make(map[string]bool)
-
-	dataDir := paths.GetDataDir()
-	stateMgr, err := persistence.GetManager(dataDir)
-	if err != nil {
-		logger.Error("Failed to initialize state manager", "err", err)
-	}
-
-	usageMgr, err := indexer.GetUsageManager(stateMgr)
-	if err != nil {
-		logger.Error("Failed to initialize usage manager", "err", err)
-	}
 
 	for _, idxCfg := range cfg.Indexers {
 		if idxCfg.URL == "" {
@@ -94,17 +64,15 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 
 		switch indexerType {
 		case "easynews":
-
 			downloadBase := cfg.AddonBaseURL
 			if downloadBase == "" {
 				downloadBase = "http://127.0.0.1:7000"
 			}
-
-			if len(downloadBase) > 0 && downloadBase[len(downloadBase)-1] == '/' {
+			if strings.HasSuffix(downloadBase, "/") {
 				downloadBase = downloadBase[:len(downloadBase)-1]
 			}
 
-			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, usageMgr)
+			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay)
 			if err != nil {
 				logger.Error("Failed to initialize Easynews from indexer list", "name", idxCfg.Name, "err", err)
 			} else {
@@ -116,7 +84,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 				availNzbHosts = append(availNzbHosts, h)
 			}
 		default:
-			client := newznab.NewClient(idxCfg, usageMgr)
+			client := newznab.NewClient(idxCfg)
 			indexers = append(indexers, client)
 			logger.Info("Initialized Newznab indexer", "name", idxCfg.Name, "url", idxCfg.URL)
 			if h := hostFromIndexerURL(idxCfg.URL); h != "" && !seenHost[h] {
@@ -129,50 +97,16 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	}
 
 	if len(indexers) == 0 {
-		logger.Warn("!! No indexers configured. Add some via the web UI or config.json !!")
+		logger.Warn("!! No indexers configured. Add INDEXER_1_URL etc. to your .env file !!")
 	}
 
 	aggregator := indexer.NewAggregator(indexers...)
 
-	indexerCaps := make(map[string]*indexer.Caps)
-	var capsMu sync.Mutex
-	var capsWg sync.WaitGroup
-	for _, idx := range indexers {
-		if c, ok := idx.(indexer.IndexerWithCaps); ok {
-			capsWg.Add(1)
-			go func(name string, capsFetcher indexer.IndexerWithCaps) {
-				defer capsWg.Done()
-				caps, err := capsFetcher.GetCaps()
-				if err != nil {
-					logger.Warn("Failed to fetch caps", "indexer", name, "err", err)
-					return
-				}
-				capsMu.Lock()
-				indexerCaps[name] = caps
-				capsMu.Unlock()
-			}(idx.Name(), c)
-		}
-	}
-	capsWg.Wait()
-	if len(indexerCaps) > 0 {
-		logger.Info("Fetched indexer capabilities", "count", len(indexerCaps))
-	}
-
 	providerPools := make(map[string]*nntp.ClientPool)
 	var streamingPools []*nntp.ClientPool
 
-	var providerUsageMgr *nntp.ProviderUsageManager
-	if stateMgr != nil {
-		if mgr, err := nntp.GetProviderUsageManager(stateMgr); err != nil {
-			logger.Error("Failed to initialize provider usage manager", "err", err)
-		} else {
-			providerUsageMgr = mgr
-		}
-	}
-
 	providers := make([]config.Provider, 0, len(cfg.Providers))
 	for _, p := range cfg.Providers {
-
 		if p.Enabled != nil && *p.Enabled {
 			providers = append(providers, p)
 		}
@@ -194,7 +128,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	for _, provider := range providers {
 		logger.Info("Initializing NNTP pool", "provider", provider.Name, "host", provider.Host, "conns", provider.Connections)
 
-		pool := nntp.NewClientPool(
+		clientPool := nntp.NewClientPool(
 			provider.Host,
 			provider.Port,
 			provider.UseSSL,
@@ -203,7 +137,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			provider.Connections,
 		)
 
-		if err := pool.Validate(); err != nil {
+		if err := clientPool.Validate(); err != nil {
 			logger.Error("Failed to initialize provider", "name", provider.Name, "host", provider.Host, "err", err)
 			continue
 		}
@@ -213,16 +147,9 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			poolName = provider.Host
 		}
 
-		if providerUsageMgr != nil {
-			if usage := providerUsageMgr.GetUsage(poolName); usage != nil {
-				pool.RestoreTotalBytes(usage.TotalBytes)
-			}
-			pool.SetUsageManager(poolName, providerUsageMgr)
-		}
-
-		providerPools[poolName] = pool
+		providerPools[poolName] = clientPool
 		providerOrder = append(providerOrder, poolName)
-		streamingPools = append(streamingPools, pool)
+		streamingPools = append(streamingPools, clientPool)
 	}
 
 	if len(providerPools) == 0 {
@@ -231,8 +158,6 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 
 	var usenetPool *pool.Pool
 	var segmentCacheBudget *pool.SegmentCacheBudget
-	// Reserve headroom for non-cache memory (session + 100+ loader Files, NZB, RAR blueprint, runtime, stacks).
-	// Otherwise segment cache uses 80% of limit and the remaining 20% is too small, so we exceed the limit.
 	const reservedMB = 150
 	if cfg.MemoryLimitMB > reservedMB {
 		segmentCacheMB := cfg.MemoryLimitMB - reservedMB
@@ -243,15 +168,15 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	if len(providerOrder) > 0 {
 		providerConfigs := make([]pool.ProviderConfig, 0, len(providerOrder))
 		for i, name := range providerOrder {
-			cp := providerPools[name]
-			if cp == nil {
+			clientPool := providerPools[name]
+			if clientPool == nil {
 				continue
 			}
 			providerConfigs = append(providerConfigs, pool.ProviderConfig{
 				ID:         name,
 				Priority:   i,
 				IsBackup:   false,
-				ClientPool: cp,
+				ClientPool: clientPool,
 			})
 		}
 		if len(providerConfigs) > 0 {
@@ -277,6 +202,5 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		UsenetPool:           usenetPool,
 		SegmentCacheBudget:   segmentCacheBudget,
 		AvailNZBIndexerHosts: availNzbHosts,
-		IndexerCaps:          indexerCaps,
 	}, nil
 }

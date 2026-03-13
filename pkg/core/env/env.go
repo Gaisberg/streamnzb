@@ -11,41 +11,23 @@ const (
 	ADDONPort             = "ADDON_PORT"
 	ADDONBaseURL          = "ADDON_BASE_URL"
 	LOGLevel              = "LOG_LEVEL"
-	KeepLogFiles          = "KEEP_LOG_FILES"
-	AvailNZBURL           = "AVAILNZB_URL"
-	AvailNZBAPIKey        = "AVAILNZB_API_KEY"
-	TMDBAPIKey            = "TMDB_API_KEY"
-	TVDBAPIKey            = "TVDB_API_KEY"
+	KeepLogFilesEnv       = "KEEP_LOG_FILES"
+	AvailNZBURLEnv        = "AVAILNZB_URL"
+	AvailNZBAPIKeyEnv     = "AVAILNZB_API_KEY"
+	TMDBAPIKeyEnv         = "TMDB_API_KEY"
+	TVDBAPIKeyEnv         = "TVDB_API_KEY"
 	NNTPProxyPort         = "NNTP_PROXY_PORT"
 	NNTPProxyHost         = "NNTP_PROXY_HOST"
 	NNTPProxyAuthUser     = "NNTP_PROXY_AUTH_USER"
 	NNTPProxyAuthPass     = "NNTP_PROXY_AUTH_PASS"
+	MemoryLimitMBEnv      = "MEMORY_LIMIT_MB"
+	AvailNZBModeEnv       = "AVAILNZB_MODE"
 	TZVar                 = "TZ"
 	ProviderPrefix        = "PROVIDER_"
 	IndexerPrefix         = "INDEXER_"
 	IndexerQueryHeaderEnv = "INDEXER_QUERY_HEADER"
 	IndexerGrabHeaderEnv  = "INDEXER_GRAB_HEADER"
 )
-
-const (
-	KeyAddonPort      = "addon_port"
-	KeyAddonBaseURL   = "addon_base_url"
-	KeyLogLevel       = "log_level"
-	KeyKeepLogFiles   = "keep_log_files"
-	KeyProxyPort      = "proxy_port"
-	KeyProxyHost      = "proxy_host"
-	KeyProxyAuthUser  = "proxy_auth_user"
-	KeyProxyAuthPass  = "proxy_auth_pass"
-	KeyProviders      = "providers"
-	KeyIndexers       = "indexers"
-	KeyAvailNZBURL    = "availnzb_url"
-	KeyAvailNZBAPIKey = "availnzb_api_key"
-	KeyTMDBAPIKey     = "tmdb_api_key"
-	KeyTVDBAPIKey     = "tvdb_api_key"
-	KeyAdminUsername  = "admin_username"
-)
-
-const AdminUsernameEnv = "ADMIN_USERNAME"
 
 var DefaultIndexerUserAgent = "StreamNZB/dev"
 
@@ -90,89 +72,51 @@ type Indexer struct {
 	Name    string
 	URL     string
 	APIKey  string
+	APIPath string
+	Type    string
 	Enabled *bool
 }
 
-type ConfigOverrides struct {
-	AddonPort         int
-	AddonBaseURL      string
-	LogLevel          string
-	KeepLogFiles      int
-	AvailNZBURL       string
-	AvailNZBAPIKey    string
-	TMDBAPIKey        string
-	TVDBAPIKey        string
-	ProxyPort         int
-	ProxyHost         string
-	ProxyAuthUser     string
-	ProxyAuthPass     string
-	AdminUsername string
+// ConfigValues holds all user-facing configuration read from environment variables.
+type ConfigValues struct {
+	AddonPort     int
+	AddonBaseURL  string
+	LogLevel      string
+	KeepLogFiles  int
+	AvailNZBURL   string
+	AvailNZBAPIKey string
+	TMDBAPIKey    string
+	TVDBAPIKey    string
+	ProxyPort     int
+	ProxyHost     string
+	ProxyAuthUser string
+	ProxyAuthPass string
+	MemoryLimitMB int
+	AvailNZBMode  string
 	Providers     []Provider
-	Indexers          []Indexer
+	Indexers      []Indexer
 }
 
-func ReadConfigOverrides() (ConfigOverrides, []string) {
-	var o ConfigOverrides
-	var keys []string
-
-	if v := os.Getenv(ADDONPort); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			o.AddonPort = port
-			keys = append(keys, KeyAddonPort)
-		}
+// ReadConfig reads all configuration from environment variables, applying defaults.
+func ReadConfig() ConfigValues {
+	return ConfigValues{
+		AddonPort:      getEnvInt(ADDONPort, 7000),
+		AddonBaseURL:   getEnv(ADDONBaseURL, "http://localhost:7000"),
+		LogLevel:       getEnv(LOGLevel, "INFO"),
+		KeepLogFiles:   max(getEnvInt(KeepLogFilesEnv, 9), 1),
+		AvailNZBURL:    getEnv(AvailNZBURLEnv, "https://snzb.stream"),
+		AvailNZBAPIKey: os.Getenv(AvailNZBAPIKeyEnv),
+		TMDBAPIKey:     os.Getenv(TMDBAPIKeyEnv),
+		TVDBAPIKey:     os.Getenv(TVDBAPIKeyEnv),
+		ProxyPort:      getEnvInt(NNTPProxyPort, 119),
+		ProxyHost:      getEnv(NNTPProxyHost, "0.0.0.0"),
+		ProxyAuthUser:  os.Getenv(NNTPProxyAuthUser),
+		ProxyAuthPass:  os.Getenv(NNTPProxyAuthPass),
+		MemoryLimitMB:  getEnvInt(MemoryLimitMBEnv, 512),
+		AvailNZBMode:   os.Getenv(AvailNZBModeEnv),
+		Providers:      readProvidersFromEnv(),
+		Indexers:       readIndexersFromEnv(),
 	}
-	if v := os.Getenv(ADDONBaseURL); v != "" {
-		o.AddonBaseURL = v
-		keys = append(keys, KeyAddonBaseURL)
-	}
-	if v := os.Getenv(LOGLevel); v != "" {
-		o.LogLevel = v
-		keys = append(keys, KeyLogLevel)
-	}
-	if v := os.Getenv(KeepLogFiles); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-			o.KeepLogFiles = n
-			keys = append(keys, KeyKeepLogFiles)
-		}
-	}
-
-	if v := os.Getenv(NNTPProxyPort); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			o.ProxyPort = port
-			keys = append(keys, KeyProxyPort)
-		}
-	}
-	if v := os.Getenv(NNTPProxyHost); v != "" {
-		o.ProxyHost = v
-		keys = append(keys, KeyProxyHost)
-	}
-	if v := os.Getenv(NNTPProxyAuthUser); v != "" {
-		o.ProxyAuthUser = v
-		keys = append(keys, KeyProxyAuthUser)
-	}
-	if v := os.Getenv(NNTPProxyAuthPass); v != "" {
-		o.ProxyAuthPass = v
-		keys = append(keys, KeyProxyAuthPass)
-	}
-	if v := os.Getenv(AdminUsernameEnv); v != "" {
-		o.AdminUsername = v
-		keys = append(keys, KeyAdminUsername)
-	}
-	o.Providers = readProvidersFromEnv()
-	if len(o.Providers) > 0 {
-		keys = append(keys, KeyProviders)
-	}
-	o.Indexers = readIndexersFromEnv()
-	if len(o.Indexers) > 0 {
-		keys = append(keys, KeyIndexers)
-	}
-
-	return o, keys
-}
-
-func OverrideKeys() []string {
-	_, keys := ReadConfigOverrides()
-	return keys
 }
 
 func readProvidersFromEnv() []Provider {
@@ -213,6 +157,8 @@ func readIndexersFromEnv() []Indexer {
 			Name:    getEnv(prefix+"NAME", fmt.Sprintf("Indexer %d", i)),
 			URL:     url,
 			APIKey:  os.Getenv(prefix + "API_KEY"),
+			APIPath: getEnv(prefix+"API_PATH", "/api"),
+			Type:    getEnv(prefix+"TYPE", "newznab"),
 			Enabled: &enabled,
 		})
 	}

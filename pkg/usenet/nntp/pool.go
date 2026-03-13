@@ -26,9 +26,6 @@ type ClientPool struct {
 	lastSpeed      float64
 	lastCheck      time.Time
 
-	providerName string
-	usageManager *ProviderUsageManager
-
 	mu     sync.Mutex
 	closed bool
 }
@@ -55,31 +52,11 @@ func NewClientPool(host string, port int, ssl bool, user, pass string, maxConn i
 	return p
 }
 
-func (p *ClientPool) SetUsageManager(name string, mgr *ProviderUsageManager) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.providerName = name
-	p.usageManager = mgr
-}
-
-func (p *ClientPool) RestoreTotalBytes(total int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.totalBytesRead = total
-	p.lastTotalBytes = total
-}
-
 func (p *ClientPool) TrackRead(n int) {
 	p.mu.Lock()
 	p.bytesRead += int64(n)
 	p.totalBytesRead += int64(n)
-	usageMgr := p.usageManager
-	providerName := p.providerName
 	p.mu.Unlock()
-
-	if usageMgr != nil && providerName != "" && n > 0 {
-		usageMgr.AddBytes(providerName, int64(n))
-	}
 }
 
 const minSpeedWindow = 0.05
@@ -121,17 +98,8 @@ func (p *ClientPool) GetSpeed() float64 {
 
 func (p *ClientPool) TotalMegabytes() float64 {
 	p.mu.Lock()
-	usageMgr := p.usageManager
-	providerName := p.providerName
 	totalBytesRead := p.totalBytesRead
 	p.mu.Unlock()
-
-	if usageMgr != nil && providerName != "" {
-		if usage := usageMgr.GetUsage(providerName); usage != nil {
-			return float64(usage.TotalBytes) / (1024 * 1024)
-		}
-	}
-
 	return float64(totalBytesRead) / (1024 * 1024)
 }
 
@@ -342,13 +310,7 @@ func (p *ClientPool) Shutdown() {
 		return
 	}
 	p.closed = true
-	usageMgr := p.usageManager
-	providerName := p.providerName
 	p.mu.Unlock()
-
-	if usageMgr != nil && providerName != "" {
-		usageMgr.FlushProvider(providerName)
-	}
 
 	// Signal reaperLoop and any racing Put() to stop.
 	// idleClients is intentionally NOT closed here; closing it while Put() or
