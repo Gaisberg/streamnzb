@@ -31,7 +31,11 @@ import (
 	nntpproxy "streamnzb/pkg/usenet/nntp/proxy"
 )
 
-var Version = "dev"
+var (
+	Version = "dev"
+	TMDBKey string
+	TVDBKey string
+)
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -43,6 +47,12 @@ func main() {
 	logger.Init(env.LogLevel())
 
 	cfg := config.Load()
+	if TMDBKey != "" {
+		cfg.TMDBAPIKey = TMDBKey
+	}
+	if TVDBKey != "" {
+		cfg.TVDBAPIKey = TVDBKey
+	}
 
 	// Purge old rotated log files based on KEEP_LOG_FILES setting.
 	logger.PurgeOldLogs(cfg.KeepLogFiles)
