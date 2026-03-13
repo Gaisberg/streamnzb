@@ -7,7 +7,8 @@ import (
 )
 
 type StreamResponse struct {
-	Streams []Stream `json:"streams"`
+	Streams             []Stream `json:"streams"`
+	ResolvedMetadataID  string   `json:"-"` // full metadata_id including season/episode for play URLs
 }
 
 type Stream struct {
@@ -36,7 +37,11 @@ func (s *Service) StreamsWithNZBURLResolver(ctx context.Context, req MatchReques
 	if err != nil {
 		return StreamResponse{}, err
 	}
-	return StreamResponse{Streams: streams}, nil
+	resolvedID := resp.ResolvedMetadataID
+	if resolvedID == "" {
+		resolvedID = req.MetadataID
+	}
+	return StreamResponse{Streams: streams, ResolvedMetadataID: resolvedID}, nil
 }
 
 func buildStreams(req MatchRequest, candidates []Candidate, resolveNZBURL func(Candidate) (string, error)) ([]Stream, error) {

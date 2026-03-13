@@ -151,7 +151,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		return SegmentData{}, fmt.Errorf("empty segment message ID")
 	}
 	if data, ok := p.cache.Get(messageID); ok {
-		logger.Trace("fetch segment cache hit", "message_id", messageID)
+		// logger.Trace("fetch segment cache hit", "message_id", messageID)
 		return data, nil
 	}
 
@@ -258,7 +258,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 
 func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *nzb.Segment, groups []string) (SegmentData, error) {
 	if data, ok := p.cache.Get(messageID); ok {
-		logger.Trace("fetch segment cache hit", "message_id", messageID)
+		// logger.Trace("fetch segment cache hit", "message_id", messageID)
 		return data, nil
 	}
 

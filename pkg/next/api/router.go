@@ -38,6 +38,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	})
 
 	protected.HandleFunc("/stream/", func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("stream request", "path", r.URL.Path)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -61,8 +62,12 @@ func NewRouter(deps Dependencies) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		metadataID := resp.ResolvedMetadataID
+		if metadataID == "" {
+			metadataID = matchReq.MetadataID
+		}
 		for i := range resp.Streams {
-			resp.Streams[i].URL = buildPlayURL(r, resp.Streams[i].NZBURL, matchReq.MetadataID)
+			resp.Streams[i].URL = buildPlayURL(r, resp.Streams[i].NZBURL, metadataID)
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		writeJSON(w, http.StatusOK, resp)

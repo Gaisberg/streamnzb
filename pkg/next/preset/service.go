@@ -78,9 +78,10 @@ type Candidate struct {
 }
 
 type MatchResponse struct {
-	Role       string      `json:"role"`
-	Status     string      `json:"status"`
-	Candidates []Candidate `json:"candidates"`
+	Role                string      `json:"role"`
+	Status              string      `json:"status"`
+	Candidates          []Candidate `json:"candidates"`
+	ResolvedMetadataID  string      `json:"-"` // full metadata_id including season/episode for play URLs
 }
 
 type Service struct {
@@ -138,13 +139,14 @@ func (s *Service) Match(_ context.Context, req MatchRequest) (MatchResponse, err
 	}
 	if s.indexer == nil {
 		return MatchResponse{
-			Role:       "preset",
-			Status:     "not_ready",
-			Candidates: []Candidate{},
+			Role:               "preset",
+			Status:             "not_ready",
+			Candidates:         []Candidate{},
+			ResolvedMetadataID: buildResolvedMetadataID(req, params),
 		}, nil
 	}
 
-	indexerReleases, err := search.RunIndexerSearches(s.indexer, s.tmdbClient, params.Req, params.ContentType, params.ContentIDs, params.ImdbForText, params.TmdbForText, s.searchConfig)
+	indexerReleases, err := search.RunIndexerSearches(s.indexer, s.tmdbClient, params.Req, params.ContentType, params.ContentIDs, params.ImdbForText, params.TmdbForText)
 	if err != nil {
 		return MatchResponse{}, err
 	}
@@ -152,9 +154,10 @@ func (s *Service) Match(_ context.Context, req MatchRequest) (MatchResponse, err
 	availResult := s.lookupAvailability(params)
 
 	return MatchResponse{
-		Role:       "preset",
-		Status:     "ok",
-		Candidates: s.buildCandidates(indexerReleases, availResult),
+		Role:               "preset",
+		Status:             "ok",
+		Candidates:         s.buildCandidates(indexerReleases, availResult),
+		ResolvedMetadataID: buildResolvedMetadataID(req, params),
 	}, nil
 }
 
@@ -258,6 +261,36 @@ func (s *Service) buildSearchParams(req MatchRequest) (*searchParams, error) {
 	params.ImdbForText = imdbForText
 	params.TmdbForText = tmdbForText
 	return params, nil
+}
+
+// buildResolvedMetadataID returns a metadata_id that includes season and episode for series,
+// so play URLs handed to the client can create sessions with the correct episode target.
+func buildResolvedMetadataID(req MatchRequest, params *searchParams) string {
+	if params == nil || params.ContentType != "series" || params.ContentIDs == nil {
+		return req.MetadataID
+	}
+	s, e := params.ContentIDs.Season, params.ContentIDs.Episode
+	if s <= 0 || e <= 0 {
+		return req.MetadataID
+	}
+	// Prefer same prefix as request (tmdb/tvdb) so playback parsing stays consistent.
+	id := strings.TrimSpace(req.MetadataID)
+	if strings.HasPrefix(id, "tmdb:") && params.Req.TMDBID != "" {
+		return fmt.Sprintf("tmdb:%s:%d:%d", params.Req.TMDBID, s, e)
+	}
+	if strings.HasPrefix(id, "tvdb:") && params.Req.TVDBID != "" {
+		return fmt.Sprintf("tvdb:%s:%d:%d", params.Req.TVDBID, s, e)
+	}
+	if params.Req.IMDbID != "" {
+		return fmt.Sprintf("%s:%d:%d", params.Req.IMDbID, s, e)
+	}
+	if params.Req.TMDBID != "" {
+		return fmt.Sprintf("tmdb:%s:%d:%d", params.Req.TMDBID, s, e)
+	}
+	if params.Req.TVDBID != "" {
+		return fmt.Sprintf("tvdb:%s:%d:%d", params.Req.TVDBID, s, e)
+	}
+	return req.MetadataID
 }
 
 func (s *Service) lookupAvailability(params *searchParams) *availnzb.ReleasesResult {

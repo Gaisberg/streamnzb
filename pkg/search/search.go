@@ -18,13 +18,7 @@ type TMDBResolver interface {
 	GetTVShowName(tmdbID, imdbID string) (string, error)
 }
 
-type SearchConfig interface {
-	GetIncludeYearInSearch() bool
-	GetSearchTitleLanguage() string
-	GetSearchTitleNormalize() bool
-}
-
-func RunIndexerSearches(idx indexer.Indexer, tmdbClient TMDBResolver, req indexer.SearchRequest, contentType string, contentIDs *session.AvailReportMeta, imdbForText, tmdbForText string, cfg SearchConfig) ([]*release.Release, error) {
+func RunIndexerSearches(idx indexer.Indexer, tmdbClient TMDBResolver, req indexer.SearchRequest, contentType string, contentIDs *session.AvailReportMeta, imdbForText, tmdbForText string) ([]*release.Release, error) {
 	idReq := req
 	idReq.Query = ""
 	idReq.PerIndexerQuery = nil
@@ -57,20 +51,17 @@ func RunIndexerSearches(idx indexer.Indexer, tmdbClient TMDBResolver, req indexe
 	}
 
 	if usePerIndexerQuery {
-		// Per-indexer text queries should be query-only. Keeping season/episode here
-		// causes some indexers to switch back to exact-episode search modes, which
-		// prevents season/show packs from entering the candidate set.
 		textReq = &indexer.SearchRequest{
 			Cat:                req.Cat,
 			Limit:              req.Limit,
 			EffectiveByIndexer: req.EffectiveByIndexer,
 			PerIndexerQuery:    req.PerIndexerQuery,
 		}
-	} else if tmdbClient != nil && cfg != nil {
+	} else if tmdbClient != nil {
 		var textQuery string
-		includeYear := cfg.GetIncludeYearInSearch()
-		searchTitleLanguage := cfg.GetSearchTitleLanguage()
-		searchTitleNormalize := cfg.GetSearchTitleNormalize()
+		includeYear := true
+		searchTitleLanguage := ""
+		searchTitleNormalize := true
 		if contentType == "movie" {
 			if searchTitleLanguage != "" || searchTitleNormalize {
 				if q, err := tmdbClient.GetMovieTitleForSearch(contentIDs.ImdbID, req.TMDBID, searchTitleLanguage, includeYear, searchTitleNormalize); err == nil {
@@ -90,17 +81,9 @@ func RunIndexerSearches(idx indexer.Indexer, tmdbClient TMDBResolver, req indexe
 				}
 			}
 		} else if req.Season != "" && req.Episode != "" {
-			// String search for episodes disabled: use ID-only search and rely on FilterResults.
-			// Uncomment below to re-enable dual search (ID + "Show Name S00E00" query).
-			// if name, err := tmdbClient.GetTVShowName(tmdbForText, imdbForText); err == nil {
-			// 	seasonNum, _ := strconv.Atoi(req.Season)
-			// 	epNum, _ := strconv.Atoi(req.Episode)
-			// 	if seasonNum > 0 || epNum > 0 {
-			// 		textQuery = fmt.Sprintf("%s S%02dE%02d", name, seasonNum, epNum)
-			// 	} else {
-			// 		textQuery = fmt.Sprintf("%s S%sE%s", name, req.Season, req.Episode)
-			// 	}
-			// }
+			if name, err := tmdbClient.GetTVShowName(tmdbForText, imdbForText); err == nil {
+				textQuery = name
+			}
 		}
 		if textQuery != "" {
 			textReq = &indexer.SearchRequest{Query: textQuery, Cat: req.Cat, Limit: req.Limit, Season: req.Season, Episode: req.Episode}
