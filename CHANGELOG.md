@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.5.5](https://github.com/Gaisberg/streamnzb/compare/v3.5.4...v3.5.5) (2026-03-19)
+
+
+### Bug Fixes
+
+* matching filter availnzb results (bad data) ([718ffcf](https://github.com/Gaisberg/streamnzb/commit/718ffcf54de0f8359a1f894b87c27130a4d1150e))
+* remove hardcoded 5 count limit ([cbc7d9c](https://github.com/Gaisberg/streamnzb/commit/cbc7d9cf1b311e9ef7056cd735b3807cb1af08cf))
+
+
+### Performance Improvements
+
+* improve playback performance, dramatically simplify prefetching ([00eff86](https://github.com/Gaisberg/streamnzb/commit/00eff8690be71e28e175779231421136a7303e4f))
+
 ## [3.5.4](https://github.com/Gaisberg/streamnzb/compare/v3.5.3...v3.5.4) (2026-03-11)
 
 
