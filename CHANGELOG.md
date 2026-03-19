@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/Gaisberg/streamnzb/compare/v3.5.5...v3.6.0) (2026-03-19)
+
+
+### Features
+
+* use AppData/Local/streamnzb as data dir on Windows ([043509b](https://github.com/Gaisberg/streamnzb/commit/043509b9417ea36ae5fd589859d774f27cd64f79))
+
 ## [3.5.5](https://github.com/Gaisberg/streamnzb/compare/v3.5.4...v3.5.5) (2026-03-19)
 
 
