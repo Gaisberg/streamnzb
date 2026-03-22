@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.7.0](https://github.com/Gaisberg/streamnzb/compare/v3.6.0...v3.7.0) (2026-03-22)
+
+
+### Features
+
+* **availnzb:** auto-recover API key when IP already has one registered ([acad7f9](https://github.com/Gaisberg/streamnzb/commit/acad7f931e3387cf5d8708d365dbe6d4287e3eab))
+* remove redundant indexer settings ([a7827b1](https://github.com/Gaisberg/streamnzb/commit/a7827b172c7e336132751787f7c4ddd0239ca435))
+* **search:** add per-indexer toggle for ID and string search methods ([d320d87](https://github.com/Gaisberg/streamnzb/commit/d320d87e2b0883a176fa5808b935103d06a60fcb))
+
+
+### Bug Fixes
+
+* **media:** remove m2ts and ts from supported video extensions ([1c0969b](https://github.com/Gaisberg/streamnzb/commit/1c0969ba76b71c06d24d42432278d90e6f85498a))
+* **nzb:** null bytes in nzb broke parser ([71cb895](https://github.com/Gaisberg/streamnzb/commit/71cb895041cc7ae8ea825bcf7e42d4eca5c7769a))
+* **unpack:** single episode releases with obfuscated name were skipped ([71cb895](https://github.com/Gaisberg/streamnzb/commit/71cb895041cc7ae8ea825bcf7e42d4eca5c7769a))
+
 ## [3.6.0](https://github.com/Gaisberg/streamnzb/compare/v3.5.5...v3.6.0) (2026-03-19)
 
 
