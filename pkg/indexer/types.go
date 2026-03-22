@@ -36,6 +36,8 @@ type Usage struct {
 type SearchRequest struct {
 	Query   string
 	IMDbID  string
+	KitsuID string
+	malID   string
 	TMDBID  string
 	TVDBID  string
 	Cat     string
