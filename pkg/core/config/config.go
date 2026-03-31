@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ const (
 	defaultAdminPasswordHash               = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 	DefaultInternalIndexerTimeoutSeconds   = 5
 	DefaultAggregatorIndexerTimeoutSeconds = 10
+	CurrentConfigVersion                   = 2
+	StreamModelConfigVersion               = 2
+	defaultMigratedStreamID                = "default"
 )
 
 type Provider struct {
@@ -55,6 +59,23 @@ type IndexerSearchConfig struct {
 	ExtraSearchTerms           *string `json:"extra_search_terms,omitempty"`
 	DisableIdSearch            *bool   `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool   `json:"disable_string_search,omitempty"`
+}
+
+type SearchQueryConfig struct {
+	Name                       string `json:"name"`
+	SearchMode                 string `json:"search_mode,omitempty"`
+	SearchResultLimit          int    `json:"search_result_limit,omitempty"`
+	IncludeYearInTextSearch    *bool  `json:"include_year_in_text_search,omitempty"`
+	UseSeasonEpisodeParams     *bool  `json:"use_season_episode_params,omitempty"`
+	EnableSeriesSeasonSearch   *bool  `json:"enable_series_season_search,omitempty"`
+	EnableSeriesCompleteSearch *bool  `json:"enable_series_complete_search,omitempty"`
+	EnableSeriesPackSearch     *bool  `json:"enable_series_pack_search,omitempty"`
+	SearchTitleLanguage        string `json:"search_title_language,omitempty"`
+	MovieCategories            string `json:"movie_categories,omitempty"`
+	TVCategories               string `json:"tv_categories,omitempty"`
+	ExtraSearchTerms           string `json:"extra_search_terms,omitempty"`
+	DisableIdSearch            *bool  `json:"disable_id_search,omitempty"`
+	DisableStringSearch        *bool  `json:"disable_string_search,omitempty"`
 }
 
 type IndexerConfig struct {
@@ -98,6 +119,8 @@ func (ic IndexerConfig) EffectiveTimeout() time.Duration {
 }
 
 type Config struct {
+	ConfigVersion int `json:"config_version,omitempty"`
+
 	Indexers []IndexerConfig `json:"indexers"`
 
 	AddonPort    int    `json:"addon_port"`
@@ -118,13 +141,19 @@ type Config struct {
 	ProxyAuthPass string `json:"proxy_auth_pass"`
 
 	AvailNZBURL    string `json:"-"`
-	AvailNZBAPIKey string `json:"-"`
+	AvailNZBAPIKey string `json:"availnzb_api_key,omitempty"`
 
-	TMDBAPIKey string `json:"-"`
+	TMDBAPIKey         string `json:"tmdb_api_key,omitempty"`
+	IndexerQueryHeader string `json:"indexer_query_header,omitempty"`
+	IndexerGrabHeader  string `json:"indexer_grab_header,omitempty"`
+	ProviderHeader     string `json:"provider_header,omitempty"`
 
-	TVDBAPIKey string `json:"-"`
+	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
 
 	Devices map[string]*DeviceEntry `json:"devices,omitempty"`
+
+	MovieSearchQueries  []SearchQueryConfig `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries []SearchQueryConfig `json:"series_search_queries,omitempty"`
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.
@@ -141,16 +170,92 @@ type Config struct {
 	AvailNZBMode string `json:"availnzb_mode,omitempty"`
 
 	LoadedPath string `json:"-"`
+
+	ResetLegacyDeviceState bool `json:"-"`
 }
 
 type DeviceEntry struct {
-	Username         string                         `json:"username"`
-	Token            string                         `json:"token"`
-	IndexerOverrides map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
+	Username            string                         `json:"username"`
+	Token               string                         `json:"token"`
+	Order               int                            `json:"order,omitempty"`
+	FilterSortingMode   string                         `json:"filter_sorting_mode,omitempty"`
+	IndexerMode         string                         `json:"indexer_mode,omitempty"`
+	UseAvailNZB         *bool                          `json:"use_availnzb,omitempty"`
+	CombineResults      *bool                          `json:"combine_results,omitempty"`
+	EnableFailover      *bool                          `json:"enable_failover,omitempty"`
+	ResultsMode         string                         `json:"results_mode,omitempty"`
+	ProviderSelections  []string                       `json:"provider_selections,omitempty"`
+	IndexerSelections   []string                       `json:"indexer_selections,omitempty"`
+	IndexerOverrides    map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
+	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
 }
 
 func (c *Config) GetSearchTitleLanguage() string { return "" }
 
+func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
+	if sq == nil {
+		return nil
+	}
+	out := &IndexerSearchConfig{
+		SearchResultLimit:          sq.SearchResultLimit,
+		EnableSeriesSeasonSearch:   sq.EnableSeriesSeasonSearch,
+		EnableSeriesCompleteSearch: sq.EnableSeriesCompleteSearch,
+		EnableSeriesPackSearch:     sq.EnableSeriesPackSearch,
+	}
+	mode := strings.ToLower(strings.TrimSpace(sq.SearchMode))
+	switch mode {
+	case "id":
+		disableID := false
+		disableString := true
+		out.DisableIdSearch = &disableID
+		out.DisableStringSearch = &disableString
+	case "text":
+		disableID := true
+		disableString := false
+		out.DisableIdSearch = &disableID
+		out.DisableStringSearch = &disableString
+	default:
+		out.DisableIdSearch = sq.DisableIdSearch
+		out.DisableStringSearch = sq.DisableStringSearch
+	}
+	if sq.SearchTitleLanguage != "" {
+		s := sq.SearchTitleLanguage
+		out.SearchTitleLanguage = &s
+	}
+	if sq.MovieCategories != "" {
+		s := sq.MovieCategories
+		out.MovieCategories = &s
+	}
+	if sq.TVCategories != "" {
+		s := sq.TVCategories
+		out.TVCategories = &s
+	}
+	if sq.ExtraSearchTerms != "" {
+		s := sq.ExtraSearchTerms
+		out.ExtraSearchTerms = &s
+	}
+	return out
+}
+
+func (c *Config) GetSearchQueryByName(contentType, name string) *SearchQueryConfig {
+	if c == nil || name == "" {
+		return nil
+	}
+	target := strings.ToLower(strings.TrimSpace(name))
+	var queries []SearchQueryConfig
+	if contentType == "movie" {
+		queries = c.MovieSearchQueries
+	} else {
+		queries = c.SeriesSearchQueries
+	}
+	for i := range queries {
+		if strings.ToLower(strings.TrimSpace(queries[i].Name)) == target {
+			return &queries[i]
+		}
+	}
+	return nil
+}
 
 func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global *Config) *IndexerSearchConfig {
 	out := &IndexerSearchConfig{}
@@ -199,7 +304,6 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		s = *override.SearchTitleLanguage
 	}
 	out.SearchTitleLanguage = &s
-
 
 	mc := ""
 	if ic != nil {
@@ -272,7 +376,6 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-
 		AddonPort:     7000,
 		AddonBaseURL:  "http://localhost:7000",
 		LogLevel:      "INFO",
@@ -294,6 +397,22 @@ func Load() (*Config, error) {
 	} else {
 		logger.Info("Loaded configuration", "path", configPath)
 	}
+	needSave := false
+	streamModelUpgrade := cfg.ConfigVersion < StreamModelConfigVersion
+	if streamModelUpgrade {
+		if len(cfg.Devices) > 0 {
+			logger.Warn("Resetting legacy stream entries from config for stream-model upgrade", "count", len(cfg.Devices), "from_version", cfg.ConfigVersion, "to_version", CurrentConfigVersion)
+		} else {
+			logger.Info("Applying stream-model upgrade defaults", "from_version", cfg.ConfigVersion, "to_version", CurrentConfigVersion)
+		}
+		cfg.Devices = make(map[string]*DeviceEntry)
+		cfg.ResetLegacyDeviceState = true
+		needSave = true
+	}
+	if cfg.ConfigVersion < CurrentConfigVersion {
+		cfg.ConfigVersion = CurrentConfigVersion
+		needSave = true
+	}
 	if cfg.KeepLogFiles < 1 {
 		cfg.KeepLogFiles = 9
 	}
@@ -303,7 +422,12 @@ func Load() (*Config, error) {
 
 	cfg.MigrateLegacyIndexers()
 
-	needSave := cfg.ApplyProviderDefaults()
+	if cfg.ApplyProviderDefaults() {
+		needSave = true
+	}
+	if streamModelUpgrade && cfg.applyStreamModelUpgradeDefaults() {
+		needSave = true
+	}
 
 	if cfg.AdminToken == "" {
 		bytes := make([]byte, 32)
@@ -335,6 +459,148 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) applyStreamModelUpgradeDefaults() bool {
+	changed := false
+	if c.ensureDefaultMigrationSearchQueries() {
+		changed = true
+	}
+	if c.ensureDefaultMigratedStream() {
+		changed = true
+	}
+	return changed
+}
+
+func (c *Config) ensureDefaultMigrationSearchQueries() bool {
+	changed := false
+	if c.ensureMovieSearchQuery(SearchQueryConfig{
+		Name:                    "DefaultMovieText",
+		SearchMode:              "text",
+		SearchResultLimit:       1000,
+		MovieCategories:         "2000",
+		IncludeYearInTextSearch: ptrBool(true),
+	}) {
+		changed = true
+	}
+	if c.ensureMovieSearchQuery(SearchQueryConfig{
+		Name:              "DefaultMovieID",
+		SearchMode:        "id",
+		SearchResultLimit: 1000,
+		MovieCategories:   "2000",
+	}) {
+		changed = true
+	}
+	if c.ensureSeriesSearchQuery(SearchQueryConfig{
+		Name:                   "DefaultTVText",
+		SearchMode:             "text",
+		SearchResultLimit:      1000,
+		TVCategories:           "5000",
+		UseSeasonEpisodeParams: ptrBool(false),
+	}) {
+		changed = true
+	}
+	if c.ensureSeriesSearchQuery(SearchQueryConfig{
+		Name:                   "DefaultTVID",
+		SearchMode:             "id",
+		SearchResultLimit:      1000,
+		TVCategories:           "5000",
+		UseSeasonEpisodeParams: ptrBool(true),
+	}) {
+		changed = true
+	}
+	return changed
+}
+
+func (c *Config) ensureMovieSearchQuery(query SearchQueryConfig) bool {
+	for _, existing := range c.MovieSearchQueries {
+		if strings.EqualFold(strings.TrimSpace(existing.Name), strings.TrimSpace(query.Name)) {
+			return false
+		}
+	}
+	c.MovieSearchQueries = append(c.MovieSearchQueries, query)
+	return true
+}
+
+func (c *Config) ensureSeriesSearchQuery(query SearchQueryConfig) bool {
+	for _, existing := range c.SeriesSearchQueries {
+		if strings.EqualFold(strings.TrimSpace(existing.Name), strings.TrimSpace(query.Name)) {
+			return false
+		}
+	}
+	c.SeriesSearchQueries = append(c.SeriesSearchQueries, query)
+	return true
+}
+
+func (c *Config) ensureDefaultMigratedStream() bool {
+	if c.Devices == nil {
+		c.Devices = make(map[string]*DeviceEntry)
+	}
+	if _, exists := c.Devices[defaultMigratedStreamID]; exists {
+		return false
+	}
+	token, err := generateConfigToken()
+	if err != nil {
+		logger.Warn("Failed to generate token for migrated default stream", "err", err)
+		return false
+	}
+	c.Devices[defaultMigratedStreamID] = &DeviceEntry{
+		Username:            defaultMigratedStreamID,
+		Token:               token,
+		Order:               1,
+		FilterSortingMode:   "aiostreams",
+		IndexerMode:         "combine",
+		UseAvailNZB:         ptrBool(true),
+		CombineResults:      ptrBool(true),
+		IndexerOverrides:    make(map[string]IndexerSearchConfig),
+		ProviderSelections:  allProviderNames(c.Providers),
+		IndexerSelections:   allIndexerNames(c.Indexers),
+		MovieSearchQueries:  allSearchQueryNames(c.MovieSearchQueries),
+		SeriesSearchQueries: allSearchQueryNames(c.SeriesSearchQueries),
+	}
+	return true
+}
+
+func generateConfigToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(bytes)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func allProviderNames(providers []Provider) []string {
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func allIndexerNames(indexers []IndexerConfig) []string {
+	names := make([]string, 0, len(indexers))
+	for _, indexer := range indexers {
+		name := strings.TrimSpace(indexer.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func allSearchQueryNames(queries []SearchQueryConfig) []string {
+	names := make([]string, 0, len(queries))
+	for _, query := range queries {
+		name := strings.TrimSpace(query.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func (c *Config) LoadFile(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -350,8 +616,24 @@ func (c *Config) LoadFile(path string) error {
 
 func (c *Config) ApplyProviderDefaults() bool {
 	changed := false
+	usedNames := make(map[string]bool, len(c.Providers))
+	for i := range c.Providers {
+		name := strings.TrimSpace(c.Providers[i].Name)
+		if name == "" {
+			continue
+		}
+		usedNames[strings.ToLower(name)] = true
+	}
 	for i := range c.Providers {
 		p := &c.Providers[i]
+
+		if strings.TrimSpace(p.Name) == "" {
+			p.Name = uniqueProviderNameFromHost(p.Host, usedNames)
+			changed = true
+		}
+		if trimmedName := strings.TrimSpace(p.Name); trimmedName != "" {
+			usedNames[strings.ToLower(trimmedName)] = true
+		}
 
 		if p.Priority == nil {
 			priority := i + 1
@@ -368,6 +650,33 @@ func (c *Config) ApplyProviderDefaults() bool {
 
 	}
 	return changed
+}
+
+func uniqueProviderNameFromHost(host string, usedNames map[string]bool) string {
+	base := providerNameFromHost(host)
+	name := base
+	for suffix := 2; usedNames[strings.ToLower(name)]; suffix++ {
+		name = base + "-" + strconv.Itoa(suffix)
+	}
+	return name
+}
+
+func providerNameFromHost(host string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(host)), ".")
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	if len(filtered) >= 2 {
+		return filtered[len(filtered)-2]
+	}
+	if len(filtered) == 1 {
+		return filtered[0]
+	}
+	return "provider"
 }
 
 func (c *Config) MigrateLegacyIndexers() {
@@ -420,6 +729,24 @@ func ApplyEnvOverrides(cfg *Config, o env.ConfigOverrides, keys []string) {
 	}
 	if keySet(keys, env.KeyKeepLogFiles) {
 		cfg.KeepLogFiles = o.KeepLogFiles
+	}
+	if keySet(keys, env.KeyAvailNZBAPIKey) {
+		cfg.AvailNZBAPIKey = o.AvailNZBAPIKey
+	}
+	if keySet(keys, env.KeyTMDBAPIKey) {
+		cfg.TMDBAPIKey = o.TMDBAPIKey
+	}
+	if keySet(keys, env.KeyIndexerQueryHeader) {
+		cfg.IndexerQueryHeader = o.IndexerQueryHeader
+	}
+	if keySet(keys, env.KeyIndexerGrabHeader) {
+		cfg.IndexerGrabHeader = o.IndexerGrabHeader
+	}
+	if keySet(keys, env.KeyProviderHeader) {
+		cfg.ProviderHeader = o.ProviderHeader
+	}
+	if keySet(keys, env.KeyTVDBAPIKey) {
+		cfg.TVDBAPIKey = o.TVDBAPIKey
 	}
 	if keySet(keys, env.KeyProxyPort) {
 		cfg.ProxyPort = o.ProxyPort
@@ -489,6 +816,29 @@ func (c *Config) RedactForAPI() Config {
 	out := *c
 	out.AdminPasswordHash = ""
 	out.AdminToken = ""
+	out.ProxyAuthUser = ""
+	out.ProxyAuthPass = ""
+	out.IndexerQueryHeader = ""
+	out.IndexerGrabHeader = ""
+	out.ProviderHeader = ""
+	out.AvailNZBAPIKey = ""
+	out.TMDBAPIKey = ""
+	out.TVDBAPIKey = ""
+	out.Providers = make([]Provider, len(c.Providers))
+	for i, provider := range c.Providers {
+		redactedProvider := provider
+		redactedProvider.Username = ""
+		redactedProvider.Password = ""
+		out.Providers[i] = redactedProvider
+	}
+	out.Indexers = make([]IndexerConfig, len(c.Indexers))
+	for i, indexer := range c.Indexers {
+		redactedIndexer := indexer
+		redactedIndexer.APIKey = ""
+		redactedIndexer.Username = ""
+		redactedIndexer.Password = ""
+		out.Indexers[i] = redactedIndexer
+	}
 	return out
 }
 
@@ -507,6 +857,18 @@ func CopyEnvOverridesFrom(src, dst *Config) {
 			dst.LogLevel = src.LogLevel
 		case env.KeyKeepLogFiles:
 			dst.KeepLogFiles = src.KeepLogFiles
+		case env.KeyAvailNZBAPIKey:
+			dst.AvailNZBAPIKey = src.AvailNZBAPIKey
+		case env.KeyTMDBAPIKey:
+			dst.TMDBAPIKey = src.TMDBAPIKey
+		case env.KeyIndexerQueryHeader:
+			dst.IndexerQueryHeader = src.IndexerQueryHeader
+		case env.KeyIndexerGrabHeader:
+			dst.IndexerGrabHeader = src.IndexerGrabHeader
+		case env.KeyProviderHeader:
+			dst.ProviderHeader = src.ProviderHeader
+		case env.KeyTVDBAPIKey:
+			dst.TVDBAPIKey = src.TVDBAPIKey
 		case env.KeyProxyPort:
 			dst.ProxyPort = src.ProxyPort
 		case env.KeyProxyHost:

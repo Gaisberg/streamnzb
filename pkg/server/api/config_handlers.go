@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"path/filepath"
 
@@ -13,6 +14,17 @@ import (
 type configPayload struct {
 	config.Config
 	EnvOverrides []string `json:"env_overrides,omitempty"`
+}
+
+func redactedConfigForViewer(cfg *config.Config, includeAPIKeys bool) config.Config {
+	redacted := cfg.RedactForAPI()
+	if includeAPIKeys {
+		return redacted
+	}
+	redacted.AvailNZBAPIKey = ""
+	redacted.TMDBAPIKey = ""
+	redacted.TVDBAPIKey = ""
+	return redacted
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -32,21 +44,18 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
+	stream, _ := auth.StreamFromContext(r)
 	var cfg config.Config
-	if device != nil && device.Username == s.config.GetAdminUsername() {
-		cfg = s.config.RedactForAPI()
-	} else if device != nil {
-		cfg = *s.config
-		cfg = cfg.RedactForAPI()
+	if stream != nil && stream.Username == s.config.GetAdminUsername() {
+		cfg = redactedConfigForViewer(s.config, true)
 	} else {
-		cfg = s.config.RedactForAPI()
+		cfg = redactedConfigForViewer(s.config, false)
 	}
 	if cfg.AdminUsername == "" {
 		cfg.AdminUsername = s.config.GetAdminUsername()
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if device != nil && device.Username == s.config.GetAdminUsername() {
+	if stream != nil && stream.Username == s.config.GetAdminUsername() {
 		envKeys := config.GetEnvOverrideKeys()
 		json.NewEncoder(w).Encode(configPayload{Config: cfg, EnvOverrides: envKeys})
 	} else {
@@ -59,29 +68,49 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Only admin can save global configuration", http.StatusForbidden)
 		return
 	}
-	var newCfg config.Config
-	if err := json.NewDecoder(r.Body).Decode(&newCfg); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		s.writeSaveStatus(w, "error", "Invalid config data", nil)
 		return
 	}
+
+	s.mu.RLock()
+	currentCfg := s.config
+	currentLoadedPath := s.config.LoadedPath
+	s.mu.RUnlock()
+
+	currentJSON, err := json.Marshal(currentCfg)
+	if err != nil {
+		s.writeSaveStatus(w, "error", "Failed to prepare config update", nil)
+		return
+	}
+
+	var newCfg config.Config
+	if err := json.Unmarshal(currentJSON, &newCfg); err != nil {
+		s.writeSaveStatus(w, "error", "Failed to prepare config update", nil)
+		return
+	}
+	if err := json.Unmarshal(body, &newCfg); err != nil {
+		s.writeSaveStatus(w, "error", "Invalid config data", nil)
+		return
+	}
+
 	fieldErrors := s.validateConfig(&newCfg)
 	if len(fieldErrors) > 0 {
 		s.writeSaveStatus(w, "error", "Validation failed", fieldErrors)
 		return
 	}
-	s.mu.RLock()
-	currentCfg := s.config
-	currentLoadedPath := s.config.LoadedPath
-	s.mu.RUnlock()
+
 	config.CopyEnvOverridesFrom(currentCfg, &newCfg)
 	newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
 	newCfg.AdminToken = currentCfg.AdminToken
 	newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
+	newCfg.Devices = currentCfg.Devices
 	if newCfg.AdminUsername == "" {
 		newCfg.AdminUsername = currentCfg.GetAdminUsername()
 	}
@@ -114,5 +143,27 @@ func (s *Server) writeSaveStatus(w http.ResponseWriter, status, message string, 
 		"status":  status,
 		"message": message,
 		"errors":  errors,
+	})
+}
+
+func (s *Server) handleClearCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
+		http.Error(w, "Only admin can clear caches", http.StatusForbidden)
+		return
+	}
+	if s.strmServer == nil {
+		http.Error(w, "Streaming server unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.strmServer.ClearSearchCaches()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"message": "Search cache cleared.",
 	})
 }

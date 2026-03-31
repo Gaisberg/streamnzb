@@ -68,6 +68,15 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	if err != nil {
 		logger.Error("Failed to initialize state manager", "err", err)
 	}
+	if stateMgr != nil && cfg.ResetLegacyDeviceState {
+		if err := stateMgr.Delete("devices"); err != nil {
+			logger.Warn("Failed to clear legacy devices state during stream-model upgrade", "err", err)
+		}
+		if err := stateMgr.Delete("users"); err != nil {
+			logger.Warn("Failed to clear legacy users state during stream-model upgrade", "err", err)
+		}
+		logger.Info("Cleared legacy persisted device state for stream-model upgrade")
+	}
 
 	usageMgr, err := indexer.GetUsageManager(stateMgr)
 	if err != nil {

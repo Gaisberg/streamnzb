@@ -81,3 +81,61 @@ func TestIndexerConfigEffectiveTimeoutHonorsExplicitOverride(t *testing.T) {
 		t.Fatalf("EffectiveTimeout() = %v, want %v", got, 7*time.Second)
 	}
 }
+
+func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{
+			{Host: "news.newshosting.com"},
+			{Name: "eweka", Host: "news.eweka.nl"},
+		},
+		Indexers: []IndexerConfig{
+			{Name: "Indexer A"},
+			{Name: "Indexer B"},
+		},
+	}
+
+	if !cfg.ApplyProviderDefaults() {
+		t.Fatalf("expected provider defaults to derive provider names")
+	}
+
+	if !cfg.applyStreamModelUpgradeDefaults() {
+		t.Fatalf("expected stream model upgrade defaults to change config")
+	}
+
+	if len(cfg.MovieSearchQueries) != 2 {
+		t.Fatalf("expected 2 movie queries, got %d", len(cfg.MovieSearchQueries))
+	}
+	if len(cfg.SeriesSearchQueries) != 2 {
+		t.Fatalf("expected 2 series queries, got %d", len(cfg.SeriesSearchQueries))
+	}
+
+	stream := cfg.Devices[defaultMigratedStreamID]
+	if stream == nil {
+		t.Fatalf("expected migrated default stream to be created")
+	}
+	if stream.Token == "" {
+		t.Fatalf("expected migrated default stream token to be populated")
+	}
+	if stream.IndexerMode != "combine" {
+		t.Fatalf("expected default stream indexer mode combine, got %q", stream.IndexerMode)
+	}
+	if stream.FilterSortingMode != "aiostreams" {
+		t.Fatalf("expected default stream filter sorting mode aiostreams, got %q", stream.FilterSortingMode)
+	}
+	if len(stream.ProviderSelections) != 2 || stream.ProviderSelections[0] != "newshosting" {
+		t.Fatalf("unexpected provider selections: %#v", stream.ProviderSelections)
+	}
+	if len(stream.IndexerSelections) != 2 {
+		t.Fatalf("unexpected indexer selections: %#v", stream.IndexerSelections)
+	}
+	if len(stream.MovieSearchQueries) != 2 || stream.MovieSearchQueries[0] != "DefaultMovieText" {
+		t.Fatalf("unexpected movie search queries: %#v", stream.MovieSearchQueries)
+	}
+	if len(stream.SeriesSearchQueries) != 2 || stream.SeriesSearchQueries[0] != "DefaultTVText" {
+		t.Fatalf("unexpected series search queries: %#v", stream.SeriesSearchQueries)
+	}
+
+	if cfg.applyStreamModelUpgradeDefaults() {
+		t.Fatalf("expected second upgrade application to be a no-op")
+	}
+}
