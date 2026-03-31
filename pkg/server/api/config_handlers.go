@@ -16,15 +16,18 @@ type configPayload struct {
 	EnvOverrides []string `json:"env_overrides,omitempty"`
 }
 
-func redactedConfigForViewer(cfg *config.Config, includeAPIKeys bool) config.Config {
-	redacted := cfg.RedactForAPI()
-	if includeAPIKeys {
-		return redacted
+func configForAdminAPI(cfg *config.Config) config.Config {
+	if cfg == nil {
+		return config.Config{}
 	}
-	redacted.AvailNZBAPIKey = ""
-	redacted.TMDBAPIKey = ""
-	redacted.TVDBAPIKey = ""
-	return redacted
+	out := *cfg
+	out.AdminPasswordHash = ""
+	out.AdminToken = ""
+	return out
+}
+
+func redactedConfigForViewer(cfg *config.Config) config.Config {
+	return cfg.RedactForAPI()
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -47,9 +50,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	stream, _ := auth.StreamFromContext(r)
 	var cfg config.Config
 	if stream != nil && stream.Username == s.config.GetAdminUsername() {
-		cfg = redactedConfigForViewer(s.config, true)
+		cfg = configForAdminAPI(s.config)
 	} else {
-		cfg = redactedConfigForViewer(s.config, false)
+		cfg = redactedConfigForViewer(s.config)
 	}
 	if cfg.AdminUsername == "" {
 		cfg.AdminUsername = s.config.GetAdminUsername()

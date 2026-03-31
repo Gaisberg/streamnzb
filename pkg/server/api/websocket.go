@@ -165,18 +165,11 @@ func (s *Server) sendConfig(client *Client) {
 
 	var cfg config.Config
 	if client.stream != nil && client.stream.Username == s.config.GetAdminUsername() {
-		cfg = s.config.RedactForAPI()
+		cfg = configForAdminAPI(s.config)
 	} else if client.stream != nil {
-		cfg = *s.config
-		cfg = cfg.RedactForAPI()
-		cfg.AvailNZBAPIKey = ""
-		cfg.TMDBAPIKey = ""
-		cfg.TVDBAPIKey = ""
+		cfg = redactedConfigForViewer(s.config)
 	} else {
-		cfg = s.config.RedactForAPI()
-		cfg.AvailNZBAPIKey = ""
-		cfg.TMDBAPIKey = ""
-		cfg.TVDBAPIKey = ""
+		cfg = redactedConfigForViewer(s.config)
 	}
 
 	var payload []byte
