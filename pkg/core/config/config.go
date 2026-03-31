@@ -550,6 +550,8 @@ func (c *Config) ensureDefaultMigratedStream() bool {
 		IndexerMode:         "combine",
 		UseAvailNZB:         ptrBool(true),
 		CombineResults:      ptrBool(true),
+		EnableFailover:      ptrBool(true),
+		ResultsMode:         "display_all",
 		IndexerOverrides:    make(map[string]IndexerSearchConfig),
 		ProviderSelections:  allProviderNames(c.Providers),
 		IndexerSelections:   allIndexerNames(c.Indexers),

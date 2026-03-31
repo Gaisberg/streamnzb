@@ -122,6 +122,12 @@ func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testin
 	if stream.FilterSortingMode != "aiostreams" {
 		t.Fatalf("expected default stream filter sorting mode aiostreams, got %q", stream.FilterSortingMode)
 	}
+	if stream.ResultsMode != "display_all" {
+		t.Fatalf("expected default stream results mode display_all, got %q", stream.ResultsMode)
+	}
+	if stream.EnableFailover == nil || !*stream.EnableFailover {
+		t.Fatalf("expected default stream failover enabled, got %#v", stream.EnableFailover)
+	}
 	if len(stream.ProviderSelections) != 2 || stream.ProviderSelections[0] != "newshosting" {
 		t.Fatalf("unexpected provider selections: %#v", stream.ProviderSelections)
 	}
