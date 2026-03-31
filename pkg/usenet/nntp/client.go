@@ -31,10 +31,14 @@ type Client struct {
 
 func readGreeting(tp *textproto.Conn) error {
 	code, _, err := tp.ReadResponse(200)
-	if err != nil && code != 201 {
-		return err
+	if err == nil {
+		return nil
 	}
-	return nil
+	var protoErr *textproto.Error
+	if errors.As(err, &protoErr) && protoErr.Code == 201 && code == 201 {
+		return nil
+	}
+	return err
 }
 
 func NewClient(address string, port int, ssl bool) (*Client, error) {

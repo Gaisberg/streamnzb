@@ -37,8 +37,8 @@ func (s *Server) handleRefreshIndexerCaps(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -76,8 +76,8 @@ func (s *Server) handleCloseSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -99,8 +99,8 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

@@ -5,68 +5,119 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
-	ADDONPort             = "ADDON_PORT"
-	ADDONBaseURL          = "ADDON_BASE_URL"
-	LOGLevel              = "LOG_LEVEL"
-	KeepLogFiles          = "KEEP_LOG_FILES"
-	AvailNZBURL           = "AVAILNZB_URL"
-	AvailNZBAPIKey        = "AVAILNZB_API_KEY"
-	TMDBAPIKey            = "TMDB_API_KEY"
-	TVDBAPIKey            = "TVDB_API_KEY"
-	NNTPProxyPort         = "NNTP_PROXY_PORT"
-	NNTPProxyHost         = "NNTP_PROXY_HOST"
-	NNTPProxyEnabled      = "NNTP_PROXY_ENABLED"
-	NNTPProxyAuthUser     = "NNTP_PROXY_AUTH_USER"
-	NNTPProxyAuthPass     = "NNTP_PROXY_AUTH_PASS"
-	TZVar                 = "TZ"
-	ProviderPrefix        = "PROVIDER_"
-	IndexerPrefix         = "INDEXER_"
-	IndexerQueryHeaderEnv = "INDEXER_QUERY_HEADER"
-	IndexerGrabHeaderEnv  = "INDEXER_GRAB_HEADER"
+	ADDONPort                      = "ADDON_PORT"
+	ADDONBaseURL                   = "ADDON_BASE_URL"
+	LOGLevel                       = "LOG_LEVEL"
+	KeepLogFiles                   = "KEEP_LOG_FILES"
+	AvailNZBURL                    = "AVAILNZB_URL"
+	AvailNZBAPIKey                 = "AVAILNZB_API_KEY"
+	TMDBAPIKey                     = "TMDB_API_KEY"
+	TVDBAPIKey                     = "TVDB_API_KEY"
+	NNTPProxyPort                  = "NNTP_PROXY_PORT"
+	NNTPProxyHost                  = "NNTP_PROXY_HOST"
+	NNTPProxyEnabled               = "NNTP_PROXY_ENABLED"
+	NNTPProxyAuthUser              = "NNTP_PROXY_AUTH_USER"
+	NNTPProxyAuthPass              = "NNTP_PROXY_AUTH_PASS"
+	TZVar                          = "TZ"
+	ProviderPrefix                 = "PROVIDER_"
+	IndexerPrefix                  = "INDEXER_"
+	IndexerQueryHeaderEnv          = "INDEXER_QUERY_HEADER"
+	IndexerGrabHeaderEnv           = "INDEXER_GRAB_HEADER"
+	ProviderHeaderEnv              = "PROVIDER_HEADER"
+	StreamNZBIndexerQueryHeaderEnv = "STREAMNZB_INDEXER_QUERY_HEADER"
+	StreamNZBIndexerGrabHeaderEnv  = "STREAMNZB_INDEXER_GRAB_HEADER"
+	StreamNZBProviderHeaderEnv     = "STREAMNZB_PROVIDER_HEADER"
 )
 
 const (
-	KeyAddonPort      = "addon_port"
-	KeyAddonBaseURL   = "addon_base_url"
-	KeyLogLevel       = "log_level"
-	KeyKeepLogFiles   = "keep_log_files"
-	KeyProxyPort      = "proxy_port"
-	KeyProxyHost      = "proxy_host"
-	KeyProxyEnabled   = "proxy_enabled"
-	KeyProxyAuthUser  = "proxy_auth_user"
-	KeyProxyAuthPass  = "proxy_auth_pass"
-	KeyProviders      = "providers"
-	KeyIndexers       = "indexers"
-	KeyAvailNZBURL    = "availnzb_url"
-	KeyAvailNZBAPIKey = "availnzb_api_key"
-	KeyTMDBAPIKey     = "tmdb_api_key"
-	KeyTVDBAPIKey     = "tvdb_api_key"
-	KeyAdminUsername  = "admin_username"
+	KeyAddonPort          = "addon_port"
+	KeyAddonBaseURL       = "addon_base_url"
+	KeyLogLevel           = "log_level"
+	KeyKeepLogFiles       = "keep_log_files"
+	KeyProxyPort          = "proxy_port"
+	KeyProxyHost          = "proxy_host"
+	KeyProxyEnabled       = "proxy_enabled"
+	KeyProxyAuthUser      = "proxy_auth_user"
+	KeyProxyAuthPass      = "proxy_auth_pass"
+	KeyProviders          = "providers"
+	KeyIndexers           = "indexers"
+	KeyAvailNZBURL        = "availnzb_url"
+	KeyAvailNZBAPIKey     = "availnzb_api_key"
+	KeyTMDBAPIKey         = "tmdb_api_key"
+	KeyTVDBAPIKey         = "tvdb_api_key"
+	KeyIndexerQueryHeader = "indexer_query_header"
+	KeyIndexerGrabHeader  = "indexer_grab_header"
+	KeyProviderHeader     = "provider_header"
+	KeyAdminUsername      = "admin_username"
 )
 
 const AdminUsernameEnv = "ADMIN_USERNAME"
 
 var DefaultIndexerUserAgent = "StreamNZB/dev"
+var runtimeHeadersMu sync.RWMutex
+var runtimeIndexerQueryHeader = ""
+var runtimeIndexerGrabHeader = ""
+var runtimeProviderHeader = ""
 
 func TZ() string {
 	return os.Getenv(TZVar)
 }
 
 func IndexerQueryHeader() string {
+	if v := os.Getenv(StreamNZBIndexerQueryHeaderEnv); v != "" {
+		return v
+	}
 	if v := os.Getenv(IndexerQueryHeaderEnv); v != "" {
 		return v
+	}
+	runtimeHeadersMu.RLock()
+	defer runtimeHeadersMu.RUnlock()
+	if runtimeIndexerQueryHeader != "" {
+		return runtimeIndexerQueryHeader
 	}
 	return DefaultIndexerUserAgent
 }
 
 func IndexerGrabHeader() string {
+	if v := os.Getenv(StreamNZBIndexerGrabHeaderEnv); v != "" {
+		return v
+	}
 	if v := os.Getenv(IndexerGrabHeaderEnv); v != "" {
 		return v
 	}
+	runtimeHeadersMu.RLock()
+	defer runtimeHeadersMu.RUnlock()
+	if runtimeIndexerGrabHeader != "" {
+		return runtimeIndexerGrabHeader
+	}
 	return DefaultIndexerUserAgent
+}
+
+func ProviderHeader() string {
+	if v := os.Getenv(StreamNZBProviderHeaderEnv); v != "" {
+		return v
+	}
+	if v := os.Getenv(ProviderHeaderEnv); v != "" {
+		return v
+	}
+	runtimeHeadersMu.RLock()
+	defer runtimeHeadersMu.RUnlock()
+	if runtimeProviderHeader != "" {
+		return runtimeProviderHeader
+	}
+	return DefaultIndexerUserAgent
+}
+
+func SetRuntimeHeaders(indexerQueryHeader, indexerGrabHeader, providerHeader string) {
+	runtimeHeadersMu.Lock()
+	defer runtimeHeadersMu.Unlock()
+	runtimeIndexerQueryHeader = strings.TrimSpace(indexerQueryHeader)
+	runtimeIndexerGrabHeader = strings.TrimSpace(indexerGrabHeader)
+	runtimeProviderHeader = strings.TrimSpace(providerHeader)
 }
 
 func LogLevel() string {
@@ -96,22 +147,25 @@ type Indexer struct {
 }
 
 type ConfigOverrides struct {
-	AddonPort         int
-	AddonBaseURL      string
-	LogLevel          string
-	KeepLogFiles      int
-	AvailNZBURL       string
-	AvailNZBAPIKey    string
-	TMDBAPIKey        string
-	TVDBAPIKey        string
-	ProxyPort         int
-	ProxyHost         string
-	ProxyEnabled      bool
-	ProxyAuthUser     string
-	ProxyAuthPass     string
-	AdminUsername string
-	Providers     []Provider
-	Indexers          []Indexer
+	AddonPort          int
+	AddonBaseURL       string
+	LogLevel           string
+	KeepLogFiles       int
+	AvailNZBURL        string
+	AvailNZBAPIKey     string
+	TMDBAPIKey         string
+	TVDBAPIKey         string
+	IndexerQueryHeader string
+	IndexerGrabHeader  string
+	ProviderHeader     string
+	ProxyPort          int
+	ProxyHost          string
+	ProxyEnabled       bool
+	ProxyAuthUser      string
+	ProxyAuthPass      string
+	AdminUsername      string
+	Providers          []Provider
+	Indexers           []Indexer
 }
 
 func ReadConfigOverrides() (ConfigOverrides, []string) {
@@ -138,6 +192,39 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 			keys = append(keys, KeyKeepLogFiles)
 		}
 	}
+	if v := os.Getenv(AvailNZBAPIKey); v != "" {
+		o.AvailNZBAPIKey = v
+		keys = append(keys, KeyAvailNZBAPIKey)
+	}
+	if v := os.Getenv(TMDBAPIKey); v != "" {
+		o.TMDBAPIKey = v
+		keys = append(keys, KeyTMDBAPIKey)
+	}
+	if v := os.Getenv(TVDBAPIKey); v != "" {
+		o.TVDBAPIKey = v
+		keys = append(keys, KeyTVDBAPIKey)
+	}
+	if v := os.Getenv(StreamNZBIndexerQueryHeaderEnv); v != "" {
+		o.IndexerQueryHeader = v
+		keys = append(keys, KeyIndexerQueryHeader)
+	} else if v := os.Getenv(IndexerQueryHeaderEnv); v != "" {
+		o.IndexerQueryHeader = v
+		keys = append(keys, KeyIndexerQueryHeader)
+	}
+	if v := os.Getenv(StreamNZBIndexerGrabHeaderEnv); v != "" {
+		o.IndexerGrabHeader = v
+		keys = append(keys, KeyIndexerGrabHeader)
+	} else if v := os.Getenv(IndexerGrabHeaderEnv); v != "" {
+		o.IndexerGrabHeader = v
+		keys = append(keys, KeyIndexerGrabHeader)
+	}
+	if v := os.Getenv(StreamNZBProviderHeaderEnv); v != "" {
+		o.ProviderHeader = v
+		keys = append(keys, KeyProviderHeader)
+	} else if v := os.Getenv(ProviderHeaderEnv); v != "" {
+		o.ProviderHeader = v
+		keys = append(keys, KeyProviderHeader)
+	}
 
 	if v := os.Getenv(NNTPProxyPort); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
@@ -149,7 +236,7 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		o.ProxyHost = v
 		keys = append(keys, KeyProxyHost)
 	}
-	if v := os.Getenv(NNTPProxyEnabled); v != "" {
+	if v, ok := os.LookupEnv(NNTPProxyEnabled); ok && v != "" {
 		o.ProxyEnabled = getEnvBool(NNTPProxyEnabled, true)
 		keys = append(keys, KeyProxyEnabled)
 	}

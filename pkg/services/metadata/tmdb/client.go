@@ -83,6 +83,11 @@ type MovieTranslationsResponse struct {
 	Translations []MovieTranslationEntry `json:"translations"`
 }
 
+type TVTranslationsResponse struct {
+	ID           int                  `json:"id"`
+	Translations []TVTranslationEntry `json:"translations"`
+}
+
 type MovieTranslationEntry struct {
 	ISO639_1    string               `json:"iso_639_1"`
 	ISO3166_1   string               `json:"iso_3166_1"`
@@ -93,6 +98,19 @@ type MovieTranslationEntry struct {
 
 type MovieTranslationData struct {
 	Title    string `json:"title"`
+	Overview string `json:"overview"`
+}
+
+type TVTranslationEntry struct {
+	ISO639_1    string            `json:"iso_639_1"`
+	ISO3166_1   string            `json:"iso_3166_1"`
+	Name        string            `json:"name"`
+	EnglishName string            `json:"english_name"`
+	Data        TVTranslationData `json:"data"`
+}
+
+type TVTranslationData struct {
+	Name     string `json:"name"`
 	Overview string `json:"overview"`
 }
 
@@ -210,11 +228,13 @@ type MovieDetails struct {
 }
 
 type TVDetails struct {
-	ID              int            `json:"id"`
-	Name            string         `json:"name"`
-	FirstAirDate    string         `json:"first_air_date"`
-	NumberOfSeasons int            `json:"number_of_seasons"`
-	Seasons         []TVSeasonInfo `json:"seasons"`
+	ID               int            `json:"id"`
+	Name             string         `json:"name"`
+	OriginalName     string         `json:"original_name"`
+	OriginalLanguage string         `json:"original_language"`
+	FirstAirDate     string         `json:"first_air_date"`
+	NumberOfSeasons  int            `json:"number_of_seasons"`
+	Seasons          []TVSeasonInfo `json:"seasons"`
 }
 
 type TVSeasonInfo struct {
@@ -344,7 +364,6 @@ func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, 
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("TMDB translations decode: %w", err)
 	}
-	logger.Debug("TMDB movie translations fetched", "movie_id", movieID, "count", len(out.Translations))
 	return &out, nil
 }
 
@@ -537,11 +556,19 @@ func (c *Client) GetMovieTitlesForSearch(imdbID, tmdbID, language string, includ
 }
 
 func (c *Client) GetTVDetails(tmdbID int) (*TVDetails, error) {
+	return c.GetTVDetailsWithLanguage(tmdbID, "")
+}
+
+func (c *Client) GetTVDetailsWithLanguage(tmdbID int, language string) (*TVDetails, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("TMDB API key not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d", tmdbID)
-	resp, err := c.doRequest(endpoint, url.Values{})
+	params := url.Values{}
+	if language != "" {
+		params.Set("language", language)
+	}
+	resp, err := c.doRequest(endpoint, params)
 	if err != nil {
 		return nil, fmt.Errorf("TMDB TV details: %w", err)
 	}
@@ -554,6 +581,110 @@ func (c *Client) GetTVDetails(tmdbID int) (*TVDetails, error) {
 		return nil, fmt.Errorf("TMDB TV decode: %w", err)
 	}
 	return &d, nil
+}
+
+func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TMDB API key not configured")
+	}
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations", tmdbID)
+	resp, err := c.doRequest(endpoint, url.Values{})
+	if err != nil {
+		return nil, fmt.Errorf("TMDB TV translations: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
+	}
+	var out TVTranslationsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("TMDB TV translations decode: %w", err)
+	}
+	return &out, nil
+}
+
+func (c *Client) GetTVShowTitlesForSearch(tmdbID, imdbID, language string, includeYear, normalize bool) (primary, original string, err error) {
+	var showID int
+	var title, year string
+	var originalTitle, originalYear string
+
+	if tmdbID != "" {
+		if id, parseErr := strconv.Atoi(tmdbID); parseErr == nil {
+			showID = id
+			details, detailsErr := c.GetTVDetails(id)
+			if detailsErr != nil {
+				return "", "", detailsErr
+			}
+			title = details.Name
+			originalTitle = details.OriginalName
+			if originalTitle == "" {
+				originalTitle = details.Name
+			}
+			if includeYear && len(details.FirstAirDate) >= 4 {
+				year = details.FirstAirDate[:4]
+				originalYear = year
+			}
+			if language != "" {
+				if localized, localizedErr := c.GetTVDetailsWithLanguage(id, language); localizedErr == nil && strings.TrimSpace(localized.Name) != "" {
+					title = localized.Name
+				}
+			}
+		}
+	}
+
+	if showID == 0 && imdbID != "" {
+		find, findErr := c.Find(imdbID, "imdb_id")
+		if findErr != nil {
+			return "", "", findErr
+		}
+		if len(find.TVResults) == 0 {
+			return "", "", fmt.Errorf("could not resolve TV show name")
+		}
+		r := find.TVResults[0]
+		showID = r.ID
+		title = r.Name
+		originalTitle = r.OriginalName
+		if originalTitle == "" {
+			originalTitle = r.Name
+		}
+		if includeYear && len(r.FirstAirDate) >= 4 {
+			year = r.FirstAirDate[:4]
+			originalYear = year
+		}
+		if language != "" && showID != 0 {
+			if localized, localizedErr := c.GetTVDetailsWithLanguage(showID, language); localizedErr == nil && strings.TrimSpace(localized.Name) != "" {
+				title = localized.Name
+			}
+		}
+	}
+
+	if title == "" {
+		return "", "", fmt.Errorf("could not resolve TV show name")
+	}
+
+	primary = strings.TrimSpace(title)
+	if includeYear && year != "" {
+		primary += " " + year
+	}
+	if normalize {
+		primary = release.NormalizeTitleForFilename(primary)
+	}
+
+	if release.NormalizeTitle(originalTitle) == release.NormalizeTitle(title) {
+		return primary, "", nil
+	}
+
+	original = strings.TrimSpace(originalTitle)
+	if includeYear && originalYear != "" {
+		original += " " + originalYear
+	}
+	if normalize {
+		original = release.NormalizeTitleForFilename(original)
+	}
+	if strings.TrimSpace(original) == "" || original == primary {
+		return primary, "", nil
+	}
+	return primary, original, nil
 }
 
 func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {

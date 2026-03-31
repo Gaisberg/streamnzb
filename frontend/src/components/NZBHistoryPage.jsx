@@ -103,9 +103,9 @@ export function NZBHistoryPage({ refreshTrigger }) {
   return (
     <div className={cn('flex flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6')}>
       <Card className="flex flex-col overflow-hidden flex-1 min-h-0">
-        <CardHeader className="pb-2">
+        <CardHeader>
           <div className="flex items-start justify-between gap-4">
-            <div>
+            <div className="min-w-0 flex-1 max-w-[38rem] space-y-0.5">
               <CardTitle className="flex items-center gap-2">
                 <History className="size-5" />
                 NZB play attempts
@@ -130,7 +130,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="flex-1 p-0 overflow-hidden flex flex-col min-h-0">
+        <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden">
           {loading && (
             <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
               <Loader2 className="size-5 animate-spin" />
@@ -142,89 +142,95 @@ export function NZBHistoryPage({ refreshTrigger }) {
           )}
 			{copyError && !error && (
 			  <div className="px-6 pb-4 text-destructive">{copyError}</div>
-			)}
+          )}
           {!loading && !error && (
-            <ScrollArea className="flex-1 min-h-[360px] px-4 pb-4">
-              <div className="pr-4">
-                {attempts.length === 0 ? (
-                  <div className="text-muted-foreground italic py-8">No NZB attempts recorded yet. Play something from Stremio to see history here.</div>
-                ) : (
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left py-2 font-medium">Time</th>
-                        <th className="text-left py-2 font-medium">Content</th>
-                        <th className="text-left py-2 font-medium">Release</th>
-	                        <th className="text-left py-2 font-medium">Served file</th>
-                        <th className="text-right py-2 font-medium">Size</th>
-                        <th className="text-center py-2 font-medium">Result</th>
-                        <th className="text-left py-2 font-medium">Reason</th>
-						<th className="text-center py-2 font-medium">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {attempts.map((a) => (
-                        <tr key={a.id} className="border-b border-border/60 hover:bg-muted/50">
-                          <td className="py-2 text-muted-foreground whitespace-nowrap">
-                            {new Date(a.tried_at).toLocaleString()}
-                          </td>
-                          <td className="py-2 max-w-[140px] truncate" title={a.content_title || a.content_id}>
-                            {a.content_title || a.content_id || '—'}
-                          </td>
-                          <td className="py-2 max-w-[220px] truncate" title={a.release_title}>
-                            {a.release_title}
-                          </td>
-	                          <td className="py-2 max-w-[220px] truncate text-muted-foreground" title={a.served_file}>
-	                            {a.served_file || '—'}
-	                          </td>
-                          <td className="py-2 text-right text-muted-foreground">
-                            {formatSize(a.release_size)}
-                          </td>
-                          <td className="py-2 text-center">
-                            {a.preload ? (
-                              <Badge variant="secondary" className="font-normal">Preload</Badge>
-                            ) : a.success ? (
-                              <Badge variant="default" className="bg-green-600 hover:bg-green-600">OK</Badge>
-                            ) : (
-                              <Badge variant="destructive">Failed</Badge>
-                            )}
-                          </td>
-                          <td className="py-2 max-w-[200px] truncate text-muted-foreground" title={a.failure_reason}>
-                            {a.failure_reason || '—'}
-                          </td>
-						  <td className="py-2 text-center">
-							<div className="flex items-center justify-center gap-1">
-							  <Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								onClick={() => handleCopyBadMatch(a)}
-								className="h-8 w-8 p-0"
-								aria-label={copiedAttemptId === a.id ? 'Bad match report copied' : 'Copy bad match report'}
-								title={copiedAttemptId === a.id ? 'Bad match report copied' : 'Copy bad match report'}
-							  >
-								{copiedAttemptId === a.id ? <Check className="size-4" /> : <Copy className="size-4" />}
-							  </Button>
-							  {a.release_url ? (
-								<a
-								  href={a.release_url}
-								  target="_blank"
-								  rel="noopener noreferrer"
-								  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-primary"
-								  title="Open release details"
-								>
-								  <ExternalLink className="size-4" />
-								</a>
-							  ) : null}
-							</div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+            attempts.length === 0 ? (
+              <div className="flex flex-1 min-h-[360px]">
+                <div className="flex w-full flex-1 items-center justify-center rounded-lg border border-dashed px-6 py-8 text-center text-sm text-muted-foreground">
+                  No NZB attempts recorded yet. Play something from Stremio to see history here.
+                </div>
               </div>
-            </ScrollArea>
+            ) : (
+              <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-border/60 bg-muted/30">
+                <ScrollArea className="flex-1 min-h-[360px]">
+                  <div className="p-4">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left py-2 font-medium">Time</th>
+                          <th className="text-left py-2 font-medium">Content</th>
+                          <th className="text-left py-2 font-medium">Release</th>
+                          <th className="text-left py-2 font-medium">Served file</th>
+                          <th className="text-right py-2 font-medium">Size</th>
+                          <th className="text-center py-2 font-medium">Result</th>
+                          <th className="text-left py-2 font-medium">Reason</th>
+                          <th className="text-center py-2 font-medium">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {attempts.map((a) => (
+                          <tr key={a.id} className="border-b border-border/60 hover:bg-muted/50">
+                            <td className="py-2 text-muted-foreground whitespace-nowrap">
+                              {new Date(a.tried_at).toLocaleString()}
+                            </td>
+                            <td className="py-2 max-w-[140px] truncate" title={a.content_title || a.content_id}>
+                              {a.content_title || a.content_id || '—'}
+                            </td>
+                            <td className="py-2 max-w-[220px] truncate" title={a.release_title}>
+                              {a.release_title}
+                            </td>
+                            <td className="py-2 max-w-[220px] truncate text-muted-foreground" title={a.served_file}>
+                              {a.served_file || '—'}
+                            </td>
+                            <td className="py-2 text-right text-muted-foreground">
+                              {formatSize(a.release_size)}
+                            </td>
+                            <td className="py-2 text-center">
+                              {a.preload ? (
+                                <Badge variant="secondary" className="font-normal">Preload</Badge>
+                              ) : a.success ? (
+                                <Badge variant="default" className="bg-green-600 hover:bg-green-600">OK</Badge>
+                              ) : (
+                                <Badge variant="destructive">Failed</Badge>
+                              )}
+                            </td>
+                            <td className="py-2 max-w-[200px] truncate text-muted-foreground" title={a.failure_reason}>
+                              {a.failure_reason || '—'}
+                            </td>
+                            <td className="py-2 text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleCopyBadMatch(a)}
+                                  className="h-8 w-8 p-0"
+                                  aria-label={copiedAttemptId === a.id ? 'Bad match report copied' : 'Copy bad match report'}
+                                  title={copiedAttemptId === a.id ? 'Bad match report copied' : 'Copy bad match report'}
+                                >
+                                  {copiedAttemptId === a.id ? <Check className="size-4" /> : <Copy className="size-4" />}
+                                </Button>
+                                {a.release_url ? (
+                                  <a
+                                    href={a.release_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-primary"
+                                    title="Open release details"
+                                  >
+                                    <ExternalLink className="size-4" />
+                                  </a>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </ScrollArea>
+              </div>
+            )
           )}
         </CardContent>
       </Card>

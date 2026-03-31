@@ -10,11 +10,19 @@ import (
 	"streamnzb/pkg/core/config"
 )
 
-const apiDevicesPrefix = "/api/devices"
+const (
+	apiDevicesPrefix = "/api/devices"
+	apiStreamsPrefix = "/api/streams"
+)
+
+func trimStreamAPIPath(path string) string {
+	path = strings.TrimPrefix(path, apiStreamsPrefix)
+	path = strings.TrimPrefix(path, apiDevicesPrefix)
+	return strings.Trim(path, "/")
+}
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, apiDevicesPrefix)
-	path = strings.Trim(path, "/")
+	path := trimStreamAPIPath(r.URL.Path)
 	if path == "configs" {
 		s.handlePutDeviceConfigs(w, r)
 		return
@@ -39,18 +47,28 @@ func (s *Server) handleDevicesList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can access devices list", http.StatusForbidden)
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
+		http.Error(w, "Only admin can access streams list", http.StatusForbidden)
 		return
 	}
-	devices := s.deviceManager.GetAllDevices()
-	list := make([]map[string]interface{}, 0, len(devices))
-	for _, d := range devices {
+	streams := s.streamManager.GetAllStreams()
+	list := make([]map[string]interface{}, 0, len(streams))
+	for _, d := range streams {
 		list = append(list, map[string]interface{}{
-			"username":          d.Username,
-			"token":             d.Token,
-			"indexer_overrides": d.IndexerOverrides,
+			"username":              d.Username,
+			"token":                 d.Token,
+			"filter_sorting_mode":   d.FilterSortingMode,
+			"indexer_mode":          d.IndexerMode,
+			"use_availnzb":          d.UseAvailNZB,
+			"combine_results":       d.CombineResults,
+			"enable_failover":       d.EnableFailover,
+			"results_mode":          d.ResultsMode,
+			"indexer_overrides":     d.IndexerOverrides,
+			"provider_selections":   d.ProviderSelections,
+			"indexer_selections":    d.IndexerSelections,
+			"movie_search_queries":  d.MovieSearchQueries,
+			"series_search_queries": d.SeriesSearchQueries,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -62,9 +80,9 @@ func (s *Server) handleDevicesCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can create devices", http.StatusForbidden)
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
+		http.Error(w, "Only admin can create streams", http.StatusForbidden)
 		return
 	}
 	var req struct {
@@ -74,7 +92,7 @@ func (s *Server) handleDevicesCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	d, err := s.deviceManager.CreateDevice(req.Username, "", s.config.GetAdminUsername())
+	d, err := s.streamManager.CreateStream(req.Username, "", s.config.GetAdminUsername())
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
@@ -89,16 +107,15 @@ func (s *Server) handleDevicesCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeviceByUsername(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, apiDevicesPrefix)
-	path = strings.Trim(path, "/")
+	path := trimStreamAPIPath(r.URL.Path)
 	parts := strings.SplitN(path, "/", 2)
 	username := parts[0]
 	if username == "" {
 		http.Error(w, "username required", http.StatusBadRequest)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -112,7 +129,7 @@ func (s *Server) handleDeviceByUsername(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
-		d, err := s.deviceManager.GetDevice(username, s.config.GetAdminUsername())
+		d, err := s.streamManager.GetStream(username, s.config.GetAdminUsername())
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			w.Header().Set("Content-Type", "application/json")
@@ -121,16 +138,26 @@ func (s *Server) handleDeviceByUsername(w http.ResponseWriter, r *http.Request) 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"username":          d.Username,
-			"token":             d.Token,
-			"indexer_overrides": d.IndexerOverrides,
+			"username":              d.Username,
+			"token":                 d.Token,
+			"filter_sorting_mode":   d.FilterSortingMode,
+			"indexer_mode":          d.IndexerMode,
+			"use_availnzb":          d.UseAvailNZB,
+			"combine_results":       d.CombineResults,
+			"enable_failover":       d.EnableFailover,
+			"results_mode":          d.ResultsMode,
+			"indexer_overrides":     d.IndexerOverrides,
+			"provider_selections":   d.ProviderSelections,
+			"indexer_selections":    d.IndexerSelections,
+			"movie_search_queries":  d.MovieSearchQueries,
+			"series_search_queries": d.SeriesSearchQueries,
 		})
 	case http.MethodDelete:
 		if suffix != "" {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
-		if err := s.deviceManager.DeleteDevice(username); err != nil {
+		if err := s.streamManager.DeleteStream(username); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -139,14 +166,14 @@ func (s *Server) handleDeviceByUsername(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"message": fmt.Sprintf("Device %s deleted successfully", username),
+			"message": fmt.Sprintf("Stream %s deleted successfully", username),
 		})
 	case http.MethodPost:
 		if suffix != "regenerate-token" {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
-		token, err := s.deviceManager.RegenerateToken(username)
+		token, err := s.streamManager.RegenerateToken(username)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "application/json")
@@ -165,25 +192,47 @@ func (s *Server) handlePutDeviceConfigs(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can save device configurations", http.StatusForbidden)
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
+		http.Error(w, "Only admin can save stream configurations", http.StatusForbidden)
 		return
 	}
-	var deviceConfigs map[string]struct {
-		IndexerOverrides map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+	var streamConfigs map[string]struct {
+		FilterSortingMode   string                                `json:"filter_sorting_mode"`
+		IndexerMode         string                                `json:"indexer_mode"`
+		UseAvailNZB         *bool                                 `json:"use_availnzb"`
+		CombineResults      *bool                                 `json:"combine_results"`
+		EnableFailover      *bool                                 `json:"enable_failover"`
+		ResultsMode         string                                `json:"results_mode"`
+		IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+		ProviderSelections  []string                              `json:"provider_selections"`
+		IndexerSelections   []string                              `json:"indexer_selections"`
+		MovieSearchQueries  []string                              `json:"movie_search_queries"`
+		SeriesSearchQueries []string                              `json:"series_search_queries"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&deviceConfigs); err != nil {
-		s.writeSaveStatus(w, "error", "Invalid device config data", nil)
+	if err := json.NewDecoder(r.Body).Decode(&streamConfigs); err != nil {
+		s.writeSaveStatus(w, "error", "Invalid stream config data", nil)
 		return
 	}
 	var errors []string
-	for username, dc := range deviceConfigs {
+	for username, dc := range streamConfigs {
 		if username == s.config.GetAdminUsername() {
 			continue
 		}
-		if err := s.deviceManager.UpdateDeviceIndexerOverrides(username, dc.IndexerOverrides); err != nil {
-			errors = append(errors, fmt.Sprintf("Failed to update indexer overrides for %s: %v", username, err))
+		if err := s.streamManager.UpdateStreamConfig(username, &auth.Device{
+			FilterSortingMode:   dc.FilterSortingMode,
+			IndexerMode:         dc.IndexerMode,
+			UseAvailNZB:         dc.UseAvailNZB,
+			CombineResults:      dc.CombineResults,
+			EnableFailover:      dc.EnableFailover,
+			ResultsMode:         dc.ResultsMode,
+			IndexerOverrides:    dc.IndexerOverrides,
+			ProviderSelections:  dc.ProviderSelections,
+			IndexerSelections:   dc.IndexerSelections,
+			MovieSearchQueries:  dc.MovieSearchQueries,
+			SeriesSearchQueries: dc.SeriesSearchQueries,
+		}); err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 		}
 	}
 	if len(errors) > 0 {
@@ -191,7 +240,7 @@ func (s *Server) handlePutDeviceConfigs(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  "error",
-			"message": "Some device configs failed to save",
+			"message": "Some stream configs failed to save",
 			"errors":  errors,
 		})
 		return
@@ -199,6 +248,6 @@ func (s *Server) handlePutDeviceConfigs(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
-		"message": "Device configurations saved successfully",
+		"message": "Stream configurations saved successfully",
 	})
 }

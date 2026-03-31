@@ -34,14 +34,20 @@ type Usage struct {
 }
 
 type SearchRequest struct {
-	Query   string
-	IMDbID  string
-	TMDBID  string
-	TVDBID  string
-	Cat     string
-	Limit   int
-	Season  string
-	Episode string
+	Query                  string
+	IMDbID                 string
+	TMDBID                 string
+	TVDBID                 string
+	Cat                    string
+	Limit                  int
+	Season                 string
+	Episode                string
+	UseSeasonEpisodeParams bool
+	ForceIDSearch          bool
+	IndexerMode            string
+	FilterQuery            string
+	StreamLabel            string `json:"-"`
+	RequestLabel           string `json:"-"`
 
 	EffectiveByIndexer map[string]*config.IndexerSearchConfig `json:"-"`
 	PerIndexerQuery    map[string][]string                    `json:"-"`

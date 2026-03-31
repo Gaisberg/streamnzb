@@ -1,526 +1,690 @@
-import React, { useState } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
-import { PasswordInput } from "@/components/ui/password-input"
-import { Trash2, Plus, ChevronDown, Search, Tv, Film, Info, Check, X, AlertTriangle } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { apiFetch } from "@/api"
+import { AlertTriangle, Download, Plus, Settings, Trash2 } from "lucide-react"
+
+function normalizeName(value) {
+  return (value || '').trim().toLowerCase()
+}
+
+function normalizeIndexerIdentity(draft) {
+  const next = normalizeIndexerDraft(draft)
+  if (next.type === 'easynews') {
+    return `easynews::${normalizeName(next.username)}`
+  }
+  return `indexer::${normalizeName(next.type)}::${normalizeName(next.url)}::${normalizeName(next.api_path)}::${normalizeName(next.api_key)}`
+}
 
 const INDEXER_PRESETS = [
-    { name: 'NZBHydra2', url: 'http://localhost:5076', api_path: '/api', type: 'aggregator' },
-    { name: 'Prowlarr', url: 'http://localhost:9696', api_path: '{indexer_id}/api', type: 'aggregator' },
-    { name: 'abNZB', url: 'https://abnzb.com', api_path: '/api', type: 'newznab' },
-    { name: 'altHUB', url: 'https://api.althub.co.za', api_path: '/api', type: 'newznab' },
-    { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab' },
-    { name: 'DOGnzb', url: 'https://api.dognzb.cr', api_path: '/api', type: 'newznab' },
-    { name: 'DrunkenSlug', url: 'https://drunkenslug.com', api_path: '/api', type: 'newznab' },
-    { name: 'GingaDADDY', url: 'https://www.gingadaddy.com', api_path: '/api', type: 'newznab' },
-    { name: 'Miatrix', url: 'https://www.miatrix.com', api_path: '/api', type: 'newznab' },
-    { name: 'Newz69', url: 'https://newz69.keagaming.com', api_path: '/api', type: 'newznab' },
-    { name: 'NinjaCentral', url: 'https://ninjacentral.co.za', api_path: '/api', type: 'newznab' },
-    { name: 'Nzb.life', url: 'https://api.nzb.life', api_path: '/api', type: 'newznab' },
-    { name: 'NZBCat', url: 'https://nzb.cat', api_path: '/api', type: 'newznab' },
-    { name: 'NZBFinder', url: 'https://nzbfinder.ws', api_path: '/api', type: 'newznab' },
-    { name: 'NZBgeek', url: 'https://api.nzbgeek.info', api_path: '/api', type: 'newznab' },
-    { name: 'NzbNoob', url: 'https://www.nzbnoob.com', api_path: '/api', type: 'newznab' },
-    { name: 'NZBNDX', url: 'https://www.nzbndx.com', api_path: '/api', type: 'newznab' },
-    { name: 'NzbPlanet', url: 'https://api.nzbplanet.net', api_path: '/api', type: 'newznab' },
-    { name: 'NZBStars', url: 'https://nzbstars.com', api_path: '/api', type: 'newznab' },
-    { name: 'SceneNZBs', url: 'https://scenenzbs.com', api_path: '/api', type: 'newznab' },
-    { name: 'Tabula Rasa', url: 'https://www.tabula-rasa.pw', api_path: '/api/v1', type: 'newznab' },
-    { name: 'Usenet Crawler', url: 'https://www.usenet-crawler.com', api_path: '/api', type: 'newznab' },
-    { name: 'Easynews', url: '', api_path: '/api', type: 'easynews' },
-    //{ name: 'Custom Newznab', url: '', api_path: '/api', type: 'newznab' }
+  { name: 'NZBHydra2', url: 'http://localhost:5076', api_path: '/api', type: 'aggregator', api_hits_day: 0, downloads_day: 0 },
+  { name: 'Prowlarr', url: 'http://localhost:9696', api_path: '{indexer_id}/api', type: 'aggregator', api_hits_day: 0, downloads_day: 0 },
+  { name: 'abNZB', url: 'https://abnzb.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'altHUB', url: 'https://api.althub.co.za', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'DOGnzb', url: 'https://api.dognzb.cr', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'DrunkenSlug', url: 'https://drunkenslug.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'GingaDADDY', url: 'https://www.gingadaddy.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Miatrix', url: 'https://www.miatrix.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Newz69', url: 'https://newz69.keagaming.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NinjaCentral', url: 'https://ninjacentral.co.za', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Nzb.life', url: 'https://api.nzb.life', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NZBCat', url: 'https://nzb.cat', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NZBFinder', url: 'https://nzbfinder.ws', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NZBgeek', url: 'https://api.nzbgeek.info', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NzbNoob', url: 'https://www.nzbnoob.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NZBNDX', url: 'https://www.nzbndx.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NzbPlanet', url: 'https://api.nzbplanet.net', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'NZBStars', url: 'https://nzbstars.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'SceneNZBs', url: 'https://scenenzbs.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Tabula Rasa', url: 'https://www.tabula-rasa.pw', api_path: '/api/v1', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Usenet Crawler', url: 'https://www.usenet-crawler.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'Easynews', url: '', api_path: '/api', type: 'easynews', api_hits_day: 100, downloads_day: 50 },
 ]
 
 const PROWLARR_INDEXER_ID_PLACEHOLDER = '{indexer_id}'
 
-function hasUnresolvedProwlarrIndexerID(value) {
-  return typeof value === 'string' && value.includes(PROWLARR_INDEXER_ID_PLACEHOLDER)
+function normalizeIndexerDraft(draft) {
+  const value = draft || {}
+  return {
+    name: (value.name || '').trim(),
+    url: (value.url || '').trim(),
+    api_path: value.api_path || '/api',
+    api_key: value.api_key || '',
+    type: value.type || 'newznab',
+    api_hits_day: Number(value.api_hits_day || 0),
+    downloads_day: Number(value.downloads_day || 0),
+    timeout_seconds: Number(value.timeout_seconds || 0),
+    enabled: value.enabled !== false,
+    username: value.username || '',
+    password: value.password || '',
+  }
 }
 
-function isAggregatorIndexerType(value) {
-  const type = typeof value === 'string' ? value.toLowerCase() : ''
-  return type === 'aggregator' || type === 'nzbhydra' || type === 'prowlarr'
+function emptyIndexerDraft() {
+  return normalizeIndexerDraft({})
 }
 
 function getDefaultIndexerTimeoutSeconds(type) {
-  return isAggregatorIndexerType(type) ? 10 : 5
+  return type === 'aggregator' ? 10 : 5
 }
 
-function CapsInfo({ caps }) {
-  if (!caps) return null
-  return (
-    <div className="space-y-2 text-xs">
-      <div className="flex items-center gap-3">
-        <span className="flex items-center gap-1">
-          <Search className="h-3 w-3" />
-          Search
-          {caps.searching?.search ? <Check className="h-3 w-3 text-green-500" /> : <X className="h-3 w-3 text-muted-foreground" />}
-        </span>
-        <span className="flex items-center gap-1">
-          <Film className="h-3 w-3" />
-          Movie
-          {caps.searching?.movie_search ? <Check className="h-3 w-3 text-green-500" /> : <X className="h-3 w-3 text-muted-foreground" />}
-        </span>
-        <span className="flex items-center gap-1">
-          <Tv className="h-3 w-3" />
-          TV
-          {caps.searching?.tv_search ? <Check className="h-3 w-3 text-green-500" /> : <X className="h-3 w-3 text-muted-foreground" />}
-        </span>
-      </div>
-      {caps.retention_days > 0 && (
-        <div className="text-muted-foreground">Retention: {caps.retention_days} days</div>
-      )}
-    </div>
-  )
+function getPresetDefaults(preset) {
+  return {
+    timeout_seconds: getDefaultIndexerTimeoutSeconds(preset.type),
+    api_hits_day: Number(preset.api_hits_day || 0),
+    downloads_day: Number(preset.downloads_day || 0),
+  }
 }
 
-function CategoriesHint({ caps, type }) {
-  if (!caps?.categories?.length) return null
-  const prefix = type === 'movie' ? '2' : '5'
-  const relevant = caps.categories.filter(c => c.id.startsWith(prefix))
-  if (relevant.length === 0) return null
+function summarizeIndexer(indexer, caps) {
+  const parts = []
+  parts.push(indexer.type === 'aggregator' ? 'Aggregator' : indexer.type === 'easynews' ? 'Easynews' : 'Newznab')
+  if (indexer.url) parts.push(indexer.url)
+  if (indexer.timeout_seconds > 0) parts.push(`Timeout: ${indexer.timeout_seconds}s`)
+  else parts.push(`Timeout: ${getDefaultIndexerTimeoutSeconds(indexer.type)}s default`)
+  if (indexer.api_hits_day > 0) parts.push(`Hits/day: ${indexer.api_hits_day}`)
+  if (indexer.downloads_day > 0) parts.push(`DLs/day: ${indexer.downloads_day}`)
+  return parts
+}
+
+function mapDevicesByUsername(devices) {
+  return (Array.isArray(devices) ? devices : []).reduce((acc, device) => {
+    if (!device?.username) return acc
+    acc[device.username] = device
+    return acc
+  }, {})
+}
+
+function assignedStreamsForIndexer(devicesByName, indexerName) {
+  const target = normalizeName(indexerName)
+  if (!target || !devicesByName) return []
+  return Object.values(devicesByName)
+    .filter(Boolean)
+    .filter((device) => Array.isArray(device.indexer_selections) && device.indexer_selections.some((name) => normalizeName(name) === target))
+    .map((device) => device.username)
+}
+
+function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus, title, description, saveLabel, existingNames = [], existingIndexers = [], editing = false }) {
+  const [draft, setDraft] = useState(() => normalizeIndexerDraft(initialValue))
+  const [wasOpen, setWasOpen] = useState(open)
+  const [saveError, setSaveError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [saving, setSaving] = useState(false)
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+  const [presetTooltipOpen, setPresetTooltipOpen] = useState(false)
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false)
+  const nameInputRef = useRef(null)
+
+  useEffect(() => {
+    if (open && !wasOpen) {
+      setDraft(normalizeIndexerDraft(initialValue))
+      setSaveError('')
+      setFieldErrors({})
+    }
+    setWasOpen(open)
+  }, [open, wasOpen, initialValue])
+
+  const normalizedInitial = JSON.stringify(normalizeIndexerDraft(initialValue))
+  const normalizedCurrent = JSON.stringify(normalizeIndexerDraft(draft))
+  const isDirty = normalizedInitial !== normalizedCurrent
+  const isEasynews = draft.type === 'easynews'
+  const hasProwlarrPlaceholder = typeof draft.api_path === 'string' && draft.api_path.includes(PROWLARR_INDEXER_ID_PLACEHOLDER)
+  const duplicateName = existingNames.some((name) => normalizeName(name) === normalizeName(draft.name))
+  const duplicateIndexer = existingIndexers.find((indexer) => normalizeIndexerIdentity(indexer) === normalizeIndexerIdentity(draft))
+  const selectedPresetName = INDEXER_PRESETS.find((preset) =>
+    preset.url === draft.url && preset.api_path === draft.api_path && preset.type === draft.type
+  )?.name || ''
+
+  const requestClose = () => {
+    if (saving) return
+    if (isDirty) {
+      setShowDiscardConfirm(true)
+      return
+    }
+    onClearStatus?.()
+    onOpenChange(false)
+  }
+
+  const update = (key, value) => setDraft((current) => ({ ...current, [key]: value }))
+  const fieldClass = (key) => fieldErrors[key] ? "border-destructive focus-visible:ring-destructive" : ""
+
+  const handleSave = async () => {
+    const nextFieldErrors = {}
+    if (!draft.name?.trim()) {
+      nextFieldErrors.name = 'Indexer name is required'
+    }
+    if (!isEasynews && !draft.url?.trim()) {
+      nextFieldErrors.url = 'URL is required'
+    }
+    if (!isEasynews && !draft.api_key?.trim()) {
+      nextFieldErrors.api_key = 'API key is required'
+    }
+    if (isEasynews && !draft.username?.trim()) {
+      nextFieldErrors.username = 'Username is required'
+    }
+    if (isEasynews && !draft.password?.trim()) {
+      nextFieldErrors.password = 'Password is required'
+    }
+    if (duplicateName) {
+      nextFieldErrors.name = 'Indexer name already exists'
+    }
+    if (duplicateIndexer) {
+      if (isEasynews) {
+        nextFieldErrors.username = `An identical Easynews indexer already exists: "${duplicateIndexer.name}".`
+      } else {
+        nextFieldErrors.url = `An identical indexer already exists: "${duplicateIndexer.name}".`
+        nextFieldErrors.api_key = `An identical indexer already exists: "${duplicateIndexer.name}".`
+      }
+    }
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setFieldErrors(nextFieldErrors)
+      setSaveError(
+        nextFieldErrors.name ||
+        nextFieldErrors.url ||
+        nextFieldErrors.api_key ||
+        nextFieldErrors.username ||
+        nextFieldErrors.password ||
+        'Please review the highlighted fields.'
+      )
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    setFieldErrors({})
+    try {
+      await onSave(normalizeIndexerDraft(draft))
+      onOpenChange(false)
+    } catch (error) {
+      const nextErrors = {}
+      Object.entries(error?.fieldErrors || {}).forEach(([path, message]) => {
+        if (path.includes('.name')) nextErrors.name = message
+        else if (path.includes('.url')) nextErrors.url = message
+        else if (path.includes('.api_path')) nextErrors.api_path = message
+        else if (path.includes('.api_key')) nextErrors.api_key = message
+        else if (path.includes('.username')) nextErrors.username = message
+        else if (path.includes('.password')) nextErrors.password = message
+        else if (path.includes('.timeout_seconds')) nextErrors.timeout_seconds = message
+        else if (path.includes('.api_hits_day')) nextErrors.api_hits_day = message
+        else if (path.includes('.downloads_day')) nextErrors.downloads_day = message
+      })
+      setFieldErrors(nextErrors)
+      setSaveError(error?.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help hover:text-foreground shrink-0" />
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs p-3 z-[100]" side="bottom" sideOffset={5}>
-          <div className="text-xs space-y-1">
-            <div className="font-medium mb-1">Available {type === 'movie' ? 'Movie' : 'TV'} Categories</div>
-            {relevant.map(cat => (
-              <div key={cat.id}>
-                <span className="font-mono">{cat.id}</span> - {cat.name}
-                {cat.subcats?.map(sub => (
-                  <div key={sub.id} className="ml-3">
-                    <span className="font-mono">{sub.id}</span> - {sub.name}
-                  </div>
-                ))}
+    <Dialog open={open} onOpenChange={(nextOpen) => {
+      if (nextOpen) {
+        onOpenChange(true)
+        return
+      }
+      requestClose()
+    }}>
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="space-y-4">
+          <div className="rounded-md border border-border/60 p-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+              <div className="min-w-0 xl:flex-1">
+                <Label className="text-sm font-medium">Indexer Name</Label>
               </div>
-            ))}
-          </div>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-}
-
-function SearchSettings({ control, index, watch, indexerCaps }) {
-  const [open, setOpen] = useState(false)
-  const indexerName = watch(`indexers.${index}.name`)
-  const caps = indexerCaps?.[indexerName]
-
-  return (
-    <div className="mt-3">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors w-full"
-      >
-        <ChevronDown className={cn("h-3.5 w-3.5 transition-transform duration-200", open && "rotate-180")} />
-        Search Settings
-        {caps && <Badge variant="outline" className="ml-auto text-[9px] h-4 px-1">CAPS</Badge>}
-      </button>
-      {open && (
-        <div className="mt-2 space-y-3">
-          {caps && <CapsInfo caps={caps} />}
-
-          <div className="grid grid-cols-2 gap-2">
-            <FormField
-              control={control}
-              name={`indexers.${index}.movie_categories`}
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-1">
-                    <FormLabel className="text-[10px]">Movie Categories</FormLabel>
-                    <CategoriesHint caps={caps} type="movie" />
-                  </div>
-                  <FormControl>
-                    <Input placeholder="2000" className="h-8 text-xs" {...field} value={field.value || ''} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={control}
-              name={`indexers.${index}.tv_categories`}
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-1">
-                    <FormLabel className="text-[10px]">TV Categories</FormLabel>
-                    <CategoriesHint caps={caps} type="tv" />
-                  </div>
-                  <FormControl>
-                    <Input placeholder="5000" className="h-8 text-xs" {...field} value={field.value || ''} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
-          <FormField
-            control={control}
-            name={`indexers.${index}.extra_search_terms`}
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-[10px]">Extra Search Terms</FormLabel>
-                <FormControl>
-                  <Input placeholder="(P73|LRO)" className="h-8 text-xs" {...field} value={field.value || ''} />
-                </FormControl>
-                <FormDescription className="text-[10px]">Appended to every search query for this indexer</FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className="grid grid-cols-2 gap-2">
-            <FormField
-              control={control}
-              name={`indexers.${index}.disable_id_search`}
-              render={({ field }) => (
-                <FormItem className="flex flex-row items-center space-x-2 space-y-0">
-                  <FormControl>
-                    <Checkbox
-                      checked={field.value === true}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                  </FormControl>
-                  <FormLabel className="text-[10px]">Disable ID search</FormLabel>
-                  <FormDescription className="text-[10px]">Skip t=movie / t=tvsearch (IMDb/TVDB ID). Use string search only.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={control}
-              name={`indexers.${index}.disable_string_search`}
-              render={({ field }) => (
-                <FormItem className="flex flex-row items-center space-x-2 space-y-0">
-                  <FormControl>
-                    <Checkbox
-                      checked={field.value === true}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                  </FormControl>
-                  <FormLabel className="text-[10px]">Disable string search</FormLabel>
-                  <FormDescription className="text-[10px]">Skip t=search (title query). Use ID search only.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border">
-            <FormField
-              control={control}
-              name={`indexers.${index}.search_result_limit`}
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel className="text-[10px]">Search Result Limit</FormLabel>
-                  <FormControl>
-                    <Input type="number" min={0} max={5000} placeholder="0 = use global" className="h-8 text-xs" {...field} value={field.value === 0 || field.value == null ? '' : field.value} onChange={e => field.onChange(e.target.value === '' ? 0 : Number(e.target.value))} />
-                  </FormControl>
-                  <FormDescription className="text-[10px]">Max results from this indexer. 0 = use global.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-          <FormField
-            control={control}
-            name={`indexers.${index}.search_title_language`}
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel className="text-[10px]">Search title language</FormLabel>
-                <FormControl>
-                  <Input placeholder="Use global or e.g. de-DE" className="h-8 text-xs" {...field} value={field.value || ''} />
-                </FormControl>
-                <FormDescription className="text-[10px]">TMDB language for movie title. Empty = use global.</FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-        </div>
-      )}
-    </div>
-  )
-}
-
-export function IndexerSettings({ control, indexerFields, appendIndexer, removeIndexer, watch, setValue, indexerCaps }) {
-  return (
-    <div className="space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {indexerFields.map((field, index) => {
-                const currentType = watch(`indexers.${index}.type`) || 'newznab';
-                const isEasynews = currentType === 'easynews';
-	                const isAggregator = isAggregatorIndexerType(currentType);
-	                const defaultTimeoutSeconds = getDefaultIndexerTimeoutSeconds(currentType);
-                const currentAPIPath = watch(`indexers.${index}.api_path`) || '';
-                const hasProwlarrPlaceholder = hasUnresolvedProwlarrIndexerID(currentAPIPath);
-
-                return (
-                    <Card key={field.id} className="relative flex flex-col h-full">
-                        <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="absolute right-1 top-1 h-8 w-8 text-destructive hover:text-destructive/90 z-10"
-                            onClick={() => removeIndexer(index)}
+              <div className="flex w-full items-center gap-2 xl:max-w-sm">
+                <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. NzbPlanet" disabled={editing} />
+                {!editing && (
+                  <TooltipProvider delayDuration={100}>
+                    <Tooltip open={presetTooltipOpen && !presetMenuOpen} onOpenChange={setPresetTooltipOpen}>
+                      <DropdownMenu onOpenChange={(nextOpen) => {
+                        setPresetMenuOpen(nextOpen)
+                        if (nextOpen) setPresetTooltipOpen(false)
+                      }}>
+                        <TooltipTrigger asChild>
+                          <DropdownMenuTrigger asChild>
+                            <Button type="button" variant={selectedPresetName ? "secondary" : "outline"} size="icon" className="h-9 w-9 shrink-0" aria-label={selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}>
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                        </TooltipTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="max-h-80 w-56 overflow-y-auto"
+                          onCloseAutoFocus={(event) => {
+                            event.preventDefault()
+                          }}
                         >
-                            <Trash2 className="h-4 w-4" />
-                        </Button>
-                        <CardHeader className="pb-3">
-                            <CardTitle className="text-base truncate pr-8">
-                                {watch(`indexers.${index}.name`) || `Indexer ${index + 1}`}
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-3 flex-grow">
-                            <FormField
-                                control={control}
-                                name={`indexers.${index}.enabled`}
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-row items-center space-x-2 space-y-0">
-                                        <FormControl>
-                                            <Checkbox
-                                                checked={field.value != null ? field.value : true}
-                                                onCheckedChange={field.onChange}
-                                            />
-                                        </FormControl>
-                                        <FormLabel className="text-xs">Enabled</FormLabel>
-                                    </FormItem>
-                                )}
-                            />
-                            <div className="space-y-2">
-                                <Label className="text-sm font-medium">Preset / Type</Label>
-                                <select
-                                    className={cn(
-                                      "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background",
-                                      "placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                                    )}
-                                    onChange={(e) => {
-                                        const preset = INDEXER_PRESETS.find(p => p.name === e.target.value);
-                                        if (preset) {
-                                            setValue(`indexers.${index}.name`, preset.name);
-                                            setValue(`indexers.${index}.url`, preset.url);
-                                            setValue(`indexers.${index}.api_path`, preset.api_path || '/api');
-                                            setValue(`indexers.${index}.type`, preset.type);
-                                        }
-                                    }}
-	                                    value={INDEXER_PRESETS.find(p => p.name === watch(`indexers.${index}.name`))?.name || (isEasynews ? 'Easynews (Experimental)' : isAggregator ? 'Custom aggregator' : 'Custom Newznab')}
-                                >
-                                    {INDEXER_PRESETS.map(preset => (
-                                        <option key={preset.name} value={preset.name}>{preset.name}</option>
-                                    ))}
-                                </select>
-                                {isAggregator && (
-                                    <p className="text-[10px] text-muted-foreground">
-                                        Aggregator (e.g. NZBHydra, Prowlarr). When adding more than one, give each a unique name below so per-indexer overrides and usage track correctly.
-                                    </p>
-                                )}
-                            </div>
-                            <FormField
-                                control={control}
-                                name={`indexers.${index}.name`}
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Name</FormLabel>
-                                        <FormControl>
-                                            <Input placeholder="e.g. Prowlarr - NZBGeek" className="h-8 text-xs" {...field} />
-                                        </FormControl>
-                                        <FormDescription className="text-[10px]">Unique label for this indexer (used for overrides and usage).</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-                            
-                            {!isEasynews && (
-                                <FormField
-                                    control={control}
-                                    name={`indexers.${index}.url`}
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>URL</FormLabel>
-                                            <FormControl>
-                                                <Input placeholder="https://api.nzbgeek.info" className="h-8 text-xs" {...field} />
-                                            </FormControl>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            )}
-                            
-                            {!isEasynews && (
-                                <FormField
-                                    control={control}
-                                    name={`indexers.${index}.api_path`}
-                                    rules={{
-                                        validate: (value) => hasUnresolvedProwlarrIndexerID(value)
-                                            ? 'Replace {indexer_id} with the Prowlarr indexer ID, for example 1/api'
-                                            : true
-                                    }}
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>API Path</FormLabel>
-                                            <FormControl>
-                                                <Input placeholder="/api" className="h-8 text-xs" {...field} />
-                                            </FormControl>
-                                            <FormDescription className="text-[10px]">API endpoint path (default: /api, Tabula Rasa: /api/v1)</FormDescription>
-                                            {hasProwlarrPlaceholder && (
-                                                <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-900 dark:text-amber-200">
-                                                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                                    <p>
-                                                        Prowlarr needs the real indexer ID here. Replace <code>{PROWLARR_INDEXER_ID_PLACEHOLDER}</code> with the numeric ID from Prowlarr, for example <code>1/api</code>.
-                                                    </p>
-                                                </div>
-                                            )}
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            )}
-                            
-                            {!isEasynews ? (
-                                <FormField
-                                    control={control}
-                                    name={`indexers.${index}.api_key`}
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>API Key</FormLabel>
-                                            <FormControl>
-                                                <PasswordInput className="h-8 text-xs" {...field} />
-                                            </FormControl>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            ) : (
-                                <>
-                                    <FormField
-                                        control={control}
-                                        name={`indexers.${index}.username`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel>Username</FormLabel>
-                                                <FormControl>
-                                                    <Input className="h-8 text-xs" {...field} />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                    <FormField
-                                        control={control}
-                                        name={`indexers.${index}.password`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel>Password</FormLabel>
-                                                <FormControl>
-                                                    <PasswordInput className="h-8 text-xs" {...field} />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                </>
-                            )}
-
-	                            {!isEasynews && (
-	                                <FormField
-	                                    control={control}
-	                                    name={`indexers.${index}.timeout_seconds`}
-	                                    render={({ field }) => (
-	                                        <FormItem className="mt-2">
-	                                            <FormLabel>Timeout (seconds)</FormLabel>
-	                                            <FormControl>
-	                                                <Input
-	                                                    type="number"
-	                                                    min={0}
-	                                                    placeholder={String(defaultTimeoutSeconds)}
-	                                                    className="h-8 text-xs"
-	                                                    {...field}
-	                                                    value={field.value === 0 || field.value == null ? '' : field.value}
-	                                                    onChange={e => field.onChange(e.target.value === '' ? 0 : Number(e.target.value))}
-	                                                />
-	                                            </FormControl>
-	                                            <FormDescription className="text-[10px]">
-	                                                0 = use default. This indexer currently defaults to {defaultTimeoutSeconds}s. Internal/newznab indexers use 5s; aggregators like NZBHydra or Prowlarr use 10s.
-	                                            </FormDescription>
-	                                            <FormMessage />
-	                                        </FormItem>
-	                                    )}
-	                                />
-	                            )}
-
-                            {!isEasynews && (
-                                <div className="grid grid-cols-2 gap-2 mt-2">
-                                    <FormField
-                                        control={control}
-                                        name={`indexers.${index}.api_hits_day`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel className="text-[10px]">Hits/Day</FormLabel>
-                                                <FormControl>
-                                                    <Input type="number" placeholder="100" className="h-8 text-xs" {...field} onChange={e => field.onChange(Number(e.target.value))} />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                    <FormField
-                                        control={control}
-                                        name={`indexers.${index}.downloads_day`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel className="text-[10px]">DLs/Day</FormLabel>
-                                                <FormControl>
-                                                    <Input type="number" placeholder="50" className="h-8 text-xs" {...field} onChange={e => field.onChange(Number(e.target.value))} />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                </div>
-                            )}
-
-                            {!isEasynews && <SearchSettings control={control} index={index} watch={watch} indexerCaps={indexerCaps} />}
-                        </CardContent>
-                    </Card>
-                )
-            })}
-
-            {/* Add Indexer Card */}
-            <Button
-                type="button"
-                variant="outline"
-		                onClick={() => appendIndexer({ name: '', url: '', api_path: '/api', api_key: '', type: 'newznab', api_hits_day: 0, downloads_day: 0, timeout_seconds: 0, enabled: true, username: '', password: '', movie_categories: '', tv_categories: '', extra_search_terms: '', search_result_limit: 0, search_title_language: '', disable_id_search: false, disable_string_search: false })}
-                className={cn(
-                  "flex flex-col items-center justify-center p-4 h-auto min-h-[180px] border-2 border-dashed border-muted-foreground/25 hover:border-muted-foreground/50 hover:bg-accent/50 transition-all group"
+                          {INDEXER_PRESETS.map((preset) => (
+                            <DropdownMenuItem
+                              key={preset.name}
+                              onClick={() => {
+                                const presetDefaults = getPresetDefaults(preset)
+                                setPresetTooltipOpen(false)
+                                setSaveError('')
+                                setFieldErrors({})
+                                setDraft((current) => ({
+                                  ...current,
+                                  name: preset.name,
+                                  url: preset.url,
+                                  api_path: preset.api_path,
+                                  type: preset.type,
+                                  timeout_seconds: presetDefaults.timeout_seconds,
+                                  api_hits_day: presetDefaults.api_hits_day,
+                                  downloads_day: presetDefaults.downloads_day,
+                                }))
+                                requestAnimationFrame(() => {
+                                  nameInputRef.current?.focus()
+                                  nameInputRef.current?.select?.()
+                                })
+                              }}
+                            >
+                              {preset.name}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <TooltipContent>{selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
-            >
-                <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 group-hover:bg-primary/20 transition-colors mb-2">
-                    <Plus className="w-6 h-6 text-primary" />
+              </div>
+            </div>
+          </div>
+
+          {!isEasynews && (
+            <div className="rounded-md border border-border/60">
+              <div className="p-3">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label className="text-sm font-medium">URL</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <Input className={`h-9 ${fieldClass('url')}`} value={draft.url} onChange={(event) => update('url', event.target.value)} placeholder="https://api.nzbgeek.info" />
+                  </div>
                 </div>
-                <span className="font-medium text-muted-foreground group-hover:text-foreground transition-colors">Add New Indexer</span>
-                <span className="text-xs text-muted-foreground/80 mt-1">Configure another search source</span>
-            </Button>
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label className="text-sm font-medium">API Path</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <Input className={`h-9 ${fieldClass('api_path')}`} value={draft.api_path} onChange={(event) => update('api_path', event.target.value)} placeholder="/api" />
+                  </div>
+                </div>
+                {hasProwlarrPlaceholder && (
+                  <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>Replace <code>{PROWLARR_INDEXER_ID_PLACEHOLDER}</code> with the real Prowlarr indexer ID, for example <code>1/api</code>.</span>
+                  </div>
+                )}
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label className="text-sm font-medium">API Key</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <Input className={`h-9 ${fieldClass('api_key')}`} type="password" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isEasynews && (
+            <div className="rounded-md border border-border/60">
+              <div className="p-3">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label className="text-sm font-medium">Username</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <Input className={`h-9 ${fieldClass('username')}`} value={draft.username} onChange={(event) => update('username', event.target.value)} />
+                  </div>
+                </div>
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label className="text-sm font-medium">Password</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <Input className={`h-9 ${fieldClass('password')}`} type="password" value={draft.password} onChange={(event) => update('password', event.target.value)} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-md border border-border/60">
+            <div className="p-3">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                <div className="min-w-0 xl:flex-1">
+                  <Label className="text-sm font-medium">Timeout (seconds)</Label>
+                </div>
+                <div className="w-full xl:max-w-[8rem]">
+                  <Input className={`h-9 ${fieldClass('timeout_seconds')}`} type="number" min={0} value={draft.timeout_seconds === 0 ? '' : draft.timeout_seconds} onChange={(event) => update('timeout_seconds', event.target.value === '' ? 0 : Number(event.target.value))} placeholder={String(getDefaultIndexerTimeoutSeconds(draft.type))} />
+                </div>
+              </div>
+            </div>
+            <div className="relative p-3">
+              <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                <div className="min-w-0 xl:flex-1">
+                  <Label className="text-sm font-medium">Hits/Day</Label>
+                </div>
+                <div className="w-full xl:max-w-[8rem]">
+                  <Input className={`h-9 ${fieldClass('api_hits_day')}`} type="number" min={0} value={draft.api_hits_day === 0 ? '' : draft.api_hits_day} onChange={(event) => update('api_hits_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="100" />
+                </div>
+              </div>
+            </div>
+            <div className="relative p-3">
+              <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                <div className="min-w-0 xl:flex-1">
+                  <Label className="text-sm font-medium">DLs/Day</Label>
+                </div>
+                <div className="w-full xl:max-w-[8rem]">
+                  <Input className={`h-9 ${fieldClass('downloads_day')}`} type="number" min={0} value={draft.downloads_day === 0 ? '' : draft.downloads_day} onChange={(event) => update('downloads_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="50" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         </div>
 
-        {indexerFields.length === 0 && (
-            <div className="hidden">
-                {/* This is handled by the skeleton card now */}
+        <DialogFooter className="flex items-center justify-between gap-3">
+          <div className="min-h-9 flex-1">
+            {saveError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {saveError}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
+          <Button type="button" variant="ghost" onClick={requestClose}>Cancel</Button>
+          <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
+            {saveLabel}
+          </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+      <ConfirmDialog
+        open={showDiscardConfirm}
+        onOpenChange={setShowDiscardConfirm}
+        title="Discard changes?"
+        description="Your unsaved indexer changes will be lost."
+        confirmLabel="Discard"
+        onConfirm={() => {
+          setShowDiscardConfirm(false)
+          onClearStatus?.()
+          onOpenChange(false)
+        }}
+      />
+    </Dialog>
+  )
+}
+
+export function IndexerSettings({ fields = [], append, update, remove, replace, indexerCaps = {}, onPersist, onClearStatus, onStatus, stats, devicesByName = {} }) {
+  const indexers = fields
+  const [editingIndex, setEditingIndex] = useState(null)
+  const [showAddDialog, setShowAddDialog] = useState(false)
+  const [knownOnlineIndexers, setKnownOnlineIndexers] = useState({})
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleteBlockedName, setDeleteBlockedName] = useState('')
+  const indexerStatusByName = useMemo(() => {
+    const map = new Map()
+    ;(stats?.indexers || []).forEach((indexer) => {
+      map.set((indexer.name || '').trim(), true)
+    })
+    return map
+  }, [stats])
+
+  useEffect(() => {
+    if (!stats?.indexers?.length) return
+    setKnownOnlineIndexers((current) => {
+      const next = { ...current }
+      stats.indexers.forEach((indexer) => {
+        const name = (indexer.name || '').trim()
+        if (name) next[name] = true
+      })
+      return next
+    })
+  }, [stats])
+
+  useEffect(() => () => {
+    onClearStatus?.()
+  }, [onClearStatus])
+
+  const replaceIndexers = (nextIndexers) => {
+    replace(nextIndexers.map((indexer) => normalizeIndexerDraft(indexer)))
+  }
+
+  const handleCreate = async (draft) => {
+    const nextIndexers = [...indexers.map((indexer) => normalizeIndexerDraft(indexer)), normalizeIndexerDraft(draft)]
+    await onPersist?.(nextIndexers)
+    append(normalizeIndexerDraft(draft))
+    setDeleteBlockedName('')
+    onStatus?.({ type: 'success', message: `Indexer "${draft.name || draft.url}" created successfully` })
+  }
+
+  const handleSave = async (index, draft) => {
+    const nextIndexers = [...indexers]
+    nextIndexers[index] = normalizeIndexerDraft(draft)
+    await onPersist?.(nextIndexers)
+    update(index, normalizeIndexerDraft(draft))
+    setDeleteBlockedName('')
+    onStatus?.({ type: 'success', message: `Indexer "${draft.name || draft.url}" saved successfully` })
+  }
+
+  const handleDelete = async (index) => {
+    const indexer = indexers[index]
+    if (!indexer) return
+    let assignedStreams = []
+    try {
+      const liveDevices = await apiFetch('/api/streams')
+      assignedStreams = assignedStreamsForIndexer(mapDevicesByUsername(liveDevices), indexer.name)
+    } catch {
+      assignedStreams = assignedStreamsForIndexer(devicesByName, indexer.name)
+    }
+    if (assignedStreams.length > 0) {
+      setDeleteBlockedName(indexer.name || indexer.url || '')
+      onStatus?.({
+        type: 'error',
+        message: `Indexer "${indexer.name || indexer.url}" cannot be deleted while assigned to stream(s): ${assignedStreams.join(', ')}`
+      })
+      return
+    }
+    setDeleteBlockedName('')
+    const nextIndexers = indexers.filter((_, currentIndex) => currentIndex !== index).map((item) => normalizeIndexerDraft(item))
+    try {
+      await onPersist?.(nextIndexers)
+      replace(nextIndexers)
+      onStatus?.({ type: 'success', message: `Indexer "${indexer.name || indexer.url}" deleted successfully` })
+    } catch (error) {
+      onStatus?.({
+        type: 'error',
+        message: error?.message || `Failed to delete indexer "${indexer.name || indexer.url}".`,
+      })
+    }
+  }
+
+  const handleToggleEnabled = async (index, enabled) => {
+    const current = indexers[index]
+    if (!current) return
+    const nextIndexers = [...indexers]
+    nextIndexers[index] = {
+      ...normalizeIndexerDraft(current),
+      enabled,
+    }
+    await onPersist?.(nextIndexers)
+    replace(nextIndexers.map((indexer) => normalizeIndexerDraft(indexer)))
+    setDeleteBlockedName('')
+    onStatus?.({ type: 'success', message: `Indexer "${current.name || current.url}" ${enabled ? 'enabled' : 'disabled'} successfully` })
+  }
+
+  return (
+    <TooltipProvider delayDuration={100}>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="space-y-0.5">
+                <CardTitle>Indexers</CardTitle>
+                <CardDescription>Configure your search sources.</CardDescription>
+              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" onClick={() => setShowAddDialog(true)} aria-label="Add indexer">
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Add Indexer</TooltipContent>
+              </Tooltip>
             </div>
-        )}
-    </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {indexers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No indexers configured yet.</p>
+            ) : (
+              indexers.map((indexer, index) => {
+                const normalized = normalizeIndexerDraft(indexer)
+                const summary = summarizeIndexer(normalized, indexerCaps?.[normalized.name])
+                const nameKey = (normalized.name || '').trim()
+                const isOnline = indexerStatusByName.has(nameKey) || (normalized.enabled === false && knownOnlineIndexers[nameKey] === true)
+                return (
+                  <Card
+                    key={`${normalized.name || normalized.url || 'indexer'}-${index}`}
+                    className={deleteBlockedName && deleteBlockedName === (normalized.name || normalized.url || '') ? 'border-destructive/60 ring-1 ring-destructive/30' : ''}
+                  >
+                    <CardContent className="pt-6">
+                      <div className="min-w-0 flex-1 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 font-semibold">{normalized.name || normalized.url || `Indexer ${index + 1}`}</div>
+                            <div className="flex items-center gap-2">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="inline-flex h-9 w-20 items-center justify-center rounded-md border border-border/60 bg-muted/30 px-2">
+                                    <Switch
+                                      checked={normalized.enabled !== false}
+                                      onCheckedChange={(checked) => handleToggleEnabled(index, checked === true)}
+                                      aria-label={normalized.enabled !== false ? `Disable indexer ${normalized.name || normalized.url || index + 1}` : `Enable indexer ${normalized.name || normalized.url || index + 1}`}
+                                      className="h-6 w-12 data-[state=checked]:bg-green-500 data-[state=unchecked]:bg-muted-foreground/30"
+                                      thumbClassName="flex h-5 w-5 items-center justify-center data-[state=checked]:translate-x-6 data-[state=unchecked]:translate-x-0"
+                                    />
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent>{normalized.enabled !== false ? 'Disable indexer' : 'Enable indexer'}</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" aria-label={`Edit indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => {
+                                    setDeleteBlockedName('')
+                                    onClearStatus?.()
+                                    setEditingIndex(index)
+                                  }}>
+                                    <Settings className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Edit indexer</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" aria-label={`Delete indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => setDeleteTarget({ index, name: normalized.name || normalized.url })}>
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Delete indexer</TooltipContent>
+                              </Tooltip>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">
+                              <span className="rounded-full border border-border px-2 py-1">
+                                Status:{' '}
+                                <span className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+                              </span>
+                              {summary.map((part) => (
+                                <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
+                              ))}
+                            </div>
+                          </div>
+                      </div>
+                    </CardContent>
+
+                    <IndexerDialog
+                      open={editingIndex === index}
+                      onOpenChange={(nextOpen) => {
+                        if (!nextOpen) {
+                          setDeleteBlockedName('')
+                        }
+                        setEditingIndex(nextOpen ? index : null)
+                      }}
+                      initialValue={normalized}
+                      existingNames={indexers.filter((_, currentIndex) => currentIndex !== index).map((indexer) => indexer?.name || '')}
+                      existingIndexers={indexers.filter((_, currentIndex) => currentIndex !== index)}
+                      onSave={(draft) => handleSave(index, draft)}
+                      onClearStatus={onClearStatus}
+                      title={normalized.name || normalized.url || 'Edit Indexer'}
+                      description="Edit indexer settings."
+                      saveLabel="Save"
+                      editing
+                    />
+                  </Card>
+                )
+              })
+            )}
+          </CardContent>
+        </Card>
+
+        <IndexerDialog
+          open={showAddDialog}
+          onOpenChange={(nextOpen) => {
+            setShowAddDialog(nextOpen)
+          }}
+          initialValue={emptyIndexerDraft()}
+          existingNames={indexers.map((indexer) => indexer?.name || '')}
+          existingIndexers={indexers}
+          onSave={handleCreate}
+          onClearStatus={onClearStatus}
+          title="Add Indexer"
+          description="Add a new indexer."
+          saveLabel="Save"
+          editing={false}
+        />
+        <ConfirmDialog
+          open={Boolean(deleteTarget)}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setDeleteTarget(null)
+          }}
+          title="Delete indexer?"
+          description={deleteTarget ? `Are you sure you want to delete indexer "${deleteTarget.name}"?` : ''}
+          confirmLabel="Delete"
+          onConfirm={() => {
+            const target = deleteTarget
+            setDeleteTarget(null)
+            if (target) {
+              void handleDelete(target.index)
+            }
+          }}
+        />
+      </div>
+    </TooltipProvider>
   )
 }

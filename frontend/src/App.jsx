@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Settings from './Settings'
 import Login from './components/Login'
 import ChangePassword from './components/ChangePassword'
@@ -9,6 +9,7 @@ import { DashboardPage } from "@/components/DashboardPage"
 import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
+import StreamManagement from './components/DeviceManagement'
 import { AlertCircle, Loader2 } from "lucide-react"
 
 import { getApiUrl, apiFetch } from './api'
@@ -38,11 +39,13 @@ function App() {
   const hasLoggedOutRef = useRef(false)
   const authCheckTimeoutRef = useRef(null)
   const [logs, setLogs] = useState([])
-  const [copied, setCopied] = useState(false)
   const [activePage, setActivePage] = useState('dashboard')
-  const [initialSettingsTab, setInitialSettingsTab] = useState(null)
   const [indexerCaps, setIndexerCaps] = useState({})
   const [nzbAttemptsRefreshTrigger, setNzbAttemptsRefreshTrigger] = useState(0)
+
+  const clearSaveStatus = useCallback(() => {
+    setSaveStatus({ type: '', msg: '', errors: null })
+  }, [])
 
   const chartData = history.map((h, i) => ({
     time: h.time,
@@ -269,16 +272,15 @@ function App() {
     if (type === 'save_config') {
       setSaveStatus({ type: 'normal', msg: 'Validating and saving...', errors: null })
       setIsSaving(true)
-      apiFetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
+      return apiFetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
         .then((data) => {
           setSaveStatus({ type: 'success', msg: data.message || 'Saved.', errors: data.errors || null })
           if (window.profileUsernameCallback) {
             window.profileUsernameCallback(data)
             delete window.profileUsernameCallback
           }
-          return fetch(getApiUrl('/api/config'), { credentials: 'include' })
+          return apiFetch(`/api/config?_=${Date.now()}`)
         })
-        .then((r) => r.ok ? r.json() : null)
         .then((cfg) => { if (cfg) setConfig(cfg) })
         .catch((err) => {
           const msg = err.message || 'Save failed'
@@ -287,14 +289,14 @@ function App() {
             window.profileUsernameCallback({ status: 'error', message: msg })
             delete window.profileUsernameCallback
           }
+          throw err
         })
         .finally(() => setIsSaving(false))
-      return
     }
     if (type === 'save_user_configs') {
       setSaveStatus({ type: 'normal', msg: 'Validating and saving...', errors: null })
       setIsSaving(true)
-      apiFetch('/api/devices/configs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
+      apiFetch('/api/streams/configs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) })
         .then((data) => {
           setSaveStatus({ type: data.status === 'success' ? 'success' : 'error', msg: data.message || '', errors: data.errors || null })
         })
@@ -312,28 +314,28 @@ function App() {
       return
     }
     if (type === 'get_users') {
-      apiFetch('/api/devices')
+      apiFetch('/api/streams')
         .then((list) => { if (window.deviceManagementCallback) window.deviceManagementCallback(list) })
         .catch((err) => { if (window.deviceManagementCallback) window.deviceManagementCallback({ error: err.message }); delete window.deviceManagementCallback })
       return
     }
     if (type === 'create_user') {
       const username = payload?.username || ''
-      apiFetch('/api/devices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) })
+      apiFetch('/api/streams', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) })
         .then((data) => { if (window.deviceActionCallback) window.deviceActionCallback(data && data.user ? {} : { error: (data && data.error) || 'Create failed' }); delete window.deviceActionCallback })
         .catch((err) => { if (window.deviceActionCallback) window.deviceActionCallback({ error: err.message }); delete window.deviceActionCallback })
       return
     }
     if (type === 'delete_user') {
       const username = payload?.username || ''
-      apiFetch(`/api/devices/${encodeURIComponent(username)}`, { method: 'DELETE' })
+      apiFetch(`/api/streams/${encodeURIComponent(username)}`, { method: 'DELETE' })
         .then(() => { if (window.deviceActionCallback) window.deviceActionCallback({}); delete window.deviceActionCallback })
         .catch((err) => { if (window.deviceActionCallback) window.deviceActionCallback({ error: err.message }); delete window.deviceActionCallback })
       return
     }
     if (type === 'regenerate_token') {
       const username = payload?.username || ''
-      apiFetch(`/api/devices/${encodeURIComponent(username)}/regenerate-token`, { method: 'POST' })
+      apiFetch(`/api/streams/${encodeURIComponent(username)}/regenerate-token`, { method: 'POST' })
         .then((data) => { if (window.deviceActionCallback) window.deviceActionCallback({ token: data.token }); delete window.deviceActionCallback })
         .catch((err) => { if (window.deviceActionCallback) window.deviceActionCallback({ error: err.message }); delete window.deviceActionCallback })
       return
@@ -359,40 +361,6 @@ function App() {
       ws.send(JSON.stringify({ type, payload }))
     }
   }
-
-  const getHTTPSLink = () => {
-      if (!config) return '#';
-      let baseUrl = config.addon_base_url || window.location.origin;
-      let url = baseUrl.replace(/\/$/, '');
-      if (currentUser && currentUser !== 'legacy' && authToken) {
-        return `${url}/${authToken}/manifest.json`;
-      }
-      return `${url}/manifest.json`;
-  }
-
-  const copyToClipboard = (text) => {
-      if (navigator.clipboard && window.isSecureContext) {
-          return navigator.clipboard.writeText(text)
-      }
-      // Fallback for non-HTTPS contexts
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      try { document.execCommand('copy') } catch (_) {}
-      document.body.removeChild(textarea)
-      return Promise.resolve()
-  }
-
-  const handleInstallClick = () => {
-      const link = getHTTPSLink();
-      copyToClipboard(link).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-      });
-  };
 
   if (!authChecked) {
     return (
@@ -445,10 +413,6 @@ function App() {
         onLogout={handleLogout}
         theme={theme}
         onThemeChange={setTheme}
-        config={config}
-        onInstallClick={handleInstallClick}
-        copied={copied}
-        manifestUrl={config ? getHTTPSLink() : null}
       />
       <SidebarInset className="min-h-0">
         <SiteHeader activePage={activePage} />
@@ -459,14 +423,20 @@ function App() {
               chartData={chartData}
               sendCommand={sendCommand}
               config={config}
-              onNavigate={(page, tab) => {
-                if (tab) setInitialSettingsTab(tab)
-                setActivePage(page)
-              }}
             />
           )}
           {activePage === 'nzb-history' && (
             <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />
+          )}
+          {activePage === 'install' && (
+            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+              <StreamManagement
+                globalConfig={config}
+                movieSearchQueries={config?.movie_search_queries || []}
+                seriesSearchQueries={config?.series_search_queries || []}
+                initialDevicesByName={config?.devices || {}}
+              />
+            </div>
           )}
           {activePage === 'logs' && (
             <LogsPage logs={logs} />
@@ -488,11 +458,11 @@ function App() {
                 initialConfig={config}
                 sendCommand={sendCommand}
                 saveStatus={saveStatus}
+                clearSaveStatus={clearSaveStatus}
                 isSaving={isSaving}
                 adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
                 indexerCaps={indexerCaps}
-                initialTab={initialSettingsTab}
-                onInitialTabConsumed={() => setInitialSettingsTab(null)}
+                stats={stats}
               />
             </div>
           )}

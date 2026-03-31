@@ -43,7 +43,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	device, err := s.deviceManager.Authenticate(req.Username, req.Password, adminUsername, s.config.AdminPasswordHash, s.config.AdminToken)
+	stream, err := s.streamManager.Authenticate(req.Username, req.Password, adminUsername, s.config.AdminPasswordHash, s.config.AdminToken)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -56,7 +56,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_session",
-		Value:    device.Token,
+		Value:    stream.Token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   false,
@@ -65,15 +65,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var mustChangePassword bool
-	if device.Username == s.config.GetAdminUsername() {
+	if stream.Username == s.config.GetAdminUsername() {
 		mustChangePassword = s.config.AdminMustChangePassword
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(LoginResponse{
 		Success:            true,
-		Token:              device.Token,
-		User:               device.Username,
+		Token:              stream.Token,
+		User:               stream.Username,
 		MustChangePassword: mustChangePassword,
 	})
 }
@@ -92,12 +92,12 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
-	device, ok := auth.DeviceFromContext(r)
+	stream, ok := auth.StreamFromContext(r)
 	if !ok {
 
 		cookie, err := r.Cookie("auth_session")
 		if err == nil && cookie != nil {
-			device, err = s.deviceManager.AuthenticateToken(cookie.Value, s.config.GetAdminUsername(), s.config.AdminToken)
+			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.config.GetAdminUsername(), s.config.AdminToken)
 			if err == nil {
 				ok = true
 			}
@@ -106,12 +106,12 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 
 	if ok {
 		var mustChangePassword bool
-		if device.Username == s.config.GetAdminUsername() {
+		if stream.Username == s.config.GetAdminUsername() {
 			mustChangePassword = s.config.AdminMustChangePassword
 		}
 		out := map[string]interface{}{
 			"authenticated":        true,
-			"username":             device.Username,
+			"username":             stream.Username,
 			"must_change_password": mustChangePassword,
 		}
 		if s.strmServer != nil {
@@ -133,8 +133,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -163,4 +163,3 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		"message": "Password updated successfully",
 	})
 }
-

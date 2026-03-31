@@ -16,8 +16,19 @@ func DeviceFromContext(r *http.Request) (*Device, bool) {
 	return device, ok
 }
 
+// StreamFromContext returns the authenticated stream from the request context.
+func StreamFromContext(r *http.Request) (*Stream, bool) {
+	stream, ok := r.Context().Value(userContextKey).(*Device)
+	return stream, ok
+}
+
 func ContextWithDevice(ctx context.Context, device *Device) context.Context {
 	return context.WithValue(ctx, userContextKey, device)
+}
+
+// ContextWithStream stores the authenticated stream in the context.
+func ContextWithStream(ctx context.Context, stream *Stream) context.Context {
+	return context.WithValue(ctx, userContextKey, stream)
 }
 
 func AuthMiddleware(deviceManager *DeviceManager, getAdminUsername, getAdminToken func() string) func(http.Handler) http.Handler {
@@ -84,4 +95,9 @@ func AuthMiddleware(deviceManager *DeviceManager, getAdminUsername, getAdminToke
 			})
 		})
 	}
+}
+
+// StreamAuthMiddleware authenticates stream requests using the shared stream manager.
+func StreamAuthMiddleware(streamManager *StreamManager, getAdminUsername, getAdminToken func() string) func(http.Handler) http.Handler {
+	return AuthMiddleware(streamManager, getAdminUsername, getAdminToken)
 }

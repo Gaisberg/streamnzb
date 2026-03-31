@@ -21,8 +21,8 @@ func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	device, _ := auth.DeviceFromContext(r)
-	if device == nil || device.Username != s.config.GetAdminUsername() {
+	stream, _ := auth.StreamFromContext(r)
+	if stream == nil || stream.Username != s.config.GetAdminUsername() {
 		http.Error(w, "Only admin can access AvailNZB key status", http.StatusForbidden)
 		return
 	}

@@ -3,8 +3,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { PasswordInput } from "@/components/ui/password-input"
-import { Separator } from "@/components/ui/separator"
-import { AlertCircle, Loader2, User } from "lucide-react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { AlertCircle, Loader2, Save, User } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 function EnvOverrideNote({ show }) {
@@ -132,120 +132,168 @@ export function ProfilePage({
   const usernameDisabled = envOverrides.includes('admin_username')
 
   return (
-    <div className="space-y-8 max-w-2xl">
-      {/* Profile hero: large avatar + title */}
-      <div className="flex flex-col items-center gap-4 text-center">
+    <div className="max-w-5xl space-y-6">
+      <div className="flex items-center gap-4">
         <div
           className={cn(
-            "flex items-center justify-center rounded-full bg-muted border border-border",
-            "w-24 h-24 sm:w-28 sm:h-28"
+            "flex items-center justify-center rounded-full border border-border bg-muted",
+            "h-16 w-16"
           )}
           aria-hidden
         >
-          <User className="h-12 w-12 sm:h-14 sm:w-14 text-muted-foreground" strokeWidth={1.5} />
+          <User className="h-8 w-8 text-muted-foreground" strokeWidth={1.5} />
         </div>
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">Profile</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">Profile</h2>
           <p className="text-sm text-muted-foreground mt-1">
             Change your dashboard login username and password.
           </p>
         </div>
       </div>
 
-      <Separator />
-
-      {/* Username — minimal section */}
-      <section className="space-y-3">
-        <div>
-          <h3 className="text-sm font-medium">Username</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            The username you use to log in. Save to apply.
-          </p>
-        </div>
-        {usernameDisabled ? (
-          <p className="text-sm text-muted-foreground">
-            Username is set by environment variable and cannot be changed here.
-          </p>
-        ) : (
-          <form onSubmit={handleSaveUsername} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1 space-y-2 min-w-0">
-              <Label htmlFor="profile-username" className="sr-only">Username</Label>
-              <Input
-                id="profile-username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
-                disabled={usernameSaving}
-                className="max-w-xs"
-              />
-              <EnvOverrideNote show={envOverrides.includes('admin_username')} />
+      <form onSubmit={handleSaveUsername}>
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+                <CardTitle>Account</CardTitle>
+                <CardDescription>Manage the username you use to sign in to the dashboard.</CardDescription>
+              </div>
+              <Button
+                type="submit"
+                variant="destructive"
+                size="icon"
+                className="h-9 w-9"
+                disabled={usernameSaving || usernameDisabled}
+                aria-label={usernameSaving ? 'Saving username' : 'Save username'}
+              >
+                {usernameSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              </Button>
             </div>
-            <Button type="submit" disabled={usernameSaving}>
-              {usernameSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save username
-            </Button>
-          </form>
-        )}
-        {usernameMessage.text && (
-          <p className={cn("text-sm", usernameMessage.type === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
-            {usernameMessage.text}
-          </p>
-        )}
-      </section>
-
-      <Separator />
-
-      {/* Password — minimal section */}
-      <section className="space-y-4">
-        <div>
-          <h3 className="text-sm font-medium">Password</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Change your password. You will stay logged in after changing it.
-          </p>
-        </div>
-        <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
-          {passwordError && (
-            <div className="flex items-center gap-2 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span>{passwordError}</span>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-md border border-border/60">
+              <div className="p-3">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label htmlFor="profile-username" className="text-sm font-medium">Username</Label>
+                  </div>
+                  <div className="w-full xl:max-w-xs">
+                    <Input
+                      id="profile-username"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="admin"
+                      disabled={usernameSaving || usernameDisabled}
+                      className="h-9 w-full"
+                    />
+                  </div>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  The username you use to log in. Save to apply.
+                </p>
+                <EnvOverrideNote show={envOverrides.includes('admin_username')} />
+              </div>
             </div>
-          )}
-          <div className="space-y-2">
-            <Label htmlFor="profile-current-password">Current password</Label>
-            <PasswordInput
-              id="profile-current-password"
-              placeholder="Enter current password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              disabled={passwordLoading}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="profile-new-password">New password</Label>
-            <PasswordInput
-              id="profile-new-password"
-              placeholder="Min 6 characters"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              disabled={passwordLoading}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="profile-confirm-password">Confirm new password</Label>
-            <PasswordInput
-              id="profile-confirm-password"
-              placeholder="Confirm new password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              disabled={passwordLoading}
-            />
-          </div>
-          <Button type="submit" disabled={passwordLoading}>
-            {passwordLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Change password
-          </Button>
-        </form>
-      </section>
+            {usernameMessage.text && (
+              <div className={cn(
+                "rounded-md border px-3 py-2 text-sm",
+                usernameMessage.type === 'error'
+                  ? 'border-destructive/30 bg-destructive/10 text-destructive'
+                  : 'border-border bg-muted/30 text-muted-foreground'
+              )}>
+                {usernameMessage.text}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </form>
+
+      <form onSubmit={handleChangePassword}>
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+                <CardTitle>Password</CardTitle>
+                <CardDescription>Change your password. You will stay logged in after changing it.</CardDescription>
+              </div>
+              <Button
+                type="submit"
+                variant="destructive"
+                size="icon"
+                className="h-9 w-9"
+                disabled={passwordLoading}
+                aria-label={passwordLoading ? 'Saving password' : 'Save password'}
+              >
+                {passwordLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-md border border-border/60">
+              <div className="p-3">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label htmlFor="profile-current-password" className="text-sm font-medium">Current password</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <PasswordInput
+                      id="profile-current-password"
+                      placeholder="Enter current password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      disabled={passwordLoading}
+                      className="h-9 w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label htmlFor="profile-new-password" className="text-sm font-medium">New password</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <PasswordInput
+                      id="profile-new-password"
+                      placeholder="Min 6 characters"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      disabled={passwordLoading}
+                      className="h-9 w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+                  <div className="min-w-0 xl:flex-1">
+                    <Label htmlFor="profile-confirm-password" className="text-sm font-medium">Confirm new password</Label>
+                  </div>
+                  <div className="w-full xl:max-w-sm">
+                    <PasswordInput
+                      id="profile-confirm-password"
+                      placeholder="Confirm new password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      disabled={passwordLoading}
+                      className="h-9 w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            {passwordError && (
+              <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{passwordError}</span>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </form>
     </div>
   )
 }

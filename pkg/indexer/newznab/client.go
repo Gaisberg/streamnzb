@@ -351,16 +351,37 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	isMovieSearch := strings.HasPrefix(req.Cat, "2")
 	isTVSearch := strings.HasPrefix(req.Cat, "5")
 
+	query := req.Query
+	isTextMode := !req.ForceIDSearch && query != ""
+	extraTerms := c.cfg.ExtraSearchTerms
+	if o := req.OptionalOverrides; o != nil && o.ExtraSearchTerms != nil {
+		extraTerms = *o.ExtraSearchTerms
+	}
+	if extraTerms != "" {
+		if req.ForceIDSearch {
+			if query != "" {
+				query = extraTerms + " " + query
+			} else {
+				query = extraTerms
+			}
+		} else {
+			if query != "" {
+				query = query + " " + extraTerms
+			} else {
+				query = extraTerms
+			}
+		}
+	}
+
 	useTVSearchParams := false
 	if isMovieSearch && (caps == nil || caps.Searching.MovieSearch) {
-
-		if req.Query == "" && req.IMDbID != "" {
+		if !isTextMode && req.IMDbID != "" {
 			params.Set("t", "movie")
 		} else {
 			params.Set("t", "search")
 		}
 	} else if isTVSearch && (caps == nil || caps.Searching.TVSearch) {
-		if req.Query != "" && req.TVDBID == "" && req.IMDbID == "" {
+		if isTextMode {
 			params.Set("t", "search")
 		} else {
 			params.Set("t", "tvsearch")
@@ -370,28 +391,15 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		params.Set("t", "search")
 	}
 
-	query := req.Query
-	extraTerms := c.cfg.ExtraSearchTerms
-	if o := req.OptionalOverrides; o != nil && o.ExtraSearchTerms != nil {
-		extraTerms = *o.ExtraSearchTerms
-	}
-	if extraTerms != "" {
-		if query != "" {
-			query = query + " " + extraTerms
-		} else {
-			query = extraTerms
-		}
-	}
-	idOnlyMovie := isMovieSearch && req.Query == "" && req.IMDbID != ""
-	if query != "" && !idOnlyMovie {
+	if query != "" {
 		params.Set("q", query)
 	}
 
-	if isMovieSearch && req.IMDbID != "" {
+	if !isTextMode && isMovieSearch && req.IMDbID != "" {
 		imdbID := strings.TrimPrefix(req.IMDbID, "tt")
 		params.Set("imdbid", imdbID)
 	}
-	if req.TVDBID != "" {
+	if !isTextMode && req.TVDBID != "" {
 		params.Set("tvdbid", req.TVDBID)
 	}
 
@@ -422,7 +430,20 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	}
 
 	apiURL := fmt.Sprintf("%s%s?%s", c.baseURL, c.apiPath, params.Encode())
-	logger.Debug("Newznab search request", "indexer", c.Name(), "url", apiURL, "limit", limit)
+	logger.Debug("Search request",
+		"stream", req.StreamLabel,
+		"request", req.RequestLabel,
+		"mode", func() string {
+			if req.ForceIDSearch {
+				return "id"
+			}
+			return "text"
+		}(),
+		"indexer", c.Name(),
+		"type", "newznab",
+		"url", apiURL,
+		"limit", limit,
+	)
 
 	httpReq, err := http.NewRequestWithContext(context.Background(), "GET", apiURL, nil)
 	if err != nil {
@@ -486,7 +507,6 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	if len(result.Channel.Items) > limit {
 		result.Channel.Items = result.Channel.Items[:limit]
 	}
-
 	return &result, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/initialization"
@@ -52,6 +53,17 @@ type App struct {
 	opts       BuildOpts
 }
 
+func resolveDataDir(override, loadedPath string) string {
+	dataDir := override
+	if dataDir == "" {
+		dataDir = filepath.Dir(loadedPath)
+	}
+	if dataDir == "" || dataDir == "." {
+		dataDir, _ = filepath.Abs(".")
+	}
+	return dataDir
+}
+
 func New() *App {
 	return &App{}
 }
@@ -81,6 +93,7 @@ func (a *App) SetAvailNZBAPIKey(apiKey string) {
 }
 
 func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error) {
+	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 	base, err := initialization.BuildComponents(cfg)
 	if err != nil {
 		return nil, err
@@ -95,13 +108,7 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 			logger.Debug("AvailNZB backbones refresh", "source", "app_build", "err", err)
 		}
 	}(availClient)
-	dataDir := opts.DataDir
-	if dataDir == "" {
-		dataDir = filepath.Dir(cfg.LoadedPath)
-	}
-	if dataDir == "" || dataDir == "." {
-		dataDir, _ = filepath.Abs(".")
-	}
+	dataDir := resolveDataDir(opts.DataDir, cfg.LoadedPath)
 	tmdbClient := tmdb.NewClient(opts.TMDBAPIKey)
 	tvdbClient := tvdb.NewClient(opts.TVDBAPIKey, dataDir)
 
@@ -159,6 +166,10 @@ func (a *App) Reload(newCfg *config.Config) (*Components, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.opts.TMDBAPIKey = strings.TrimSpace(newCfg.TMDBAPIKey)
+	a.opts.TVDBAPIKey = strings.TrimSpace(newCfg.TVDBAPIKey)
+	env.SetRuntimeHeaders(newCfg.IndexerQueryHeader, newCfg.IndexerGrabHeader, newCfg.ProviderHeader)
+
 	old := a.components
 	scope := ConfigChanged(old.Config, newCfg)
 
@@ -170,6 +181,9 @@ func (a *App) Reload(newCfg *config.Config) (*Components, bool, error) {
 		comp := *old
 		comp.Config = newCfg
 		comp.Triage = triageSvc
+		comp.TMDBClient = tmdb.NewClient(a.opts.TMDBAPIKey)
+		dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
+		comp.TVDBClient = tvdb.NewClient(a.opts.TVDBAPIKey, dataDir)
 		a.components = &comp
 		return &comp, false, nil
 

@@ -18,6 +18,10 @@ type ProviderHostsSource interface {
 	GetProviderHosts() []string
 }
 
+type sessionProviderHostSource interface {
+	ProviderHosts() []string
+}
+
 type Reporter struct {
 	client               *Client
 	providerSrc          ProviderHostsSource
@@ -98,7 +102,13 @@ func (r *Reporter) report(sess *session.Session, available bool) {
 		if sess.NZB != nil {
 			meta.CompressionType = sess.NZB.CompressionType()
 		}
-		hosts := r.providerSrc.GetProviderHosts()
+		var hosts []string
+		if sessWithHosts, ok := interface{}(sess).(sessionProviderHostSource); ok {
+			hosts = sessWithHosts.ProviderHosts()
+		}
+		if len(hosts) == 0 {
+			hosts = r.providerSrc.GetProviderHosts()
+		}
 		if len(hosts) == 0 {
 			return
 		}

@@ -1,95 +1,125 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
-import { Switch } from "@/components/ui/switch"
-import { PasswordInput } from "@/components/ui/password-input"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Loader2, Info, AlertTriangle, Eye, EyeOff, Copy, Check, Settings as SettingsIcon, Server, Globe, MonitorSmartphone } from "lucide-react"
+import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
-import DeviceManagement from "@/components/DeviceManagement"
+import { SearchQuerySettings } from "@/components/SearchQuerySettings"
+import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
+import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { apiFetch } from './api'
 import { cn } from "@/lib/utils"
 
 const TABS = [
-  { id: 'general', label: 'General', icon: SettingsIcon },
+  { id: 'network', label: 'Network', icon: Network },
   { id: 'indexers', label: 'Indexers', icon: Server },
   { id: 'providers', label: 'Providers', icon: Globe },
-  { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
+  { id: 'search_query', label: 'Search', icon: Search },
+  { id: 'advanced', label: 'Advanced', icon: SlidersHorizontal },
+]
+
+const ACTIVE_TAB_STORAGE_KEY = 'streamnzb.settings.activeTab'
+const NETWORK_TAB_FIELDS = [
+  'addon_port',
+  'addon_base_url',
+  'proxy_enabled',
+  'proxy_port',
+  'proxy_host',
+  'proxy_auth_user',
+  'proxy_auth_pass',
+  'indexer_query_header',
+  'indexer_grab_header',
+  'provider_header',
+]
+const ADVANCED_TAB_FIELDS = [
+  'log_level',
+  'keep_log_files',
+  'memory_limit_mb',
+  'availnzb_api_key',
+  'availnzb_mode',
+  'tmdb_api_key',
+  'tvdb_api_key',
 ]
 
 /** Map a dotted field name (e.g. "indexers.0.url") to a tab id. */
 function fieldToTab(fieldName) {
-  if (fieldName.startsWith('indexers')) return 'indexers'
+  if (fieldName.startsWith('indexers')) {
+    const searchQueryFields = [
+      'movie_categories',
+      'tv_categories',
+      'extra_search_terms',
+      'disable_id_search',
+      'disable_string_search',
+      'search_result_limit',
+      'search_title_language',
+    ]
+    if (searchQueryFields.some((suffix) => fieldName.endsWith(`.${suffix}`))) return 'search_query'
+    return 'indexers'
+  }
   if (fieldName.startsWith('providers')) return 'providers'
-  return 'general'
+  if (fieldName.startsWith('movie_search_queries') || fieldName.startsWith('series_search_queries')) return 'search_query'
+  if (NETWORK_TAB_FIELDS.includes(fieldName)) return 'network'
+  if (ADVANCED_TAB_FIELDS.includes(fieldName)) return 'advanced'
+  return null
 }
 
-function EnvOverrideNote({ show }) {
-  if (!show) return null
-  return (
-    <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-      <AlertTriangle className="h-3.5 w-3 shrink-0" />
-      Overwritten by environment variable on restart.
-    </p>
-  )
+function isConfigTab(tabId) {
+  return tabId === 'network' || tabId === 'advanced'
 }
 
-function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken, indexerCaps, initialTab, onInitialTabConsumed }) {
-  const [activeTab, setActiveTab] = useState(initialTab || 'general')
+function pickConfigSlice(values, keys) {
+  return keys.reduce((acc, key) => {
+    acc[key] = values?.[key]
+    return acc
+  }, {})
+}
 
-  useEffect(() => {
-    if (initialTab) {
-      setActiveTab(initialTab)
-      onInitialTabConsumed?.()
-    }
-  }, [initialTab, onInitialTabConsumed])
+function Settings({ initialConfig, sendCommand, saveStatus, clearSaveStatus, isSaving, adminToken, indexerCaps, stats }) {
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === 'undefined') return 'network'
+    const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'network'
+    return TABS.some((tab) => tab.id === savedTab) ? savedTab : 'network'
+  })
+  const [visibleFooterStatus, setVisibleFooterStatus] = useState(null)
+  const [footerStatusVisible, setFooterStatusVisible] = useState(false)
+  const [lastSettingsSaveCard, setLastSettingsSaveCard] = useState('')
+  const [lastConfigSaveSource, setLastConfigSaveSource] = useState('network')
+  const footerTimeoutRef = useRef(null)
+  const footerHideTimeoutRef = useRef(null)
   const [loading, setLoading] = useState(!initialConfig)
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [initialFormValues, setInitialFormValues] = useState(null)
-  const [availNZBStatus, setAvailNZBStatus] = useState(null)
-  const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
-  const [availNZBStatusError, setAvailNZBStatusError] = useState('')
-  const [showAvailNZBRecoverySecret, setShowAvailNZBRecoverySecret] = useState(false)
-  const [availNZBRecoverySecretCopied, setAvailNZBRecoverySecretCopied] = useState(false)
+  const [configSnapshot, setConfigSnapshot] = useState({})
+  const [liveDevicesByName, setLiveDevicesByName] = useState(initialConfig?.devices || {})
+  const networkSectionRef = useRef(null)
+  const advancedSectionRef = useRef(null)
 
   const form = useForm({
     defaultValues: {
-      addon_port: 7000,
-      addon_base_url: '',
-      log_level: 'INFO',
-      proxy_port: 119,
-      proxy_host: '',
-      proxy_enabled: true,
-      proxy_auth_user: '',
-      proxy_auth_pass: '',
-      movie_categories: '',
-      tv_categories: '',
-      extra_search_terms: '',
-      use_season_episode_params: undefined,
-      memory_limit_mb: 512,
-      keep_log_files: 9,
-      availnzb_mode: '',
       providers: [],
-      indexers: []
+      indexers: [],
+      movie_search_queries: [],
+      series_search_queries: []
     }
   })
 
   const envOverrides = initialConfig?.env_overrides ?? []
-  const { control, handleSubmit, reset, setError, formState, setValue, watch, getValues } = form
-  const { fields, append, remove } = useFieldArray({
+  const { control, handleSubmit, reset, setError, clearErrors, formState, setValue, watch, getValues } = form
+  const { fields, append, remove, replace } = useFieldArray({
     control,
     name: 'providers'
   })
   
-  const { fields: indexerFields, append: appendIndexer, remove: removeIndexer } = useFieldArray({
+  const { fields: indexerFields, append: appendIndexer, remove: removeIndexer, update: updateIndexer, replace: replaceIndexers } = useFieldArray({
     control,
     name: 'indexers'
+  })
+
+  const { fields: movieSearchQueryFields, append: appendMovieSearchQuery, remove: removeMovieSearchQuery, update: updateMovieSearchQuery } = useFieldArray({
+    control,
+    name: 'movie_search_queries'
+  })
+
+  const { fields: seriesSearchQueryFields, append: appendSeriesSearchQuery, remove: removeSeriesSearchQuery, update: updateSeriesSearchQuery } = useFieldArray({
+    control,
+    name: 'series_search_queries'
   })
 
   useEffect(() => {
@@ -100,6 +130,12 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
         addon_port: Number(initialConfig.addon_port),
         proxy_port: Number(initialConfig.proxy_port),
         proxy_enabled: initialConfig.proxy_enabled !== false,
+        availnzb_api_key: initialConfig.availnzb_api_key ?? '',
+        tmdb_api_key: initialConfig.tmdb_api_key ?? '',
+        tvdb_api_key: initialConfig.tvdb_api_key ?? '',
+        indexer_query_header: initialConfig.indexer_query_header ?? '',
+        indexer_grab_header: initialConfig.indexer_grab_header ?? '',
+        provider_header: initialConfig.provider_header ?? '',
         movie_categories: initialConfig.movie_categories ?? '',
         tv_categories: initialConfig.tv_categories ?? '',
         extra_search_terms: initialConfig.extra_search_terms ?? '',
@@ -124,90 +160,195 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
           password: idx.password || '',
           disable_id_search: idx.disable_id_search === true,
           disable_string_search: idx.disable_string_search === true
+        })) || [],
+        movie_search_queries: initialConfig.movie_search_queries?.map((query) => ({
+          ...query,
+          name: query.name || '',
+          search_mode: query.search_mode || 'id',
+          movie_categories: query.movie_categories || '',
+          extra_search_terms: query.extra_search_terms || '',
+          search_result_limit: Number(query.search_result_limit || 0),
+          search_title_language: query.search_title_language || '',
+          include_year_in_text_search: query.include_year_in_text_search ?? true,
+        })) || [],
+        series_search_queries: initialConfig.series_search_queries?.map((query) => ({
+          ...query,
+          name: query.name || '',
+          search_mode: query.search_mode || 'id',
+          tv_categories: query.tv_categories || '',
+          extra_search_terms: query.extra_search_terms || '',
+          search_result_limit: Number(query.search_result_limit || 0),
+          search_title_language: query.search_title_language || '',
+          include_year_in_text_search: query.include_year_in_text_search ?? true,
+          use_season_episode_params: query.use_season_episode_params ?? true,
         })) || []
       }
-      reset(formattedData)
-      setInitialFormValues(JSON.stringify(formattedData))
-      setHasUnsavedChanges(false)
+      reset({
+        providers: formattedData.providers,
+        indexers: formattedData.indexers,
+        movie_search_queries: formattedData.movie_search_queries,
+        series_search_queries: formattedData.series_search_queries,
+      })
+      setConfigSnapshot(formattedData)
+      setLiveDevicesByName(initialConfig.devices || {})
       setLoading(false)
     }
   }, [initialConfig, reset])
 
   useEffect(() => {
-    const subscription = watch((value) => {
-      const currentValues = JSON.stringify(value)
-      if (initialFormValues && currentValues !== initialFormValues) {
-        setHasUnsavedChanges(true)
-      } else {
-        setHasUnsavedChanges(false)
-      }
-    })
-    return () => subscription.unsubscribe()
-  }, [watch, initialFormValues])
-
-  useEffect(() => {
-      if (saveStatus.errors) {
-          Object.keys(saveStatus.errors).forEach(key => {
-              setError(key, { type: 'server', message: saveStatus.errors[key] });
-          });
-      }
-  }, [saveStatus.errors, setError]);
-
-  const fetchAvailNZBStatus = async () => {
-    setAvailNZBStatusLoading(true)
-    setAvailNZBStatusError('')
-    setAvailNZBRecoverySecretCopied(false)
-    try {
-      const data = await apiFetch('/api/availnzb/status')
-      setAvailNZBStatus(data || null)
-    } catch (error) {
-      setAvailNZBStatus(null)
-      setAvailNZBStatusError(error.message || 'Failed to load AvailNZB key status.')
-    } finally {
-      setAvailNZBStatusLoading(false)
-    }
-  }
-
-  const handleCopyAvailNZBRecoverySecret = async () => {
-    const recoverySecret = availNZBStatus?.recovery_secret?.trim?.() || ''
-    if (!recoverySecret) return
-    if (!navigator?.clipboard?.writeText) {
-      setAvailNZBStatusError('Clipboard access is unavailable in this browser.')
+    if (saveStatus.type === 'error' && saveStatus.errors) {
+      Object.keys(saveStatus.errors).forEach((key) => {
+        setError(key, { type: 'server', message: saveStatus.errors[key] })
+      })
       return
     }
-    try {
-      await navigator.clipboard.writeText(recoverySecret)
-      setAvailNZBRecoverySecretCopied(true)
-      window.setTimeout(() => setAvailNZBRecoverySecretCopied(false), 1500)
-    } catch (error) {
-      setAvailNZBStatusError(error?.message || 'Failed to copy AvailNZB recovery secret.')
-    }
-  }
+    clearErrors()
+  }, [clearErrors, saveStatus.errors, saveStatus.type, setError])
 
   useEffect(() => {
-    if (activeTab === 'general') {
-      fetchAvailNZBStatus()
-    }
+    if (typeof window === 'undefined') return
+    window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab)
   }, [activeTab])
+
+  const showFooterStatus = (status, onHide) => {
+    if (footerTimeoutRef.current) {
+      window.clearTimeout(footerTimeoutRef.current)
+      footerTimeoutRef.current = null
+    }
+    if (footerHideTimeoutRef.current) {
+      window.clearTimeout(footerHideTimeoutRef.current)
+      footerHideTimeoutRef.current = null
+    }
+
+    if (!status?.message) {
+      setFooterStatusVisible(false)
+      setVisibleFooterStatus(null)
+      return
+    }
+
+    setVisibleFooterStatus(status)
+    requestAnimationFrame(() => setFooterStatusVisible(true))
+    if (status.type === 'error') return
+
+    footerTimeoutRef.current = window.setTimeout(() => {
+      setFooterStatusVisible(false)
+      footerTimeoutRef.current = null
+      footerHideTimeoutRef.current = window.setTimeout(() => {
+        setVisibleFooterStatus(null)
+        footerHideTimeoutRef.current = null
+        onHide?.()
+      }, 180)
+    }, 2600)
+  }
+
+  const clearTransientStatus = useCallback(() => {
+    showFooterStatus(null)
+    clearSaveStatus?.()
+  }, [clearSaveStatus])
+
+  useEffect(() => () => {
+    if (footerTimeoutRef.current) {
+      window.clearTimeout(footerTimeoutRef.current)
+    }
+    if (footerHideTimeoutRef.current) {
+      window.clearTimeout(footerHideTimeoutRef.current)
+    }
+  }, [])
+
+  const handleTabChange = (nextTab) => {
+    if (nextTab === activeTab) return
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+    window.setTimeout(() => {
+      if (activeTab === 'network') {
+        networkSectionRef.current?.requestTabChange?.(nextTab)
+        return
+      }
+      if (activeTab === 'advanced') {
+        advancedSectionRef.current?.requestTabChange?.(nextTab)
+        return
+      }
+      clearTransientStatus()
+      setActiveTab(nextTab)
+    }, 0)
+  }
+
+  const handleNetworkDirtyChange = useCallback(() => {}, [])
+
+  const handleAdvancedDirtyChange = useCallback(() => {}, [])
+
+  const handleNetworkProceedTabChange = useCallback((nextTab) => {
+    clearTransientStatus()
+    setActiveTab(nextTab)
+  }, [clearTransientStatus])
+
+  const handleAdvancedProceedTabChange = useCallback((nextTab) => {
+    clearTransientStatus()
+    setActiveTab(nextTab)
+  }, [clearTransientStatus])
 
   // Compute which tabs have validation errors from server
   const tabsWithErrors = useMemo(() => {
+    if (saveStatus.type !== 'error') return new Set()
     const errs = saveStatus.errors
     if (!errs) return new Set()
     const tabs = new Set()
     Object.keys(errs).forEach((key) => tabs.add(fieldToTab(key)))
     return tabs
-  }, [saveStatus.errors])
+  }, [saveStatus.errors, saveStatus.type])
 
   // When errors arrive, switch to the first failing tab
   useEffect(() => {
+    if (!isConfigTab(lastConfigSaveSource)) return
     if (tabsWithErrors.size > 0 && !tabsWithErrors.has(activeTab)) {
       const firstErrorTab = TABS.find((t) => tabsWithErrors.has(t.id))
       if (firstErrorTab) setActiveTab(firstErrorTab.id)
     }
-  }, [tabsWithErrors])
+  }, [activeTab, lastConfigSaveSource, tabsWithErrors])
 
-  const onSubmit = async (data) => {
+  const errorCount = saveStatus.errors ? Object.keys(saveStatus.errors).length : 0
+  const settingsCardTitles = {
+    network: 'Network',
+    advanced: 'Advanced',
+    addon: 'Addon',
+    proxy: 'NNTP Proxy Server',
+    useragent: 'User-Agent',
+    admin: 'Logs',
+    memory: 'Memory & Cache',
+    availnzb: 'AvailNZB',
+    metadata: 'Metadata APIs',
+  }
+  const networkInitialValues = useMemo(
+    () => pickConfigSlice(configSnapshot, NETWORK_TAB_FIELDS),
+    [configSnapshot]
+  )
+  const advancedInitialValues = useMemo(
+    () => pickConfigSlice(configSnapshot, ADVANCED_TAB_FIELDS),
+    [configSnapshot]
+  )
+  const saveFooterMsg = saveStatus.type === 'error' && errorCount > 0
+    ? `Validation failed — ${errorCount} field${errorCount > 1 ? 's' : ''} need${errorCount === 1 ? 's' : ''} attention`
+    : saveStatus.type === 'success' && lastSettingsSaveCard
+      ? `${settingsCardTitles[lastSettingsSaveCard] || 'Settings'} saved.`
+      : saveStatus.type === 'normal' && lastConfigSaveSource
+        ? `Saving ${settingsCardTitles[lastConfigSaveSource] || 'Settings'}...`
+        : saveStatus.msg
+
+  useEffect(() => {
+    if (activeTab !== 'advanced' && activeTab !== 'network') return
+    if (lastConfigSaveSource !== activeTab) {
+      setVisibleFooterStatus(null)
+      return
+    }
+    if (!saveFooterMsg) return
+    showFooterStatus({ type: saveStatus.type, message: saveFooterMsg }, () => {
+      clearSaveStatus()
+      setLastSettingsSaveCard('')
+    })
+  }, [activeTab, clearSaveStatus, lastConfigSaveSource, saveFooterMsg, saveStatus.type])
+
+  const onSubmit = useCallback(async (overrides = null, sourceTab = activeTab) => {
     try {
       const trimData = (obj) => {
         if (typeof obj !== 'object' || obj === null) return obj;
@@ -227,79 +368,75 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
         return newObj;
       };
 
-      const trimmedData = trimData(data);
-      if (typeof trimmedData.memory_limit_mb !== 'number') {
-        trimmedData.memory_limit_mb = Number(trimmedData.memory_limit_mb) || 0
+      const baseValues = {
+        ...configSnapshot,
+        providers: getValues('providers'),
+        indexers: getValues('indexers'),
+        movie_search_queries: getValues('movie_search_queries'),
+        series_search_queries: getValues('series_search_queries'),
       }
-      const keepLog = Number(trimmedData.keep_log_files)
-      trimmedData.keep_log_files = Math.min(50, Math.max(1, isNaN(keepLog) ? 9 : keepLog))
+      const nextValues = overrides ? { ...baseValues, ...overrides } : baseValues
+      const trimmedFullData = trimData(nextValues)
 
-      sendCommand('save_config', trimmedData)
-      setHasUnsavedChanges(false)
-      setInitialFormValues(JSON.stringify(trimmedData))
+      if (typeof trimmedFullData.memory_limit_mb !== 'number') {
+        trimmedFullData.memory_limit_mb = Number(trimmedFullData.memory_limit_mb) || 0
+      }
+      const keepLog = Number(trimmedFullData.keep_log_files)
+      trimmedFullData.keep_log_files = Math.min(50, Math.max(1, isNaN(keepLog) ? 9 : keepLog))
+
+      const payload = overrides
+        ? Object.keys(overrides).reduce((acc, key) => {
+            acc[key] = trimmedFullData[key]
+            return acc
+          }, {})
+        : trimmedFullData
+
+      setLastConfigSaveSource(sourceTab)
+      await sendCommand('save_config', payload)
+
+      const nextInitialValues = overrides
+        ? {
+            ...configSnapshot,
+            ...Object.keys(overrides).reduce((acc, key) => {
+              acc[key] = trimmedFullData[key]
+              return acc
+            }, {}),
+          }
+        : trimmedFullData
+
+      setConfigSnapshot(nextInitialValues)
+      return true
     } catch (error) {
       console.error('Error saving configuration:', error)
       setError('root', { message: 'Failed to save configuration: ' + error.message })
+      throw error
     }
-  }
+  }, [activeTab, configSnapshot, getValues, sendCommand, setError])
+
+  const handleNetworkPersist = useCallback((payload, cardId = 'network') => {
+    setLastSettingsSaveCard(cardId)
+    return onSubmit(payload, 'network')
+  }, [onSubmit])
+
+  const handleAdvancedPersist = useCallback((payload, cardId = 'advanced') => {
+    setLastSettingsSaveCard(cardId)
+    return onSubmit(payload, 'advanced')
+  }, [onSubmit])
 
   if (loading) return null
 
-  const availNZBRecoverySecret = availNZBStatus?.recovery_secret || ''
-  const proxyEnabled = watch('proxy_enabled') !== false
-  const availNZBStatusMessage = availNZBStatusError || availNZBStatus?.status_error || ''
-	const availNZBMode = watch('availnzb_mode') || ''
-	const availNZBModeDoesNotImproveScore = availNZBMode === 'status_only' || availNZBMode === 'disabled'
-  const rawAvailNZBTrustScore = Number(availNZBStatus?.status?.trust_score)
-	const maxAvailNZBTrustScore = 60
-  const availNZBTrustScore = Number.isFinite(rawAvailNZBTrustScore)
-	  ? (Math.max(0, Math.min(maxAvailNZBTrustScore, rawAvailNZBTrustScore)) / maxAvailNZBTrustScore) * 100
-    : null
-	const availNZBTrustBlocksStatusResults = availNZBTrustScore !== null && availNZBTrustScore < 100
-	const availNZBBadgeClass = availNZBTrustBlocksStatusResults
-	  ? 'border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-900 dark:text-red-200'
-	  : availNZBModeDoesNotImproveScore
-	    ? 'border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200'
-	    : 'px-2 py-0.5 text-[10px] font-semibold'
-  const availNZBTrustSummary = availNZBStatusLoading
-    ? 'Loading…'
-    : availNZBTrustScore !== null
-      ? `${Math.round(availNZBTrustScore)}% trust`
-      : availNZBStatusMessage
-        ? 'Status unavailable'
-        : 'Trust unavailable'
-  const availNZBTrustBarClass = availNZBTrustScore === null
-    ? 'bg-muted-foreground/20'
-    : availNZBTrustScore < 34
-      ? 'bg-destructive'
-      : availNZBTrustScore < 67
-        ? 'bg-chart-4'
-        : 'bg-primary'
-
-  const errorCount = saveStatus.errors ? Object.keys(saveStatus.errors).length : 0
-  const saveFooterMsg = saveStatus.type === 'error' && errorCount > 0
-    ? `Validation failed — ${errorCount} field${errorCount > 1 ? 's' : ''} need${errorCount === 1 ? 's' : ''} attention`
-    : saveStatus.msg
-
-  const saveFooter = (
-    <div className="sticky bottom-0 z-10 -mx-4 mt-3 pb-4 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-2 border-t bg-background px-4 pt-3 sm:px-0 sm:pt-4">
-      <div className={`flex items-center gap-1.5 text-sm min-w-0 ${saveStatus.type === 'error' ? 'text-destructive' : saveStatus.type === 'success' ? 'text-emerald-500' : 'text-muted-foreground'}`}>
-        {saveStatus.type === 'error' && errorCount > 0 && <AlertTriangle className="h-4 w-4 shrink-0" />}
-        {saveStatus.type === 'success' && <Check className="h-4 w-4 shrink-0" />}
-        {saveFooterMsg}
-      </div>
-      <div className="flex shrink-0 justify-end">
-        <Button type="submit" variant="default" onClick={handleSubmit(onSubmit)} disabled={isSaving || formState.isSubmitting} className="w-full sm:w-auto">
-          {(isSaving || formState.isSubmitting) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Save Changes
-        </Button>
-      </div>
-    </div>
-  )
+  const handleClearCache = async () => {
+    showFooterStatus({ type: 'normal', message: 'Clearing search cache...' })
+    try {
+      const data = await apiFetch('/api/cache/clear', { method: 'POST' })
+      showFooterStatus({ type: 'success', message: data?.message || 'Search cache cleared.' })
+    } catch (error) {
+      showFooterStatus({ type: 'error', message: error?.message || 'Failed to clear search cache.' })
+    }
+  }
   
   return (
-    <Form {...form}>
-      <form onSubmit={handleSubmit(onSubmit)}>
+      <div className="pb-10">
         {/* Tab bar */}
         <div className="flex items-center gap-1 border-b border-border mb-6 -mt-1 overflow-x-auto">
           {TABS.map((tab) => {
@@ -309,7 +446,7 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={cn(
                   'relative flex items-center gap-1.5 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors',
                   'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md',
@@ -329,250 +466,29 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
           })}
         </div>
 
-        {activeTab === 'general' && (
-          <>
-            <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Addon Settings</CardTitle>
-                <CardDescription>Configure how the Stremio addon listens and is accessed.</CardDescription>
-              </CardHeader>
-              <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={control} name="addon_base_url" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Base URL</FormLabel>
-                    <FormControl><Input placeholder="http://localhost:7000" {...field} /></FormControl>
-                    <FormMessage />
-                    <EnvOverrideNote show={envOverrides.includes('addon_base_url')} />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="addon_port" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Port (Requires Restart)</FormLabel>
-                    <FormControl><Input type="number" {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
-                    <FormMessage />
-                    <EnvOverrideNote show={envOverrides.includes('addon_port')} />
-                  </FormItem>
-                )} />
-              </div>
-              </CardContent>
-            </Card>
+        {activeTab === 'network' && (
+        <NetworkSettingsSection
+          ref={networkSectionRef}
+          initialValues={networkInitialValues}
+          envOverrides={envOverrides}
+          isSaving={isSaving}
+          onDirtyChange={handleNetworkDirtyChange}
+          onProceedTabChange={handleNetworkProceedTabChange}
+          onPersist={handleNetworkPersist}
+          />
+        )}
 
-            <Card>
-              <CardHeader>
-                <CardTitle>NNTP Proxy Server</CardTitle>
-                <CardDescription>Allow other apps (SABnzbd, NZBGet) to use StreamNZB as a localized news server.</CardDescription>
-                {(envOverrides.includes('proxy_port') || envOverrides.includes('proxy_host') || envOverrides.includes('proxy_enabled') || envOverrides.includes('proxy_auth_user') || envOverrides.includes('proxy_auth_pass')) && (
-                  <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                    <AlertTriangle className="h-3.5 w-3 shrink-0" />
-                    Some settings overwritten by environment variables (NNTP_PROXY_*) on restart.
-                  </p>
-                )}
-              </CardHeader>
-              <CardContent>
-              <div className="mb-4">
-                <FormField control={control} name="proxy_enabled" render={({ field }) => (
-                  <FormItem className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="space-y-0.5">
-                      <FormLabel className="text-sm font-medium">Enable NNTP Proxy</FormLabel>
-                      <FormDescription>Turn the local NNTP proxy server on or off.</FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch checked={field.value !== false} onCheckedChange={field.onChange} />
-                    </FormControl>
-                  </FormItem>
-                )} />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={control} name="proxy_host" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Bind Host</FormLabel>
-                    <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="proxy_port" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Port</FormLabel>
-                    <FormControl><Input type="number" disabled={!proxyEnabled} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="proxy_auth_user" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Proxy Username</FormLabel>
-                    <FormControl><Input disabled={!proxyEnabled} {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="proxy_auth_pass" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Proxy Password</FormLabel>
-                    <FormControl><PasswordInput disabled={!proxyEnabled} {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Advanced</CardTitle>
-                <CardDescription>Log level, cache, and validation.</CardDescription>
-              </CardHeader>
-              <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField control={control} name="log_level" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Log Level</FormLabel>
-                    <FormControl>
-                      <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" {...field}>
-                        <option value="DEBUG">DEBUG</option>
-                        <option value="INFO">INFO</option>
-                        <option value="WARN">WARN</option>
-                        <option value="ERROR">ERROR</option>
-                      </select>
-                    </FormControl>
-                    <FormMessage />
-                    <EnvOverrideNote show={envOverrides.includes('log_level')} />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="memory_limit_mb" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Memory limit (MB)</FormLabel>
-                    <FormControl>
-                      <Input type="number" min={0} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 0 : Number(v) || 0) }} />
-                    </FormControl>
-                    <FormDescription>Soft limit on total process memory (0 = no limit). Segment cache uses 80% of this. Restart required.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="keep_log_files" render={({ field }) => (
-                  <FormItem className="space-y-2">
-                    <FormLabel className="text-sm font-medium">Keep log files</FormLabel>
-                    <FormControl>
-                      <Input type="number" min={1} max={50} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 9 : Math.min(50, Math.max(1, Number(v) || 9))) }} />
-                    </FormControl>
-                    <FormDescription>Number of log files to keep (current streamnzb.log plus rotated archives). Oldest rotated logs are purged on restart.</FormDescription>
-                    <EnvOverrideNote show={envOverrides.includes('keep_log_files')} />
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="availnzb_mode" render={({ field }) => (
-                  <FormItem className="space-y-2 col-span-full">
-                    <FormLabel className="flex items-start justify-between gap-3 text-sm font-medium">
-                      <span>AvailNZB mode</span>
-                      <span className="flex flex-col items-end gap-1">
-		                        <TooltipProvider delayDuration={150}>
-		                          <span className="flex flex-wrap items-center justify-end gap-2">
-		                            <Tooltip>
-		                              <TooltipTrigger asChild>
-		                                <span className="inline-flex cursor-help">
-		                                  <Badge variant="outline" className={availNZBBadgeClass}>
-		                                    {availNZBTrustBlocksStatusResults || availNZBModeDoesNotImproveScore ? (
-		                                      <AlertTriangle className="mr-1 h-3 w-3" />
-		                                    ) : (
-		                                      <Info className="mr-1 h-3 w-3" />
-		                                    )}
-		                                  </Badge>
-		                                </span>
-		                              </TooltipTrigger>
-		                              <TooltipContent side="bottom" align="end" className="max-w-xs p-3">
-		                                <div className="space-y-1 text-xs font-normal">
-		                                  <div className="font-medium">
-		                                    {availNZBTrustBlocksStatusResults ? 'AvailNZB /status trust requirement' : 'AvailNZB scoring'}
-		                                  </div>
-		                                  {availNZBTrustBlocksStatusResults && (
-		                                    <>
-		                                      <div>AvailNZB /status availability results require 100 trust.</div>
-		                                      <div>Below that, /status will not return available results.</div>
-		                                    </>
-		                                  )}
-		                                  <div>Only "GET status + POST report" increases your AvailNZB score.</div>
-		                                  <div>"GET status only" fetches availability data but does not report your playback results back to the community.</div>
-		                                  <div>"Disabled" skips AvailNZB entirely.</div>
-		                                </div>
-		                              </TooltipContent>
-		                            </Tooltip>
-
-		                            <span className={`flex items-center gap-1 text-xs font-normal ${availNZBStatusError ? 'text-destructive/80' : 'text-muted-foreground'}`}>
-                          {availNZBStatusLoading && <Loader2 className="h-3 w-3 animate-spin" />}
-                          {availNZBTrustSummary}
-                        </span>
-		                          </span>
-		                        </TooltipProvider>
-                        {availNZBTrustScore !== null && !availNZBStatusLoading && !availNZBStatusError && (
-                          <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted/70" aria-hidden="true">
-                            <span
-                              className={`block h-full rounded-full transition-all ${availNZBTrustBarClass}`}
-                              style={{ width: `${availNZBTrustScore}%` }}
-                            />
-                          </span>
-                        )}
-                      </span>
-	                    </FormLabel>
-                    <FormControl>
-                      <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" {...field}>
-                        <option value="">GET status + POST report</option>
-                        <option value="status_only">GET status only</option>
-                        <option value="disabled">Disabled</option>
-                      </select>
-                    </FormControl>
-                    <FormDescription>
-                      Controls how StreamNZB interacts with AvailNZB.
-                    </FormDescription>
-	                    {availNZBStatusMessage && (
-	                      <p className="text-xs text-destructive/80">{availNZBStatusMessage}</p>
-	                    )}
-	                    {availNZBRecoverySecret && (
-	                      <div className="rounded-md border border-border bg-muted/30 p-3 space-y-2">
-	                        <div className="flex items-center justify-between gap-2">
-	                          <span className="text-sm font-medium">Recovery secret</span>
-	                          <span className="text-xs text-muted-foreground">
-	                            {availNZBRecoverySecretCopied ? 'Copied' : 'Reveal to copy'}
-	                          </span>
-	                        </div>
-	                        <div className="flex items-center gap-2">
-	                          <Input
-	                            type={showAvailNZBRecoverySecret ? 'text' : 'password'}
-	                            value={availNZBRecoverySecret}
-	                            readOnly
-	                            className="font-mono"
-	                          />
-	                          <Button
-	                            type="button"
-	                            variant="outline"
-	                            size="icon"
-	                            aria-label={showAvailNZBRecoverySecret ? 'Hide AvailNZB recovery secret' : 'Show AvailNZB recovery secret'}
-	                            onClick={() => setShowAvailNZBRecoverySecret((current) => !current)}
-	                          >
-	                            {showAvailNZBRecoverySecret ? <EyeOff /> : <Eye />}
-	                          </Button>
-	                          <Button
-	                            type="button"
-	                            variant="outline"
-	                            size="icon"
-	                            aria-label="Copy AvailNZB recovery secret"
-	                            onClick={handleCopyAvailNZBRecoverySecret}
-	                          >
-	                            {availNZBRecoverySecretCopied ? <Check /> : <Copy />}
-	                          </Button>
-	                        </div>
-	                        <p className="text-xs text-muted-foreground">
-	                          Save this recovery secret somewhere safe. You can use it to recover the AvailNZB app key later.
-	                        </p>
-	                      </div>
-	                    )}
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              </CardContent>
-            </Card>
-            </div>
-          </>
+        {activeTab === 'advanced' && (
+        <AdvancedSettingsSection
+          ref={advancedSectionRef}
+          initialValues={advancedInitialValues}
+          envOverrides={envOverrides}
+          isSaving={isSaving}
+          onDirtyChange={handleAdvancedDirtyChange}
+          onProceedTabChange={handleAdvancedProceedTabChange}
+          onPersist={handleAdvancedPersist}
+            onClearCache={handleClearCache}
+          />
         )}
 
         {activeTab === 'indexers' && (
@@ -586,13 +502,17 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
               </div>
             )}
             <IndexerSettings
-              control={control}
-              indexerFields={indexerFields}
-              appendIndexer={appendIndexer}
-              removeIndexer={removeIndexer}
-              watch={watch}
-              setValue={setValue}
+              fields={indexerFields}
               indexerCaps={indexerCaps || {}}
+              stats={stats}
+              devicesByName={liveDevicesByName}
+              append={appendIndexer}
+              update={updateIndexer}
+              remove={removeIndexer}
+              replace={replaceIndexers}
+              onClearStatus={clearTransientStatus}
+              onPersist={(nextIndexers) => onSubmit({ indexers: nextIndexers }, 'indexers')}
+              onStatus={(status) => showFooterStatus(status)}
             />
           </div>
         )}
@@ -608,27 +528,58 @@ function Settings({ initialConfig, sendCommand, saveStatus, isSaving, adminToken
               </div>
             )}
             <ProviderSettings
-              control={control}
               fields={fields}
+              stats={stats}
+              devicesByName={liveDevicesByName}
               append={append}
               remove={remove}
-              watch={watch}
+              replace={replace}
+              onClearStatus={clearTransientStatus}
+              onPersist={(nextProviders) => onSubmit({ providers: nextProviders }, 'providers')}
+              onStatus={(status) => showFooterStatus(status)}
             />
           </div>
         )}
 
-        {activeTab === 'devices' && (
+        {activeTab === 'search_query' && (
           <div className="space-y-4">
-            <DeviceManagement
-              sendCommand={sendCommand}
-              globalConfig={initialConfig}
+            <SearchQuerySettings
+              control={control}
+              watch={watch}
+              movieFields={movieSearchQueryFields}
+              seriesFields={seriesSearchQueryFields}
+              appendMovie={appendMovieSearchQuery}
+              appendSeries={appendSeriesSearchQuery}
+              removeMovie={removeMovieSearchQuery}
+              removeSeries={removeSeriesSearchQuery}
+              updateMovie={updateMovieSearchQuery}
+              updateSeries={updateSeriesSearchQuery}
+              devicesByName={liveDevicesByName}
+              onPersist={(overrides) => onSubmit(overrides, 'search_query')}
+              onStatus={(status) => showFooterStatus(status)}
+              onClearStatus={clearTransientStatus}
             />
           </div>
         )}
 
-        {activeTab !== 'devices' && saveFooter}
-      </form>
-    </Form>
+        {visibleFooterStatus?.message && (
+          <div className={cn(
+            "fixed bottom-4 left-4 right-4 z-40 transition-all duration-200 ease-out md:left-[calc(var(--sidebar-width)+1rem)]",
+            footerStatusVisible ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
+          )}>
+            <div className={cn(
+              "mx-auto w-full rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/90",
+              visibleFooterStatus.type === 'error'
+                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                : visibleFooterStatus.type === 'success'
+                  ? "border-green-500/30 bg-green-50 text-green-700"
+                  : "border-border bg-background/95 text-muted-foreground"
+            )}>
+              {visibleFooterStatus.message}
+            </div>
+          </div>
+        )}
+      </div>
   )
 }
 

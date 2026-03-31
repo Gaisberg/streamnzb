@@ -37,7 +37,7 @@ type Server struct {
 	proxyServer    *proxy.Server
 	indexer        indexer.Indexer
 	indexerCaps    map[string]*indexer.Caps
-	deviceManager  *auth.DeviceManager
+	streamManager  *auth.StreamManager
 	app            *app.App
 
 	availNZBURL    string
@@ -54,16 +54,16 @@ type Server struct {
 type Client struct {
 	conn   *websocket.Conn
 	send   chan WSMessage
-	device *auth.Device
+	stream *auth.Stream
 
-	user *auth.Device
+	user *auth.Stream
 }
 
-func NewServer(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, deviceManager *auth.DeviceManager, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
-	return NewServerWithApp(cfg, pools, sessMgr, strmServer, indexer, deviceManager, nil, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey)
+func NewServer(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
+	return NewServerWithApp(cfg, pools, sessMgr, strmServer, indexer, streamManager, nil, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey)
 }
 
-func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, deviceManager *auth.DeviceManager, a *app.App, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
+func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, a *app.App, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
 
 	var list []*nntp.ClientPool
 	for _, p := range pools {
@@ -77,7 +77,7 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 		sessionMgr:     sessMgr,
 		strmServer:     strmServer,
 		indexer:        indexer,
-		deviceManager:  deviceManager,
+		streamManager:  streamManager,
 		app:            a,
 		availNZBURL:    availNZBURL,
 		availNZBAPIKey: availNZBAPIKey,
@@ -162,6 +162,7 @@ func (s *Server) SetAvailNZBAPIKey(apiKey string) {
 func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 	var oldProxy *proxy.Server
 	var oldPools map[string]*nntp.ClientPool
+	var newProxy *proxy.Server
 
 	s.mu.Lock()
 	if fullReload {
@@ -176,22 +177,14 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 		}
 		s.sessionMgr.UpdatePools(s.streamingPools)
 		s.sessionMgr.UpdateUsenetPool(comp.UsenetPool)
-
-		if comp.Config.ProxyEnabled {
-			logger.Info("Restarting NNTP Proxy...", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
-			newProxy, err := proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
-			if err != nil {
-				logger.Error("Failed to create new proxy during reload", "err", err)
-			} else {
-				s.proxyServer = newProxy
-			}
-		} else {
-			logger.Info("NNTP proxy disabled by config; not starting proxy server")
-			s.proxyServer = nil
-		}
 	}
 
 	s.config = comp.Config
+	s.tmdbAPIKey = strings.TrimSpace(comp.Config.TMDBAPIKey)
+	s.tvdbAPIKey = strings.TrimSpace(comp.Config.TVDBAPIKey)
+	if s.streamManager != nil {
+		s.streamManager.SetConfig(comp.Config, nil)
+	}
 	if comp.IndexerCaps != nil {
 		s.indexerCaps = comp.IndexerCaps
 	}
@@ -207,12 +200,28 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 		for _, pool := range oldPools {
 			pool.Shutdown()
 		}
-		if s.proxyServer != nil {
-			go func(p *proxy.Server) {
-				if err := p.Start(); err != nil {
-					logger.Error("Proxy server failed to start", "err", err)
-				}
-			}(s.proxyServer)
+
+		if comp.Config.ProxyEnabled {
+			logger.Info("Restarting NNTP Proxy...", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
+			var err error
+			newProxy, err = proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
+			if err != nil {
+				logger.Error("Failed to create new proxy during reload", "err", err)
+			} else {
+				s.mu.Lock()
+				s.proxyServer = newProxy
+				s.mu.Unlock()
+				go func(p *proxy.Server) {
+					if err := p.Start(); err != nil {
+						logger.Error("Proxy server failed to start", "err", err)
+					}
+				}(newProxy)
+			}
+		} else {
+			logger.Info("NNTP proxy disabled by config; not starting proxy server")
+			s.mu.Lock()
+			s.proxyServer = nil
+			s.mu.Unlock()
 		}
 		s.cleanupIndexerUsageFromConfig(comp.Config)
 		s.cleanupProviderUsageFromConfig(comp.Config)
@@ -230,8 +239,7 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 			AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 			TMDBClient:           comp.TMDBClient,
 			TVDBClient:           comp.TVDBClient,
-			DeviceManager:        s.deviceManager,
-
+			StreamManager:        s.streamManager,
 		})
 	}
 }
@@ -302,11 +310,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/info", s.handleInfo)
 
-	authMiddleware := auth.AuthMiddleware(s.deviceManager, func() string { return s.config.GetAdminUsername() }, func() string { return s.config.AdminToken })
+	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.config.GetAdminUsername() }, func() string { return s.config.AdminToken })
 	mux.Handle("/api/ws", authMiddleware(http.HandlerFunc(s.handleWebSocket)))
 	mux.Handle("/api/config", authMiddleware(http.HandlerFunc(s.handleConfig)))
+	mux.Handle("/api/cache/clear", authMiddleware(http.HandlerFunc(s.handleClearCache)))
 	mux.Handle("/api/devices", authMiddleware(http.HandlerFunc(s.handleDevices)))
 	mux.Handle("/api/devices/", authMiddleware(http.HandlerFunc(s.handleDevices)))
+	mux.Handle("/api/streams", authMiddleware(http.HandlerFunc(s.handleDevices)))
+	mux.Handle("/api/streams/", authMiddleware(http.HandlerFunc(s.handleDevices)))
 	mux.Handle("/api/indexer/caps", authMiddleware(http.HandlerFunc(s.handleGetIndexerCaps)))
 	mux.Handle("/api/indexer/caps/refresh", authMiddleware(http.HandlerFunc(s.handleRefreshIndexerCaps)))
 	mux.Handle("/api/availnzb/status", authMiddleware(http.HandlerFunc(s.handleAvailNZBStatus)))
@@ -315,8 +326,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/auth/change-password", authMiddleware(http.HandlerFunc(s.handleChangePassword)))
 	mux.Handle("/api/tmdb/search", authMiddleware(http.HandlerFunc(s.handleTMDBSearch)))
 	mux.Handle("/api/tmdb/tv/", authMiddleware(http.HandlerFunc(s.handleTMDBTV)))
-	mux.Handle("/api/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
-	mux.Handle("/api/streams/avail", authMiddleware(http.HandlerFunc(s.handleStreamsAvail)))
+	mux.Handle("/api/search/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
+	mux.Handle("/api/search/streams/avail", authMiddleware(http.HandlerFunc(s.handleStreamsAvail)))
 	mux.Handle("/api/search/releases", authMiddleware(http.HandlerFunc(s.handleSearchReleases)))
 
 	mux.Handle("/api/logs/download", authMiddleware(http.HandlerFunc(s.handleDownloadLogs)))

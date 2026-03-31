@@ -64,7 +64,7 @@ type Config struct {
 type Pool struct {
 	providers     []ProviderConfig
 	cache         SegmentCache
-	sf            singleflight.Group
+	sf            *singleflight.Group
 	mu            sync.RWMutex
 	activeFetches atomic.Int64
 }
@@ -124,6 +124,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 	return &Pool{
 		providers: providers,
 		cache:     cache,
+		sf:        &singleflight.Group{},
 	}, nil
 }
 
@@ -131,6 +132,13 @@ func (p *Pool) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []
 	messageID := strings.TrimSpace(segment.ID)
 	if messageID == "" {
 		return SegmentData{}, fmt.Errorf("empty segment message ID")
+	}
+	if p.sf == nil {
+		p.mu.Lock()
+		if p.sf == nil {
+			p.sf = &singleflight.Group{}
+		}
+		p.mu.Unlock()
 	}
 
 	v, err, _ := p.sf.Do(messageID, func() (interface{}, error) {
@@ -582,6 +590,44 @@ func (p *Pool) ProviderHosts() []string {
 		}
 	}
 	return hosts
+}
+
+func (p *Pool) Subset(providerIDs []string) *Pool {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(providerIDs) == 0 {
+		return &Pool{
+			providers: p.providers,
+			cache:     p.cache,
+			sf:        p.sf,
+		}
+	}
+	byID := make(map[string]ProviderConfig, len(p.providers))
+	for i := range p.providers {
+		byID[p.providers[i].ID] = p.providers[i]
+	}
+	subset := make([]ProviderConfig, 0, len(providerIDs))
+	for _, id := range providerIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if cfg, ok := byID[id]; ok {
+			cfg.Priority = len(subset)
+			subset = append(subset, cfg)
+		}
+	}
+	if len(subset) == 0 {
+		return nil
+	}
+	return &Pool{
+		providers: subset,
+		cache:     p.cache,
+		sf:        p.sf,
+	}
 }
 
 func (p *Pool) Host(providerID string) string {

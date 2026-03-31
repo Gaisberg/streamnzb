@@ -124,7 +124,7 @@ func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, ok := auth.DeviceFromContext(r); !ok {
+	if _, ok := auth.StreamFromContext(r); !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -194,12 +194,12 @@ func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func (s *Server) parseStreamRequest(w http.ResponseWriter, r *http.Request) (contentType, id string, device *auth.Device, ok bool) {
+func (s *Server) parseStreamRequest(w http.ResponseWriter, r *http.Request) (contentType, id string, stream *auth.Stream, ok bool) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return "", "", nil, false
 	}
-	device, authOk := auth.DeviceFromContext(r)
+	stream, authOk := auth.StreamFromContext(r)
 	if !authOk {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return "", "", nil, false
@@ -214,15 +214,15 @@ func (s *Server) parseStreamRequest(w http.ResponseWriter, r *http.Request) (con
 		http.Error(w, "type must be movie or series", http.StatusBadRequest)
 		return "", "", nil, false
 	}
-	return contentType, id, device, true
+	return contentType, id, stream, true
 }
 
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
-	contentType, id, device, ok := s.parseStreamRequest(w, r)
+	contentType, id, stream, ok := s.parseStreamRequest(w, r)
 	if !ok {
 		return
 	}
-	streams, err := s.strmServer.GetStreams(r.Context(), contentType, id, device)
+	streams, err := s.strmServer.GetStreams(r.Context(), contentType, id, stream)
 	if err != nil {
 		logger.Error("GetStreams failed", "type", contentType, "id", id, "err", err)
 		http.Error(w, "Stream search failed", http.StatusInternalServerError)
@@ -233,11 +233,11 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStreamsAvail(w http.ResponseWriter, r *http.Request) {
-	contentType, id, device, ok := s.parseStreamRequest(w, r)
+	contentType, id, stream, ok := s.parseStreamRequest(w, r)
 	if !ok {
 		return
 	}
-	streams, err := s.strmServer.GetAvailNZBStreams(r.Context(), contentType, id, device)
+	streams, err := s.strmServer.GetAvailNZBStreams(r.Context(), contentType, id, stream)
 	if err != nil {
 		logger.Error("GetAvailNZBStreams failed", "type", contentType, "id", id, "err", err)
 		http.Error(w, "AvailNZB streams failed", http.StatusInternalServerError)

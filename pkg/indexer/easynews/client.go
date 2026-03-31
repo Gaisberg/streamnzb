@@ -165,7 +165,6 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	}
 
 	query := strings.TrimSpace(req.Query)
-
 	logger.Debug("Easynews search query", "indexer", c.name, "query", query, "cat", req.Cat, "season", req.Season, "episode", req.Episode)
 
 	season := req.Season
@@ -361,9 +360,6 @@ func (c *Client) downloadNZBInternal(payload map[string]interface{}) ([]byte, er
 		return nil, fmt.Errorf("failed to read NZB data: %w", err)
 	}
 
-	// Easynews NZBs use hash-based subjects that lack real filenames/extensions.
-	// The media loader needs a recognisable video extension in the subject to
-	// classify a file as playable.  Inject the actual filename we already know.
 	nzbData = injectEasynewsSubject(nzbData, filename, ext)
 
 	return nzbData, nil
@@ -392,9 +388,9 @@ func (c *Client) checkDownloadLimit() error {
 }
 
 type easynewsSearchResponse struct {
-	Data    []interface{} `json:"data"`
-	Results int           `json:"results"`
-	ThumbURL string       `json:"thumbURL"`
+	Data     []interface{} `json:"data"`
+	Results  int           `json:"results"`
+	ThumbURL string        `json:"thumbURL"`
 }
 
 type easynewsResult struct {
@@ -465,17 +461,16 @@ func (c *Client) filterAndMapResults(data easynewsSearchResponse, query, season,
 				item.Duration = arr[14]
 			}
 		} else if obj, ok := entry.(map[string]interface{}); ok {
+
 			if hash, ok := obj["hash"].(string); ok {
 				item.Hash = hash
 			}
 			if subject, ok := obj["subject"].(string); ok {
 				item.Subject = subject
 			}
-			// API returns "fn" for filename, not "filename"
 			if fn, ok := obj["fn"].(string); ok {
 				item.Filename = fn
 			}
-			// API returns "extension" for file extension, not "ext"
 			if ext, ok := obj["extension"].(string); ok {
 				item.Ext = ext
 			}
@@ -488,11 +483,9 @@ func (c *Client) filterAndMapResults(data easynewsSearchResponse, query, season,
 			if poster, ok := obj["poster"].(string); ok {
 				item.Poster = poster
 			}
-			// "runtime" is duration in seconds (numeric)
 			if rt, ok := obj["runtime"].(float64); ok {
 				item.Duration = rt
 			}
-			// "timestamp" is unix epoch; convert to date string
 			if ts, ok := obj["timestamp"].(float64); ok {
 				item.Posted = time.Unix(int64(ts), 0).Format("2006-01-02 15:04:05")
 			}
@@ -691,17 +684,19 @@ func buildValueToken(item easynewsItem) string {
 	return fmt.Sprintf("%s|%s:%s", item.Hash, fnB64, extB64)
 }
 
-
-// injectEasynewsSubject rewrites file subjects in the NZB so the media loader
-// can detect the correct video extension. Easynews NZBs typically use opaque
-// hash strings as subjects which carry no filename information.
 func injectEasynewsSubject(data []byte, filename, ext string) []byte {
 	if filename == "" && ext == "" {
 		return data
 	}
 	subject := filename
-	if ext != "" && !strings.HasSuffix(strings.ToLower(subject), strings.ToLower(ext)) {
-		subject += ext
+	if ext != "" {
+		normalizedExt := ext
+		if !strings.HasPrefix(normalizedExt, ".") {
+			normalizedExt = "." + normalizedExt
+		}
+		if !strings.HasSuffix(strings.ToLower(subject), strings.ToLower(normalizedExt)) {
+			subject += normalizedExt
+		}
 	}
 	if subject == "" {
 		return data

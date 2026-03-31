@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### ⚠ BREAKING CHANGES
+
+* legacy device entries are no longer migrated into the new stream model
+
+### Notes
+
+* global configuration, providers, and indexers are kept during upgrade
+* legacy `devices` / `users` state is reset intentionally
+* streams must be recreated in the UI after upgrading from older device-based versions
+
 ## [3.7.0](https://github.com/Gaisberg/streamnzb/compare/v3.6.0...v3.7.0) (2026-03-22)
 
 

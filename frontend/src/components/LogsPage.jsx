@@ -42,9 +42,9 @@ export function LogsPage({ logs = [] }) {
   return (
 	  <div className={cn("flex flex-1 min-h-0 flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6")}>
       <Card className="flex flex-col overflow-hidden flex-1 min-h-0">
-        <CardHeader className="pb-2">
+        <CardHeader>
 			  <div className="flex items-start justify-between gap-4">
-				<div>
+				<div className="min-w-0 flex-1 max-w-[34rem] space-y-0.5">
 				  <CardTitle className="flex items-center gap-2">
 					<FileText className="size-5" />
 					Logs
@@ -59,8 +59,9 @@ export function LogsPage({ logs = [] }) {
 				</Button>
 			  </div>
         </CardHeader>
-	        <CardContent className="flex-1 p-0 overflow-hidden flex flex-col min-h-0">
-	          <ScrollArea ref={scrollAreaRef} className="flex-1 min-h-0 px-4 pb-4">
+	        <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden">
+	          <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-border/60 bg-muted/30">
+	            <ScrollArea ref={scrollAreaRef} className="flex-1 min-h-0 px-4 py-4">
             <div className="font-mono text-xs space-y-1 pr-4">
               {logs.length === 0 && (
                 <div className="text-muted-foreground italic py-4">Waiting for logs...</div>
@@ -78,6 +79,7 @@ export function LogsPage({ logs = [] }) {
               ))}
             </div>
           </ScrollArea>
+            </div>
         </CardContent>
       </Card>
     </div>

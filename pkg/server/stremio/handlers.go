@@ -61,13 +61,13 @@ type Server struct {
 	availNZBIndexerHosts      []string
 	tmdbClient                *tmdb.Client
 	tvdbClient                *tvdb.Client
-	deviceManager             *auth.DeviceManager
+	streamManager             *auth.StreamManager
 	playListCache             sync.Map
 	rawSearchCache            sync.Map
 	recordedSuccessSessionIDs sync.Map // session ID -> struct{}; record actual playback success only once per stream
 	recordedPreloadSessionIDs sync.Map // session ID -> struct{}; record preload only once per session lifetime
 	recordedFailureSessionIDs sync.Map // session ID -> struct{}; record failure only once per session lifetime (prevents concurrent goroutines from inserting duplicate rows)
-	nextReleaseIndex          sync.Map // key: deviceToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
+	nextReleaseIndex          sync.Map // key: streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
 	webHandler                http.Handler
 	apiHandler                http.Handler
 	attemptRecorder           *persistence.StateManager
@@ -88,7 +88,7 @@ type ServerOptions struct {
 	AvailNZBIndexerHosts []string
 	TMDBClient           *tmdb.Client
 	TVDBClient           *tvdb.Client
-	DeviceManager        *auth.DeviceManager
+	StreamManager        *auth.StreamManager
 	Version              string
 	AttemptRecorder      *persistence.StateManager
 }
@@ -130,7 +130,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
-		deviceManager:        opts.DeviceManager,
+		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 	}
 
@@ -145,7 +145,7 @@ func (s *Server) CheckPort(port int) error {
 	address := fmt.Sprintf(":%d", port)
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		return fmt.Errorf("addon port %d is already in use", port)
+		return fmt.Errorf("addon port %d listen check failed: %w", port, err)
 	}
 	ln.Close()
 	return nil
@@ -157,6 +157,22 @@ func (s *Server) SetWebHandler(h http.Handler) {
 
 func (s *Server) SetAPIHandler(h http.Handler) {
 	s.apiHandler = h
+}
+
+func (s *Server) ClearSearchCaches() {
+	s.playListCache.Range(func(key, _ interface{}) bool {
+		s.playListCache.Delete(key)
+		return true
+	})
+	s.rawSearchCache.Range(func(key, _ interface{}) bool {
+		s.rawSearchCache.Delete(key)
+		return true
+	})
+	s.nextReleaseIndex.Range(func(key, _ interface{}) bool {
+		s.nextReleaseIndex.Delete(key)
+		return true
+	})
+	logger.Info("Search caches cleared")
 }
 
 // SetOnAttemptRecorded sets a callback invoked after each NZB attempt is recorded (e.g. to broadcast to WS clients).
@@ -177,13 +193,13 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 
 	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
-		deviceManager := s.deviceManager
+		streamManager := s.streamManager
 		webHandler := s.webHandler
 		apiHandler := s.apiHandler
 		s.mu.RUnlock()
 
 		path := r.URL.Path
-		var authenticatedDevice *auth.Device
+		var authenticatedStream *auth.Stream
 
 		if path == "/error/failure.mp4" && webHandler != nil {
 			webHandler.ServeHTTP(w, r)
@@ -198,10 +214,10 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		if len(parts) >= 1 && parts[0] != "" {
 			token := parts[0]
 
-			if deviceManager != nil {
-				device, err := deviceManager.AuthenticateToken(token, s.config.GetAdminUsername(), s.config.AdminToken)
-				if err == nil && device != nil {
-					authenticatedDevice = device
+			if streamManager != nil {
+				stream, err := streamManager.AuthenticateToken(token, s.config.GetAdminUsername(), s.config.AdminToken)
+				if err == nil && stream != nil {
+					authenticatedStream = stream
 
 					if len(parts) > 1 {
 						path = "/" + parts[1]
@@ -210,15 +226,11 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 					}
 					r.URL.Path = path
 
-					r = r.WithContext(auth.ContextWithDevice(r.Context(), device))
+					r = r.WithContext(auth.ContextWithStream(r.Context(), stream))
 
-					// Detect AIOStreams client once per request, centrally, to avoid redundant checks in every handler.
-					if strings.Contains(r.Header.Get("User-Agent"), "AIOStreams") {
-						s.sessionManager.SetAIOStreamsDevice(device.Token)
-					}
 				} else if isStremioRoute {
 
-					logger.Error("Unauthorized request - invalid device token", "path", path, "remote", r.RemoteAddr)
+					logger.Error("Unauthorized request - invalid stream token", "path", path, "remote", r.RemoteAddr)
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 					return
 				}
@@ -226,7 +238,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 			}
 		} else if isStremioRoute {
 
-			logger.Error("Unauthorized request - Stremio route requires device token", "path", path, "remote", r.RemoteAddr)
+			logger.Error("Unauthorized request - Stremio route requires stream token", "path", path, "remote", r.RemoteAddr)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -234,15 +246,15 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		if path == "/manifest.json" {
 			s.handleManifest(w, r)
 		} else if strings.HasPrefix(path, "/stream/") {
-			s.handleStream(w, r, authenticatedDevice)
+			s.handleStream(w, r, authenticatedStream)
 		} else if strings.HasPrefix(path, "/play/") {
-			s.handlePlay(w, r, authenticatedDevice)
+			s.handlePlay(w, r, authenticatedStream)
 		} else if strings.HasPrefix(path, "/next/") {
-			s.handleNextRelease(w, r, authenticatedDevice)
+			s.handleNextRelease(w, r, authenticatedStream)
 		} else if path == FailoverOrderPath {
-			s.handleFailoverOrder(w, r, authenticatedDevice)
+			s.handleFailoverOrder(w, r, authenticatedStream)
 		} else if strings.HasPrefix(path, "/debug/play") {
-			s.handleDebugPlay(w, r, authenticatedDevice)
+			s.handleDebugPlay(w, r, authenticatedStream)
 		} else if path == "/health" {
 			s.handleHealth(w, r)
 		} else if strings.HasPrefix(path, "/api/") {
@@ -274,8 +286,8 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	manifest := s.manifest
 	s.mu.RUnlock()
 
-	device, _ := auth.DeviceFromContext(r)
-	isAdmin := device != nil && device.Username == s.config.GetAdminUsername()
+	stream, _ := auth.StreamFromContext(r)
+	isAdmin := stream != nil && stream.Username == s.config.GetAdminUsername()
 
 	data, err := manifest.ToJSONForDevice(isAdmin)
 	if err != nil {
@@ -286,7 +298,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, device *auth.Device) {
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *auth.Stream) {
 
 	path := strings.TrimPrefix(r.URL.Path, "/stream/")
 	path = strings.TrimSuffix(path, ".json")
@@ -300,30 +312,50 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, device *au
 	contentType := parts[0]
 	id := parts[1]
 
-	logger.Info("Stream request", "type", contentType, "id", id, "device", func() string {
-		if device != nil {
-			return device.Username
+	logger.Info("Client request", "stream", func() string {
+		if stream != nil {
+			return stream.Username
 		}
 		return "legacy"
-	}())
+	}(), "type", contentType, "id", id)
 
 	const streamRequestTimeout = 30 * time.Second
 	ctx, cancel := context.WithTimeout(r.Context(), streamRequestTimeout)
 	defer cancel()
 
 	logger.Trace("stream request start", "type", contentType, "id", id)
-	baseURL := s.baseURLWithToken(device)
-	key := StreamSlotKey{StreamID: defaultStreamID, ContentType: contentType, ID: id}
-	streams, list, err := s.buildStreamsForKey(ctx, key, device, baseURL)
+	baseURL := s.baseURLWithToken(stream)
+	key := StreamSlotKey{StreamID: streamID(stream), ContentType: contentType, ID: id}
+	streams, list, err := s.buildStreamsForKey(ctx, key, stream, baseURL)
 	if err != nil {
 		logger.Error("Error building play list", "err", err)
-	}
-	if list != nil {
-		logger.Debug("Stream rows", "candidates", len(list.Candidates))
 	}
 	if streams == nil {
 		streams = []Stream{}
 	}
+	logger.Debug("Stream finished",
+		"stream", func() string {
+			if stream != nil {
+				return stream.Username
+			}
+			return "legacy"
+		}(),
+		"indexer_mode", streamIndexerMode(stream),
+		"search_requests_mode", func() string {
+			if streamCombinesResults(stream) {
+				return "combine"
+			}
+			return "first_hit"
+		}(),
+		"results_mode", streamResultsMode(stream),
+		"candidate_results", func() int {
+			if list != nil {
+				return len(list.Candidates)
+			}
+			return 0
+		}(),
+		"final_results", len(streams),
+	)
 
 	response := StreamResponse{
 		Streams: streams,
@@ -344,8 +376,8 @@ type failoverOrderRequest struct {
 	} `json:"streams"`
 }
 
-func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, device *auth.Device) {
-	logger.Debug("Failover order request", "device", device.Username, "method", r.Method, "url", r.URL.Path)
+func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, stream *auth.Stream) {
+	logger.Debug("Failover order request", "stream", stream.Username, "method", r.Method, "url", r.URL.Path)
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -401,11 +433,12 @@ func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, dev
 				}
 			}
 		}
-		logger.Info("Failover order: no entries stored (all skipped)", "device", deviceToken(device), "requested", len(req.Streams), "nonEmptyFailoverIds", nonEmptyCount, "firstFailoverIdSample", firstNonEmptyRaw)
+		logger.Info("Failover order: no entries stored (all skipped)", "stream", streamToken(stream), "requested", len(req.Streams), "nonEmptyFailoverIds", nonEmptyCount, "firstFailoverIdSample", firstNonEmptyRaw)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	streamKey := ""
+	isAIOStreams := false
 	for _, entry := range order {
 		if strings.HasPrefix(entry, streamSlotPrefix) {
 			if sid, contentType, id, _, ok := parseStreamSlotID(entry); ok {
@@ -414,11 +447,17 @@ func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, dev
 					sk.StreamID = defaultStreamID
 				}
 				streamKey = sk.CacheKey()
+				isAIOStreams = streamUsesAIOStreamsProfile(stream)
 				break
 			}
 		}
 	}
-	token := deviceToken(device)
+	if !isAIOStreams {
+		logger.Debug("Failover order ignored for non-AIO stream profile", "stream", streamToken(stream), "streamKey", streamKey)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	token := streamToken(stream)
 	s.sessionManager.SetDeviceFailoverOrder(token, streamKey, order)
 	sample := ""
 	if len(order) > 0 {
@@ -570,9 +609,9 @@ func buildStreamsFromPlayList(list *orderedPlayListResult, key StreamSlotKey, st
 
 // buildStreamsForKey runs the shared pipeline: build play list → optional AIO filter → device order → clear next bound → build Stream[].
 // Returns (nil, nil, nil) when there are no candidates; (nil, nil, err) on error.
-func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, device *auth.Device, baseURL string) ([]Stream, *orderedPlayListResult, error) {
-	isAIOStreams := s.sessionManager.IsAIOStreamsDevice(deviceToken(device))
-	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams)
+func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stream *auth.Stream, baseURL string) ([]Stream, *orderedPlayListResult, error) {
+	isAIOStreams := streamUsesAIOStreamsProfile(stream)
+	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams, stream)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -585,25 +624,30 @@ func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, devi
 			return nil, nil, nil
 		}
 	}
-	if order := s.sessionManager.GetDeviceFailoverOrder(deviceToken(device), key.CacheKey()); len(order) > 0 {
-		list = filterPlayListByOrder(list, key, order)
+	if isAIOStreams {
+		if order := s.sessionManager.GetDeviceFailoverOrder(streamToken(stream), key.CacheKey()); len(order) > 0 {
+			list = filterPlayListByOrder(list, key, order)
+		}
+	}
+	for _, slotPath := range list.SlotPaths {
+		s.sessionManager.ClearSlotFailedDuringPlayback(slotPath)
 	}
 	// Create deferred sessions for each slot path we will expose, so handlePlay can serve without hitting indexers.
-	s.ensureDeferredSessionsForPlayList(list, key, device)
+	s.ensureDeferredSessionsForPlayList(list, key, stream)
 	streamName := "StreamNZB"
-	showAll := isAIOStreams
+	showAll := streamResultsMode(stream) == "display_all"
 	return buildStreamsFromPlayList(list, key, streamName, baseURL, showAll), list, nil
 }
 
 const defaultStreamID = "default"
 
-func (s *Server) GetStreams(ctx context.Context, contentType, id string, device *auth.Device) ([]Stream, error) {
+func (s *Server) GetStreams(ctx context.Context, contentType, id string, stream *auth.Stream) ([]Stream, error) {
 	const streamRequestTimeout = 30 * time.Second
 	ctx, cancel := context.WithTimeout(ctx, streamRequestTimeout)
 	defer cancel()
-	baseURL := s.baseURLWithToken(device)
-	key := StreamSlotKey{StreamID: defaultStreamID, ContentType: contentType, ID: id}
-	streams, _, err := s.buildStreamsForKey(ctx, key, device, baseURL)
+	baseURL := s.baseURLWithToken(stream)
+	key := StreamSlotKey{StreamID: streamID(stream), ContentType: contentType, ID: id}
+	streams, _, err := s.buildStreamsForKey(ctx, key, stream, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -681,19 +725,224 @@ func (k StreamSlotKey) RawCacheKey() string {
 	return k.ContentType + ":" + k.ID
 }
 
-func (s *Server) baseURLWithToken(device *auth.Device) string {
+func (s *Server) baseURLWithToken(stream *auth.Stream) string {
 	base := strings.TrimSuffix(s.baseURL, "/")
-	if device != nil && device.Token != "" {
-		base += "/" + device.Token
+	if stream != nil && stream.Token != "" {
+		base += "/" + stream.Token
 	}
 	return base
 }
 
-func deviceToken(device *auth.Device) string {
-	if device != nil {
-		return device.Token
+func streamToken(stream *auth.Stream) string {
+	if stream != nil {
+		return stream.Token
 	}
 	return ""
+}
+
+func streamID(stream *auth.Stream) string {
+	if stream != nil && strings.TrimSpace(stream.Username) != "" {
+		return strings.TrimSpace(stream.Username)
+	}
+	return defaultStreamID
+}
+
+func streamSearchQueryNames(stream *auth.Stream, contentType string) []string {
+	if stream == nil {
+		return nil
+	}
+	if contentType == "movie" {
+		return append([]string(nil), stream.MovieSearchQueries...)
+	}
+	return append([]string(nil), stream.SeriesSearchQueries...)
+}
+
+func allSearchQueryNames(queries []config.SearchQueryConfig) []string {
+	names := make([]string, 0, len(queries))
+	for _, query := range queries {
+		name := strings.TrimSpace(query.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func streamUsesAvailNZB(stream *auth.Stream) bool {
+	if stream == nil || stream.UseAvailNZB == nil {
+		return true
+	}
+	return *stream.UseAvailNZB
+}
+
+func streamUsesAIOStreamsProfile(stream *auth.Stream) bool {
+	if stream == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "aiostreams")
+}
+
+func streamIndexerMode(stream *auth.Stream) string {
+	if stream == nil || strings.TrimSpace(stream.IndexerMode) == "" {
+		return "combine"
+	}
+	mode := strings.ToLower(strings.TrimSpace(stream.IndexerMode))
+	switch mode {
+	case "failover":
+		return "failover"
+	default:
+		return "combine"
+	}
+}
+
+func streamCombinesResults(stream *auth.Stream) bool {
+	if stream == nil || stream.CombineResults == nil {
+		return true
+	}
+	return *stream.CombineResults
+}
+
+func streamFailoverEnabled(stream *auth.Stream) bool {
+	if stream == nil || stream.EnableFailover == nil {
+		return true
+	}
+	return *stream.EnableFailover
+}
+
+func streamIndexerSelections(stream *auth.Stream) []string {
+	if stream == nil {
+		return nil
+	}
+	return append([]string(nil), stream.IndexerSelections...)
+}
+
+func streamIndexerOverrides(stream *auth.Stream) map[string]config.IndexerSearchConfig {
+	if stream == nil || len(stream.IndexerOverrides) == 0 {
+		return nil
+	}
+	out := make(map[string]config.IndexerSearchConfig, len(stream.IndexerOverrides))
+	for name, override := range stream.IndexerOverrides {
+		out[name] = override
+	}
+	return out
+}
+
+func streamResultsMode(stream *auth.Stream) string {
+	if stream == nil || strings.TrimSpace(stream.ResultsMode) == "" {
+		return "combined_stream"
+	}
+	mode := strings.ToLower(strings.TrimSpace(stream.ResultsMode))
+	switch mode {
+	case "display_all":
+		return "display_all"
+	default:
+		return "combined_stream"
+	}
+}
+
+func stableIndexerOverridesKey(overrides map[string]config.IndexerSearchConfig) string {
+	if len(overrides) == 0 {
+		return "none"
+	}
+	data, err := json.Marshal(overrides)
+	if err != nil {
+		return "error"
+	}
+	return string(data)
+}
+
+func streamSearchQueryCacheKey(stream *auth.Stream, contentType string) string {
+	names := streamSearchQueryNames(stream, contentType)
+	queryComponent := "none"
+	if len(names) > 0 {
+		if streamCombinesResults(stream) {
+			sort.Strings(names)
+		}
+		queryComponent = strings.Join(names, ",")
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf(
+			"stream=%s|queries=%s|providers=%s|selected_indexers=%s|overrides=%s|avail=%t|indexers=%s|combine=%t|failover=%t|results=%s",
+			streamID(stream),
+			queryComponent,
+			strings.Join(streamProviderSelections(stream), ","),
+			strings.Join(streamIndexerSelections(stream), ","),
+			stableIndexerOverridesKey(streamIndexerOverrides(stream)),
+			streamUsesAvailNZB(stream),
+			streamIndexerMode(stream),
+			streamCombinesResults(stream),
+			streamFailoverEnabled(stream),
+			streamResultsMode(stream),
+		)
+	}
+	return fmt.Sprintf(
+		"stream=%s|queries=%s|providers=%s|selected_indexers=%s|overrides=%s|avail=%t|indexers=%s|combine=%t|failover=%t|results=%s",
+		streamID(stream),
+		queryComponent,
+		strings.Join(streamProviderSelections(stream), ","),
+		strings.Join(streamIndexerSelections(stream), ","),
+		stableIndexerOverridesKey(streamIndexerOverrides(stream)),
+		streamUsesAvailNZB(stream),
+		streamIndexerMode(stream),
+		streamCombinesResults(stream),
+		streamFailoverEnabled(stream),
+		streamResultsMode(stream),
+	)
+}
+
+func applyStreamIndexerSelection(req *indexer.SearchRequest, stream *auth.Stream) {
+	if req == nil {
+		return
+	}
+	req.IndexerMode = streamIndexerMode(stream)
+	if stream == nil || len(stream.IndexerOverrides) == 0 || len(req.EffectiveByIndexer) == 0 {
+		return
+	}
+
+	selected := make(map[string]config.IndexerSearchConfig, len(stream.IndexerOverrides))
+	for name, override := range stream.IndexerOverrides {
+		selected[name] = override
+	}
+
+	disableID := true
+	disableText := true
+
+	for name, effective := range req.EffectiveByIndexer {
+		override, isSelected := selected[name]
+		if isSelected {
+			if effective == nil {
+				copyOverride := override
+				req.EffectiveByIndexer[name] = &copyOverride
+				continue
+			}
+			if override.DisableIdSearch != nil {
+				effective.DisableIdSearch = override.DisableIdSearch
+			}
+			if override.DisableStringSearch != nil {
+				effective.DisableStringSearch = override.DisableStringSearch
+			}
+			continue
+		}
+		if effective == nil {
+			req.EffectiveByIndexer[name] = &config.IndexerSearchConfig{
+				DisableIdSearch:     &disableID,
+				DisableStringSearch: &disableText,
+			}
+			continue
+		}
+		effective.DisableIdSearch = &disableID
+		effective.DisableStringSearch = &disableText
+	}
+
+	if req.PerIndexerQuery == nil {
+		return
+	}
+	for name := range req.PerIndexerQuery {
+		if _, ok := selected[name]; !ok {
+			delete(req.PerIndexerQuery, name)
+		}
+	}
 }
 
 func formatStreamSlotPath(streamID, contentType, id string, index int) string {
@@ -816,7 +1065,7 @@ func filterPlayListToAvailableForAIOStreams(list *orderedPlayListResult) *ordere
 // buildOrderedPlayList returns an ordered list of candidates for (stream, type, id).
 // Raw search is cached by (contentType, id); play list is cached by (key, isAIOStreams).
 // When isAIOStreams is true we skip triage/sort and do title dedup only (for AIOStreams client).
-func (s *Server) buildOrderedPlayList(ctx context.Context, key StreamSlotKey, isAIOStreams bool) (*orderedPlayListResult, error) {
+func (s *Server) buildOrderedPlayList(ctx context.Context, key StreamSlotKey, isAIOStreams bool, stream *auth.Stream) (*orderedPlayListResult, error) {
 	if key.StreamID == "" {
 		key.StreamID = defaultStreamID
 	}
@@ -824,13 +1073,14 @@ func (s *Server) buildOrderedPlayList(ctx context.Context, key StreamSlotKey, is
 	if isAIOStreams {
 		cacheKey += "|noFilter"
 	}
+	cacheKey += "|queries=" + streamSearchQueryCacheKey(stream, key.ContentType)
 	if v, ok := s.playListCache.Load(cacheKey); ok {
 		if ent, _ := v.(*playListCacheEntry); ent != nil && time.Now().Before(ent.until) {
 			logger.Debug("Play list cache hit", "key", cacheKey)
 			return ent.result, nil
 		}
 	}
-	list, err := s.buildOrderedPlayListUncached(ctx, key, isAIOStreams)
+	list, err := s.buildOrderedPlayListUncached(ctx, key, isAIOStreams, stream)
 	if err != nil || list == nil {
 		return list, err
 	}
@@ -838,23 +1088,23 @@ func (s *Server) buildOrderedPlayList(ctx context.Context, key StreamSlotKey, is
 	return list, nil
 }
 
-func (s *Server) buildOrderedPlayListUncached(ctx context.Context, key StreamSlotKey, isAIOStreams bool) (*orderedPlayListResult, error) {
-	raw, err := s.getOrBuildRawSearchResult(ctx, key.ContentType, key.ID)
+func (s *Server) buildOrderedPlayListUncached(ctx context.Context, key StreamSlotKey, isAIOStreams bool, stream *auth.Stream) (*orderedPlayListResult, error) {
+	raw, err := s.getOrBuildRawSearchResult(ctx, key.ContentType, key.ID, stream)
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	return s.buildOrderedPlayListFromRaw(raw, isAIOStreams)
+	return s.buildOrderedPlayListFromRaw(raw, isAIOStreams, stream)
 }
 
-func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id string) (*rawSearchResult, error) {
-	rawKey := contentType + ":" + id
+func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id string, stream *auth.Stream) (*rawSearchResult, error) {
+	rawKey := contentType + ":" + id + "|queries=" + streamSearchQueryCacheKey(stream, contentType)
 	if v, ok := s.rawSearchCache.Load(rawKey); ok {
 		if ent, _ := v.(*rawSearchCacheEntry); ent != nil && time.Now().Before(ent.until) {
 			logger.Debug("Raw search cache hit", "key", rawKey)
 			return ent.raw, nil
 		}
 	}
-	raw, err := s.buildRawSearchResult(ctx, contentType, id)
+	raw, err := s.buildRawSearchResult(ctx, contentType, id, stream)
 	if err != nil || raw == nil {
 		return nil, err
 	}
@@ -862,27 +1112,141 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 	return raw, nil
 }
 
-func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id string) (*rawSearchResult, error) {
-	params, err := s.buildSearchParams(contentType, id)
+func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id string, stream *auth.Stream) (*rawSearchResult, error) {
+	selectedQueries := streamSearchQueryNames(stream, contentType)
+	if len(selectedQueries) == 0 {
+		return nil, fmt.Errorf("stream is missing at least one %s search request", contentType)
+	}
+
+	params, err := s.buildSearchParamsBase(contentType, id, nil)
 	if err != nil {
 		return nil, err
 	}
-	req := &params.Req
+	logger.Debug("Stream metadata",
+		"stream", func() string {
+			if stream != nil {
+				return stream.Username
+			}
+			return "legacy"
+		}(),
+		"type", contentType,
+		"id", id,
+		"imdb_id", params.ContentIDs.ImdbID,
+		"tmdb_id", params.Req.TMDBID,
+		"tvdb_id", params.ContentIDs.TvdbID,
+		"season", params.ContentIDs.Season,
+		"episode", params.ContentIDs.Episode,
+		"title", metadataDisplayTitle(params.Metadata, contentType),
+		"year", metadataDisplayYear(params.Metadata, contentType),
+		"languages", metadataLanguageCount(params.Metadata, contentType),
+	)
 	contentIDs := params.ContentIDs
 	imdbForText := params.ImdbForText
 	tmdbForText := params.TmdbForText
+	var tmdbResolver search.TMDBResolver
+	if s.tmdbClient != nil {
+		tmdbResolver = s.tmdbClient
+	}
 
 	var availReleases []*release.Release
 	cachedAvailable := make(map[string]bool)
 	var availResult *availnzb.ReleasesResult
-	if s.availClient != nil && s.availClient.BaseURL != "" && (contentIDs.ImdbID != "" || contentIDs.TvdbID != "") {
-		availResult, _ = s.availClient.GetReleases(contentIDs.ImdbID, contentIDs.TvdbID, contentIDs.Season, contentIDs.Episode, params.AvailIndexers, s.validator.GetProviderHosts())
+	if streamUsesAvailNZB(stream) && s.availClient != nil && s.availClient.BaseURL != "" && (contentIDs.ImdbID != "" || contentIDs.TvdbID != "") {
+		availResult, _ = s.availClient.GetReleases(contentIDs.ImdbID, contentIDs.TvdbID, contentIDs.Season, contentIDs.Episode, params.AvailIndexers, s.providerHostsForStream(stream))
 	}
 
-	indexerReleases, err := search.RunIndexerSearches(s.indexer, s.tmdbClient, *req, contentType, contentIDs, imdbForText, tmdbForText, s.config)
-	if err != nil {
-		return nil, err
+	indexerReleases := make([]*release.Release, 0)
+	streamLabel := func() string {
+		if stream != nil {
+			return stream.Username
+		}
+		return "legacy"
+	}()
+	logger.Debug("Stream configuration",
+		"stream", streamLabel,
+		"type", contentType,
+		"filter_sorting", func() string {
+			if stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" {
+				return "none"
+			}
+			return strings.ToLower(strings.TrimSpace(stream.FilterSortingMode))
+		}(),
+		"indexer_mode", streamIndexerMode(stream),
+		"search_requests_mode", func() string {
+			if streamCombinesResults(stream) {
+				return "combine"
+			}
+			return "first_hit"
+		}(),
+		"results_mode", streamResultsMode(stream),
+		"failover", streamFailoverEnabled(stream),
+		"availnzb", streamUsesAvailNZB(stream),
+		"providers", append([]string(nil), stream.ProviderSelections...),
+		"indexers", append([]string(nil), stream.IndexerSelections...),
+		"requests", append([]string(nil), selectedQueries...),
+	)
+	for _, name := range selectedQueries {
+		searchQuery := s.config.GetSearchQueryByName(contentType, name)
+		if searchQuery == nil {
+			logger.Debug("Stream search query missing", "stream", func() string {
+				if stream != nil {
+					return stream.Username
+				}
+				return "legacy"
+			}(), "content_type", contentType, "id", id, "query", name)
+			continue
+		}
+		params.Req.StreamLabel = streamLabel
+		params.Req.RequestLabel = searchQuery.Name
+		profileParams, profileErr := s.buildSearchParamsFromBase(params, searchQuery)
+		if profileErr != nil {
+			return nil, profileErr
+		}
+		profileParams.Req.StreamLabel = streamLabel
+		profileParams.Req.RequestLabel = searchQuery.Name
+		applyStreamIndexerSelection(&profileParams.Req, stream)
+		effectiveLimit := profileParams.Req.Limit
+		if searchQuery.SearchResultLimit > 0 {
+			effectiveLimit = searchQuery.SearchResultLimit
+		}
+		logger.Debug("Search request config",
+			"stream", streamLabel,
+			"request", searchQuery.Name,
+			"search_mode", searchQuery.SearchMode,
+			"type", contentType,
+			"id", id,
+			"movie_categories", searchQuery.MovieCategories,
+			"tv_categories", searchQuery.TVCategories,
+			"language", searchQuery.SearchTitleLanguage,
+			"extra_terms", searchQuery.ExtraSearchTerms,
+			"limit", effectiveLimit,
+		)
+		releases, runErr := search.RunIndexerSearches(s.indexer, tmdbResolver, profileParams.Req, contentType, profileParams.ContentIDs, profileParams.ImdbForText, profileParams.TmdbForText, s.config)
+		if runErr != nil {
+			return nil, runErr
+		}
+		if streamCombinesResults(stream) {
+			indexerReleases = append(indexerReleases, releases...)
+			continue
+		}
+		if len(releases) > 0 {
+			indexerReleases = releases
+			break
+		}
 	}
+	streamInputResults := len(indexerReleases)
+	indexerReleases = search.MergeAndDedupeSearchResults(indexerReleases)
+	logger.Debug("Stream deduplication",
+		"stream", streamLabel,
+		"search_requests_mode", func() string {
+			if streamCombinesResults(stream) {
+				return "combine"
+			}
+			return "first_hit"
+		}(),
+		"input_results", streamInputResults,
+		"final_results", len(indexerReleases),
+	)
 
 	if availResult != nil && len(params.AvailIndexers) == 0 {
 		indexerDetailsURLs := make(map[string]bool)
@@ -922,9 +1286,9 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	// applies to indexer results. Without this, releases with incorrect IMDB
 	// metadata on the indexer side bypass the title check and can cause wrong
 	// content to be served (e.g. "Dying Of The Light" for "Interstellar").
-	filterQuery := search.BuildFilterQuery(s.tmdbClient, *req, contentType, contentIDs, imdbForText, tmdbForText)
+	filterQuery := search.BuildFilterQuery(tmdbResolver, params.Req, contentType, contentIDs, imdbForText, tmdbForText)
 	if filterQuery != "" && len(availReleases) > 0 {
-		availReleases = search.FilterResults(availReleases, contentType, filterQuery, req.Season, req.Episode)
+		availReleases = search.FilterResults(availReleases, contentType, filterQuery, params.Req.Season, params.Req.Episode)
 	}
 
 	return &rawSearchResult{
@@ -937,7 +1301,13 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 }
 
 func (s *Server) GetSearchReleases(ctx context.Context, contentType, id string) (*SearchReleasesResponse, error) {
-	raw, err := s.getOrBuildRawSearchResult(ctx, contentType, id)
+	fallbackStream := &auth.Stream{Username: defaultStreamID}
+	if contentType == "movie" {
+		fallbackStream.MovieSearchQueries = allSearchQueryNames(s.config.MovieSearchQueries)
+	} else {
+		fallbackStream.SeriesSearchQueries = allSearchQueryNames(s.config.SeriesSearchQueries)
+	}
+	raw, err := s.getOrBuildRawSearchResult(ctx, contentType, id, fallbackStream)
 	if err != nil || raw == nil {
 		return nil, err
 	}
@@ -1092,6 +1462,32 @@ func populateAvailable(raw *rawSearchResult) {
 	}
 }
 
+func streamProviderSelections(stream *auth.Stream) []string {
+	if stream == nil {
+		return nil
+	}
+	return append([]string(nil), stream.ProviderSelections...)
+}
+
+func (s *Server) providerHostsForStream(stream *auth.Stream) []string {
+	if s.sessionManager != nil {
+		if hosts := s.sessionManager.ProviderHostsForProviders(streamProviderSelections(stream)); len(hosts) > 0 {
+			return hosts
+		}
+	}
+	if s.validator != nil {
+		return s.validator.GetProviderHosts()
+	}
+	return nil
+}
+
+func (s *Server) segmentFetcherForStream(stream *auth.Stream) loader.SegmentFetcher {
+	if s.sessionManager == nil {
+		return nil
+	}
+	return s.sessionManager.SegmentFetcherForProviders(streamProviderSelections(stream))
+}
+
 func buildAllReleasesFromRaw(raw *rawSearchResult) []*release.Release {
 	seenURL := make(map[string]bool)
 	var out []*release.Release
@@ -1129,7 +1525,7 @@ func releasesToCandidates(releases []*release.Release) []triage.Candidate {
 	return out
 }
 
-func (s *Server) buildOrderedPlayListFromRaw(raw *rawSearchResult, isAIOStreams bool) (*orderedPlayListResult, error) {
+func (s *Server) buildOrderedPlayListFromRaw(raw *rawSearchResult, isAIOStreams bool, stream *auth.Stream) (*orderedPlayListResult, error) {
 	populateAvailable(raw)
 
 	unavailableDetailsURLs := make(map[string]bool)
@@ -1183,7 +1579,7 @@ func (s *Server) buildOrderedPlayListFromRaw(raw *rawSearchResult, isAIOStreams 
 	merged = filtered
 
 	if raw.AvailResult != nil && s.availClient != nil {
-		ourBackbones, _ := s.availClient.OurBackbones(s.validator.GetProviderHosts())
+		ourBackbones, _ := s.availClient.OurBackbones(s.providerHostsForStream(stream))
 		cachedUnhealthyForUs := make(map[string]bool)
 		for _, rws := range raw.AvailResult.Releases {
 			if rws == nil || rws.Release == nil {
@@ -1259,13 +1655,218 @@ func getStreamSinkFromContext(ctx context.Context) StreamSink {
 }
 
 type SearchParams struct {
-	ContentType   string
-	ID            string
-	Req           indexer.SearchRequest
-	ContentIDs    *session.AvailReportMeta
-	ImdbForText   string
-	TmdbForText   string
-	AvailIndexers []string
+	ContentType        string
+	ID                 string
+	Req                indexer.SearchRequest
+	ContentIDs         *session.AvailReportMeta
+	ImdbForText        string
+	TmdbForText        string
+	AvailIndexers      []string
+	MovieTitleQueries  map[string][]string
+	SeriesTitleQueries map[string][]string
+	Metadata           *resolvedSearchMetadata
+}
+
+type resolvedSearchMetadata struct {
+	MovieDetails      *tmdb.MovieDetails
+	MovieTranslations *tmdb.MovieTranslationsResponse
+	TVDetails         *tmdb.TVDetails
+	TVTranslations    *tmdb.TVTranslationsResponse
+}
+
+func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) string {
+	if metadata == nil {
+		return ""
+	}
+	if contentType == "movie" {
+		if metadata.MovieDetails != nil {
+			if title := strings.TrimSpace(metadata.MovieDetails.Title); title != "" {
+				return title
+			}
+			return strings.TrimSpace(metadata.MovieDetails.OriginalTitle)
+		}
+		return ""
+	}
+	if metadata.TVDetails != nil {
+		if title := strings.TrimSpace(metadata.TVDetails.Name); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.TVDetails.OriginalName)
+	}
+	return ""
+}
+
+func metadataDisplayYear(metadata *resolvedSearchMetadata, contentType string) string {
+	if metadata == nil {
+		return ""
+	}
+	if contentType == "movie" {
+		if metadata.MovieDetails != nil && len(metadata.MovieDetails.ReleaseDate) >= 4 {
+			return metadata.MovieDetails.ReleaseDate[:4]
+		}
+		return ""
+	}
+	if metadata.TVDetails != nil && len(metadata.TVDetails.FirstAirDate) >= 4 {
+		return metadata.TVDetails.FirstAirDate[:4]
+	}
+	return ""
+}
+
+func metadataLanguageCount(metadata *resolvedSearchMetadata, contentType string) int {
+	if metadata == nil {
+		return 0
+	}
+	if contentType == "movie" {
+		if metadata.MovieTranslations != nil {
+			return len(metadata.MovieTranslations.Translations)
+		}
+		return 0
+	}
+	if metadata.TVTranslations != nil {
+		return len(metadata.TVTranslations.Translations)
+	}
+	return 0
+}
+
+func localizedMovieTitleForLanguage(translations *tmdb.MovieTranslationsResponse, language string) string {
+	if translations == nil || language == "" {
+		return ""
+	}
+	langCode, countryCode := splitLanguageTagLocal(language)
+	for i := range translations.Translations {
+		entry := translations.Translations[i]
+		if strings.TrimSpace(entry.Data.Title) == "" {
+			continue
+		}
+		if countryCode != "" && strings.EqualFold(entry.ISO639_1, langCode) && strings.EqualFold(entry.ISO3166_1, countryCode) {
+			return strings.TrimSpace(entry.Data.Title)
+		}
+	}
+	for i := range translations.Translations {
+		entry := translations.Translations[i]
+		if strings.TrimSpace(entry.Data.Title) != "" && strings.EqualFold(entry.ISO639_1, langCode) {
+			return strings.TrimSpace(entry.Data.Title)
+		}
+	}
+	return ""
+}
+
+func localizedTVTitleForLanguage(translations *tmdb.TVTranslationsResponse, language string) string {
+	if translations == nil || language == "" {
+		return ""
+	}
+	langCode, countryCode := splitLanguageTagLocal(language)
+	for i := range translations.Translations {
+		entry := translations.Translations[i]
+		if strings.TrimSpace(entry.Data.Name) == "" {
+			continue
+		}
+		if countryCode != "" && strings.EqualFold(entry.ISO639_1, langCode) && strings.EqualFold(entry.ISO3166_1, countryCode) {
+			return strings.TrimSpace(entry.Data.Name)
+		}
+	}
+	for i := range translations.Translations {
+		entry := translations.Translations[i]
+		if strings.TrimSpace(entry.Data.Name) != "" && strings.EqualFold(entry.ISO639_1, langCode) {
+			return strings.TrimSpace(entry.Data.Name)
+		}
+	}
+	return ""
+}
+
+func splitLanguageTagLocal(tag string) (lang, country string) {
+	tag = strings.TrimSpace(tag)
+	if i := strings.Index(tag, "-"); i >= 0 {
+		return tag[:i], tag[i+1:]
+	}
+	return tag, ""
+}
+
+func buildMovieQueriesFromMetadata(metadata *resolvedSearchMetadata, language string, includeYear bool) []string {
+	if metadata == nil || metadata.MovieDetails == nil {
+		return nil
+	}
+	title := strings.TrimSpace(metadata.MovieDetails.Title)
+	if localized := localizedMovieTitleForLanguage(metadata.MovieTranslations, language); localized != "" {
+		title = localized
+	}
+	if title == "" {
+		return nil
+	}
+	year := ""
+	if includeYear && len(metadata.MovieDetails.ReleaseDate) >= 4 {
+		year = metadata.MovieDetails.ReleaseDate[:4]
+	}
+	primary := strings.TrimSpace(title)
+	if year != "" {
+		primary += " " + year
+	}
+	queries := []string{strings.TrimSpace(primary)}
+
+	originalTitle := strings.TrimSpace(metadata.MovieDetails.OriginalTitle)
+	originalLang := strings.TrimSpace(metadata.MovieDetails.OriginalLanguage)
+	if originalTitle == "" || originalLang == "" || strings.EqualFold(originalLang, "en") {
+		return queries
+	}
+	if release.NormalizeTitle(originalTitle) == release.NormalizeTitle(title) {
+		return queries
+	}
+	original := originalTitle
+	if year != "" {
+		original += " " + year
+	}
+	original = strings.TrimSpace(original)
+	if original != "" && original != queries[0] {
+		queries = append(queries, original)
+	}
+	return queries
+}
+
+func buildSeriesQueriesFromMetadata(metadata *resolvedSearchMetadata, language string, includeYear bool, season, episode string, useSeasonEpisodeParams bool) []string {
+	if metadata == nil || metadata.TVDetails == nil {
+		return nil
+	}
+	title := strings.TrimSpace(metadata.TVDetails.Name)
+	if localized := localizedTVTitleForLanguage(metadata.TVTranslations, language); localized != "" {
+		title = localized
+	}
+	if title == "" {
+		return nil
+	}
+	year := ""
+	if includeYear && len(metadata.TVDetails.FirstAirDate) >= 4 {
+		year = metadata.TVDetails.FirstAirDate[:4]
+	}
+	primary := strings.TrimSpace(title)
+	if year != "" {
+		primary += " " + year
+	}
+	queries := []string{strings.TrimSpace(primary)}
+
+	originalTitle := strings.TrimSpace(metadata.TVDetails.OriginalName)
+	originalLang := strings.TrimSpace(metadata.TVDetails.OriginalLanguage)
+	if originalTitle != "" && originalLang != "" && !strings.EqualFold(originalLang, "en") && release.NormalizeTitle(originalTitle) != release.NormalizeTitle(title) {
+		original := originalTitle
+		if year != "" {
+			original += " " + year
+		}
+		original = strings.TrimSpace(original)
+		if original != "" && original != queries[0] {
+			queries = append(queries, original)
+		}
+	}
+
+	if !useSeasonEpisodeParams {
+		withEpisode := make([]string, 0, len(queries))
+		for _, query := range queries {
+			if query == "" {
+				continue
+			}
+			withEpisode = append(withEpisode, appendSeasonEpisodeQuery(query, season, episode))
+		}
+		queries = withEpisode
+	}
+	return queries
 }
 
 func buildSeriesQueries(showName string) []string {
@@ -1283,10 +1884,25 @@ func buildSeriesQueriesWithOptions(showName, year string, includeYear bool) []st
 	return []string{showName}
 }
 
-func (s *Server) buildSearchParams(contentType, id string) (*SearchParams, error) {
+func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *config.SearchQueryConfig) (*SearchParams, error) {
 	const searchLimit = 1000
-	params := &SearchParams{ContentType: contentType, ID: id}
+	params := &SearchParams{
+		ContentType:        contentType,
+		ID:                 id,
+		MovieTitleQueries:  make(map[string][]string),
+		SeriesTitleQueries: make(map[string][]string),
+		Metadata:           &resolvedSearchMetadata{},
+	}
 	req := indexer.SearchRequest{Limit: searchLimit}
+	searchMode := ""
+	useSeasonEpisodeParams := true
+	if searchQuery != nil {
+		searchMode = strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
+		if searchQuery.UseSeasonEpisodeParams != nil {
+			useSeasonEpisodeParams = *searchQuery.UseSeasonEpisodeParams
+		}
+	}
+	req.UseSeasonEpisodeParams = useSeasonEpisodeParams
 
 	searchID := id
 	if contentType == "series" && strings.Contains(id, ":") {
@@ -1302,6 +1918,19 @@ func (s *Server) buildSearchParams(contentType, id string) (*SearchParams, error
 		}
 	} else if strings.HasPrefix(id, "tmdb:") {
 		searchID = strings.TrimPrefix(id, "tmdb:")
+	}
+	if searchMode == "id" {
+		req.ForceIDSearch = true
+		if contentType == "series" && req.Season != "" && req.Episode != "" && !useSeasonEpisodeParams {
+			if seasonNum, err1 := strconv.Atoi(req.Season); err1 == nil {
+				if episodeNum, err2 := strconv.Atoi(req.Episode); err2 == nil {
+					req.Query = fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
+				}
+			}
+			if req.Query == "" {
+				req.Query = fmt.Sprintf("S%sE%s", req.Season, req.Episode)
+			}
+		}
 	}
 	if strings.HasPrefix(searchID, "tt") {
 		req.IMDbID = searchID
@@ -1322,7 +1951,40 @@ func (s *Server) buildSearchParams(contentType, id string) (*SearchParams, error
 		req.Cat = "5000"
 	}
 
+	if req.TMDBID == "" && req.IMDbID != "" && s.tmdbClient != nil {
+		findResp, findErr := s.tmdbClient.Find(req.IMDbID, "imdb_id")
+		if findErr == nil {
+			if contentType == "movie" && len(findResp.MovieResults) > 0 {
+				req.TMDBID = strconv.Itoa(findResp.MovieResults[0].ID)
+				tmdbForText = req.TMDBID
+			}
+			if contentType == "series" && len(findResp.TVResults) > 0 {
+				req.TMDBID = strconv.Itoa(findResp.TVResults[0].ID)
+				tmdbForText = req.TMDBID
+			}
+		}
+	}
+
 	if contentType == "series" {
+		if req.TMDBID != "" && s.tmdbClient != nil {
+			if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
+				if details, err := s.tmdbClient.GetTVDetails(tmdbIDNum); err == nil {
+					params.Metadata.TVDetails = details
+				}
+				if translations, err := s.tmdbClient.GetTVTranslations(tmdbIDNum); err == nil {
+					params.Metadata.TVTranslations = translations
+				}
+				if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
+					if extIDs.TVDBID != 0 {
+						req.TVDBID = strconv.Itoa(extIDs.TVDBID)
+					}
+					if extIDs.IMDbID != "" && req.IMDbID == "" {
+						req.IMDbID = extIDs.IMDbID
+						imdbForText = extIDs.IMDbID
+					}
+				}
+			}
+		}
 		if req.IMDbID != "" && req.TVDBID == "" {
 			if s.tvdbClient != nil {
 				if tvdbID, err := s.tvdbClient.ResolveTVDBID(req.IMDbID); err == nil && tvdbID != "" {
@@ -1335,107 +1997,27 @@ func (s *Server) buildSearchParams(contentType, id string) (*SearchParams, error
 				}
 			}
 		}
-		if req.TVDBID == "" && req.TMDBID != "" && s.tmdbClient != nil {
-			if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
-				if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
-					if extIDs.TVDBID != 0 {
-						req.TVDBID = strconv.Itoa(extIDs.TVDBID)
-					}
-					if extIDs.IMDbID != "" && req.IMDbID == "" {
-						req.IMDbID = extIDs.IMDbID
-						imdbForText = extIDs.IMDbID
-					}
-				}
-			}
-		}
 	}
 	seasonNum, _ := strconv.Atoi(req.Season)
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TvdbID: req.TVDBID, Season: seasonNum, Episode: episodeNum}
-	if contentType == "movie" && contentIDs.ImdbID == "" && req.TMDBID != "" && s.tmdbClient != nil {
+	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
-			if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil && extIDs.IMDbID != "" {
+			if details, err := s.tmdbClient.GetMovieDetails(tmdbIDNum); err == nil {
+				params.Metadata.MovieDetails = details
+			}
+			if translations, err := s.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
+				params.Metadata.MovieTranslations = translations
+			}
+			if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil && extIDs.IMDbID != "" && contentIDs.ImdbID == "" {
 				contentIDs.ImdbID = extIDs.IMDbID
 				req.IMDbID = contentIDs.ImdbID
 				imdbForText = contentIDs.ImdbID
 			}
 		}
 	}
-	if len(s.config.Indexers) > 0 {
-		req.EffectiveByIndexer = make(map[string]*config.IndexerSearchConfig)
-		indexerTypeByName := make(map[string]string, len(s.config.Indexers))
-		for i := range s.config.Indexers {
-			ic := &s.config.Indexers[i]
-			if ic.Enabled != nil && !*ic.Enabled {
-				continue
-			}
-			eff := config.MergeIndexerSearch(ic, nil, s.config)
-			if strings.EqualFold(ic.Type, "easynews") {
-				t := true
-				eff.DisableIdSearch = &t
-			}
-			req.EffectiveByIndexer[ic.Name] = eff
-			indexerTypeByName[ic.Name] = ic.Type
-		}
-		req.PerIndexerQuery = make(map[string][]string)
-		if s.tmdbClient != nil {
-			if contentType == "movie" {
-
-				type queryKey struct {
-					lang        string
-					includeYear bool
-				}
-				resolved := make(map[queryKey][]string)
-				for name, eff := range req.EffectiveByIndexer {
-					lang := ""
-					if eff.SearchTitleLanguage != nil {
-						lang = *eff.SearchTitleLanguage
-					}
-					k := queryKey{lang: lang, includeYear: false}
-					if queries, ok := resolved[k]; ok {
-						req.PerIndexerQuery[name] = queries
-						continue
-					}
-					primary, orig, err := s.tmdbClient.GetMovieTitlesForSearch(contentIDs.ImdbID, req.TMDBID, lang, false, false)
-					if err != nil {
-						logger.Debug("Per-indexer movie query failed", "indexer", name, "language", lang, "err", err)
-						continue
-					}
-					queries := []string{primary}
-					if orig != "" {
-						queries = append(queries, orig)
-						logger.Debug("Per-indexer movie query", "indexer", name, "language", lang, "primary", primary, "original", orig)
-					} else {
-						logger.Debug("Per-indexer movie query", "indexer", name, "language", lang, "query", primary)
-					}
-					resolved[k] = queries
-					req.PerIndexerQuery[name] = queries
-				}
-			} else if req.Season != "" && req.Episode != "" {
-
-				type queryKey struct {
-					includeYear bool
-				}
-				resolved := make(map[queryKey][]string)
-				for name := range req.EffectiveByIndexer {
-					k := queryKey{includeYear: false}
-					if queries, ok := resolved[k]; ok {
-						req.PerIndexerQuery[name] = queries
-						continue
-					}
-					showName, year, err := s.tmdbClient.GetTVShowTitleAndYear(tmdbForText, imdbForText)
-					if err != nil {
-						logger.Debug("Per-indexer series query failed", "indexer", name, "err", err)
-						continue
-					}
-					queries := buildSeriesQueriesWithOptions(showName, year, false)
-					logger.Debug("Per-indexer series query", "indexer", name, "queries", queries)
-					resolved[k] = queries
-					req.PerIndexerQuery[name] = queries
-				}
-			}
-		}
-	}
+	contentIDs.ImdbID = req.IMDbID
+	contentIDs.TvdbID = req.TVDBID
 	params.Req = req
 	params.ContentIDs = contentIDs
 	params.ImdbForText = imdbForText
@@ -1444,13 +2026,182 @@ func (s *Server) buildSearchParams(contentType, id string) (*SearchParams, error
 	return params, nil
 }
 
-func (s *Server) runAvailNZBPhase(ctx context.Context, params *SearchParams, device *auth.Device) ([]Stream, []*release.Release, *availnzb.ReleasesResult) {
+func cloneSearchParams(base *SearchParams) *SearchParams {
+	if base == nil {
+		return nil
+	}
+	next := *base
+	nextReq := base.Req
+	next.Req = nextReq
+	if base.ContentIDs != nil {
+		contentIDs := *base.ContentIDs
+		next.ContentIDs = &contentIDs
+	}
+	if base.AvailIndexers != nil {
+		next.AvailIndexers = append([]string(nil), base.AvailIndexers...)
+	}
+	next.MovieTitleQueries = base.MovieTitleQueries
+	next.SeriesTitleQueries = base.SeriesTitleQueries
+	next.Metadata = base.Metadata
+	return &next
+}
+
+func (s *Server) buildSearchParamsFromBase(base *SearchParams, searchQuery *config.SearchQueryConfig) (*SearchParams, error) {
+	params := cloneSearchParams(base)
+	if params == nil {
+		return nil, fmt.Errorf("base search params are required")
+	}
+	contentType := params.ContentType
+	req := &params.Req
+	searchMode := ""
+	includeYearInTextSearch := true
+	useSeasonEpisodeParams := true
+	var queryIndexerConfig *config.IndexerSearchConfig
+	if searchQuery != nil {
+		searchMode = strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
+		queryIndexerConfig = searchQuery.AsIndexerSearchConfig()
+		if searchQuery.IncludeYearInTextSearch != nil {
+			includeYearInTextSearch = *searchQuery.IncludeYearInTextSearch
+		}
+		if searchQuery.UseSeasonEpisodeParams != nil {
+			useSeasonEpisodeParams = *searchQuery.UseSeasonEpisodeParams
+		}
+	}
+	req.UseSeasonEpisodeParams = useSeasonEpisodeParams
+	req.ForceIDSearch = false
+	req.Query = ""
+	req.PerIndexerQuery = nil
+	req.FilterQuery = ""
+	if searchMode == "id" {
+		req.ForceIDSearch = true
+		if contentType == "series" && req.Season != "" && req.Episode != "" && !useSeasonEpisodeParams {
+			if seasonNum, err1 := strconv.Atoi(req.Season); err1 == nil {
+				if episodeNum, err2 := strconv.Atoi(req.Episode); err2 == nil {
+					req.Query = fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
+				}
+			}
+			if req.Query == "" {
+				req.Query = fmt.Sprintf("S%sE%s", req.Season, req.Episode)
+			}
+		}
+	}
+
+	if len(s.config.Indexers) > 0 {
+		req.EffectiveByIndexer = make(map[string]*config.IndexerSearchConfig)
+		indexerTypeByName := make(map[string]string, len(s.config.Indexers))
+		for i := range s.config.Indexers {
+			ic := &s.config.Indexers[i]
+			if ic.Enabled != nil && !*ic.Enabled {
+				continue
+			}
+			eff := config.MergeIndexerSearch(ic, queryIndexerConfig, s.config)
+			if strings.EqualFold(ic.Type, "easynews") {
+				t := true
+				eff.DisableIdSearch = &t
+			}
+			req.EffectiveByIndexer[ic.Name] = eff
+			indexerTypeByName[ic.Name] = ic.Type
+		}
+		if searchMode != "id" {
+			req.PerIndexerQuery = make(map[string][]string)
+		}
+		if searchMode != "id" {
+			if contentType == "movie" {
+				for name, eff := range req.EffectiveByIndexer {
+					includeYear := includeYearInTextSearch
+					if strings.EqualFold(indexerTypeByName[name], "easynews") {
+						includeYear = false
+					}
+					lang := ""
+					if eff.SearchTitleLanguage != nil {
+						lang = *eff.SearchTitleLanguage
+					}
+					cacheKey := fmt.Sprintf("%s|%t|%t", lang, includeYear, useSeasonEpisodeParams)
+					if queries, ok := params.MovieTitleQueries[cacheKey]; ok {
+						req.PerIndexerQuery[name] = queries
+						continue
+					}
+					queries := buildMovieQueriesFromMetadata(params.Metadata, lang, includeYear)
+					if len(queries) == 0 {
+						logger.Debug("Prepared movie search titles failed", "stream", req.StreamLabel, "request", req.RequestLabel, "language", lang, "err", "metadata unavailable")
+						continue
+					}
+					params.MovieTitleQueries[cacheKey] = queries
+					req.PerIndexerQuery[name] = queries
+				}
+			} else if req.Season != "" && req.Episode != "" {
+				for name, eff := range req.EffectiveByIndexer {
+					includeYear := includeYearInTextSearch
+					if strings.EqualFold(indexerTypeByName[name], "easynews") {
+						includeYear = false
+					}
+					lang := ""
+					if eff.SearchTitleLanguage != nil {
+						lang = *eff.SearchTitleLanguage
+					}
+					cacheKey := fmt.Sprintf("%s|%t", lang, includeYear)
+					if queries, ok := params.SeriesTitleQueries[cacheKey]; ok {
+						req.PerIndexerQuery[name] = queries
+						continue
+					}
+					queries := buildSeriesQueriesFromMetadata(params.Metadata, lang, includeYear, req.Season, req.Episode, useSeasonEpisodeParams)
+					if len(queries) == 0 {
+						logger.Debug("Prepared series search titles failed", "stream", req.StreamLabel, "request", req.RequestLabel, "language", lang, "err", "metadata unavailable")
+						continue
+					}
+					params.SeriesTitleQueries[cacheKey] = queries
+					req.PerIndexerQuery[name] = queries
+				}
+			}
+		}
+	}
+	if searchMode != "id" {
+		if contentType == "movie" {
+			queries := buildMovieQueriesFromMetadata(params.Metadata, "", includeYearInTextSearch)
+			if len(queries) > 0 {
+				req.FilterQuery = queries[0]
+			}
+		} else if req.Season != "" && req.Episode != "" {
+			queries := buildSeriesQueriesFromMetadata(params.Metadata, "", false, req.Season, req.Episode, false)
+			if len(queries) > 0 {
+				req.FilterQuery = queries[0]
+			}
+		}
+	}
+	return params, nil
+}
+
+func (s *Server) buildSearchParams(contentType, id string, searchQuery *config.SearchQueryConfig) (*SearchParams, error) {
+	base, err := s.buildSearchParamsBase(contentType, id, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildSearchParamsFromBase(base, searchQuery)
+}
+
+func appendSeasonEpisodeQuery(query, season, episode string) string {
+	if season == "" || episode == "" {
+		return strings.TrimSpace(query)
+	}
+	seasonNum, seasonErr := strconv.Atoi(season)
+	episodeNum, episodeErr := strconv.Atoi(episode)
+	suffix := fmt.Sprintf("S%sE%s", season, episode)
+	if seasonErr == nil && episodeErr == nil {
+		suffix = fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
+	}
+	if strings.TrimSpace(query) == "" {
+		return suffix
+	}
+	return strings.TrimSpace(query) + " " + suffix
+}
+
+func (s *Server) runAvailNZBPhase(ctx context.Context, params *SearchParams, stream *auth.Stream) ([]Stream, []*release.Release, *availnzb.ReleasesResult) {
 	contentIDs := params.ContentIDs
 	availIndexers := params.AvailIndexers
-	if s.availClient == nil || s.availClient.BaseURL == "" || (contentIDs.ImdbID == "" && contentIDs.TvdbID == "") {
+	if !streamUsesAvailNZB(stream) || s.availClient == nil || s.availClient.BaseURL == "" || (contentIDs.ImdbID == "" && contentIDs.TvdbID == "") {
 		return nil, nil, nil
 	}
-	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, contentIDs.TvdbID, contentIDs.Season, contentIDs.Episode, availIndexers, s.validator.GetProviderHosts())
+	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, contentIDs.TvdbID, contentIDs.Season, contentIDs.Episode, availIndexers, s.providerHostsForStream(stream))
 	if availResult == nil || len(availResult.Releases) == 0 {
 		return nil, nil, nil
 	}
@@ -1485,14 +2236,14 @@ func (s *Server) runAvailNZBPhase(ctx context.Context, params *SearchParams, dev
 		seen[norm] = true
 		downloadURL := addAPIKeyToDownloadURL(rel.Link, s.config.Indexers)
 		sessionID := fmt.Sprintf("%x", md5.Sum([]byte(rel.DetailsURL)))
-		_, err := s.sessionManager.CreateDeferredSession(sessionID, downloadURL, rel, s.indexer, contentIDs, params.ContentType, params.ID)
+		_, err := s.sessionManager.CreateDeferredSessionWithFetcher(sessionID, downloadURL, rel, s.indexer, contentIDs, params.ContentType, params.ID, s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
 		if err != nil {
 			logger.Debug("AvailNZB deferred session failed", "title", rel.Title, "err", err)
 			continue
 		}
 		var streamURL string
-		if device != nil {
-			streamURL = s.baseURLWithToken(device) + "/play/" + sessionID
+		if stream != nil {
+			streamURL = s.baseURLWithToken(stream) + "/play/" + sessionID
 		}
 		sizeGB := float64(rel.Size) / (1024 * 1024 * 1024)
 		displayTitle := rel.Title + "\n[AvailNZB]"
@@ -1505,12 +2256,12 @@ func (s *Server) runAvailNZBPhase(ctx context.Context, params *SearchParams, dev
 	return streams, availReleases, availResult
 }
 
-func (s *Server) GetAvailNZBStreams(ctx context.Context, contentType, id string, device *auth.Device) ([]Stream, error) {
-	params, err := s.buildSearchParams(contentType, id)
+func (s *Server) GetAvailNZBStreams(ctx context.Context, contentType, id string, stream *auth.Stream) ([]Stream, error) {
+	params, err := s.buildSearchParams(contentType, id, nil)
 	if err != nil {
 		return nil, err
 	}
-	streams, _, _ := s.runAvailNZBPhase(ctx, params, device)
+	streams, _, _ := s.runAvailNZBPhase(ctx, params, stream)
 	if streams == nil {
 		return []Stream{}, nil
 	}
@@ -1519,7 +2270,7 @@ func (s *Server) GetAvailNZBStreams(ctx context.Context, contentType, id string,
 
 // ensureDeferredSessionsForPlayList creates deferred sessions for every candidate in the play list,
 // keyed by the same slot path used in stream URLs, so handlePlay can serve without resolving or hitting indexers.
-func (s *Server) ensureDeferredSessionsForPlayList(list *orderedPlayListResult, key StreamSlotKey, device *auth.Device) {
+func (s *Server) ensureDeferredSessionsForPlayList(list *orderedPlayListResult, key StreamSlotKey, stream *auth.Stream) {
 	if list == nil || list.Params == nil {
 		return
 	}
@@ -1540,18 +2291,18 @@ func (s *Server) ensureDeferredSessionsForPlayList(list *orderedPlayListResult, 
 				idx = ii
 			}
 		}
-		if _, err := s.sessionManager.CreateDeferredSession(playPath, downloadURL, cand.Release, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID); err != nil {
+		if _, err := s.sessionManager.CreateDeferredSessionWithFetcher(playPath, downloadURL, cand.Release, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, s.segmentFetcherForStream(stream), s.providerHostsForStream(stream)); err != nil {
 			logger.Debug("Create deferred session for play list failed", "slot", playPath, "err", err)
 		}
 	}
 }
 
-func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index int, device *auth.Device) (*session.Session, error) {
+func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index int, stream *auth.Stream) (*session.Session, error) {
 	if key.StreamID == "" {
 		key.StreamID = defaultStreamID
 	}
-	isAIOStreams := s.sessionManager.IsAIOStreamsDevice(deviceToken(device))
-	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams)
+	isAIOStreams := streamUsesAIOStreamsProfile(stream)
+	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams, stream)
 	if err != nil || list == nil {
 		return nil, fmt.Errorf("build play list: %w", err)
 	}
@@ -1572,7 +2323,7 @@ func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index
 		}
 	}
 	sessionID := key.SlotPath(index)
-	_, err = s.sessionManager.CreateDeferredSession(sessionID, downloadURL, rel, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID)
+	_, err = s.sessionManager.CreateDeferredSessionWithFetcher(sessionID, downloadURL, rel, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
 	if err != nil {
 		return nil, fmt.Errorf("create deferred session: %w", err)
 	}
@@ -1587,7 +2338,7 @@ func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index
 // For slot :0 (the "next release" stream URL, which is always anchored to slot 0), a per-device cursor
 // advances through releases so repeated clicks return :1, :2, :3, ... rather than always :1.
 // For slot :N (direct progression from a known position), deriveNextSlotID is used as-is.
-func (s *Server) handleNextRelease(w http.ResponseWriter, r *http.Request, device *auth.Device) {
+func (s *Server) handleNextRelease(w http.ResponseWriter, r *http.Request, stream *auth.Stream) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/next/")
 	if sessionID == "" {
 		http.Error(w, "Missing stream slot", http.StatusBadRequest)
@@ -1608,16 +2359,16 @@ func (s *Server) handleNextRelease(w http.ResponseWriter, r *http.Request, devic
 	if currentIndex == 0 {
 		// The "next release" stream URL is always anchored to slot :0 regardless of how many times the
 		// user has already clicked "next". Use a cursor so successive clicks advance through the list.
-		nextSlotID, err = s.advanceNextReleaseCursor(r.Context(), key, device)
+		nextSlotID, err = s.advanceNextReleaseCursor(r.Context(), key, stream)
 	} else {
 		// Called from a specific non-zero slot (e.g. AIOStreams failover order progression).
-		nextSlotID, err = s.deriveNextSlotID(r.Context(), sessionID, device)
+		nextSlotID, err = s.deriveNextSlotID(r.Context(), sessionID, stream)
 	}
 	if err != nil || nextSlotID == "" {
 		http.Error(w, "No next release available", http.StatusNotFound)
 		return
 	}
-	nextURL := s.baseURLWithToken(device) + "/play/" + nextSlotID + "?next=1"
+	nextURL := s.baseURLWithToken(stream) + "/play/" + nextSlotID + "?next=1"
 	logger.Info("Next release redirect", "from", sessionID, "to", nextSlotID)
 	w.Header().Set("Location", nextURL)
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1635,19 +2386,19 @@ type nextReleaseCursor struct {
 // until it either commits (was successfully served, tracked by recordedSuccessSessionIDs) or
 // fails (marked by SetSlotFailedDuringPlayback). This prevents Stremio's automatic re-requests
 // of the /next/ URL from prematurely advancing through the playlist.
-func (s *Server) advanceNextReleaseCursor(ctx context.Context, key StreamSlotKey, device *auth.Device) (string, error) {
+func (s *Server) advanceNextReleaseCursor(ctx context.Context, key StreamSlotKey, stream *auth.Stream) (string, error) {
 	if key.StreamID == "" {
 		key.StreamID = defaultStreamID
 	}
-	isAIOStreams := s.sessionManager.IsAIOStreamsDevice(deviceToken(device))
-	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams)
+	isAIOStreams := streamUsesAIOStreamsProfile(stream)
+	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams, stream)
 	if err != nil || list == nil {
 		return "", err
 	}
 	n := len(list.Candidates)
 	useSlotPaths := len(list.SlotPaths) == n
 
-	stateKey := deviceToken(device) + "|" + key.CacheKey()
+	stateKey := streamToken(stream) + "|" + key.CacheKey()
 	v, _ := s.nextReleaseIndex.LoadOrStore(stateKey, &nextReleaseCursor{nextIndex: 1})
 	cursor := v.(*nextReleaseCursor)
 
@@ -1771,7 +2522,7 @@ type playbackSourceOpenResult struct {
 
 // handlePlay: resolve session (by slot path or existing), optionally redirect if slot previously failed,
 // then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
-func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth.Device) {
+func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/play/")
 	requestedSessionID := sessionID
 	logger.Info("Play request", "session", sessionID)
@@ -1788,9 +2539,9 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 	if err != nil {
 		// The session may have been deleted by a concurrent internal failover (e.g. exceeded failure threshold).
 		// If the slot was marked as failed, redirect the client to the next working slot rather than 404.
-		if s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
-			if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, device); nextID != "" && deriveErr == nil {
-				nextURL := s.baseURLWithToken(device) + "/play/" + nextID
+		if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
+			if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
+				nextURL := s.baseURLWithToken(streamConfig) + "/play/" + nextID
 				logger.Info("Session deleted (slot failed during playback), redirecting to next", "from", sessionID, "to", nextID)
 				w.Header().Set("Location", nextURL)
 				w.WriteHeader(http.StatusFound)
@@ -1807,9 +2558,9 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 	}
 
 	// If this slot failed during playback (430), redirect client to next fallback so retries get a working stream.
-	if s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
-		if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, device); nextID != "" && deriveErr == nil {
-			nextURL := s.baseURLWithToken(device) + "/play/" + nextID
+	if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
+		if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
+			nextURL := s.baseURLWithToken(streamConfig) + "/play/" + nextID
 			logger.Info("Redirecting to next fallback (slot failed during playback)", "from", sessionID, "to", nextID)
 			w.Header().Set("Location", nextURL)
 			w.WriteHeader(http.StatusFound)
@@ -1830,8 +2581,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 	// No response (headers or body) is sent until we pass the probe below and call ServeContent. That way we can fail over without the client having seen any response.
 	for {
 		// Skip slots we've already marked as failed; use cache so we never try them.
-		if s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
-			if nextSess, nextID, switchErr := s.switchToNextFallback(r.Context(), sess, device); nextID != "" && switchErr == nil {
+		if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
+			if nextSess, nextID, switchErr := s.switchToNextFallback(r.Context(), sess, streamConfig); nextID != "" && switchErr == nil {
 				logger.Info("Skipping known-failed slot, trying next fallback", "from", sessionID, "to", nextID)
 				sess, sessionID = nextSess, nextID
 				continue
@@ -1839,8 +2590,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 			forceDisconnect(w, s.baseURL)
 			return
 		}
-		if nextSlotID, deriveErr := s.deriveNextSlotID(r.Context(), sess.ID, device); deriveErr == nil {
-			s.prefetchNextFallbackNZB(nextSlotID, device)
+		if nextSlotID, deriveErr := s.deriveNextSlotID(r.Context(), sess.ID, streamConfig); deriveErr == nil {
+			s.prefetchNextFallbackNZB(nextSlotID, streamConfig)
 		}
 		// Use a context that cancels when either the request ends or the session is closed (e.g. user closed from dashboard).
 		// That way closing the session aborts playback and stops downloading immediately.
@@ -1891,10 +2642,12 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, device *auth
 				}(sessionID, sess.Done())
 			}
 			s.sessionManager.DeleteSession(sessionID)
-			if nextSess, nextID, switchErr := s.switchToNextFallback(r.Context(), sess, device); nextID != "" && switchErr == nil {
-				logger.Info("Trying next fallback slot (internal)", "from", sessionID, "to", nextID, "err", prepareErr)
-				sess, sessionID = nextSess, nextID
-				continue
+			if streamFailoverEnabled(streamConfig) {
+				if nextSess, nextID, switchErr := s.switchToNextFallback(r.Context(), sess, streamConfig); nextID != "" && switchErr == nil {
+					logger.Info("Trying next fallback slot (internal)", "from", sessionID, "to", nextID, "err", prepareErr)
+					sess, sessionID = nextSess, nextID
+					continue
+				}
 			}
 			logger.Info("No more fallback slots", "last", sessionID, "err", prepareErr)
 			forceDisconnect(w, s.baseURL)
@@ -2369,40 +3122,43 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 
 // prefetchNextFallbackNZB starts a background goroutine to resolve the next fallback slot and
 // download its NZB so that when we fail over to it, tryPlaySlot may find the NZB already loaded.
-func (s *Server) prefetchNextFallbackNZB(nextSlotID string, device *auth.Device) {
+func (s *Server) prefetchNextFallbackNZB(nextSlotID string, stream *auth.Stream) {
 	if nextSlotID == "" {
 		return
 	}
-	go func(id string, dev *auth.Device) {
+	go func(id string, stream *auth.Stream) {
 		ctx := context.Background()
-		sess, err := s.getOrResolveSession(ctx, id, dev)
+		sess, err := s.getOrResolveSession(ctx, id, stream)
 		if err != nil {
 			return
 		}
 		if _, err := sess.GetOrDownloadNZB(s.sessionManager); err != nil {
 			logger.Trace("Prefetch NZB failed (next fallback)", "slot", id, "err", err)
 		}
-	}(nextSlotID, device)
+	}(nextSlotID, stream)
 }
 
 // deriveNextSlotID returns the next non-failed slot path after currentID by consulting the cached play list.
-// If the device has a failover order (AIOStreams), it advances through that order; otherwise it increments the index.
-func (s *Server) deriveNextSlotID(ctx context.Context, currentID string, device *auth.Device) (string, error) {
+// If the stream uses the AIOStreams profile and has a failover order, it advances through that order; otherwise it increments the index.
+func (s *Server) deriveNextSlotID(ctx context.Context, currentID string, stream *auth.Stream) (string, error) {
 	streamId, contentType, id, currentIndex, ok := parseStreamSlotID(currentID)
 	if !ok {
 		return "", nil
 	}
 	key := StreamSlotKey{StreamID: streamId, ContentType: contentType, ID: id}
-	isAIOStreams := s.sessionManager.IsAIOStreamsDevice(deviceToken(device))
-	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams)
+	isAIOStreams := streamUsesAIOStreamsProfile(stream)
+	list, err := s.buildOrderedPlayList(ctx, key, isAIOStreams, stream)
 	if err != nil || list == nil {
 		return "", err
 	}
 	n := len(list.Candidates)
 	useSlotPaths := len(list.SlotPaths) == n
 
-	// If the device has a failover order (AIOStreams), advance through that order.
-	order := s.sessionManager.GetDeviceFailoverOrder(deviceToken(device), key.CacheKey())
+	// If the stream uses the AIOStreams profile and has a failover order, advance through that order.
+	order := []string(nil)
+	if isAIOStreams {
+		order = s.sessionManager.GetDeviceFailoverOrder(streamToken(stream), key.CacheKey())
+	}
 	if len(order) > 0 {
 		ourPosition := -1
 		for p, entry := range order {
@@ -2428,7 +3184,7 @@ func (s *Server) deriveNextSlotID(ctx context.Context, currentID string, device 
 					return entry, nil
 				}
 			}
-			return "", nil // exhausted the device-provided order
+			return "", nil // exhausted the stream-provided order
 		}
 	}
 
@@ -2447,14 +3203,14 @@ func (s *Server) deriveNextSlotID(ctx context.Context, currentID string, device 
 
 // switchToNextFallback derives the next fallback slot from the cached play list and returns its session.
 // Returns (nil, "", nil) when there is no next slot, or (nil, "", err) on a resolve error.
-func (s *Server) switchToNextFallback(ctx context.Context, sess *session.Session, device *auth.Device) (*session.Session, string, error) {
+func (s *Server) switchToNextFallback(ctx context.Context, sess *session.Session, stream *auth.Stream) (*session.Session, string, error) {
 	currentID := sess.ID
 	for {
-		nextID, err := s.deriveNextSlotID(ctx, currentID, device)
+		nextID, err := s.deriveNextSlotID(ctx, currentID, stream)
 		if err != nil || nextID == "" {
 			return nil, "", err
 		}
-		nextSess, err := s.getOrResolveSession(ctx, nextID, device)
+		nextSess, err := s.getOrResolveSession(ctx, nextID, stream)
 		if err == nil {
 			return nextSess, nextID, nil
 		}
@@ -2467,14 +3223,14 @@ func (s *Server) switchToNextFallback(ctx context.Context, sess *session.Session
 	}
 }
 
-func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, device *auth.Device) (*session.Session, error) {
+func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, stream *auth.Stream) (*session.Session, error) {
 	sess, err := s.sessionManager.GetSession(sessionID)
 	if err == nil {
 		return sess, nil
 	}
 	if streamId, contentType, id, index, ok := parseStreamSlotID(sessionID); ok {
 		key := StreamSlotKey{StreamID: streamId, ContentType: contentType, ID: id}
-		sess, err = s.resolveStreamSlot(ctx, key, index, device)
+		sess, err = s.resolveStreamSlot(ctx, key, index, stream)
 		if err != nil {
 			return nil, err
 		}
@@ -2554,7 +3310,7 @@ func (s *Server) recordAttempt(sess *session.Session, success bool, failureReaso
 	}
 }
 
-func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, device *auth.Device) {
+func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
 	nzbPath := r.URL.Query().Get("nzb")
 	if nzbPath == "" {
 		http.Error(w, "Missing 'nzb' query parameter (URL or file path)", http.StatusBadRequest)
@@ -2774,7 +3530,7 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.availNZBIndexerHosts = opts.AvailNZBIndexerHosts
 	s.tmdbClient = opts.TMDBClient
 	s.tvdbClient = opts.TVDBClient
-	s.deviceManager = opts.DeviceManager
+	s.streamManager = opts.StreamManager
 }
 
 type writeTimeoutResponseWriter struct {

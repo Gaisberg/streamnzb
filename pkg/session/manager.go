@@ -84,6 +84,9 @@ type Session struct {
 	downloadURL string
 	indexer     indexer.Indexer
 
+	segmentFetcher loader.SegmentFetcher
+	providerHosts  []string
+
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
 }
@@ -126,6 +129,12 @@ func (s *Session) ReportReleaseName() string {
 		return s.Release.Title
 	}
 	return ""
+}
+
+func (s *Session) ProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.providerHosts...)
 }
 
 // BytesRead returns the number of bytes read from this session during playback.
@@ -176,10 +185,6 @@ const PostPlaybackEvictTTL = 15 * time.Minute
 // Matches the 60-second window used in GetActiveSessions.
 const clientStaleTTL = 60 * time.Second
 
-// AIOStreamsDeviceTTL is how long an AIOStreams device entry is retained before cleanup() removes it.
-// Prevents aioStreamsDevices from growing unbounded over the lifetime of the process.
-const AIOStreamsDeviceTTL = 48 * time.Hour
-
 type failoverOrderEntry struct {
 	order     []string
 	expiresAt time.Time
@@ -195,7 +200,6 @@ type Manager struct {
 	mu                       sync.RWMutex
 	failoverOrder            sync.Map
 	slotFailedDuringPlayback sync.Map // slotPath -> *failedSlotEntry (430 during streaming)
-	aioStreamsDevices        sync.Map // deviceToken -> time.Time (last seen; cleaned up after AIOStreamsDeviceTTL)
 	stopCh                   chan struct{}
 }
 
@@ -465,6 +469,10 @@ type AvailReportMeta struct {
 }
 
 func (m *Manager) CreateSession(sessionID string, nzbData *nzb.NZB, rel *release.Release, contentIDs *AvailReportMeta) (*Session, error) {
+	return m.CreateSessionWithFetcher(sessionID, nzbData, rel, contentIDs, nil, nil)
+}
+
+func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, rel *release.Release, contentIDs *AvailReportMeta, segmentFetcher loader.SegmentFetcher, providerHosts []string) (*Session, error) {
 	logger.Trace("session CreateSession start", "id", sessionID)
 	m.mu.Lock()
 	if existing, ok := m.sessions[sessionID]; ok {
@@ -487,22 +495,27 @@ func (m *Manager) CreateSession(sessionID string, nzbData *nzb.NZB, rel *release
 	usenetPool := m.usenetPool
 	estimator := m.estimator
 	m.mu.RUnlock()
+	if segmentFetcher == nil {
+		segmentFetcher = usenetPool
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, pools, usenetPool, estimator)
+	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, pools, segmentFetcher, estimator)
 
 	session := &Session{
-		ID:         sessionID,
-		NZB:        nzbData,
-		Files:      loaderFiles,
-		File:       loaderFiles[0],
-		Release:    rel,
-		ContentIDs: contentIDs,
-		CreatedAt:  time.Now(),
-		LastAccess: time.Now(),
-		Clients:    make(map[string]time.Time),
-		ctx:        ctx,
-		cancel:     cancel,
+		ID:             sessionID,
+		NZB:            nzbData,
+		Files:          loaderFiles,
+		File:           loaderFiles[0],
+		Release:        rel,
+		ContentIDs:     contentIDs,
+		CreatedAt:      time.Now(),
+		LastAccess:     time.Now(),
+		Clients:        make(map[string]time.Time),
+		ctx:            ctx,
+		cancel:         cancel,
+		segmentFetcher: segmentFetcher,
+		providerHosts:  append([]string(nil), providerHosts...),
 	}
 
 	logger.Debug("session CreateSession", "id", sessionID, "files", len(loaderFiles))
@@ -512,6 +525,7 @@ func (m *Manager) CreateSession(sessionID string, nzbData *nzb.NZB, rel *release
 		existing.mu.Lock()
 		existing.LastAccess = time.Now()
 		existing.mu.Unlock()
+		cancel()
 		return existing, nil
 	}
 	m.sessions[sessionID] = session
@@ -547,6 +561,10 @@ func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.F
 }
 
 func (m *Manager) CreateDeferredSession(sessionID, downloadURL string, rel *release.Release, idx indexer.Indexer, contentIDs *AvailReportMeta, contentType, contentID string) (*Session, error) {
+	return m.CreateDeferredSessionWithFetcher(sessionID, downloadURL, rel, idx, contentIDs, contentType, contentID, nil, nil)
+}
+
+func (m *Manager) CreateDeferredSessionWithFetcher(sessionID, downloadURL string, rel *release.Release, idx indexer.Indexer, contentIDs *AvailReportMeta, contentType, contentID string, segmentFetcher loader.SegmentFetcher, providerHosts []string) (*Session, error) {
 	logger.Trace("session CreateDeferredSession start", "id", sessionID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -561,19 +579,21 @@ func (m *Manager) CreateDeferredSession(sessionID, downloadURL string, rel *rele
 
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &Session{
-		ID:          sessionID,
-		NZB:         nil,
-		Release:     rel,
-		ContentIDs:  contentIDs,
-		ContentType: contentType,
-		ContentID:   contentID,
-		downloadURL: downloadURL,
-		indexer:     idx,
-		CreatedAt:   time.Now(),
-		LastAccess:  time.Now(),
-		Clients:     make(map[string]time.Time),
-		ctx:         ctx,
-		cancel:      cancel,
+		ID:             sessionID,
+		NZB:            nil,
+		Release:        rel,
+		ContentIDs:     contentIDs,
+		ContentType:    contentType,
+		ContentID:      contentID,
+		downloadURL:    downloadURL,
+		indexer:        idx,
+		CreatedAt:      time.Now(),
+		LastAccess:     time.Now(),
+		Clients:        make(map[string]time.Time),
+		ctx:            ctx,
+		cancel:         cancel,
+		segmentFetcher: segmentFetcher,
+		providerHosts:  append([]string(nil), providerHosts...),
 	}
 	m.sessions[sessionID] = session
 	logger.Trace("session CreateDeferredSession done", "id", sessionID)
@@ -640,8 +660,12 @@ func (s *Session) GetOrDownloadNZB(manager *Manager) (*nzb.NZB, error) {
 	usenetPool := manager.usenetPool
 	estimator := manager.estimator
 	manager.mu.RUnlock()
+	segmentFetcher := s.segmentFetcher
+	if segmentFetcher == nil {
+		segmentFetcher = usenetPool
+	}
 
-	loaderFiles := buildLoaderFiles(ctx, s.ID, contentFiles, pools, usenetPool, estimator)
+	loaderFiles := buildLoaderFiles(ctx, s.ID, contentFiles, pools, segmentFetcher, estimator)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -653,23 +677,6 @@ func (s *Session) GetOrDownloadNZB(manager *Manager) (*nzb.NZB, error) {
 	s.File = loaderFiles[0]
 	logger.Debug("session GetOrDownloadNZB created loader files", "id", s.ID, "files", len(loaderFiles))
 	return s.NZB, nil
-}
-
-// SetAIOStreamsDevice marks this device as an AIOStreams client. Call when User-Agent contains "AIOStreams".
-// The timestamp is refreshed on every call so active devices are not evicted by cleanup().
-func (m *Manager) SetAIOStreamsDevice(deviceToken string) {
-	if deviceToken != "" {
-		m.aioStreamsDevices.Store(deviceToken, time.Now())
-	}
-}
-
-// IsAIOStreamsDevice returns true if this device has been seen with AIOStreams User-Agent.
-func (m *Manager) IsAIOStreamsDevice(deviceToken string) bool {
-	if deviceToken == "" {
-		return false
-	}
-	_, ok := m.aioStreamsDevices.Load(deviceToken)
-	return ok
 }
 
 func failoverOrderMapKey(deviceToken, streamKey string) string {
@@ -735,6 +742,13 @@ func (m *Manager) GetSlotFailedDuringPlayback(slotPath string) bool {
 		return false
 	}
 	return true
+}
+
+func (m *Manager) ClearSlotFailedDuringPlayback(slotPath string) {
+	if slotPath == "" {
+		return
+	}
+	m.slotFailedDuringPlayback.Delete(slotPath)
 }
 
 // HasActiveSessionForContentID returns true if any session with the given content type
@@ -1040,12 +1054,6 @@ func (m *Manager) cleanup() {
 		return true
 	})
 
-	m.aioStreamsDevices.Range(func(key, val any) bool {
-		if lastSeen, ok := val.(time.Time); ok && now.Sub(lastSeen) > AIOStreamsDeviceTTL {
-			m.aioStreamsDevices.Delete(key)
-		}
-		return true
-	})
 }
 
 func (m *Manager) StartPlayback(id, ip string) {
@@ -1183,4 +1191,31 @@ func (m *Manager) UpdateUsenetPool(up *pool.Pool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.usenetPool = up
+}
+
+func (m *Manager) SegmentFetcherForProviders(providerIDs []string) loader.SegmentFetcher {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.usenetPool == nil {
+		return nil
+	}
+	if len(providerIDs) == 0 {
+		return m.usenetPool
+	}
+	subset := m.usenetPool.Subset(providerIDs)
+	if subset == nil {
+		return m.usenetPool
+	}
+	return subset
+}
+
+func (m *Manager) ProviderHostsForProviders(providerIDs []string) []string {
+	fetcher := m.SegmentFetcherForProviders(providerIDs)
+	if fetcher == nil {
+		return nil
+	}
+	if p, ok := fetcher.(*pool.Pool); ok {
+		return p.ProviderHosts()
+	}
+	return nil
 }

@@ -26,13 +26,14 @@ func (r *recordingIndexer) Ping() error                                         
 func (r *recordingIndexer) Name() string                                        { return r.name }
 func (r *recordingIndexer) GetUsage() indexer.Usage                             { return indexer.Usage{} }
 
-func TestRunIndexerSearchesPerIndexerTextRequestDoesNotCarrySeasonEpisode(t *testing.T) {
+func TestRunIndexerSearchesPerIndexerTextRequestCarriesSeasonEpisodeWhenEnabled(t *testing.T) {
 	idx := &recordingIndexer{name: "TestIndexer"}
 	req := indexer.SearchRequest{
-		Cat:     "5000",
-		Limit:   100,
-		Season:  "1",
-		Episode: "5",
+		Cat:                    "5000",
+		Limit:                  100,
+		Season:                 "1",
+		Episode:                "5",
+		UseSeasonEpisodeParams: true,
 		PerIndexerQuery: map[string][]string{
 			"TestIndexer": {"The Walking Dead"},
 		},
@@ -66,8 +67,8 @@ func TestRunIndexerSearchesPerIndexerTextRequestDoesNotCarrySeasonEpisode(t *tes
 	if idReq.Season != "1" || idReq.Episode != "5" {
 		t.Fatalf("expected ID request to keep season/episode, got season=%q episode=%q", idReq.Season, idReq.Episode)
 	}
-	if textReq.Season != "" || textReq.Episode != "" {
-		t.Fatalf("expected text request to omit season/episode, got season=%q episode=%q", textReq.Season, textReq.Episode)
+	if textReq.Season != "1" || textReq.Episode != "5" {
+		t.Fatalf("expected text request to keep season/episode when enabled, got season=%q episode=%q", textReq.Season, textReq.Episode)
 	}
 	if got := textReq.PerIndexerQuery["TestIndexer"]; len(got) != 1 || got[0] != "The Walking Dead" {
 		t.Fatalf("expected text request queries to be preserved, got %#v", got)

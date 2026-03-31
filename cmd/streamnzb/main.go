@@ -71,16 +71,26 @@ func main() {
 	}
 	availNZBAPIKey := os.Getenv(env.AvailNZBAPIKey)
 	if availNZBAPIKey == "" {
+		availNZBAPIKey = strings.TrimSpace(cfg.AvailNZBAPIKey)
+	}
+	if availNZBAPIKey == "" {
 		availNZBAPIKey = AvailNZBAPIKey
 	}
 	tmdbKey := os.Getenv(env.TMDBAPIKey)
+	if tmdbKey == "" {
+		tmdbKey = strings.TrimSpace(cfg.TMDBAPIKey)
+	}
 	if tmdbKey == "" {
 		tmdbKey = TMDBKey
 	}
 	tvdbKey := os.Getenv(env.TVDBAPIKey)
 	if tvdbKey == "" {
+		tvdbKey = strings.TrimSpace(cfg.TVDBAPIKey)
+	}
+	if tvdbKey == "" {
 		tvdbKey = TVDBKey
 	}
+	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 
 	dataDir := filepath.Dir(cfg.LoadedPath)
 	if dataDir == "" || dataDir == "." {
@@ -117,7 +127,7 @@ func main() {
 	}
 
 	{
-		if len(cfg.Devices) == 0 {
+		if !cfg.ResetLegacyDeviceState && len(cfg.Devices) == 0 {
 			var stateDevices map[string]*auth.Device
 			if found, _ := stateMgr.Get("devices", &stateDevices); found && len(stateDevices) > 0 {
 				cfg.Devices = make(map[string]*config.DeviceEntry)
@@ -189,7 +199,7 @@ func main() {
 		AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 		TMDBClient:           comp.TMDBClient,
 		TVDBClient:           comp.TVDBClient,
-		DeviceManager:        deviceManager,
+		StreamManager:        deviceManager,
 		Version:              Version,
 		AttemptRecorder:      stateMgr,
 	})
