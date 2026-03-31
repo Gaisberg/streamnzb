@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -216,8 +217,13 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 	}
 
 	if client.stream != nil && client.stream.Username == s.config.GetAdminUsername() {
+		s.mu.RLock()
+		currentCfg := s.config
+		currentLoadedPath := s.config.LoadedPath
+		s.mu.RUnlock()
 
-		fieldErrors := s.validateConfig(&newCfg)
+		plan := validationPlanFromPatch(payload, currentCfg, &newCfg)
+		fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
 		if len(fieldErrors) > 0 {
 			errorPayload, _ := json.Marshal(map[string]interface{}{
 				"status":  "error",
@@ -228,10 +234,6 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 			return
 		}
 
-		s.mu.RLock()
-		currentCfg := s.config
-		currentLoadedPath := s.config.LoadedPath
-		s.mu.RUnlock()
 		config.CopyEnvOverridesFrom(currentCfg, &newCfg)
 
 		newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
@@ -645,8 +647,90 @@ func (s *Server) broadcastUsersList() {
 }
 
 func (s *Server) validateConfig(cfg *config.Config) map[string]string {
+	return s.validateConfigWithPlan(cfg, fullConfigValidationPlan())
+}
+
+type configValidationPlan struct {
+	validateKeepLogFiles        bool
+	validateMovieSearchQueries  bool
+	validateSeriesSearchQueries bool
+	validateDeviceAssignments   bool
+	validateProviders           bool
+	validateIndexers            bool
+	providerDeletionOnly        bool
+	indexerDeletionOnly         bool
+	changedProviderIndexes      map[int]bool
+	changedIndexerIndexes       map[int]bool
+}
+
+func fullConfigValidationPlan() configValidationPlan {
+	return configValidationPlan{
+		validateKeepLogFiles:        true,
+		validateMovieSearchQueries:  true,
+		validateSeriesSearchQueries: true,
+		validateDeviceAssignments:   true,
+		validateProviders:           true,
+		validateIndexers:            true,
+	}
+}
+
+func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) configValidationPlan {
+	plan := fullConfigValidationPlan()
+	if len(body) == 0 || currentCfg == nil || nextCfg == nil {
+		return plan
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || len(raw) == 0 {
+		return plan
+	}
+
+	plan = configValidationPlan{}
+
+	if _, ok := raw["keep_log_files"]; ok {
+		plan.validateKeepLogFiles = true
+	}
+	if _, ok := raw["movie_search_queries"]; ok {
+		plan.validateMovieSearchQueries = true
+		plan.validateDeviceAssignments = true
+	}
+	if _, ok := raw["series_search_queries"]; ok {
+		plan.validateSeriesSearchQueries = true
+		plan.validateDeviceAssignments = true
+	}
+	if _, ok := raw["providers"]; ok {
+		plan.validateProviders = true
+		if len(nextCfg.Providers) < len(currentCfg.Providers) {
+			plan.providerDeletionOnly = true
+		} else {
+			plan.changedProviderIndexes = changedIndexes(currentCfg.Providers, nextCfg.Providers)
+		}
+	}
+	if _, ok := raw["indexers"]; ok {
+		plan.validateIndexers = true
+		if len(nextCfg.Indexers) < len(currentCfg.Indexers) {
+			plan.indexerDeletionOnly = true
+		} else {
+			plan.changedIndexerIndexes = changedIndexes(currentCfg.Indexers, nextCfg.Indexers)
+		}
+	}
+
+	return plan
+}
+
+func changedIndexes[T any](current, next []T) map[int]bool {
+	changed := make(map[int]bool)
+	for i := range next {
+		if i >= len(current) || !reflect.DeepEqual(current[i], next[i]) {
+			changed[i] = true
+		}
+	}
+	return changed
+}
+
+func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidationPlan) map[string]string {
 	errors := make(map[string]string)
-	if cfg.KeepLogFiles < 1 || cfg.KeepLogFiles > 50 {
+	if plan.validateKeepLogFiles && (cfg.KeepLogFiles < 1 || cfg.KeepLogFiles > 50) {
 		errors["keep_log_files"] = "Must be between 1 and 50"
 	}
 	validateSearchQueries := func(prefix string, queries []config.SearchQueryConfig) {
@@ -669,33 +753,39 @@ func (s *Server) validateConfig(cfg *config.Config) map[string]string {
 		}
 	}
 
-	validateSearchQueries("movie_search_queries", cfg.MovieSearchQueries)
-	validateSearchQueries("series_search_queries", cfg.SeriesSearchQueries)
+	if plan.validateMovieSearchQueries {
+		validateSearchQueries("movie_search_queries", cfg.MovieSearchQueries)
+	}
+	if plan.validateSeriesSearchQueries {
+		validateSearchQueries("series_search_queries", cfg.SeriesSearchQueries)
+	}
 
-	movieQueryNames := make(map[string]bool, len(cfg.MovieSearchQueries))
-	for _, query := range cfg.MovieSearchQueries {
-		if name := strings.ToLower(strings.TrimSpace(query.Name)); name != "" {
-			movieQueryNames[name] = true
-		}
-	}
-	seriesQueryNames := make(map[string]bool, len(cfg.SeriesSearchQueries))
-	for _, query := range cfg.SeriesSearchQueries {
-		if name := strings.ToLower(strings.TrimSpace(query.Name)); name != "" {
-			seriesQueryNames[name] = true
-		}
-	}
-	for username, device := range cfg.Devices {
-		if device == nil {
-			continue
-		}
-		for i, name := range device.MovieSearchQueries {
-			if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" && !movieQueryNames[normalized] {
-				errors[fmt.Sprintf("devices.%s.movie_search_queries.%d", username, i)] = "Assigned movie search query does not exist"
+	if plan.validateDeviceAssignments {
+		movieQueryNames := make(map[string]bool, len(cfg.MovieSearchQueries))
+		for _, query := range cfg.MovieSearchQueries {
+			if name := strings.ToLower(strings.TrimSpace(query.Name)); name != "" {
+				movieQueryNames[name] = true
 			}
 		}
-		for i, name := range device.SeriesSearchQueries {
-			if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" && !seriesQueryNames[normalized] {
-				errors[fmt.Sprintf("devices.%s.series_search_queries.%d", username, i)] = "Assigned show search query does not exist"
+		seriesQueryNames := make(map[string]bool, len(cfg.SeriesSearchQueries))
+		for _, query := range cfg.SeriesSearchQueries {
+			if name := strings.ToLower(strings.TrimSpace(query.Name)); name != "" {
+				seriesQueryNames[name] = true
+			}
+		}
+		for username, device := range cfg.Devices {
+			if device == nil {
+				continue
+			}
+			for i, name := range device.MovieSearchQueries {
+				if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" && !movieQueryNames[normalized] {
+					errors[fmt.Sprintf("devices.%s.movie_search_queries.%d", username, i)] = "Assigned movie search query does not exist"
+				}
+			}
+			for i, name := range device.SeriesSearchQueries {
+				if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" && !seriesQueryNames[normalized] {
+					errors[fmt.Sprintf("devices.%s.series_search_queries.%d", username, i)] = "Assigned show search query does not exist"
+				}
 			}
 		}
 	}
@@ -703,76 +793,86 @@ func (s *Server) validateConfig(cfg *config.Config) map[string]string {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	for i, p := range cfg.Providers {
-		wg.Add(1)
-		go func(idx int, provider config.Provider) {
-			defer wg.Done()
-			if provider.Enabled != nil && !*provider.Enabled {
-				return
+	if plan.validateProviders && !plan.providerDeletionOnly {
+		for i, p := range cfg.Providers {
+			if len(plan.changedProviderIndexes) > 0 && !plan.changedProviderIndexes[i] {
+				continue
 			}
-			if provider.Host == "" {
-				mu.Lock()
-				errors[fmt.Sprintf("providers.%d.host", idx)] = "Host is required"
-				mu.Unlock()
-				return
-			}
-			pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, 1)
-			if err := pool.Validate(); err != nil {
-				mu.Lock()
-				errors[fmt.Sprintf("providers.%d.host", idx)] = err.Error()
-				mu.Unlock()
-			}
-		}(i, p)
+			wg.Add(1)
+			go func(idx int, provider config.Provider) {
+				defer wg.Done()
+				if provider.Enabled != nil && !*provider.Enabled {
+					return
+				}
+				if provider.Host == "" {
+					mu.Lock()
+					errors[fmt.Sprintf("providers.%d.host", idx)] = "Host is required"
+					mu.Unlock()
+					return
+				}
+				pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, 1)
+				if err := pool.Validate(); err != nil {
+					mu.Lock()
+					errors[fmt.Sprintf("providers.%d.host", idx)] = err.Error()
+					mu.Unlock()
+				}
+			}(i, p)
+		}
 	}
 
-	for i, idx := range cfg.Indexers {
-		wg.Add(1)
-		go func(index int, indexerCfg config.IndexerConfig) {
-			defer wg.Done()
-			if indexerCfg.Enabled != nil && !*indexerCfg.Enabled {
-				return
+	if plan.validateIndexers && !plan.indexerDeletionOnly {
+		for i, idx := range cfg.Indexers {
+			if len(plan.changedIndexerIndexes) > 0 && !plan.changedIndexerIndexes[i] {
+				continue
 			}
-			if strings.EqualFold(indexerCfg.Type, "easynews") {
-				if indexerCfg.Username == "" {
+			wg.Add(1)
+			go func(index int, indexerCfg config.IndexerConfig) {
+				defer wg.Done()
+				if indexerCfg.Enabled != nil && !*indexerCfg.Enabled {
+					return
+				}
+				if strings.EqualFold(indexerCfg.Type, "easynews") {
+					if indexerCfg.Username == "" {
+						mu.Lock()
+						errors[fmt.Sprintf("indexers.%d.username", index)] = "Username is required"
+						mu.Unlock()
+					}
+					if indexerCfg.Password == "" {
+						mu.Lock()
+						errors[fmt.Sprintf("indexers.%d.password", index)] = "Password is required"
+						mu.Unlock()
+					}
+					return
+				}
+				if indexerCfg.URL == "" {
 					mu.Lock()
-					errors[fmt.Sprintf("indexers.%d.username", index)] = "Username is required"
+					errors[fmt.Sprintf("indexers.%d.url", index)] = "URL is required"
+					mu.Unlock()
+					return
+				}
+				if strings.Contains(indexerCfg.APIPath, "{indexer_id}") {
+					mu.Lock()
+					errors[fmt.Sprintf("indexers.%d.api_path", index)] = "Replace {indexer_id} with the Prowlarr indexer ID (for example 1/api)"
+					mu.Unlock()
+					return
+				}
+				indexerPingTimeout := indexerCfg.EffectiveTimeout()
+				client := newznab.NewClient(indexerCfg, nil)
+				errCh := make(chan error, 1)
+				go func() { errCh <- client.Ping() }()
+				var err error
+				select {
+				case err = <-errCh:
+				case <-time.After(indexerPingTimeout):
+					err = fmt.Errorf("connection timeout after %v", indexerPingTimeout)
+				}
+				if err != nil {
+					mu.Lock()
+					errors[fmt.Sprintf("indexers.%d.url", index)] = err.Error()
 					mu.Unlock()
 				}
-				if indexerCfg.Password == "" {
-					mu.Lock()
-					errors[fmt.Sprintf("indexers.%d.password", index)] = "Password is required"
-					mu.Unlock()
-				}
-				return
-			}
-			if indexerCfg.URL == "" {
-				mu.Lock()
-				errors[fmt.Sprintf("indexers.%d.url", index)] = "URL is required"
-				mu.Unlock()
-				return
-			}
-			if strings.Contains(indexerCfg.APIPath, "{indexer_id}") {
-				mu.Lock()
-				errors[fmt.Sprintf("indexers.%d.api_path", index)] = "Replace {indexer_id} with the Prowlarr indexer ID (for example 1/api)"
-				mu.Unlock()
-				return
-			}
-			indexerPingTimeout := indexerCfg.EffectiveTimeout()
-			client := newznab.NewClient(indexerCfg, nil)
-			errCh := make(chan error, 1)
-			go func() { errCh <- client.Ping() }()
-			var err error
-			select {
-			case err = <-errCh:
-			case <-time.After(indexerPingTimeout):
-				err = fmt.Errorf("connection timeout after %v", indexerPingTimeout)
-			}
-			if err != nil {
-				mu.Lock()
-				errors[fmt.Sprintf("indexers.%d.url", index)] = err.Error()
-				mu.Unlock()
-			}
-		}(i, idx)
+			}(i, idx)
+		}
 	}
 
 	wg.Wait()

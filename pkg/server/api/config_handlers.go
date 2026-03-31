@@ -100,7 +100,8 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fieldErrors := s.validateConfig(&newCfg)
+	plan := validationPlanFromPatch(body, currentCfg, &newCfg)
+	fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
 	if len(fieldErrors) > 0 {
 		s.writeSaveStatus(w, "error", "Validation failed", fieldErrors)
 		return
