@@ -73,6 +73,41 @@ function pickConfigSlice(values, keys) {
   }, {})
 }
 
+function buildNamedValidationSummary(errors, prefix, items, fallbackLabel) {
+  if (!errors) return ''
+  const summaries = []
+  const seen = new Set()
+
+  Object.entries(errors).forEach(([path, message]) => {
+    const match = path.match(new RegExp(`^${prefix}\\.(\\d+)\\.`))
+    if (!match) return
+    const index = Number(match[1])
+    const item = Array.isArray(items) ? items[index] : null
+    const label = item?.name || item?.host || item?.url || `${fallbackLabel} ${index + 1}`
+    const summary = `${label}: ${message}`
+    if (seen.has(summary)) return
+    seen.add(summary)
+    summaries.push(summary)
+  })
+
+  if (summaries.length === 0) return ''
+  if (summaries.length === 1) return summaries[0]
+  const visible = summaries.slice(0, 2)
+  const remaining = summaries.length - visible.length
+  return remaining > 0 ? `${visible.join(' | ')} | +${remaining} more` : visible.join(' | ')
+}
+
+function summarizeConfigErrors(errors, sourceTab, values) {
+  if (!errors) return ''
+  if (sourceTab === 'providers') {
+    return buildNamedValidationSummary(errors, 'providers', values?.providers, 'Provider')
+  }
+  if (sourceTab === 'indexers') {
+    return buildNamedValidationSummary(errors, 'indexers', values?.indexers, 'Indexer')
+  }
+  return ''
+}
+
 function Settings({ initialConfig, sendCommand, saveStatus, clearSaveStatus, isSaving, adminToken, indexerCaps, stats }) {
   const [activeTab, setActiveTab] = useState(() => {
     if (typeof window === 'undefined') return 'network'
@@ -407,11 +442,21 @@ function Settings({ initialConfig, sendCommand, saveStatus, clearSaveStatus, isS
       setConfigSnapshot(nextInitialValues)
       return true
     } catch (error) {
+      const summary = summarizeConfigErrors(error?.fieldErrors, sourceTab, {
+        providers: getValues('providers'),
+        indexers: getValues('indexers'),
+      })
+      if (summary) {
+        error.message = summary
+      }
       console.error('Error saving configuration:', error)
+      if (sourceTab !== 'network' && sourceTab !== 'advanced') {
+        showFooterStatus({ type: 'error', message: error.message || 'Failed to save configuration.' })
+      }
       setError('root', { message: 'Failed to save configuration: ' + error.message })
       throw error
     }
-  }, [activeTab, configSnapshot, getValues, sendCommand, setError])
+  }, [activeTab, configSnapshot, getValues, sendCommand, setError, showFooterStatus])
 
   const handleNetworkPersist = useCallback((payload, cardId = 'network') => {
     setLastSettingsSaveCard(cardId)
