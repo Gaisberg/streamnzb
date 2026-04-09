@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.0.0](https://github.com/Gaisberg/streamnzb/compare/v3.7.0...v4.0.0) (2026-04-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **streams:** refactor stream architecture and admin workflows ([#111](https://github.com/Gaisberg/streamnzb/issues/111))
+* **streams:** overhaul stream model and settings ui
+
+### Features
+
+* cleanup ui a bit ([5cd8bf4](https://github.com/Gaisberg/streamnzb/commit/5cd8bf49490874fbe87f0baa58f5915f3ce95c43))
+* easynews indexer ([416accf](https://github.com/Gaisberg/streamnzb/commit/416accf1a86359ebd21351ea9451feffa65b0199))
+* **streams:** improve search handling, caching, and settings UX ([#107](https://github.com/Gaisberg/streamnzb/issues/107)) ([12d6eb9](https://github.com/Gaisberg/streamnzb/commit/12d6eb961903359f367c4caab90ccee5d0a66894))
+* **streams:** overhaul stream model and settings ui ([b760493](https://github.com/Gaisberg/streamnzb/commit/b7604930b90a1c807541f2f75148f5b794acc1d6))
+* **streams:** refactor stream architecture and admin workflows ([#111](https://github.com/Gaisberg/streamnzb/issues/111)) ([cc19986](https://github.com/Gaisberg/streamnzb/commit/cc199862b7e3d4326627ad7e863d0a0739c86a83))
+* toggle nntp proxy on and off (Fixes [#101](https://github.com/Gaisberg/streamnzb/issues/101)) ([b62657b](https://github.com/Gaisberg/streamnzb/commit/b62657b78870ebaabf72dc7f1eeebac5f13e69a1))
+
+
+### Bug Fixes
+
+* accept 201 greetings response on NNTP connection (Fixes [#104](https://github.com/Gaisberg/streamnzb/issues/104)) ([5cd8bf4](https://github.com/Gaisberg/streamnzb/commit/5cd8bf49490874fbe87f0baa58f5915f3ce95c43))
+
 ## [Unreleased]
 
 ### ⚠ BREAKING CHANGES
