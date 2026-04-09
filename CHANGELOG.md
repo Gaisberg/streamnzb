@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.0.1](https://github.com/Gaisberg/streamnzb/compare/v4.0.0...v4.0.1) (2026-04-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **streams:** refactor stream architecture and admin workflows ([#111](https://github.com/Gaisberg/streamnzb/issues/111))
+
+### Features
+
+* **streams:** refactor stream architecture and admin workflows ([#111](https://github.com/Gaisberg/streamnzb/issues/111)) ([cc19986](https://github.com/Gaisberg/streamnzb/commit/cc199862b7e3d4326627ad7e863d0a0739c86a83))
+
+
+### Miscellaneous Chores
+
+* release 4.0.1 ([0a4e5f7](https://github.com/Gaisberg/streamnzb/commit/0a4e5f7d82cbc5c912ff96f8793cc8342ef7ef30))
+
 ## [4.0.0](https://github.com/Gaisberg/streamnzb/compare/v3.7.0...v4.0.0) (2026-04-09)
 
 
