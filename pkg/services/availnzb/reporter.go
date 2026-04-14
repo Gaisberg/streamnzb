@@ -66,11 +66,15 @@ func (r *Reporter) ReportGood(sess *session.Session, serveDuration time.Duration
 	if !QualifiesGood(sess, serveDuration, r.MinBytesToReportGood, r.MinDurationToReportGood) {
 		return SkippedOutcome("Playback ended before the good threshold was reached.")
 	}
-	if _, loaded := r.reported.LoadOrStore(sess.ID, struct{}{}); loaded {
+	if _, loaded := r.reported.Load(sess.ID); loaded {
 		return SkippedOutcome("This session was already reported to AvailNZB.")
 	}
 	logger.Info("Reporting good/streamable release to AvailNZB", "session", sess.ID)
-	return r.report(sess, true, true)
+	outcome := r.report(sess, true, true)
+	if outcome.Status == "sent" {
+		r.reported.Store(sess.ID, struct{}{})
+	}
+	return outcome
 }
 
 func (r *Reporter) ReportBad(sess *session.Session, reason string) ReportOutcome {

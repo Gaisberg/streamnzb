@@ -98,3 +98,41 @@ func TestReportGoodReturnsSkippedWhenDeliveryFails(t *testing.T) {
 		t.Fatalf("unexpected skip reason: %q", outcome.Reason)
 	}
 }
+
+func TestReportGoodAllowsRetryAfterSkippedAttempt(t *testing.T) {
+	reportCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reportCalls++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key")
+	reporter := NewReporter(client, nil)
+	reporter.MinBytesToReportGood = 1
+	reporter.MinDurationToReportGood = 0
+
+	sess := &session.Session{
+		ID:      "sess-good-retry",
+		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt1234567",
+		},
+	}
+	sess.AddBytesRead(2)
+
+	first := reporter.ReportGood(sess, time.Second)
+	if first.Status != "skipped" {
+		t.Fatalf("expected first outcome skipped, got %+v", first)
+	}
+
+	sess.RecordServedProviderHost("news.example.net")
+
+	second := reporter.ReportGood(sess, time.Second)
+	if second.Status != "sent" {
+		t.Fatalf("expected second outcome sent, got %+v", second)
+	}
+	if reportCalls != 1 {
+		t.Fatalf("expected one successful report call after retry, got %d", reportCalls)
+	}
+}
