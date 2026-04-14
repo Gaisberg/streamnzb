@@ -244,7 +244,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
       }
       requestClose()
     }}>
-      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -443,11 +443,11 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
               </div>
             )}
           </div>
-          <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
-          <Button type="button" variant="ghost" onClick={requestClose}>Cancel</Button>
-          <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
-            {saveLabel}
-          </Button>
+          <div className="flex flex-row items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
+            <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
+              {saveLabel}
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>
@@ -570,14 +570,14 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
       <div className="space-y-4">
         <Card>
           <CardHeader>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="space-y-0.5">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+              <div className="min-w-0 space-y-0.5">
                 <CardTitle>Indexers</CardTitle>
-                <CardDescription>Configure your search sources.</CardDescription>
+                <CardDescription className="break-words">Configure your search sources.</CardDescription>
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" onClick={() => setShowAddDialog(true)} aria-label="Add indexer">
+                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9 shrink-0" onClick={() => setShowAddDialog(true)} aria-label="Add indexer">
                     <Plus className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
@@ -601,9 +601,8 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
                   >
                     <CardContent className="pt-6">
                       <div className="min-w-0 flex-1 space-y-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 font-semibold">{normalized.name || normalized.url || `Indexer ${index + 1}`}</div>
-                            <div className="flex items-center gap-2">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="flex items-center gap-2 self-end sm:order-2">
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <div className="inline-flex h-9 w-20 items-center justify-center rounded-md border border-border/60 bg-muted/30 px-2">
@@ -639,6 +638,7 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
                                 <TooltipContent>Delete indexer</TooltipContent>
                               </Tooltip>
                             </div>
+                            <div className="min-w-0 font-semibold sm:order-1">{normalized.name || normalized.url || `Indexer ${index + 1}`}</div>
                           </div>
                           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">

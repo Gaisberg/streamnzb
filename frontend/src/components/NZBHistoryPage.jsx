@@ -1,9 +1,10 @@
-import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
 import { getApiUrl, apiFetch } from '../api'
 import { cn } from '@/lib/utils'
@@ -21,6 +22,12 @@ function formatSize(bytes) {
 function formatAttemptResult(attempt) {
   if (attempt.preload) return 'Pending'
   return attempt.success ? 'OK' : 'Failed'
+}
+
+function formatAttemptBadgeLabel(attempt) {
+  if (attempt.preload) return 'Pending'
+  if (attempt.success) return 'OK'
+  return shortReason(attempt.failure_reason) || 'Failed'
 }
 
 function shortReason(reason) {
@@ -55,6 +62,10 @@ function formatDateOnly(value) {
 
 function formatTimeOnly(value) {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatTimeWithSeconds(value) {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function formatContentTypeLabel(contentType) {
@@ -232,10 +243,18 @@ function buildRequestGroups(attempts) {
 
 function formatGroupStatus(group) {
   if (group.okCount > 0) return 'OK'
+  if (group.preloadCount > 0 && group.failedCount === 0) return 'Pending'
   return 'Failed'
 }
 
+function formatAvailStatus(value) {
+  if (value === 'sent') return 'Sent'
+  if (value === 'skipped') return 'Skipped'
+  return '—'
+}
+
 function statusTone(group) {
+  if (group.preloadCount > 0 && group.failedCount === 0) return 'secondary'
   return group.okCount > 0 ? 'success' : 'destructive'
 }
 
@@ -251,6 +270,43 @@ function groupRequestsByDay(groups) {
     day,
     items,
   }))
+}
+
+function DetailSection({ title, children }) {
+  return (
+    <section className="mt-7 space-y-1.5 first:mt-0">
+      <div className="px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
+        {children}
+      </div>
+    </section>
+  )
+}
+
+function DetailRow({ label, value, mono = false, tone = 'default', bordered = false }) {
+  return (
+    <div className="relative px-4 py-3 sm:px-5">
+      {bordered ? <div className="absolute left-4 right-4 top-0 border-t border-border/60 sm:left-5 sm:right-5" /> : null}
+      <div
+        className={cn(
+          'grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3 text-sm',
+          'items-center',
+          tone === 'danger' && 'sm:grid-cols-[5.5rem_minmax(0,1fr)]'
+        )}
+      >
+        <div className="text-muted-foreground">{label}</div>
+        <div
+          className={cn(
+            'min-w-0 break-words leading-relaxed [overflow-wrap:anywhere]',
+            mono && 'rounded-md border border-border/50 bg-background/70 px-3 py-2 font-mono text-xs sm:text-sm',
+            tone === 'danger' && 'rounded-md border border-red-200/70 bg-red-50/70 px-3 py-2 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300'
+          )}
+        >
+          {value || '—'}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function SummaryCard({ label, value, tone }) {
@@ -292,13 +348,14 @@ export function NZBHistoryPage({ refreshTrigger }) {
   const [error, setError] = useState(null)
   const [copyError, setCopyError] = useState(null)
   const [copiedAttemptId, setCopiedAttemptId] = useState(null)
-  const [expandedGroups, setExpandedGroups] = useState({})
+  const [expandedGroupKey, setExpandedGroupKey] = useState(null)
   const [selectedAttemptId, setSelectedAttemptId] = useState(null)
   const [timeframe, setTimeframe] = useState('7d')
   const [resultFilter, setResultFilter] = useState('all')
   const [streamFilter, setStreamFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [filtersDialogOpen, setFiltersDialogOpen] = useState(false)
+  const attemptDetailScrollRef = useRef(null)
 
   const fetchAttempts = useCallback((showLoadingSpinner = true) => {
     if (showLoadingSpinner) setLoading(true)
@@ -351,7 +408,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
   }), [filteredAttempts, requestGroups])
 
   const toggleGroup = useCallback((key) => {
-    setExpandedGroups((current) => ({ ...current, [key]: !current[key] }))
+    setExpandedGroupKey((current) => (current === key ? null : key))
   }, [])
 
   const requestsByDay = useMemo(() => groupRequestsByDay(requestGroups), [requestGroups])
@@ -374,6 +431,11 @@ export function NZBHistoryPage({ refreshTrigger }) {
     () => filteredAttempts.find((attempt) => attempt.id === selectedAttemptId) || null,
     [filteredAttempts, selectedAttemptId]
   )
+
+  useEffect(() => {
+    if (!selectedAttempt || !attemptDetailScrollRef.current) return
+    attemptDetailScrollRef.current.scrollTop = 0
+  }, [selectedAttempt])
 
   const resetFilters = useCallback(() => {
     setTimeframe('7d')
@@ -438,12 +500,19 @@ export function NZBHistoryPage({ refreshTrigger }) {
               <div className="flex items-center gap-2">
                 <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 shadow-xs">
                   <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
-                  <Input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Request, release, provider, ID or indexer"
-                    className="h-auto border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
-                  />
+                  <div className="relative min-w-0 flex-1">
+                    <Input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder=""
+                      className="h-auto min-w-0 border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
+                    />
+                    {!search ? (
+                      <span className="pointer-events-none absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap text-muted-foreground">
+                        Request, release, provider, ID or indexer
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
                 <Button
                   type="button"
@@ -455,7 +524,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
                 >
                   <SlidersHorizontal className="size-4" />
                   {activeFilterChips.length > 0 ? (
-                    <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
+                    <span className="absolute -right-1 -top-1 size-3.5 rounded-full border-2 border-background bg-primary shadow-sm" />
                   ) : null}
                 </Button>
               </div>
@@ -486,120 +555,91 @@ export function NZBHistoryPage({ refreshTrigger }) {
                 No matching NZB attempts found for the current filters.
               </div>
             ) : (
-              <div className="flex min-w-0 flex-1 min-h-0 flex-col overflow-y-auto rounded-lg border border-border/60">
-                <table className="w-full table-fixed border-collapse text-sm">
-                  <thead className="sticky top-0 z-10 bg-background">
-                      <tr className="border-b border-border/60 text-left">
-                        <th className="w-[84px] px-3 py-3 font-medium text-muted-foreground">
-                          <div className="flex justify-center">Time</div>
-                        </th>
-                        <th className="px-3 py-3 font-medium text-muted-foreground">Request</th>
-                        <th className="w-[120px] px-2 py-3 font-medium text-muted-foreground text-center">
-                          <div className="mx-auto w-fit pl-5 text-center">Status</div>
-                        </th>
-                        <th className="w-[72px] px-2 py-3 font-medium text-muted-foreground" />
-                      </tr>
-                  </thead>
+              <div className="flex min-w-0 flex-1 min-h-0 flex-col overflow-y-auto rounded-lg border border-border/60 bg-background/40 p-3 md:p-4">
+                <div className="flex min-w-0 flex-col gap-5">
                   {requestsByDay.map((section) => (
-                    <tbody key={section.day}>
-                      <tr className="bg-background">
-                        <td colSpan={4} className="px-0 py-0">
-                          <div className="grid grid-cols-[84px_minmax(0,1fr)_120px_72px] border-y border-border/40 bg-muted/45 px-0 py-2">
-                            <div className="flex justify-center">
-                              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                {section.day}
-                              </span>
-                            </div>
-                            <div />
-                            <div />
-                            <div />
-                          </div>
-                        </td>
-                      </tr>
-                      {section.items.map((group) => {
-                        const expanded = Boolean(expandedGroups[group.key])
-                        const activeAttempt = group.active
-                        return (
-                          <Fragment key={group.key}>
-                            <tr className="border-b border-border/50 bg-background/80 hover:bg-muted/20">
-                              <td className="px-3 py-3 align-middle">
-                                <div className="flex justify-center">
-                                  <span className="text-xs font-normal text-muted-foreground">
-                                    {formatTimeOnly(group.requestTime)}
-                                  </span>
+                    <div key={section.day} className="space-y-3 pb-3 md:pb-4">
+                      <div className="rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        {section.day}
+                      </div>
+                      <div className="space-y-3">
+                        {section.items.map((group) => {
+                          const expanded = expandedGroupKey === group.key
+                          return (
+                            <div
+                              key={group.key}
+                              className={cn(
+                                'overflow-hidden rounded-xl border bg-background/95 shadow-sm transition-all duration-200 hover:bg-muted/10',
+                                expanded
+                                  ? 'border-primary/40 ring-1 ring-primary/25 shadow-md bg-primary/[0.03]'
+                                  : 'border-border/60'
+                              )}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => toggleGroup(group.key)}
+                                aria-label={`${expanded ? 'Collapse' : 'Expand'} attempts for ${group.title}`}
+                                aria-expanded={expanded}
+                                className="flex w-full min-w-0 flex-col gap-3 px-4 py-4 text-left md:px-5"
+                              >
+                                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                                  <div className="min-w-0">
+                                    <div className="inline-flex items-center rounded-md border border-border/60 bg-muted/30 px-2.5 py-0.5 text-xs text-muted-foreground">
+                                      {formatTimeOnly(group.requestTime)}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge
+                                      variant={statusTone(group) === 'destructive' ? 'destructive' : 'secondary'}
+                                      className={cn(
+                                        'shrink-0',
+                                        statusTone(group) === 'success' && 'bg-green-600 text-white hover:bg-green-600 hover:text-white dark:text-black',
+                                        statusTone(group) === 'destructive' && 'bg-red-500 text-white hover:bg-red-500 hover:text-white dark:bg-red-500 dark:text-black'
+                                      )}
+                                    >
+                                      {formatGroupStatus(group)}
+                                    </Badge>
+                                    <span className="text-xs text-muted-foreground">
+                                      {group.attempts.length}
+                                    </span>
+                                    {expanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+                                  </div>
                                 </div>
-                              </td>
-                              <td className="px-3 py-3 align-top">
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium">{group.title}</div>
-                                  <div className="truncate text-xs text-muted-foreground">
+                                <div className="space-y-1.5">
+                                  <div className="line-clamp-2 text-base font-semibold leading-snug md:text-lg">
+                                    {group.title}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
                                     {[group.latest?.stream_name || 'default', formatContentTypeLabel(group.contentType), group.latest?.content_id || '—'].join(' • ')}
                                   </div>
                                 </div>
-                              </td>
-                              <td className="px-2 py-3 align-middle">
-                                <div className="flex w-full justify-center pl-5">
-                                  <Badge
-                                    variant={statusTone(group) === 'destructive' ? 'destructive' : 'secondary'}
-                                    className={cn(
-                                      statusTone(group) === 'success' && 'bg-green-600 text-white hover:bg-green-600 hover:text-white dark:text-black',
-                                      statusTone(group) === 'destructive' && 'bg-red-500 text-white hover:bg-red-500 hover:text-white dark:bg-red-500 dark:text-black',
-                                      statusTone(group) === 'default' && 'bg-blue-600 text-white hover:bg-blue-600'
-                                    )}
-                                  >
-                                    {formatGroupStatus(group)}
-                                  </Badge>
-                                </div>
-                              </td>
-                              <td className="w-[56px] px-2 py-3 align-middle text-right">
-                                <div className="inline-flex min-w-[40px] items-center justify-end gap-1.5">
-                                  {!expanded ? (
-                                    <span className="text-xs font-medium text-muted-foreground">
-                                      {group.attempts.length}
-                                    </span>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleGroup(group.key)}
-                                    aria-label={`${expanded ? 'Collapse' : 'Expand'} attempts for ${group.title}`}
-                                    aria-expanded={expanded}
-                                    className="inline-flex items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground"
-                                  >
-                                    {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                            {expanded && (
-                              <tr className="border-b border-border/50 bg-muted/10">
-                                <td colSpan={4} className="bg-muted/25 px-4 py-5">
-                                  <div className="animate-in slide-in-from-top-1 fade-in-0 rounded-lg border border-border/70 bg-background/95 shadow-sm duration-200">
-                                    <table className="w-full table-fixed border-collapse text-sm">
-                                      <tbody>
-                                        {group.attempts.map((attempt) => {
-                                          const reasonLabel = shortReason(attempt.failure_reason)
-                                          const attemptBadgeLabel = attempt.success ? 'OK' : (reasonLabel || (attempt.preload ? 'Pending' : 'Failed'))
-                                          return (
-                                            <Fragment key={attempt.id}>
-                                              <tr className="border-b border-border/50">
-                                                <td className="px-3 py-3 align-top">
-                                                  <div className="truncate font-medium">{attempt.release_title || '—'}</div>
-                                                  <div className="mt-1 truncate text-xs text-muted-foreground">
-                                                    {[attempt.indexer_name || '—', attempt.provider_name || '—', formatSize(attempt.release_size)].join(' • ')}
-                                                  </div>
-                                                </td>
-                                                <td className="w-[120px] px-2 py-3 align-middle">
-                                                  <div className="flex items-center justify-center pl-5">
-                                                    <Badge
-                                                      variant={attempt.success ? 'default' : attempt.preload ? 'secondary' : 'destructive'}
-                                                      className={attemptBadgeClass(attempt, reasonLabel)}
-                                                    >
-                                                      {attemptBadgeLabel}
-                                                    </Badge>
-                                                  </div>
-                                                </td>
-                                                <td className="w-[72px] px-3 py-3 align-middle text-right">
-                                                  <div className="flex w-full justify-end">
+                              </button>
+
+                              {expanded && (
+                                <div className="border-t border-border/60 bg-muted/20 px-3 py-3 md:px-5 md:py-4">
+                                  <div className="animate-in slide-in-from-top-1 fade-in-0 space-y-2 duration-200">
+                                    {group.attempts.map((attempt) => {
+                                      const reasonLabel = shortReason(attempt.failure_reason)
+                                      const attemptBadgeLabel = formatAttemptBadgeLabel(attempt)
+                                      return (
+                                        <div
+                                          key={attempt.id}
+                                          className="grid grid-cols-1 gap-3 rounded-lg border border-border/60 bg-background/95 px-3 py-3"
+                                        >
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="inline-flex items-center rounded-md border border-border/60 bg-muted/30 px-2.5 py-0.5 text-xs text-muted-foreground">
+                                              {formatTimeWithSeconds(attempt.tried_at)}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              <Badge
+                                                variant={attempt.success ? 'default' : attempt.preload ? 'secondary' : 'destructive'}
+                                                className={attemptBadgeClass(attempt, reasonLabel)}
+                                              >
+                                                {attemptBadgeLabel}
+                                              </Badge>
+                                              <TooltipProvider delayDuration={100}>
+                                                <Tooltip>
+                                                  <TooltipTrigger asChild>
                                                     <button
                                                       type="button"
                                                       onClick={() => setSelectedAttemptId(attempt.id)}
@@ -608,24 +648,33 @@ export function NZBHistoryPage({ refreshTrigger }) {
                                                     >
                                                       <Info className="size-4" />
                                                     </button>
-                                                  </div>
-                                                </td>
-                                              </tr>
-                                            </Fragment>
-                                          )
-                                        })}
-                                      </tbody>
-                                    </table>
+                                                  </TooltipTrigger>
+                                                  <TooltipContent>Details</TooltipContent>
+                                                </Tooltip>
+                                              </TooltipProvider>
+                                            </div>
+                                          </div>
+                                          <div className="min-w-0 space-y-1">
+                                            <div className="line-clamp-3 break-words font-medium leading-snug">
+                                              {attempt.release_title || '—'}
+                                            </div>
+                                            <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                                              {[attempt.indexer_name || '—', attempt.provider_name || '—', formatSize(attempt.release_size)].join(' • ')}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
                                   </div>
-                                </td>
-                              </tr>
-                            )}
-                          </Fragment>
-                        )
-                      })}
-                    </tbody>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
                   ))}
-                </table>
+                </div>
               </div>
             )
           )}
@@ -633,49 +682,98 @@ export function NZBHistoryPage({ refreshTrigger }) {
           <Dialog open={Boolean(selectedAttempt)} onOpenChange={(open) => {
             if (!open) setSelectedAttemptId(null)
           }}>
-            <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-3xl overflow-x-hidden overflow-y-auto rounded-2xl px-5 sm:px-6">
+            <DialogContent
+              className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden"
+              onOpenAutoFocus={(event) => event.preventDefault()}
+            >
               {selectedAttempt ? (
                 <>
-                  <DialogHeader>
-                    <DialogTitle className="pr-10 text-left text-xl leading-tight [overflow-wrap:anywhere] sm:text-2xl">
+                  <DialogHeader className="space-y-1 pb-1">
+                    <DialogTitle className="pr-10 text-left text-lg leading-tight break-words [overflow-wrap:anywhere] sm:text-2xl">
                       {selectedAttempt.release_title || 'Attempt details'}
                     </DialogTitle>
-                    <DialogDescription className="text-left">
-                      {formatDateTime(selectedAttempt.tried_at)}
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-2 text-sm">
-                    <div><span className="text-muted-foreground">Stream:</span> {selectedAttempt.stream_name || 'default'}</div>
-                    <div><span className="text-muted-foreground">Content:</span> {selectedAttempt.content_title || '—'}</div>
-                    <div><span className="text-muted-foreground">Content ID:</span> {selectedAttempt.content_id || '—'}</div>
-                    <div><span className="text-muted-foreground">Indexer:</span> {selectedAttempt.indexer_name || '—'}</div>
-                    <div><span className="text-muted-foreground">Provider:</span> {selectedAttempt.provider_name || '—'}</div>
-                    <div><span className="text-muted-foreground">Served file:</span> {selectedAttempt.served_file || '—'}</div>
-                    <div><span className="text-muted-foreground">Size:</span> {formatSize(selectedAttempt.release_size)}</div>
-                    <div><span className="text-muted-foreground">Reason:</span> {selectedAttempt.failure_reason || '—'}</div>
-                    <div className="[overflow-wrap:anywhere]"><span className="text-muted-foreground">Slot path:</span> {selectedAttempt.slot_path || '—'}</div>
-                  </div>
-                  <DialogFooter className="grid min-w-0 grid-cols-2 gap-2 sm:justify-start">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="w-full min-w-0"
-                      onClick={() => handleCopyBadMatch(selectedAttempt)}
-                    >
-                      {copiedAttemptId === selectedAttempt.id ? <Check className="size-4" /> : <Copy className="size-4" />}
-                      {copiedAttemptId === selectedAttempt.id ? 'Copied' : 'Copy bad match'}
-                    </Button>
-                    {getSafeReleaseUrl(selectedAttempt.release_url) ? (
-                      <a
-                        href={getSafeReleaseUrl(selectedAttempt.release_url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex w-full min-w-0 items-center justify-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                        {formatDateTime(selectedAttempt.tried_at)}
+                      </Badge>
+                      <Badge
+                        variant={selectedAttempt.success ? 'default' : selectedAttempt.preload ? 'secondary' : 'destructive'}
+                        className={attemptBadgeClass(selectedAttempt, shortReason(selectedAttempt.failure_reason))}
                       >
-                        <ExternalLink className="size-4" />
-                        Open release
-                      </a>
+                        {formatAttemptBadgeLabel(selectedAttempt)}
+                      </Badge>
+                    </div>
+                  </DialogHeader>
+                  <div ref={attemptDetailScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
+                    <div className="pb-6">
+                      <DetailSection title="Content">
+                        <div>
+                          <DetailRow label="Stream" value={selectedAttempt.stream_name || 'default'} />
+                          <DetailRow label="Title" value={selectedAttempt.content_title || '—'} bordered />
+                          <DetailRow label="Content ID" value={selectedAttempt.content_id || '—'} bordered />
+                          <DetailRow label="Size" value={formatSize(selectedAttempt.release_size)} bordered />
+                        </div>
+                      </DetailSection>
+                      <DetailSection title="Source">
+                        <div>
+                          <DetailRow label="Indexer" value={selectedAttempt.indexer_name || '—'} />
+                          <DetailRow label="Provider" value={selectedAttempt.provider_name || '—'} bordered />
+                        </div>
+                      </DetailSection>
+                      <DetailSection title="File">
+                        <div>
+                          <DetailRow label="Served file" value={selectedAttempt.served_file || '—'} mono />
+                        </div>
+                      </DetailSection>
+                      <DetailSection title="Debug">
+                        <div>
+                          <DetailRow label="Reason" value={selectedAttempt.failure_reason || '—'} tone={selectedAttempt.failure_reason ? 'danger' : 'default'} />
+                          <DetailRow label="Slot path" value={selectedAttempt.slot_path || '—'} mono bordered />
+                        </div>
+                      </DetailSection>
+                      <DetailSection title="AvailNZB">
+                        <div>
+                          <DetailRow label="Report" value={formatAvailStatus(selectedAttempt.avail_status)} />
+                          <DetailRow label="Reason" value={selectedAttempt.avail_reason || '—'} bordered />
+                        </div>
+                      </DetailSection>
+                    </div>
+                  </div>
+                  <DialogFooter className="flex-row flex-wrap items-center justify-end gap-2 pt-1">
+                    <TooltipProvider delayDuration={100}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="min-w-24"
+                            onClick={() => handleCopyBadMatch(selectedAttempt)}
+                          >
+                            {copiedAttemptId === selectedAttempt.id ? <Check className="size-4" /> : <Copy className="size-4" />}
+                            {copiedAttemptId === selectedAttempt.id ? 'Copied' : 'Copy'}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Copy bad match</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                    {getSafeReleaseUrl(selectedAttempt.release_url) ? (
+                      <TooltipProvider delayDuration={100}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <a
+                              href={getSafeReleaseUrl(selectedAttempt.release_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground"
+                            >
+                              <ExternalLink className="size-4" />
+                              Open
+                            </a>
+                          </TooltipTrigger>
+                          <TooltipContent>Open release</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     ) : null}
                   </DialogFooter>
                 </>
@@ -683,8 +781,8 @@ export function NZBHistoryPage({ refreshTrigger }) {
             </DialogContent>
           </Dialog>
 
-          <Dialog open={filtersDialogOpen} onOpenChange={setFiltersDialogOpen}>
-            <DialogContent className="w-[calc(100vw-2rem)] max-w-lg rounded-2xl px-5 sm:px-6">
+            <Dialog open={filtersDialogOpen} onOpenChange={setFiltersDialogOpen}>
+            <DialogContent className="w-[calc(100vw-2rem)] max-w-lg rounded-2xl px-5 sm:px-6" onOpenAutoFocus={(event) => event.preventDefault()}>
               <DialogHeader>
                 <DialogTitle className="text-left text-xl">Filters</DialogTitle>
                 <DialogDescription className="text-left">

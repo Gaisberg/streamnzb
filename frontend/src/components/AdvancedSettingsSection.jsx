@@ -203,6 +203,11 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
     baseClassName,
     showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
   )
+  const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+  const controlWideClass = "w-full min-w-0 sm:max-w-xs"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
+  const labelClass = "min-w-0 text-sm font-medium"
 
   const handleCopyRecoverySecret = async () => {
     const recoverySecret = availNZBStatus?.recovery_secret?.trim?.() || ''
@@ -253,10 +258,10 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                   <div className="rounded-md border border-border/60">
                     <FormField control={control} name="log_level" render={({ field }) => (
                       <FormItem className="rounded-none border-0 p-3">
-                        <div className="flex items-center justify-between gap-4">
-                          <FormLabel className="text-sm font-medium flex items-center gap-1.5">Log Level <EnvOverrideIndicator show={envOverrides.includes('log_level')} /></FormLabel>
+                        <div className={stackedFieldRowClass}>
+                          <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Log Level <EnvOverrideIndicator show={envOverrides.includes('log_level')} /></FormLabel>
                           <FormControl>
-                            <select className={fieldClassName('log_level', 'flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2')} {...field}>
+                            <select className={fieldClassName('log_level', controlSelectClass)} {...field}>
                               <option value="DEBUG">DEBUG</option>
                               <option value="INFO">INFO</option>
                               <option value="WARN">WARN</option>
@@ -271,9 +276,9 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                     <FormField control={control} name="keep_log_files" render={({ field }) => (
                       <FormItem className="relative rounded-none border-0 p-3">
                         <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                        <div className="flex items-center justify-between gap-4">
-                          <FormLabel className="text-sm font-medium flex items-center gap-1.5">Keep log files <EnvOverrideIndicator show={envOverrides.includes('keep_log_files')} /></FormLabel>
-                          <FormControl><Input type="number" min={1} max={50} className={fieldClassName('keep_log_files', 'h-9 w-28')} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 9 : Math.min(50, Math.max(1, Number(v) || 9))) }} /></FormControl>
+                        <div className={stackedFieldRowClass}>
+                          <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Keep log files <EnvOverrideIndicator show={envOverrides.includes('keep_log_files')} /></FormLabel>
+                          <FormControl><Input type="number" min={1} max={50} className={fieldClassName('keep_log_files', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 9 : Math.min(50, Math.max(1, Number(v) || 9))) }} /></FormControl>
                         </div>
                         <FormDescription className="mt-3">Number of log files to keep. Oldest rotated logs are purged on restart.</FormDescription>
                         <FormMessage />
@@ -284,9 +289,9 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                   <div className="rounded-md border border-border/60">
                     <FormField control={control} name="nzb_history_retention_days" render={({ field }) => (
                       <FormItem className="rounded-none border-0 p-3">
-                        <div className="flex items-center justify-between gap-4">
-                          <FormLabel className="text-sm font-medium">NZB history retention (days)</FormLabel>
-                          <FormControl><Input type="number" min={0} max={3650} className={fieldClassName('nzb_history_retention_days', 'h-9 w-28')} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} /></FormControl>
+                        <div className={stackedFieldRowClass}>
+                          <FormLabel className={cn(labelClass, 'sm:flex-1')}>NZB history retention (days)</FormLabel>
+                          <FormControl><Input type="number" min={0} max={3650} className={fieldClassName('nzb_history_retention_days', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} /></FormControl>
                         </div>
                         <FormDescription className="mt-3">Delete NZB history entries older than this many days on startup.</FormDescription>
                         <FormMessage />
@@ -311,9 +316,9 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                 <div className="rounded-md border border-border/60">
                   <FormField control={control} name="memory_limit_mb" render={({ field }) => (
                     <FormItem className="rounded-none border-0 p-3">
-                      <div className="flex items-center justify-between gap-4">
-                        <FormLabel className="text-sm font-medium">Memory limit (MB)</FormLabel>
-                        <FormControl><Input type="number" min={0} className={fieldClassName('memory_limit_mb', 'h-9 w-28')} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 0 : Number(v) || 0) }} /></FormControl>
+                      <div className={stackedFieldRowClass}>
+                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Memory limit (MB)</FormLabel>
+                        <FormControl><Input type="number" min={0} className={fieldClassName('memory_limit_mb', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 0 : Number(v) || 0) }} /></FormControl>
                       </div>
                       <FormDescription className="mt-3">Soft limit on total process memory (0 = no limit). Segment cache uses 80% of this. Restart required.</FormDescription>
                       <FormMessage />
@@ -398,8 +403,8 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                 <FormField control={control} name="availnzb_mode" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="flex items-center gap-2 text-sm font-medium">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, "flex items-center gap-2 sm:flex-1")}>
                         <span>AvailNZB mode</span>
                         <TooltipProvider delayDuration={150}>
                           <Tooltip>
@@ -421,7 +426,7 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                         </TooltipProvider>
                       </FormLabel>
                       <FormControl>
-                        <select className={fieldClassName('availnzb_mode', 'flex h-9 w-56 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2')} {...field}>
+                        <select className={fieldClassName('availnzb_mode', controlSelectClass)} {...field}>
                           <option value="">GET status + POST report</option>
                           <option value="status_only">GET status only</option>
                           <option value="disabled">Disabled</option>

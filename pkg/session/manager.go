@@ -86,8 +86,11 @@ type Session struct {
 	downloadURL string
 	indexer     indexer.Indexer
 
-	segmentFetcher loader.SegmentFetcher
-	providerHosts  []string
+	segmentFetcher       loader.SegmentFetcher
+	providerHosts        []string
+	usedProviders        map[string]struct{}
+	servedProviders      map[string]struct{}
+	trackServedProviders bool
 
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
@@ -144,6 +147,142 @@ func (s *Session) ProviderHosts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.providerHosts...)
+}
+
+func (s *Session) UsedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.usedProviders) == 0 {
+		return nil
+	}
+	hosts := make([]string, 0, len(s.usedProviders))
+	for host := range s.usedProviders {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+func (s *Session) ServedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.servedProviders) == 0 {
+		return nil
+	}
+	hosts := make([]string, 0, len(s.servedProviders))
+	for host := range s.servedProviders {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+func (s *Session) RecordUsedProviderHost(host string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usedProviders == nil {
+		s.usedProviders = make(map[string]struct{})
+	}
+	s.usedProviders[host] = struct{}{}
+}
+
+func (s *Session) RecordServedProviderHost(host string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.servedProviders == nil {
+		s.servedProviders = make(map[string]struct{})
+	}
+	s.servedProviders[host] = struct{}{}
+}
+
+func (s *Session) BeginServeProviderTracking() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trackServedProviders = true
+}
+
+func (s *Session) EndServeProviderTracking() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trackServedProviders = false
+}
+
+func (s *Session) IsServeProviderTrackingEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trackServedProviders
+}
+
+type sessionTrackingFetcher struct {
+	session *Session
+	base    loader.SegmentFetcher
+}
+
+func (f *sessionTrackingFetcher) record(data pool.SegmentData) {
+	if f == nil || f.session == nil {
+		return
+	}
+	f.session.RecordUsedProviderHost(data.ProviderHost)
+	if f.session.IsServeProviderTrackingEnabled() {
+		f.session.RecordServedProviderHost(data.ProviderHost)
+	}
+}
+
+func (f *sessionTrackingFetcher) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []string) (pool.SegmentData, error) {
+	if f == nil || f.base == nil {
+		return pool.SegmentData{}, fmt.Errorf("segment fetcher unavailable")
+	}
+	data, err := f.base.FetchSegment(ctx, segment, groups)
+	if err == nil {
+		f.record(data)
+	}
+	return data, err
+}
+
+func (f *sessionTrackingFetcher) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, groups []string) (pool.SegmentData, error) {
+	if f == nil || f.base == nil {
+		return pool.SegmentData{}, fmt.Errorf("segment fetcher unavailable")
+	}
+	first, ok := f.base.(loader.SegmentFirstFetcher)
+	if !ok {
+		return f.FetchSegment(ctx, segment, groups)
+	}
+	data, err := first.FetchSegmentFirst(ctx, segment, groups)
+	if err == nil {
+		f.record(data)
+	}
+	return data, err
+}
+
+type sessionTrackingFetcherWithStat struct {
+	*sessionTrackingFetcher
+	statter loader.SegmentStatter
+}
+
+func (f *sessionTrackingFetcherWithStat) StatSegment(ctx context.Context, messageID string, groups []string) (bool, error) {
+	if f == nil || f.statter == nil {
+		return false, fmt.Errorf("segment statter unavailable")
+	}
+	return f.statter.StatSegment(ctx, messageID, groups)
+}
+
+func attachProviderTracking(session *Session, fetcher loader.SegmentFetcher) loader.SegmentFetcher {
+	if session == nil || fetcher == nil {
+		return fetcher
+	}
+	wrapped := &sessionTrackingFetcher{session: session, base: fetcher}
+	if statter, ok := fetcher.(loader.SegmentStatter); ok {
+		return &sessionTrackingFetcherWithStat{sessionTrackingFetcher: wrapped, statter: statter}
+	}
+	return wrapped
 }
 
 // BytesRead returns the number of bytes read from this session during playback.
@@ -510,13 +649,9 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, pools, segmentFetcher, estimator)
-
 	session := &Session{
 		ID:             sessionID,
 		NZB:            nzbData,
-		Files:          loaderFiles,
-		File:           loaderFiles[0],
 		Release:        rel,
 		ContentIDs:     contentIDs,
 		CreatedAt:      time.Now(),
@@ -527,6 +662,10 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 		segmentFetcher: segmentFetcher,
 		providerHosts:  append([]string(nil), providerHosts...),
 	}
+	session.segmentFetcher = attachProviderTracking(session, session.segmentFetcher)
+	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, pools, session.segmentFetcher, estimator)
+	session.Files = loaderFiles
+	session.File = loaderFiles[0]
 
 	logger.Debug("session CreateSession", "id", sessionID, "files", len(loaderFiles))
 	m.mu.Lock()
@@ -588,6 +727,7 @@ func (m *Manager) CreateDeferredSessionWithFetcher(sessionID, downloadURL string
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	trackedFetcher := segmentFetcher
 	session := &Session{
 		ID:             sessionID,
 		StreamName:     streamName,
@@ -604,9 +744,10 @@ func (m *Manager) CreateDeferredSessionWithFetcher(sessionID, downloadURL string
 		Clients:        make(map[string]time.Time),
 		ctx:            ctx,
 		cancel:         cancel,
-		segmentFetcher: segmentFetcher,
+		segmentFetcher: trackedFetcher,
 		providerHosts:  append([]string(nil), providerHosts...),
 	}
+	session.segmentFetcher = attachProviderTracking(session, trackedFetcher)
 	m.sessions[sessionID] = session
 	logger.Trace("session CreateDeferredSession done", "id", sessionID)
 	return session, nil

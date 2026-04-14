@@ -38,6 +38,8 @@ const (
 		served_file TEXT,
 		success INTEGER NOT NULL,
 		failure_reason TEXT,
+		avail_status TEXT,
+		avail_reason TEXT,
 		slot_path TEXT,
 		preload INTEGER NOT NULL DEFAULT 0
 	);`
@@ -88,6 +90,12 @@ func initSchema(db *sql.DB) error {
 	if err := migrateNzbAttemptsProviderName(db); err != nil {
 		return err
 	}
+	if err := migrateNzbAttemptsAvailStatus(db); err != nil {
+		return err
+	}
+	if err := migrateNzbAttemptsAvailReason(db); err != nil {
+		return err
+	}
 	for _, stmt := range []string{nzbAttemptsIndexStream, nzbAttemptsIndexProvider, nzbAttemptsIndexIndexer} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("schema: %w", err)
@@ -133,6 +141,22 @@ func migrateNzbAttemptsProviderName(db *sql.DB) error {
 	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN provider_name TEXT`)
 	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return fmt.Errorf("migrate nzb_attempts.provider_name: %w", err)
+	}
+	return nil
+}
+
+func migrateNzbAttemptsAvailStatus(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN avail_status TEXT`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate nzb_attempts.avail_status: %w", err)
+	}
+	return nil
+}
+
+func migrateNzbAttemptsAvailReason(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN avail_reason TEXT`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate nzb_attempts.avail_reason: %w", err)
 	}
 	return nil
 }

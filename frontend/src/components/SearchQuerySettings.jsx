@@ -412,7 +412,7 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
       }
       requestClose()
     }}>
-      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{dialogTitle(kind, editing)}</DialogTitle>
           <DialogDescription>{dialogDescription(kind)}</DialogDescription>
@@ -426,11 +426,11 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{validationError}</div>
             )}
           </div>
-          <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
-          <Button type="button" variant="ghost" onClick={requestClose} disabled={saving}>Cancel</Button>
-          <Button type="button" variant="destructive" onClick={() => void handleSave()} disabled={saving}>
-            {saving ? 'Saving...' : saveLabel}
-          </Button>
+          <div className="flex flex-row items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={requestClose} disabled={saving}>Cancel</Button>
+            <Button type="button" variant="destructive" onClick={() => void handleSave()} disabled={saving}>
+              {saving ? 'Saving...' : saveLabel}
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>
@@ -502,10 +502,10 @@ function QuerySection({ title, description, kind, items, names, update, remove, 
   return (
     <Card>
       <CardHeader>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-0.5">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+          <div className="min-w-0 space-y-0.5">
             <CardTitle>{title}</CardTitle>
-            <CardDescription>{description}</CardDescription>
+            <CardDescription className="break-words">{description}</CardDescription>
           </div>
           <AddQueryButton
             kind={kind}
@@ -534,9 +534,8 @@ function QuerySection({ title, description, kind, items, names, update, remove, 
               <Card className={deleteBlockedName && deleteBlockedName === query.name ? 'border-destructive/60 ring-1 ring-destructive/30' : ''} key={field.id}>
                 <CardContent className="pt-6">
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0 font-semibold">{query.name || defaultQueryName(kind, index)}</div>
-                      <div className="flex items-center gap-2">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-center gap-2 self-end sm:order-2">
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => {
@@ -575,6 +574,7 @@ function QuerySection({ title, description, kind, items, names, update, remove, 
                           <TooltipContent>Delete query</TooltipContent>
                         </Tooltip>
                       </div>
+                      <div className="min-w-0 font-semibold sm:order-1">{query.name || defaultQueryName(kind, index)}</div>
                     </div>
                     {summary.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No values set.</p>
@@ -676,7 +676,7 @@ function AddQueryButton({ kind, title, existingNames, existingQueries, onCreate,
     <>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button type="button" variant="destructive" size="icon" className="h-9 w-9" onClick={() => setOpen(true)}>
+          <Button type="button" variant="destructive" size="icon" className="h-9 w-9 shrink-0" onClick={() => setOpen(true)}>
             <Plus className="h-4 w-4" />
           </Button>
         </TooltipTrigger>

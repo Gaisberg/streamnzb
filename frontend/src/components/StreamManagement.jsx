@@ -436,7 +436,7 @@ function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', provid
       }
       requestClose()
     }}>
-      <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-3xl flex-col overflow-visible">
+      <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-3xl flex-col overflow-visible" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{isEditing ? 'Change Stream' : 'Add Stream'}</DialogTitle>
           <DialogDescription>Create a stream or manage its provider, indexer, and search request assignments.</DialogDescription>
@@ -669,8 +669,8 @@ function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', provid
               </div>
             )}
           </div>
-          <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
-            <Button type="button" variant="ghost" onClick={requestClose}>Cancel</Button>
+          <div className="flex flex-row items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
             <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save
@@ -710,6 +710,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const [visibleFooterStatus, setVisibleFooterStatus] = useState(null)
   const [footerStatusVisible, setFooterStatusVisible] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState('')
+  const [regenerateTarget, setRegenerateTarget] = useState('')
   const [expandedStreams, setExpandedStreams] = useState({})
 
   const indexerNames = useMemo(
@@ -990,10 +991,10 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     <TooltipProvider delayDuration={100}>
       <Card>
         <CardHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-0.5">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+            <div className="min-w-0 space-y-0.5">
               <CardTitle>Streams</CardTitle>
-              <CardDescription>Configure stream-specific manifests and their provider, indexer and search order.</CardDescription>
+              <CardDescription className="break-words">Configure stream-specific manifests and their provider, indexer and search order.</CardDescription>
             </div>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1001,7 +1002,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                   type="button"
                   variant="destructive"
                   size="icon"
-                  className="h-9 w-9"
+                  className="h-9 w-9 shrink-0"
                   onClick={() => {
                     setAddDialogDraft({ username: nextStreamName(streams) })
                     setShowAddDialog(true)
@@ -1071,9 +1072,9 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                       <div className="min-w-0 flex-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
                         <div className="space-y-1.5">
                           <Label className="block text-xs text-muted-foreground">Manifest</Label>
-                          <div className="flex items-start gap-2">
+                          <div className="flex items-center gap-2">
                             <code className="block min-w-0 flex-1 break-all rounded bg-muted px-2.5 py-1.5 text-[11px] leading-5">{getManifestUrl(stream.token)}</code>
-                            <div className="flex items-center gap-2">
+                            <div className="flex shrink-0 items-center gap-2 self-center">
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button type="button" variant="ghost" size="icon" onClick={() => copyManifestUrl(stream.token)} className="h-8 w-8 shrink-0 bg-muted hover:bg-muted" aria-label={`Copy manifest URL for ${stream.username}`}>
@@ -1084,7 +1085,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                               </Tooltip>
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Button type="button" variant="outline" size="icon" onClick={() => handleRegenerateToken(stream.username)} disabled={actionLoading !== null || loading} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
+                                  <Button type="button" variant="outline" size="icon" onClick={() => setRegenerateTarget(stream.username)} disabled={actionLoading !== null || loading} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
                                     {actionLoading === `regenerate-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                                   </Button>
                                 </TooltipTrigger>
@@ -1106,13 +1107,13 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                             <SummaryRow label="Filter/Sorting" icon={ArrowUpDown} values={filterSortingSummaryValues(stream)} />
                           </div>
                         ) : (
-                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          <div className="grid grid-cols-3 gap-3 md:grid-cols-2 xl:grid-cols-6">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Settings className="h-3.5 w-3.5" />
-                                <span>General</span>
+                                <span className="hidden sm:inline">General</span>
                               </div>
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
                                 {generalCompactValues(stream).map((value) => (
                                   <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
                                     {value}
@@ -1120,40 +1121,40 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                                 ))}
                               </div>
                             </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Globe className="h-3.5 w-3.5" />
-                                <span>Providers</span>
+                                <span className="hidden sm:inline">Providers</span>
                               </div>
                               <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.provider_selections || []).length}</div>
                             </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Server className="h-3.5 w-3.5" />
-                                <span>Indexers</span>
+                                <span className="hidden sm:inline">Indexers</span>
                               </div>
                               <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.indexer_selections || Object.keys(stream.indexer_overrides || {})).length}</div>
                             </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Search className="h-3.5 w-3.5" />
-                                <span>Movie</span>
+                                <span className="hidden sm:inline">Movie</span>
                               </div>
                               <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.movie_search_queries || []).length}</div>
                             </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Search className="h-3.5 w-3.5" />
-                                <span>TV</span>
+                                <span className="hidden sm:inline">TV</span>
                               </div>
                               <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.series_search_queries || []).length}</div>
                             </div>
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <ArrowUpDown className="h-3.5 w-3.5" />
-                                <span>Filter/Sorting</span>
+                                <span className="hidden sm:inline">Filter/Sorting</span>
                               </div>
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
                                 {filterSortingSummaryValues(stream).map((value) => (
                                   <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
                                     {value}
@@ -1248,6 +1249,22 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
           setDeleteTarget('')
           if (username) {
             void handleDeleteStream(username)
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(regenerateTarget)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setRegenerateTarget('')
+        }}
+        title="Regenerate token?"
+        description={regenerateTarget ? `Are you sure you want to regenerate the manifest token for stream "${regenerateTarget}"? Existing links using the old token will stop working.` : ''}
+        confirmLabel="Regenerate"
+        onConfirm={() => {
+          const username = regenerateTarget
+          setRegenerateTarget('')
+          if (username) {
+            void handleRegenerateToken(username)
           }
         }}
       />

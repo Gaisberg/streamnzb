@@ -7,8 +7,9 @@ import (
 )
 
 type SegmentData struct {
-	Body []byte
-	Size int64
+	Body         []byte
+	Size         int64
+	ProviderHost string
 }
 
 // SegmentCacheBudget limits total segment cache memory across all sessions (0 = no limit).

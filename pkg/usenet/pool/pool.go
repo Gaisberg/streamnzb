@@ -235,7 +235,11 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				ch <- segResult{err: err}
 				return
 			}
-			ch <- segResult{data: SegmentData{Body: frame.Data, Size: int64(len(frame.Data))}}
+			ch <- segResult{data: SegmentData{
+				Body:         frame.Data,
+				Size:         int64(len(frame.Data)),
+				ProviderHost: p.Host(providerID),
+			}}
 		}(exclude)
 	}
 
@@ -247,7 +251,9 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				cancel()
 				return SegmentData{}, fetchCtx.Err()
 			}
-			p.cache.Set(messageID, res.data)
+			cached := res.data
+			cached.ProviderHost = ""
+			p.cache.Set(messageID, cached)
 			cancel()
 			logger.Trace("fetch segment ok (parallel)", "message_id", messageID, "size", res.data.Size)
 			return res.data, nil
@@ -332,8 +338,9 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			}
 
 			return SegmentData{
-				Body: frame.Data,
-				Size: int64(len(frame.Data)),
+				Body:         frame.Data,
+				Size:         int64(len(frame.Data)),
+				ProviderHost: p.Host(providerID),
 			}, false, nil
 		}()
 		if err != nil {
@@ -348,7 +355,9 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		if !shouldCacheFetchedSegment(fetchCtx) {
 			return SegmentData{}, fetchCtx.Err()
 		}
-		p.cache.Set(messageID, data)
+		cached := data
+		cached.ProviderHost = ""
+		p.cache.Set(messageID, cached)
 		logger.Trace("fetch segment ok", "message_id", messageID, "size", data.Size)
 		return data, nil
 	}

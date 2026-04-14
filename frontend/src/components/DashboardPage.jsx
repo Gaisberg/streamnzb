@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   ChartContainer,
@@ -34,6 +35,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
   const [availNZBStatus, setAvailNZBStatus] = useState(null)
   const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
   const [availNZBStatusError, setAvailNZBStatusError] = useState('')
+  const [activeSessionToClose, setActiveSessionToClose] = useState(null)
   const availNZBEnabled = (config?.availnzb_mode || '') !== 'disabled'
   const indexerUrls = useMemo(() => {
     const urls = new Map()
@@ -148,10 +150,17 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
         ? 'bg-chart-4'
         : 'bg-primary'
 
+  const confirmCloseActiveSession = () => {
+    if (!activeSessionToClose) return
+    sendCommand('close_session', { id: activeSessionToClose.id })
+    setActiveSessionToClose(null)
+  }
+
   return (
-    <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6">
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+    <>
+      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6">
+        {/* KPI cards */}
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Card className="overflow-hidden">
           <CardHeader>
             <div className="flex items-center justify-between gap-2">
@@ -223,8 +232,8 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
         </Card>
       </div>
 
-      {/* Network chart */}
-      <Card className="overflow-hidden">
+        {/* Network chart */}
+        <Card className="overflow-hidden">
         <CardHeader>
           <CardTitle>Network activity</CardTitle>
           <CardDescription>Speed (Mbps) and active connections over time</CardDescription>
@@ -272,39 +281,50 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
             </ComposedChart>
           </ChartContainer>
         </CardContent>
-      </Card>
+        </Card>
 
-      {/* Active sessions */}
-      {stats.active_sessions?.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <Activity className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">Active streams</h2>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-            {stats.active_sessions.map(sess => (
-              <Card key={sess.id} className="group relative min-w-0 pr-10">
-                <CardContent className="p-3">
-                  <div className="text-sm font-medium truncate pr-2 min-w-0" title={sess.title}>{sess.title}</div>
-                  <div className="text-xs text-muted-foreground truncate min-w-0">{sess.clients.join(', ')}</div>
-                </CardContent>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  onClick={() => sendCommand('close_session', { id: sess.id })}
-                  title="End stream"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </Card>
-            ))}
-          </div>
-        </div>
-      )}
+        {/* Active sessions */}
+        {stats.active_sessions?.length > 0 && (
+          <Card className="overflow-hidden">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Activity className="h-5 w-5 text-primary" />
+                <CardTitle className="text-lg font-semibold tracking-tight">Active streams</CardTitle>
+              </div>
+              <CardDescription>Streams that are currently being played.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {stats.active_sessions.map(sess => (
+                  <Card key={sess.id} className="group relative min-w-0 pr-10">
+                    <CardContent className="p-3">
+                      <div
+                        className="min-w-0 pr-2 text-sm font-medium leading-snug whitespace-normal break-words [overflow-wrap:anywhere] md:truncate md:whitespace-nowrap"
+                        title={sess.title}
+                      >
+                        {sess.title}
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate min-w-0">{sess.clients.join(', ')}</div>
+                    </CardContent>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={() => setActiveSessionToClose(sess)}
+                      title="End stream"
+                      aria-label={`End stream ${sess.title}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
-      {/* Providers & Indexers */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Providers & Indexers */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="overflow-hidden">
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -455,7 +475,29 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
             </div>
           </CardContent>
         </Card>
+        </div>
       </div>
-    </div>
+
+      <Dialog open={Boolean(activeSessionToClose)} onOpenChange={(open) => { if (!open) setActiveSessionToClose(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>End active stream?</DialogTitle>
+            <DialogDescription className="break-words [overflow-wrap:anywhere]">
+              {activeSessionToClose
+                ? `This will stop playback for "${activeSessionToClose.title}".`
+                : 'This will stop playback for the selected stream.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-row flex-wrap items-center justify-center gap-2 sm:justify-center sm:space-x-0">
+            <Button type="button" variant="outline" className="min-w-28" onClick={() => setActiveSessionToClose(null)}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" className="min-w-28" onClick={confirmCloseActiveSession}>
+              End stream
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

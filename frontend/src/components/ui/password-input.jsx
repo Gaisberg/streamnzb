@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 const PasswordInput = React.forwardRef(({ className, ...props }, ref) => {
   const [show, setShow] = React.useState(false)
   return (
-    <div className="relative">
+    <div className="relative w-full min-w-0">
       <Input
         type={show ? "text" : "password"}
         className={cn("pr-10", className)}

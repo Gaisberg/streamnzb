@@ -14,6 +14,7 @@ import (
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/media/seek"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/usenet/pool"
 )
 
 type fakePlaybackStream struct {
@@ -72,6 +73,19 @@ func (f *fakeIndexer) Type() string {
 		return f.typeName
 	}
 	return "newznab"
+}
+
+type fakeSegmentFetcher struct {
+	data pool.SegmentData
+	err  error
+}
+
+func (f *fakeSegmentFetcher) FetchSegment(_ context.Context, _ *nzb.Segment, _ []string) (pool.SegmentData, error) {
+	return f.data, f.err
+}
+
+func (f *fakeSegmentFetcher) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, groups []string) (pool.SegmentData, error) {
+	return f.FetchSegment(ctx, segment, groups)
 }
 
 func TestSessionCloseClearsHeavyReferences(t *testing.T) {
@@ -215,6 +229,65 @@ func TestGetOrDownloadNZBSelectsRequestedEpisode(t *testing.T) {
 		t.Fatalf("expected one selected file after lazy load, got %d", len(s.Files))
 	}
 	s.Close()
+}
+
+func TestCreateDeferredSessionTracksUsedProviderHosts(t *testing.T) {
+	logger.Init("ERROR")
+
+	m := &Manager{sessions: make(map[string]*Session)}
+	fetcher := &fakeSegmentFetcher{
+		data: pool.SegmentData{
+			Body:         []byte("segment-data"),
+			Size:         int64(len("segment-data")),
+			ProviderHost: "news.example.net",
+		},
+	}
+	s, err := m.CreateDeferredSessionWithFetcher(
+		"sess-provider-hosts",
+		"https://example.invalid/get?nzb=1",
+		nil,
+		&fakeIndexer{},
+		nil,
+		"movie",
+		"tt1375666",
+		"Inception",
+		"Stream01",
+		fetcher,
+		[]string{"configured.example.net"},
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSessionWithFetcher returned error: %v", err)
+	}
+
+	data, err := s.segmentFetcher.FetchSegment(context.Background(), &nzb.Segment{ID: "<seg1>"}, nil)
+	if err != nil {
+		t.Fatalf("FetchSegment returned error: %v", err)
+	}
+	if got := data.ProviderHost; got != "news.example.net" {
+		t.Fatalf("ProviderHost = %q, want %q", got, "news.example.net")
+	}
+
+	used := s.UsedProviderHosts()
+	if len(used) != 1 || used[0] != "news.example.net" {
+		t.Fatalf("UsedProviderHosts = %v, want [news.example.net]", used)
+	}
+	if configured := s.ProviderHosts(); len(configured) != 1 || configured[0] != "configured.example.net" {
+		t.Fatalf("ProviderHosts = %v, want [configured.example.net]", configured)
+	}
+	if served := s.ServedProviderHosts(); len(served) != 0 {
+		t.Fatalf("ServedProviderHosts = %v, want none before serve tracking", served)
+	}
+
+	s.BeginServeProviderTracking()
+	if _, err := s.segmentFetcher.FetchSegment(context.Background(), &nzb.Segment{ID: "<seg2>"}, nil); err != nil {
+		t.Fatalf("FetchSegment during serve tracking returned error: %v", err)
+	}
+	s.EndServeProviderTracking()
+
+	served := s.ServedProviderHosts()
+	if len(served) != 1 || served[0] != "news.example.net" {
+		t.Fatalf("ServedProviderHosts = %v, want [news.example.net]", served)
+	}
 }
 
 func TestCreateSessionKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.T) {

@@ -161,6 +161,10 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
     baseClassName,
     showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
   )
+  const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+  const controlWideClass = "w-full min-w-0 sm:max-w-xs"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const labelClass = "min-w-0 text-sm font-medium"
 
   return (
     <Form {...form}>
@@ -180,9 +184,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
               <div className="rounded-md border border-border/60">
                 <FormField control={control} name="addon_base_url" render={({ field }) => (
                   <FormItem className="rounded-none border-0 p-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium flex items-center gap-1.5">Base URL <EnvOverrideIndicator show={envOverrides.includes('addon_base_url')} /></FormLabel>
-                      <FormControl><Input placeholder="http://localhost:7000" className={fieldClassName('addon_base_url', 'h-9 w-64')} {...field} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Base URL <EnvOverrideIndicator show={envOverrides.includes('addon_base_url')} /></FormLabel>
+                      <FormControl><Input placeholder="http://localhost:7000" className={fieldClassName('addon_base_url', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The public base URL clients use to reach your StreamNZB addon.</FormDescription>
                     <FormMessage />
@@ -191,9 +195,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
                 <FormField control={control} name="addon_port" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium flex items-center gap-1.5">Port <EnvOverrideIndicator show={envOverrides.includes('addon_port')} /></FormLabel>
-                      <FormControl><Input type="number" className={fieldClassName('addon_port', 'h-9 w-28')} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Port <EnvOverrideIndicator show={envOverrides.includes('addon_port')} /></FormLabel>
+                      <FormControl><Input type="number" className={fieldClassName('addon_port', `h-9 ${controlMediumClass}`)} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The local port where the addon server listens.</FormDescription>
                     <FormMessage />
@@ -222,8 +226,8 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
               <div className="mb-4">
                 <FormField control={control} name="proxy_enabled" render={({ field }) => (
                   <FormItem className="rounded-md border border-border/60 p-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium">Enable NNTP Proxy</FormLabel>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={labelClass}>Enable NNTP Proxy</FormLabel>
                       <FormControl><Switch checked={field.value !== false} onCheckedChange={field.onChange} className={showUnsavedHighlights && formState.dirtyFields?.proxy_enabled ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Turn the local NNTP proxy server on or off.</FormDescription>
@@ -233,9 +237,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
               <div className="rounded-md border border-border/60">
                 <FormField control={control} name="proxy_host" render={({ field }) => (
                   <FormItem className="rounded-none border-0 p-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium">Bind Host</FormLabel>
-                      <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} className={fieldClassName('proxy_host', 'h-9 w-40')} {...field} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Bind Host</FormLabel>
+                      <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} className={fieldClassName('proxy_host', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Which local address the proxy server should bind to.</FormDescription>
                     <FormMessage />
@@ -244,9 +248,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
                 <FormField control={control} name="proxy_port" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium">Port</FormLabel>
-                      <FormControl><Input type="number" disabled={!proxyEnabled} className={fieldClassName('proxy_port', 'h-9 w-28')} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Port</FormLabel>
+                      <FormControl><Input type="number" disabled={!proxyEnabled} className={fieldClassName('proxy_port', `h-9 ${controlMediumClass}`)} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The port other apps use when connecting to the local NNTP proxy.</FormDescription>
                     <FormMessage />
@@ -255,9 +259,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
                 <FormField control={control} name="proxy_auth_user" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium">Proxy Username</FormLabel>
-                      <FormControl><Input disabled={!proxyEnabled} className={fieldClassName('proxy_auth_user', 'h-9 w-40')} {...field} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Username</FormLabel>
+                      <FormControl><Input disabled={!proxyEnabled} className={fieldClassName('proxy_auth_user', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Optional username clients must provide when using the proxy.</FormDescription>
                     <FormMessage />
@@ -266,9 +270,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
                 <FormField control={control} name="proxy_auth_pass" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className="flex items-center justify-between gap-4">
-                      <FormLabel className="text-sm font-medium">Proxy Password</FormLabel>
-                      <FormControl><PasswordInput disabled={!proxyEnabled} className={fieldClassName('proxy_auth_pass', 'h-9 w-40')} {...field} /></FormControl>
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Password</FormLabel>
+                      <FormControl><PasswordInput disabled={!proxyEnabled} className={fieldClassName('proxy_auth_pass', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Optional password clients must provide when using the proxy.</FormDescription>
                     <FormMessage />
@@ -293,9 +297,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
             <div className="rounded-md border border-border/60">
               <FormField control={control} name="indexer_query_header" render={({ field }) => (
                 <FormItem className="rounded-none border-0 p-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <FormLabel className="text-sm font-medium flex items-center gap-1.5">Indexer Query Header <EnvOverrideIndicator show={envOverrides.includes('indexer_query_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('indexer_query_header', 'h-9 w-64')} {...field} value={field.value || ''} placeholder="Prowlarr/2.3.0.5236" /></FormControl>
+                  <div className={stackedFieldRowClass}>
+                    <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Indexer Query Header <EnvOverrideIndicator show={envOverrides.includes('indexer_query_header')} /></FormLabel>
+                    <FormControl><Input className={fieldClassName('indexer_query_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="Prowlarr/2.3.0.5236" /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used for indexer search and capability requests.</FormDescription>
                   <FormMessage />
@@ -304,9 +308,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
               <FormField control={control} name="indexer_grab_header" render={({ field }) => (
                 <FormItem className="relative rounded-none border-0 p-3">
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                  <div className="flex items-center justify-between gap-4">
-                    <FormLabel className="text-sm font-medium flex items-center gap-1.5">Indexer Grab Header <EnvOverrideIndicator show={envOverrides.includes('indexer_grab_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('indexer_grab_header', 'h-9 w-64')} {...field} value={field.value || ''} placeholder="SABnzbd/4.5.5" /></FormControl>
+                  <div className={stackedFieldRowClass}>
+                    <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Indexer Grab Header <EnvOverrideIndicator show={envOverrides.includes('indexer_grab_header')} /></FormLabel>
+                    <FormControl><Input className={fieldClassName('indexer_grab_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="SABnzbd/4.5.5" /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used when grabbing NZBs from indexers.</FormDescription>
                   <FormMessage />
@@ -315,9 +319,9 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
               <FormField control={control} name="provider_header" render={({ field }) => (
                 <FormItem className="relative rounded-none border-0 p-3">
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                  <div className="flex items-center justify-between gap-4">
-                    <FormLabel className="text-sm font-medium flex items-center gap-1.5">Provider Header <EnvOverrideIndicator show={envOverrides.includes('provider_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('provider_header', 'h-9 w-64')} {...field} value={field.value || ''} placeholder="VLC/1.2.3.4" /></FormControl>
+                  <div className={stackedFieldRowClass}>
+                    <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Provider Header <EnvOverrideIndicator show={envOverrides.includes('provider_header')} /></FormLabel>
+                    <FormControl><Input className={fieldClassName('provider_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="VLC/1.2.3.4" /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Custom provider-facing User-Agent header.</FormDescription>
                   <FormMessage />

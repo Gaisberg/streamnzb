@@ -29,6 +29,7 @@ import (
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/media/seek"
 	"streamnzb/pkg/media/unpack"
+	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
 )
 
@@ -1087,13 +1088,14 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
 				s.ClearSearchCaches()
 			}
-			if (isSegmentUnavailableErr(prepareErr) || isDataCorruptErr(prepareErr)) && s.availReporter != nil {
-				s.availReporter.ReportBad(sess, prepareErr.Error())
+			availOutcome := availOutcomeForFailure(prepareErr)
+			if shouldReportBadRelease(prepareErr) && s.availReporter != nil {
+				availOutcome = s.availReporter.ReportBad(sess, prepareErr.Error())
 			}
 			// Gate failure recording: concurrent goroutines for the same session (Stremio's automatic
 			// re-requests) must not each insert a Failure row. Only the first one wins.
 			if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(sessionID, struct{}{}); !alreadyFailed {
-				s.recordAttempt(sess, false, prepareErr.Error())
+				s.recordAttempt(sess, false, prepareErr.Error(), availOutcome)
 				go func(id string, done <-chan struct{}) {
 					<-done
 					s.recordedFailureSessionIDs.Delete(id)
@@ -1187,11 +1189,12 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		s.ClearSearchCaches()
 		if errSess, _ := s.sessionManager.GetSession(playbackSessionID); errSess != nil {
 			errSess.ResetPlaybackStream()
+			availOutcome := availOutcomeForFailure(readErr)
 			if s.availReporter != nil {
-				s.availReporter.ReportBad(errSess, readErr.Error())
+				availOutcome = s.availReporter.ReportBad(errSess, readErr.Error())
 			}
 			if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(playbackSessionID, struct{}{}); !alreadyFailed {
-				s.recordAttempt(errSess, false, readErr.Error())
+				s.recordAttempt(errSess, false, readErr.Error(), availOutcome)
 				go func(id string, done <-chan struct{}) {
 					<-done
 					s.recordedFailureSessionIDs.Delete(id)
@@ -1232,7 +1235,9 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		"failed_over", failedOver,
 		"stream_mode", streamMode,
 	)
+	sess.BeginServeProviderTracking()
 	defer func() {
+		sess.EndServeProviderTracking()
 		closeStream("handler exit")
 		bufW.Flush()
 
@@ -1304,11 +1309,39 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			)
 			return
 		}
+		serveDuration := time.Since(serveStartedAt)
+		minBytes := availnzb.DefaultMinBytesToReportGood
+		minDuration := availnzb.DefaultMinDurationToReportGood
 		if s.availReporter != nil {
-			s.availReporter.ReportGood(sess)
+			minBytes = s.availReporter.MinBytesToReportGood
+			minDuration = s.availReporter.MinDurationToReportGood
+		}
+		if !availnzb.QualifiesGood(sess, serveDuration, minBytes, minDuration) {
+			reason := fmt.Sprintf(
+				"Playback ended too early to classify this release as good. Threshold not reached (%d/%d bytes, %ds/%ds).",
+				sess.BytesRead(),
+				minBytes,
+				int(serveDuration/time.Second),
+				int(minDuration/time.Second),
+			)
+			logger.Debug("Skipping success bookkeeping below good threshold",
+				"session", sessionID,
+				"requested_session", requestedSessionID,
+				"bytes_read", sess.BytesRead(),
+				"serve_duration", serveDuration,
+				"min_bytes", minBytes,
+				"min_duration", minDuration,
+				"reason", reason,
+			)
+			s.recordPendingAttempt(sess, reason, availnzb.SkippedOutcome("Playback ended before the good threshold was reached."))
+			return
+		}
+		availOutcome := availnzb.ReportOutcome{}
+		if s.availReporter != nil {
+			availOutcome = s.availReporter.ReportGood(sess, serveDuration)
 		}
 		if _, already := s.recordedSuccessSessionIDs.LoadOrStore(sessionID, struct{}{}); !already {
-			s.recordAttempt(sess, true, "")
+			s.recordAttempt(sess, true, "", availOutcome)
 			// When session is gone, allow recording success again for a future play of the same release.
 			go func() {
 				<-sess.Done()
@@ -1544,7 +1577,6 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 		for _, f := range files {
 			if f.IsFailed() {
 				logger.Error("Session file has too many failures", "session", sessionID, "file", f.Name())
-				s.reportBadRelease(sess, unpack.ErrTooManyZeroFills)
 				if sess.NZB != nil {
 					s.validator.InvalidateCache(sess.NZB.Hash())
 				}
@@ -1569,7 +1601,6 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 	cacheReturnedPlaybackBlueprint(sess, bp)
 	if err != nil {
 		logger.Error("Failed to open media stream", "id", sessionID, "err", err)
-		s.reportBadRelease(sess, err)
 		if sess.NZB != nil {
 			s.validator.InvalidateCache(sess.NZB.Hash())
 		}
@@ -1712,24 +1743,53 @@ func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, stre
 	return nil, err
 }
 
-func (s *Server) reportBadRelease(sess *session.Session, streamErr error) {
+func shouldReportBadRelease(streamErr error) bool {
 	errMsg := streamErr.Error()
 	if !strings.Contains(errMsg, "compressed") && !strings.Contains(errMsg, "encrypted") &&
 		!strings.Contains(errMsg, "EOF") && !errors.Is(streamErr, unpack.ErrTooManyZeroFills) &&
 		!errors.Is(streamErr, unpack.ErrEpisodeTargetNotFound) {
-		return
+		return false
 	}
-	if s.availReporter != nil {
-		s.availReporter.ReportBad(sess, errMsg)
+	return true
+}
+
+func normalizeAttemptReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		return ""
 	}
-	// Do NOT call recordAttempt here. The caller (tryPlaySlot → handlePlay) always calls
-	// recordAttempt after tryPlaySlot returns an error, so calling it here too would insert
-	// a duplicate Failure row (the first call updates preload=1→0, the second falls through
-	// to INSERT because no preload=1 row remains).
+	lower := strings.ToLower(trimmed)
+	switch {
+	case lower == "eof":
+		return "No playable media stream could be opened from this release (EOF)."
+	case strings.Contains(lower, "playback ended too early to classify this release"):
+		return trimmed
+	default:
+		return trimmed
+	}
+}
+
+func availOutcomeForFailure(err error) availnzb.ReportOutcome {
+	if err == nil {
+		return availnzb.ReportOutcome{}
+	}
+	errMsg := strings.TrimSpace(err.Error())
+	switch {
+	case strings.Contains(strings.ToLower(errMsg), "playback startup timeout"):
+		return availnzb.SkippedOutcome("Not reported to AvailNZB because this startup timeout may be temporary and does not prove the release is bad.")
+	case isIndexerLimitErr(err):
+		return availnzb.SkippedOutcome("Not reported to AvailNZB because the failure was caused by an indexer or provider limit.")
+	default:
+		return availnzb.ReportOutcome{}
+	}
 }
 
 // recordAttemptParams builds persistence params from a session.
 func (s *Server) recordAttemptParams(sess *session.Session) persistence.RecordAttemptParams {
+	return s.recordAttemptParamsForOutcome(sess, false)
+}
+
+func (s *Server) recordAttemptParamsForOutcome(sess *session.Session, success bool) persistence.RecordAttemptParams {
 	contentType := sess.ContentType
 	if contentType == "" {
 		contentType = "movie"
@@ -1746,7 +1806,11 @@ func (s *Server) recordAttemptParams(sess *session.Session) persistence.RecordAt
 		}
 	}
 	providerName := ""
-	if hosts := sess.ProviderHosts(); len(hosts) > 0 {
+	hosts := sess.UsedProviderHosts()
+	if success {
+		hosts = sess.ServedProviderHosts()
+	}
+	if len(hosts) > 0 {
 		providerName = strings.Join(hosts, ", ")
 	}
 	return persistence.RecordAttemptParams{
@@ -1769,7 +1833,7 @@ func (s *Server) recordPreloadAttempt(sess *session.Session) {
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
-	p := s.recordAttemptParams(sess)
+	p := s.recordAttemptParamsForOutcome(sess, false)
 	s.attemptRecorder.RecordPreloadAttempt(p)
 	if s.onAttemptRecorded != nil {
 		s.onAttemptRecorded()
@@ -1777,14 +1841,30 @@ func (s *Server) recordPreloadAttempt(sess *session.Session) {
 }
 
 // recordAttempt writes one NZB attempt to the persistence layer when attemptRecorder is set (or updates existing preload row).
-func (s *Server) recordAttempt(sess *session.Session, success bool, failureReason string) {
+func (s *Server) recordAttempt(sess *session.Session, success bool, failureReason string, availOutcome availnzb.ReportOutcome) {
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
-	p := s.recordAttemptParams(sess)
+	p := s.recordAttemptParamsForOutcome(sess, success)
 	p.Success = success
-	p.FailureReason = failureReason
+	p.FailureReason = normalizeAttemptReason(failureReason)
+	p.AvailStatus = availOutcome.Status
+	p.AvailReason = availOutcome.Reason
 	s.attemptRecorder.RecordAttempt(p)
+	if s.onAttemptRecorded != nil {
+		s.onAttemptRecorded()
+	}
+}
+
+func (s *Server) recordPendingAttempt(sess *session.Session, reason string, availOutcome availnzb.ReportOutcome) {
+	if s.attemptRecorder == nil || sess == nil {
+		return
+	}
+	p := s.recordAttemptParamsForOutcome(sess, true)
+	p.FailureReason = normalizeAttemptReason(reason)
+	p.AvailStatus = availOutcome.Status
+	p.AvailReason = availOutcome.Reason
+	s.attemptRecorder.UpdatePendingAttempt(p)
 	if s.onAttemptRecorded != nil {
 		s.onAttemptRecorded()
 	}

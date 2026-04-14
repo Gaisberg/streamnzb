@@ -71,6 +71,16 @@
 
 * legacy device entries are no longer migrated into the new stream model
 
+### Features
+
+* **availnzb:** record successful playback reports only after real serving crosses byte or time thresholds
+* **history:** add richer AvailNZB reporting details and pending playback classification to NZB attempt details
+
+### Bug Fixes
+
+* **history:** show only serving providers for successful playback attempts and keep short playback sessions pending instead of failed
+* **ui:** improve NZB history readability and mobile layouts across dialogs, dashboard cards, stream management, and settings forms
+
 ### Notes
 
 * global configuration, providers, and indexers are kept during upgrade
