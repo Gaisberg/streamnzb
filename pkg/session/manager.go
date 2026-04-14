@@ -86,11 +86,11 @@ type Session struct {
 	downloadURL string
 	indexer     indexer.Indexer
 
-	segmentFetcher       loader.SegmentFetcher
-	providerHosts        []string
-	usedProviders        map[string]struct{}
-	servedProviders      map[string]struct{}
-	trackServedProviders bool
+	segmentFetcher     loader.SegmentFetcher
+	providerHosts      []string
+	usedProviders      map[string]struct{}
+	servedProviders    map[string]struct{}
+	serveTrackingDepth int
 
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
@@ -206,19 +206,21 @@ func (s *Session) RecordServedProviderHost(host string) {
 func (s *Session) BeginServeProviderTracking() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.trackServedProviders = true
+	s.serveTrackingDepth++
 }
 
 func (s *Session) EndServeProviderTracking() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.trackServedProviders = false
+	if s.serveTrackingDepth > 0 {
+		s.serveTrackingDepth--
+	}
 }
 
 func (s *Session) IsServeProviderTrackingEnabled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.trackServedProviders
+	return s.serveTrackingDepth > 0
 }
 
 type sessionTrackingFetcher struct {

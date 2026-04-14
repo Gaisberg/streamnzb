@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
@@ -436,7 +436,7 @@ function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', provid
       }
       requestClose()
     }}>
-      <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-3xl flex-col overflow-visible" onOpenAutoFocus={(event) => event.preventDefault()}>
+      <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-3xl flex-col overflow-visible" onOpenAutoFocus={focusDialogCloseButton}>
         <DialogHeader>
           <DialogTitle>{isEditing ? 'Change Stream' : 'Add Stream'}</DialogTitle>
           <DialogDescription>Create a stream or manage its provider, indexer, and search request assignments.</DialogDescription>

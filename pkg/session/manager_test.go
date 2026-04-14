@@ -290,6 +290,26 @@ func TestCreateDeferredSessionTracksUsedProviderHosts(t *testing.T) {
 	}
 }
 
+func TestServeProviderTrackingUsesDepthCounter(t *testing.T) {
+	s := &Session{}
+
+	s.BeginServeProviderTracking()
+	s.BeginServeProviderTracking()
+	if !s.IsServeProviderTrackingEnabled() {
+		t.Fatal("expected serve provider tracking to be enabled")
+	}
+
+	s.EndServeProviderTracking()
+	if !s.IsServeProviderTrackingEnabled() {
+		t.Fatal("expected serve provider tracking to remain enabled while another serve window is still active")
+	}
+
+	s.EndServeProviderTracking()
+	if s.IsServeProviderTrackingEnabled() {
+		t.Fatal("expected serve provider tracking to be disabled after the final serve window ends")
+	}
+}
+
 func TestCreateSessionKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.T) {
 	logger.Init("ERROR")
 

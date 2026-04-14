@@ -134,8 +134,9 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 		}
 		return SkippedOutcome("No provider could be confirmed for this attempt.")
 	}
-	go func() {
-		_ = r.client.ReportAvailability(releaseURL, strings.Join(hosts, ","), available, meta)
-	}()
+	if err := r.client.ReportAvailability(releaseURL, strings.Join(hosts, ","), available, meta); err != nil {
+		logger.Warn("AvailNZB report delivery failed", "session", sess.ID, "err", err)
+		return SkippedOutcome("AvailNZB report could not be delivered.")
+	}
 	return SentOutcome(available)
 }

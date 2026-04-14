@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'rea
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
@@ -254,8 +254,9 @@ function formatAvailStatus(value) {
 }
 
 function statusTone(group) {
+  if (group.okCount > 0) return 'success'
   if (group.preloadCount > 0 && group.failedCount === 0) return 'secondary'
-  return group.okCount > 0 ? 'success' : 'destructive'
+  return 'destructive'
 }
 
 function groupRequestsByDay(groups) {
@@ -684,7 +685,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
           }}>
             <DialogContent
               className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden"
-              onOpenAutoFocus={(event) => event.preventDefault()}
+              onOpenAutoFocus={focusDialogCloseButton}
             >
               {selectedAttempt ? (
                 <>
@@ -782,7 +783,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
           </Dialog>
 
             <Dialog open={filtersDialogOpen} onOpenChange={setFiltersDialogOpen}>
-            <DialogContent className="w-[calc(100vw-2rem)] max-w-lg rounded-2xl px-5 sm:px-6" onOpenAutoFocus={(event) => event.preventDefault()}>
+            <DialogContent className="w-[calc(100vw-2rem)] max-w-lg rounded-2xl px-5 sm:px-6" onOpenAutoFocus={focusDialogCloseButton}>
               <DialogHeader>
                 <DialogTitle className="text-left text-xl">Filters</DialogTitle>
                 <DialogDescription className="text-left">
