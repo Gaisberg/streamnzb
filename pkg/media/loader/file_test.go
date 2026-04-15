@@ -225,6 +225,30 @@ func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
 	}
 }
 
+func TestOpenStreamCtxUsesProvidedContextForSegmentDetection(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
+	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, nil, fetcher)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stream, err := f.OpenStreamCtx(ctx)
+	if stream != nil {
+		_ = stream.Close()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	fetcher.Release()
+}
+
 func TestDownloadSegmentLeaderCancellationDoesNotCancelFollower(t *testing.T) {
 	oldLogger := logger.Log
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))

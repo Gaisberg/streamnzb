@@ -158,3 +158,20 @@ func TestInitTwiceKeepsCurrentLogFile(t *testing.T) {
 		t.Fatalf("expected current log file to remain active after second init, got %q", text)
 	}
 }
+
+func TestVerboseNNTPLoggingToggle(t *testing.T) {
+	SetVerboseNNTPLogging(false)
+	if VerboseNNTPLoggingEnabled() {
+		t.Fatal("expected verbose NNTP logging to be disabled")
+	}
+
+	SetVerboseNNTPLogging(true)
+	if !VerboseNNTPLoggingEnabled() {
+		t.Fatal("expected verbose NNTP logging to be enabled")
+	}
+
+	SetVerboseNNTPLogging(false)
+	if VerboseNNTPLoggingEnabled() {
+		t.Fatal("expected verbose NNTP logging to be disabled again")
+	}
+}

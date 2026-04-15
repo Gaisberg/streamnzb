@@ -13,6 +13,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/triage"
+	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
 )
 
@@ -47,6 +48,12 @@ func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 		},
 		until: time.Now().Add(time.Minute),
 	})
+	server.rawSearchCache.Store(key.StreamID+":"+key.ContentType+":"+key.ID, &rawSearchCacheEntry{
+		raw: &rawSearchResult{
+			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+		},
+		until: time.Now().Add(time.Minute),
+	})
 
 	nextSess, nextID, err := server.switchToNextFallback(context.Background(), &session.Session{ID: currentID}, nil)
 	if err != nil {
@@ -66,6 +73,117 @@ func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 	}
 	if manager.GetSlotFailedDuringPlayback(wantID) {
 		t.Fatalf("did not expect resolved slot %q to be marked failed", wantID)
+	}
+	if _, ok := server.playlistCache.Load(key.CacheKey()); !ok {
+		t.Fatalf("expected playlist cache to survive failover skipping")
+	}
+	if _, ok := server.rawSearchCache.Load(key.StreamID + ":" + key.ContentType + ":" + key.ID); !ok {
+		t.Fatalf("expected raw search cache to survive failover skipping")
+	}
+}
+
+func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	manager := session.NewManager(nil, nil, time.Minute)
+	t.Cleanup(manager.Shutdown)
+	server := &Server{sessionManager: manager}
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "series", ID: "tt123:1:4"}
+	failedDetailsURL := "https://example.invalid/details/failed"
+	otherDetailsURL := "https://example.invalid/details/other"
+
+	server.playlistCache.Store(key.CacheKey(), &playlistCacheEntry{
+		result: &playlistResult{
+			Candidates: []triage.Candidate{
+				{Release: &release.Release{Title: "failed", DetailsURL: failedDetailsURL}},
+				{Release: &release.Release{Title: "other", DetailsURL: otherDetailsURL}},
+			},
+			CachedAvailable: map[string]bool{
+				failedDetailsURL: true,
+				otherDetailsURL:  true,
+			},
+			UnavailableDetailsURLs: map[string]bool{},
+		},
+		until: time.Now().Add(time.Minute),
+	})
+	server.rawSearchCache.Store(key.StreamID+":"+key.ContentType+":"+key.ID, &rawSearchCacheEntry{
+		raw: &rawSearchResult{
+			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			IndexerReleases: []*release.Release{
+				{Title: "failed", DetailsURL: failedDetailsURL, Available: &availTrue},
+				{Title: "other", DetailsURL: otherDetailsURL, Available: &availTrue},
+			},
+			Avail: &AvailContext{
+				ByDetailsURL: map[string]*availnzb.ReleaseWithStatus{
+					failedDetailsURL: {
+						Release:   &release.Release{Title: "failed", DetailsURL: failedDetailsURL, Available: &availTrue},
+						Available: true,
+					},
+				},
+				AvailableByDetailsURL: map[string]bool{
+					failedDetailsURL: true,
+					otherDetailsURL:  true,
+				},
+				UnavailableByDetailsURL: map[string]bool{},
+				Result: &availnzb.ReleasesResult{
+					Releases: []*availnzb.ReleaseWithStatus{
+						{
+							Release:   &release.Release{Title: "failed", DetailsURL: failedDetailsURL, Available: &availTrue},
+							Available: true,
+						},
+					},
+				},
+			},
+		},
+		until: time.Now().Add(time.Minute),
+	})
+
+	server.applyReportedBadReleaseToCaches(&session.Session{
+		ID:      key.SlotPath(0),
+		Release: &release.Release{DetailsURL: failedDetailsURL},
+	}, availnzb.SentOutcome(false))
+
+	cachedPlaylistValue, ok := server.playlistCache.Load(key.CacheKey())
+	if !ok {
+		t.Fatalf("expected playlist cache entry to remain available")
+	}
+	cachedPlaylist := cachedPlaylistValue.(*playlistCacheEntry).result
+	if len(cachedPlaylist.Candidates) != 1 || cachedPlaylist.Candidates[0].Release == nil || cachedPlaylist.Candidates[0].Release.DetailsURL != otherDetailsURL {
+		t.Fatalf("expected failed release to be removed from cached playlist, got %#v", cachedPlaylist.Candidates)
+	}
+	if len(cachedPlaylist.SlotPaths) != 1 || cachedPlaylist.SlotPaths[0] != key.SlotPath(1) {
+		t.Fatalf("expected cached playlist slot paths to preserve original fallback order, got %#v", cachedPlaylist.SlotPaths)
+	}
+	if nextID := server.deriveNextSlotIDFromPlaylist(key.SlotPath(0), key, 0, cachedPlaylist, nil); nextID != key.SlotPath(1) {
+		t.Fatalf("expected failover to advance to the next original slot after cache update, got %q", nextID)
+	}
+	if cachedPlaylist.FirstIsAvailGood != true {
+		t.Fatalf("expected first remaining candidate to stay avail-good")
+	}
+	if !cachedPlaylist.UnavailableDetailsURLs[failedDetailsURL] {
+		t.Fatalf("expected failed release to be marked unavailable in cached playlist")
+	}
+	if cachedPlaylist.CachedAvailable[failedDetailsURL] {
+		t.Fatalf("expected failed release to be removed from cached available set")
+	}
+
+	cachedRawValue, ok := server.rawSearchCache.Load(key.StreamID + ":" + key.ContentType + ":" + key.ID)
+	if !ok {
+		t.Fatalf("expected raw search cache entry to remain available")
+	}
+	cachedRaw := cachedRawValue.(*rawSearchCacheEntry).raw
+	if !cachedRaw.Avail.UnavailableByDetailsURL[failedDetailsURL] {
+		t.Fatalf("expected raw avail context to mark failed release unavailable")
+	}
+	if cachedRaw.Avail.AvailableByDetailsURL[failedDetailsURL] {
+		t.Fatalf("expected raw avail context to remove failed release from available set")
+	}
+	if rel := cachedRaw.Avail.ByDetailsURL[failedDetailsURL]; rel == nil || rel.Available {
+		t.Fatalf("expected raw avail cache entry to be marked unavailable, got %#v", rel)
+	}
+	if cachedRaw.IndexerReleases[0].Available == nil || *cachedRaw.IndexerReleases[0].Available {
+		t.Fatalf("expected cached raw indexer release to be marked unavailable")
 	}
 }
 
@@ -100,7 +218,7 @@ func TestClassifyPlaybackStartupErrWrapsOwnTimeout(t *testing.T) {
 	defer cancel()
 	<-ctx.Done()
 
-	err := classifyPlaybackStartupErr("probe", ctx, context.DeadlineExceeded)
+	err := classifyPlaybackStartupErr("probe", 5*time.Second, ctx, context.DeadlineExceeded)
 	if !errors.Is(err, ErrPlaybackStartupTimeout) {
 		t.Fatalf("expected startup timeout error, got %v", err)
 	}
@@ -116,7 +234,7 @@ func TestClassifyPlaybackStartupErrPreservesParentCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := classifyPlaybackStartupErr("open", ctx, context.Canceled)
+	err := classifyPlaybackStartupErr("open", 5*time.Second, ctx, context.Canceled)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}

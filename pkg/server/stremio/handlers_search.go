@@ -650,6 +650,12 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		}
 		return "legacy"
 	}()
+	logger.Debug("Building playback candidates",
+		"stream", streamLabel,
+		"type", contentType,
+		"id", id,
+		"requests", len(selectedQueries),
+	)
 	logMetadataLookup(streamLabel, contentType, id)
 	logMetadataLookupFinished(streamLabel, contentType, id, params)
 	if !hasUsableResolvedMetadata(params, contentType) {
@@ -682,6 +688,14 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	indexerReleases = dedupeCombinedSearchResults(streamLabel, stream, indexerReleases, executedRequests)
 	availCtx = alignAvailContextWithSearch(availCtx, indexerReleases)
 	enrichSearchResultsWithAvail(streamLabel, indexerReleases, availCtx)
+	logger.Debug("Playback candidate build finished",
+		"stream", streamLabel,
+		"type", contentType,
+		"id", id,
+		"executed_requests", executedRequests,
+		"releases", len(indexerReleases),
+		"avail_matches", len(availCtx.AvailableByDetailsURL)+len(availCtx.UnavailableByDetailsURL),
+	)
 
 	return &rawSearchResult{
 		Params:          params,

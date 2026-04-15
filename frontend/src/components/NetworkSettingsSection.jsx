@@ -272,7 +272,11 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Password</FormLabel>
-                      <FormControl><PasswordInput disabled={!proxyEnabled} className={fieldClassName('proxy_auth_pass', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
+                      <FormControl>
+                        <div className={controlWideClass}>
+                          <PasswordInput disabled={!proxyEnabled} className={fieldClassName('proxy_auth_pass', 'h-9 w-full')} {...field} />
+                        </div>
+                      </FormControl>
                     </div>
                     <FormDescription className="mt-3">Optional password clients must provide when using the proxy.</FormDescription>
                     <FormMessage />

@@ -88,6 +88,7 @@ type Session struct {
 
 	segmentFetcher     loader.SegmentFetcher
 	providerHosts      []string
+	attemptedProviders map[string]struct{}
 	usedProviders      map[string]struct{}
 	servedProviders    map[string]struct{}
 	serveTrackingDepth int
@@ -163,6 +164,20 @@ func (s *Session) UsedProviderHosts() []string {
 	return hosts
 }
 
+func (s *Session) AttemptedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.attemptedProviders) == 0 {
+		return nil
+	}
+	hosts := make([]string, 0, len(s.attemptedProviders))
+	for host := range s.attemptedProviders {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
 func (s *Session) ServedProviderHosts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,6 +192,25 @@ func (s *Session) ServedProviderHosts() []string {
 	return hosts
 }
 
+func (s *Session) RecordAttemptedProviderHost(host string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.attemptedProviders == nil {
+		s.attemptedProviders = make(map[string]struct{})
+	}
+	s.attemptedProviders[host] = struct{}{}
+}
+
+func (s *Session) RecordAttemptedProviderHosts(hosts []string) {
+	for _, host := range hosts {
+		s.RecordAttemptedProviderHost(host)
+	}
+}
+
 func (s *Session) RecordUsedProviderHost(host string) {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -187,6 +221,10 @@ func (s *Session) RecordUsedProviderHost(host string) {
 	if s.usedProviders == nil {
 		s.usedProviders = make(map[string]struct{})
 	}
+	if s.attemptedProviders == nil {
+		s.attemptedProviders = make(map[string]struct{})
+	}
+	s.attemptedProviders[host] = struct{}{}
 	s.usedProviders[host] = struct{}{}
 }
 
@@ -245,6 +283,8 @@ func (f *sessionTrackingFetcher) FetchSegment(ctx context.Context, segment *nzb.
 	data, err := f.base.FetchSegment(ctx, segment, groups)
 	if err == nil {
 		f.record(data)
+	} else {
+		f.session.RecordAttemptedProviderHosts(pool.AttemptedProviderHosts(err))
 	}
 	return data, err
 }
@@ -260,6 +300,8 @@ func (f *sessionTrackingFetcher) FetchSegmentFirst(ctx context.Context, segment 
 	data, err := first.FetchSegmentFirst(ctx, segment, groups)
 	if err == nil {
 		f.record(data)
+	} else {
+		f.session.RecordAttemptedProviderHosts(pool.AttemptedProviderHosts(err))
 	}
 	return data, err
 }
@@ -273,7 +315,15 @@ func (f *sessionTrackingFetcherWithStat) StatSegment(ctx context.Context, messag
 	if f == nil || f.statter == nil {
 		return false, fmt.Errorf("segment statter unavailable")
 	}
-	return f.statter.StatSegment(ctx, messageID, groups)
+	exists, err := f.statter.StatSegment(ctx, messageID, groups)
+	if err != nil {
+		f.session.RecordAttemptedProviderHosts(pool.AttemptedProviderHosts(err))
+		return exists, err
+	}
+	if !exists && f.session != nil {
+		f.session.RecordAttemptedProviderHosts(f.session.ProviderHosts())
+	}
+	return exists, nil
 }
 
 func attachProviderTracking(session *Session, fetcher loader.SegmentFetcher) loader.SegmentFetcher {
@@ -1093,9 +1143,17 @@ func (m *Manager) DeleteSession(sessionID string) {
 }
 
 func (s *Session) Close() {
+	s.closeWithLogging(true, "")
+}
+
+func (s *Session) closeWithLogging(debugLog bool, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	logger.Debug("session Close", "id", s.ID)
+	if debugLog {
+		logger.Debug("session Close", "id", s.ID)
+	} else {
+		logger.Trace("session Close", "id", s.ID, "reason", reason)
+	}
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -1151,6 +1209,9 @@ func (m *Manager) cleanup() {
 	now := time.Now()
 	var toClose []*Session
 	var closedIDs []string
+	var idleEvictions int
+	var postPlaybackEvictions int
+	var stuckPlaybackEvictions int
 	for id, session := range m.sessions {
 		session.mu.Lock()
 		// Evict stale Clients entries before computing hasActivePlayback.
@@ -1169,6 +1230,14 @@ func (m *Manager) cleanup() {
 			delete(m.sessions, id)
 			toClose = append(toClose, session)
 			closedIDs = append(closedIDs, id)
+			switch {
+			case evictStuckPlayback:
+				stuckPlaybackEvictions++
+			case evictPostPlayback:
+				postPlaybackEvictions++
+			default:
+				idleEvictions++
+			}
 		}
 		session.mu.Unlock()
 	}
@@ -1176,11 +1245,19 @@ func (m *Manager) cleanup() {
 	m.mu.Unlock()
 
 	for _, s := range toClose {
-		logger.Debug("session cleanup evicting", "id", s.ID)
-		s.Close()
+		s.closeWithLogging(false, "cleanup")
+	}
+	if len(toClose) > 0 {
+		logger.Debug(
+			"session cleanup evicted sessions",
+			"count", len(toClose),
+			"idle", idleEvictions,
+			"post_playback", postPlaybackEvictions,
+			"stuck_playback", stuckPlaybackEvictions,
+			"purge_segment_cache", shouldPurgeCache,
+		)
 	}
 	if shouldPurgeCache {
-		logger.Debug("session cleanup: no sessions with active files, purging segment cache")
 		m.usenetPool.PurgeCache()
 	}
 	if len(toClose) > 0 {

@@ -3,17 +3,18 @@ import { useForm, useWatch } from 'react-hook-form'
 import { Loader2, Info, AlertTriangle, Eye, EyeOff, Copy, Check, Lock, LockOpen, Save, Paintbrush } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
 import { PasswordInput } from "@/components/ui/password-input"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { apiFetch } from "@/api"
 import { cn } from "@/lib/utils"
 
 const CARD_FIELDS = {
-  admin: ['log_level', 'keep_log_files', 'nzb_history_retention_days'],
+  admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
+  playback: ['playback_startup_timeout_seconds'],
   availnzb: ['availnzb_api_key', 'availnzb_mode'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -22,11 +23,16 @@ function pickInitialValues(values = {}) {
   const parsedRetentionDays = values.nzb_history_retention_days == null
     ? 90
     : Number(values.nzb_history_retention_days)
+  const parsedPlaybackStartupTimeout = values.playback_startup_timeout_seconds == null
+    ? 5
+    : Number(values.playback_startup_timeout_seconds)
   return {
     log_level: values.log_level ?? 'INFO',
+    verbose_nntp_logging: values.verbose_nntp_logging === true,
     keep_log_files: Number(values.keep_log_files ?? 9) || 9,
     nzb_history_retention_days: Number.isFinite(parsedRetentionDays) ? parsedRetentionDays : 90,
     memory_limit_mb: Number(values.memory_limit_mb ?? 512),
+    playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
     availnzb_api_key: values.availnzb_api_key ?? '',
     availnzb_mode: values.availnzb_mode ?? '',
     tmdb_api_key: values.tmdb_api_key ?? '',
@@ -58,8 +64,12 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
   initialValues,
   envOverrides,
   isSaving,
+  availNZBStatus,
+  availNZBStatusLoading,
+  availNZBStatusError,
   onPersist,
   onClearCache,
+  onRefreshAvailNZBStatus,
   onDirtyChange,
   onProceedTabChange,
 }, ref) {
@@ -76,9 +86,6 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [pendingTabChange, setPendingTabChange] = useState('')
   const [showUnsavedHighlights, setShowUnsavedHighlights] = useState(false)
-  const [availNZBStatus, setAvailNZBStatus] = useState(null)
-  const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
-  const [availNZBStatusError, setAvailNZBStatusError] = useState('')
   const dirtyRef = useRef(false)
 
   const form = useForm({ defaultValues: defaults })
@@ -98,34 +105,6 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
     dirtyRef.current = false
     onDirtyChange?.(false)
   }, [defaults, onDirtyChange, reset])
-
-  useEffect(() => {
-    let cancelled = false
-
-    const fetchAvailNZBStatus = async () => {
-      setAvailNZBStatusLoading(true)
-      setAvailNZBStatusError('')
-      try {
-        const data = await apiFetch('/api/availnzb/status')
-        if (cancelled) return
-        setAvailNZBStatus(data || null)
-      } catch (error) {
-        if (cancelled) return
-        setAvailNZBStatus(null)
-        setAvailNZBStatusError(error.message || 'Failed to load AvailNZB key status.')
-      } finally {
-        if (!cancelled) {
-          setAvailNZBStatusLoading(false)
-        }
-      }
-    }
-
-    fetchAvailNZBStatus()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useImperativeHandle(ref, () => ({
     hasUnsavedChanges() {
@@ -164,6 +143,9 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
       dirtyRef.current = false
       onDirtyChange?.(false)
       setShowUnsavedHighlights(false)
+      if (cardId === 'availnzb') {
+        void onRefreshAvailNZBStatus?.()
+      }
     } finally {
       setSavingCard('')
     }
@@ -273,6 +255,25 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                         <FormMessage />
                       </FormItem>
                     )} />
+                    <FormField control={control} name="verbose_nntp_logging" render={({ field }) => (
+                      <FormItem className="relative rounded-none border-0 p-3">
+                        <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                        <div className={stackedFieldRowClass}>
+                          <div className="sm:flex-1">
+                            <FormLabel className={labelClass}>Verbose NNTP logging</FormLabel>
+                          </div>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={field.onChange}
+                              className={showUnsavedHighlights && formState.dirtyFields?.verbose_nntp_logging ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                            />
+                          </FormControl>
+                        </div>
+                        <FormDescription className="mt-3">Include low-level NNTP connection and pool logs in DEBUG output.</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
                     <FormField control={control} name="keep_log_files" render={({ field }) => (
                       <FormItem className="relative rounded-none border-0 p-3">
                         <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
@@ -336,6 +337,32 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                     </Button>
                   </div>
                   <div className="mt-3 text-sm text-muted-foreground">Clears the in-memory playlist and raw search caches immediately.</div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+                    <CardTitle>Playback</CardTitle>
+                    <CardDescription>Startup behavior before the first playable response is sent.</CardDescription>
+                  </div>
+                  <div className="shrink-0">{renderSaveButton('playback')}</div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-md border border-border/60">
+                  <FormField control={control} name="playback_startup_timeout_seconds" render={({ field }) => (
+                    <FormItem className="rounded-none border-0 p-3">
+                      <div className={stackedFieldRowClass}>
+                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Playback startup timeout (s)</FormLabel>
+                        <FormControl><Input type="number" min={1} max={60} className={fieldClassName('playback_startup_timeout_seconds', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 5 : Math.min(60, Math.max(1, Number.isNaN(next) ? 5 : next))) }} /></FormControl>
+                      </div>
+                      <FormDescription className="mt-3">How long StreamNZB waits for the initial playback probe/open before failing over to the next release. Higher values reduce false startup timeouts but delay failover.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
                 </div>
               </CardContent>
             </Card>

@@ -39,6 +39,9 @@ func GetMediaStream(ctx context.Context, files []UnpackableFile, cachedBP interf
 }
 
 func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cachedBP interface{}, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, interface{}, error) {
+	if err := contextErr(ctx); err != nil {
+		return nil, "", 0, nil, err
+	}
 	logger.Debug("GetMediaStreamForEpisode starting",
 		"target", target,
 		"files", len(files),
@@ -94,7 +97,7 @@ func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cache
 		logger.Trace("Detected RAR archive", "target", target, "volumes", len(rarFiles))
 		unpackables := make([]UnpackableFile, len(files))
 		copy(unpackables, files)
-		bp, err := ScanArchive(unpackables, password, target)
+		bp, err := ScanArchive(ctx, unpackables, password, target)
 		if err != nil {
 			if errors.Is(err, ErrEpisodeTargetNotFound) {
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
@@ -114,7 +117,7 @@ func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cache
 	if err == nil && len(archiveFiles) > 0 {
 		firstVolName := ExtractFilename(archiveFiles[0].Name())
 		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles))
-		newBp, err := CreateSevenZipBlueprint(archiveFiles, firstVolName, password, target)
+		newBp, err := CreateSevenZipBlueprint(ctx, archiveFiles, firstVolName, password, target)
 		if err != nil {
 			if errors.Is(err, ErrEpisodeTargetNotFound) {
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
@@ -160,7 +163,7 @@ func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cache
 			unpackables := make([]UnpackableFile, len(files))
 			copy(unpackables, files)
 			logger.Info("Attempting heuristic RAR scan on unknown files")
-			bp, err := ScanArchive(unpackables, password, target)
+			bp, err := ScanArchive(ctx, unpackables, password, target)
 			if err == nil {
 				s, name, size, err := StreamFromBlueprint(ctx, bp, password)
 				if err == nil {

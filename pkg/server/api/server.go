@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -48,6 +49,9 @@ type Server struct {
 	clientsMu     sync.Mutex
 	logCh         chan string
 	attemptLister *persistence.StateManager
+	availNZBStore availnzb.KeyStore
+
+	availNZBRegistrationInFlight bool
 }
 
 type Client struct {
@@ -143,6 +147,7 @@ func (s *Server) SetAttemptLister(m *persistence.StateManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attemptLister = m
+	s.availNZBStore = m
 }
 
 func (s *Server) SetProxyServer(p *proxy.Server) {
@@ -155,6 +160,97 @@ func (s *Server) SetAvailNZBAPIKey(apiKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.availNZBAPIKey = strings.TrimSpace(apiKey)
+}
+
+func (s *Server) syncLiveAvailNZBAPIKey(apiKey string) {
+	apiKey = strings.TrimSpace(apiKey)
+	if s.app != nil {
+		s.app.SetAvailNZBAPIKey(apiKey)
+	}
+	s.SetAvailNZBAPIKey(apiKey)
+}
+
+func (s *Server) ensureAvailNZBReadyForReload(newCfg *config.Config) {
+	if newCfg == nil || newCfg.AvailNZBMode == "disabled" {
+		return
+	}
+
+	explicitKey := strings.TrimSpace(newCfg.AvailNZBAPIKey)
+	if explicitKey != "" {
+		s.syncLiveAvailNZBAPIKey(explicitKey)
+		return
+	}
+
+	s.mu.RLock()
+	currentKey := strings.TrimSpace(s.availNZBAPIKey)
+	availNZBURL := strings.TrimSpace(s.availNZBURL)
+	store := s.availNZBStore
+	s.mu.RUnlock()
+
+	if currentKey != "" {
+		s.syncLiveAvailNZBAPIKey(currentKey)
+		return
+	}
+
+	resolvedKey, err := availnzb.ResolveStartupAPIKey(store, availNZBURL, "")
+	if err != nil {
+		logger.Warn("AvailNZB key bootstrap during reload failed", "err", err)
+		return
+	}
+	if resolvedKey != "" {
+		s.syncLiveAvailNZBAPIKey(resolvedKey)
+		return
+	}
+
+	s.startDeferredAvailNZBRegistration(newCfg.AvailNZBMode)
+}
+
+func (s *Server) startDeferredAvailNZBRegistration(mode string) {
+	s.mu.Lock()
+	if s.availNZBRegistrationInFlight {
+		s.mu.Unlock()
+		return
+	}
+	availNZBURL := strings.TrimSpace(s.availNZBURL)
+	store := s.availNZBStore
+	if availNZBURL == "" || store == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.availNZBRegistrationInFlight = true
+	s.mu.Unlock()
+
+	logger.Info("AvailNZB API key registration deferred", "mode", mode)
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.availNZBRegistrationInFlight = false
+			s.mu.Unlock()
+		}()
+
+		registeredKey, err := availnzb.RegisterAndPersistAPIKey(store, availNZBURL, availnzb.DefaultAppName)
+		if err != nil {
+			if errors.Is(err, availnzb.ErrRegisterKeyIPAlreadyHasKey) {
+				return
+			}
+			logger.Warn("AvailNZB background key registration failed", "err", err)
+			return
+		}
+
+		s.syncLiveAvailNZBAPIKey(registeredKey)
+
+		if s.app != nil {
+			current := s.app.Components()
+			if current != nil && current.AvailClient != nil {
+				if err := current.AvailClient.RefreshBackbones(); err != nil {
+					logger.Debug("AvailNZB backbones refresh", "source", "background_registration", "err", err)
+				}
+			}
+		}
+
+		logger.Info("AvailNZB background key registration completed")
+	}()
 }
 
 func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
@@ -230,6 +326,7 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 	}
 
 	logger.SetLevel(comp.Config.LogLevel)
+	logger.SetVerboseNNTPLogging(comp.Config.VerboseNNTPLogging)
 	if s.strmServer != nil {
 		s.strmServer.Reload(&stremio.ServerOptions{
 			Config:               comp.Config,

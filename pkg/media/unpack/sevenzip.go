@@ -23,13 +23,19 @@ type SevenZipBlueprint struct {
 	Target       EpisodeTarget
 }
 
-func CreateSevenZipBlueprint(files []UnpackableFile, firstVolName string, password string, target EpisodeTarget) (*SevenZipBlueprint, error) {
+func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstVolName string, password string, target EpisodeTarget) (*SevenZipBlueprint, error) {
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
 	archiveFiles := make([]UnpackableFile, len(files))
 	copy(archiveFiles, files)
 	sort.Slice(archiveFiles, func(i, j int) bool {
 		return Get7zVolumeNumber(archiveFiles[i].Name()) < Get7zVolumeNumber(archiveFiles[j].Name())
 	})
-	parts := filesToParts(archiveFiles)
+	parts, err := filesToParts(ctx, archiveFiles)
+	if err != nil {
+		return nil, err
+	}
 	mr := NewConcatenatedReaderAt(parts)
 
 	// Verify 7z magic signature before passing to library
@@ -43,7 +49,6 @@ func CreateSevenZipBlueprint(files []UnpackableFile, firstVolName string, passwo
 	}
 
 	var r *sevenzip.Reader
-	var err error
 	if password != "" {
 		r, err = sevenzip.NewReaderWithPassword(mr, mr.Size(), password)
 	} else {
@@ -110,7 +115,10 @@ func Open7zStreamFromBlueprint(ctx context.Context, bp *SevenZipBlueprint, passw
 		return nil, "", 0, ErrEncrypted7zStreaming
 	}
 
-	parts := filesToParts(bp.Files)
+	parts, err := filesToParts(ctx, bp.Files)
+	if err != nil {
+		return nil, "", 0, err
+	}
 	streamParts, err := mapOffsetToParts(parts, bp.FileOffset, bp.TotalSize)
 	if err != nil {
 		return nil, "", 0, err
@@ -134,16 +142,22 @@ func filter7zFiles(files []UnpackableFile) []UnpackableFile {
 	return result
 }
 
-func filesToParts(files []UnpackableFile) []Part {
+func filesToParts(ctx context.Context, files []UnpackableFile) ([]Part, error) {
 	parts := make([]Part, len(files))
 	if len(files) == 0 {
-		return parts
+		return parts, nil
 	}
 
-	firstSize := resolved7zVolumeSize(files[0])
+	firstSize, err := resolved7zVolumeSize(ctx, files[0])
+	if err != nil {
+		return nil, err
+	}
 	lastSize := firstSize
 	if len(files) > 1 {
-		lastSize = resolved7zVolumeSize(files[len(files)-1])
+		lastSize, err = resolved7zVolumeSize(ctx, files[len(files)-1])
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for i, f := range files {
@@ -153,12 +167,14 @@ func filesToParts(files []UnpackableFile) []Part {
 		}
 		parts[i] = Part{Reader: f, Offset: 0, Size: size}
 	}
-	return parts
+	return parts, nil
 }
 
-func resolved7zVolumeSize(f UnpackableFile) int64 {
-	_ = f.EnsureSegmentMap()
-	return f.Size()
+func resolved7zVolumeSize(ctx context.Context, f UnpackableFile) (int64, error) {
+	if err := ensureSegmentMap(ctx, f); err != nil {
+		return 0, err
+	}
+	return f.Size(), nil
 }
 
 func mapOffsetToParts(volumes []Part, startOffset, size int64) ([]virtualPart, error) {

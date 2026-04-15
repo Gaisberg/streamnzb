@@ -159,10 +159,15 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 	cacheKey := key.CacheKey()
 	if v, ok := s.playlistCache.Load(cacheKey); ok {
 		if ent, _ := v.(*playlistCacheEntry); ent != nil && time.Now().Before(ent.until) {
-			logger.Debug("Play list cache hit", "key", cacheKey)
+			candidateCount := 0
+			if ent.result != nil {
+				candidateCount = len(ent.result.Candidates)
+			}
+			logger.Debug("Playback playlist cache hit", "key", cacheKey, "candidates", candidateCount)
 			return ent.result, nil
 		}
 	}
+	logger.Debug("Playback playlist cache miss", "key", cacheKey)
 	list, err := s.buildPlaylistUncached(ctx, key, isAIOStreams, stream)
 	if err != nil || list == nil {
 		return list, err
@@ -183,10 +188,15 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 	rawKey := streamID(stream) + ":" + contentType + ":" + id
 	if v, ok := s.rawSearchCache.Load(rawKey); ok {
 		if ent, _ := v.(*rawSearchCacheEntry); ent != nil && time.Now().Before(ent.until) {
-			logger.Debug("Raw search cache hit", "key", rawKey)
+			releaseCount := 0
+			if ent.raw != nil {
+				releaseCount = len(ent.raw.IndexerReleases)
+			}
+			logger.Debug("Playback candidate cache hit", "key", rawKey, "releases", releaseCount)
 			return cloneRawSearchResult(ent.raw), nil
 		}
 	}
+	logger.Debug("Playback candidate cache miss", "key", rawKey)
 	raw, err := s.buildRawSearchResult(ctx, contentType, id, stream)
 	if err != nil || raw == nil {
 		return nil, err
@@ -463,6 +473,204 @@ func cloneRawSearchResult(raw *rawSearchResult) *rawSearchResult {
 		}
 	}
 	return next
+}
+
+func clonePlaylistResult(list *playlistResult) *playlistResult {
+	if list == nil {
+		return nil
+	}
+	next := &playlistResult{
+		FirstIsAvailGood:       list.FirstIsAvailGood,
+		Params:                 cloneSearchParams(list.Params),
+		CachedAvailable:        make(map[string]bool, len(list.CachedAvailable)),
+		UnavailableDetailsURLs: make(map[string]bool, len(list.UnavailableDetailsURLs)),
+	}
+	if list.Candidates != nil {
+		next.Candidates = make([]triage.Candidate, 0, len(list.Candidates))
+		for _, candidate := range list.Candidates {
+			copyCandidate := candidate
+			copyCandidate.Release = cloneReleaseForPlaylist(candidate.Release)
+			next.Candidates = append(next.Candidates, copyCandidate)
+		}
+	}
+	if list.SlotPaths != nil {
+		next.SlotPaths = append([]string(nil), list.SlotPaths...)
+	}
+	for k, v := range list.CachedAvailable {
+		next.CachedAvailable[k] = v
+	}
+	for k, v := range list.UnavailableDetailsURLs {
+		next.UnavailableDetailsURLs[k] = v
+	}
+	return next
+}
+
+func playlistSlotPaths(list *playlistResult, key StreamSlotKey) []string {
+	if list == nil || len(list.Candidates) == 0 {
+		return nil
+	}
+	if len(list.SlotPaths) == len(list.Candidates) {
+		return append([]string(nil), list.SlotPaths...)
+	}
+	paths := make([]string, len(list.Candidates))
+	for i := range list.Candidates {
+		paths[i] = key.SlotPath(i)
+	}
+	return paths
+}
+
+func markRawSearchResultUnavailable(raw *rawSearchResult, detailsURL string) bool {
+	if raw == nil || strings.TrimSpace(detailsURL) == "" {
+		return false
+	}
+	changed := false
+	if raw.Avail != nil {
+		if raw.Avail.AvailableByDetailsURL != nil && raw.Avail.AvailableByDetailsURL[detailsURL] {
+			delete(raw.Avail.AvailableByDetailsURL, detailsURL)
+			changed = true
+		}
+		if raw.Avail.UnavailableByDetailsURL == nil {
+			raw.Avail.UnavailableByDetailsURL = make(map[string]bool)
+		}
+		if !raw.Avail.UnavailableByDetailsURL[detailsURL] {
+			raw.Avail.UnavailableByDetailsURL[detailsURL] = true
+			changed = true
+		}
+		if rws := raw.Avail.ByDetailsURL[detailsURL]; rws != nil {
+			if rws.Available {
+				rws.Available = false
+				changed = true
+			}
+			if rws.Release != nil {
+				if rws.Release.Available == nil || *rws.Release.Available {
+					rws.Release.Available = &availFalse
+					changed = true
+				}
+			}
+		}
+		if raw.Avail.Result != nil {
+			for _, rws := range raw.Avail.Result.Releases {
+				if rws == nil || rws.Release == nil || rws.Release.DetailsURL != detailsURL {
+					continue
+				}
+				if rws.Available {
+					rws.Available = false
+					changed = true
+				}
+				if rws.Release.Available == nil || *rws.Release.Available {
+					rws.Release.Available = &availFalse
+					changed = true
+				}
+			}
+		}
+	}
+	for _, rel := range raw.IndexerReleases {
+		if rel == nil || rel.DetailsURL != detailsURL {
+			continue
+		}
+		if rel.Available == nil || *rel.Available {
+			rel.Available = &availFalse
+			changed = true
+		}
+	}
+	return changed
+}
+
+func markPlaylistResultUnavailable(list *playlistResult, key StreamSlotKey, detailsURL, slotPath string) bool {
+	if list == nil {
+		return false
+	}
+	changed := false
+	detailsURL = strings.TrimSpace(detailsURL)
+	slotPath = strings.TrimSpace(slotPath)
+	if detailsURL != "" {
+		if list.CachedAvailable != nil && list.CachedAvailable[detailsURL] {
+			delete(list.CachedAvailable, detailsURL)
+			changed = true
+		}
+		if list.UnavailableDetailsURLs == nil {
+			list.UnavailableDetailsURLs = make(map[string]bool)
+		}
+		if !list.UnavailableDetailsURLs[detailsURL] {
+			list.UnavailableDetailsURLs[detailsURL] = true
+			changed = true
+		}
+	}
+
+	paths := playlistSlotPaths(list, key)
+	if len(paths) != len(list.Candidates) {
+		recomputePlaylistAvailability(list)
+		return changed
+	}
+
+	filteredCandidates := make([]triage.Candidate, 0, len(list.Candidates))
+	filteredPaths := make([]string, 0, len(paths))
+	removed := false
+	for i, candidate := range list.Candidates {
+		candidateDetailsURL := ""
+		if candidate.Release != nil {
+			candidateDetailsURL = candidate.Release.DetailsURL
+		}
+		if (detailsURL != "" && candidateDetailsURL == detailsURL) || (slotPath != "" && paths[i] == slotPath) {
+			removed = true
+			continue
+		}
+		filteredCandidates = append(filteredCandidates, candidate)
+		filteredPaths = append(filteredPaths, paths[i])
+	}
+	if removed {
+		list.Candidates = filteredCandidates
+		list.SlotPaths = filteredPaths
+		changed = true
+	}
+	recomputePlaylistAvailability(list)
+	return changed
+}
+
+func recomputePlaylistAvailability(list *playlistResult) {
+	if list == nil {
+		return
+	}
+	list.FirstIsAvailGood = false
+	if len(list.Candidates) == 0 || list.CachedAvailable == nil || list.Candidates[0].Release == nil {
+		return
+	}
+	detailsURL := list.Candidates[0].Release.DetailsURL
+	if detailsURL == "" {
+		return
+	}
+	list.FirstIsAvailGood = list.CachedAvailable[detailsURL]
+}
+
+func (s *Server) markCachedReleaseUnavailable(key StreamSlotKey, detailsURL, slotPath string) {
+	if strings.TrimSpace(detailsURL) == "" {
+		return
+	}
+	updated := false
+	cacheKey := key.CacheKey()
+	if v, ok := s.playlistCache.Load(cacheKey); ok {
+		if ent, _ := v.(*playlistCacheEntry); ent != nil && time.Now().Before(ent.until) && ent.result != nil {
+			nextResult := clonePlaylistResult(ent.result)
+			if markPlaylistResultUnavailable(nextResult, key, detailsURL, slotPath) {
+				s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: nextResult, until: ent.until})
+				updated = true
+			}
+		}
+	}
+
+	rawKey := key.StreamID + ":" + key.ContentType + ":" + key.ID
+	if v, ok := s.rawSearchCache.Load(rawKey); ok {
+		if ent, _ := v.(*rawSearchCacheEntry); ent != nil && time.Now().Before(ent.until) && ent.raw != nil {
+			nextRaw := cloneRawSearchResult(ent.raw)
+			if markRawSearchResultUnavailable(nextRaw, detailsURL) {
+				s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: nextRaw, until: ent.until})
+				updated = true
+			}
+		}
+	}
+	if updated {
+		logger.Debug("Playback caches updated after bad release report", "key", cacheKey, "details_url", detailsURL, "slot", slotPath)
+	}
 }
 
 func buildUnavailableDetailsURLs(availCtx *AvailContext, filteringActive bool) map[string]bool {

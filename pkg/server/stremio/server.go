@@ -45,6 +45,7 @@ type Server struct {
 	recordedSuccessSessionIDs sync.Map // session ID -> struct{}; record actual playback success only once per stream
 	recordedPreloadSessionIDs sync.Map // session ID -> struct{}; record preload only once per session lifetime
 	recordedFailureSessionIDs sync.Map // session ID -> struct{}; record failure only once per session lifetime (prevents concurrent goroutines from inserting duplicate rows)
+	loggedThresholdSkipIDs    sync.Map // session ID -> struct{}; keep threshold-below logs to a single line per session
 	nextReleaseIndex          sync.Map // key: streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
 	webHandler                http.Handler
 	apiHandler                http.Handler

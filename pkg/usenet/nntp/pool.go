@@ -136,21 +136,21 @@ func (p *ClientPool) TotalMegabytes() float64 {
 }
 
 func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
-	logger.Debug("nntp pool Get", "host", p.host)
+	logger.VerboseNNTP("nntp pool Get", "host", p.host)
 
 	select {
 	case <-ctx.Done():
-		logger.Trace("pool.Get ctx.Done (idle check)", "host", p.host)
+		logger.VerboseNNTP("pool.Get ctx.Done (idle check)", "host", p.host)
 		return nil, ctx.Err()
 	case c := <-p.idleClients:
-		logger.Debug("nntp pool Get from idle", "host", p.host)
+		logger.VerboseNNTP("nntp pool Get from idle", "host", p.host)
 		return c, nil
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		logger.Trace("pool.Get ctx.Done (slot check)", "host", p.host)
+		logger.VerboseNNTP("pool.Get ctx.Done (slot check)", "host", p.host)
 		return nil, ctx.Err()
 	case <-p.slots:
 
@@ -165,20 +165,27 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 			p.slots <- struct{}{}
 			return nil, err
 		}
-		logger.Debug("nntp pool Get new client", "host", p.host)
+		logger.VerboseNNTP("nntp pool Get new client", "host", p.host)
 		return c, nil
 	default:
 	}
 
-	logger.Debug("nntp pool Get blocking", "host", p.host)
+	waitStarted := time.Now()
 	select {
 	case <-ctx.Done():
-		logger.Trace("pool.Get ctx.Done (blocking)", "host", p.host)
+		if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
+			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "context_canceled")
+		}
+		logger.VerboseNNTP("pool.Get ctx.Done (blocking)", "host", p.host)
 		return nil, ctx.Err()
 	case c := <-p.idleClients:
-		logger.Debug("nntp pool Get from idle (after block)", "host", p.host)
+		if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
+			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "idle_client")
+		}
+		logger.VerboseNNTP("nntp pool Get from idle (after block)", "host", p.host)
 		return c, nil
 	case <-p.slots:
+		wait := time.Since(waitStarted)
 
 		c, err := NewClient(p.host, p.port, p.ssl)
 		if err != nil {
@@ -191,7 +198,10 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 			p.slots <- struct{}{}
 			return nil, err
 		}
-		logger.Debug("nntp pool Get new client (after block)", "host", p.host)
+		if wait >= 250*time.Millisecond {
+			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "new_client")
+		}
+		logger.VerboseNNTP("nntp pool Get new client (after block)", "host", p.host)
 		return c, nil
 	}
 }
@@ -240,7 +250,7 @@ func (p *ClientPool) Put(c *Client) {
 		return
 	}
 	c.LastUsed = time.Now()
-	logger.Trace("nntp pool Put", "host", p.host)
+	logger.VerboseNNTP("nntp pool Put", "host", p.host)
 
 	// Use stopCh as an extra guard: if Shutdown() fires in the window between
 	// reading closed==false above and reaching this select, the stopCh case
@@ -253,7 +263,7 @@ func (p *ClientPool) Put(c *Client) {
 		c.Quit()
 		p.slots <- struct{}{}
 	default:
-		logger.Trace("nntp pool Put idle full, closing connection", "host", p.host)
+		logger.VerboseNNTP("nntp pool Put idle full, closing connection", "host", p.host)
 		c.Quit()
 		p.slots <- struct{}{}
 	}
@@ -263,7 +273,7 @@ func (p *ClientPool) Discard(c *Client) {
 	if c == nil {
 		return
 	}
-	logger.Debug("nntp pool Discard connection not returned to pool", "host", p.host)
+	logger.VerboseNNTP("nntp pool Discard connection not returned to pool", "host", p.host)
 	c.Quit()
 	p.slots <- struct{}{}
 }

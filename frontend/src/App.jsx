@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Settings from './Settings'
 import Login from './components/Login'
 import ChangePassword from './components/ChangePassword'
@@ -10,6 +10,7 @@ import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import StreamManagement from './components/StreamManagement'
+import { apiFetch } from './api'
 import { AlertCircle, Loader2 } from "lucide-react"
 
 import { useAdminRuntime } from './hooks/useAdminRuntime'
@@ -23,6 +24,11 @@ function App() {
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'system')
   const hasLoggedOutRef = useRef(false)
   const [activePage, setActivePage] = useState('dashboard')
+  const [availNZBStatus, setAvailNZBStatus] = useState(null)
+  const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
+  const [availNZBStatusError, setAvailNZBStatusError] = useState('')
+  const availNZBStatusLoadedRef = useRef(false)
+  const availNZBStatusLoadingRef = useRef(false)
 
   const {
     stats,
@@ -147,6 +153,43 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  const isSettingsPage = activePage === 'settings'
+  const availNZBEnabled = (config?.availnzb_mode || '') !== 'disabled'
+
+  const fetchAvailNZBStatus = useCallback(async (force = false) => {
+    if (!authenticated || !config || !availNZBEnabled) return
+    if (availNZBStatusLoadingRef.current) return
+    if (!force && availNZBStatusLoadedRef.current) return
+
+    availNZBStatusLoadingRef.current = true
+    setAvailNZBStatusLoading(true)
+    setAvailNZBStatusError('')
+    try {
+      const data = await apiFetch('/api/availnzb/status')
+      setAvailNZBStatus(data || null)
+      availNZBStatusLoadedRef.current = true
+    } catch (error) {
+      setAvailNZBStatus(null)
+      setAvailNZBStatusError(error.message || 'Failed to load AvailNZB status.')
+      availNZBStatusLoadedRef.current = true
+    } finally {
+      availNZBStatusLoadingRef.current = false
+      setAvailNZBStatusLoading(false)
+    }
+  }, [authenticated, config, availNZBEnabled])
+
+  useEffect(() => {
+    if (!authenticated || !config || !availNZBEnabled) {
+      availNZBStatusLoadedRef.current = false
+      availNZBStatusLoadingRef.current = false
+      setAvailNZBStatus(null)
+      setAvailNZBStatusError('')
+      setAvailNZBStatusLoading(false)
+      return
+    }
+    void fetchAvailNZBStatus(false)
+  }, [authenticated, config, availNZBEnabled, fetchAvailNZBStatus])
+
   if (!authChecked) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm gap-4">
@@ -186,8 +229,6 @@ function App() {
     </div>
   )
 
-  const isSettingsPage = activePage === 'settings'
-
   return (
     <SidebarProvider>
       <AppSidebar
@@ -208,6 +249,9 @@ function App() {
               chartData={chartData}
               sendCommand={sendCommand}
               config={config}
+              availNZBStatus={availNZBStatus}
+              availNZBStatusLoading={availNZBStatusLoading}
+              availNZBStatusError={availNZBStatusError}
             />
           )}
           {activePage === 'nzb-history' && (
@@ -245,6 +289,10 @@ function App() {
                 saveStatus={saveStatus}
                 clearSaveStatus={clearSaveStatus}
                 isSaving={isSaving}
+                availNZBStatus={availNZBStatus}
+                availNZBStatusLoading={availNZBStatusLoading}
+                availNZBStatusError={availNZBStatusError}
+                onRefreshAvailNZBStatus={() => fetchAvailNZBStatus(true)}
                 adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
                 indexerCaps={indexerCaps}
                 stats={stats}

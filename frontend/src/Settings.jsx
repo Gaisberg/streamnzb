@@ -19,7 +19,20 @@ const TABS = [
 
 const ACTIVE_TAB_STORAGE_KEY = 'streamnzb.settings.activeTab'
 
-function Settings({ initialConfig, sendCommand, saveStatus, clearSaveStatus, isSaving, adminToken, indexerCaps, stats }) {
+function Settings({
+  initialConfig,
+  sendCommand,
+  saveStatus,
+  clearSaveStatus,
+  isSaving,
+  availNZBStatus,
+  availNZBStatusLoading,
+  availNZBStatusError,
+  onRefreshAvailNZBStatus,
+  adminToken,
+  indexerCaps,
+  stats,
+}) {
   const [activeTab, setActiveTab] = useState(() => {
     if (typeof window === 'undefined') return 'network'
     const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'network'
@@ -260,10 +273,14 @@ function Settings({ initialConfig, sendCommand, saveStatus, clearSaveStatus, isS
           initialValues={advancedInitialValues}
           envOverrides={envOverrides}
           isSaving={isSaving}
+          availNZBStatus={availNZBStatus}
+          availNZBStatusLoading={availNZBStatusLoading}
+          availNZBStatusError={availNZBStatusError}
           onDirtyChange={handleAdvancedDirtyChange}
           onProceedTabChange={handleAdvancedProceedTabChange}
           onPersist={handleAdvancedPersist}
-            onClearCache={handleClearCache}
+          onClearCache={handleClearCache}
+          onRefreshAvailNZBStatus={onRefreshAvailNZBStatus}
           />
         )}
 

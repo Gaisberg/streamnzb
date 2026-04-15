@@ -143,3 +143,17 @@ func TestValidateConfigWithPlanAllowsIndexerDeleteDespiteOtherInvalidIndexer(t *
 		t.Fatalf("expected indexer delete to skip unrelated indexer validation, got %q", got)
 	}
 }
+
+func TestValidateConfigRejectsOutOfRangePlaybackStartupTimeout(t *testing.T) {
+	s := &Server{}
+
+	errs := s.validateConfig(&config.Config{
+		KeepLogFiles:                  9,
+		NZBHistoryRetentionDays:       90,
+		PlaybackStartupTimeoutSeconds: 0,
+	})
+
+	if got := errs["playback_startup_timeout_seconds"]; got == "" {
+		t.Fatalf("expected playback startup timeout validation error, got %#v", errs)
+	}
+}

@@ -20,6 +20,7 @@ const (
 	defaultAdminPasswordHash               = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 	DefaultInternalIndexerTimeoutSeconds   = 5
 	DefaultAggregatorIndexerTimeoutSeconds = 10
+	DefaultPlaybackStartupTimeoutSeconds   = 5
 	CurrentConfigVersion                   = 2
 	StreamModelConfigVersion               = 2
 	defaultMigratedStreamID                = "default"
@@ -119,14 +120,26 @@ func (ic IndexerConfig) EffectiveTimeout() time.Duration {
 	return time.Duration(ic.EffectiveTimeoutSeconds()) * time.Second
 }
 
+func (c *Config) EffectivePlaybackStartupTimeoutSeconds() int {
+	if c != nil && c.PlaybackStartupTimeoutSeconds > 0 {
+		return c.PlaybackStartupTimeoutSeconds
+	}
+	return DefaultPlaybackStartupTimeoutSeconds
+}
+
+func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
+	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
+}
+
 type Config struct {
 	ConfigVersion int `json:"config_version,omitempty"`
 
 	Indexers []IndexerConfig `json:"indexers"`
 
-	AddonPort    int    `json:"addon_port"`
-	AddonBaseURL string `json:"addon_base_url"`
-	LogLevel     string `json:"log_level"`
+	AddonPort          int    `json:"addon_port"`
+	AddonBaseURL       string `json:"addon_base_url"`
+	LogLevel           string `json:"log_level"`
+	VerboseNNTPLogging bool   `json:"verbose_nntp_logging,omitempty"`
 
 	AdminUsername           string `json:"admin_username"`
 	AdminPasswordHash       string `json:"admin_password_hash"`
@@ -166,6 +179,9 @@ type Config struct {
 
 	// NZBHistoryRetentionDays controls how many days NZB attempt history is kept. Default 90.
 	NZBHistoryRetentionDays int `json:"nzb_history_retention_days,omitempty"`
+
+	// PlaybackStartupTimeoutSeconds bounds probe/open work before the first playable response is ready. Default 5.
+	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "" or "full"        – fetch availability status AND report playback results (default).
@@ -380,17 +396,19 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		AddonPort:               7000,
-		AddonBaseURL:            "http://localhost:7000",
-		LogLevel:                "INFO",
-		AdminUsername:           "admin",
-		ProxyPort:               119,
-		ProxyHost:               "0.0.0.0",
-		ProxyEnabled:            true,
-		MemoryLimitMB:           512,
-		KeepLogFiles:            9,
-		NZBHistoryRetentionDays: 90,
-		LoadedPath:              configPath,
+		AddonPort:                     7000,
+		AddonBaseURL:                  "http://localhost:7000",
+		LogLevel:                      "INFO",
+		VerboseNNTPLogging:            false,
+		AdminUsername:                 "admin",
+		ProxyPort:                     119,
+		ProxyHost:                     "0.0.0.0",
+		ProxyEnabled:                  true,
+		MemoryLimitMB:                 512,
+		KeepLogFiles:                  9,
+		NZBHistoryRetentionDays:       90,
+		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
+		LoadedPath:                    configPath,
 	}
 
 	if err := cfg.LoadFile(configPath); err != nil {
@@ -423,6 +441,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.NZBHistoryRetentionDays < 1 {
 		cfg.NZBHistoryRetentionDays = 90
+		needSave = true
+	}
+	if cfg.PlaybackStartupTimeoutSeconds < 1 {
+		cfg.PlaybackStartupTimeoutSeconds = DefaultPlaybackStartupTimeoutSeconds
 		needSave = true
 	}
 

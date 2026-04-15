@@ -57,7 +57,7 @@ func NewClient(address string, port int, ssl bool) (*Client, error) {
 		return nil, err
 	}
 
-	logger.Debug("nntp NewClient connection opened", "addr", fullAddr)
+	logger.VerboseNNTP("nntp NewClient connection opened", "addr", fullAddr)
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	tp := textproto.NewConn(conn)
 	if err = readGreeting(tp); err != nil {
@@ -288,7 +288,7 @@ func (c *Client) Reconnect() error {
 
 func (c *Client) Quit() error {
 	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
-	logger.Debug("nntp Client Quit closing connection", "addr", addr)
+	logger.VerboseNNTP("nntp Client Quit closing connection", "addr", addr)
 	return c.conn.Close()
 }
 

@@ -131,6 +131,12 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 	if servedOnly {
 		hosts = sess.ServedProviderHosts()
 	}
+	if len(hosts) == 0 && !servedOnly {
+		hosts = sess.AttemptedProviderHosts()
+	}
+	if len(hosts) == 0 && !servedOnly && available && r.providerSrc != nil {
+		hosts = r.providerSrc.GetProviderHosts()
+	}
 	if len(hosts) == 0 {
 		if servedOnly {
 			logger.Debug("Skipping AvailNZB report without served provider hosts", "session", sess.ID)

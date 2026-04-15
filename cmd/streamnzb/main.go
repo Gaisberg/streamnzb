@@ -55,6 +55,7 @@ func main() {
 		initialization.WaitForInputAndExit(fmt.Errorf("configuration error: %w", err))
 	}
 	logger.SetLevel(cfg.LogLevel)
+	logger.SetVerboseNNTPLogging(cfg.VerboseNNTPLogging)
 	logger.PurgeOldLogs(cfg.KeepLogFiles)
 
 	if cfg.MemoryLimitMB > 0 {

@@ -36,7 +36,6 @@ var (
 )
 
 // isArticleNotFound reports whether err indicates 430 No Such Article (article missing on server).
-// On 430 we return immediately instead of trying other providers.
 func isArticleNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -67,6 +66,68 @@ type Pool struct {
 	sf            *singleflight.Group
 	mu            sync.RWMutex
 	activeFetches atomic.Int64
+}
+
+type attemptedProvidersError struct {
+	err   error
+	hosts []string
+}
+
+func (e *attemptedProvidersError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *attemptedProvidersError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// AttemptedProviderHosts returns the provider hosts that were actually attempted before err was returned.
+func AttemptedProviderHosts(err error) []string {
+	var attemptedErr *attemptedProvidersError
+	if !errors.As(err, &attemptedErr) || attemptedErr == nil || len(attemptedErr.hosts) == 0 {
+		return nil
+	}
+	return append([]string(nil), attemptedErr.hosts...)
+}
+
+func wrapAttemptedProviders(err error, hosts []string) error {
+	if err == nil {
+		return nil
+	}
+	hosts = appendUniqueHosts(nil, hosts...)
+	if len(hosts) == 0 {
+		return err
+	}
+	return &attemptedProvidersError{
+		err:   err,
+		hosts: hosts,
+	}
+}
+
+func appendUniqueHosts(dst []string, hosts ...string) []string {
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range dst {
+			if existing == host {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			dst = append(dst, host)
+		}
+	}
+	return dst
 }
 
 type PoolProviderTraceSnapshot struct {
@@ -179,6 +240,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	type segResult struct {
 		data SegmentData
 		err  error
+		host string
 	}
 	ch := make(chan segResult, len(providers))
 
@@ -195,6 +257,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				ch <- segResult{err: err}
 				return
 			}
+			host := p.Host(providerID)
 			p.activeFetches.Add(1)
 			defer p.activeFetches.Add(-1)
 
@@ -216,14 +279,14 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			if len(groups) > 0 {
 				if err := conn.Group(groups[0]); err != nil {
 					logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
-					ch <- segResult{err: err}
+					ch <- segResult{err: err, host: host}
 					return
 				}
 			}
 			r, err := conn.Body(messageID)
 			if err != nil {
 				logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
-				ch <- segResult{err: err}
+				ch <- segResult{err: err, host: host}
 				return
 			}
 			cr := &countReader{Reader: r}
@@ -232,20 +295,24 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			r.Close()
 			if err != nil {
 				logger.Debug("fetch segment decode failed", "provider", providerID, "err", err)
-				ch <- segResult{err: err}
+				ch <- segResult{err: err, host: host}
 				return
 			}
 			ch <- segResult{data: SegmentData{
 				Body:         frame.Data,
 				Size:         int64(len(frame.Data)),
-				ProviderHost: p.Host(providerID),
+				ProviderHost: host,
 			}}
 		}(exclude)
 	}
 
 	var lastErr error
+	var attempted []string
+	var articleNotFoundErr error
+	sawNonArticleNotFound := false
 	for range providers {
 		res := <-ch
+		attempted = appendUniqueHosts(attempted, res.host)
 		if res.err == nil {
 			if !shouldCacheFetchedSegment(fetchCtx) {
 				cancel()
@@ -260,12 +327,18 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		}
 		lastErr = res.err
 		if isArticleNotFound(res.err) {
-			cancel()
-			return SegmentData{}, fmt.Errorf("fetch segment %s: %w", messageID, res.err)
+			if articleNotFoundErr == nil {
+				articleNotFoundErr = res.err
+			}
+			continue
 		}
+		sawNonArticleNotFound = true
+	}
+	if articleNotFoundErr != nil && !sawNonArticleNotFound {
+		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
 	if lastErr != nil {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr)
+		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr), attempted)
 	}
 	return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries", messageID)
 }
@@ -279,17 +352,33 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	p.mu.RLock()
+	providerCount := len(p.providers)
+	p.mu.RUnlock()
+
 	var exclude []string
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	var attempted []string
+	var articleNotFoundErr error
+	sawNonArticleNotFound := false
+	maxAttempts := providerCount
+	if maxAttempts < 3 {
+		maxAttempts = 3
+	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		conn, release, discard, providerID, err := p.getConnection(fetchCtx, exclude, 999, false)
 		if err != nil {
 			if errors.Is(err, ErrNoProvidersAvailable) && len(exclude) > 0 {
+				if articleNotFoundErr != nil && !sawNonArticleNotFound && providerCount > 0 && len(exclude) >= providerCount {
+					break
+				}
 				exclude = nil
 				continue
 			}
 			return SegmentData{}, err
 		}
+		host := p.Host(providerID)
+		attempted = appendUniqueHosts(attempted, host)
 
 		data, articleNotFound, err := func() (SegmentData, bool, error) {
 			p.activeFetches.Add(1)
@@ -340,13 +429,17 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			return SegmentData{
 				Body:         frame.Data,
 				Size:         int64(len(frame.Data)),
-				ProviderHost: p.Host(providerID),
+				ProviderHost: host,
 			}, false, nil
 		}()
 		if err != nil {
 			lastErr = err
 			if articleNotFound {
-				return SegmentData{}, fmt.Errorf("fetch segment %s: %w", messageID, err)
+				if articleNotFoundErr == nil {
+					articleNotFoundErr = err
+				}
+			} else {
+				sawNonArticleNotFound = true
 			}
 			exclude = append(exclude, providerID)
 			continue
@@ -362,8 +455,11 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		return data, nil
 	}
 
+	if articleNotFoundErr != nil && !sawNonArticleNotFound {
+		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
+	}
 	if lastErr != nil {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr)
+		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr), attempted)
 	}
 	return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries", messageID)
 }
@@ -392,6 +488,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	type statResult struct {
 		exists bool
 		err    error
+		host   string
 	}
 	ch := make(chan statResult, len(providers))
 
@@ -408,6 +505,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 				ch <- statResult{err: getErr}
 				return
 			}
+			host := p.Host(providerID)
 
 			// Watchdog: if the context is cancelled while we are waiting for
 			// StatArticle (or Group), call discard() so the connection is closed
@@ -437,7 +535,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 					logger.Debug("stat segment group failed", "provider", providerID, "err", groupErr)
 					doRelease = false
 					discard()
-					ch <- statResult{err: groupErr}
+					ch <- statResult{err: groupErr, host: host}
 					return
 				}
 			}
@@ -446,16 +544,18 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 				logger.Debug("stat segment failed", "provider", providerID, "err", statErr)
 				doRelease = false
 				discard()
-				ch <- statResult{err: statErr}
+				ch <- statResult{err: statErr, host: host}
 				return
 			}
-			ch <- statResult{exists: exists}
+			ch <- statResult{exists: exists, host: host}
 		}(exclude)
 	}
 
 	var lastErr error
+	var attempted []string
 	for range providers {
 		res := <-ch
+		attempted = appendUniqueHosts(attempted, res.host)
 		if res.err == nil && res.exists {
 			cancel()
 			logger.Trace("stat segment ok", "message_id", messageID)
@@ -469,7 +569,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 		}
 	}
 	if lastErr != nil {
-		return false, fmt.Errorf("stat segment %s: %w", messageID, lastErr)
+		return false, wrapAttemptedProviders(fmt.Errorf("stat segment %s: %w", messageID, lastErr), attempted)
 	}
 	logger.Trace("stat segment not found (430)", "message_id", messageID)
 	return false, nil
@@ -542,7 +642,7 @@ func (p *Pool) DiscardConnection(client *nntp.Client, pool *nntp.ClientPool) {
 // Call when no sessions are active so the GC can reclaim the segment memory.
 func (p *Pool) PurgeCache() {
 	p.cache.Purge()
-	logger.Debug("pool PurgeCache: segment cache purged")
+	logger.Trace("pool PurgeCache: segment cache purged")
 }
 
 func (p *Pool) TraceSnapshot() PoolTraceSnapshot {

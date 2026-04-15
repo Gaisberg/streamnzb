@@ -176,22 +176,36 @@ func (f *File) SegmentMapDetected() bool {
 }
 
 func (f *File) EnsureSegmentMap() error {
-	f.mu.Lock()
-	if f.detected {
-		f.mu.Unlock()
-		return nil
-	}
-	f.mu.Unlock()
-	return f.detectSegmentSize()
+	return f.EnsureSegmentMapCtx(f.ctx)
 }
 
-func (f *File) detectSegmentSize() error {
+func (f *File) EnsureSegmentMapCtx(ctx context.Context) error {
 	f.mu.Lock()
 	if f.detected {
 		f.mu.Unlock()
 		return nil
 	}
 	f.mu.Unlock()
+	return f.detectSegmentSize(ctx)
+}
+
+func (f *File) detectSegmentSize(ctx context.Context) error {
+	f.mu.Lock()
+	if f.detected {
+		f.mu.Unlock()
+		return nil
+	}
+	f.mu.Unlock()
+
+	if ctx == nil {
+		ctx = f.ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if len(f.segments) == 0 {
 		f.mu.Lock()
@@ -212,7 +226,7 @@ func (f *File) detectSegmentSize() error {
 	}
 
 	if !usedEstimator {
-		data, err := f.DownloadSegment(f.ctx, 0)
+		data, err := f.DownloadSegment(ctx, 0)
 		if err != nil {
 			return err
 		}
@@ -225,7 +239,10 @@ func (f *File) detectSegmentSize() error {
 	lastSegSize := segSize
 	lastIdx := len(f.segments) - 1
 	if lastIdx > 0 {
-		data, err := f.DownloadSegment(f.ctx, lastIdx)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := f.DownloadSegment(ctx, lastIdx)
 		if err != nil {
 			return err
 		}
@@ -614,14 +631,14 @@ func (f *File) OpenStream() (io.ReadSeekCloser, error) {
 }
 
 func (f *File) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
-	if err := f.EnsureSegmentMap(); err != nil {
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
 	}
 	return NewSegmentReader(ctx, f, 0), nil
 }
 
 func (f *File) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
-	if err := f.EnsureSegmentMap(); err != nil {
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
 	}
 	return NewSegmentReader(ctx, f, offset), nil

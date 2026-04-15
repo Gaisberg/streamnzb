@@ -17,8 +17,10 @@ const NETWORK_TAB_FIELDS = [
 
 const ADVANCED_TAB_FIELDS = [
   'log_level',
+  'verbose_nntp_logging',
   'keep_log_files',
   'nzb_history_retention_days',
+  'playback_startup_timeout_seconds',
   'memory_limit_mb',
   'availnzb_api_key',
   'availnzb_mode',
@@ -193,6 +195,7 @@ export function useSettingsState({
     useragent: 'User-Agent',
     admin: 'Logs',
     memory: 'Memory & Cache',
+    playback: 'Playback',
     availnzb: 'AvailNZB',
     metadata: 'Metadata APIs',
   }

@@ -81,7 +81,10 @@ func TestFilesToPartsSplitSevenZipUsesFirstVolumeSizeForMiddleParts(t *testing.T
 		resolvedSize:         80,
 	}
 
-	parts := filesToParts([]UnpackableFile{first, middle, last})
+	parts, err := filesToParts(context.Background(), []UnpackableFile{first, middle, last})
+	if err != nil {
+		t.Fatalf("filesToParts returned error: %v", err)
+	}
 
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 parts, got %d", len(parts))

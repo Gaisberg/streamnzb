@@ -266,6 +266,8 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 
 func (s *Server) reloadConfigAsync(newCfg *config.Config) {
 	go func() {
+		s.ensureAvailNZBReadyForReload(newCfg)
+
 		if s.app != nil {
 			comp, fullReload, err := s.app.Reload(newCfg)
 			if err != nil {
@@ -650,28 +652,30 @@ func (s *Server) validateConfig(cfg *config.Config) map[string]string {
 }
 
 type configValidationPlan struct {
-	validateKeepLogFiles        bool
-	validateNZBHistoryRetention bool
-	validateMovieSearchQueries  bool
-	validateSeriesSearchQueries bool
-	validateDeviceAssignments   bool
-	validateProviders           bool
-	validateIndexers            bool
-	providerDeletionOnly        bool
-	indexerDeletionOnly         bool
-	changedProviderIndexes      map[int]bool
-	changedIndexerIndexes       map[int]bool
+	validateKeepLogFiles           bool
+	validateNZBHistoryRetention    bool
+	validatePlaybackStartupTimeout bool
+	validateMovieSearchQueries     bool
+	validateSeriesSearchQueries    bool
+	validateDeviceAssignments      bool
+	validateProviders              bool
+	validateIndexers               bool
+	providerDeletionOnly           bool
+	indexerDeletionOnly            bool
+	changedProviderIndexes         map[int]bool
+	changedIndexerIndexes          map[int]bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
 	return configValidationPlan{
-		validateKeepLogFiles:        true,
-		validateNZBHistoryRetention: true,
-		validateMovieSearchQueries:  true,
-		validateSeriesSearchQueries: true,
-		validateDeviceAssignments:   true,
-		validateProviders:           true,
-		validateIndexers:            true,
+		validateKeepLogFiles:           true,
+		validateNZBHistoryRetention:    true,
+		validatePlaybackStartupTimeout: true,
+		validateMovieSearchQueries:     true,
+		validateSeriesSearchQueries:    true,
+		validateDeviceAssignments:      true,
+		validateProviders:              true,
+		validateIndexers:               true,
 	}
 }
 
@@ -693,6 +697,9 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["nzb_history_retention_days"]; ok {
 		plan.validateNZBHistoryRetention = true
+	}
+	if _, ok := raw["playback_startup_timeout_seconds"]; ok {
+		plan.validatePlaybackStartupTimeout = true
 	}
 	if _, ok := raw["movie_search_queries"]; ok {
 		plan.validateMovieSearchQueries = true
@@ -739,6 +746,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	}
 	if plan.validateNZBHistoryRetention && (cfg.NZBHistoryRetentionDays < 0 || cfg.NZBHistoryRetentionDays > 3650) {
 		errors["nzb_history_retention_days"] = "Must be between 0 and 3650 days"
+	}
+	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > 60) {
+		errors["playback_startup_timeout_seconds"] = "Must be between 1 and 60 seconds"
 	}
 	validateSearchQueries := func(prefix string, queries []config.SearchQueryConfig) {
 		seen := make(map[string]bool)

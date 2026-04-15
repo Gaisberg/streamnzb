@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -12,7 +12,6 @@ import {
 import { ComposedChart, Area, XAxis, YAxis } from "recharts"
 import { Activity, Globe, X, MonitorPlay, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { apiFetch } from '../api'
 
 const chartConfig = {
   speed: {
@@ -31,10 +30,7 @@ function formatDownloadedMb(mb) {
   return { value: n.toFixed(1), unit: 'MB' }
 }
 
-export function DashboardPage({ stats, chartData, sendCommand, config }) {
-  const [availNZBStatus, setAvailNZBStatus] = useState(null)
-  const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
-  const [availNZBStatusError, setAvailNZBStatusError] = useState('')
+export function DashboardPage({ stats, chartData, sendCommand, config, availNZBStatus, availNZBStatusLoading, availNZBStatusError }) {
   const [activeSessionToClose, setActiveSessionToClose] = useState(null)
   const availNZBEnabled = (config?.availnzb_mode || '') !== 'disabled'
   const indexerUrls = useMemo(() => {
@@ -105,36 +101,6 @@ export function DashboardPage({ stats, chartData, sendCommand, config }) {
 
     return rows
   }, [config, stats])
-
-  useEffect(() => {
-    if (!availNZBEnabled) {
-      setAvailNZBStatus(null)
-      setAvailNZBStatusError('')
-      setAvailNZBStatusLoading(false)
-      return
-    }
-
-    let cancelled = false
-
-    const fetchAvailNZBStatus = async () => {
-      setAvailNZBStatusLoading(true)
-      setAvailNZBStatusError('')
-      try {
-        const data = await apiFetch('/api/availnzb/status')
-        if (!cancelled) setAvailNZBStatus(data || null)
-      } catch (error) {
-        if (!cancelled) {
-          setAvailNZBStatus(null)
-          setAvailNZBStatusError(error.message || 'Trust unavailable')
-        }
-      } finally {
-        if (!cancelled) setAvailNZBStatusLoading(false)
-      }
-    }
-
-    fetchAvailNZBStatus()
-    return () => { cancelled = true }
-  }, [availNZBEnabled])
 
   const rawAvailNZBTrustScore = Number(availNZBStatus?.status?.trust_score)
   const maxAvailNZBTrustScore = 60

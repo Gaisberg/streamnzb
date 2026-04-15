@@ -36,7 +36,8 @@ func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvide
 	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: []byte("second")}}
 	thirdFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part003.rar", data: []byte("third")}}
 
-	parts := aggregateRemainingVolumesFromStart(
+	parts, err := aggregateRemainingVolumesFromStart(
+		context.Background(),
 		[]filePart{{name: "movie.mkv", unpackedSize: 1000, dataOffset: 100, packedSize: 200, volFile: firstFile, volName: firstFile.Name(), isMedia: true}},
 		[]UnpackableFile{firstFile, secondFile, thirdFile},
 		0,
@@ -44,6 +45,9 @@ func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvide
 		1000,
 		continuationProbe{dataOffset: 24, packedSize: 300},
 	)
+	if err != nil {
+		t.Fatalf("aggregateRemainingVolumesFromStart returned error: %v", err)
+	}
 
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 parts, got %d", len(parts))
@@ -65,7 +69,8 @@ func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutPro
 	firstFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part001.rar", data: []byte("first")}}
 	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: make([]byte, 350)}}
 
-	parts := aggregateRemainingVolumesFromStart(
+	parts, err := aggregateRemainingVolumesFromStart(
+		context.Background(),
 		[]filePart{{name: "movie.mkv", unpackedSize: 500, dataOffset: 100, packedSize: 200, volFile: firstFile, volName: firstFile.Name(), isMedia: true}},
 		[]UnpackableFile{firstFile, secondFile},
 		0,
@@ -73,6 +78,9 @@ func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutPro
 		500,
 		continuationProbe{dataOffset: 50},
 	)
+	if err != nil {
+		t.Fatalf("aggregateRemainingVolumesFromStart returned error: %v", err)
+	}
 
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(parts))
@@ -111,11 +119,25 @@ func TestGetMediaStreamForEpisodeSkipsCachedArchiveBlueprintForDifferentTarget(t
 func TestTryNestedArchiveFailsWhenRequestedEpisodeMissing(t *testing.T) {
 	discardTestLogger(t)
 
-	_, err := tryNestedArchive([]filePart{
+	_, err := tryNestedArchive(context.Background(), []filePart{
 		{name: "Show.S01E04.rar", packedSize: 100},
 		{name: "Show.S01E04.r00", packedSize: 100},
 	}, "", EpisodeTarget{Season: 1, Episode: 1})
 	if !errors.Is(err, ErrEpisodeTargetNotFound) {
 		t.Fatalf("expected ErrEpisodeTargetNotFound, got %v", err)
+	}
+}
+
+func TestScanArchiveReturnsContextErrorWhenCanceled(t *testing.T) {
+	discardTestLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ScanArchive(ctx, []UnpackableFile{
+		&memoryUnpackableFile{name: "release.part01.rar", data: []byte("ignored")},
+	}, "", EpisodeTarget{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
