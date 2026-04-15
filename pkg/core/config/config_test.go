@@ -106,6 +106,14 @@ func TestConfigEffectivePlaybackStartupTimeoutHonorsExplicitOverride(t *testing.
 	}
 }
 
+func TestConfigEffectivePlaybackStartupTimeoutRejectsOutOfRangeValues(t *testing.T) {
+	cfg := &Config{PlaybackStartupTimeoutSeconds: 61}
+
+	if got := cfg.EffectivePlaybackStartupTimeoutSeconds(); got != DefaultPlaybackStartupTimeoutSeconds {
+		t.Fatalf("EffectivePlaybackStartupTimeoutSeconds() = %d, want %d", got, DefaultPlaybackStartupTimeoutSeconds)
+	}
+}
+
 func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{

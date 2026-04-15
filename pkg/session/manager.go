@@ -206,8 +206,41 @@ func (s *Session) RecordAttemptedProviderHost(host string) {
 }
 
 func (s *Session) RecordAttemptedProviderHosts(hosts []string) {
+	if len(hosts) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.attemptedProviders == nil {
+		s.attemptedProviders = make(map[string]struct{})
+	}
 	for _, host := range hosts {
-		s.RecordAttemptedProviderHost(host)
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		s.attemptedProviders[host] = struct{}{}
+	}
+}
+
+func (s *Session) RecordConfiguredProviderHostsAttempted() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.providerHosts) == 0 {
+		return
+	}
+	if s.attemptedProviders == nil {
+		s.attemptedProviders = make(map[string]struct{})
+	}
+	for _, host := range s.providerHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		s.attemptedProviders[host] = struct{}{}
 	}
 }
 
@@ -321,7 +354,7 @@ func (f *sessionTrackingFetcherWithStat) StatSegment(ctx context.Context, messag
 		return exists, err
 	}
 	if !exists && f.session != nil {
-		f.session.RecordAttemptedProviderHosts(f.session.ProviderHosts())
+		f.session.RecordConfiguredProviderHostsAttempted()
 	}
 	return exists, nil
 }

@@ -260,6 +260,8 @@ export function useSettingsState({
       trimmedFullData.keep_log_files = Math.min(50, Math.max(1, Number.isNaN(keepLog) ? 9 : keepLog))
       const nzbHistoryRetention = Number(trimmedFullData.nzb_history_retention_days)
       trimmedFullData.nzb_history_retention_days = Math.min(3650, Math.max(0, Number.isNaN(nzbHistoryRetention) ? 90 : nzbHistoryRetention))
+      const playbackStartupTimeout = Number(trimmedFullData.playback_startup_timeout_seconds)
+      trimmedFullData.playback_startup_timeout_seconds = Math.min(60, Math.max(1, Number.isNaN(playbackStartupTimeout) ? 5 : playbackStartupTimeout))
 
       const payload = overrides
         ? Object.keys(overrides).reduce((acc, key) => {

@@ -85,6 +85,7 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 		}
 		if h.Name == bp.MainFileName || filepath.Base(h.Name) == mainBase {
 			stream := &encryptedRARStream{
+				ctx:          ctx,
 				rc:           rc,
 				limit:        bp.TotalSize,
 				firstVolName: firstName,
@@ -101,6 +102,7 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 }
 
 type encryptedRARStream struct {
+	ctx          context.Context
 	rc           *rardecode.ReadCloser
 	limit        int64
 	read         int64
@@ -153,7 +155,7 @@ func (e *encryptedRARStream) Seek(offset int64, whence int) (int64, error) {
 	if err := e.rc.Close(); err != nil {
 		logger.Debug("encrypted RAR stream close on seek", "err", err)
 	}
-	fsys := NewNZBFSFromMap(e.fileMap)
+	fsys := NewNZBFSFromMapCtx(e.ctx, e.fileMap)
 	opts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.Password(e.password)}
 	rc, err := rardecode.OpenReader(e.firstVolName, opts...)
 	if err != nil {

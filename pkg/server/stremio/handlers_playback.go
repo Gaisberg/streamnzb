@@ -1876,7 +1876,7 @@ func providerHostsForOutcome(sess *session.Session, success bool) []string {
 	return sess.AttemptedProviderHosts()
 }
 
-func (s *Server) recordAttemptParamsForFailure(sess *session.Session, _ error) persistence.RecordAttemptParams {
+func (s *Server) recordAttemptParamsForFailure(sess *session.Session) persistence.RecordAttemptParams {
 	params := s.recordAttemptParamsForOutcome(sess, false)
 	return params
 }
@@ -1913,7 +1913,7 @@ func (s *Server) recordFailureAttempt(sess *session.Session, streamErr error, av
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
-	p := s.recordAttemptParamsForFailure(sess, streamErr)
+	p := s.recordAttemptParamsForFailure(sess)
 	p.Success = false
 	p.FailureReason = normalizeAttemptReason(streamErr.Error())
 	p.AvailStatus = availOutcome.Status
@@ -1953,10 +1953,14 @@ func (s *Server) logBelowGoodThresholdOnce(sess *session.Session, sessionID, req
 			}()
 		}
 	}
+	bytesRead := int64(0)
+	if sess != nil {
+		bytesRead = sess.BytesRead()
+	}
 	logger.Debug("Skipping success bookkeeping below good threshold",
 		"session", sessionID,
 		"requested_session", requestedSessionID,
-		"bytes_read", sess.BytesRead(),
+		"bytes_read", bytesRead,
 		"serve_duration", serveDuration,
 		"min_bytes", minBytes,
 		"min_duration", minDuration,

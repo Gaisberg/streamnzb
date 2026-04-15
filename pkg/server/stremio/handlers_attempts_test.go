@@ -58,7 +58,7 @@ func TestRecordAttemptParamsFailureUsesAttemptedProvidersWhenNoUsedProvidersExis
 	sess.RecordAttemptedProviderHost("news-a.example.net")
 	sess.RecordAttemptedProviderHost("news-b.example.net")
 
-	params := server.recordAttemptParamsForFailure(sess, errors.New("segment unavailable: fetch segment msgid: 430 No Such Article"))
+	params := server.recordAttemptParamsForFailure(sess)
 	if got := params.ProviderName; got != "news-a.example.net, news-b.example.net" {
 		t.Fatalf("ProviderName = %q, want %q", got, "news-a.example.net, news-b.example.net")
 	}

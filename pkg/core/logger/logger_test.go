@@ -160,6 +160,11 @@ func TestInitTwiceKeepsCurrentLogFile(t *testing.T) {
 }
 
 func TestVerboseNNTPLoggingToggle(t *testing.T) {
+	previous := VerboseNNTPLoggingEnabled()
+	t.Cleanup(func() {
+		SetVerboseNNTPLogging(previous)
+	})
+
 	SetVerboseNNTPLogging(false)
 	if VerboseNNTPLoggingEnabled() {
 		t.Fatal("expected verbose NNTP logging to be disabled")

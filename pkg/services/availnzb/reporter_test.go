@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,15 +140,27 @@ func TestReportGoodAllowsRetryAfterSkippedAttempt(t *testing.T) {
 }
 
 func TestReportBadFallsBackToAttemptedProviderHosts(t *testing.T) {
-	reportCalls := 0
-	var gotProvider string
+	var (
+		mu          sync.Mutex
+		reportCalls int
+		gotProvider string
+		decodeErr   error
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		reportCalls++
+		mu.Unlock()
 		var body ReportRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode report body: %v", err)
+			mu.Lock()
+			decodeErr = err
+			mu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		mu.Lock()
 		gotProvider = body.ProviderURL
+		mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -168,6 +181,11 @@ func TestReportBadFallsBackToAttemptedProviderHosts(t *testing.T) {
 	outcome := reporter.ReportBad(sess, "EOF")
 	if outcome.Status != "sent" {
 		t.Fatalf("expected sent outcome, got %+v", outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if decodeErr != nil {
+		t.Fatalf("decode report body: %v", decodeErr)
 	}
 	if reportCalls != 1 {
 		t.Fatalf("expected one report call, got %d", reportCalls)

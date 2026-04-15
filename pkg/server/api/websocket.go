@@ -747,7 +747,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	if plan.validateNZBHistoryRetention && (cfg.NZBHistoryRetentionDays < 0 || cfg.NZBHistoryRetentionDays > 3650) {
 		errors["nzb_history_retention_days"] = "Must be between 0 and 3650 days"
 	}
-	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > 60) {
+	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > config.MaxPlaybackStartupTimeoutSeconds) {
 		errors["playback_startup_timeout_seconds"] = "Must be between 1 and 60 seconds"
 	}
 	validateSearchQueries := func(prefix string, queries []config.SearchQueryConfig) {

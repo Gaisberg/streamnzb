@@ -21,6 +21,7 @@ const (
 	DefaultInternalIndexerTimeoutSeconds   = 5
 	DefaultAggregatorIndexerTimeoutSeconds = 10
 	DefaultPlaybackStartupTimeoutSeconds   = 5
+	MaxPlaybackStartupTimeoutSeconds       = 60
 	CurrentConfigVersion                   = 2
 	StreamModelConfigVersion               = 2
 	defaultMigratedStreamID                = "default"
@@ -120,9 +121,16 @@ func (ic IndexerConfig) EffectiveTimeout() time.Duration {
 	return time.Duration(ic.EffectiveTimeoutSeconds()) * time.Second
 }
 
+func normalizePlaybackStartupTimeoutSeconds(timeout int) int {
+	if timeout < 1 || timeout > MaxPlaybackStartupTimeoutSeconds {
+		return DefaultPlaybackStartupTimeoutSeconds
+	}
+	return timeout
+}
+
 func (c *Config) EffectivePlaybackStartupTimeoutSeconds() int {
-	if c != nil && c.PlaybackStartupTimeoutSeconds > 0 {
-		return c.PlaybackStartupTimeoutSeconds
+	if c != nil {
+		return normalizePlaybackStartupTimeoutSeconds(c.PlaybackStartupTimeoutSeconds)
 	}
 	return DefaultPlaybackStartupTimeoutSeconds
 }
@@ -443,8 +451,8 @@ func Load() (*Config, error) {
 		cfg.NZBHistoryRetentionDays = 90
 		needSave = true
 	}
-	if cfg.PlaybackStartupTimeoutSeconds < 1 {
-		cfg.PlaybackStartupTimeoutSeconds = DefaultPlaybackStartupTimeoutSeconds
+	if normalized := normalizePlaybackStartupTimeoutSeconds(cfg.PlaybackStartupTimeoutSeconds); normalized != cfg.PlaybackStartupTimeoutSeconds {
+		cfg.PlaybackStartupTimeoutSeconds = normalized
 		needSave = true
 	}
 

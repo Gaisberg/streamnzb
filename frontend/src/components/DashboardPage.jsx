@@ -104,11 +104,15 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
 
   const rawAvailNZBTrustScore = Number(availNZBStatus?.status?.trust_score)
   const maxAvailNZBTrustScore = 60
+  const availNZBStatusMessage = availNZBStatusError || availNZBStatus?.status_error || ''
+  const hasAvailNZBTrustError = availNZBEnabled && !availNZBStatusLoading && Boolean(availNZBStatusMessage)
   const availNZBTrustScore = Number.isFinite(rawAvailNZBTrustScore)
     ? (Math.max(0, Math.min(maxAvailNZBTrustScore, rawAvailNZBTrustScore)) / maxAvailNZBTrustScore) * 100
     : null
-  const availNZBTrustSummary = `${Math.round(availNZBTrustScore ?? 0)}%`
-  const availNZBTrustBarClass = availNZBTrustScore === null
+  const availNZBTrustSummary = hasAvailNZBTrustError ? 'Error' : `${Math.round(availNZBTrustScore ?? 0)}%`
+  const availNZBTrustBarClass = hasAvailNZBTrustError
+    ? 'bg-destructive/50'
+    : availNZBTrustScore === null
     ? 'bg-muted-foreground/20'
     : availNZBTrustScore < 34
       ? 'bg-destructive'
@@ -146,14 +150,18 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
               <>
                 <CardTitle className="flex items-center gap-2 tabular-nums">
                   {availNZBStatusLoading && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
-                  <span className="text-primary">{availNZBTrustSummary}</span>
+                  <span className={hasAvailNZBTrustError ? 'text-destructive' : 'text-primary'}>{availNZBTrustSummary}</span>
                 </CardTitle>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted/70" aria-hidden="true">
-                  <div
-                    className={cn("h-full rounded-full transition-all duration-500", availNZBTrustBarClass)}
-                    style={{ width: `${availNZBTrustScore ?? 0}%` }}
-                  />
-                </div>
+                {hasAvailNZBTrustError ? (
+                  <p className="mt-2 line-clamp-2 text-xs text-destructive">{availNZBStatusMessage}</p>
+                ) : (
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted/70" aria-hidden="true">
+                    <div
+                      className={cn("h-full rounded-full transition-all duration-500", availNZBTrustBarClass)}
+                      style={{ width: `${availNZBTrustScore ?? 0}%` }}
+                    />
+                  </div>
+                )}
               </>
             ) : (
               <CardTitle className="tabular-nums text-muted-foreground">0%</CardTitle>
