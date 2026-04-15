@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.2](https://github.com/Gaisberg/streamnzb/compare/v4.0.1...v4.0.2) (2026-04-15)
+
+
+### Bug Fixes
+
+* address follow-up review feedback ([c70b442](https://github.com/Gaisberg/streamnzb/commit/c70b442d606151879147c8895e361e07d2eba3f4))
+* **availnzb:** only latch successful good reports ([230e094](https://github.com/Gaisberg/streamnzb/commit/230e0941146ea7bb48188fb94fa663817b4b2c6f))
+* **persistence:** archive recovered misplaced databases ([675e8b0](https://github.com/Gaisberg/streamnzb/commit/675e8b0cb2d62429e3c8c53d0f48d3d172cdb3b8))
+* **persistence:** recover nzb history after db path drift ([b963c85](https://github.com/Gaisberg/streamnzb/commit/b963c85a97763c78939b48190b56f8417138339c))
+* **ui:** refine avail reporting and mobile admin layouts ([65d2226](https://github.com/Gaisberg/streamnzb/commit/65d2226b0c60334c9157ed8f31aa611277a02193))
+
 ## [4.0.1](https://github.com/Gaisberg/streamnzb/compare/v4.0.0...v4.0.1) (2026-04-09)
 
 
