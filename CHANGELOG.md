@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.1.0](https://github.com/Gaisberg/streamnzb/compare/v4.0.2...v4.1.0) (2026-04-16)
+
+
+### Features
+
+* **availnzb:** simplify ON/OFF mode and automate recover-first key lifecycle ([ec6fc87](https://github.com/Gaisberg/streamnzb/commit/ec6fc87a18d99b0148a400f72d28feed50690094))
+
+
+### Bug Fixes
+
+* **playback:** refine failover reporting and startup handling ([#120](https://github.com/Gaisberg/streamnzb/issues/120)) ([52ffa2a](https://github.com/Gaisberg/streamnzb/commit/52ffa2acd96bea7f2ff5ed6bf8ce012523daed42))
+
 ## [4.0.2](https://github.com/Gaisberg/streamnzb/compare/v4.0.1...v4.0.2) (2026-04-15)
 
 
