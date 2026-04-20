@@ -91,7 +91,7 @@ func metadataAlternativeTitle(metadata *resolvedSearchMetadata, contentType stri
 		return ""
 	}
 	if contentType == "movie" {
-		if metadata.MovieDetails == nil || !strings.EqualFold(strings.TrimSpace(metadata.MovieDetails.OriginalLanguage), "ja") {
+		if metadata.MovieDetails == nil || metadata.MovieAlternativeTitles == nil || !strings.EqualFold(strings.TrimSpace(metadata.MovieDetails.OriginalLanguage), "ja") {
 			return ""
 		}
 		if alt := pickRomanizedAlternativeTitle(metadata.MovieAlternativeTitles.Titles); alt != "" && !strings.EqualFold(strings.TrimSpace(alt), original) {
@@ -99,7 +99,7 @@ func metadataAlternativeTitle(metadata *resolvedSearchMetadata, contentType stri
 		}
 		return ""
 	}
-	if metadata.TVDetails == nil || !strings.EqualFold(strings.TrimSpace(metadata.TVDetails.OriginalLanguage), "ja") {
+	if metadata.TVDetails == nil || metadata.TVAlternativeTitles == nil || !strings.EqualFold(strings.TrimSpace(metadata.TVDetails.OriginalLanguage), "ja") {
 		return ""
 	}
 	if alt := pickRomanizedAlternativeTitle(metadata.TVAlternativeTitles.Results); alt != "" && !strings.EqualFold(strings.TrimSpace(alt), original) {

@@ -67,3 +67,9 @@ func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {
 		t.Fatalf("expected parsed title to drop dashed season/episode suffix, got %q", parsed.Title)
 	}
 }
+
+func TestDashedSeasonEpisodePatternDoesNotFalseMatchInsideLongerToken(t *testing.T) {
+	if matches := dashedSeasonEpisodePattern.FindStringSubmatch("Example.Show.S1 - 24bit.1080p.WEB-DL"); len(matches) != 0 {
+		t.Fatalf("expected no regex match inside longer token, got %v", matches)
+	}
+}

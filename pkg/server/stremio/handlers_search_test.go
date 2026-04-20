@@ -99,6 +99,36 @@ func TestMetadataLogTitlesDoNotAddAlternativeForNonJapaneseOriginals(t *testing.
 	}
 }
 
+func TestMetadataLogTitlesHandleMissingJapaneseAlternativeTitles(t *testing.T) {
+	metadata := &resolvedSearchMetadata{
+		MovieDetails: &tmdb.MovieDetails{
+			Title:            "Spirited Away",
+			OriginalTitle:    "千と千尋の神隠し",
+			OriginalLanguage: "ja",
+		},
+	}
+
+	if got := metadataAlternativeTitle(metadata, "movie"); got != "" {
+		t.Fatalf("metadataAlternativeTitle() = %q, want empty", got)
+	}
+
+	params := &SearchParams{
+		Req: indexer.SearchRequest{TMDBID: "129"},
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt0245429",
+		},
+		Metadata: metadata,
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("logMetadataLookupFinished() panicked: %v", r)
+		}
+	}()
+
+	logMetadataLookupFinished("Stream01", "movie", "tt0245429", params)
+}
+
 func TestBuildMovieQueriesFromMetadataAddsGermanTransliterationVariant(t *testing.T) {
 	metadata := &resolvedSearchMetadata{
 		MovieDetails: &tmdb.MovieDetails{
