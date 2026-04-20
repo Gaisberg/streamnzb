@@ -693,6 +693,82 @@ func TestSearchMovieIDModeUsesTMDBIDWhenCapsSupportIt(t *testing.T) {
 	}
 }
 
+func TestSearchMovieIDModeUsesTMDBIDWithoutCaps(t *testing.T) {
+	var gotQuery url.Values
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:   "MockIndexer",
+		URL:    server.URL,
+		APIKey: "test-api-key",
+	}, nil)
+
+	_, err := client.Search(indexer.SearchRequest{
+		Cat:        "2000",
+		TMDBID:     "83533",
+		SearchMode: "id",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if got := gotQuery.Get("t"); got != "movie" {
+		t.Fatalf("t = %q, want %q", got, "movie")
+	}
+	if got := gotQuery.Get("tmdbid"); got != "83533" {
+		t.Fatalf("tmdbid = %q, want %q", got, "83533")
+	}
+}
+
+func TestSearchTVIDModeUsesTMDBIDWithoutCaps(t *testing.T) {
+	var gotQuery url.Values
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:   "MockIndexer",
+		URL:    server.URL,
+		APIKey: "test-api-key",
+	}, nil)
+
+	_, err := client.Search(indexer.SearchRequest{
+		Cat:               "5000",
+		TMDBID:            "250307",
+		Season:            "1",
+		SeriesSearchScope: config.SeriesSearchScopeSeason,
+		SearchMode:        "id",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if got := gotQuery.Get("t"); got != "tvsearch" {
+		t.Fatalf("t = %q, want %q", got, "tvsearch")
+	}
+	if got := gotQuery.Get("tmdbid"); got != "250307" {
+		t.Fatalf("tmdbid = %q, want %q", got, "250307")
+	}
+}
+
 func TestSearchTVIDModeOmitsQueryWhenUsingTVSearchParams(t *testing.T) {
 	var gotQuery url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,9 @@
 package parser
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseReleaseTitleRetainsEpisodeCollections(t *testing.T) {
 	parsed := ParseReleaseTitle("The.Walking.Dead.S01E05E06.1080p.WEB-DL")
@@ -40,5 +43,27 @@ func TestParsedReleaseEpisodeMatchRank(t *testing.T) {
 				t.Fatalf("EpisodeMatchRank() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {
+	parsed := ParseReleaseTitle("[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 03 (720p) [370B1C65]")
+	if parsed == nil {
+		t.Fatal("expected parsed release")
+	}
+	if parsed.Season != 4 {
+		t.Fatalf("expected season 4, got %d", parsed.Season)
+	}
+	if parsed.Episode != 3 {
+		t.Fatalf("expected episode 3, got %d", parsed.Episode)
+	}
+	if !parsed.HasSeason(4) {
+		t.Fatal("expected parsed release to include season 4")
+	}
+	if !parsed.HasEpisode(3) {
+		t.Fatalf("expected parsed release to include episode 3, got %v", parsed.Episodes)
+	}
+	if strings.Contains(parsed.Title, "S4 - 03") {
+		t.Fatalf("expected parsed title to drop dashed season/episode suffix, got %q", parsed.Title)
 	}
 }

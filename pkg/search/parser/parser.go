@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -8,6 +9,8 @@ import (
 
 	"github.com/MunifTanjim/go-ptt"
 )
+
+var dashedSeasonEpisodePattern = regexp.MustCompile(`(?i)\bS(?:eason)?\s*0*([0-9]{1,2})\s*-\s*0*([0-9]{1,3})\b`)
 
 type ParsedRelease struct {
 	Title      string
@@ -117,8 +120,43 @@ func ParseReleaseTitle(title string) *ParsedRelease {
 	if len(parsed.Episodes) > 0 {
 		parsed.Episode = parsed.Episodes[0]
 	}
+	applyDashedSeasonEpisodeFallback(title, parsed)
 
 	return parsed
+}
+
+func applyDashedSeasonEpisodeFallback(rawTitle string, parsed *ParsedRelease) {
+	if parsed == nil {
+		return
+	}
+	matches := dashedSeasonEpisodePattern.FindStringSubmatch(rawTitle)
+	if len(matches) != 3 {
+		return
+	}
+	season, seasonErr := strconv.Atoi(matches[1])
+	episode, episodeErr := strconv.Atoi(matches[2])
+	if seasonErr != nil || episodeErr != nil || season <= 0 || episode <= 0 {
+		return
+	}
+	if !hasInt(parsed.Seasons, season) {
+		parsed.Seasons = append(parsed.Seasons, season)
+	}
+	if !hasInt(parsed.Episodes, episode) {
+		parsed.Episodes = append(parsed.Episodes, episode)
+	}
+	if parsed.Season == 0 {
+		parsed.Season = season
+	}
+	if parsed.Episode == 0 {
+		parsed.Episode = episode
+	}
+	if parsed.Title != "" {
+		cleanedTitle := strings.TrimSpace(dashedSeasonEpisodePattern.ReplaceAllString(parsed.Title, " "))
+		cleanedTitle = strings.Join(strings.Fields(cleanedTitle), " ")
+		if cleanedTitle != "" {
+			parsed.Title = cleanedTitle
+		}
+	}
 }
 
 func uniqueInts(values []int) []int {

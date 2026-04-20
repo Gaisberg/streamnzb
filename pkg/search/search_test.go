@@ -212,6 +212,24 @@ func TestValidateSearchResultsWithStatsAllowsOptionalAndWordMatches(t *testing.T
 	}
 }
 
+func TestValidateSearchResultsWithStatsAllowsDashedSeasonEpisodePattern(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 03 (720p) [370B1C65]"},
+	}
+
+	filtered, stats := ValidateSearchResultsWithStats(releases, "series", "Tensei shitara Slime Datta Ken", "4", "3", true, false)
+
+	if len(filtered) != 1 {
+		t.Fatalf("expected dashed season/episode title to pass, got %d results", len(filtered))
+	}
+	if stats.DroppedEpisodeRequest != 0 || stats.DroppedTitle != 0 {
+		t.Fatalf("expected no rejection for dashed season/episode pattern, got %+v", stats)
+	}
+	if stats.AcceptedExactEpisode != 1 {
+		t.Fatalf("expected exact episode match, got %+v", stats)
+	}
+}
+
 func TestValidateSearchResultsWithStatsRejectsExtraTrailingTitleWords(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "The.Rookie.Feds.S01E01.1080p.WEB-DL.x264-GROUP"},

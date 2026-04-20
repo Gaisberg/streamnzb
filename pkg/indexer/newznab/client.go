@@ -419,14 +419,14 @@ func normalizeIMDbID(id string) string {
 
 func supportsMovieIDParam(caps *indexer.Caps, param string) bool {
 	if caps == nil || len(caps.Searching.MovieSearchSupportedParams) == 0 {
-		return param == "imdbid"
+		return param == "imdbid" || param == "tmdbid"
 	}
 	return caps.Searching.MovieSearchSupportedParams[param]
 }
 
 func supportsTVIDParam(caps *indexer.Caps, param string) bool {
 	if caps == nil || len(caps.Searching.TVSearchSupportedParams) == 0 {
-		return param == "tvdbid"
+		return param == "tvdbid" || param == "tmdbid" || param == "imdbid"
 	}
 	return caps.Searching.TVSearchSupportedParams[param]
 }

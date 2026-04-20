@@ -55,6 +55,50 @@ func TestBuildSeriesQueriesWithOptionsCanOmitYear(t *testing.T) {
 	}
 }
 
+func TestMetadataLogTitlesPreferOriginalAndJapaneseRomajiAlternative(t *testing.T) {
+	metadata := &resolvedSearchMetadata{
+		MovieDetails: &tmdb.MovieDetails{
+			Title:            "Spirited Away",
+			OriginalTitle:    "千と千尋の神隠し",
+			OriginalLanguage: "ja",
+		},
+		MovieAlternativeTitles: &tmdb.MovieAlternativeTitlesResponse{
+			Titles: []tmdb.AlternativeTitle{
+				{ISO3166_1: "JP", Title: "Sen to Chihiro no Kamikakushi", Type: "Romaji"},
+			},
+		},
+	}
+
+	if got := metadataOriginalTitle(metadata, "movie"); got != "千と千尋の神隠し" {
+		t.Fatalf("metadataOriginalTitle() = %q, want %q", got, "千と千尋の神隠し")
+	}
+	if got := metadataAlternativeTitle(metadata, "movie"); got != "Sen to Chihiro no Kamikakushi" {
+		t.Fatalf("metadataAlternativeTitle() = %q, want %q", got, "Sen to Chihiro no Kamikakushi")
+	}
+}
+
+func TestMetadataLogTitlesDoNotAddAlternativeForNonJapaneseOriginals(t *testing.T) {
+	metadata := &resolvedSearchMetadata{
+		MovieDetails: &tmdb.MovieDetails{
+			Title:            "The Lion King",
+			OriginalTitle:    "The Lion King",
+			OriginalLanguage: "en",
+		},
+		MovieAlternativeTitles: &tmdb.MovieAlternativeTitlesResponse{
+			Titles: []tmdb.AlternativeTitle{
+				{ISO3166_1: "US", Title: "Lion King", Type: "Working Title"},
+			},
+		},
+	}
+
+	if got := metadataOriginalTitle(metadata, "movie"); got != "The Lion King" {
+		t.Fatalf("metadataOriginalTitle() = %q, want %q", got, "The Lion King")
+	}
+	if got := metadataAlternativeTitle(metadata, "movie"); got != "" {
+		t.Fatalf("metadataAlternativeTitle() = %q, want empty", got)
+	}
+}
+
 func TestBuildMovieQueriesFromMetadataAddsGermanTransliterationVariant(t *testing.T) {
 	metadata := &resolvedSearchMetadata{
 		MovieDetails: &tmdb.MovieDetails{
@@ -107,6 +151,29 @@ func TestBuildMovieQueriesFromMetadataUsesOriginalTitleWhenRequested(t *testing.
 
 	got := buildMovieQueriesFromMetadata(metadata, "original", false)
 	want := []string{"Der Untergang"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildMovieQueriesFromMetadata() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildMovieQueriesFromMetadataUsesRomanizedJapaneseOriginalTitle(t *testing.T) {
+	metadata := &resolvedSearchMetadata{
+		MovieDetails: &tmdb.MovieDetails{
+			Title:            "Spirited Away",
+			OriginalTitle:    "千と千尋の神隠し",
+			OriginalLanguage: "ja",
+			ReleaseDate:      "2001-07-20",
+		},
+		MovieAlternativeTitles: &tmdb.MovieAlternativeTitlesResponse{
+			Titles: []tmdb.AlternativeTitle{
+				{ISO3166_1: "JP", Title: "Sen to Chihiro no Kamikakushi", Type: "Romaji"},
+			},
+		},
+	}
+
+	got := buildMovieQueriesFromMetadata(metadata, "original", false)
+	want := []string{"Sen to Chihiro no Kamikakushi"}
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildMovieQueriesFromMetadata() = %#v, want %#v", got, want)
@@ -168,6 +235,41 @@ func TestBuildSeriesQueriesFromMetadataUsesOriginalTitleWhenRequested(t *testing
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildSeriesQueriesFromMetadata() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildSeriesQueriesFromMetadataUsesRomanizedJapaneseOriginalTitle(t *testing.T) {
+	metadata := &resolvedSearchMetadata{
+		TVDetails: &tmdb.TVDetails{
+			Name:             "Attack on Titan",
+			OriginalName:     "進撃の巨人",
+			OriginalLanguage: "ja",
+			FirstAirDate:     "2013-04-07",
+		},
+		TVAlternativeTitles: &tmdb.TVAlternativeTitlesResponse{
+			Results: []tmdb.AlternativeTitle{
+				{ISO3166_1: "JP", Title: "Shingeki no Kyojin", Type: "Romaji"},
+			},
+		},
+	}
+
+	got := buildSeriesQueriesFromMetadata(metadata, "original", false, "1", "2", config.SeriesSearchScopeSeasonEpisode)
+	want := []string{"Shingeki no Kyojin S01E02"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildSeriesQueriesFromMetadata() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPickRomanizedAlternativeTitleRequiresExactRomajiType(t *testing.T) {
+	alts := []tmdb.AlternativeTitle{
+		{ISO3166_1: "JP", Title: "TenSura", Type: "Romaji (Short)"},
+		{ISO3166_1: "JP", Title: "Tensei Shitara Slime Datta Ken 3rd Season", Type: "Romaji (Season 3)"},
+		{ISO3166_1: "JP", Title: "Tensei shitara Slime Datta Ken", Type: "Romaji"},
+	}
+
+	if got := pickRomanizedAlternativeTitle(alts); got != "Tensei shitara Slime Datta Ken" {
+		t.Fatalf("pickRomanizedAlternativeTitle() = %q, want %q", got, "Tensei shitara Slime Datta Ken")
 	}
 }
 

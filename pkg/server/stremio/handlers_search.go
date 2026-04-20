@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
@@ -32,10 +33,12 @@ type SearchParams struct {
 }
 
 type resolvedSearchMetadata struct {
-	MovieDetails      *tmdb.MovieDetails
-	MovieTranslations *tmdb.MovieTranslationsResponse
-	TVDetails         *tmdb.TVDetails
-	TVTranslations    *tmdb.TVTranslationsResponse
+	MovieDetails           *tmdb.MovieDetails
+	MovieTranslations      *tmdb.MovieTranslationsResponse
+	MovieAlternativeTitles *tmdb.MovieAlternativeTitlesResponse
+	TVDetails              *tmdb.TVDetails
+	TVTranslations         *tmdb.TVTranslationsResponse
+	TVAlternativeTitles    *tmdb.TVAlternativeTitlesResponse
 }
 
 func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) string {
@@ -56,6 +59,51 @@ func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) 
 			return title
 		}
 		return strings.TrimSpace(metadata.TVDetails.OriginalName)
+	}
+	return ""
+}
+
+func metadataOriginalTitle(metadata *resolvedSearchMetadata, contentType string) string {
+	if metadata == nil {
+		return ""
+	}
+	if contentType == "movie" {
+		if metadata.MovieDetails != nil {
+			if title := strings.TrimSpace(metadata.MovieDetails.OriginalTitle); title != "" {
+				return title
+			}
+			return strings.TrimSpace(metadata.MovieDetails.Title)
+		}
+		return ""
+	}
+	if metadata.TVDetails != nil {
+		if title := strings.TrimSpace(metadata.TVDetails.OriginalName); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.TVDetails.Name)
+	}
+	return ""
+}
+
+func metadataAlternativeTitle(metadata *resolvedSearchMetadata, contentType string) string {
+	original := strings.TrimSpace(metadataOriginalTitle(metadata, contentType))
+	if metadata == nil || original == "" {
+		return ""
+	}
+	if contentType == "movie" {
+		if metadata.MovieDetails == nil || !strings.EqualFold(strings.TrimSpace(metadata.MovieDetails.OriginalLanguage), "ja") {
+			return ""
+		}
+		if alt := pickRomanizedAlternativeTitle(metadata.MovieAlternativeTitles.Titles); alt != "" && !strings.EqualFold(strings.TrimSpace(alt), original) {
+			return strings.TrimSpace(alt)
+		}
+		return ""
+	}
+	if metadata.TVDetails == nil || !strings.EqualFold(strings.TrimSpace(metadata.TVDetails.OriginalLanguage), "ja") {
+		return ""
+	}
+	if alt := pickRomanizedAlternativeTitle(metadata.TVAlternativeTitles.Results); alt != "" && !strings.EqualFold(strings.TrimSpace(alt), original) {
+		return strings.TrimSpace(alt)
 	}
 	return ""
 }
@@ -125,6 +173,72 @@ func localizedMovieTitleForLanguage(translations *tmdb.MovieTranslationsResponse
 		}
 	}
 	return ""
+}
+
+func hasLatinLetter(s string) bool {
+	for _, r := range s {
+		if unicode.In(r, unicode.Latin) && unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func pickRomanizedAlternativeTitle(alternatives []tmdb.AlternativeTitle) string {
+	for _, alt := range alternatives {
+		title := strings.TrimSpace(alt.Title)
+		if title == "" || !hasLatinLetter(title) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(alt.Type), "Romaji") {
+			return title
+		}
+	}
+	return ""
+}
+
+func preferredMovieOriginalTitle(metadata *resolvedSearchMetadata) string {
+	if metadata == nil || metadata.MovieDetails == nil {
+		return ""
+	}
+	title := strings.TrimSpace(metadata.MovieDetails.OriginalTitle)
+	if title == "" {
+		title = strings.TrimSpace(metadata.MovieDetails.Title)
+	}
+	if title == "" {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(metadata.MovieDetails.OriginalLanguage), "ja") || hasLatinLetter(title) {
+		return title
+	}
+	if metadata.MovieAlternativeTitles != nil {
+		if alt := pickRomanizedAlternativeTitle(metadata.MovieAlternativeTitles.Titles); alt != "" {
+			return alt
+		}
+	}
+	return title
+}
+
+func preferredSeriesOriginalTitle(metadata *resolvedSearchMetadata) string {
+	if metadata == nil || metadata.TVDetails == nil {
+		return ""
+	}
+	title := strings.TrimSpace(metadata.TVDetails.OriginalName)
+	if title == "" {
+		title = strings.TrimSpace(metadata.TVDetails.Name)
+	}
+	if title == "" {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(metadata.TVDetails.OriginalLanguage), "ja") || hasLatinLetter(title) {
+		return title
+	}
+	if metadata.TVAlternativeTitles != nil {
+		if alt := pickRomanizedAlternativeTitle(metadata.TVAlternativeTitles.Results); alt != "" {
+			return alt
+		}
+	}
+	return title
 }
 
 func localizedTVTitleForLanguage(translations *tmdb.TVTranslationsResponse, language string) string {
@@ -205,7 +319,7 @@ func buildMovieSearchQueryFromMetadata(metadata *resolvedSearchMetadata, languag
 	}
 	title := strings.TrimSpace(metadata.MovieDetails.Title)
 	if useOriginalTitleLanguage(language) {
-		title = strings.TrimSpace(metadata.MovieDetails.OriginalTitle)
+		title = preferredMovieOriginalTitle(metadata)
 	} else if localized := localizedMovieTitleForLanguage(metadata.MovieTranslations, language); localized != "" {
 		title = localized
 	}
@@ -252,17 +366,7 @@ func buildMovieValidationQueryFromMetadata(metadata *resolvedSearchMetadata, lan
 }
 
 func buildMovieOriginalQueryFromMetadata(metadata *resolvedSearchMetadata) string {
-	if metadata == nil || metadata.MovieDetails == nil {
-		return ""
-	}
-	title := strings.TrimSpace(metadata.MovieDetails.OriginalTitle)
-	if title == "" {
-		title = strings.TrimSpace(metadata.MovieDetails.Title)
-	}
-	if title == "" {
-		return ""
-	}
-	return title
+	return strings.TrimSpace(preferredMovieOriginalTitle(metadata))
 }
 
 func appendSeasonQuery(query, season string) string {
@@ -303,7 +407,7 @@ func buildSeriesSearchTitleFromMetadata(metadata *resolvedSearchMetadata, langua
 	}
 	title := strings.TrimSpace(metadata.TVDetails.Name)
 	if useOriginalTitleLanguage(language) {
-		title = strings.TrimSpace(metadata.TVDetails.OriginalName)
+		title = preferredSeriesOriginalTitle(metadata)
 	} else if localized := localizedTVTitleForLanguage(metadata.TVTranslations, language); localized != "" {
 		title = localized
 	}
@@ -335,17 +439,7 @@ func buildSeriesValidationQueryFromMetadata(metadata *resolvedSearchMetadata, la
 }
 
 func buildSeriesOriginalQueryFromMetadata(metadata *resolvedSearchMetadata) string {
-	if metadata == nil || metadata.TVDetails == nil {
-		return ""
-	}
-	title := strings.TrimSpace(metadata.TVDetails.OriginalName)
-	if title == "" {
-		title = strings.TrimSpace(metadata.TVDetails.Name)
-	}
-	if title == "" {
-		return ""
-	}
-	return title
+	return strings.TrimSpace(preferredSeriesOriginalTitle(metadata))
 }
 
 func searchRequestNormalisationLogValues(metadata *resolvedSearchMetadata, contentType, language string, includeYear bool, season, episode, scope string) (string, string, string, bool) {
@@ -428,15 +522,19 @@ func logMetadataLookup(streamLabel, contentType, id string) {
 }
 
 func logMetadataLookupFinished(streamLabel, contentType, id string, params *SearchParams) {
+	originalTitle := metadataOriginalTitle(params.Metadata, contentType)
 	attrs := []any{
 		"stream", streamLabel,
 		"type", contentType,
 		"id", id,
 		"imdb_id", params.ContentIDs.ImdbID,
 		"tmdb_id", params.Req.TMDBID,
-		"title", metadataDisplayTitle(params.Metadata, contentType),
+		"original_title", originalTitle,
 		"year", metadataDisplayYear(params.Metadata, contentType),
 		"languages", metadataLanguageCount(params.Metadata, contentType),
+	}
+	if alternativeTitle := metadataAlternativeTitle(params.Metadata, contentType); alternativeTitle != "" {
+		attrs = append(attrs, "alternative_title", alternativeTitle)
 	}
 	if contentType == "series" {
 		attrs = append(attrs,
@@ -928,6 +1026,9 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 				} else {
 					logMetadataResolutionState(contentType, id, "tmdb_series_translations", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
 				}
+				if alternatives, err := s.tmdbClient.GetTVAlternativeTitles(tmdbIDNum); err == nil {
+					params.Metadata.TVAlternativeTitles = alternatives
+				}
 				if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
 					if extIDs.TVDBID != 0 {
 						req.TVDBID = strconv.Itoa(extIDs.TVDBID)
@@ -982,6 +1083,9 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			}
 			if translations, err := s.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
 				params.Metadata.MovieTranslations = translations
+			}
+			if alternatives, err := s.tmdbClient.GetMovieAlternativeTitles(tmdbIDNum); err == nil {
+				params.Metadata.MovieAlternativeTitles = alternatives
 			}
 			if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil && extIDs.IMDbID != "" && contentIDs.ImdbID == "" {
 				contentIDs.ImdbID = extIDs.IMDbID

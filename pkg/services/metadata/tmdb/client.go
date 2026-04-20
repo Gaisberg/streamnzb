@@ -88,6 +88,22 @@ type TVTranslationsResponse struct {
 	Translations []TVTranslationEntry `json:"translations"`
 }
 
+type AlternativeTitle struct {
+	ISO3166_1 string `json:"iso_3166_1"`
+	Title     string `json:"title"`
+	Type      string `json:"type"`
+}
+
+type MovieAlternativeTitlesResponse struct {
+	ID     int                `json:"id"`
+	Titles []AlternativeTitle `json:"titles"`
+}
+
+type TVAlternativeTitlesResponse struct {
+	ID      int                `json:"id"`
+	Results []AlternativeTitle `json:"results"`
+}
+
 type MovieTranslationEntry struct {
 	ISO639_1    string               `json:"iso_639_1"`
 	ISO3166_1   string               `json:"iso_3166_1"`
@@ -367,6 +383,26 @@ func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, 
 	return &out, nil
 }
 
+func (c *Client) GetMovieAlternativeTitles(movieID int) (*MovieAlternativeTitlesResponse, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TMDB API key not configured")
+	}
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles", movieID)
+	resp, err := c.doRequest(endpoint, url.Values{})
+	if err != nil {
+		return nil, fmt.Errorf("TMDB movie alternative titles: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
+	}
+	var out MovieAlternativeTitlesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("TMDB alternative titles decode: %w", err)
+	}
+	return &out, nil
+}
+
 func movieTitleFromTranslations(translations *MovieTranslationsResponse, language string) string {
 	if translations == nil || language == "" {
 		return ""
@@ -509,6 +545,26 @@ func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) 
 	var out TVTranslationsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("TMDB TV translations decode: %w", err)
+	}
+	return &out, nil
+}
+
+func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesResponse, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TMDB API key not configured")
+	}
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles", tmdbID)
+	resp, err := c.doRequest(endpoint, url.Values{})
+	if err != nil {
+		return nil, fmt.Errorf("TMDB TV alternative titles: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
+	}
+	var out TVAlternativeTitlesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("TMDB alternative titles decode: %w", err)
 	}
 	return &out, nil
 }
