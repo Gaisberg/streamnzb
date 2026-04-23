@@ -1493,31 +1493,31 @@ func (m *Manager) MarkPlaybackValidated(id string) {
 }
 
 func (m *Manager) BeginPlaybackStartup(id string) {
+	now := time.Now()
 	m.mu.RLock()
 	s := m.sessions[id]
-	m.mu.RUnlock()
-	if s == nil {
-		return
+	if s != nil {
+		s.mu.Lock()
+		s.playbackStarting++
+		s.LastAccess = now
+		s.mu.Unlock()
 	}
-	s.mu.Lock()
-	s.playbackStarting++
-	s.LastAccess = time.Now()
-	s.mu.Unlock()
+	m.mu.RUnlock()
 }
 
 func (m *Manager) EndPlaybackStartup(id string) {
+	now := time.Now()
 	m.mu.RLock()
 	s := m.sessions[id]
+	if s != nil {
+		s.mu.Lock()
+		if s.playbackStarting > 0 {
+			s.playbackStarting--
+		}
+		s.LastAccess = now
+		s.mu.Unlock()
+	}
 	m.mu.RUnlock()
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.playbackStarting > 0 {
-		s.playbackStarting--
-	}
-	s.LastAccess = time.Now()
-	s.mu.Unlock()
 }
 
 func (m *Manager) EndPlayback(id, ip string) {

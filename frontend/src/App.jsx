@@ -10,7 +10,7 @@ import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import StreamManagement from './components/StreamManagement'
-import { apiFetch, UNAUTHORIZED_EVENT } from './api'
+import { apiFetch, getApiUrl, UNAUTHORIZED_EVENT } from './api'
 import { AlertCircle, Loader2 } from "lucide-react"
 
 import { useAdminRuntime } from './hooks/useAdminRuntime'
@@ -139,7 +139,7 @@ function App() {
 
   const handleLogout = useCallback(() => {
     hasLoggedOutRef.current = true
-    fetch('/api/auth/logout', {
+    fetch(getApiUrl('/api/auth/logout'), {
       method: 'POST',
       credentials: 'include',
     }).catch(() => {})
