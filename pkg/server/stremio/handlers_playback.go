@@ -718,6 +718,9 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 		return
 	}
 	n := len(list.Candidates)
+	createdCount := 0
+	reusedCount := 0
+	replacedCount := 0
 	for i := 0; i < n; i++ {
 		cand := list.Candidates[i]
 		if cand.Release == nil || cand.Release.Link == "" {
@@ -734,9 +737,31 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 				idx = ii
 			}
 		}
-		if _, err := s.sessionManager.CreateDeferredSessionWithFetcher(playPath, downloadURL, cand.Release, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream)); err != nil {
+		_, outcome, err := s.sessionManager.CreateDeferredSessionWithFetcherOutcome(playPath, downloadURL, cand.Release, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
+		if err != nil {
 			logger.Debug("Create deferred session for play list failed", "slot", playPath, "err", err)
+			continue
 		}
+		switch outcome {
+		case session.DeferredSessionCreateCreated:
+			createdCount++
+		case session.DeferredSessionCreateExisting:
+			reusedCount++
+		case session.DeferredSessionCreateReplaced:
+			replacedCount++
+		}
+	}
+	if replacedCount > 0 || reusedCount > 0 {
+		logger.Debug(
+			"Deferred sessions refreshed",
+			"stream", key.StreamID,
+			"type", key.ContentType,
+			"id", key.ID,
+			"candidates", n,
+			"created", createdCount,
+			"reused", reusedCount,
+			"replaced", replacedCount,
+		)
 	}
 }
 

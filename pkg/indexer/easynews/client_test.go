@@ -134,6 +134,15 @@ func TestBuildEasynewsGPSQuery(t *testing.T) {
 			want:     "The Last of Us S01E02",
 		},
 		{
+			name:     "tv query with extra terms does not duplicate episode token",
+			query:    "The Boys S05E01 1080p",
+			season:   "5",
+			episode:  "1",
+			scope:    config.SeriesSearchScopeSeasonEpisode,
+			category: "5000",
+			want:     "The Boys S05E01 1080p",
+		},
+		{
 			name:     "season param appends season only",
 			query:    "The Last of Us",
 			season:   "1",

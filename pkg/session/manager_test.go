@@ -314,6 +314,85 @@ func TestCreateDeferredSessionTracksUsedProviderHosts(t *testing.T) {
 	}
 }
 
+func TestCreateDeferredSessionReplacesStaleDeferredSessionWhenSourceChanges(t *testing.T) {
+	logger.Init("ERROR")
+
+	m := &Manager{sessions: make(map[string]*Session)}
+	first, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-replace",
+		"https://example.invalid/get?nzb=1",
+		&release.Release{Title: "Old Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(first) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateCreated {
+		t.Fatalf("expected first session to be created, got %q", outcome)
+	}
+
+	second, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-replace",
+		"https://example.invalid/get?nzb=2",
+		&release.Release{Title: "New Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(second) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateReplaced {
+		t.Fatalf("expected second session to replace the stale session, got %q", outcome)
+	}
+	if first == second {
+		t.Fatal("expected stale deferred session to be replaced")
+	}
+	if second.Release == nil || second.Release.Title != "New Release" {
+		t.Fatalf("expected replacement session to carry new release, got %#v", second.Release)
+	}
+	select {
+	case <-first.Done():
+	default:
+		t.Fatal("expected replaced session to be closed")
+	}
+
+	third, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-replace",
+		"https://example.invalid/get?nzb=2",
+		&release.Release{Title: "Newest Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(third) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateExisting {
+		t.Fatalf("expected third session to reuse the current session, got %q", outcome)
+	}
+	if third != second {
+		t.Fatal("expected matching deferred session to be reused")
+	}
+}
+
 func TestServeProviderTrackingUsesDepthCounter(t *testing.T) {
 	s := &Session{}
 

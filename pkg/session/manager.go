@@ -798,21 +798,51 @@ func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.F
 	return loaderFiles
 }
 
+type DeferredSessionCreateOutcome string
+
+const (
+	DeferredSessionCreateCreated  DeferredSessionCreateOutcome = "created"
+	DeferredSessionCreateExisting DeferredSessionCreateOutcome = "existing"
+	DeferredSessionCreateReplaced DeferredSessionCreateOutcome = "replaced"
+)
+
 func (m *Manager) CreateDeferredSession(sessionID, downloadURL string, rel *release.Release, idx indexer.Indexer, contentIDs *AvailReportMeta, contentType, contentID, contentTitle, streamName string) (*Session, error) {
 	return m.CreateDeferredSessionWithFetcher(sessionID, downloadURL, rel, idx, contentIDs, contentType, contentID, contentTitle, streamName, nil, nil)
 }
 
 func (m *Manager) CreateDeferredSessionWithFetcher(sessionID, downloadURL string, rel *release.Release, idx indexer.Indexer, contentIDs *AvailReportMeta, contentType, contentID, contentTitle, streamName string, segmentFetcher loader.SegmentFetcher, providerHosts []string) (*Session, error) {
+	session, _, err := m.CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL, rel, idx, contentIDs, contentType, contentID, contentTitle, streamName, segmentFetcher, providerHosts)
+	return session, err
+}
+
+func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL string, rel *release.Release, idx indexer.Indexer, contentIDs *AvailReportMeta, contentType, contentID, contentTitle, streamName string, segmentFetcher loader.SegmentFetcher, providerHosts []string) (*Session, DeferredSessionCreateOutcome, error) {
 	logger.Trace("session CreateDeferredSession start", "id", sessionID)
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var replaced *Session
+	defer func() {
+		m.mu.Unlock()
+		if replaced != nil {
+			replaced.closeWithLogging(false, "replaced_stale_deferred_session")
+		}
+	}()
 
 	if existing, ok := m.sessions[sessionID]; ok {
 		existing.mu.Lock()
 		existing.LastAccess = time.Now()
+		replaceable := existing.ActivePlays == 0 && existing.PlaybackValidatedAt.IsZero()
+		sameDownloadURL := existing.downloadURL == downloadURL
 		existing.mu.Unlock()
-		logger.Trace("session CreateDeferredSession existing", "id", sessionID)
-		return existing, nil
+		if !sameDownloadURL && replaceable {
+			logger.Trace("session CreateDeferredSession replacing stale deferred session",
+				"id", sessionID,
+				"old_download_url", existing.downloadURL,
+				"new_download_url", downloadURL)
+			delete(m.sessions, sessionID)
+			replaced = existing
+		} else {
+			logger.Trace("session CreateDeferredSession existing", "id", sessionID)
+			return existing, DeferredSessionCreateExisting, nil
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -839,7 +869,10 @@ func (m *Manager) CreateDeferredSessionWithFetcher(sessionID, downloadURL string
 	session.segmentFetcher = attachProviderTracking(session, trackedFetcher)
 	m.sessions[sessionID] = session
 	logger.Trace("session CreateDeferredSession done", "id", sessionID)
-	return session, nil
+	if replaced != nil {
+		return session, DeferredSessionCreateReplaced, nil
+	}
+	return session, DeferredSessionCreateCreated, nil
 }
 
 func (s *Session) GetOrDownloadNZB(manager *Manager) (*nzb.NZB, error) {

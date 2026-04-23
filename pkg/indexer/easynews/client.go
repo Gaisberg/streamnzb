@@ -359,7 +359,7 @@ func buildEasynewsGPSQuery(query, season, episode, scope, category string) strin
 		if seasonErr == nil && episodeErr == nil {
 			suffix = fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
 		}
-		if strings.HasSuffix(strings.ToLower(query), strings.ToLower(" "+suffix)) || strings.EqualFold(query, suffix) {
+		if easynewsQueryContainsToken(query, suffix) {
 			return query
 		}
 		if query == "" {
@@ -375,7 +375,7 @@ func buildEasynewsGPSQuery(query, season, episode, scope, category string) strin
 		if seasonErr == nil {
 			suffix = fmt.Sprintf("S%02d", seasonNum)
 		}
-		if strings.HasSuffix(strings.ToLower(query), strings.ToLower(" "+suffix)) || strings.EqualFold(query, suffix) {
+		if easynewsQueryContainsToken(query, suffix) {
 			return query
 		}
 		if query == "" {
@@ -385,6 +385,19 @@ func buildEasynewsGPSQuery(query, season, episode, scope, category string) strin
 	default:
 		return query
 	}
+}
+
+func easynewsQueryContainsToken(query, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	for _, part := range strings.Fields(query) {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) searchInternal(ctx context.Context, query, season, episode, scope, category string, strictMode bool) ([]easynewsResult, int, error) {
