@@ -337,6 +337,9 @@ func TestCreateDeferredSessionReplacesStaleDeferredSessionWhenSourceChanges(t *t
 	if outcome != DeferredSessionCreateCreated {
 		t.Fatalf("expected first session to be created, got %q", outcome)
 	}
+	first.mu.Lock()
+	first.LastAccess = time.Now().Add(-2 * deferredSessionReplaceGrace)
+	first.mu.Unlock()
 
 	second, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
 		"sess-replace",
@@ -390,6 +393,169 @@ func TestCreateDeferredSessionReplacesStaleDeferredSessionWhenSourceChanges(t *t
 	}
 	if third != second {
 		t.Fatal("expected matching deferred session to be reused")
+	}
+}
+
+func TestCreateDeferredSessionDoesNotReplaceActiveOrStartingSession(t *testing.T) {
+	logger.Init("ERROR")
+
+	m := &Manager{sessions: make(map[string]*Session)}
+	first, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-protected",
+		"https://example.invalid/get?nzb=1",
+		&release.Release{Title: "Old Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(first) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateCreated {
+		t.Fatalf("expected first session to be created, got %q", outcome)
+	}
+
+	first.mu.Lock()
+	first.LastAccess = time.Now().Add(-2 * deferredSessionReplaceGrace)
+	first.ActivePlays = 1
+	first.mu.Unlock()
+
+	second, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-protected",
+		"https://example.invalid/get?nzb=2",
+		&release.Release{Title: "New Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(second) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateExisting {
+		t.Fatalf("expected active session to be reused, got %q", outcome)
+	}
+	if second != first {
+		t.Fatal("expected active session to stay in place")
+	}
+
+	first.mu.Lock()
+	first.ActivePlays = 0
+	first.playbackStarting = 1
+	first.LastAccess = time.Now().Add(-2 * deferredSessionReplaceGrace)
+	first.mu.Unlock()
+
+	third, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-protected",
+		"https://example.invalid/get?nzb=3",
+		&release.Release{Title: "Newest Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(third) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateExisting {
+		t.Fatalf("expected startup-protected session to be reused, got %q", outcome)
+	}
+	if third != first {
+		t.Fatal("expected startup-protected session to stay in place")
+	}
+
+	first.mu.Lock()
+	first.playbackStarting = 0
+	first.nzbDownloadInFlight = true
+	first.LastAccess = time.Now().Add(-2 * deferredSessionReplaceGrace)
+	first.mu.Unlock()
+
+	fourth, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-protected",
+		"https://example.invalid/get?nzb=4",
+		&release.Release{Title: "Final Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(fourth) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateExisting {
+		t.Fatalf("expected downloading session to be reused, got %q", outcome)
+	}
+	if fourth != first {
+		t.Fatal("expected downloading session to stay in place")
+	}
+}
+
+func TestCreateDeferredSessionDoesNotReplaceRecentlyAccessedSession(t *testing.T) {
+	logger.Init("ERROR")
+
+	m := &Manager{sessions: make(map[string]*Session)}
+	first, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-grace",
+		"https://example.invalid/get?nzb=1",
+		&release.Release{Title: "Old Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(first) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateCreated {
+		t.Fatalf("expected first session to be created, got %q", outcome)
+	}
+
+	first.mu.Lock()
+	first.LastAccess = time.Now()
+	first.mu.Unlock()
+
+	second, outcome, err := m.CreateDeferredSessionWithFetcherOutcome(
+		"sess-grace",
+		"https://example.invalid/get?nzb=2",
+		&release.Release{Title: "New Release"},
+		&fakeIndexer{},
+		nil,
+		"series",
+		"tt1190634:5:1",
+		"The Boys",
+		"Stream01",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateDeferredSession(second) returned error: %v", err)
+	}
+	if outcome != DeferredSessionCreateExisting {
+		t.Fatalf("expected recently accessed session to be reused, got %q", outcome)
+	}
+	if second != first {
+		t.Fatal("expected recently accessed session to stay in place")
 	}
 }
 

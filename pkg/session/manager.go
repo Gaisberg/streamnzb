@@ -67,6 +67,7 @@ type Session struct {
 	PlaybackValidatedAt time.Time // when probe/prepare proved the file is playable; separate from playback end bookkeeping
 	PlaybackStartedAt   time.Time // when ActivePlays went from 0 to >0; used to evict stuck sessions
 	PlaybackEndedAt     time.Time // when ActivePlays went to 0; used to evict session soon after stream stops
+	playbackStarting    int       // number of in-flight playback startups; prevents background refresh from replacing the session mid-startup
 	Clients             map[string]time.Time
 	mu                  sync.Mutex
 
@@ -421,6 +422,10 @@ const PostPlaybackEvictTTL = 15 * time.Minute
 // clientStaleTTL is how long a Clients map entry is kept before it is treated as stale in cleanup().
 // Matches the 60-second window used in GetActiveSessions.
 const clientStaleTTL = 60 * time.Second
+
+// deferredSessionReplaceGrace is a short protection window after a session was last touched.
+// It avoids replacing a slot that was just handed to playback while startup bookkeeping is still catching up.
+const deferredSessionReplaceGrace = 5 * time.Second
 
 type failoverOrderEntry struct {
 	order     []string
@@ -827,15 +832,24 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 	}()
 
 	if existing, ok := m.sessions[sessionID]; ok {
+		now := time.Now()
 		existing.mu.Lock()
-		existing.LastAccess = time.Now()
-		replaceable := existing.ActivePlays == 0 && existing.PlaybackValidatedAt.IsZero()
-		sameDownloadURL := existing.downloadURL == downloadURL
+		existingURL := existing.downloadURL
+		lastAccess := existing.LastAccess
+		replaceable := existing.ActivePlays == 0 &&
+			existing.PlaybackValidatedAt.IsZero() &&
+			!existing.nzbDownloadInFlight &&
+			existing.playbackStarting == 0 &&
+			now.Sub(lastAccess) >= deferredSessionReplaceGrace
+		sameDownloadURL := existingURL == downloadURL
+		if sameDownloadURL || !replaceable {
+			existing.LastAccess = now
+		}
 		existing.mu.Unlock()
 		if !sameDownloadURL && replaceable {
 			logger.Trace("session CreateDeferredSession replacing stale deferred session",
 				"id", sessionID,
-				"old_download_url", existing.downloadURL,
+				"old_download_url", existingURL,
 				"new_download_url", downloadURL)
 			delete(m.sessions, sessionID)
 			replaced = existing
@@ -1338,6 +1352,7 @@ func (s *Session) closeWithLogging(debugLog bool, reason string) {
 		s.playback = nil
 	}
 	s.selectedPlaybackFile = ""
+	s.playbackStarting = 0
 
 	// Release heavyweight references so a closed session cannot pin NZB / unpack /
 	// loader graphs or deferred-download state after it has been removed.
@@ -1472,8 +1487,37 @@ func (m *Manager) MarkPlaybackValidated(id string) {
 		if s.PlaybackValidatedAt.IsZero() {
 			s.PlaybackValidatedAt = time.Now()
 		}
+		s.playbackStarting = 0
 		s.mu.Unlock()
 	}
+}
+
+func (m *Manager) BeginPlaybackStartup(id string) {
+	m.mu.RLock()
+	s := m.sessions[id]
+	m.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.playbackStarting++
+	s.LastAccess = time.Now()
+	s.mu.Unlock()
+}
+
+func (m *Manager) EndPlaybackStartup(id string) {
+	m.mu.RLock()
+	s := m.sessions[id]
+	m.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.playbackStarting > 0 {
+		s.playbackStarting--
+	}
+	s.LastAccess = time.Now()
+	s.mu.Unlock()
 }
 
 func (m *Manager) EndPlayback(id, ip string) {

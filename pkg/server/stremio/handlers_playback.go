@@ -751,7 +751,7 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 			replacedCount++
 		}
 	}
-	if replacedCount > 0 || reusedCount > 0 {
+	if createdCount > 0 || replacedCount > 0 || reusedCount > 0 {
 		logger.Debug(
 			"Deferred sessions refreshed",
 			"stream", key.StreamID,
@@ -812,7 +812,7 @@ func (s *Server) resolveStreamSlotFromPlaylist(key StreamSlotKey, index int, lis
 		}
 	}
 	sessionID := requestedSlotPath
-	_, err := s.sessionManager.CreateDeferredSessionWithFetcher(sessionID, downloadURL, rel, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
+	_, _, err := s.sessionManager.CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL, rel, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
 	if err != nil {
 		return nil, fmt.Errorf("create deferred session: %w", err)
 	}
@@ -1119,7 +1119,9 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			}(sessionID, sess.Done())
 		}
 
+		s.sessionManager.BeginPlaybackStartup(sessionID)
 		preparedStream, prepareErr := s.preparePlaybackStream(mergedCtx, sess, requestedSessionID, sessionID, wantTimeOffset)
+		s.sessionManager.EndPlaybackStartup(sessionID)
 		if prepareErr != nil {
 			mergedCancel()
 			if isPlayPrepareCancellation(prepareErr) {
