@@ -10,7 +10,7 @@ import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import StreamManagement from './components/StreamManagement'
-import { apiFetch } from './api'
+import { apiFetch, UNAUTHORIZED_EVENT } from './api'
 import { AlertCircle, Loader2 } from "lucide-react"
 
 import { useAdminRuntime } from './hooks/useAdminRuntime'
@@ -124,12 +124,8 @@ function App() {
     localStorage.setItem('auth_token', token)
   }
 
-  const handleLogout = () => {
+  const clearAuthState = useCallback(() => {
     hasLoggedOutRef.current = true
-    fetch('/api/auth/logout', {
-      method: 'POST',
-      credentials: 'include',
-    }).catch(() => {})
     setAuthenticated(false)
     setCurrentUser(null)
     setAuthToken('')
@@ -139,7 +135,28 @@ function App() {
       ws.close()
     }
     window.ws = null
-  }
+  }, [ws])
+
+  const handleLogout = useCallback(() => {
+    hasLoggedOutRef.current = true
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => {})
+    clearAuthState()
+  }, [clearAuthState])
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      if (!authenticated || hasLoggedOutRef.current) return
+      clearAuthState()
+    }
+
+    window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized)
+    return () => {
+      window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized)
+    }
+  }, [authenticated, clearAuthState])
 
   useEffect(() => {
     const root = window.document.documentElement;

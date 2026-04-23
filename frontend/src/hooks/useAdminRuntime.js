@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { apiFetch, getApiUrl } from '../api'
+import { apiFetch, getApiUrl, notifyUnauthorized } from '../api'
 
 const MAX_HISTORY = 60
 const MAX_LOGS = 200
@@ -155,25 +155,18 @@ export function useAdminRuntime({
               setCurrentUser(msg.payload.username)
               setMustChangePassword(msg.payload.must_change_password || false)
               const currentSocket = socket
-              fetch(getApiUrl('/api/config'), { credentials: 'include' })
-                .then((res) => (res.ok ? res.json() : null))
+              apiFetch('/api/config')
                 .then((data) => {
                   if (data && isActiveSocket(currentSocket)) setConfig(data)
                 })
                 .catch(() => {})
-              fetch(getApiUrl('/api/indexer/caps'), { credentials: 'include' })
-                .then((res) => (res.ok ? res.json() : null))
+              apiFetch('/api/indexer/caps')
                 .then((data) => {
                   if (data && isActiveSocket(currentSocket)) setIndexerCaps(data)
                 })
                 .catch(() => {})
             } else {
-              // The initial HTTP auth check is the authoritative gate for the
-              // admin UI. If the WS channel briefly reports unauthenticated,
-              // don't throw the whole app back to the login screen; just
-              // surface a connection issue and let reconnect / normal API
-              // auth continue to work.
-              setError('Realtime connection is not authenticated')
+              notifyUnauthorized({ source: 'ws_auth_info' })
               socket.close()
             }
             break
