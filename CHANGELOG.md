@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.2.0](https://github.com/Gaisberg/streamnzb/compare/v4.1.0...v4.2.0) (2026-04-23)
+
+
+### Features
+
+* **metadata:** improve anime title resolution and validation ([#124](https://github.com/Gaisberg/streamnzb/issues/124)) ([26f878c](https://github.com/Gaisberg/streamnzb/commit/26f878ccd73427236a26fa0939d1d64ceaa5386b))
+* **search:** add multilingual title validation ([#126](https://github.com/Gaisberg/streamnzb/issues/126)) ([06ae4b7](https://github.com/Gaisberg/streamnzb/commit/06ae4b7697ea2b1572542dbdade0023e2843000b))
+
+
+### Bug Fixes
+
+* **frontend:** logout on expired admin auth ([97dd360](https://github.com/Gaisberg/streamnzb/commit/97dd360d121e2088a77dc27e530fc5cab706a7ea))
+* **playback:** refresh deferred sessions and dedupe easynews queries ([1ebc5ea](https://github.com/Gaisberg/streamnzb/commit/1ebc5eac3963df2359a4390378e36a5e5893344a))
+* **session:** avoid replacing sessions during startup ([b3190b1](https://github.com/Gaisberg/streamnzb/commit/b3190b19609a8dc04d04b22cb9c22a494f28a640))
+* **session:** tighten startup locking and logout path ([51f1347](https://github.com/Gaisberg/streamnzb/commit/51f134770bc39c6ada9cf32c89250a6b31ff43ec))
+
 ## [4.1.0](https://github.com/Gaisberg/streamnzb/compare/v4.0.2...v4.1.0) (2026-04-16)
 
 
