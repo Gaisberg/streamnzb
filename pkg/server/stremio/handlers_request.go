@@ -320,7 +320,32 @@ func bingeGroupLabelFromMeta(meta *parser.ParsedRelease) string {
 	return meta.Quality
 }
 
-func streamBehaviorHints(streamName, streamID string, rel *release.Release, cached *bool, bingeGroupLabel string) *BehaviorHints {
+func streamContentDisplayTitle(params *SearchParams, fallback string) string {
+	if params != nil {
+		if title := strings.TrimSpace(params.ContentTitle); title != "" {
+			return title
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func streamContentDisplayFilename(params *SearchParams, fallback string) string {
+	title := streamContentDisplayTitle(params, fallback)
+	if params == nil || params.ContentType != "series" || params.ContentIDs == nil {
+		return title
+	}
+	season := params.ContentIDs.Season
+	episode := params.ContentIDs.Episode
+	if season <= 0 {
+		return title
+	}
+	if episode > 0 {
+		return fmt.Sprintf("%s - S%02dE%02d", title, season, episode)
+	}
+	return fmt.Sprintf("%s - Season %02d", title, season)
+}
+
+func streamBehaviorHints(streamName, streamID string, rel *release.Release, cached *bool, bingeGroupLabel, fallbackFilename string) *BehaviorHints {
 	bingeGroup := "streamnzb-" + streamID
 	if bingeGroupLabel != "" {
 		bingeGroup = "streamnzb-" + bingeGroupLabel
@@ -329,8 +354,13 @@ func streamBehaviorHints(streamName, streamID string, rel *release.Release, cach
 		NotWebReady: true,
 		BingeGroup:  bingeGroup,
 	}
+	if strings.TrimSpace(fallbackFilename) != "" {
+		h.Filename = strings.TrimSpace(fallbackFilename)
+	}
 	if rel != nil {
-		h.Filename = rel.Title
+		if h.Filename == "" && strings.TrimSpace(rel.Title) != "" {
+			h.Filename = strings.TrimSpace(rel.Title)
+		}
 		if rel.Size > 0 {
 			h.VideoSize = rel.Size
 		}
@@ -346,6 +376,8 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 	if nameLeft == "" {
 		nameLeft = key.StreamID
 	}
+	displayTitle := streamContentDisplayTitle(list.Params, nameLeft)
+	displayFilename := streamContentDisplayFilename(list.Params, displayTitle)
 	useSlotPaths := len(list.SlotPaths) == len(list.Candidates)
 	var streams []Stream
 	if showAll {
@@ -372,10 +404,11 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			if bingeLabel == "" {
 				bingeLabel = nameLeft
 			}
-			hints := streamBehaviorHints(nameLeft, key.StreamID, cand.Release, &isAvail, bingeLabel)
+			hints := streamBehaviorHints(nameLeft, key.StreamID, cand.Release, &isAvail, bingeLabel, displayFilename)
 			streams = append(streams, Stream{
 				FailoverID:    failoverId,
 				Name:          sName,
+				Title:         displayTitle,
 				URL:           streamURL,
 				Description:   desc,
 				BehaviorHints: hints,
@@ -417,10 +450,11 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		if bingeLabel == "" {
 			bingeLabel = nameLeft
 		}
-		hints := streamBehaviorHints(nameLeft, key.StreamID, firstRel, &firstAvail, bingeLabel)
+		hints := streamBehaviorHints(nameLeft, key.StreamID, firstRel, &firstAvail, bingeLabel, displayFilename)
 		streams = append(streams, Stream{
 			FailoverID:    failoverId,
 			Name:          nameLeft,
+			Title:         displayTitle,
 			URL:           streamURL,
 			Description:   description,
 			BehaviorHints: hints,
@@ -431,10 +465,11 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			nextName := nameLeft + " (next release)"
 			nextDesc := "StreamNZB\nTry next release in list"
 			nextFailoverId := "streamnzb-next-" + nextPath
-			nextHints := streamBehaviorHints(nameLeft, key.StreamID, nil, nil, nameLeft)
+			nextHints := streamBehaviorHints(nameLeft, key.StreamID, nil, nil, nameLeft, displayFilename)
 			streams = append(streams, Stream{
 				FailoverID:    nextFailoverId,
 				Name:          nextName,
+				Title:         displayTitle,
 				URL:           nextURL,
 				Description:   nextDesc,
 				BehaviorHints: nextHints,
