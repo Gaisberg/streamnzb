@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/indexer/httpproxy"
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/release"
 )
@@ -53,7 +54,7 @@ type Client struct {
 
 var _ indexer.Indexer = (*Client)(nil)
 
-func NewClient(username, password, name string, downloadBase string, apiLimit, downloadLimit, rateLimitRPS, timeoutSeconds int, um *indexer.UsageManager) (*Client, error) {
+func NewClient(username, password, name string, downloadBase string, apiLimit, downloadLimit, rateLimitRPS, timeoutSeconds int, proxyURL string, um *indexer.UsageManager) (*Client, error) {
 	if username == "" || password == "" {
 		return nil, fmt.Errorf("easynews username and password are required")
 	}
@@ -63,7 +64,16 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 	searchTimeout := time.Duration(timeoutSeconds) * time.Second
 	downloadTimeout := searchTimeout * 2
 
-	transport := &http.Transport{
+	searchProxy := httpproxy.IndexerProxy(proxyURL)
+	searchTransport := &http.Transport{
+		Proxy:               searchProxy,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		MaxConnsPerHost:     100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	downloadTransport := &http.Transport{
+		Proxy:               searchProxy,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		MaxConnsPerHost:     100,
@@ -87,11 +97,11 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 		requestLimiter:    indexer.NewRequestLimiter(rateLimitRPS),
 		client: &http.Client{
 			Timeout:   searchTimeout,
-			Transport: transport,
+			Transport: searchTransport,
 		},
 		downloadClient: &http.Client{
 			Timeout:   downloadTimeout,
-			Transport: transport,
+			Transport: downloadTransport,
 		},
 	}
 

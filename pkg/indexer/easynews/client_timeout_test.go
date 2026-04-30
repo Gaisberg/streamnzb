@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewClientConfiguresSeparateSearchAndDownloadTimeouts(t *testing.T) {
-	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, nil)
+	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, "", nil)
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestNewClientConfiguresSeparateSearchAndDownloadTimeouts(t *testing.T) {
 }
 
 func TestNewClientUsesConfiguredTimeoutAndDoublesDownloadTimeout(t *testing.T) {
-	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 12, nil)
+	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 12, "", nil)
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
@@ -48,7 +48,7 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestSearchInternalUsesSearchClient(t *testing.T) {
-	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, nil)
+	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, "", nil)
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSearchInternalUsesSearchClient(t *testing.T) {
 }
 
 func TestDownloadNZBInternalUsesDownloadClient(t *testing.T) {
-	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, nil)
+	client, err := NewClient("user", "pass", "Easynews", "", 0, 0, 0, 0, "", nil)
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}

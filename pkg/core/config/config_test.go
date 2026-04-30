@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -179,6 +180,51 @@ func TestIndexerConfigEffectiveTimeoutHonorsExplicitOverride(t *testing.T) {
 	}
 	if got := cfg.EffectiveTimeout(); got != 7*time.Second {
 		t.Fatalf("EffectiveTimeout() = %v, want %v", got, 7*time.Second)
+	}
+}
+
+func TestValidateIndexerProxyURL(t *testing.T) {
+	if err := ValidateIndexerProxyURL(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateIndexerProxyURL("http://proxy:8888"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateIndexerProxyURL("socks5://127.0.0.1:1080"); err == nil {
+		t.Fatal("expected error for socks5 scheme")
+	}
+	if err := ValidateIndexerProxyURL("http://"); err == nil {
+		t.Fatal("expected error for missing host")
+	}
+}
+
+func TestValidateIndexerProxyReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	if err := ValidateIndexerProxyReachable("http://" + ln.Addr().String()); err != nil {
+		t.Fatalf("expected reachable proxy, got err: %v", err)
+	}
+}
+
+func TestRedactProxyURLForAPI(t *testing.T) {
+	got := RedactProxyURLForAPI("http://user:secret@proxy:8888")
+	want := "http://proxy:8888"
+	if got != want {
+		t.Fatalf("RedactProxyURLForAPI = %q, want %q", got, want)
 	}
 }
 
