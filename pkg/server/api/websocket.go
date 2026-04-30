@@ -784,8 +784,18 @@ func verifyGlobalIndexerProxy(cfg *config.Config) error {
 		return nil
 	}
 
+	type probeResult struct {
+		name string
+		err  error
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var attempted int
 	samples := make([]string, 0, 3)
+	resultCh := make(chan probeResult, len(cfg.Indexers))
+	var wg sync.WaitGroup
 
 	for _, idx := range cfg.Indexers {
 		if idx.Enabled != nil && !*idx.Enabled {
@@ -804,9 +814,16 @@ func verifyGlobalIndexerProxy(cfg *config.Config) error {
 		testCfg := idx
 		testCfg.ProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
 		attempted++
-		if err := pingIndexerWithTimeout(testCfg); err == nil {
-			return nil
-		} else if len(samples) < 3 {
+		wg.Add(1)
+		go func(testCfg config.IndexerConfig) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			err := pingIndexerWithTimeout(testCfg)
 			name := strings.TrimSpace(testCfg.Name)
 			if name == "" {
 				if strings.EqualFold(testCfg.Type, "easynews") {
@@ -815,12 +832,31 @@ func verifyGlobalIndexerProxy(cfg *config.Config) error {
 					name = testCfg.URL
 				}
 			}
-			samples = append(samples, fmt.Sprintf("%s: %v", name, err))
-		}
+			select {
+			case resultCh <- probeResult{name: name, err: err}:
+			case <-ctx.Done():
+			}
+		}(testCfg)
 	}
 
 	if attempted == 0 {
 		return nil
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	for result := range resultCh {
+		if result.err == nil {
+			cancel()
+			wg.Wait()
+			return nil
+		}
+		if len(samples) < 3 {
+			samples = append(samples, fmt.Sprintf("%s: %v", result.name, result.err))
+		}
 	}
 	return fmt.Errorf("global proxy could not reach any enabled indexer (%s)", strings.Join(samples, " | "))
 }
@@ -987,7 +1023,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					}
 					testCfg := indexerCfg
 					effectiveProxyURL := strings.TrimSpace(indexerCfg.ProxyURL)
-					if effectiveProxyURL == "" {
+					if effectiveProxyURL == "" && plan.validateIndexerProxyURL {
 						effectiveProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
 					}
 					testCfg.ProxyURL = effectiveProxyURL
@@ -1018,7 +1054,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				}
 				testCfg := indexerCfg
 				effectiveProxyURL := strings.TrimSpace(indexerCfg.ProxyURL)
-				if effectiveProxyURL == "" {
+				if effectiveProxyURL == "" && plan.validateIndexerProxyURL {
 					effectiveProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
 				}
 				testCfg.ProxyURL = effectiveProxyURL
