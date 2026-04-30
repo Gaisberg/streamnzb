@@ -109,6 +109,10 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		if indexerType == "aggregator" {
 			indexerType = "newznab"
 		}
+		effectiveProxyURL := strings.TrimSpace(idxCfg.ProxyURL)
+		if effectiveProxyURL == "" {
+			effectiveProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
+		}
 
 		switch indexerType {
 		case "easynews":
@@ -122,7 +126,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 				downloadBase = downloadBase[:len(downloadBase)-1]
 			}
 
-			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), usageMgr)
+			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), effectiveProxyURL, usageMgr)
 			if err != nil {
 				logger.Error("Failed to initialize Easynews from indexer list", "name", idxCfg.Name, "err", err)
 			} else {
@@ -133,7 +137,9 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 				availNzbHosts[idxCfg.Name] = h
 			}
 		default:
-			client := newznab.NewClient(idxCfg, usageMgr)
+			effectiveCfg := idxCfg
+			effectiveCfg.ProxyURL = effectiveProxyURL
+			client := newznab.NewClient(effectiveCfg, usageMgr)
 			indexers = append(indexers, client)
 			logger.Info("Initialized Newznab indexer", "name", idxCfg.Name, "url", idxCfg.URL)
 			if h := hostFromIndexerURL(idxCfg.URL); h != "" {

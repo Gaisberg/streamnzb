@@ -10,13 +10,15 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
+
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
-	"strings"
-	"sync"
-	"time"
+	"streamnzb/pkg/indexer/httpproxy"
 )
 
 type Client struct {
@@ -186,6 +188,7 @@ func (c *Client) recordSearchDuration(elapsed time.Duration) {
 func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 
 	transport := &http.Transport{
+		Proxy: httpproxy.IndexerProxy(cfg.ProxyURL),
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},

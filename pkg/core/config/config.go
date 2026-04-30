@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +121,77 @@ type IndexerConfig struct {
 	SearchTitleLanguage        string `json:"search_title_language,omitempty"`
 	DisableIdSearch            *bool  `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool  `json:"disable_string_search,omitempty"`
+
+	// ProxyURL is an optional HTTP or HTTPS proxy for this indexer (http://host:port or https://...).
+	// When empty, HTTP_PROXY / HTTPS_PROXY / NO_PROXY apply via the default proxy resolution.
+	ProxyURL string `json:"proxy_url,omitempty"`
+}
+
+// ValidateIndexerProxyURL returns nil if raw is empty or a valid http(s) proxy URL.
+func ValidateIndexerProxyURL(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("proxy URL scheme must be http or https")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("proxy URL must include a host")
+	}
+	return nil
+}
+
+// ValidateIndexerProxyReachable performs a lightweight TCP dial check to ensure
+// the proxy endpoint is reachable.
+func ValidateIndexerProxyReachable(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("proxy URL must include a host")
+	}
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+		case "https":
+			port = "443"
+		default:
+			port = "80"
+		}
+	}
+	addr := net.JoinHostPort(host, port)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("proxy is unreachable at %s: %w", addr, err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// RedactProxyURLForAPI strips userinfo from a proxy URL for non-admin API responses.
+func RedactProxyURLForAPI(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
 }
 
 func (ic IndexerConfig) EffectiveTimeoutSeconds() int {
@@ -291,6 +365,7 @@ type Config struct {
 	IndexerQueryHeader string `json:"indexer_query_header,omitempty"`
 	IndexerGrabHeader  string `json:"indexer_grab_header,omitempty"`
 	ProviderHeader     string `json:"provider_header,omitempty"`
+	IndexerProxyURL    string `json:"indexer_proxy_url,omitempty"`
 
 	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
 
@@ -1089,6 +1164,7 @@ func (c *Config) RedactForAPI() Config {
 	out.IndexerQueryHeader = ""
 	out.IndexerGrabHeader = ""
 	out.ProviderHeader = ""
+	out.IndexerProxyURL = RedactProxyURLForAPI(c.IndexerProxyURL)
 	out.AvailNZBAPIKey = ""
 	out.TMDBAPIKey = ""
 	out.TVDBAPIKey = ""
@@ -1105,6 +1181,7 @@ func (c *Config) RedactForAPI() Config {
 		redactedIndexer.APIKey = ""
 		redactedIndexer.Username = ""
 		redactedIndexer.Password = ""
+		redactedIndexer.ProxyURL = RedactProxyURLForAPI(indexer.ProxyURL)
 		out.Indexers[i] = redactedIndexer
 	}
 	return out

@@ -68,6 +68,7 @@ function normalizeIndexerDraft(draft) {
     enabled: value.enabled !== false,
     username: value.username || '',
     password: value.password || '',
+    proxy_url: (value.proxy_url || '').trim(),
   }
 }
 
@@ -93,7 +94,7 @@ function formatLimitValue(value) {
   return value > 0 ? String(value) : '∞'
 }
 
-function summarizeIndexer(indexer, caps) {
+function summarizeIndexer(indexer, defaultProxyURL = '') {
   const parts = []
   parts.push(indexer.type === 'aggregator' ? 'Aggregator' : indexer.type === 'easynews' ? 'Easynews' : 'Newznab')
   if (indexer.url) parts.push(indexer.url)
@@ -102,6 +103,8 @@ function summarizeIndexer(indexer, caps) {
   parts.push(`Hits/day: ${formatLimitValue(indexer.api_hits_day)}`)
   parts.push(`DLs/day: ${formatLimitValue(indexer.downloads_day)}`)
   parts.push(`RPS: ${formatLimitValue(indexer.rate_limit_rps)}`)
+  if (indexer.proxy_url) parts.push('Proxy: override')
+  else if (defaultProxyURL) parts.push('Proxy: default')
   return parts
 }
 
@@ -236,6 +239,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         else if (path.includes('.api_hits_day')) nextErrors.api_hits_day = message
         else if (path.includes('.downloads_day')) nextErrors.downloads_day = message
         else if (path.includes('.rate_limit_rps')) nextErrors.rate_limit_rps = message
+        else if (path.includes('.proxy_url')) nextErrors.proxy_url = message
       })
       setFieldErrors(nextErrors)
       setSaveError(firstFieldErrorMessage(nextErrors, error?.message || 'Save failed'))
@@ -395,6 +399,24 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
             </div>
           )}
 
+          <div className="rounded-md border border-border/60 p-3">
+            <div className={rowClass}>
+              <div className={labelClass}>
+                <Label className="text-sm font-medium">HTTP(S) proxy</Label>
+                <p className="mt-1 text-xs text-muted-foreground">Optional proxy override</p>
+              </div>
+              <div className={controlWideClass}>
+                <Input
+                  className={`h-9 ${fieldClass('proxy_url')}`}
+                  value={draft.proxy_url}
+                  onChange={(event) => update('proxy_url', event.target.value)}
+                  placeholder="http://proxy:8888"
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-md border border-border/60">
             <div className="p-3">
               <div className="space-y-3">
@@ -480,7 +502,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
   )
 }
 
-export function IndexerSettings({ fields = [], append, update, remove, replace, indexerCaps = {}, onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
+export function IndexerSettings({ fields = [], append, update, remove, replace, indexerCaps = {}, defaultProxyURL = '', onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
   const indexers = fields
   const [editingIndex, setEditingIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
@@ -604,7 +626,7 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
             ) : (
               indexers.map((indexer, index) => {
                 const normalized = normalizeIndexerDraft(indexer)
-                const summary = summarizeIndexer(normalized, indexerCaps?.[normalized.name])
+                const summary = summarizeIndexer(normalized, defaultProxyURL)
                 const nameKey = (normalized.name || '').trim()
                 const isOnline = indexerStatusByName.has(nameKey) || (normalized.enabled === false && knownOnlineIndexers[nameKey] === true)
                 return (

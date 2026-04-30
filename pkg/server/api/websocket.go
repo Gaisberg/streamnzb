@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/search/triage"
@@ -655,6 +656,7 @@ type configValidationPlan struct {
 	validateKeepLogFiles           bool
 	validateNZBHistoryRetention    bool
 	validatePlaybackStartupTimeout bool
+	validateIndexerProxyURL        bool
 	validateMovieSearchQueries     bool
 	validateSeriesSearchQueries    bool
 	validateDeviceAssignments      bool
@@ -671,6 +673,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateKeepLogFiles:           true,
 		validateNZBHistoryRetention:    true,
 		validatePlaybackStartupTimeout: true,
+		validateIndexerProxyURL:        true,
 		validateMovieSearchQueries:     true,
 		validateSeriesSearchQueries:    true,
 		validateDeviceAssignments:      true,
@@ -700,6 +703,9 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["playback_startup_timeout_seconds"]; ok {
 		plan.validatePlaybackStartupTimeout = true
+	}
+	if _, ok := raw["indexer_proxy_url"]; ok {
+		plan.validateIndexerProxyURL = true
 	}
 	if _, ok := raw["movie_search_queries"]; ok {
 		plan.validateMovieSearchQueries = true
@@ -739,6 +745,86 @@ func changedIndexes[T any](current, next []T) map[int]bool {
 	return changed
 }
 
+func pingIndexerWithTimeout(indexerCfg config.IndexerConfig) error {
+	pingTimeout := indexerCfg.EffectiveTimeout()
+	ping := func() error {
+		if strings.EqualFold(indexerCfg.Type, "easynews") {
+			client, err := easynews.NewClient(
+				indexerCfg.Username,
+				indexerCfg.Password,
+				indexerCfg.Name,
+				"",
+				indexerCfg.APIHitsDay,
+				indexerCfg.DownloadsDay,
+				indexerCfg.RateLimitRPS,
+				indexerCfg.EffectiveTimeoutSeconds(),
+				indexerCfg.ProxyURL,
+				nil,
+			)
+			if err != nil {
+				return err
+			}
+			return client.Ping()
+		}
+		return newznab.NewClient(indexerCfg, nil).Ping()
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- ping() }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(pingTimeout):
+		return fmt.Errorf("connection timeout after %v", pingTimeout)
+	}
+}
+
+func verifyGlobalIndexerProxy(cfg *config.Config) error {
+	if cfg == nil || strings.TrimSpace(cfg.IndexerProxyURL) == "" {
+		return nil
+	}
+
+	var attempted int
+	samples := make([]string, 0, 3)
+
+	for _, idx := range cfg.Indexers {
+		if idx.Enabled != nil && !*idx.Enabled {
+			continue
+		}
+		if strings.EqualFold(idx.Type, "easynews") {
+			if strings.TrimSpace(idx.Username) == "" || strings.TrimSpace(idx.Password) == "" {
+				continue
+			}
+		} else {
+			if strings.TrimSpace(idx.URL) == "" || strings.Contains(idx.APIPath, "{indexer_id}") {
+				continue
+			}
+		}
+
+		testCfg := idx
+		testCfg.ProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
+		attempted++
+		if err := pingIndexerWithTimeout(testCfg); err == nil {
+			return nil
+		} else if len(samples) < 3 {
+			name := strings.TrimSpace(testCfg.Name)
+			if name == "" {
+				if strings.EqualFold(testCfg.Type, "easynews") {
+					name = "easynews"
+				} else {
+					name = testCfg.URL
+				}
+			}
+			samples = append(samples, fmt.Sprintf("%s: %v", name, err))
+		}
+	}
+
+	if attempted == 0 {
+		return nil
+	}
+	return fmt.Errorf("global proxy could not reach any enabled indexer (%s)", strings.Join(samples, " | "))
+}
+
 func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidationPlan) map[string]string {
 	errors := make(map[string]string)
 	if plan.validateKeepLogFiles && (cfg.KeepLogFiles < 1 || cfg.KeepLogFiles > 50) {
@@ -749,6 +835,13 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	}
 	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > config.MaxPlaybackStartupTimeoutSeconds) {
 		errors["playback_startup_timeout_seconds"] = "Must be between 1 and 60 seconds"
+	}
+	if plan.validateIndexerProxyURL {
+		if err := config.ValidateIndexerProxyURL(cfg.IndexerProxyURL); err != nil {
+			errors["indexer_proxy_url"] = err.Error()
+		} else if err := verifyGlobalIndexerProxy(cfg); err != nil {
+			errors["indexer_proxy_url"] = err.Error()
+		}
 	}
 	validateSearchQueries := func(prefix string, queries []config.SearchQueryConfig) {
 		seen := make(map[string]bool)
@@ -886,6 +979,23 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 						errors[fmt.Sprintf("indexers.%d.password", index)] = "Password is required"
 						mu.Unlock()
 					}
+					if err := config.ValidateIndexerProxyURL(indexerCfg.ProxyURL); err != nil {
+						mu.Lock()
+						errors[fmt.Sprintf("indexers.%d.proxy_url", index)] = err.Error()
+						mu.Unlock()
+						return
+					}
+					testCfg := indexerCfg
+					effectiveProxyURL := strings.TrimSpace(indexerCfg.ProxyURL)
+					if effectiveProxyURL == "" {
+						effectiveProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
+					}
+					testCfg.ProxyURL = effectiveProxyURL
+					if err := pingIndexerWithTimeout(testCfg); err != nil {
+						mu.Lock()
+						errors[fmt.Sprintf("indexers.%d.username", index)] = err.Error()
+						mu.Unlock()
+					}
 					return
 				}
 				if indexerCfg.URL == "" {
@@ -900,16 +1010,19 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					mu.Unlock()
 					return
 				}
-				indexerPingTimeout := indexerCfg.EffectiveTimeout()
-				client := newznab.NewClient(indexerCfg, nil)
-				errCh := make(chan error, 1)
-				go func() { errCh <- client.Ping() }()
-				var err error
-				select {
-				case err = <-errCh:
-				case <-time.After(indexerPingTimeout):
-					err = fmt.Errorf("connection timeout after %v", indexerPingTimeout)
+				if err := config.ValidateIndexerProxyURL(indexerCfg.ProxyURL); err != nil {
+					mu.Lock()
+					errors[fmt.Sprintf("indexers.%d.proxy_url", index)] = err.Error()
+					mu.Unlock()
+					return
 				}
+				testCfg := indexerCfg
+				effectiveProxyURL := strings.TrimSpace(indexerCfg.ProxyURL)
+				if effectiveProxyURL == "" {
+					effectiveProxyURL = strings.TrimSpace(cfg.IndexerProxyURL)
+				}
+				testCfg.ProxyURL = effectiveProxyURL
+				err := pingIndexerWithTimeout(testCfg)
 				if err != nil {
 					mu.Lock()
 					errors[fmt.Sprintf("indexers.%d.url", index)] = err.Error()

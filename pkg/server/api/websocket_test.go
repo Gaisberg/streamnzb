@@ -2,6 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"streamnzb/pkg/core/config"
@@ -158,6 +162,51 @@ func TestValidateConfigRejectsOutOfRangePlaybackStartupTimeout(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsInvalidGlobalIndexerProxyURL(t *testing.T) {
+	s := &Server{}
+
+	errs := s.validateConfig(&config.Config{
+		KeepLogFiles:                  9,
+		NZBHistoryRetentionDays:       90,
+		PlaybackStartupTimeoutSeconds: 5,
+		IndexerProxyURL:               "socks5://127.0.0.1:1080",
+	})
+
+	if got := errs["indexer_proxy_url"]; got == "" {
+		t.Fatalf("expected global indexer proxy validation error, got %#v", errs)
+	}
+}
+
+func TestValidateConfigRejectsUnreachableGlobalIndexerProxyURL(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	s := &Server{}
+	enabled := true
+	errs := s.validateConfig(&config.Config{
+		KeepLogFiles:                  9,
+		NZBHistoryRetentionDays:       90,
+		PlaybackStartupTimeoutSeconds: 5,
+		IndexerProxyURL:               "http://" + addr,
+		Indexers: []config.IndexerConfig{{
+			Enabled: &enabled,
+			Name:    "BrokenIndexer",
+			URL:     "http://example.invalid",
+			APIPath: "/api",
+			APIKey:  "abc",
+			Type:    "newznab",
+		}},
+	})
+
+	if got := errs["indexer_proxy_url"]; got == "" {
+		t.Fatalf("expected global indexer proxy reachability error, got %#v", errs)
+	}
+}
+
 func TestValidateConfigWithPlanAllowsLegacyOriginalIDTitleLanguage(t *testing.T) {
 	s := &Server{}
 
@@ -172,5 +221,104 @@ func TestValidateConfigWithPlanAllowsLegacyOriginalIDTitleLanguage(t *testing.T)
 	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateMovieSearchQueries: true})
 	if got := errs["movie_search_queries.0.search_title_languages"]; got != "" {
 		t.Fatalf("expected legacy original title language to be accepted, got %q", got)
+	}
+}
+
+func TestValidateConfigWithPlanGlobalProxyPassesWhenAnyIndexerReachable(t *testing.T) {
+	enabled := true
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host == "ok.indexer" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	s := &Server{}
+	cfg := &config.Config{
+		IndexerProxyURL: proxy.URL,
+		Indexers: []config.IndexerConfig{
+			{
+				Enabled: &enabled,
+				Name:    "Failing",
+				URL:     "http://fail.indexer",
+				APIPath: "/api",
+				APIKey:  "abc",
+				Type:    "newznab",
+			},
+			{
+				Enabled: &enabled,
+				Name:    "Healthy",
+				URL:     "http://ok.indexer",
+				APIPath: "/api",
+				APIKey:  "abc",
+				Type:    "newznab",
+			},
+		},
+	}
+
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateIndexerProxyURL: true})
+	if got := errs["indexer_proxy_url"]; got != "" {
+		t.Fatalf("expected global proxy verification to pass when one indexer is reachable, got %q", got)
+	}
+}
+
+func TestValidateConfigWithPlanGlobalProxyFailsWhenNoIndexerReachable(t *testing.T) {
+	enabled := true
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	s := &Server{}
+	cfg := &config.Config{
+		IndexerProxyURL: proxy.URL,
+		Indexers: []config.IndexerConfig{{
+			Enabled: &enabled,
+			Name:    "Failing",
+			URL:     "http://fail.indexer",
+			APIPath: "/api",
+			APIKey:  "abc",
+			Type:    "newznab",
+		}},
+	}
+
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateIndexerProxyURL: true})
+	got := errs["indexer_proxy_url"]
+	if got == "" {
+		t.Fatalf("expected global proxy verification error, got %#v", errs)
+	}
+	if !strings.Contains(got, "could not reach any enabled indexer") {
+		t.Fatalf("expected aggregate global proxy error, got %q", got)
+	}
+}
+
+func TestValidateConfigWithPlanIndexerProxyChecksIndexerConnection(t *testing.T) {
+	enabled := true
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	s := &Server{}
+	cfg := &config.Config{
+		Indexers: []config.IndexerConfig{{
+			Enabled:  &enabled,
+			Name:     "Failing",
+			URL:      "http://blocked.indexer",
+			APIPath:  "/api",
+			APIKey:   "abc",
+			Type:     "newznab",
+			ProxyURL: proxy.URL,
+		}},
+	}
+
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateIndexers: true})
+	if got := errs["indexers.0.url"]; got == "" {
+		t.Fatalf("expected indexer connectivity error, got %#v", errs)
+	}
+	if got := errs["indexers.0.proxy_url"]; got != "" {
+		t.Fatalf("expected no standalone proxy reachability error, got %q", got)
 	}
 }

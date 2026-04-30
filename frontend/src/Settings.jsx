@@ -1,12 +1,17 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search } from "lucide-react"
+import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Save } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
 import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useSettingsState } from './hooks/useSettingsState'
 import { normalizeAvailNZBMode } from './lib/availnzb'
 
@@ -83,6 +88,8 @@ function Settings({
   const [loading, setLoading] = useState(!initialConfig)
   const [configSnapshot, setConfigSnapshot] = useState({})
   const [liveStreamsByName, setLiveStreamsByName] = useState(initialConfig?.streams || {})
+  const [globalIndexerProxyURL, setGlobalIndexerProxyURL] = useState('')
+  const [savingGlobalIndexerProxy, setSavingGlobalIndexerProxy] = useState(false)
   const networkSectionRef = useRef(null)
   const advancedSectionRef = useRef(null)
 
@@ -186,6 +193,8 @@ function Settings({
         series_search_queries: formattedData.series_search_queries,
       })
       setConfigSnapshot(formattedData)
+      const normalizedProxyURL = formattedData.indexer_proxy_url || ''
+      setGlobalIndexerProxyURL(normalizedProxyURL)
       setLiveStreamsByName(initialConfig.streams || {})
       setLoading(false)
     }
@@ -205,6 +214,11 @@ function Settings({
     if (typeof window === 'undefined') return
     window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab)
   }, [activeTab])
+
+  useEffect(() => {
+    const normalizedProxyURL = configSnapshot?.indexer_proxy_url || ''
+    setGlobalIndexerProxyURL(normalizedProxyURL)
+  }, [configSnapshot?.indexer_proxy_url])
 
   const handleTabChange = (nextTab) => {
     if (nextTab === activeTab) return
@@ -332,8 +346,61 @@ function Settings({
                 </p>
               </div>
             )}
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                    <CardTitle>Default Proxy</CardTitle>
+                    <CardDescription>Global HTTP(S) proxy used by indexers when a per-indexer proxy is not set.</CardDescription>
+                  </div>
+                  <TooltipProvider delayDuration={100}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="icon"
+                          className="h-9 w-9 shrink-0"
+                          onClick={async () => {
+                            setSavingGlobalIndexerProxy(true)
+                            try {
+                              const payload = { indexer_proxy_url: globalIndexerProxyURL }
+                              await submitSettings(payload, 'indexers')
+                              showFooterStatus({ type: 'success', message: `Global indexer proxy saved.${' Search cache cleared.'}` })
+                            } catch (error) {
+                              showFooterStatus({ type: 'error', message: error?.message || 'Failed to save global indexer proxy.' })
+                            } finally {
+                              setSavingGlobalIndexerProxy(false)
+                            }
+                          }}
+                          disabled={isSaving || savingGlobalIndexerProxy}
+                        >
+                          {(isSaving || savingGlobalIndexerProxy)
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <Save className="h-4 w-4" />}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Save</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="indexer-global-proxy">HTTP(S) Proxy URL</Label>
+                  <Input
+                    id="indexer-global-proxy"
+                    value={globalIndexerProxyURL}
+                    onChange={(event) => setGlobalIndexerProxyURL(event.target.value)}
+                    placeholder="http://proxy:8888"
+                    autoComplete="off"
+                  />
+                </div>
+              </CardContent>
+            </Card>
             <IndexerSettings
               fields={indexerFields}
+              defaultProxyURL={globalIndexerProxyURL}
               indexerCaps={indexerCaps || {}}
               stats={stats}
               streamsByName={liveStreamsByName}
