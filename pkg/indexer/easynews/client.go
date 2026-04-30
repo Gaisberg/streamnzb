@@ -73,7 +73,7 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 		IdleConnTimeout:     90 * time.Second,
 	}
 	downloadTransport := &http.Transport{
-		Proxy:               searchProxy,
+		Proxy:               httpproxy.WithEasynewsDownloadNoProxy(searchProxy),
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		MaxConnsPerHost:     100,

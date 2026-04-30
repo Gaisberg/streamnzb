@@ -20,7 +20,7 @@ function normalizeIndexerIdentity(draft) {
   if (next.type === 'easynews') {
     return `easynews::${normalizeName(next.username)}`
   }
-  return `indexer::${normalizeName(next.type)}::${normalizeName(next.url)}::${normalizeName(next.api_path)}::${normalizeName(next.api_key)}`
+  return `indexer::${normalizeName(next.type)}::${normalizeName(next.url)}::${normalizeName(next.api_path)}::${normalizeName(next.api_key)}::${normalizeName(next.proxy_url)}`
 }
 
 const INDEXER_PRESETS = [
