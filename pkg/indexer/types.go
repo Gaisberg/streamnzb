@@ -27,6 +27,8 @@ type Usage struct {
 	DownloadsRemaining   int
 	AllTimeAPIHitsUsed   int
 	AllTimeDownloadsUsed int
+	SearchesCount        int
+	AvgResponseMS        float64
 }
 
 type SearchRequest struct {

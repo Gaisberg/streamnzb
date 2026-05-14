@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"streamnzb/pkg/auth"
@@ -26,6 +27,7 @@ var (
 
 type Server struct {
 	mu                        sync.RWMutex
+	availStatsMu              sync.RWMutex
 	manifest                  *Manifest
 	version                   string
 	baseURL                   string
@@ -52,6 +54,12 @@ type Server struct {
 	apiHandler                http.Handler
 	attemptRecorder           *persistence.StateManager
 	onAttemptRecorded         func()
+	availIndexerStats         map[string]AvailIndexerStats
+}
+
+type AvailIndexerStats struct {
+	AvailableReturned int64
+	Discarded         int64
 }
 
 const FailoverOrderPath = "/failover_order"
@@ -109,6 +117,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		tvdbClient:           opts.TVDBClient,
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
+		availIndexerStats:    make(map[string]AvailIndexerStats),
 	}
 
 	if err := s.CheckPort(opts.Port); err != nil {
@@ -164,6 +173,40 @@ func (s *Server) Version() string {
 		return s.version
 	}
 	return "dev"
+}
+
+func (s *Server) addAvailIndexerStats(availableByIndexer, discardedByIndexer map[string]int) {
+	if len(availableByIndexer) == 0 && len(discardedByIndexer) == 0 {
+		return
+	}
+	s.availStatsMu.Lock()
+	defer s.availStatsMu.Unlock()
+	for name, n := range availableByIndexer {
+		if strings.TrimSpace(name) == "" || n <= 0 {
+			continue
+		}
+		curr := s.availIndexerStats[name]
+		curr.AvailableReturned += int64(n)
+		s.availIndexerStats[name] = curr
+	}
+	for name, n := range discardedByIndexer {
+		if strings.TrimSpace(name) == "" || n <= 0 {
+			continue
+		}
+		curr := s.availIndexerStats[name]
+		curr.Discarded += int64(n)
+		s.availIndexerStats[name] = curr
+	}
+}
+
+func (s *Server) GetAvailIndexerStats() map[string]AvailIndexerStats {
+	s.availStatsMu.RLock()
+	defer s.availStatsMu.RUnlock()
+	out := make(map[string]AvailIndexerStats, len(s.availIndexerStats))
+	for k, v := range s.availIndexerStats {
+		out[k] = v
+	}
+	return out
 }
 
 func (s *Server) Reload(opts *ServerOptions) {

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,25 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 )
+
+type persistedStatsResponse struct {
+	Providers []persistence.ProviderMetric `json:"providers"`
+	Indexers  []persistence.IndexerMetric  `json:"indexers"`
+}
+
+func parseDateParam(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	// Parse date-only filters in local server time so the selected calendar day
+	// aligns with user expectations instead of being interpreted as UTC.
+	t, err := time.ParseInLocation("2006-01-02", raw, time.Local)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
 
 func (s *Server) handleGetIndexerCaps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -188,4 +208,95 @@ func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(list)
+}
+
+func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	mgr := s.attemptLister
+	s.mu.RUnlock()
+	resp := persistedStatsResponse{
+		Providers: []persistence.ProviderMetric{},
+		Indexers:  []persistence.IndexerMetric{},
+	}
+	if mgr == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+	providers, err := mgr.GetLatestProviderMetrics()
+	if err != nil {
+		logger.Error("GetLatestProviderMetrics failed", "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	indexers, err := mgr.GetLatestIndexerMetrics()
+	if err != nil {
+		logger.Error("GetLatestIndexerMetrics failed", "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	resp.Providers = providers
+	resp.Indexers = indexers
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	mgr := s.attemptLister
+	s.mu.RUnlock()
+	resp := persistedStatsResponse{
+		Providers: []persistence.ProviderMetric{},
+		Indexers:  []persistence.IndexerMetric{},
+	}
+	if mgr == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	from, err := parseDateParam(r.URL.Query().Get("from"))
+	if err != nil {
+		http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+	to, err := parseDateParam(r.URL.Query().Get("to"))
+	if err != nil {
+		http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+	if to != nil {
+		endExclusive := to.Add(24 * time.Hour)
+		to = &endExclusive
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		http.Error(w, "Invalid date range", http.StatusBadRequest)
+		return
+	}
+
+	providers, err := mgr.GetProviderMetricsSummary(from, to)
+	if err != nil {
+		logger.Error("GetProviderMetricsSummary failed", "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	indexers, err := mgr.GetIndexerMetricsSummary(from, to)
+	if err != nil {
+		logger.Error("GetIndexerMetricsSummary failed", "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	resp.Providers = providers
+	resp.Indexers = indexers
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

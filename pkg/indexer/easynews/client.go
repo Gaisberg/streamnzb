@@ -44,6 +44,8 @@ type Client struct {
 	downloadLimit     int
 	downloadUsed      int
 	downloadRemaining int
+	searchesCount     int
+	totalResponseMS   int64
 	usageManager      *indexer.UsageManager
 	requestLimiter    *indexer.RequestLimiter
 	mu                sync.RWMutex
@@ -130,6 +132,10 @@ func (c *Client) GetUsage() indexer.Usage {
 		DownloadsLimit:     c.downloadLimit,
 		DownloadsUsed:      c.downloadUsed,
 		DownloadsRemaining: c.downloadRemaining,
+		SearchesCount:      c.searchesCount,
+	}
+	if c.searchesCount > 0 {
+		u.AvgResponseMS = float64(c.totalResponseMS) / float64(c.searchesCount)
 	}
 	c.mu.RUnlock()
 	if usageData != nil {
@@ -163,6 +169,17 @@ func (c *Client) refreshUsageFromManager() *indexer.UsageData {
 	c.mu.Unlock()
 
 	return ud
+}
+
+func (c *Client) recordSearchDuration(elapsed time.Duration) {
+	ms := elapsed.Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	c.mu.Lock()
+	c.searchesCount++
+	c.totalResponseMS += ms
+	c.mu.Unlock()
 }
 
 func (c *Client) Ping() error {
@@ -260,6 +277,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		"total_results", totalResults,
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 	)
+	c.recordSearchDuration(time.Since(startedAt))
 
 	return &indexer.SearchResponse{
 		Channel: indexer.Channel{

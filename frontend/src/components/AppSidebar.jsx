@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Settings, LogOut,
-  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History
+  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn
 } from "lucide-react"
 import {
   Sidebar,
@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils"
 
 const navMain = [
   { id: "dashboard", title: "Dashboard", icon: LayoutDashboard },
+  { id: "statistics", title: "Statistics", icon: ChartColumn },
   { id: "nzb-history", title: "NZB History", icon: History },
   { id: "logs", title: "Logs", icon: FileText },
   { id: "settings", title: "Settings", icon: Settings },
