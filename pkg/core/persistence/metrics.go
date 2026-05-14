@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ type IndexerMetric struct {
 	DownloadsUsed       int       `json:"downloads_used"`
 	DownloadsLimit      int       `json:"downloads_limit"`
 	SearchesCount       int       `json:"searches_count"`
-	AvgResponseMS       int64     `json:"avg_response_ms"`
+	AvgResponseMS       float64   `json:"avg_response_ms"`
 	AvailAvailableCount int64     `json:"avail_available_count"`
 	AvailDiscardedCount int64     `json:"avail_discarded_count"`
 }
@@ -188,7 +189,8 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			agg[key] = mx
 			continue
 		}
-		if mx.CollectedAt.After(prev.CollectedAt) {
+		isNewer := mx.CollectedAt.After(prev.CollectedAt)
+		if isNewer {
 			prev.CollectedAt = mx.CollectedAt
 		}
 		if mx.APIHitsUsed > prev.APIHitsUsed {
@@ -206,7 +208,7 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		if mx.SearchesCount > prev.SearchesCount {
 			prev.SearchesCount = mx.SearchesCount
 		}
-		if mx.AvgResponseMS > prev.AvgResponseMS {
+		if isNewer {
 			prev.AvgResponseMS = mx.AvgResponseMS
 		}
 		if mx.AvailAvailableCount > prev.AvailAvailableCount {
@@ -240,8 +242,19 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		return nil
 	}
 	return m.withWriteLock(func(db *sql.DB) error {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
 		if len(providers) > 0 {
-			stmt, err := db.Prepare(`
+			stmt, err := tx.Prepare(`
 				INSERT INTO provider_metrics (
 					collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -272,7 +285,7 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		}
 
 		if len(indexers) > 0 {
-			stmt, err := db.Prepare(`
+			stmt, err := tx.Prepare(`
 				INSERT INTO indexer_metrics (
 					collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, avg_response_ms, avail_available_count, avail_discarded_count
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -303,6 +316,10 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 			}
 		}
 
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
 		return nil
 	})
 }

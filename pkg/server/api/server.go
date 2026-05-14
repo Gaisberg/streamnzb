@@ -45,13 +45,14 @@ type Server struct {
 	tmdbAPIKey     string
 	tvdbAPIKey     string
 
-	clients       map[*Client]bool
-	clientsMu     sync.Mutex
-	logCh         chan string
-	attemptLister *persistence.StateManager
-	availNZBStore availnzb.KeyStore
-	metricsMu     sync.Mutex
-	lastMetricsAt time.Time
+	clients         map[*Client]bool
+	clientsMu       sync.Mutex
+	logCh           chan string
+	attemptLister   *persistence.StateManager
+	availNZBStore   availnzb.KeyStore
+	metricsMu       sync.Mutex
+	lastMetricsAt   time.Time
+	metricsInFlight bool
 }
 
 type Client struct {
