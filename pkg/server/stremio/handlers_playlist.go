@@ -14,6 +14,27 @@ import (
 	"streamnzb/pkg/services/availnzb"
 )
 
+type namedIndexer interface {
+	Name() string
+}
+
+func indexerNameFromRelease(rel *release.Release) string {
+	if rel == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(rel.Indexer); name != "" {
+		return name
+	}
+	if rel.SourceIndexer != nil {
+		if n, ok := rel.SourceIndexer.(namedIndexer); ok {
+			if name := strings.TrimSpace(n.Name()); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
 type playlistResult struct {
 	Candidates       []triage.Candidate
 	FirstIsAvailGood bool
@@ -350,10 +371,49 @@ func releasesToCandidates(releases []*release.Release) []triage.Candidate {
 func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
 	filterMode, filteringActive := resolveFilterMode(stream)
 	source := buildPlaylistSource(raw, filteringActive)
-	candidates := buildPlaylistCandidates(source)
-	candidates = s.applyPlaylistFiltering(candidates, source, isAIOStreams, filteringActive, filterMode, stream)
+	inputCandidates := buildPlaylistCandidates(source)
+	candidates := s.applyPlaylistFiltering(inputCandidates, source, isAIOStreams, filteringActive, filterMode, stream)
 	candidates = applyPlaylistSorting(candidates, s.triageService, filteringActive, filterMode, stream)
+	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive)
 	return buildPlaylistResult(source, candidates), nil
+}
+
+func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []triage.Candidate, source *playlistSource, filteringActive bool) {
+	if source == nil {
+		return
+	}
+	availableByIndexer := make(map[string]int)
+	discardedByIndexer := make(map[string]int)
+
+	if filteringActive && len(source.UnavailableDetailsURLs) > 0 {
+		for _, c := range inputCandidates {
+			if c.Release == nil || c.Release.DetailsURL == "" {
+				continue
+			}
+			if !source.UnavailableDetailsURLs[c.Release.DetailsURL] {
+				continue
+			}
+			if name := indexerNameFromRelease(c.Release); name != "" {
+				discardedByIndexer[name]++
+			}
+		}
+	}
+
+	if len(source.CachedAvailable) > 0 {
+		for _, c := range finalCandidates {
+			if c.Release == nil || c.Release.DetailsURL == "" {
+				continue
+			}
+			if !source.CachedAvailable[c.Release.DetailsURL] {
+				continue
+			}
+			if name := indexerNameFromRelease(c.Release); name != "" {
+				availableByIndexer[name]++
+			}
+		}
+	}
+
+	s.addAvailIndexerStats(availableByIndexer, discardedByIndexer)
 }
 
 func resolveFilterMode(stream *auth.Stream) (string, bool) {

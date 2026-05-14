@@ -6,6 +6,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/AppSidebar"
 import { SiteHeader } from "@/components/SiteHeader"
 import { DashboardPage } from "@/components/DashboardPage"
+import { StatisticsPage } from "@/components/StatisticsPage"
 import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
@@ -271,6 +272,9 @@ function App() {
               availNZBStatusLoading={availNZBStatusLoading}
               availNZBStatusError={availNZBStatusError}
             />
+          )}
+          {activePage === 'statistics' && (
+            <StatisticsPage />
           )}
           {activePage === 'nzb-history' && (
             <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />

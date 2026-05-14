@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -49,6 +50,8 @@ type Server struct {
 	logCh         chan string
 	attemptLister *persistence.StateManager
 	availNZBStore availnzb.KeyStore
+	metricsMu     sync.Mutex
+	lastMetricsAt time.Time
 }
 
 type Client struct {
@@ -360,6 +363,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/streams/", authMiddleware(http.HandlerFunc(s.handleManagedStreams)))
 	mux.Handle("/api/indexer/caps", authMiddleware(http.HandlerFunc(s.handleGetIndexerCaps)))
 	mux.Handle("/api/indexer/caps/refresh", authMiddleware(http.HandlerFunc(s.handleRefreshIndexerCaps)))
+	mux.Handle("/api/stats/persisted", authMiddleware(http.HandlerFunc(s.handlePersistedStats)))
+	mux.Handle("/api/stats/history", authMiddleware(http.HandlerFunc(s.handleStatsHistory)))
 	mux.Handle("/api/availnzb/status", authMiddleware(http.HandlerFunc(s.handleAvailNZBStatus)))
 	mux.Handle("/api/sessions/close", authMiddleware(http.HandlerFunc(s.handleCloseSession)))
 	mux.Handle("/api/restart", authMiddleware(http.HandlerFunc(s.handleRestart)))

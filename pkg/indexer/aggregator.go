@@ -27,6 +27,7 @@ func (a *Aggregator) GetIndexers() []Indexer {
 
 func (a *Aggregator) GetUsage() Usage {
 	var usage Usage
+	var weightedResponseTotal float64
 	for _, idx := range a.Indexers {
 		u := idx.GetUsage()
 		usage.APIHitsLimit += u.APIHitsLimit
@@ -37,6 +38,11 @@ func (a *Aggregator) GetUsage() Usage {
 		usage.DownloadsRemaining += u.DownloadsRemaining
 		usage.AllTimeAPIHitsUsed += u.AllTimeAPIHitsUsed
 		usage.AllTimeDownloadsUsed += u.AllTimeDownloadsUsed
+		usage.SearchesCount += u.SearchesCount
+		weightedResponseTotal += float64(u.SearchesCount) * u.AvgResponseMS
+	}
+	if usage.SearchesCount > 0 {
+		usage.AvgResponseMS = weightedResponseTotal / float64(usage.SearchesCount)
 	}
 	return usage
 }
