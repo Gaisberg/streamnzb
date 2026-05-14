@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.3.0](https://github.com/Gaisberg/streamnzb/compare/v4.2.0...v4.3.0) (2026-05-14)
+
+
+### Features
+
+* **stats:** add persisted history metrics API and interactive statistics dashboard ([8091331](https://github.com/Gaisberg/streamnzb/commit/8091331454620e6044978576e7cbfbc33aeaf19a))
+
+
+### Bug Fixes
+
+* **availnzb:** report definitive unavailable releases across all providers and fix unavailable discard stats tracking ([d922a9d](https://github.com/Gaisberg/streamnzb/commit/d922a9d6e938a88778a764513c88cc1cc311f251))
+
 ## [4.2.0](https://github.com/Gaisberg/streamnzb/compare/v4.1.0...v4.2.0) (2026-04-23)
 
 
