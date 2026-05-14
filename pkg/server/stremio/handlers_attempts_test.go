@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -168,6 +169,34 @@ func TestAvailOutcomeForFailureSegmentUnavailable(t *testing.T) {
 	want := "Not reported to AvailNZB because this segment fetch failure does not reliably prove the release is bad."
 	if got.Reason != want {
 		t.Fatalf("Reason = %q, want %q", got.Reason, want)
+	}
+}
+
+func TestShouldReportBadReleaseAllProvidersThresholdExceeded(t *testing.T) {
+	err := errors.Join(unpack.ErrTooManyZeroFills, errors.New("segment unavailable: 430 No Such Article"))
+	if !shouldReportBadReleaseAllProviders(err) {
+		t.Fatal("expected threshold-exceeded unavailable error to report across all providers")
+	}
+}
+
+func TestShouldReportBadReleaseAllProvidersRegularUnavailable(t *testing.T) {
+	err := errors.New("segment unavailable: fetch segment msgid: 430 No Such Article")
+	if shouldReportBadReleaseAllProviders(err) {
+		t.Fatal("expected single unavailable segment error not to report across all providers")
+	}
+}
+
+func TestShouldReportBadReleaseFirstSegmentMissing(t *testing.T) {
+	err := fmt.Errorf("segment unavailable: %w", ErrFirstSegmentUnavailable)
+	if !shouldReportBadRelease(err) {
+		t.Fatal("expected first-segment-430 startup failure to be reportable")
+	}
+}
+
+func TestShouldReportBadReleaseAllProvidersFirstSegmentMissing(t *testing.T) {
+	err := fmt.Errorf("segment unavailable: %w", ErrFirstSegmentUnavailable)
+	if !shouldReportBadReleaseAllProviders(err) {
+		t.Fatal("expected first-segment-430 startup failure to report across all providers")
 	}
 }
 

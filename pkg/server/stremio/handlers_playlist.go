@@ -353,7 +353,7 @@ func buildPlaylistSource(raw *rawSearchResult, filteringActive bool) *playlistSo
 		Releases:               buildAllReleasesFromRaw(raw),
 		Avail:                  raw.Avail,
 		CachedAvailable:        cachedAvailable,
-		UnavailableDetailsURLs: buildUnavailableDetailsURLs(raw.Avail, filteringActive),
+		UnavailableDetailsURLs: buildUnavailableDetailsURLs(raw.Avail),
 	}
 }
 
@@ -385,7 +385,7 @@ func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []tria
 	availableByIndexer := make(map[string]int)
 	discardedByIndexer := make(map[string]int)
 
-	if filteringActive && len(source.UnavailableDetailsURLs) > 0 {
+	if len(source.UnavailableDetailsURLs) > 0 {
 		for _, c := range inputCandidates {
 			if c.Release == nil || c.Release.DetailsURL == "" {
 				continue
@@ -692,9 +692,9 @@ func (s *Server) markCachedReleaseUnavailable(key StreamSlotKey, detailsURL, slo
 	}
 }
 
-func buildUnavailableDetailsURLs(availCtx *AvailContext, filteringActive bool) map[string]bool {
+func buildUnavailableDetailsURLs(availCtx *AvailContext) map[string]bool {
 	out := make(map[string]bool)
-	if !filteringActive || availCtx == nil {
+	if availCtx == nil {
 		return out
 	}
 	for detailsURL := range availCtx.UnavailableByDetailsURL {
@@ -704,14 +704,17 @@ func buildUnavailableDetailsURLs(availCtx *AvailContext, filteringActive bool) m
 }
 
 func filterCandidates(merged []triage.Candidate, isAIOStreams, filteringActive bool, unavailableDetailsURLs map[string]bool) []triage.Candidate {
-	if !filteringActive {
+	if len(unavailableDetailsURLs) == 0 && !filteringActive {
 		return merged
 	}
 	var seenTitle map[string]bool
 	if isAIOStreams {
 		seenTitle = make(map[string]bool)
 	}
-	filtered := merged[:0]
+	// Build a new slice instead of compacting in-place, so callers that keep a
+	// reference to the original candidate list (for metrics accounting) are not
+	// accidentally mutated by filtering.
+	filtered := make([]triage.Candidate, 0, len(merged))
 	for _, c := range merged {
 		if c.Release == nil {
 			continue
@@ -741,11 +744,12 @@ func buildPlaylistCandidates(source *playlistSource) []triage.Candidate {
 }
 
 func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *playlistSource, isAIOStreams, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
+	// Always remove releases explicitly known as unavailable by AvailNZB.
+	candidates = filterCandidates(candidates, isAIOStreams, filteringActive, source.UnavailableDetailsURLs)
 	if !filteringActive {
 		return candidates
 	}
 	inputResults := len(candidates)
-	candidates = filterCandidates(candidates, isAIOStreams, filteringActive, source.UnavailableDetailsURLs)
 	candidates = s.filterCachedUnhealthyCandidates(candidates, source.Avail, filteringActive, stream)
 	logStreamFiltering(stream, filterMode, inputResults, len(candidates))
 	return candidates
