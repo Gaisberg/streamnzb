@@ -75,7 +75,7 @@ const (
 		downloads_used INTEGER NOT NULL DEFAULT 0,
 		downloads_limit INTEGER NOT NULL DEFAULT 0,
 		searches_count INTEGER NOT NULL DEFAULT 0,
-		avg_response_ms INTEGER NOT NULL DEFAULT 0,
+		avg_response_ms REAL NOT NULL DEFAULT 0.0,
 		avail_available_count INTEGER NOT NULL DEFAULT 0,
 		avail_discarded_count INTEGER NOT NULL DEFAULT 0
 	);`

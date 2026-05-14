@@ -43,6 +43,34 @@ function normalizeHistoryStats(data) {
   return { providers, indexers }
 }
 
+function summarizeEntries(entries, nameSnakeKey, namePascalKey) {
+  let stamp = 0
+  for (let i = 0; i < entries.length; i += 1) {
+    const item = entries[i] || {}
+    const name = String(pick(item, nameSnakeKey, namePascalKey, ''))
+    const collectedAt = String(pick(item, 'collected_at', 'CollectedAt', ''))
+    const keyCount = Object.keys(item).length
+    const base = `${name}|${collectedAt}|${keyCount}`
+    for (let j = 0; j < base.length; j += 1) {
+      stamp = ((stamp * 31) + base.charCodeAt(j)) | 0
+    }
+  }
+  return `${entries.length}:${stamp}`
+}
+
+function buildHistorySignature(normalized) {
+  const providers = Array.isArray(normalized?.providers) ? normalized.providers : []
+  const indexers = Array.isArray(normalized?.indexers) ? normalized.indexers : []
+  return `${summarizeEntries(providers, 'provider_name', 'ProviderName')}|${summarizeEntries(indexers, 'indexer_name', 'IndexerName')}`
+}
+
+function parseDateValue(raw) {
+  if (!raw) return null
+  const d = new Date(`${raw}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return null
+  return d
+}
+
 function formatDownloadedMb(mb) {
   const n = toNumber(mb)
   if (n >= 1024) return `${(n / 1024).toFixed(2)} GB`
@@ -100,7 +128,7 @@ export function StatisticsPage() {
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const inFlightRef = useRef(false)
-  const lastSignatureRef = useRef('{"providers":[],"indexers":[]}')
+  const lastSignatureRef = useRef(buildHistorySignature({ providers: [], indexers: [] }))
 
   const loadStats = useCallback(async (from, to, { background = false } = {}) => {
     if (inFlightRef.current) return
@@ -115,7 +143,7 @@ export function StatisticsPage() {
       if (to) query.set('to', to)
       const data = await apiFetch(`/api/stats/history?${query.toString()}`)
       const normalized = normalizeHistoryStats(data)
-      const signature = JSON.stringify(normalized)
+      const signature = buildHistorySignature(normalized)
       if (signature !== lastSignatureRef.current) {
         lastSignatureRef.current = signature
         setHistoryStats(normalized)
@@ -124,7 +152,7 @@ export function StatisticsPage() {
       if (!background) {
         setLoadError(error?.message || 'Failed to load statistics.')
         setHistoryStats({ providers: [], indexers: [] })
-        lastSignatureRef.current = '{"providers":[],"indexers":[]}'
+        lastSignatureRef.current = buildHistorySignature({ providers: [], indexers: [] })
       }
     } finally {
       if (!background) {
@@ -142,11 +170,51 @@ export function StatisticsPage() {
   }, [loadStats, preset])
 
   useEffect(() => {
-    const id = window.setInterval(() => {
-      void loadStats(activeRange.from, activeRange.to, { background: true })
-    }, 1000)
-    return () => window.clearInterval(id)
+    let timeoutId = null
+    let cancelled = false
+    const pollDelayMs = 7000
+
+    const poll = async () => {
+      if (cancelled) return
+      if (document.hidden) {
+        timeoutId = window.setTimeout(poll, pollDelayMs)
+        return
+      }
+      await loadStats(activeRange.from, activeRange.to, { background: true })
+      if (cancelled) return
+      timeoutId = window.setTimeout(poll, pollDelayMs)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden || cancelled) return
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId)
+        timeoutId = null
+      }
+      void poll()
+    }
+
+    timeoutId = window.setTimeout(poll, pollDelayMs)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (timeoutId != null) window.clearTimeout(timeoutId)
+    }
   }, [activeRange.from, activeRange.to, loadStats])
+
+  const customRangeValidation = useMemo(() => {
+    if (preset !== 'custom') return ''
+    const fromDate = parseDateValue(customRange.from)
+    const toDate = parseDateValue(customRange.to)
+    if (!fromDate || !toDate) return 'Select both dates.'
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (toDate < fromDate) return 'To date must be on or after From date.'
+    if (fromDate > today || toDate > today) return 'Future dates are not allowed.'
+    return ''
+  }, [customRange.from, customRange.to, preset])
 
   const indexerRows = useMemo(() => {
     const metricKey = indexerMetricOptions[indexerMetric]?.key || 'avgResponseMs'
@@ -278,8 +346,9 @@ export function StatisticsPage() {
                 type="button"
                 variant="outline"
                 className="h-9 sm:min-w-28"
-                disabled={loading}
+                disabled={loading || Boolean(customRangeValidation)}
                 onClick={() => {
+                  if (customRangeValidation) return
                   setActiveRange(customRange)
                   void loadStats(customRange.from, customRange.to)
                 }}
@@ -287,6 +356,9 @@ export function StatisticsPage() {
                 Apply Custom
               </Button>
             </div>
+          )}
+          {preset === 'custom' && customRangeValidation && (
+            <div className="text-xs text-destructive">{customRangeValidation}</div>
           )}
         </CardContent>
       </Card>

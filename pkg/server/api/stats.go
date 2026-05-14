@@ -26,19 +26,19 @@ type SystemStats struct {
 }
 
 type IndexerStats struct {
-	Name                 string `json:"name"`
-	APIHitsLimit         int    `json:"api_hits_limit"`
-	APIHitsUsed          int    `json:"api_hits_used"`
-	APIHitsRemaining     int    `json:"api_hits_remaining"`
-	AllTimeAPIHitsUsed   int    `json:"api_hits_used_all_time"`
-	DownloadsLimit       int    `json:"downloads_limit"`
-	DownloadsUsed        int    `json:"downloads_used"`
-	DownloadsRemaining   int    `json:"downloads_remaining"`
-	AllTimeDownloadsUsed int    `json:"downloads_used_all_time"`
-	SearchesCount        int    `json:"searches_count"`
-	AvgResponseMS        int64  `json:"avg_response_ms"`
-	AvailAvailableCount  int64  `json:"avail_available_count"`
-	AvailDiscardedCount  int64  `json:"avail_discarded_count"`
+	Name                 string  `json:"name"`
+	APIHitsLimit         int     `json:"api_hits_limit"`
+	APIHitsUsed          int     `json:"api_hits_used"`
+	APIHitsRemaining     int     `json:"api_hits_remaining"`
+	AllTimeAPIHitsUsed   int     `json:"api_hits_used_all_time"`
+	DownloadsLimit       int     `json:"downloads_limit"`
+	DownloadsUsed        int     `json:"downloads_used"`
+	DownloadsRemaining   int     `json:"downloads_remaining"`
+	AllTimeDownloadsUsed int     `json:"downloads_used_all_time"`
+	SearchesCount        int     `json:"searches_count"`
+	AvgResponseMS        float64 `json:"avg_response_ms"`
+	AvailAvailableCount  int64   `json:"avail_available_count"`
+	AvailDiscardedCount  int64   `json:"avail_discarded_count"`
 }
 
 type ProviderStats struct {
@@ -128,7 +128,7 @@ func (s *Server) collectStats() SystemStats {
 				DownloadsRemaining:   usage.DownloadsRemaining,
 				AllTimeDownloadsUsed: usage.AllTimeDownloadsUsed,
 				SearchesCount:        usage.SearchesCount,
-				AvgResponseMS:        int64(usage.AvgResponseMS),
+				AvgResponseMS:        usage.AvgResponseMS,
 				AvailAvailableCount:  availIndexerStats[idx.Name()].AvailableReturned,
 				AvailDiscardedCount:  availIndexerStats[idx.Name()].Discarded,
 			})
@@ -201,11 +201,15 @@ func (s *Server) maybePersistMetrics(stats SystemStats) {
 	const metricsInterval = 30 * time.Second
 
 	s.metricsMu.Lock()
+	if s.metricsInFlight {
+		s.metricsMu.Unlock()
+		return
+	}
 	if !s.lastMetricsAt.IsZero() && now.Sub(s.lastMetricsAt) < metricsInterval {
 		s.metricsMu.Unlock()
 		return
 	}
-	s.lastMetricsAt = now
+	s.metricsInFlight = true
 	s.metricsMu.Unlock()
 
 	providers := make([]persistence.ProviderMetric, 0, len(stats.Providers))
@@ -240,6 +244,14 @@ func (s *Server) maybePersistMetrics(stats SystemStats) {
 	}
 
 	if err := mgr.RecordMetricsSnapshot(providers, indexers); err != nil {
+		s.metricsMu.Lock()
+		s.metricsInFlight = false
+		s.metricsMu.Unlock()
 		logger.Warn("Failed to persist metrics snapshot", "err", err)
+		return
 	}
+	s.metricsMu.Lock()
+	s.lastMetricsAt = now
+	s.metricsInFlight = false
+	s.metricsMu.Unlock()
 }

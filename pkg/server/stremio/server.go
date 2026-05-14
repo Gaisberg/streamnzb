@@ -57,6 +57,9 @@ type Server struct {
 	availIndexerStats         map[string]AvailIndexerStats
 }
 
+// AvailIndexerStats stores per-indexer availability outcomes aggregated from
+// playlist processing: AvailableReturned counts releases returned as available,
+// and Discarded counts releases discarded as unavailable.
 type AvailIndexerStats struct {
 	AvailableReturned int64
 	Discarded         int64
@@ -199,6 +202,9 @@ func (s *Server) addAvailIndexerStats(availableByIndexer, discardedByIndexer map
 	}
 }
 
+// GetAvailIndexerStats returns a snapshot copy of availIndexerStats keyed by
+// indexer name. The copy is read under availStatsMu to avoid exposing internal
+// mutable state to callers.
 func (s *Server) GetAvailIndexerStats() map[string]AvailIndexerStats {
 	s.availStatsMu.RLock()
 	defer s.availStatsMu.RUnlock()
