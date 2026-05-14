@@ -393,6 +393,7 @@ var streamSinkKey = streamSinkKeyType{}
 const streamSlotPrefix = "stream:"
 
 var ErrPlaybackStartupTimeout = errors.New("playback startup timeout")
+var ErrFirstSegmentUnavailable = errors.New("first segment not found (430)")
 
 func (s *Server) playbackStartupTimeout() time.Duration {
 	s.mu.RLock()
@@ -1139,7 +1140,11 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			}
 			availOutcome := availOutcomeForFailure(prepareErr)
 			if shouldReportBadRelease(prepareErr) && s.availReporter != nil {
-				availOutcome = s.availReporter.ReportBad(sess, prepareErr.Error())
+				if shouldReportBadReleaseAllProviders(prepareErr) {
+					availOutcome = s.availReporter.ReportBadAllProviders(sess, prepareErr.Error())
+				} else {
+					availOutcome = s.availReporter.ReportBad(sess, prepareErr.Error())
+				}
 			}
 			s.applyReportedBadReleaseToCaches(sess, availOutcome)
 			// Gate failure recording: concurrent goroutines for the same session (Stremio's automatic
@@ -1243,7 +1248,11 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			errSess.ResetPlaybackStream()
 			availOutcome := availOutcomeForFailure(readErr)
 			if shouldReportBadRelease(readErr) && s.availReporter != nil {
-				availOutcome = s.availReporter.ReportBad(errSess, readErr.Error())
+				if shouldReportBadReleaseAllProviders(readErr) {
+					availOutcome = s.availReporter.ReportBadAllProviders(errSess, readErr.Error())
+				} else {
+					availOutcome = s.availReporter.ReportBad(errSess, readErr.Error())
+				}
 			}
 			s.applyReportedBadReleaseToCaches(errSess, availOutcome)
 			if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(playbackSessionID, struct{}{}); !alreadyFailed {
@@ -1606,7 +1615,7 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 			return nil, "", 0, statErr
 		}
 		if !exists {
-			return nil, "", 0, fmt.Errorf("segment unavailable: first segment not found (430)")
+			return nil, "", 0, fmt.Errorf("segment unavailable: %w", ErrFirstSegmentUnavailable)
 		}
 	}
 
@@ -1822,6 +1831,9 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 }
 
 func shouldReportBadRelease(streamErr error) bool {
+	if isDefinitiveUnavailableStartupErr(streamErr) {
+		return true
+	}
 	errMsg := streamErr.Error()
 	if !strings.Contains(errMsg, "compressed") && !strings.Contains(errMsg, "encrypted") &&
 		!strings.Contains(errMsg, "EOF") && !errors.Is(streamErr, unpack.ErrTooManyZeroFills) &&
@@ -1829,6 +1841,24 @@ func shouldReportBadRelease(streamErr error) bool {
 		return false
 	}
 	return true
+}
+
+func shouldReportBadReleaseAllProviders(streamErr error) bool {
+	if streamErr == nil {
+		return false
+	}
+	// This means failures exceeded the tolerated missing-segment threshold,
+	// so we report using all active providers for better AvailNZB signal quality.
+	return errors.Is(streamErr, unpack.ErrTooManyZeroFills) || isDefinitiveUnavailableStartupErr(streamErr)
+}
+
+func isDefinitiveUnavailableStartupErr(streamErr error) bool {
+	if streamErr == nil {
+		return false
+	}
+	// This specific startup probe error means the first segment is missing (430)
+	// across selected providers, which is a reliable bad-release signal.
+	return errors.Is(streamErr, ErrFirstSegmentUnavailable)
 }
 
 func normalizeAttemptReason(reason string) string {

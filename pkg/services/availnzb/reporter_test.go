@@ -12,6 +12,14 @@ import (
 	"streamnzb/pkg/session"
 )
 
+type staticProviderHostsSource struct {
+	hosts []string
+}
+
+func (s staticProviderHostsSource) GetProviderHosts() []string {
+	return append([]string(nil), s.hosts...)
+}
+
 func TestQualifiesGoodByBytes(t *testing.T) {
 	sess := &session.Session{}
 	sess.AddBytesRead(64 << 20)
@@ -192,5 +200,56 @@ func TestReportBadFallsBackToAttemptedProviderHosts(t *testing.T) {
 	}
 	if gotProvider != "news-a.example.net,news-b.example.net" {
 		t.Fatalf("provider = %q, want %q", gotProvider, "news-a.example.net,news-b.example.net")
+	}
+}
+
+func TestReportBadAllProvidersMergesConfiguredHosts(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		gotProvider string
+		decodeErr   error
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body ReportRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mu.Lock()
+			decodeErr = err
+			mu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		gotProvider = body.ProviderURL
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key")
+	reporter := NewReporter(client, staticProviderHostsSource{
+		hosts: []string{"news-c.example.net", "news-a.example.net", "news-b.example.net"},
+	})
+
+	sess := &session.Session{
+		ID:      "sess-bad-all-providers",
+		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt1234567",
+		},
+	}
+	sess.RecordAttemptedProviderHost("news-a.example.net")
+	sess.RecordAttemptedProviderHost("news-b.example.net")
+
+	outcome := reporter.ReportBadAllProviders(sess, "too many failed segments")
+	if outcome.Status != "sent" {
+		t.Fatalf("expected sent outcome, got %+v", outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if decodeErr != nil {
+		t.Fatalf("decode report body: %v", decodeErr)
+	}
+	if gotProvider != "news-a.example.net,news-b.example.net,news-c.example.net" {
+		t.Fatalf("provider = %q, want %q", gotProvider, "news-a.example.net,news-b.example.net,news-c.example.net")
 	}
 }

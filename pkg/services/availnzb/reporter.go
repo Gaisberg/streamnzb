@@ -70,7 +70,7 @@ func (r *Reporter) ReportGood(sess *session.Session, serveDuration time.Duration
 		return SkippedOutcome("This session was already reported to AvailNZB.")
 	}
 	logger.Info("Reporting good/streamable release to AvailNZB", "session", sess.ID)
-	outcome := r.report(sess, true, true)
+	outcome := r.report(sess, true, true, false)
 	if outcome.Status == "sent" {
 		r.reported.Store(sess.ID, struct{}{})
 	}
@@ -81,15 +81,24 @@ func (r *Reporter) ReportBad(sess *session.Session, reason string) ReportOutcome
 	if reason != "" {
 		logger.Info("Reporting bad/unstreamable release to AvailNZB", "session", sess.ID, "reason", reason)
 	}
-	return r.report(sess, false, false)
+	return r.report(sess, false, false, false)
+}
+
+// ReportBadAllProviders reports a release as bad and includes all configured
+// provider hosts in addition to the hosts observed during playback.
+func (r *Reporter) ReportBadAllProviders(sess *session.Session, reason string) ReportOutcome {
+	if reason != "" {
+		logger.Info("Reporting bad/unstreamable release to AvailNZB across all providers", "session", sess.ID, "reason", reason)
+	}
+	return r.report(sess, false, false, true)
 }
 
 func (r *Reporter) ReportRAR(sess *session.Session) ReportOutcome {
 	logger.Info("Reporting RAR release to AvailNZB (compression_type)", "session", sess.ID)
-	return r.report(sess, true, false)
+	return r.report(sess, true, false, false)
 }
 
-func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool) ReportOutcome {
+func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool, includeConfiguredProviders bool) ReportOutcome {
 	if r.Disabled {
 		logger.Debug("AvailNZB reporting disabled by configuration, skipping report")
 		return SkippedOutcome("AvailNZB reporting is disabled.")
@@ -137,6 +146,9 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 	if len(hosts) == 0 && !servedOnly && available && r.providerSrc != nil {
 		hosts = r.providerSrc.GetProviderHosts()
 	}
+	if includeConfiguredProviders && r.providerSrc != nil {
+		hosts = mergeProviderHosts(hosts, r.providerSrc.GetProviderHosts())
+	}
 	if len(hosts) == 0 {
 		if servedOnly {
 			logger.Debug("Skipping AvailNZB report without served provider hosts", "session", sess.ID)
@@ -149,4 +161,35 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 		return SkippedOutcome("AvailNZB report could not be delivered.")
 	}
 	return SentOutcome(available)
+}
+
+func mergeProviderHosts(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, h := range base {
+		host := strings.TrimSpace(h)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	for _, h := range extra {
+		host := strings.TrimSpace(h)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
 }
