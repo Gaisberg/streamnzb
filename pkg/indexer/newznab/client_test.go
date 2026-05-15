@@ -921,3 +921,36 @@ func TestSearchTVIDModeOrdersQueryParams(t *testing.T) {
 		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
 	}
 }
+
+func TestSearchAggregatorIncludesCacheTimeParam(t *testing.T) {
+	var gotRawQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:                   "NZBHydra2",
+		Type:                   "aggregator",
+		URL:                    server.URL,
+		APIKey:                 "test-api-key",
+		SearchResultsCacheTime: 60,
+	}, nil)
+	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
+
+	_, err := client.Search(indexer.SearchRequest{
+		Cat:        "5000",
+		Query:      "Interstellar",
+		SearchMode: "text",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	want := "apikey=test-api-key&t=search&cat=5000&q=Interstellar&cachetime=60&offset=0&limit=2000&o=xml"
+	if gotRawQuery != want {
+		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
+	}
+}

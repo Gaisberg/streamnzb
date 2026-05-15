@@ -97,16 +97,17 @@ type SearchQueryConfig struct {
 }
 
 type IndexerConfig struct {
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	APIKey         string `json:"api_key"`
-	APIPath        string `json:"api_path"`
-	Type           string `json:"type"`
-	APIHitsDay     int    `json:"api_hits_day"`
-	DownloadsDay   int    `json:"downloads_day"`
-	RateLimitRPS   int    `json:"rate_limit_rps,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	Enabled        *bool  `json:"enabled,omitempty"`
+	Name                   string `json:"name"`
+	URL                    string `json:"url"`
+	APIKey                 string `json:"api_key"`
+	APIPath                string `json:"api_path"`
+	Type                   string `json:"type"`
+	APIHitsDay             int    `json:"api_hits_day"`
+	DownloadsDay           int    `json:"downloads_day"`
+	RateLimitRPS           int    `json:"rate_limit_rps,omitempty"`
+	TimeoutSeconds         int    `json:"timeout_seconds,omitempty"`
+	SearchResultsCacheTime int    `json:"search_results_cache_time,omitempty"`
+	Enabled                *bool  `json:"enabled,omitempty"`
 
 	Username string `json:"username"`
 	Password string `json:"password"`

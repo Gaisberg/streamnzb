@@ -54,6 +54,7 @@ var orderedSearchQueryKeys = []string{
 	"season",
 	"ep",
 	"q",
+	"cachetime",
 	"offset",
 	"limit",
 	"o",
@@ -632,6 +633,9 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 
 	if query != "" && (isTextMode || !useTVSearchParams || (!isTextMode && useTVSearchParams && query != rawQuery)) {
 		params.Set("q", query)
+	}
+	if c.cfg.SearchResultsCacheTime > 0 && config.IsAggregatorIndexerType(c.cfg.Type) {
+		params.Set("cachetime", strconv.Itoa(c.cfg.SearchResultsCacheTime))
 	}
 
 	apiURL := fmt.Sprintf("%s%s?%s", c.baseURL, c.apiPath, encodeOrderedQuery(params, orderedSearchQueryKeys))
