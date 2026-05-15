@@ -230,6 +230,16 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
 }
 
+func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
+	if c != nil && NormalizeAvailNZBMode(c.AvailNZBMode) == "off" {
+		return false
+	}
+	if c != nil && c.AvailNZBFilterReportedBad != nil {
+		return *c.AvailNZBFilterReportedBad
+	}
+	return true
+}
+
 func NormalizeAvailNZBMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "full", "status_only", "on":
@@ -393,6 +403,10 @@ type Config struct {
 	// "on"  - fetch availability status and report playback results.
 	// "off" - disable AvailNZB entirely (no GET, no POST).
 	AvailNZBMode string `json:"availnzb_mode,omitempty"`
+
+	// AvailNZBFilterReportedBad controls whether releases reported as unavailable
+	// by AvailNZB are filtered out of playlist candidates.
+	AvailNZBFilterReportedBad *bool `json:"availnzb_filter_reported_bad,omitempty"`
 
 	LoadedPath string `json:"-"`
 
@@ -651,6 +665,10 @@ func Load() (*Config, error) {
 	}
 	if normalizedMode := NormalizeAvailNZBMode(cfg.AvailNZBMode); normalizedMode != cfg.AvailNZBMode {
 		cfg.AvailNZBMode = normalizedMode
+		needSave = true
+	}
+	if cfg.AvailNZBFilterReportedBad == nil {
+		cfg.AvailNZBFilterReportedBad = ptrBool(true)
 		needSave = true
 	}
 
