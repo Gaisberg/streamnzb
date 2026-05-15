@@ -292,6 +292,30 @@ func TestConfigEffectivePlaybackStartupTimeoutRejectsOutOfRangeValues(t *testing
 	}
 }
 
+func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsEnabled(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+	}
+}
+
+func TestConfigEffectiveAvailNZBFilterReportedBadHonorsExplicitValue(t *testing.T) {
+	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(false)}
+	if cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
+	}
+}
+
+func TestConfigEffectiveAvailNZBFilterReportedBadDisabledWhenAvailNZBModeOff(t *testing.T) {
+	cfg := &Config{
+		AvailNZBMode:              "off",
+		AvailNZBFilterReportedBad: ptrBool(true),
+	}
+	if cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false when mode is off")
+	}
+}
+
 func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{

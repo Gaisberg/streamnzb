@@ -378,6 +378,13 @@ func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, s
 	return buildPlaylistResult(source, candidates), nil
 }
 
+func (s *Server) shouldFilterAvailNZBReportedBad() bool {
+	if s == nil || s.config == nil {
+		return true
+	}
+	return s.config.EffectiveAvailNZBFilterReportedBad()
+}
+
 func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []triage.Candidate, source *playlistSource, filteringActive bool) {
 	if source == nil {
 		return
@@ -385,7 +392,7 @@ func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []tria
 	availableByIndexer := make(map[string]int)
 	discardedByIndexer := make(map[string]int)
 
-	if len(source.UnavailableDetailsURLs) > 0 {
+	if s.shouldFilterAvailNZBReportedBad() && len(source.UnavailableDetailsURLs) > 0 {
 		for _, c := range inputCandidates {
 			if c.Release == nil || c.Release.DetailsURL == "" {
 				continue
@@ -744,8 +751,19 @@ func buildPlaylistCandidates(source *playlistSource) []triage.Candidate {
 }
 
 func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *playlistSource, isAIOStreams, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
-	// Always remove releases explicitly known as unavailable by AvailNZB.
-	candidates = filterCandidates(candidates, isAIOStreams, filteringActive, source.UnavailableDetailsURLs)
+	availReportedBadFilteringEnabled := s.shouldFilterAvailNZBReportedBad()
+	unavailableDetailsURLs := map[string]bool{}
+	if availReportedBadFilteringEnabled {
+		// Remove releases explicitly known as unavailable by AvailNZB when enabled.
+		unavailableDetailsURLs = source.UnavailableDetailsURLs
+	}
+	availFilteredOut := countCandidatesByUnavailableDetailsURL(candidates, unavailableDetailsURLs)
+	candidates = filterCandidates(candidates, isAIOStreams, filteringActive, unavailableDetailsURLs)
+	unavailableKnownCount := 0
+	if source != nil && len(source.UnavailableDetailsURLs) > 0 {
+		unavailableKnownCount = len(source.UnavailableDetailsURLs)
+	}
+	logAvailReportedBadFiltering(stream, availReportedBadFilteringEnabled, availFilteredOut, unavailableKnownCount)
 	if !filteringActive {
 		return candidates
 	}
@@ -827,6 +845,36 @@ func logStreamFiltering(stream *auth.Stream, filterMode string, inputResults, fi
 		"mode", filterMode,
 		"input_results", inputResults,
 		"final_results", finalResults,
+	)
+}
+
+func countCandidatesByUnavailableDetailsURL(candidates []triage.Candidate, unavailableDetailsURLs map[string]bool) int {
+	if len(candidates) == 0 || len(unavailableDetailsURLs) == 0 {
+		return 0
+	}
+	filtered := 0
+	for _, c := range candidates {
+		if c.Release == nil || c.Release.DetailsURL == "" {
+			continue
+		}
+		if unavailableDetailsURLs[c.Release.DetailsURL] {
+			filtered++
+		}
+	}
+	return filtered
+}
+
+func logAvailReportedBadFiltering(stream *auth.Stream, enabled bool, availFilteredOut, unavailableKnown int) {
+	logger.Debug("AvailNZB reported-bad filtering",
+		"stream", func() string {
+			if stream != nil {
+				return stream.Username
+			}
+			return "legacy"
+		}(),
+		"enabled", enabled,
+		"avail_filtered_out", availFilteredOut,
+		"known_unavailable", unavailableKnown,
 	)
 }
 
