@@ -65,6 +65,7 @@ function normalizeIndexerDraft(draft) {
     downloads_day: Number(value.downloads_day || 0),
     rate_limit_rps: Number(value.rate_limit_rps || 0),
     timeout_seconds: Number(value.timeout_seconds || 0),
+    search_results_cache_time: Number(value.search_results_cache_time || 0),
     enabled: value.enabled !== false,
     username: value.username || '',
     password: value.password || '',
@@ -105,6 +106,7 @@ function summarizeIndexer(indexer, defaultProxyURL = '') {
   parts.push(`RPS: ${formatLimitValue(indexer.rate_limit_rps)}`)
   if (indexer.proxy_url) parts.push('Proxy: override')
   else if (defaultProxyURL) parts.push('Proxy: default')
+  if (indexer.search_results_cache_time > 0) parts.push(`Cache time: ${indexer.search_results_cache_time}m`)
   return parts
 }
 
@@ -216,6 +218,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         nextFieldErrors.api_key ||
         nextFieldErrors.username ||
         nextFieldErrors.password ||
+        nextFieldErrors.search_results_cache_time ||
         'Please review the highlighted fields.'
       )
       return
@@ -240,6 +243,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         else if (path.includes('.downloads_day')) nextErrors.downloads_day = message
         else if (path.includes('.rate_limit_rps')) nextErrors.rate_limit_rps = message
         else if (path.includes('.proxy_url')) nextErrors.proxy_url = message
+        else if (path.includes('.search_results_cache_time')) nextErrors.search_results_cache_time = message
       })
       setFieldErrors(nextErrors)
       setSaveError(firstFieldErrorMessage(nextErrors, error?.message || 'Save failed'))
@@ -444,6 +448,29 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                 </div>
               </div>
             </div>
+            {draft.type === 'aggregator' && (
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className={rowClass}>
+                  <div className={labelClass}>
+                    <Label className="text-sm font-medium">Search Results Cache Time (minutes)</Label>
+                  </div>
+                  <div className={controlNarrowClass}>
+                    <Input
+                      className={`h-9 ${fieldClass('search_results_cache_time')}`}
+                      type="number"
+                      min={0}
+                      value={draft.search_results_cache_time === 0 ? '' : draft.search_results_cache_time}
+                      onChange={(event) => update('search_results_cache_time', event.target.value === '' ? 0 : Number(event.target.value))}
+                      placeholder="disabled"
+                    />
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  NZBHydra2: adds <code>cachetime</code> to search API calls.
+                </p>
+              </div>
+            )}
             <div className="relative p-3">
               <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
               <div className={rowClass}>
