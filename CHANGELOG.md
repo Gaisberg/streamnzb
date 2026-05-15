@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.4.0](https://github.com/Gaisberg/streamnzb/compare/v4.3.0...v4.4.0) (2026-05-15)
+
+
+### Features
+
+* indexer proxy ([930e744](https://github.com/Gaisberg/streamnzb/commit/930e744e63a126373c4788a65791e948decb526b))
+* **indexers:** add NZBHydra2 search results cachetime setting and API parameter ([0fba48d](https://github.com/Gaisberg/streamnzb/commit/0fba48dac6363395b9c292381516d5fba2a2f20c))
+
+
+### Bug Fixes
+
+* **availnzb:** make reported-bad filtering configurable ([4867cce](https://github.com/Gaisberg/streamnzb/commit/4867cce5ceef88ef0a61076fde367aad8236c671))
+* **stremio:** include indexer name in AIO stream descriptions ([48607d3](https://github.com/Gaisberg/streamnzb/commit/48607d3375a15c7f0de0a013775fe89e262fe8df))
+* **validation:** avoid stale proxy fallback and parallelize global proxy probes ([1079fc6](https://github.com/Gaisberg/streamnzb/commit/1079fc646e45fa1b8fe634c971ff4da07d642265))
+
 ## [4.3.0](https://github.com/Gaisberg/streamnzb/compare/v4.2.0...v4.3.0) (2026-05-14)
 
 
