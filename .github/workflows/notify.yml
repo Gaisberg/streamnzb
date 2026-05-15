@@ -1,9 +1,13 @@
+name: notify
+
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["build-release"]
+    types: [completed]
 
 jobs:
   notify-release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
