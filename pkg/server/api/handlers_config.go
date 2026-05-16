@@ -115,11 +115,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
 	newCfg.AdminToken = currentCfg.AdminToken
 	newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
-	newCfg.Streams = currentCfg.Streams
+	newCfg.Streams = cloneStreamEntries(currentCfg.Streams)
+	newCfg.ApplyProviderDefaults()
+	applyStreamAutoSelections(&newCfg)
 	if newCfg.AdminUsername == "" {
 		newCfg.AdminUsername = currentCfg.GetAdminUsername()
 	}
-	newCfg.ApplyProviderDefaults()
 	if currentLoadedPath == "" {
 		currentLoadedPath = filepath.Join(paths.GetDataDir(), "config.json")
 	}

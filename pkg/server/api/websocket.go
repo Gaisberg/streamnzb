@@ -233,9 +233,9 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 		newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
 		newCfg.AdminToken = currentCfg.AdminToken
 		newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
-		newCfg.Streams = currentCfg.Streams
-
+		newCfg.Streams = cloneStreamEntries(currentCfg.Streams)
 		newCfg.ApplyProviderDefaults()
+		applyStreamAutoSelections(&newCfg)
 
 		if currentLoadedPath == "" {
 			currentLoadedPath = filepath.Join(paths.GetDataDir(), "config.json")
@@ -364,6 +364,8 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 		CombineResults      *bool                                 `json:"combine_results"`
 		EnableFailover      *bool                                 `json:"enable_failover"`
 		ResultsMode         string                                `json:"results_mode"`
+		AutoAddProviders    *bool                                 `json:"auto_add_providers"`
+		AutoAddIndexers     *bool                                 `json:"auto_add_indexers"`
 		IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 		ProviderSelections  []string                              `json:"provider_selections"`
 		IndexerSelections   []string                              `json:"indexer_selections"`
@@ -380,17 +382,32 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 		if username == s.config.GetAdminUsername() {
 			continue
 		}
-		if err := s.streamManager.UpdateStreamIndexerConfig(username, streamConfig.IndexerSelections, streamConfig.IndexerOverrides); err != nil {
-			errors = append(errors, fmt.Sprintf("Failed to update indexer overrides for %s: %v", username, err))
+		providerSelections := append([]string(nil), streamConfig.ProviderSelections...)
+		indexerSelections := append([]string(nil), streamConfig.IndexerSelections...)
+		indexerOverrides := cloneIndexerOverrides(streamConfig.IndexerOverrides)
+		if streamConfig.AutoAddProviders != nil && *streamConfig.AutoAddProviders {
+			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(s.config.Providers))
 		}
-		if err := s.streamManager.UpdateStreamProviderSelections(username, streamConfig.ProviderSelections); err != nil {
-			errors = append(errors, fmt.Sprintf("Failed to update provider selections for %s: %v", username, err))
+		if streamConfig.AutoAddIndexers != nil && *streamConfig.AutoAddIndexers {
+			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
+			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
 		}
-		if err := s.streamManager.UpdateStreamGeneralSettings(username, streamConfig.FilterSortingMode, streamConfig.IndexerMode, streamConfig.UseAvailNZB, streamConfig.CombineResults, streamConfig.EnableFailover, streamConfig.ResultsMode); err != nil {
-			errors = append(errors, fmt.Sprintf("Failed to update general settings for %s: %v", username, err))
-		}
-		if err := s.streamManager.UpdateStreamSearchQueries(username, streamConfig.MovieSearchQueries, streamConfig.SeriesSearchQueries); err != nil {
-			errors = append(errors, fmt.Sprintf("Failed to update search queries for %s: %v", username, err))
+		if err := s.streamManager.UpdateStreamConfig(username, &auth.Stream{
+			FilterSortingMode:   streamConfig.FilterSortingMode,
+			IndexerMode:         streamConfig.IndexerMode,
+			UseAvailNZB:         streamConfig.UseAvailNZB,
+			CombineResults:      streamConfig.CombineResults,
+			EnableFailover:      streamConfig.EnableFailover,
+			ResultsMode:         streamConfig.ResultsMode,
+			AutoAddProviders:    streamConfig.AutoAddProviders,
+			AutoAddIndexers:     streamConfig.AutoAddIndexers,
+			IndexerOverrides:    indexerOverrides,
+			ProviderSelections:  providerSelections,
+			IndexerSelections:   indexerSelections,
+			MovieSearchQueries:  streamConfig.MovieSearchQueries,
+			SeriesSearchQueries: streamConfig.SeriesSearchQueries,
+		}); err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 		}
 	}
 
@@ -430,6 +447,8 @@ func (s *Server) handleGetStreamsWS(client *Client) {
 			"combine_results":       stream.CombineResults,
 			"enable_failover":       stream.EnableFailover,
 			"results_mode":          stream.ResultsMode,
+			"auto_add_providers":    stream.AutoAddProviders,
+			"auto_add_indexers":     stream.AutoAddIndexers,
 			"indexer_overrides":     stream.IndexerOverrides,
 			"provider_selections":   stream.ProviderSelections,
 			"indexer_selections":    stream.IndexerSelections,
@@ -473,6 +492,8 @@ func (s *Server) handleGetStreamWS(client *Client, payload json.RawMessage) {
 		"combine_results":       stream.CombineResults,
 		"enable_failover":       stream.EnableFailover,
 		"results_mode":          stream.ResultsMode,
+		"auto_add_providers":    stream.AutoAddProviders,
+		"auto_add_indexers":     stream.AutoAddIndexers,
 		"indexer_overrides":     stream.IndexerOverrides,
 		"provider_selections":   stream.ProviderSelections,
 		"indexer_selections":    stream.IndexerSelections,

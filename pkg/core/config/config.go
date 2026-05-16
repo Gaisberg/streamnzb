@@ -423,6 +423,8 @@ type StreamEntry struct {
 	CombineResults      *bool                          `json:"combine_results,omitempty"`
 	EnableFailover      *bool                          `json:"enable_failover,omitempty"`
 	ResultsMode         string                         `json:"results_mode,omitempty"`
+	AutoAddProviders    *bool                          `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers     *bool                          `json:"auto_add_indexers,omitempty"`
 	ProviderSelections  []string                       `json:"provider_selections,omitempty"`
 	IndexerSelections   []string                       `json:"indexer_selections,omitempty"`
 	IndexerOverrides    map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
@@ -889,6 +891,8 @@ func (c *Config) ensureDefaultMigratedStream() bool {
 		CombineResults:      ptrBool(true),
 		EnableFailover:      ptrBool(true),
 		ResultsMode:         "display_all",
+		AutoAddProviders:    ptrBool(true),
+		AutoAddIndexers:     ptrBool(true),
 		IndexerOverrides:    make(map[string]IndexerSearchConfig),
 		ProviderSelections:  allProviderNames(c.Providers),
 		IndexerSelections:   allIndexerNames(c.Indexers),
