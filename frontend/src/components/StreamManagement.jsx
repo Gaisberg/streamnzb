@@ -46,6 +46,8 @@ function normalizeStreamDraft(draft) {
     combine_results: draft?.combine_results !== false,
     enable_failover: draft?.enable_failover !== false,
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
+    auto_add_providers: draft?.auto_add_providers === true,
+    auto_add_indexers: draft?.auto_add_indexers === true,
     providers: uniquePreserveOrder(draft?.providers),
     indexers: uniquePreserveOrder(draft?.indexers),
     indexer_overrides: draft?.indexer_overrides || {},
@@ -63,6 +65,8 @@ function buildStreamDraft(stream) {
     combine_results: stream?.combine_results,
     enable_failover: stream?.enable_failover,
     results_mode: stream?.results_mode,
+    auto_add_providers: stream?.auto_add_providers,
+    auto_add_indexers: stream?.auto_add_indexers,
     providers: stream?.provider_selections || stream?.providers || [],
     indexers: stream?.indexer_selections || stream?.indexers || Object.keys(stream?.indexer_overrides || {}),
     indexer_overrides: stream?.indexer_overrides || {},
@@ -88,6 +92,8 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     combine_results: draft.combine_results,
     enable_failover: draft.enable_failover,
     results_mode: draft.results_mode,
+    auto_add_providers: draft.auto_add_providers,
+    auto_add_indexers: draft.auto_add_indexers,
     provider_selections: draft.providers || [],
     indexer_selections: draft.indexers || [],
     indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
@@ -107,6 +113,8 @@ function generalDetailValues(stream) {
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
     `Search ${stream?.combine_results !== false ? 'Combine' : 'First hit'}`,
     `Results ${stream?.results_mode === 'display_all' ? 'All' : 'Combine'}`,
+    `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
+    `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
   ]
 }
 
@@ -177,7 +185,7 @@ function SummaryRow({ label, values, icon: Icon }) {
   )
 }
 
-function SelectionSection({ title, values, selected, onToggle, onMove, error }) {
+function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false }) {
   const [dragIndex, setDragIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
   const selectedValues = useMemo(
@@ -230,30 +238,39 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error }) 
     <div className={`space-y-3 rounded-md border p-3 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'}`}>
       <div className="flex items-center justify-between gap-3">
         <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</Label>
-        <DropdownMenu>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="destructive" size="icon" className="h-8 w-8" disabled={availableValues.length === 0}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-            </TooltipTrigger>
-            <TooltipContent>{availableValues.length === 0 ? 'No more entries to add' : `Add ${title.toLowerCase()}`}</TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
-            {availableValues.length === 0 ? (
-              <DropdownMenuItem disabled>No more entries available</DropdownMenuItem>
-            ) : (
-              availableValues.map((value) => (
-                <DropdownMenuItem key={value} onClick={() => onToggle(value, true)}>
-                  {value}
-                </DropdownMenuItem>
-              ))
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {!membershipLocked && (
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="icon"
+                    className="h-8 w-8"
+                    disabled={availableValues.length === 0}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{availableValues.length === 0 ? 'No more entries to add' : `Add ${title.toLowerCase()}`}</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
+              {availableValues.length === 0 ? (
+                <DropdownMenuItem disabled>No more entries available</DropdownMenuItem>
+              ) : (
+                availableValues.map((value) => (
+                  <DropdownMenuItem key={value} onClick={() => onToggle(value, true)}>
+                    {value}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
+      {helperText ? <p className="text-sm text-muted-foreground">{helperText}</p> : null}
 
       <div className="space-y-2">
         {selectedValues.length === 0 ? (
@@ -295,9 +312,11 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error }) 
                 <GripVertical className="h-4 w-4" />
               </div>
               <div className="min-w-0 flex-1 text-sm font-medium">{value}</div>
-              <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
-                Remove
-              </Button>
+              {!membershipLocked && (
+                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
+                  Remove
+                </Button>
+              )}
             </div>
           ))
         )}
@@ -330,14 +349,33 @@ function nextStreamName(streams) {
   return `Stream${Date.now()}`
 }
 
-function getInitialStreamDraft(initialStream, isEditing) {
+function getInitialStreamDraft(initialStream, isEditing, enabledProviderNames = [], enabledIndexerNames = []) {
   const base = buildStreamDraft(initialStream)
+  if (!isEditing) {
+    base.auto_add_providers = true
+    base.auto_add_indexers = true
+    base.providers = uniquePreserveOrder(enabledProviderNames)
+    base.indexers = uniquePreserveOrder(enabledIndexerNames)
+  }
   return base
 }
 
-function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', providerNames, indexerNames, movieQueryNames, seriesQueryNames, onSave, saving }) {
+function StreamDialog({
+  open,
+  onOpenChange,
+  initialStream,
+  mode = 'edit',
+  providerNames,
+  enabledProviderNames,
+  indexerNames,
+  enabledIndexerNames,
+  movieQueryNames,
+  seriesQueryNames,
+  onSave,
+  saving,
+}) {
   const isEditing = mode === 'edit'
-  const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing))
+  const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
   const [saveError, setSaveError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [activeTab, setActiveTab] = useState('general')
@@ -348,16 +386,16 @@ function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', provid
 
   useEffect(() => {
     if (open && (!wasOpen || dialogIdentity !== lastDialogIdentity)) {
-      setDraft(getInitialStreamDraft(initialStream, isEditing))
+      setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
       setSaveError('')
       setFieldErrors({})
       setActiveTab('general')
       setLastDialogIdentity(dialogIdentity)
     }
     setWasOpen(open)
-  }, [open, initialStream, isEditing, wasOpen, dialogIdentity, lastDialogIdentity])
+  }, [open, initialStream, isEditing, wasOpen, dialogIdentity, lastDialogIdentity, enabledProviderNames, enabledIndexerNames])
 
-  const normalizedInitial = JSON.stringify(getInitialStreamDraft(initialStream, isEditing))
+  const normalizedInitial = JSON.stringify(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
   const normalizedCurrent = JSON.stringify(normalizeStreamDraft(draft))
   const isDirty = normalizedInitial !== normalizedCurrent
   const aiostreamsMode = draft.filter_sorting_mode === 'aiostreams'
@@ -607,25 +645,71 @@ function StreamDialog({ open, onOpenChange, initialStream, mode = 'edit', provid
           )}
 
           {activeTab === 'providers' && (
-            <SelectionSection
-              title="Providers"
-              values={providerNames}
-              selected={draft.providers || []}
-              onToggle={(value, checked) => toggleListValue('providers', value, checked)}
-              onMove={(fromIndex, toIndex) => moveListValue('providers', fromIndex, toIndex)}
-              error={fieldErrors.providers}
-            />
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Automatic sync</div>
+                  <Switch
+                    checked={draft.auto_add_providers === true}
+                    onCheckedChange={(checked) => setDraft((current) => (
+                      checked === true
+                        ? { ...current, auto_add_providers: true, providers: uniquePreserveOrder(enabledProviderNames || []) }
+                        : { ...current, auto_add_providers: false }
+                    ))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Keep this stream in sync with globally enabled providers. Disabled providers are removed automatically.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Disable automatic sync to manage providers manually.
+                </p>
+              </div>
+              <SelectionSection
+                title="Providers"
+                values={providerNames}
+                selected={draft.providers || []}
+                onToggle={(value, checked) => toggleListValue('providers', value, checked)}
+                onMove={(fromIndex, toIndex) => moveListValue('providers', fromIndex, toIndex)}
+                error={fieldErrors.providers}
+                helperText="Priority is based on position. Drag to reorder."
+                membershipLocked={draft.auto_add_providers === true}
+              />
+            </div>
           )}
 
           {activeTab === 'indexers' && (
-            <SelectionSection
-              title="Indexers"
-              values={indexerNames}
-              selected={draft.indexers || []}
-              onToggle={(value, checked) => toggleListValue('indexers', value, checked)}
-              onMove={(fromIndex, toIndex) => moveListValue('indexers', fromIndex, toIndex)}
-              error={fieldErrors.indexers}
-            />
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Automatic sync</div>
+                  <Switch
+                    checked={draft.auto_add_indexers === true}
+                    onCheckedChange={(checked) => setDraft((current) => (
+                      checked === true
+                        ? { ...current, auto_add_indexers: true, indexers: uniquePreserveOrder(enabledIndexerNames || []) }
+                        : { ...current, auto_add_indexers: false }
+                    ))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Keep this stream in sync with globally enabled indexers. Disabled indexers are removed automatically.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Disable automatic sync to manage indexers manually.
+                </p>
+              </div>
+              <SelectionSection
+                title="Indexers"
+                values={indexerNames}
+                selected={draft.indexers || []}
+                onToggle={(value, checked) => toggleListValue('indexers', value, checked)}
+                onMove={(fromIndex, toIndex) => moveListValue('indexers', fromIndex, toIndex)}
+                error={fieldErrors.indexers}
+                helperText="Priority is based on position. Drag to reorder."
+                membershipLocked={draft.auto_add_indexers === true}
+              />
+            </div>
           )}
 
           {activeTab === 'movie' && (
@@ -712,8 +796,30 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     () => (globalConfig?.providers || []).map((provider) => provider.name).filter(Boolean),
     [globalConfig]
   )
+  const enabledProviderNames = useMemo(
+    () => (globalConfig?.providers || [])
+      .filter((provider) => provider?.enabled !== false)
+      .map((provider) => provider.name)
+      .filter(Boolean),
+    [globalConfig]
+  )
   const movieQueryNames = useMemo(() => movieSearchQueries.map((query) => query.name).filter(Boolean), [movieSearchQueries])
   const seriesQueryNames = useMemo(() => seriesSearchQueries.map((query) => query.name).filter(Boolean), [seriesSearchQueries])
+  const enabledIndexerNames = useMemo(
+    () => (globalConfig?.indexers || [])
+      .filter((indexer) => indexer?.enabled !== false)
+      .map((indexer) => indexer.name)
+      .filter(Boolean),
+    [globalConfig]
+  )
+  const enabledProviderSignature = useMemo(
+    () => JSON.stringify(enabledProviderNames),
+    [enabledProviderNames]
+  )
+  const enabledIndexerSignature = useMemo(
+    () => JSON.stringify(enabledIndexerNames),
+    [enabledIndexerNames]
+  )
 
   useEffect(() => {
     if (lastAppliedInitialSignatureRef.current === initialStreamsSignature) return
@@ -776,6 +882,10 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   }, [onStreamsChange, showStatus])
 
   useEffect(() => {
+    fetchStreams(false, { silent: true }).catch(() => {})
+  }, [enabledProviderSignature, enabledIndexerSignature, fetchStreams])
+
+  useEffect(() => {
     if (initialFetchStartedRef.current) return
     initialFetchStartedRef.current = true
     fetchStreams(false).catch(() => {})
@@ -804,6 +914,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         combine_results: draft.combine_results,
         enable_failover: draft.enable_failover,
         results_mode: draft.results_mode,
+        auto_add_providers: draft.auto_add_providers,
+        auto_add_indexers: draft.auto_add_indexers,
         provider_selections: draft.providers || [],
         indexer_selections: draft.indexers || [],
         indexer_overrides: buildIndexerOverrides(draft.indexers, existingStream?.indexer_overrides),
@@ -879,6 +991,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       combine_results: stream.combine_results,
       enable_failover: stream.enable_failover,
       results_mode: stream.results_mode,
+      auto_add_providers: stream.auto_add_providers,
+      auto_add_indexers: stream.auto_add_indexers,
       providers: stream.provider_selections || [],
       indexers: stream.indexer_selections || Object.keys(stream.indexer_overrides || {}),
       indexer_overrides: stream.indexer_overrides || {},
@@ -1187,7 +1301,9 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             initialStream={addDialogDraft}
             mode="add"
             providerNames={providerNames}
+            enabledProviderNames={enabledProviderNames}
             indexerNames={indexerNames}
+            enabledIndexerNames={enabledIndexerNames}
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             onSave={handleCreateStream}
@@ -1202,7 +1318,9 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             initialStream={editingStream}
             mode="edit"
             providerNames={providerNames}
+            enabledProviderNames={enabledProviderNames}
             indexerNames={indexerNames}
+            enabledIndexerNames={enabledIndexerNames}
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             onSave={handleSaveStream}

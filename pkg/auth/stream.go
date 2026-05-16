@@ -42,6 +42,8 @@ type Stream struct {
 	CombineResults      *bool                                 `json:"combine_results,omitempty"`
 	EnableFailover      *bool                                 `json:"enable_failover,omitempty"`
 	ResultsMode         string                                `json:"results_mode,omitempty"`
+	AutoAddProviders    *bool                                 `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers     *bool                                 `json:"auto_add_indexers,omitempty"`
 	IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 	ProviderSelections  []string                              `json:"provider_selections,omitempty"`
 	IndexerSelections   []string                              `json:"indexer_selections,omitempty"`
@@ -116,38 +118,11 @@ func (dm *StreamManager) load() error {
 	defer dm.mu.Unlock()
 
 	if dm.cfg != nil {
-		dm.streams = make(map[string]*Stream)
-		if dm.cfg.Streams != nil {
-			for k, e := range dm.cfg.Streams {
-				if e == nil {
-					continue
-				}
-				ov := e.IndexerOverrides
-				if ov == nil {
-					ov = make(map[string]config.IndexerSearchConfig)
-				}
-				dm.streams[k] = &Stream{
-					Username:            e.Username,
-					Token:               e.Token,
-					Order:               e.Order,
-					FilterSortingMode:   e.FilterSortingMode,
-					IndexerMode:         e.IndexerMode,
-					UseAvailNZB:         e.UseAvailNZB,
-					CombineResults:      e.CombineResults,
-					EnableFailover:      e.EnableFailover,
-					ResultsMode:         e.ResultsMode,
-					IndexerOverrides:    ov,
-					ProviderSelections:  append([]string(nil), e.ProviderSelections...),
-					IndexerSelections:   append([]string(nil), e.IndexerSelections...),
-					MovieSearchQueries:  append([]string(nil), e.MovieSearchQueries...),
-					SeriesSearchQueries: append([]string(nil), e.SeriesSearchQueries...),
-				}
+		removedAdmin := dm.syncStreamsFromConfigLocked()
+		if removedAdmin {
+			if err := dm.saveLocked(); err != nil {
+				logger.Warn("Failed to persist removal of legacy admin stream", "err", err)
 			}
-		}
-		if _, exists := dm.streams["admin"]; exists {
-			delete(dm.streams, "admin")
-			dm.saveLocked()
-			logger.Info("Removed legacy admin from streams (admin is in config)")
 		}
 		return nil
 	}
@@ -181,6 +156,8 @@ func (dm *StreamManager) load() error {
 				CombineResults:      d.CombineResults,
 				EnableFailover:      d.EnableFailover,
 				ResultsMode:         d.ResultsMode,
+				AutoAddProviders:    d.AutoAddProviders,
+				AutoAddIndexers:     d.AutoAddIndexers,
 				IndexerOverrides:    d.IndexerOverrides,
 				ProviderSelections:  append([]string(nil), d.ProviderSelections...),
 				IndexerSelections:   append([]string(nil), d.IndexerSelections...),
@@ -202,6 +179,46 @@ func (dm *StreamManager) load() error {
 	return nil
 }
 
+func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
+	dm.streams = make(map[string]*Stream)
+	if dm.cfg == nil || dm.cfg.Streams == nil {
+		return false
+	}
+	for k, e := range dm.cfg.Streams {
+		if e == nil {
+			continue
+		}
+		ov := e.IndexerOverrides
+		if ov == nil {
+			ov = make(map[string]config.IndexerSearchConfig)
+		}
+		dm.streams[k] = &Stream{
+			Username:            e.Username,
+			Token:               e.Token,
+			Order:               e.Order,
+			FilterSortingMode:   e.FilterSortingMode,
+			IndexerMode:         e.IndexerMode,
+			UseAvailNZB:         e.UseAvailNZB,
+			CombineResults:      e.CombineResults,
+			EnableFailover:      e.EnableFailover,
+			ResultsMode:         e.ResultsMode,
+			AutoAddProviders:    e.AutoAddProviders,
+			AutoAddIndexers:     e.AutoAddIndexers,
+			IndexerOverrides:    ov,
+			ProviderSelections:  append([]string(nil), e.ProviderSelections...),
+			IndexerSelections:   append([]string(nil), e.IndexerSelections...),
+			MovieSearchQueries:  append([]string(nil), e.MovieSearchQueries...),
+			SeriesSearchQueries: append([]string(nil), e.SeriesSearchQueries...),
+		}
+	}
+	if _, exists := dm.streams["admin"]; exists {
+		delete(dm.streams, "admin")
+		logger.Info("Removed legacy admin from streams (admin is in config)")
+		return true
+	}
+	return false
+}
+
 func (dm *StreamManager) saveLocked() error {
 	if dm.cfg != nil {
 		dm.cfg.Streams = make(map[string]*config.StreamEntry)
@@ -220,6 +237,8 @@ func (dm *StreamManager) saveLocked() error {
 				CombineResults:      d.CombineResults,
 				EnableFailover:      d.EnableFailover,
 				ResultsMode:         d.ResultsMode,
+				AutoAddProviders:    d.AutoAddProviders,
+				AutoAddIndexers:     d.AutoAddIndexers,
 				IndexerOverrides:    ov,
 				ProviderSelections:  append([]string(nil), d.ProviderSelections...),
 				IndexerSelections:   append([]string(nil), d.IndexerSelections...),
@@ -240,6 +259,9 @@ func (dm *StreamManager) SetConfig(cfg *config.Config, saveFn func() error) {
 	dm.saveFn = saveFn
 	if dm.cfg != nil && dm.cfg.Streams == nil {
 		dm.cfg.Streams = make(map[string]*config.StreamEntry)
+	}
+	if dm.cfg != nil {
+		dm.syncStreamsFromConfigLocked()
 	}
 }
 
@@ -343,6 +365,8 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 			CombineResults:      stream.CombineResults,
 			EnableFailover:      stream.EnableFailover,
 			ResultsMode:         stream.ResultsMode,
+			AutoAddProviders:    stream.AutoAddProviders,
+			AutoAddIndexers:     stream.AutoAddIndexers,
 			IndexerOverrides:    stream.IndexerOverrides,
 			ProviderSelections:  append([]string(nil), stream.ProviderSelections...),
 			IndexerSelections:   append([]string(nil), stream.IndexerSelections...),
@@ -416,6 +440,8 @@ func (dm *StreamManager) CreateStream(username, password string, adminUsername s
 		IndexerMode:         "combine",
 		UseAvailNZB:         ptrBool(true),
 		CombineResults:      ptrBool(true),
+		AutoAddProviders:    ptrBool(true),
+		AutoAddIndexers:     ptrBool(true),
 		IndexerOverrides:    make(map[string]config.IndexerSearchConfig),
 		ProviderSelections:  []string{},
 		IndexerSelections:   []string{},
@@ -574,6 +600,8 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.CombineResults = streamConfig.CombineResults
 	stream.EnableFailover = streamConfig.EnableFailover
 	stream.ResultsMode = strings.TrimSpace(streamConfig.ResultsMode)
+	stream.AutoAddProviders = streamConfig.AutoAddProviders
+	stream.AutoAddIndexers = streamConfig.AutoAddIndexers
 	if streamConfig.IndexerOverrides == nil {
 		stream.IndexerOverrides = make(map[string]config.IndexerSearchConfig)
 	} else {

@@ -64,6 +64,8 @@ func (s *Server) handleStreamsList(w http.ResponseWriter, r *http.Request) {
 			"combine_results":       d.CombineResults,
 			"enable_failover":       d.EnableFailover,
 			"results_mode":          d.ResultsMode,
+			"auto_add_providers":    d.AutoAddProviders,
+			"auto_add_indexers":     d.AutoAddIndexers,
 			"indexer_overrides":     d.IndexerOverrides,
 			"provider_selections":   d.ProviderSelections,
 			"indexer_selections":    d.IndexerSelections,
@@ -149,6 +151,8 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 			"combine_results":       d.CombineResults,
 			"enable_failover":       d.EnableFailover,
 			"results_mode":          d.ResultsMode,
+			"auto_add_providers":    d.AutoAddProviders,
+			"auto_add_indexers":     d.AutoAddIndexers,
 			"indexer_overrides":     d.IndexerOverrides,
 			"provider_selections":   d.ProviderSelections,
 			"indexer_selections":    d.IndexerSelections,
@@ -210,6 +214,8 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		CombineResults      *bool                                 `json:"combine_results"`
 		EnableFailover      *bool                                 `json:"enable_failover"`
 		ResultsMode         string                                `json:"results_mode"`
+		AutoAddProviders    *bool                                 `json:"auto_add_providers"`
+		AutoAddIndexers     *bool                                 `json:"auto_add_indexers"`
 		IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 		ProviderSelections  []string                              `json:"provider_selections"`
 		IndexerSelections   []string                              `json:"indexer_selections"`
@@ -228,6 +234,16 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		if username == s.config.GetAdminUsername() {
 			continue
 		}
+		providerSelections := append([]string(nil), dc.ProviderSelections...)
+		indexerSelections := append([]string(nil), dc.IndexerSelections...)
+		indexerOverrides := cloneIndexerOverrides(dc.IndexerOverrides)
+		if dc.AutoAddProviders != nil && *dc.AutoAddProviders {
+			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(s.config.Providers))
+		}
+		if dc.AutoAddIndexers != nil && *dc.AutoAddIndexers {
+			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
+			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
+		}
 		if err := s.streamManager.UpdateStreamConfig(username, &auth.Stream{
 			FilterSortingMode:   dc.FilterSortingMode,
 			IndexerMode:         dc.IndexerMode,
@@ -235,9 +251,11 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			CombineResults:      dc.CombineResults,
 			EnableFailover:      dc.EnableFailover,
 			ResultsMode:         dc.ResultsMode,
-			IndexerOverrides:    dc.IndexerOverrides,
-			ProviderSelections:  dc.ProviderSelections,
-			IndexerSelections:   dc.IndexerSelections,
+			AutoAddProviders:    dc.AutoAddProviders,
+			AutoAddIndexers:     dc.AutoAddIndexers,
+			IndexerOverrides:    indexerOverrides,
+			ProviderSelections:  providerSelections,
+			IndexerSelections:   indexerSelections,
 			MovieSearchQueries:  dc.MovieSearchQueries,
 			SeriesSearchQueries: dc.SeriesSearchQueries,
 		}); err != nil {

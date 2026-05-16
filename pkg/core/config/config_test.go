@@ -374,6 +374,12 @@ func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testin
 	if stream.EnableFailover == nil || !*stream.EnableFailover {
 		t.Fatalf("expected default stream failover enabled, got %#v", stream.EnableFailover)
 	}
+	if stream.AutoAddProviders == nil || !*stream.AutoAddProviders {
+		t.Fatalf("expected default stream auto add providers enabled, got %#v", stream.AutoAddProviders)
+	}
+	if stream.AutoAddIndexers == nil || !*stream.AutoAddIndexers {
+		t.Fatalf("expected default stream auto add indexers enabled, got %#v", stream.AutoAddIndexers)
+	}
 	if len(stream.ProviderSelections) != 2 || stream.ProviderSelections[0] != "newshosting" {
 		t.Fatalf("unexpected provider selections: %#v", stream.ProviderSelections)
 	}
