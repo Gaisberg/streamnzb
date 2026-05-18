@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/javi11/rardecode/v2"
 )
+
+const likelyPAR2RepairRequiredMsg = "likely PAR2 repair required"
 
 type ArchiveBlueprint struct {
 	MainFileName string
@@ -84,21 +87,54 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 			return nil, "", 0, fmt.Errorf("encrypted RAR next: %w", err)
 		}
 		if h.Name == bp.MainFileName || filepath.Base(h.Name) == mainBase {
-			stream := &encryptedRARStream{
-				ctx:          ctx,
-				rc:           rc,
-				limit:        bp.TotalSize,
-				firstVolName: firstName,
-				fileMap:      fileMap,
-				password:     password,
-				mainFileName: bp.MainFileName,
-				mainBase:     mainBase,
+			stream, err := newEncryptedRARStream(
+				ctx,
+				rc,
+				bp.TotalSize,
+				firstName,
+				fileMap,
+				password,
+				bp.MainFileName,
+				mainBase,
+			)
+			if err != nil {
+				rc.Close()
+				return nil, "", 0, err
 			}
 			return stream, bp.MainFileName, bp.TotalSize, nil
 		}
 
 		_, _ = io.Copy(io.Discard, io.LimitReader(rc, h.UnPackedSize))
 	}
+}
+
+func newEncryptedRARStream(
+	ctx context.Context,
+	rc *rardecode.ReadCloser,
+	limit int64,
+	firstVolName string,
+	fileMap map[string]UnpackableFile,
+	password string,
+	mainFileName string,
+	mainBase string,
+) (*encryptedRARStream, error) {
+	tmp, err := os.CreateTemp("", "streamnzb-encrypted-rar-*")
+	if err != nil {
+		return nil, fmt.Errorf("create encrypted RAR cache file: %w", err)
+	}
+	return &encryptedRARStream{
+		ctx:          ctx,
+		rc:           rc,
+		limit:        limit,
+		firstVolName: firstVolName,
+		fileMap:      fileMap,
+		password:     password,
+		mainFileName: mainFileName,
+		mainBase:     mainBase,
+		cacheFile:    tmp,
+		cachePath:    tmp.Name(),
+		copyBuf:      make([]byte, 256*1024),
+	}, nil
 }
 
 type encryptedRARStream struct {
@@ -111,12 +147,20 @@ type encryptedRARStream struct {
 	password     string
 	mainFileName string
 	mainBase     string
+	cacheFile    *os.File
+	cachePath    string
+	cachedBytes  int64
+	sourceEOF    bool
+	copyBuf      []byte
 	mu           sync.Mutex
 }
 
 func (e *encryptedRARStream) Read(p []byte) (n int, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := contextErr(e.ctx); err != nil {
+		return 0, err
+	}
 	if e.read >= e.limit {
 		return 0, io.EOF
 	}
@@ -124,11 +168,86 @@ func (e *encryptedRARStream) Read(p []byte) (n int, err error) {
 	if max > e.limit-e.read {
 		max = e.limit - e.read
 	}
-	n, err = e.rc.Read(p[:max])
+	if max <= 0 {
+		return 0, io.EOF
+	}
+
+	target := e.read + max
+	if err := e.ensureCachedUntilLocked(target); err != nil && !errors.Is(err, io.EOF) {
+		return 0, err
+	}
+
+	available := e.cachedBytes - e.read
+	if available <= 0 {
+		return 0, io.EOF
+	}
+	if available > max {
+		available = max
+	}
+
+	n, readErr := e.cacheFile.ReadAt(p[:available], e.read)
 	if n > 0 {
 		e.read += int64(n)
 	}
-	return n, err
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return n, readErr
+	}
+	if int64(n) < max {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (e *encryptedRARStream) ensureCachedUntilLocked(target int64) error {
+	if target > e.limit {
+		target = e.limit
+	}
+	for e.cachedBytes < target {
+		if err := contextErr(e.ctx); err != nil {
+			return err
+		}
+		if e.sourceEOF {
+			break
+		}
+		remaining := target - e.cachedBytes
+		chunk := int64(len(e.copyBuf))
+		if remaining < chunk {
+			chunk = remaining
+		}
+		n, err := e.rc.Read(e.copyBuf[:chunk])
+		if n > 0 {
+			if err := writeAllAt(e.cacheFile, e.copyBuf[:n], e.cachedBytes); err != nil {
+				return err
+			}
+			e.cachedBytes += int64(n)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				e.sourceEOF = true
+				break
+			}
+			return err
+		}
+		if n == 0 {
+			break
+		}
+	}
+	if e.cachedBytes < target {
+		return io.EOF
+	}
+	return nil
+}
+
+func writeAllAt(file *os.File, data []byte, off int64) error {
+	for len(data) > 0 {
+		n, err := file.WriteAt(data, off)
+		if err != nil {
+			return err
+		}
+		data = data[n:]
+		off += int64(n)
+	}
+	return nil
 }
 
 func (e *encryptedRARStream) Seek(offset int64, whence int) (int64, error) {
@@ -148,40 +267,6 @@ func (e *encryptedRARStream) Seek(offset int64, whence int) (int64, error) {
 	if abs < 0 {
 		return e.read, fmt.Errorf("negative position")
 	}
-	if abs == e.read {
-		return e.read, nil
-	}
-
-	if err := e.rc.Close(); err != nil {
-		logger.Debug("encrypted RAR stream close on seek", "err", err)
-	}
-	fsys := NewNZBFSFromMapCtx(e.ctx, e.fileMap)
-	opts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.Password(e.password)}
-	rc, err := rardecode.OpenReader(e.firstVolName, opts...)
-	if err != nil {
-		return e.read, fmt.Errorf("reopen for seek: %w", err)
-	}
-	e.rc = rc
-
-	for {
-		h, err := rc.Next()
-		if err != nil {
-			rc.Close()
-			return e.read, fmt.Errorf("seek next: %w", err)
-		}
-		if h.Name == e.mainFileName || filepath.Base(h.Name) == e.mainBase {
-			break
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(rc, h.UnPackedSize))
-	}
-
-	if abs > 0 {
-		_, err = io.CopyN(io.Discard, rc, abs)
-		if err != nil && err != io.EOF {
-			rc.Close()
-			return e.read, err
-		}
-	}
 	e.read = abs
 	return e.read, nil
 }
@@ -189,18 +274,42 @@ func (e *encryptedRARStream) Seek(offset int64, whence int) (int64, error) {
 func (e *encryptedRARStream) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.rc == nil {
-		return nil
+	var closeErr error
+	if e.rc != nil {
+		if err := e.rc.Close(); err != nil {
+			closeErr = err
+		}
+		e.rc = nil
 	}
-	err := e.rc.Close()
-	e.rc = nil
-	return err
+	if e.cacheFile != nil {
+		if err := e.cacheFile.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		e.cacheFile = nil
+	}
+	if e.cachePath != "" {
+		if err := os.Remove(e.cachePath); err != nil && !errors.Is(err, os.ErrNotExist) && closeErr == nil {
+			closeErr = err
+		}
+		e.cachePath = ""
+	}
+	return closeErr
 }
 
 // maxFirstVolumesToScan caps how many "first" volumes we try when many files are
 // treated as first volumes (e.g. non-standard names like .100, .101). Prevents
 // failing slowly across hundreds of volumes; we try a few and fail fast.
 const maxFirstVolumesToScan = 5
+
+func shouldRetryExhaustiveRARScan(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrTooManyZeroFills) {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(likelyPAR2RepairRequiredMsg))
+}
 
 func ScanArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {
 	if err := contextErr(ctx); err != nil {
@@ -211,7 +320,8 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 		return nil, errors.New("no RAR files found")
 	}
 
-	firstVols := filterFirstVolumes(rarFiles)
+	allFirstVols := filterFirstVolumes(rarFiles)
+	firstVols := allFirstVols
 	tryingCount := len(firstVols)
 	if tryingCount > maxFirstVolumesToScan {
 		sort.Slice(firstVols, func(i, j int) bool {
@@ -220,34 +330,74 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 		firstVols = firstVols[:maxFirstVolumesToScan]
 		logger.Debug("Limiting RAR first-volume scan to fail fast", "trying", len(firstVols), "skipped", tryingCount-len(firstVols))
 	}
-	logger.Debug("Scanning RAR first volumes", "target", target, "count", len(firstVols), "total", len(rarFiles))
+	runScan := func(scanFirstVols []UnpackableFile, mode string) (*ArchiveBlueprint, error) {
+		logger.Debug("Scanning RAR first volumes", "target", target, "count", len(scanFirstVols), "total", len(rarFiles), "mode", mode)
+		start := time.Now()
+		parts, diagnostics, err := scanVolumesParallel(ctx, scanFirstVols, password)
+		if err != nil {
+			return nil, err
+		}
 
-	start := time.Now()
-	parts, err := scanVolumesParallel(ctx, firstVols, password)
-	if err != nil {
-		return nil, err
+		for _, f := range scanFirstVols {
+			if fc, ok := f.(interface{ IsFailed() bool }); ok && fc.IsFailed() {
+				logger.Error("First volume failed too many segments, aborting scan", "file", f.Name())
+				return nil, fmt.Errorf("first volume unavailable: %w", ErrTooManyZeroFills)
+			}
+		}
+
+		logger.Info("RAR scan complete", "files", len(rarFiles), "duration", time.Since(start), "mode", mode)
+		if diagnostics.failedScans > 0 {
+			logger.Debug("RAR scan diagnostics",
+				"mode", mode,
+				"failed_scans", diagnostics.failedScans,
+				"invalid_blocks", diagnostics.invalidBlocks,
+				"unexpected_eof", diagnostics.unexpectedEOF,
+				"decode_corruption", diagnostics.decodeCorruption)
+		}
+		if len(parts) == 0 {
+			if err := diagnostics.classifyArchiveError(); err != nil {
+				return nil, err
+			}
+		}
+
+		for _, p := range parts {
+			if p.isCompressed {
+				return nil, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", p.name)
+			}
+		}
+
+		return buildBlueprint(ctx, parts, rarFiles, password, target)
 	}
 
-	for _, f := range firstVols {
-		if fc, ok := f.(interface{ IsFailed() bool }); ok && fc.IsFailed() {
-			logger.Error("First volume failed too many segments, aborting scan", "file", f.Name())
-			return nil, fmt.Errorf("first volume unavailable: %w", ErrTooManyZeroFills)
+	bp, err := runScan(firstVols, "fast")
+	if err == nil {
+		return bp, nil
+	}
+
+	// Obfuscated sets can have random volume names where alphabetical top-N may
+	// miss the true first volume. Keep fail-fast behavior, but retry exhaustively
+	// once before giving up.
+	if len(firstVols) < len(allFirstVols) && shouldRetryExhaustiveRARScan(err) {
+		logger.Warn("RAR fast first-volume scan failed, retrying exhaustive first-volume scan",
+			"target", target,
+			"fast_count", len(firstVols),
+			"full_count", len(allFirstVols),
+			"err", err)
+		if bpFull, errFull := runScan(allFirstVols, "full"); errFull == nil {
+			return bpFull, nil
+		} else {
+			return nil, errFull
 		}
 	}
-
-	logger.Info("RAR scan complete", "files", len(rarFiles), "duration", time.Since(start))
-
-	for _, p := range parts {
-		if p.isCompressed {
-			return nil, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", p.name)
-		}
+	if len(firstVols) < len(allFirstVols) {
+		logger.Warn("Skipping exhaustive RAR first-volume scan after conclusive fast-scan failure",
+			"target", target,
+			"fast_count", len(firstVols),
+			"full_count", len(allFirstVols),
+			"err", err)
 	}
 
-	bp, err := buildBlueprint(ctx, parts, rarFiles, password, target)
-	if err != nil {
-		return nil, err
-	}
-	return bp, nil
+	return nil, err
 }
 
 func InspectRAR(files []UnpackableFile) (string, error) {
@@ -301,9 +451,46 @@ type filePart struct {
 	isEncrypted  bool
 }
 
-func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password string) ([]filePart, error) {
+type scanDiagnostics struct {
+	failedScans      int
+	invalidBlocks    int
+	unexpectedEOF    int
+	decodeCorruption int
+}
+
+func (d scanDiagnostics) classifyArchiveError() error {
+	if d.failedScans == 0 {
+		return nil
+	}
+	// Require explicit decode-corruption evidence; "invalid file block"
+	// alone can happen when scanning non-first volumes in obfuscated sets.
+	if d.decodeCorruption == 0 {
+		return nil
+	}
+	// Classify as likely corruption only when most failures look like
+	// broken article/volume bytes rather than generic parse errors.
+	evidence := d.invalidBlocks + d.unexpectedEOF + d.decodeCorruption
+	if evidence == 0 {
+		return nil
+	}
+	if evidence*2 < d.failedScans {
+		return nil
+	}
+	return fmt.Errorf(
+		"archive data appears corrupted or incomplete (%d/%d corrupt scans; invalid_blocks=%d unexpected_eof=%d decode_corruption=%d): %s",
+		evidence,
+		d.failedScans,
+		d.invalidBlocks,
+		d.unexpectedEOF,
+		d.decodeCorruption,
+		likelyPAR2RepairRequiredMsg,
+	)
+}
+
+func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password string) ([]filePart, scanDiagnostics, error) {
 	var mu sync.Mutex
 	var result []filePart
+	diag := scanDiagnostics{}
 	sem := make(chan struct{}, 20)
 	var wg sync.WaitGroup
 	var firstErr error
@@ -353,6 +540,22 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 					return
 				}
 				logger.Debug("Scan failure", "name", cleanName, "err", err)
+				mu.Lock()
+				diag.failedScans++
+				msg := strings.ToLower(err.Error())
+				if strings.Contains(msg, "invalid file block") {
+					diag.invalidBlocks++
+				}
+				if strings.Contains(msg, "unexpected eof") {
+					diag.unexpectedEOF++
+				}
+				if strings.Contains(msg, "data corruption detected") ||
+					strings.Contains(msg, "without finding \"=yend\" trailer") ||
+					strings.Contains(msg, "without finding '=yend' trailer") ||
+					strings.Contains(msg, "rapidyenc") {
+					diag.decodeCorruption++
+				}
+				mu.Unlock()
 			}
 
 			for _, info := range infos {
@@ -392,9 +595,9 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return nil, firstErr
+		return nil, scanDiagnostics{}, firstErr
 	}
-	return result, nil
+	return result, diag, nil
 }
 
 func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []UnpackableFile, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {

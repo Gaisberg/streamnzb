@@ -38,6 +38,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		if len(parts) == 2 && parts[0] != "" {
 			effectivePath = "/" + parts[1]
 		}
+		isDebugPlayRoute := strings.HasPrefix(path, "/debug/play") || strings.HasPrefix(effectivePath, "/debug/play")
 		isStremioRoute := effectivePath == "/manifest.json" || effectivePath == FailoverOrderPath || strings.HasPrefix(effectivePath, "/stream/") || strings.HasPrefix(effectivePath, "/play/") || strings.HasPrefix(effectivePath, "/next/") || strings.HasPrefix(effectivePath, "/debug/play")
 
 		if len(parts) >= 1 && parts[0] != "" {
@@ -57,20 +58,20 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 
 					r = r.WithContext(auth.ContextWithStream(r.Context(), stream))
 
-				} else if isStremioRoute {
+				} else if isStremioRoute && !isDebugPlayRoute {
 
 					logger.Warn("Unauthorized request - invalid stream token", "path", path, "remote", r.RemoteAddr)
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 					return
 				}
 
-			} else if isStremioRoute {
+			} else if isStremioRoute && !isDebugPlayRoute {
 
 				logger.Warn("Unauthorized request - stream authentication unavailable", "path", path, "remote", r.RemoteAddr)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-		} else if isStremioRoute {
+		} else if isStremioRoute && !isDebugPlayRoute {
 
 			logger.Warn("Unauthorized request - Stremio route requires stream token", "path", path, "remote", r.RemoteAddr)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
