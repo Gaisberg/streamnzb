@@ -780,12 +780,12 @@ func selectSessionContentFiles(nzbData *nzb.NZB, contentIDs *AvailReportMeta) []
 	if nzbData == nil {
 		return nil
 	}
-	season, episode := 0, 0
-	if contentIDs != nil {
-		season = contentIDs.Season
-		episode = contentIDs.Episode
+	if contentIDs != nil && contentIDs.Season > 0 && contentIDs.Episode > 0 {
+		if files := nzbData.GetSessionContentFilesForEpisode(contentIDs.Season, contentIDs.Episode); len(files) > 0 {
+			return files
+		}
 	}
-	return nzbData.GetSessionContentFilesForEpisode(season, episode)
+	return nzbData.GetContentFiles()
 }
 
 func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.FileInfo, pools []*nntp.ClientPool, usenetPool loader.SegmentFetcher, estimator *loader.SegmentSizeEstimator) []*loader.File {

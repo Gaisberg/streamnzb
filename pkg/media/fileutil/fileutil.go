@@ -1,20 +1,12 @@
 package fileutil
 
-import (
-	"regexp"
-	"strings"
-)
-
-var filenameTokenWithKnownExtRE = regexp.MustCompile(`(?i)([A-Za-z0-9._-]+\.(?:mkv|mp4|avi|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|rar|7z|par2|nzb|nfo|r[0-9]{2}|[0-9]{3}))`)
+import "strings"
 
 func ExtractFilename(subject string) string {
 
 	if start := strings.Index(subject, "\""); start != -1 {
 		if end := strings.Index(subject[start+1:], "\""); end != -1 {
-			quoted := strings.Trim(subject[start+1:start+1+end], "\"' ")
-			if quoted != "" {
-				return quoted
-			}
+			return strings.Trim(subject[start+1:start+1+end], "\"' ")
 		}
 	}
 
@@ -35,10 +27,6 @@ func ExtractFilename(subject string) string {
 
 	clean = strings.TrimSuffix(clean, " yEnc")
 	clean = strings.TrimSpace(clean)
-
-	if matches := filenameTokenWithKnownExtRE.FindAllString(clean, -1); len(matches) > 0 {
-		return strings.Trim(matches[len(matches)-1], "\"' ")
-	}
 
 	if idx := strings.LastIndex(clean, "/"); idx != -1 {
 		clean = clean[idx+1:]

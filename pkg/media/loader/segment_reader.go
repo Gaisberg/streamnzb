@@ -211,14 +211,9 @@ func (r *SegmentReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("invalid whence")
 	}
 
-	if target < 0 {
+	if target < 0 || target > r.file.Size() {
 		r.mu.Unlock()
 		return 0, errors.New("seek out of bounds")
-	}
-	if fileSize := r.file.Size(); target > fileSize {
-		// Be tolerant of callers that seek slightly past EOF (some archive
-		// parsers probe layout this way). Clamp to EOF instead of failing.
-		target = fileSize
 	}
 
 	if target == r.offset {

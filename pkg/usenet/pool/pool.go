@@ -56,109 +56,16 @@ type ProviderConfig struct {
 }
 
 type Config struct {
-	Providers                  []ProviderConfig
-	SegmentCache               SegmentCache
-	PermanentMissingMaxEntries int
+	Providers    []ProviderConfig
+	SegmentCache SegmentCache
 }
 
 type Pool struct {
 	providers     []ProviderConfig
 	cache         SegmentCache
 	sf            *singleflight.Group
-	missing       *permanentMissingSegments
-	providerSig   string
 	mu            sync.RWMutex
 	activeFetches atomic.Int64
-}
-
-type permanentMissingSegments struct {
-	mu         sync.RWMutex
-	m          map[string]time.Time
-	maxEntries int
-}
-
-const defaultPermanentMissingMaxEntries = 50000
-
-func newPermanentMissingSegments(maxEntries int) *permanentMissingSegments {
-	if maxEntries <= 0 {
-		maxEntries = defaultPermanentMissingMaxEntries
-	}
-	return &permanentMissingSegments{
-		m:          make(map[string]time.Time),
-		maxEntries: maxEntries,
-	}
-}
-
-func (p *permanentMissingSegments) has(key string) bool {
-	p.mu.RLock()
-	_, ok := p.m[key]
-	p.mu.RUnlock()
-	return ok
-}
-
-func (p *permanentMissingSegments) delete(key string) {
-	p.mu.Lock()
-	delete(p.m, key)
-	p.mu.Unlock()
-}
-
-func (p *permanentMissingSegments) add(key string) {
-	now := time.Now()
-	p.mu.Lock()
-	p.m[key] = now
-	for len(p.m) > p.maxEntries {
-		var oldestKey string
-		var oldest time.Time
-		for k, insertedAt := range p.m {
-			if oldestKey == "" || insertedAt.Before(oldest) {
-				oldestKey = k
-				oldest = insertedAt
-			}
-		}
-		if oldestKey == "" {
-			break
-		}
-		delete(p.m, oldestKey)
-	}
-	p.mu.Unlock()
-}
-
-func providerSignature(providers []ProviderConfig) string {
-	ids := make([]string, 0, len(providers))
-	for i := range providers {
-		if id := strings.TrimSpace(providers[i].ID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return strings.Join(ids, ",")
-}
-
-func (p *Pool) missingKey(messageID string) string {
-	return p.providerSig + "|" + strings.TrimSpace(messageID)
-}
-
-func (p *Pool) isKnownMissing(messageID string) bool {
-	if p == nil || p.missing == nil {
-		return false
-	}
-	key := p.missingKey(messageID)
-	return p.missing.has(key)
-}
-
-func (p *Pool) markKnownMissing(messageID string) {
-	if p == nil || p.missing == nil {
-		return
-	}
-	key := p.missingKey(messageID)
-	p.missing.add(key)
-}
-
-func (p *Pool) clearKnownMissing(messageID string) {
-	if p == nil || p.missing == nil {
-		return
-	}
-	key := p.missingKey(messageID)
-	p.missing.delete(key)
 }
 
 type attemptedProvidersError struct {
@@ -223,35 +130,6 @@ func appendUniqueHosts(dst []string, hosts ...string) []string {
 	return dst
 }
 
-func (p *Pool) attemptedAllProviderIDs(attemptedIDs []string) bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if len(p.providers) == 0 {
-		return false
-	}
-	seen := make(map[string]struct{}, len(attemptedIDs))
-	for _, id := range attemptedIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		seen[id] = struct{}{}
-	}
-	if len(seen) == 0 {
-		return false
-	}
-	for i := range p.providers {
-		id := strings.TrimSpace(p.providers[i].ID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 type PoolProviderTraceSnapshot struct {
 	ID     string
 	Host   string
@@ -305,11 +183,9 @@ func NewPool(cfg *Config) (*Pool, error) {
 		cache = NoopSegmentCache()
 	}
 	return &Pool{
-		providers:   providers,
-		cache:       cache,
-		sf:          &singleflight.Group{},
-		missing:     newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
-		providerSig: providerSignature(providers),
+		providers: providers,
+		cache:     cache,
+		sf:        &singleflight.Group{},
 	}, nil
 }
 
@@ -342,9 +218,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	messageID := strings.TrimSpace(segment.ID)
 	if messageID == "" {
 		return SegmentData{}, fmt.Errorf("empty segment message ID")
-	}
-	if p.isKnownMissing(messageID) {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: 430 No Such Article (cached)", messageID)
 	}
 	if data, ok := p.cache.Get(messageID); ok {
 		logger.Trace("fetch segment cache hit", "message_id", messageID)
@@ -440,9 +313,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	for range providers {
 		res := <-ch
 		attempted = appendUniqueHosts(attempted, res.host)
-		if res.host != "" {
-			// no-op, keep host tracking for wrapped error context
-		}
 		if res.err == nil {
 			if !shouldCacheFetchedSegment(fetchCtx) {
 				cancel()
@@ -451,7 +321,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			cached := res.data
 			cached.ProviderHost = ""
 			p.cache.Set(messageID, cached)
-			p.clearKnownMissing(messageID)
 			cancel()
 			logger.Trace("fetch segment ok (parallel)", "message_id", messageID, "size", res.data.Size)
 			return res.data, nil
@@ -461,9 +330,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			if articleNotFoundErr == nil {
 				articleNotFoundErr = res.err
 			}
-			// FetchSegmentFirst uses fixed one-provider workers; provider IDs are
-			// not surfaced in results, so we cannot prove all providers were
-			// attempted here. Do not mark permanent-missing from this fast path.
 			continue
 		}
 		sawNonArticleNotFound = true
@@ -478,9 +344,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 }
 
 func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *nzb.Segment, groups []string) (SegmentData, error) {
-	if p.isKnownMissing(messageID) {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: 430 No Such Article (cached)", messageID)
-	}
 	if data, ok := p.cache.Get(messageID); ok {
 		logger.Trace("fetch segment cache hit", "message_id", messageID)
 		return data, nil
@@ -496,7 +359,6 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	var exclude []string
 	var lastErr error
 	var attempted []string
-	var attemptedIDs []string
 	var articleNotFoundErr error
 	sawNonArticleNotFound := false
 	maxAttempts := providerCount
@@ -517,7 +379,6 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		}
 		host := p.Host(providerID)
 		attempted = appendUniqueHosts(attempted, host)
-		attemptedIDs = appendUniqueHosts(attemptedIDs, providerID)
 
 		data, articleNotFound, err := func() (SegmentData, bool, error) {
 			p.activeFetches.Add(1)
@@ -590,15 +451,11 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		cached := data
 		cached.ProviderHost = ""
 		p.cache.Set(messageID, cached)
-		p.clearKnownMissing(messageID)
 		logger.Trace("fetch segment ok", "message_id", messageID, "size", data.Size)
 		return data, nil
 	}
 
 	if articleNotFoundErr != nil && !sawNonArticleNotFound {
-		if p.attemptedAllProviderIDs(attemptedIDs) {
-			p.markKnownMissing(messageID)
-		}
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
 	if lastErr != nil {
@@ -614,9 +471,6 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return false, fmt.Errorf("empty segment message ID")
-	}
-	if p.isKnownMissing(messageID) {
-		return false, nil
 	}
 
 	statCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -699,40 +553,23 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 
 	var lastErr error
 	var attempted []string
-	var attemptedIDs []string
-	sawNotFound := false
-	sawError := false
 	for range providers {
 		res := <-ch
 		attempted = appendUniqueHosts(attempted, res.host)
-		if res.host != "" {
-			for i := range providers {
-				if providers[i].ClientPool != nil && providers[i].ClientPool.Host() == res.host {
-					attemptedIDs = appendUniqueHosts(attemptedIDs, providers[i].ID)
-					break
-				}
-			}
-		}
 		if res.err == nil && res.exists {
-			p.clearKnownMissing(messageID)
 			cancel()
 			logger.Trace("stat segment ok", "message_id", messageID)
 			return true, nil
 		}
 		if res.err != nil {
 			lastErr = res.err
-			sawError = true
-			continue
 		}
-		if !res.exists {
-			sawNotFound = true
+		if res.err == nil && !res.exists {
+			lastErr = nil
 		}
 	}
 	if lastErr != nil {
 		return false, wrapAttemptedProviders(fmt.Errorf("stat segment %s: %w", messageID, lastErr), attempted)
-	}
-	if p.attemptedAllProviderIDs(attemptedIDs) && sawNotFound && !sawError {
-		p.markKnownMissing(messageID)
 	}
 	logger.Trace("stat segment not found (430)", "message_id", messageID)
 	return false, nil
@@ -872,11 +709,9 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 	defer p.mu.RUnlock()
 	if len(providerIDs) == 0 {
 		return &Pool{
-			providers:   p.providers,
-			cache:       p.cache,
-			sf:          p.sf,
-			missing:     p.missing,
-			providerSig: p.providerSig,
+			providers: p.providers,
+			cache:     p.cache,
+			sf:        p.sf,
 		}
 	}
 	byID := make(map[string]ProviderConfig, len(p.providers))
@@ -898,11 +733,9 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		return nil
 	}
 	return &Pool{
-		providers:   subset,
-		cache:       p.cache,
-		sf:          p.sf,
-		missing:     p.missing,
-		providerSig: providerSignature(subset),
+		providers: subset,
+		cache:     p.cache,
+		sf:        p.sf,
 	}
 }
 
