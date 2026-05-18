@@ -43,7 +43,7 @@ const INDEXER_PRESETS = [
   { name: 'NZBNDX', url: 'https://www.nzbndx.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'NzbPlanet', url: 'https://api.nzbplanet.net', api_path: '/api', type: 'newznab', api_hits_day: 5000, downloads_day: 0, rate_limit_rps: 0, timeout_seconds: 5 },
   { name: 'NZBStars', url: 'https://nzbstars.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
-  { name: 'SceneNZBs', url: 'https://scenenzbs.com', api_path: '/api', type: 'newznab', api_hits_day: 0, downloads_day: 400, rate_limit_rps: 5, timeout_seconds: 5 },
+  { name: 'SceneNZBs', url: 'https://scenenzbs.com', api_path: '/api', type: 'newznab', api_hits_day: 0, downloads_day: 400, rate_limit_rps: 5, timeout_seconds: 5, grab_header: 'SABnzbd/4.3.0' },
   { name: 'Tabula Rasa', url: 'https://www.tabula-rasa.pw', api_path: '/api/v1', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'Usenet Crawler', url: 'https://www.usenet-crawler.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'Easynews', url: '', api_path: '/api', type: 'easynews', api_hits_day: 100, downloads_day: 50 },
@@ -70,6 +70,8 @@ function normalizeIndexerDraft(draft) {
     username: value.username || '',
     password: value.password || '',
     proxy_url: (value.proxy_url || '').trim(),
+    query_header: value.type === 'easynews' ? '' : (value.query_header || '').trim(),
+    grab_header: (value.grab_header || '').trim(),
   }
 }
 
@@ -88,6 +90,8 @@ function getPresetDefaults(preset) {
     api_hits_day: Number(preset.api_hits_day || 0),
     downloads_day: Number(preset.downloads_day || 0),
     rate_limit_rps: Number(preset.rate_limit_rps || 0),
+    query_header: preset.query_header || '',
+    grab_header: preset.grab_header || '',
   }
 }
 
@@ -106,6 +110,8 @@ function summarizeIndexer(indexer, defaultProxyURL = '') {
   parts.push(`RPS: ${formatLimitValue(indexer.rate_limit_rps)}`)
   if (indexer.proxy_url) parts.push('Proxy: override')
   else if (defaultProxyURL) parts.push('Proxy: default')
+  if (indexer.grab_header) parts.push(`Grab UA: ${indexer.grab_header}`)
+  if (indexer.query_header) parts.push(`Query UA: ${indexer.query_header}`)
   if (indexer.search_results_cache_time > 0) parts.push(`Cache time: ${indexer.search_results_cache_time}m`)
   return parts
 }
@@ -267,234 +273,276 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        <div className="space-y-4">
-          <div className="rounded-md border border-border/60 p-3">
-            <div className={rowClass}>
-              <div className={labelClass}>
-                <Label className="text-sm font-medium">Name</Label>
-              </div>
-              <div className={controlNameClass}>
-                <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. NzbPlanet" disabled={editing} />
-                {!editing && (
-                  <TooltipProvider delayDuration={100}>
-                    <Tooltip open={presetTooltipOpen && !presetMenuOpen} onOpenChange={setPresetTooltipOpen}>
-                      <DropdownMenu onOpenChange={(nextOpen) => {
-                        setPresetMenuOpen(nextOpen)
-                        if (nextOpen) setPresetTooltipOpen(false)
-                      }}>
-                        <TooltipTrigger asChild>
-                          <DropdownMenuTrigger asChild>
-                            <Button type="button" variant={selectedPresetName ? "secondary" : "outline"} size="icon" className="h-9 w-9 shrink-0" aria-label={selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}>
-                              <Download className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                        </TooltipTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          className="max-h-80 w-56 overflow-y-auto"
-                          onCloseAutoFocus={(event) => {
-                            event.preventDefault()
-                          }}
-                        >
-                          {INDEXER_PRESETS.map((preset) => (
-                            <DropdownMenuItem
-                              key={preset.name}
-                              onClick={() => {
-                                const presetDefaults = getPresetDefaults(preset)
-                                setPresetTooltipOpen(false)
-                                setSaveError('')
-                                setFieldErrors({})
-                                setDraft((current) => ({
-                                  ...current,
-                                  name: preset.name,
-                                  url: preset.url,
-                                  api_path: preset.api_path,
-                                  type: preset.type,
-                                  timeout_seconds: presetDefaults.timeout_seconds,
-                                  api_hits_day: presetDefaults.api_hits_day,
-                                  downloads_day: presetDefaults.downloads_day,
-                                  rate_limit_rps: presetDefaults.rate_limit_rps,
-                                }))
-                                requestAnimationFrame(() => {
-                                  nameInputRef.current?.focus()
-                                  nameInputRef.current?.select?.()
-                                })
-                              }}
-                            >
-                              {preset.name}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                      <TooltipContent>{selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {!isEasynews && (
-            <div className="rounded-md border border-border/60">
-              <div className="p-3">
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">URL</Label>
-                  </div>
-                  <div className={controlWideClass}>
-                    <Input className={`h-9 ${fieldClass('url')}`} value={draft.url} onChange={(event) => update('url', event.target.value)} placeholder="https://api.nzbgeek.info" />
-                  </div>
-                </div>
-              </div>
-              <div className="relative p-3">
-                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">API Path</Label>
-                  </div>
-                  <div className={controlWideClass}>
-                    <Input className={`h-9 ${fieldClass('api_path')}`} value={draft.api_path} onChange={(event) => update('api_path', event.target.value)} placeholder="/api" />
-                  </div>
-                </div>
-                {hasProwlarrPlaceholder && (
-                  <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>Replace <code>{PROWLARR_INDEXER_ID_PLACEHOLDER}</code> with the real Prowlarr indexer ID, for example <code>1/api</code>.</span>
-                  </div>
-                )}
-              </div>
-              <div className="relative p-3">
-                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">API Key</Label>
-                  </div>
-                  <div className={controlWideClass}>
-                    <Input className={`h-9 ${fieldClass('api_key')}`} type="password" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isEasynews && (
-            <div className="rounded-md border border-border/60">
-              <div className="p-3">
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">Username</Label>
-                  </div>
-                  <div className={controlWideClass}>
-                    <Input className={`h-9 ${fieldClass('username')}`} value={draft.username} onChange={(event) => update('username', event.target.value)} />
-                  </div>
-                </div>
-              </div>
-              <div className="relative p-3">
-                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">Password</Label>
-                  </div>
-                  <div className={controlWideClass}>
-                    <Input className={`h-9 ${fieldClass('password')}`} type="password" value={draft.password} onChange={(event) => update('password', event.target.value)} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="rounded-md border border-border/60 p-3">
-            <div className={rowClass}>
-              <div className={labelClass}>
-                <Label className="text-sm font-medium">HTTP(S) proxy</Label>
-                <p className="mt-1 text-xs text-muted-foreground">Optional proxy override</p>
-              </div>
-              <div className={controlWideClass}>
-                <Input
-                  className={`h-9 ${fieldClass('proxy_url')}`}
-                  value={draft.proxy_url}
-                  onChange={(event) => update('proxy_url', event.target.value)}
-                  placeholder="http://proxy:8888"
-                  autoComplete="off"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-md border border-border/60">
-            <div className="p-3">
-              <div className="space-y-3">
-                <div className={rowClass}>
-                  <div className={labelClass}>
-                    <Label className="text-sm font-medium">Timeout (seconds)</Label>
-                  </div>
-                  <div className={controlNarrowClass}>
-                    <Input className={`h-9 ${fieldClass('timeout_seconds')}`} type="number" min={0} value={draft.timeout_seconds === 0 ? '' : draft.timeout_seconds} onChange={(event) => update('timeout_seconds', event.target.value === '' ? 0 : Number(event.target.value))} placeholder={String(getDefaultIndexerTimeoutSeconds(draft.type))} />
-                  </div>
-                </div>
-                {isEasynews && (
-                  <p className="text-sm text-muted-foreground">{EASYNEWS_TIMEOUT_HINT}</p>
-                )}
-              </div>
-            </div>
-            <div className="relative p-3">
-              <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+          <div className="space-y-4">
+            <div className="rounded-md border border-border/60 p-3">
               <div className={rowClass}>
                 <div className={labelClass}>
-                  <Label className="text-sm font-medium">Requests/Second</Label>
+                  <Label className="text-sm font-medium">Name</Label>
                 </div>
-                <div className={controlNarrowClass}>
-                  <Input className={`h-9 ${fieldClass('rate_limit_rps')}`} type="number" min={0} value={draft.rate_limit_rps === 0 ? '' : draft.rate_limit_rps} onChange={(event) => update('rate_limit_rps', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
+                <div className={controlNameClass}>
+                  <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. NzbPlanet" disabled={editing} />
+                  {!editing && (
+                    <TooltipProvider delayDuration={100}>
+                      <Tooltip open={presetTooltipOpen && !presetMenuOpen} onOpenChange={setPresetTooltipOpen}>
+                        <DropdownMenu onOpenChange={(nextOpen) => {
+                          setPresetMenuOpen(nextOpen)
+                          if (nextOpen) setPresetTooltipOpen(false)
+                        }}>
+                          <TooltipTrigger asChild>
+                            <DropdownMenuTrigger asChild>
+                              <Button type="button" variant={selectedPresetName ? "secondary" : "outline"} size="icon" className="h-9 w-9 shrink-0" aria-label={selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}>
+                                <Download className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                          </TooltipTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            className="max-h-80 w-56 overflow-y-auto"
+                            onCloseAutoFocus={(event) => {
+                              event.preventDefault()
+                            }}
+                          >
+                            {INDEXER_PRESETS.map((preset) => (
+                              <DropdownMenuItem
+                                key={preset.name}
+                                onClick={() => {
+                                  const presetDefaults = getPresetDefaults(preset)
+                                  setPresetTooltipOpen(false)
+                                  setSaveError('')
+                                  setFieldErrors({})
+                                  setDraft((current) => ({
+                                    ...current,
+                                    name: preset.name,
+                                    url: preset.url,
+                                    api_path: preset.api_path,
+                                    type: preset.type,
+                                    timeout_seconds: presetDefaults.timeout_seconds,
+                                    api_hits_day: presetDefaults.api_hits_day,
+                                    downloads_day: presetDefaults.downloads_day,
+                                    rate_limit_rps: presetDefaults.rate_limit_rps,
+                                    query_header: presetDefaults.query_header,
+                                    grab_header: presetDefaults.grab_header,
+                                  }))
+                                  requestAnimationFrame(() => {
+                                    nameInputRef.current?.focus()
+                                    nameInputRef.current?.select?.()
+                                  })
+                                }}
+                              >
+                                {preset.name}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        <TooltipContent>{selectedPresetName ? `Load preset (${selectedPresetName})` : 'Load preset'}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
                 </div>
               </div>
             </div>
-            {draft.type === 'aggregator' && (
-              <div className="relative p-3">
-                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+
+            {!isEasynews && (
+              <div className="rounded-md border border-border/60">
+                <div className="p-3">
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">URL</Label>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input className={`h-9 ${fieldClass('url')}`} value={draft.url} onChange={(event) => update('url', event.target.value)} placeholder="https://api.nzbgeek.info" />
+                    </div>
+                  </div>
+                </div>
+                <div className="relative p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">API Path</Label>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input className={`h-9 ${fieldClass('api_path')}`} value={draft.api_path} onChange={(event) => update('api_path', event.target.value)} placeholder="/api" />
+                    </div>
+                  </div>
+                  {hasProwlarrPlaceholder && (
+                    <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>Replace <code>{PROWLARR_INDEXER_ID_PLACEHOLDER}</code> with the real Prowlarr indexer ID, for example <code>1/api</code>.</span>
+                    </div>
+                  )}
+                </div>
+                <div className="relative p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">API Key</Label>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input className={`h-9 ${fieldClass('api_key')}`} type="password" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isEasynews && (
+              <div className="rounded-md border border-border/60">
+                <div className="p-3">
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">Username</Label>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input className={`h-9 ${fieldClass('username')}`} value={draft.username} onChange={(event) => update('username', event.target.value)} />
+                    </div>
+                  </div>
+                </div>
+                <div className="relative p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">Password</Label>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input className={`h-9 ${fieldClass('password')}`} type="password" value={draft.password} onChange={(event) => update('password', event.target.value)} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-md border border-border/60 p-3">
+              <div className={rowClass}>
+                <div className={labelClass}>
+                  <Label className="text-sm font-medium">HTTP(S) proxy</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">Optional proxy override</p>
+                </div>
+                <div className={controlWideClass}>
+                  <Input
+                    className={`h-9 ${fieldClass('proxy_url')}`}
+                    value={draft.proxy_url}
+                    onChange={(event) => update('proxy_url', event.target.value)}
+                    placeholder="http://proxy:8888"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/60">
+              {!isEasynews && (
+                <div className="p-3">
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">Indexer Query Header</Label>
+                      <p className="mt-1 text-xs text-muted-foreground">User-Agent for search and capability requests. Overrides the global setting for this indexer only.</p>
+                    </div>
+                    <div className={controlWideClass}>
+                      <Input
+                        className="h-9"
+                        value={draft.query_header}
+                        onChange={(event) => update('query_header', event.target.value)}
+                        placeholder="Prowlarr/2.3.0.5236"
+                        autoComplete="off"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className={!isEasynews ? "relative p-3" : "p-3"}>
+                {!isEasynews && <div className="absolute left-3 right-3 top-0 border-t border-border/60" />}
                 <div className={rowClass}>
                   <div className={labelClass}>
-                    <Label className="text-sm font-medium">Search Results Cache Time (minutes)</Label>
+                    <Label className="text-sm font-medium">Indexer Grab Header</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">User-Agent for NZB download requests. Overrides the global setting for this indexer only.</p>
                   </div>
-                  <div className={controlNarrowClass}>
+                  <div className={controlWideClass}>
                     <Input
-                      className={`h-9 ${fieldClass('search_results_cache_time')}`}
-                      type="number"
-                      min={0}
-                      value={draft.search_results_cache_time === 0 ? '' : draft.search_results_cache_time}
-                      onChange={(event) => update('search_results_cache_time', event.target.value === '' ? 0 : Number(event.target.value))}
-                      placeholder="disabled"
+                      className="h-9"
+                      value={draft.grab_header}
+                      onChange={(event) => update('grab_header', event.target.value)}
+                      placeholder="SABnzbd/4.3.0"
+                      autoComplete="off"
                     />
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  NZBHydra2: adds <code>cachetime</code> to search API calls.
-                </p>
-              </div>
-            )}
-            <div className="relative p-3">
-              <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-              <div className={rowClass}>
-                <div className={labelClass}>
-                  <Label className="text-sm font-medium">Hits/Day</Label>
-                </div>
-                <div className={controlNarrowClass}>
-                  <Input className={`h-9 ${fieldClass('api_hits_day')}`} type="number" min={0} value={draft.api_hits_day === 0 ? '' : draft.api_hits_day} onChange={(event) => update('api_hits_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
-                </div>
               </div>
             </div>
-            <div className="relative p-3">
-              <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-              <div className={rowClass}>
-                <div className={labelClass}>
-                  <Label className="text-sm font-medium">DLs/Day</Label>
+
+            <div className="rounded-md border border-border/60">
+              <div className="p-3">
+                <div className="space-y-3">
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">Timeout (seconds)</Label>
+                    </div>
+                    <div className={controlNarrowClass}>
+                      <Input className={`h-9 ${fieldClass('timeout_seconds')}`} type="number" min={0} value={draft.timeout_seconds === 0 ? '' : draft.timeout_seconds} onChange={(event) => update('timeout_seconds', event.target.value === '' ? 0 : Number(event.target.value))} placeholder={String(getDefaultIndexerTimeoutSeconds(draft.type))} />
+                    </div>
+                  </div>
+                  {isEasynews && (
+                    <p className="text-sm text-muted-foreground">{EASYNEWS_TIMEOUT_HINT}</p>
+                  )}
                 </div>
-                <div className={controlNarrowClass}>
-                  <Input className={`h-9 ${fieldClass('downloads_day')}`} type="number" min={0} value={draft.downloads_day === 0 ? '' : draft.downloads_day} onChange={(event) => update('downloads_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className={rowClass}>
+                  <div className={labelClass}>
+                    <Label className="text-sm font-medium">Requests/Second</Label>
+                  </div>
+                  <div className={controlNarrowClass}>
+                    <Input className={`h-9 ${fieldClass('rate_limit_rps')}`} type="number" min={0} value={draft.rate_limit_rps === 0 ? '' : draft.rate_limit_rps} onChange={(event) => update('rate_limit_rps', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
+                  </div>
+                </div>
+              </div>
+              {draft.type === 'aggregator' && (
+                <div className="relative p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={rowClass}>
+                    <div className={labelClass}>
+                      <Label className="text-sm font-medium">Search Results Cache Time (minutes)</Label>
+                    </div>
+                    <div className={controlNarrowClass}>
+                      <Input
+                        className={`h-9 ${fieldClass('search_results_cache_time')}`}
+                        type="number"
+                        min={0}
+                        value={draft.search_results_cache_time === 0 ? '' : draft.search_results_cache_time}
+                        onChange={(event) => update('search_results_cache_time', event.target.value === '' ? 0 : Number(event.target.value))}
+                        placeholder="disabled"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    NZBHydra2: adds <code>cachetime</code> to search API calls.
+                  </p>
+                </div>
+              )}
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className={rowClass}>
+                  <div className={labelClass}>
+                    <Label className="text-sm font-medium">Hits/Day</Label>
+                  </div>
+                  <div className={controlNarrowClass}>
+                    <Input className={`h-9 ${fieldClass('api_hits_day')}`} type="number" min={0} value={draft.api_hits_day === 0 ? '' : draft.api_hits_day} onChange={(event) => update('api_hits_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
+                  </div>
+                </div>
+              </div>
+              <div className="relative p-3">
+                <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                <div className={rowClass}>
+                  <div className={labelClass}>
+                    <Label className="text-sm font-medium">DLs/Day</Label>
+                  </div>
+                  <div className={controlNarrowClass}>
+                    <Input className={`h-9 ${fieldClass('downloads_day')}`} type="number" min={0} value={draft.downloads_day === 0 ? '' : draft.downloads_day} onChange={(event) => update('downloads_day', event.target.value === '' ? 0 : Number(event.target.value))} placeholder="∞" />
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
         </div>
 
         <DialogFooter className="flex items-center justify-between gap-3">
@@ -663,56 +711,56 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
                   >
                     <CardContent className="pt-6">
                       <div className="min-w-0 flex-1 space-y-3">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="flex items-center gap-2 self-end sm:order-2">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <div className="inline-flex h-9 w-20 items-center justify-center rounded-md border border-border/60 bg-muted/30 px-2">
-                                    <Switch
-                                      checked={normalized.enabled !== false}
-                                      onCheckedChange={(checked) => handleToggleEnabled(index, checked === true)}
-                                      aria-label={normalized.enabled !== false ? `Disable indexer ${normalized.name || normalized.url || index + 1}` : `Enable indexer ${normalized.name || normalized.url || index + 1}`}
-                                      className="h-6 w-12 data-[state=checked]:bg-green-500 data-[state=unchecked]:bg-muted-foreground/30"
-                                      thumbClassName="flex h-5 w-5 items-center justify-center data-[state=checked]:translate-x-6 data-[state=unchecked]:translate-x-0"
-                                    />
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent>{normalized.enabled !== false ? 'Disable indexer' : 'Enable indexer'}</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" aria-label={`Edit indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => {
-                                    setDeleteBlockedName('')
-                                    onClearStatus?.()
-                                    setEditingIndex(index)
-                                  }}>
-                                    <Settings className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Edit indexer</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" aria-label={`Delete indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => setDeleteTarget({ index, name: normalized.name || normalized.url })}>
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Delete indexer</TooltipContent>
-                              </Tooltip>
-                            </div>
-                            <div className="min-w-0 font-semibold sm:order-1">{normalized.name || normalized.url || `Indexer ${index + 1}`}</div>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="flex items-center gap-2 self-end sm:order-2">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="inline-flex h-9 w-20 items-center justify-center rounded-md border border-border/60 bg-muted/30 px-2">
+                                  <Switch
+                                    checked={normalized.enabled !== false}
+                                    onCheckedChange={(checked) => handleToggleEnabled(index, checked === true)}
+                                    aria-label={normalized.enabled !== false ? `Disable indexer ${normalized.name || normalized.url || index + 1}` : `Enable indexer ${normalized.name || normalized.url || index + 1}`}
+                                    className="h-6 w-12 data-[state=checked]:bg-green-500 data-[state=unchecked]:bg-muted-foreground/30"
+                                    thumbClassName="flex h-5 w-5 items-center justify-center data-[state=checked]:translate-x-6 data-[state=unchecked]:translate-x-0"
+                                  />
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent>{normalized.enabled !== false ? 'Disable indexer' : 'Enable indexer'}</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button type="button" variant="outline" size="icon" className="h-9 w-9" aria-label={`Edit indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => {
+                                  setDeleteBlockedName('')
+                                  onClearStatus?.()
+                                  setEditingIndex(index)
+                                }}>
+                                  <Settings className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Edit indexer</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button type="button" variant="destructive" size="icon" className="h-9 w-9" aria-label={`Delete indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => setDeleteTarget({ index, name: normalized.name || normalized.url })}>
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Delete indexer</TooltipContent>
+                            </Tooltip>
                           </div>
-                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-                            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">
-                              <span className="rounded-full border border-border px-2 py-1">
-                                Status:{' '}
-                                <span className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
-                              </span>
-                              {summary.map((part) => (
-                                <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
-                              ))}
-                            </div>
+                          <div className="min-w-0 font-semibold sm:order-1">{normalized.name || normalized.url || `Indexer ${index + 1}`}</div>
+                        </div>
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">
+                            <span className="rounded-full border border-border px-2 py-1">
+                              Status:{' '}
+                              <span className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+                            </span>
+                            {summary.map((part) => (
+                              <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
+                            ))}
                           </div>
+                        </div>
                       </div>
                     </CardContent>
 
