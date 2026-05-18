@@ -33,6 +33,7 @@ type Client struct {
 	username        string
 	password        string
 	name            string
+	grabHeader      string
 	client          *http.Client
 	downloadClient  *http.Client
 	downloadBase    string
@@ -54,7 +55,7 @@ type Client struct {
 
 var _ indexer.Indexer = (*Client)(nil)
 
-func NewClient(username, password, name string, downloadBase string, apiLimit, downloadLimit, rateLimitRPS, timeoutSeconds int, proxyURL string, um *indexer.UsageManager) (*Client, error) {
+func NewClient(username, password, name string, downloadBase string, apiLimit, downloadLimit, rateLimitRPS, timeoutSeconds int, proxyURL, grabHeader string, um *indexer.UsageManager) (*Client, error) {
 	if username == "" || password == "" {
 		return nil, fmt.Errorf("easynews username and password are required")
 	}
@@ -84,6 +85,7 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 		username:          username,
 		password:          password,
 		name:              name,
+		grabHeader:        grabHeader,
 		downloadBase:      downloadBase,
 		searchTimeout:     searchTimeout,
 		downloadTimeout:   downloadTimeout,
@@ -122,6 +124,13 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 	}
 
 	return c, nil
+}
+
+func (c *Client) effectiveGrabHeader() string {
+	if h := strings.TrimSpace(c.grabHeader); h != "" {
+		return h
+	}
+	return env.IndexerGrabHeader()
 }
 
 func (c *Client) Name() string {
@@ -509,7 +518,7 @@ func (c *Client) downloadNZBInternal(ctx context.Context, payload map[string]int
 
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", env.IndexerGrabHeader())
+	req.Header.Set("User-Agent", c.effectiveGrabHeader())
 	resp, err := c.downloadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("easynews NZB download request failed: %w", err)

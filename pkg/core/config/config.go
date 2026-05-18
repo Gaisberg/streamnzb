@@ -126,6 +126,13 @@ type IndexerConfig struct {
 	// ProxyURL is an optional HTTP or HTTPS proxy for this indexer (http://host:port or https://...).
 	// When empty, HTTP_PROXY / HTTPS_PROXY / NO_PROXY apply via the default proxy resolution.
 	ProxyURL string `json:"proxy_url,omitempty"`
+
+	// QueryHeader overrides the global indexer_query_header for search and capability requests to this indexer.
+	// Some indexers (e.g. SceneNZBs) gate content by User-Agent; leave empty to use the global setting.
+	QueryHeader string `json:"query_header,omitempty"`
+	// GrabHeader overrides the global indexer_grab_header for NZB download requests to this indexer.
+	// Some indexers (e.g. SceneNZBs) return different NZBs depending on the downloader UA; leave empty to use the global setting.
+	GrabHeader string `json:"grab_header,omitempty"`
 }
 
 // ValidateIndexerProxyURL returns nil if raw is empty or a valid http(s) proxy URL.

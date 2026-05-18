@@ -780,6 +780,7 @@ func pingIndexerWithTimeout(indexerCfg config.IndexerConfig) error {
 				indexerCfg.RateLimitRPS,
 				indexerCfg.EffectiveTimeoutSeconds(),
 				indexerCfg.ProxyURL,
+				indexerCfg.GrabHeader,
 				nil,
 			)
 			if err != nil {
