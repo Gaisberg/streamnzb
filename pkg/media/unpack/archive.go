@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -35,6 +36,8 @@ type FailedBlueprint struct {
 type StreamSelectionHints struct {
 	AllowLargestDirectFallback bool
 }
+
+const maxDirectProbeCandidates = 3
 
 func isPlausibleLargestDirectFallbackName(name string) bool {
 	trimmed := strings.TrimSpace(name)
@@ -146,6 +149,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 
 	rarFiles := filterRarFiles(files)
 	var rarScanFailed bool
+	var rarScanErr error
 	if len(rarFiles) > 0 {
 		logger.Trace("Detected RAR archive", "target", target, "volumes", len(rarFiles))
 		unpackables := make([]UnpackableFile, len(files))
@@ -156,6 +160,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
 			}
 			rarScanFailed = true
+			rarScanErr = err
 			logger.Warn("ScanArchive failed, falling back to other methods", "err", err)
 		} else {
 			s, name, size, err := StreamFromBlueprint(ctx, bp, password)
@@ -181,17 +186,32 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		return s, n, sz, newBp, err
 	}
 
-	if directIdx, err := selectDirectFileIndex(files, target); err != nil {
+	nameOverrides := recoverDirectFilenamesFromPAR2(ctx, files)
+	if len(nameOverrides) > 0 {
+		logger.Debug("PAR2 deobfuscation recovered direct media names",
+			"renamed_files", len(nameOverrides))
+	}
+
+	if directIdx, err := selectDirectFileIndexWithNames(files, target, nameOverrides); err != nil {
 		return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
 	} else if directIdx >= 0 {
 		f := files[directIdx]
-		name := ExtractFilename(f.Name())
+		name := directFileDisplayName(files, directIdx, nameOverrides)
 		stream, err := f.OpenStreamCtx(ctx)
 		if err != nil {
 			return nil, "", 0, nil, err
 		}
 		logger.Debug("Selected direct playback file", "target", target, "name", name, "index", directIdx, "size", f.Size())
 		return stream, name, f.Size(), &DirectBlueprint{FileName: name, FileIndex: directIdx, Target: target}, nil
+	}
+
+	if probedStream, probedName, probedSize, probedIdx, ok := probeDirectPlayableCandidates(ctx, files, nameOverrides); ok {
+		logger.Debug("Selected direct playback file via content probe",
+			"target", target,
+			"name", probedName,
+			"index", probedIdx,
+			"size", probedSize)
+		return probedStream, probedName, probedSize, &DirectBlueprint{FileName: probedName, FileIndex: probedIdx, Target: target}, nil
 	}
 
 	var largestFile UnpackableFile
@@ -229,7 +249,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 				logger.Warn("Heuristic RAR scan failed, falling back to direct stream", "err", err)
 			}
 		}
-		extractedName := ExtractFilename(largestFile.Name())
+		extractedName := directFileDisplayName(files, largestIdx, nameOverrides)
 		if !hints.AllowLargestDirectFallback {
 			err := fmt.Errorf("%w: largest direct fallback disabled", io.EOF)
 			if target.Valid() {
@@ -266,5 +286,63 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 	}
 
 	logger.Warn("GetMediaStream found no suitable media", "target", target, "files", len(files), "rar_candidates", len(rarFiles))
-	return nil, "", 0, &FailedBlueprint{Err: io.EOF, Target: target}, io.EOF
+	finalErr := io.EOF
+	if rarScanErr != nil {
+		finalErr = fmt.Errorf("no suitable media stream: RAR scan failed: %w", rarScanErr)
+	} else {
+		finalErr = fmt.Errorf("no suitable media stream: no direct video candidates and no playable archive content")
+	}
+	return nil, "", 0, &FailedBlueprint{Err: finalErr, Target: target}, finalErr
+}
+
+type directProbeCandidate struct {
+	idx  int
+	file UnpackableFile
+	name string
+	size int64
+}
+
+func probeDirectPlayableCandidates(ctx context.Context, files []UnpackableFile, nameOverrides map[int]string) (ReadSeekCloser, string, int64, int, bool) {
+	candidates := make([]directProbeCandidate, 0, len(files))
+	for i, f := range files {
+		if f == nil {
+			continue
+		}
+		name := directFileDisplayName(files, i, nameOverrides)
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ExtRar) || strings.Contains(lower, ".part") || IsRarPart(lower) || IsSplitArchivePart(lower) {
+			continue
+		}
+		if strings.HasSuffix(lower, ExtPar2) || strings.HasSuffix(lower, ExtNzb) || strings.HasSuffix(lower, ExtNfo) || strings.HasSuffix(lower, ExtIso) {
+			continue
+		}
+		size := f.Size()
+		if size < 50*1024*1024 {
+			continue
+		}
+		candidates = append(candidates, directProbeCandidate{idx: i, file: f, name: name, size: size})
+	}
+	if len(candidates) == 0 {
+		return nil, "", 0, -1, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].size > candidates[j].size })
+	if len(candidates) > maxDirectProbeCandidates {
+		candidates = candidates[:maxDirectProbeCandidates]
+	}
+
+	for _, c := range candidates {
+		if err := contextErr(ctx); err != nil {
+			return nil, "", 0, -1, false
+		}
+		stream, err := c.file.OpenStreamCtx(ctx)
+		if err != nil {
+			continue
+		}
+		probeErr := ProbeMediaStreamByContent(stream, c.name, c.size)
+		if probeErr == nil {
+			return stream, c.name, c.size, c.idx, true
+		}
+		_ = stream.Close()
+	}
+	return nil, "", 0, -1, false
 }

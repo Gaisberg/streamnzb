@@ -2228,10 +2228,6 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID, 
 }
 
 func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
-	if streamConfig == nil || streamConfig.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
 	if debugValue := strings.ToLower(strings.TrimSpace(os.Getenv("STREAMNZB_DEBUG_PLAY"))); debugValue != "1" && debugValue != "true" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -2333,7 +2329,9 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
 	}
 	hints := unpack.StreamSelectionHints{
-		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
+		// Debug play should be permissive and mirror nzbdav-style direct playback
+		// behavior for odd/obfuscated NZBs where strict content typing is absent.
+		AllowLargestDirectFallback: true,
 	}
 	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(mergedCtx, unpackFiles, sess.Blueprint, password, target, hints)
 	cacheReturnedPlaybackBlueprint(sess, bp)

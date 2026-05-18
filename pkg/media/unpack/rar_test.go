@@ -3,8 +3,10 @@ package unpack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"streamnzb/pkg/core/logger"
@@ -139,5 +141,64 @@ func TestScanArchiveReturnsContextErrorWhenCanceled(t *testing.T) {
 	}, "", EpisodeTarget{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsClassifiesLikelyCorruption(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:      10,
+		evidenceScans:    9,
+		invalidBlocks:    7,
+		unexpectedEOF:    1,
+		decodeCorruption: 1,
+	}
+
+	err := diag.classifyArchiveError()
+	if err == nil {
+		t.Fatal("expected corruption classification error")
+	}
+	if !strings.Contains(err.Error(), likelyPAR2RepairRequiredMsg) {
+		t.Fatalf("expected PAR2 guidance in error, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsIgnoresWeakCorruptionSignal(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:   10,
+		invalidBlocks: 2,
+	}
+
+	if err := diag.classifyArchiveError(); err != nil {
+		t.Fatalf("expected no corruption classification, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsDoesNotClassifyWithoutDecodeCorruptionEvidence(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:   10,
+		invalidBlocks: 9,
+		unexpectedEOF: 1,
+	}
+
+	if err := diag.classifyArchiveError(); err != nil {
+		t.Fatalf("expected no corruption classification without decode evidence, got %v", err)
+	}
+}
+
+func TestShouldRetryExhaustiveRARScan(t *testing.T) {
+	if shouldRetryExhaustiveRARScan(nil) {
+		t.Fatal("expected nil error to skip exhaustive retry")
+	}
+
+	if shouldRetryExhaustiveRARScan(errors.New("archive data appears corrupted or incomplete: likely PAR2 repair required")) {
+		t.Fatal("expected PAR2-classified corruption to skip exhaustive retry")
+	}
+
+	if shouldRetryExhaustiveRARScan(fmt.Errorf("first volume unavailable: %w", ErrTooManyZeroFills)) {
+		t.Fatal("expected first-volume unavailable to skip exhaustive retry")
+	}
+
+	if !shouldRetryExhaustiveRARScan(errors.New("empty archive")) {
+		t.Fatal("expected ambiguous fast-scan failure to allow exhaustive retry")
 	}
 }
