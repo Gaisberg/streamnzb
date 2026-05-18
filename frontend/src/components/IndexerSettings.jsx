@@ -434,8 +434,8 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                 <div className="p-3">
                   <div className={rowClass}>
                     <div className={labelClass}>
-                      <Label className="text-sm font-medium">Indexer Query Header</Label>
-                      <p className="mt-1 text-xs text-muted-foreground">User-Agent for search and capability requests. Overrides the global setting for this indexer only.</p>
+                      <Label className="text-sm font-medium">Query Header</Label>
+                      <p className="mt-1 text-xs text-muted-foreground">Optional Query Header override</p>
                     </div>
                     <div className={controlWideClass}>
                       <Input
@@ -453,15 +453,15 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                 {!isEasynews && <div className="absolute left-3 right-3 top-0 border-t border-border/60" />}
                 <div className={rowClass}>
                   <div className={labelClass}>
-                    <Label className="text-sm font-medium">Indexer Grab Header</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">User-Agent for NZB download requests. Overrides the global setting for this indexer only.</p>
+                    <Label className="text-sm font-medium">Grab Header</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">Optional Grab Header override</p>
                   </div>
                   <div className={controlWideClass}>
                     <Input
                       className="h-9"
                       value={draft.grab_header}
                       onChange={(event) => update('grab_header', event.target.value)}
-                      placeholder="SABnzbd/4.3.0"
+                      placeholder="SABnzbd/4.5.5"
                       autoComplete="off"
                     />
                   </div>
@@ -586,9 +586,9 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
   const [deleteBlockedName, setDeleteBlockedName] = useState('')
   const indexerStatusByName = useMemo(() => {
     const map = new Map()
-    ;(stats?.indexers || []).forEach((indexer) => {
-      map.set((indexer.name || '').trim(), true)
-    })
+      ; (stats?.indexers || []).forEach((indexer) => {
+        map.set((indexer.name || '').trim(), true)
+      })
     return map
   }, [stats])
 
