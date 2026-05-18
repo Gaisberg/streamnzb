@@ -126,7 +126,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 				downloadBase = downloadBase[:len(downloadBase)-1]
 			}
 
-			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), effectiveProxyURL, usageMgr)
+			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), effectiveProxyURL, idxCfg.GrabHeader, usageMgr)
 			if err != nil {
 				logger.Error("Failed to initialize Easynews from indexer list", "name", idxCfg.Name, "err", err)
 			} else {

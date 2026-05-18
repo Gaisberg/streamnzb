@@ -247,6 +247,20 @@ func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 	return c
 }
 
+func (c *Client) effectiveQueryHeader() string {
+	if h := strings.TrimSpace(c.cfg.QueryHeader); h != "" {
+		return h
+	}
+	return env.IndexerQueryHeader()
+}
+
+func (c *Client) effectiveGrabHeader() string {
+	if h := strings.TrimSpace(c.cfg.GrabHeader); h != "" {
+		return h
+	}
+	return env.IndexerGrabHeader()
+}
+
 func (c *Client) checkAPILimit() error {
 	c.refreshUsageFromManager()
 
@@ -339,7 +353,7 @@ func (c *Client) Ping() error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", env.IndexerQueryHeader())
+	req.Header.Set("User-Agent", c.effectiveQueryHeader())
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -366,7 +380,7 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create caps request: %w", err)
 	}
-	req.Header.Set("User-Agent", env.IndexerQueryHeader())
+	req.Header.Set("User-Agent", c.effectiveQueryHeader())
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -658,7 +672,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	httpReq.Header.Set("User-Agent", env.IndexerQueryHeader())
+	httpReq.Header.Set("User-Agent", c.effectiveQueryHeader())
 	startedAt := time.Now()
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
@@ -758,7 +772,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", env.IndexerGrabHeader())
+	req.Header.Set("User-Agent", c.effectiveGrabHeader())
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download NZB from %s: %w", c.Name(), err)
