@@ -147,6 +147,7 @@ func TestScanArchiveReturnsContextErrorWhenCanceled(t *testing.T) {
 func TestScanDiagnosticsClassifiesLikelyCorruption(t *testing.T) {
 	diag := scanDiagnostics{
 		failedScans:      10,
+		evidenceScans:    9,
 		invalidBlocks:    7,
 		unexpectedEOF:    1,
 		decodeCorruption: 1,

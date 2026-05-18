@@ -112,6 +112,20 @@ func recoverDirectFilenamesFromPAR2(ctx context.Context, files []UnpackableFile)
 	}
 
 	out := make(map[int]string, len(obfuscatedMediaIdx))
+	// Only apply positional overrides when we can prove identity mapping:
+	// obfuscated media indexes must be an exact 0..N-1 sequence.
+	identityMapping := true
+	for i, idx := range obfuscatedMediaIdx {
+		if idx != i {
+			identityMapping = false
+			break
+		}
+	}
+	if !identityMapping {
+		logger.Debug("PAR2 deobfuscation: skipping unsafe positional filename override",
+			"obfuscated_media", len(obfuscatedMediaIdx))
+		return nil
+	}
 	for i, idx := range obfuscatedMediaIdx {
 		out[idx] = mediaNames[i]
 	}

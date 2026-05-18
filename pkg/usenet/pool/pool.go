@@ -56,8 +56,9 @@ type ProviderConfig struct {
 }
 
 type Config struct {
-	Providers    []ProviderConfig
-	SegmentCache SegmentCache
+	Providers                  []ProviderConfig
+	SegmentCache               SegmentCache
+	PermanentMissingMaxEntries int
 }
 
 type Pool struct {
@@ -71,12 +72,55 @@ type Pool struct {
 }
 
 type permanentMissingSegments struct {
-	mu sync.RWMutex
-	m  map[string]struct{}
+	mu         sync.RWMutex
+	m          map[string]time.Time
+	maxEntries int
 }
 
-func newPermanentMissingSegments() *permanentMissingSegments {
-	return &permanentMissingSegments{m: make(map[string]struct{})}
+const defaultPermanentMissingMaxEntries = 50000
+
+func newPermanentMissingSegments(maxEntries int) *permanentMissingSegments {
+	if maxEntries <= 0 {
+		maxEntries = defaultPermanentMissingMaxEntries
+	}
+	return &permanentMissingSegments{
+		m:          make(map[string]time.Time),
+		maxEntries: maxEntries,
+	}
+}
+
+func (p *permanentMissingSegments) has(key string) bool {
+	p.mu.RLock()
+	_, ok := p.m[key]
+	p.mu.RUnlock()
+	return ok
+}
+
+func (p *permanentMissingSegments) delete(key string) {
+	p.mu.Lock()
+	delete(p.m, key)
+	p.mu.Unlock()
+}
+
+func (p *permanentMissingSegments) add(key string) {
+	now := time.Now()
+	p.mu.Lock()
+	p.m[key] = now
+	for len(p.m) > p.maxEntries {
+		var oldestKey string
+		var oldest time.Time
+		for k, insertedAt := range p.m {
+			if oldestKey == "" || insertedAt.Before(oldest) {
+				oldestKey = k
+				oldest = insertedAt
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(p.m, oldestKey)
+	}
+	p.mu.Unlock()
 }
 
 func providerSignature(providers []ProviderConfig) string {
@@ -98,10 +142,7 @@ func (p *Pool) isKnownMissing(messageID string) bool {
 		return false
 	}
 	key := p.missingKey(messageID)
-	p.missing.mu.RLock()
-	_, ok := p.missing.m[key]
-	p.missing.mu.RUnlock()
-	return ok
+	return p.missing.has(key)
 }
 
 func (p *Pool) markKnownMissing(messageID string) {
@@ -109,9 +150,7 @@ func (p *Pool) markKnownMissing(messageID string) {
 		return
 	}
 	key := p.missingKey(messageID)
-	p.missing.mu.Lock()
-	p.missing.m[key] = struct{}{}
-	p.missing.mu.Unlock()
+	p.missing.add(key)
 }
 
 func (p *Pool) clearKnownMissing(messageID string) {
@@ -119,9 +158,7 @@ func (p *Pool) clearKnownMissing(messageID string) {
 		return
 	}
 	key := p.missingKey(messageID)
-	p.missing.mu.Lock()
-	delete(p.missing.m, key)
-	p.missing.mu.Unlock()
+	p.missing.delete(key)
 }
 
 type attemptedProvidersError struct {
@@ -271,7 +308,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 		providers:   providers,
 		cache:       cache,
 		sf:          &singleflight.Group{},
-		missing:     newPermanentMissingSegments(),
+		missing:     newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
 		providerSig: providerSignature(providers),
 	}, nil
 }
@@ -663,6 +700,8 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	var lastErr error
 	var attempted []string
 	var attemptedIDs []string
+	sawNotFound := false
+	sawError := false
 	for range providers {
 		res := <-ch
 		attempted = appendUniqueHosts(attempted, res.host)
@@ -682,15 +721,17 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 		}
 		if res.err != nil {
 			lastErr = res.err
+			sawError = true
+			continue
 		}
-		if res.err == nil && !res.exists {
-			lastErr = nil
+		if !res.exists {
+			sawNotFound = true
 		}
 	}
 	if lastErr != nil {
 		return false, wrapAttemptedProviders(fmt.Errorf("stat segment %s: %w", messageID, lastErr), attempted)
 	}
-	if p.attemptedAllProviderIDs(attemptedIDs) {
+	if p.attemptedAllProviderIDs(attemptedIDs) && sawNotFound && !sawError {
 		p.markKnownMissing(messageID)
 	}
 	logger.Trace("stat segment not found (430)", "message_id", messageID)
@@ -831,9 +872,11 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 	defer p.mu.RUnlock()
 	if len(providerIDs) == 0 {
 		return &Pool{
-			providers: p.providers,
-			cache:     p.cache,
-			sf:        p.sf,
+			providers:   p.providers,
+			cache:       p.cache,
+			sf:          p.sf,
+			missing:     p.missing,
+			providerSig: p.providerSig,
 		}
 	}
 	byID := make(map[string]ProviderConfig, len(p.providers))

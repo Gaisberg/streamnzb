@@ -46,6 +46,9 @@ func ProbeMediaStreamByContent(stream io.ReadSeeker, name string, size int64) er
 	if size < int64(readSize) {
 		readSize = int(size)
 	}
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	buf := make([]byte, readSize)
 	n, err := io.ReadFull(stream, buf)
 	if err != nil && err != io.ErrUnexpectedEOF {

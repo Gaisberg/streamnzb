@@ -453,6 +453,7 @@ type filePart struct {
 
 type scanDiagnostics struct {
 	failedScans      int
+	evidenceScans    int
 	invalidBlocks    int
 	unexpectedEOF    int
 	decodeCorruption int
@@ -469,7 +470,7 @@ func (d scanDiagnostics) classifyArchiveError() error {
 	}
 	// Classify as likely corruption only when most failures look like
 	// broken article/volume bytes rather than generic parse errors.
-	evidence := d.invalidBlocks + d.unexpectedEOF + d.decodeCorruption
+	evidence := d.evidenceScans
 	if evidence == 0 {
 		return nil
 	}
@@ -543,17 +544,24 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 				mu.Lock()
 				diag.failedScans++
 				msg := strings.ToLower(err.Error())
+				scanHasEvidence := false
 				if strings.Contains(msg, "invalid file block") {
 					diag.invalidBlocks++
+					scanHasEvidence = true
 				}
 				if strings.Contains(msg, "unexpected eof") {
 					diag.unexpectedEOF++
+					scanHasEvidence = true
 				}
 				if strings.Contains(msg, "data corruption detected") ||
 					strings.Contains(msg, "without finding \"=yend\" trailer") ||
 					strings.Contains(msg, "without finding '=yend' trailer") ||
 					strings.Contains(msg, "rapidyenc") {
 					diag.decodeCorruption++
+					scanHasEvidence = true
+				}
+				if scanHasEvidence {
+					diag.evidenceScans++
 				}
 				mu.Unlock()
 			}
