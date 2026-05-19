@@ -309,8 +309,8 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                         </FormControl>
                       </div>
                       <FormDescription className="mt-3">
-                        When enabled, failover favors startup speed by skipping exhaustive operations.
-                        When disabled, startup timeout is automatically doubled to allow deeper diagnostics.
+                        When enabled, failover prioritizes faster startup and may skip deeper checks.
+                        When disabled, failover spends longer exhausting all options before moving on.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
