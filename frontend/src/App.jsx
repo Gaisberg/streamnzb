@@ -225,7 +225,7 @@ function App() {
   if (mustChangePassword && currentUser) {
     return <ChangePassword username={currentUser} onPasswordChanged={() => {
       setMustChangePassword(false)
-    }} />
+    }} requireCurrentPassword={false} />
   }
 
   if (error && wsStatus === 'disconnected') {
@@ -255,6 +255,7 @@ function App() {
         onNavigate={setActivePage}
         version={version}
         currentUser={currentUser}
+        forcePasswordResetEnabled={Boolean(config?.env_overrides?.includes('admin_must_change_password'))}
         onLogout={handleLogout}
         theme={theme}
         onThemeChange={setTheme}

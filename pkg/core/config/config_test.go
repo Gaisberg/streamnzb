@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coreenv "streamnzb/pkg/core/env"
 )
 
 func TestMergeIndexerSearchDefaultsSeriesSeasonAndCompleteSearchOn(t *testing.T) {
@@ -310,6 +312,18 @@ func TestConfigEffectiveFailoverFastModeHonorsDisabledValue(t *testing.T) {
 	cfg := &Config{FailoverFastMode: false}
 	if cfg.EffectiveFailoverFastMode() {
 		t.Fatalf("EffectiveFailoverFastMode() = true, want false")
+	}
+}
+
+func TestApplyEnvOverridesForcesAdminPasswordResetPrompt(t *testing.T) {
+	t.Setenv(coreenv.AdminForcePasswordResetEnv, "true")
+	o, keys := coreenv.ReadConfigOverrides()
+	cfg := &Config{}
+
+	ApplyEnvOverrides(cfg, o, keys)
+
+	if !cfg.AdminMustChangePassword {
+		t.Fatalf("AdminMustChangePassword = false, want true")
 	}
 }
 

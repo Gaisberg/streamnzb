@@ -1143,6 +1143,9 @@ func ApplyEnvOverrides(cfg *Config, o env.ConfigOverrides, keys []string) {
 	if keySet(keys, env.KeyAdminUsername) {
 		cfg.AdminUsername = o.AdminUsername
 	}
+	if keySet(keys, env.KeyAdminMustChangePwd) {
+		cfg.AdminMustChangePassword = o.AdminMustChangePwd
+	}
 	if keySet(keys, env.KeyProviders) {
 		cfg.Providers = make([]Provider, len(o.Providers))
 		for i, p := range o.Providers {
@@ -1260,6 +1263,8 @@ func CopyEnvOverridesFrom(src, dst *Config) {
 			dst.ProxyAuthPass = src.ProxyAuthPass
 		case env.KeyAdminUsername:
 			dst.AdminUsername = src.AdminUsername
+		case env.KeyAdminMustChangePwd:
+			dst.AdminMustChangePassword = src.AdminMustChangePassword
 		case env.KeyProviders:
 			dst.Providers = make([]Provider, len(src.Providers))
 			for i, p := range src.Providers {

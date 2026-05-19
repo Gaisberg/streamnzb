@@ -53,9 +53,11 @@ const (
 	KeyIndexerGrabHeader  = "indexer_grab_header"
 	KeyProviderHeader     = "provider_header"
 	KeyAdminUsername      = "admin_username"
+	KeyAdminMustChangePwd = "admin_must_change_password"
 )
 
 const AdminUsernameEnv = "ADMIN_USERNAME"
+const AdminForcePasswordResetEnv = "ADMIN_FORCE_PASSWORD_RESET"
 
 var DefaultIndexerUserAgent = "StreamNZB/dev"
 var runtimeHeadersMu sync.RWMutex
@@ -164,6 +166,7 @@ type ConfigOverrides struct {
 	ProxyAuthUser      string
 	ProxyAuthPass      string
 	AdminUsername      string
+	AdminMustChangePwd bool
 	Providers          []Provider
 	Indexers           []Indexer
 }
@@ -251,6 +254,10 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	if v := os.Getenv(AdminUsernameEnv); v != "" {
 		o.AdminUsername = v
 		keys = append(keys, KeyAdminUsername)
+	}
+	if v, ok := os.LookupEnv(AdminForcePasswordResetEnv); ok && v != "" && getEnvBool(AdminForcePasswordResetEnv, false) {
+		o.AdminMustChangePwd = true
+		keys = append(keys, KeyAdminMustChangePwd)
 	}
 	o.Providers = readProvidersFromEnv()
 	if len(o.Providers) > 0 {
