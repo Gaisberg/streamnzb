@@ -421,7 +421,22 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			// Close ensures EndResponse is called even if decode stopped before EOF.
 			r.Close()
 			if err != nil {
-				logger.Debug("fetch segment decode failed", "provider", providerID, "err", err)
+				ctxErr := fetchCtx.Err()
+				if ctxErr != nil {
+					logger.Trace("fetch segment decode aborted",
+						"provider", providerID,
+						"err", err,
+						"message_id", messageID,
+						"raw_body_bytes", cr.n,
+						"ctx_err", ctxErr)
+				} else {
+					logger.Debug("fetch segment decode failed",
+						"provider", providerID,
+						"err", err,
+						"message_id", messageID,
+						"raw_body_bytes", cr.n,
+						"ctx_err", ctxErr)
+				}
 				ch <- segResult{err: err, host: host}
 				return
 			}
@@ -556,11 +571,21 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			r.Close()
 			if err != nil {
 				discard()
-				errStr := err.Error()
-				if strings.Contains(errStr, "expected size") && strings.Contains(errStr, "but got") {
-					logger.Debug("fetch segment decode failed", "provider", providerID, "err", err, "raw_body_bytes", cr.n)
+				ctxErr := fetchCtx.Err()
+				if ctxErr != nil {
+					logger.Trace("fetch segment decode aborted",
+						"provider", providerID,
+						"err", err,
+						"message_id", messageID,
+						"raw_body_bytes", cr.n,
+						"ctx_err", ctxErr)
 				} else {
-					logger.Debug("fetch segment decode failed", "provider", providerID, "err", err)
+					logger.Debug("fetch segment decode failed",
+						"provider", providerID,
+						"err", err,
+						"message_id", messageID,
+						"raw_body_bytes", cr.n,
+						"ctx_err", ctxErr)
 				}
 				return SegmentData{}, false, err
 			}

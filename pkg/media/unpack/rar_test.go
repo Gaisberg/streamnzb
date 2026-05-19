@@ -202,3 +202,50 @@ func TestShouldRetryExhaustiveRARScan(t *testing.T) {
 		t.Fatal("expected ambiguous fast-scan failure to allow exhaustive retry")
 	}
 }
+
+func TestSelectFirstVolumesForFastScanPrefersLikelyFirstVolumes(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "zzz-obf.rar"},
+		&memoryUnpackableFile{name: "release.part002.rar"},
+		&memoryUnpackableFile{name: "release.part001.rar"},
+		&memoryUnpackableFile{name: "release.r00"},
+		&memoryUnpackableFile{name: "random.001"},
+		&memoryUnpackableFile{name: "release.r01"},
+	}
+
+	selected := selectFirstVolumesForFastScan(files, 3)
+	if len(selected) != 3 {
+		t.Fatalf("expected 3 selected files, got %d", len(selected))
+	}
+
+	got := []string{
+		strings.ToLower(selected[0].Name()),
+		strings.ToLower(selected[1].Name()),
+		strings.ToLower(selected[2].Name()),
+	}
+	want := []string{
+		"zzz-obf.rar",
+		"release.part001.rar",
+		"random.001",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected rank at %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseSubjectPartCounter(t *testing.T) {
+	part, ok := parseSubjectPartCounter(`abc [10/30] "file.rar"`)
+	if !ok || part != 10 {
+		t.Fatalf("expected part 10, got part=%d ok=%v", part, ok)
+	}
+
+	if _, ok := parseSubjectPartCounter(`abc [x/30] "file.rar"`); ok {
+		t.Fatal("expected invalid part token to fail parsing")
+	}
+
+	if _, ok := parseSubjectPartCounter(`abc no counter`); ok {
+		t.Fatal("expected missing counter to fail parsing")
+	}
+}

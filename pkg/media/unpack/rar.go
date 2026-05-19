@@ -301,6 +301,126 @@ func (e *encryptedRARStream) Close() error {
 // failing slowly across hundreds of volumes; we try a few and fail fast.
 const maxFirstVolumesToScan = 5
 
+type rarFastFailoverContextKey struct{}
+
+func withRARFastFailoverMode(ctx context.Context, enabled bool) context.Context {
+	if !enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, rarFastFailoverContextKey{}, true)
+}
+
+func isRARFastFailoverModeEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(rarFastFailoverContextKey{}).(bool)
+	return enabled
+}
+
+type firstVolumeCandidate struct {
+	file  UnpackableFile
+	score int
+	order int
+}
+
+func selectFirstVolumesForFastScan(files []UnpackableFile, limit int) []UnpackableFile {
+	if len(files) <= limit {
+		out := make([]UnpackableFile, len(files))
+		copy(out, files)
+		return out
+	}
+	candidates := make([]firstVolumeCandidate, 0, len(files))
+	for idx, f := range files {
+		candidates = append(candidates, firstVolumeCandidate{
+			file:  f,
+			score: firstVolumeScore(f, idx, len(files)),
+			order: idx,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].order < candidates[j].order
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	out := make([]UnpackableFile, 0, limit)
+	for i := 0; i < len(candidates) && i < limit; i++ {
+		out = append(out, candidates[i].file)
+	}
+	return out
+}
+
+func firstVolumeScore(file UnpackableFile, index, total int) int {
+	name := strings.ToLower(ExtractFilename(file.Name()))
+	score := 0
+
+	// Prefer names that are likely canonical first volumes.
+	switch {
+	case strings.HasSuffix(name, ExtRar) && !strings.Contains(name, ".part"):
+		score += 1200
+	case strings.Contains(name, ".part001.") || strings.Contains(name, ".part01."):
+		score += 1100
+	case strings.Contains(name, ".part1."):
+		score += 1000
+	case strings.HasSuffix(name, ".001"):
+		score += 900
+	case strings.HasSuffix(name, ".r00"):
+		score += 300
+	}
+
+	if IsMiddleRarVolume(name) {
+		score -= 800
+	}
+
+	// NZB-order tie-breaker: keep earlier files slightly preferred.
+	if total > 0 {
+		score += (total - index)
+	}
+
+	// Subject counters often indicate segment/part ordering when filenames are obfuscated.
+	if part, ok := parseSubjectPartCounter(strings.ToLower(file.Name())); ok {
+		switch {
+		case part == 1:
+			score += 200
+		case part <= 3:
+			score += 100
+		default:
+			score -= 50
+		}
+	}
+
+	return score
+}
+
+func parseSubjectPartCounter(subject string) (int, bool) {
+	closeIdx := strings.Index(subject, "]")
+	if closeIdx <= 0 {
+		return 0, false
+	}
+	openIdx := strings.LastIndex(subject[:closeIdx], "[")
+	if openIdx < 0 || openIdx+1 >= closeIdx {
+		return 0, false
+	}
+	token := strings.TrimSpace(subject[openIdx+1 : closeIdx])
+	slashIdx := strings.Index(token, "/")
+	if slashIdx <= 0 {
+		return 0, false
+	}
+	partStr := strings.TrimSpace(token[:slashIdx])
+	part := 0
+	for _, r := range partStr {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		part = part*10 + int(r-'0')
+	}
+	if part <= 0 {
+		return 0, false
+	}
+	return part, true
+}
+
 func shouldRetryExhaustiveRARScan(err error) bool {
 	if err == nil {
 		return false
@@ -321,13 +441,11 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 	}
 
 	allFirstVols := filterFirstVolumes(rarFiles)
-	firstVols := allFirstVols
+	firstVols := make([]UnpackableFile, len(allFirstVols))
+	copy(firstVols, allFirstVols)
 	tryingCount := len(firstVols)
 	if tryingCount > maxFirstVolumesToScan {
-		sort.Slice(firstVols, func(i, j int) bool {
-			return ExtractFilename(firstVols[i].Name()) < ExtractFilename(firstVols[j].Name())
-		})
-		firstVols = firstVols[:maxFirstVolumesToScan]
+		firstVols = selectFirstVolumesForFastScan(firstVols, maxFirstVolumesToScan)
 		logger.Debug("Limiting RAR first-volume scan to fail fast", "trying", len(firstVols), "skipped", tryingCount-len(firstVols))
 	}
 	runScan := func(scanFirstVols []UnpackableFile, mode string) (*ArchiveBlueprint, error) {
@@ -377,6 +495,14 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 	// Obfuscated sets can have random volume names where alphabetical top-N may
 	// miss the true first volume. Keep fail-fast behavior, but retry exhaustively
 	// once before giving up.
+	if isRARFastFailoverModeEnabled(ctx) {
+		logger.Warn("RAR fast failover mode enabled: skipping exhaustive first-volume scan",
+			"target", target,
+			"fast_count", len(firstVols),
+			"full_count", len(allFirstVols),
+			"err", err)
+		return nil, err
+	}
 	if len(firstVols) < len(allFirstVols) && shouldRetryExhaustiveRARScan(err) {
 		logger.Warn("RAR fast first-volume scan failed, retrying exhaustive first-volume scan",
 			"target", target,

@@ -16,7 +16,7 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/text v0.34.0
 )
 
 require golang.org/x/net v0.50.0
@@ -26,6 +26,7 @@ require github.com/gorilla/websocket v1.5.3
 require (
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
 	golang.org/x/sync v0.19.0
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -39,7 +40,6 @@ require (
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.46.1 // indirect
 )
 
 replace github.com/javi11/rardecode/v2 => ./third_party/rardecode

@@ -170,9 +170,16 @@ func (s *Server) handleClearCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.strmServer.ClearSearchCaches()
+	blueprintsCleared := 0
+	if s.sessionMgr != nil {
+		blueprintsCleared = s.sessionMgr.ClearBlueprintCache()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
-		"message": "Search cache cleared.",
+		"message": "Search cache and blueprint cache cleared.",
+		"details": map[string]interface{}{
+			"blueprints_cleared": blueprintsCleared,
+		},
 	})
 }

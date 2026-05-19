@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 	"time"
 
@@ -428,7 +429,7 @@ func verifyArchiveHeader(ct string, firstSeg, lastSeg []byte, info *nzb.FileInfo
 		if err != nil {
 			return fmt.Errorf("cannot read RAR file entry: %w", err)
 		}
-		if !hdr.Stored {
+		if stored, known := rarHeaderStored(hdr); known && !stored {
 			return fmt.Errorf("RAR archive uses compression (STORE mode required for streaming)")
 		}
 	case "7z":
@@ -437,6 +438,21 @@ func verifyArchiveHeader(ct string, firstSeg, lastSeg []byte, info *nzb.FileInfo
 		}
 	}
 	return nil
+}
+
+func rarHeaderStored(hdr *rardecode.FileHeader) (bool, bool) {
+	if hdr == nil {
+		return false, false
+	}
+	v := reflect.ValueOf(hdr)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return false, false
+	}
+	field := v.Elem().FieldByName("Stored")
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		return false, false
+	}
+	return field.Bool(), true
 }
 
 func verify7zHeader(headData, tailData []byte, info *nzb.FileInfo, password string) error {

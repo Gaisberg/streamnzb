@@ -35,6 +35,7 @@ type FailedBlueprint struct {
 
 type StreamSelectionHints struct {
 	AllowLargestDirectFallback bool
+	FailoverFastMode           bool
 }
 
 const maxDirectProbeCandidates = 3
@@ -102,6 +103,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		"target", target,
 		"files", len(files),
 		"cached_type", fmt.Sprintf("%T", cachedBP))
+	rarScanCtx := withRARFastFailoverMode(ctx, hints.FailoverFastMode)
 	if cachedBP != nil {
 		switch bp := cachedBP.(type) {
 		case *ArchiveBlueprint:
@@ -154,7 +156,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		logger.Trace("Detected RAR archive", "target", target, "volumes", len(rarFiles))
 		unpackables := make([]UnpackableFile, len(files))
 		copy(unpackables, files)
-		bp, err := ScanArchive(ctx, unpackables, password, target)
+		bp, err := ScanArchive(rarScanCtx, unpackables, password, target)
 		if err != nil {
 			if errors.Is(err, ErrEpisodeTargetNotFound) {
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
@@ -169,6 +171,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 			}
 			return s, name, size, bp, nil
 		}
+		logger.Warn("RAR analysis failed; release likely requires PAR2 repair", "target", target, "err", rarScanErr)
 	}
 
 	archiveFiles, err := Identify7zParts(files)
@@ -236,7 +239,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 			unpackables := make([]UnpackableFile, len(files))
 			copy(unpackables, files)
 			logger.Info("Attempting heuristic RAR scan on unknown files")
-			bp, err := ScanArchive(ctx, unpackables, password, target)
+			bp, err := ScanArchive(rarScanCtx, unpackables, password, target)
 			if err == nil {
 				s, name, size, err := StreamFromBlueprint(ctx, bp, password)
 				if err == nil {

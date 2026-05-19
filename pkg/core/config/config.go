@@ -230,6 +230,13 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
 }
 
+func (c *Config) EffectiveFailoverFastMode() bool {
+	if c == nil {
+		return false
+	}
+	return c.FailoverFastMode
+}
+
 func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	if c != nil && NormalizeAvailNZBMode(c.AvailNZBMode) == "off" {
 		return false
@@ -398,6 +405,9 @@ type Config struct {
 
 	// PlaybackStartupTimeoutSeconds bounds probe/open work before the first playable response is ready. Default 5.
 	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
+	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
+	// playback skips expensive archive checks that can delay startup.
+	FailoverFastMode bool `json:"failover_fast_mode,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.

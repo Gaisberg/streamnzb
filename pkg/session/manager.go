@@ -890,7 +890,7 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 }
 
 func (s *Session) GetOrDownloadNZB(manager *Manager) (*nzb.NZB, error) {
-	return s.GetOrDownloadNZBWithContext(nil, manager)
+	return s.GetOrDownloadNZBWithContext(context.TODO(), manager)
 }
 
 func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Manager) (*nzb.NZB, error) {
@@ -1318,6 +1318,35 @@ func (m *Manager) DeleteSession(sessionID string) {
 	} else {
 		logger.Trace("session DeleteSession no session", "id", sessionID)
 	}
+}
+
+// ClearBlueprintCache clears cached playback blueprints from active sessions so
+// subsequent playback opens rebuild unpack selection state.
+func (m *Manager) ClearBlueprintCache() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	snapshot := make([]*Session, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		snapshot = append(snapshot, sess)
+	}
+	m.mu.RUnlock()
+
+	cleared := 0
+	for _, sess := range snapshot {
+		if sess == nil {
+			continue
+		}
+		sess.mu.Lock()
+		if sess.Blueprint != nil {
+			sess.Blueprint = nil
+			cleared++
+		}
+		sess.mu.Unlock()
+	}
+	logger.Info("session blueprint cache cleared", "sessions", len(snapshot), "cleared", cleared)
+	return cleared
 }
 
 func (s *Session) Close() {

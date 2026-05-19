@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds'],
+  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode'],
   availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -34,6 +34,7 @@ function pickInitialValues(values = {}) {
     nzb_history_retention_days: Number.isFinite(parsedRetentionDays) ? parsedRetentionDays : 90,
     memory_limit_mb: Number(values.memory_limit_mb ?? 512),
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
+    failover_fast_mode: values.failover_fast_mode === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad !== false,
     tmdb_api_key: values.tmdb_api_key ?? '',
@@ -289,6 +290,28 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                         <FormControl><Input type="number" min={1} max={60} className={fieldClassName('playback_startup_timeout_seconds', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 5 : Math.min(60, Math.max(1, Number.isNaN(next) ? 5 : next))) }} /></FormControl>
                       </div>
                       <FormDescription className="mt-3">How long StreamNZB waits for the initial playback probe/open before failing over to the next release. Higher values reduce false startup timeouts but delay failover.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="failover_fast_mode" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Failover fast mode</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={field.onChange}
+                            className={showUnsavedHighlights && formState.dirtyFields?.failover_fast_mode ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        When enabled, failover favors startup speed by skipping exhaustive operations.
+                        When disabled, startup timeout is automatically doubled to allow deeper diagnostics.
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )} />

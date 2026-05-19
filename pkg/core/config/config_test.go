@@ -292,6 +292,20 @@ func TestConfigEffectivePlaybackStartupTimeoutRejectsOutOfRangeValues(t *testing
 	}
 }
 
+func TestConfigEffectiveFailoverFastModeDefaultsDisabled(t *testing.T) {
+	cfg := &Config{}
+	if cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = true, want false")
+	}
+}
+
+func TestConfigEffectiveFailoverFastModeHonorsEnabledValue(t *testing.T) {
+	cfg := &Config{FailoverFastMode: true}
+	if !cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = false, want true")
+	}
+}
+
 func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsEnabled(t *testing.T) {
 	cfg := &Config{}
 	if !cfg.EffectiveAvailNZBFilterReportedBad() {
