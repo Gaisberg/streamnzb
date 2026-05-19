@@ -34,7 +34,7 @@ function pickInitialValues(values = {}) {
     nzb_history_retention_days: Number.isFinite(parsedRetentionDays) ? parsedRetentionDays : 90,
     memory_limit_mb: Number(values.memory_limit_mb ?? 512),
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
-    failover_fast_mode: values.failover_fast_mode === true,
+    failover_fast_mode: values.failover_fast_mode !== false,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad !== false,
     tmdb_api_key: values.tmdb_api_key ?? '',

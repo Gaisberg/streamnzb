@@ -232,7 +232,7 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 
 func (c *Config) EffectiveFailoverFastMode() bool {
 	if c == nil {
-		return false
+		return true
 	}
 	return c.FailoverFastMode
 }
@@ -636,6 +636,7 @@ func Load() (*Config, error) {
 		KeepLogFiles:                  9,
 		NZBHistoryRetentionDays:       90,
 		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
+		FailoverFastMode:              true,
 		LoadedPath:                    configPath,
 	}
 

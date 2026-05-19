@@ -292,10 +292,10 @@ func TestConfigEffectivePlaybackStartupTimeoutRejectsOutOfRangeValues(t *testing
 	}
 }
 
-func TestConfigEffectiveFailoverFastModeDefaultsDisabled(t *testing.T) {
-	cfg := &Config{}
-	if cfg.EffectiveFailoverFastMode() {
-		t.Fatalf("EffectiveFailoverFastMode() = true, want false")
+func TestConfigEffectiveFailoverFastModeDefaultsEnabled(t *testing.T) {
+	var cfg *Config
+	if !cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = false, want true")
 	}
 }
 
@@ -303,6 +303,13 @@ func TestConfigEffectiveFailoverFastModeHonorsEnabledValue(t *testing.T) {
 	cfg := &Config{FailoverFastMode: true}
 	if !cfg.EffectiveFailoverFastMode() {
 		t.Fatalf("EffectiveFailoverFastMode() = false, want true")
+	}
+}
+
+func TestConfigEffectiveFailoverFastModeHonorsDisabledValue(t *testing.T) {
+	cfg := &Config{FailoverFastMode: false}
+	if cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = true, want false")
 	}
 }
 
