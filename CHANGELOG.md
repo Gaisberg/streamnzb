@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.5.0](https://github.com/Gaisberg/streamnzb/compare/v4.4.0...v4.5.0) (2026-05-22)
+
+
+### Features
+
+* **indexers:** support per-indexer user agents ([#144](https://github.com/Gaisberg/streamnzb/issues/144)) ([167f5fc](https://github.com/Gaisberg/streamnzb/commit/167f5fc66421f922f8549e1de77d3a2937cb2493))
+* **streaming:** improve usenet resilience with rar scan fallback, pa… ([#145](https://github.com/Gaisberg/streamnzb/issues/145)) ([605551d](https://github.com/Gaisberg/streamnzb/commit/605551da1b0ea247269b45a4785f21e1313ccd86))
+* **streams:** add automatic provider/indexer sync with enabled-only enforcement ([0bfd6b4](https://github.com/Gaisberg/streamnzb/commit/0bfd6b4c2f24680bb3f54ce6a3346c4037735973)), closes [#133](https://github.com/Gaisberg/streamnzb/issues/133)
+
 ## [4.4.0](https://github.com/Gaisberg/streamnzb/compare/v4.3.0...v4.4.0) (2026-05-15)
 
 
