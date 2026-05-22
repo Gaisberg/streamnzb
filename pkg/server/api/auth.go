@@ -194,6 +194,17 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
 		return
 	}
+	adminUsername := s.config.GetAdminUsername()
+	if req.Username != "" && req.Username != adminUsername {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid username"})
+		return
+	}
+	if len(strings.TrimSpace(req.Password)) < 6 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password must be at least 6 characters long"})
+		return
+	}
 	newHash := auth.HashPassword(req.Password)
 	s.mu.Lock()
 	s.config.AdminPasswordHash = newHash

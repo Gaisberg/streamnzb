@@ -3,8 +3,10 @@ package unpack
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"streamnzb/pkg/core/logger"
@@ -64,7 +66,7 @@ func (f *sizedUnpackableFile) EnsureSegmentMap() error {
 	return nil
 }
 
-func TestFilesToPartsSplitSevenZipUsesFirstVolumeSizeForMiddleParts(t *testing.T) {
+func TestFilesToPartsSplitSevenZipProbesFirstMiddleAndLastOnly(t *testing.T) {
 	first := &sizedUnpackableFile{
 		memoryUnpackableFile: &memoryUnpackableFile{name: "release.7z.001"},
 		size:                 110,
@@ -75,31 +77,92 @@ func TestFilesToPartsSplitSevenZipUsesFirstVolumeSizeForMiddleParts(t *testing.T
 		size:                 130,
 		resolvedSize:         120,
 	}
-	last := &sizedUnpackableFile{
+	extraMiddle := &sizedUnpackableFile{
 		memoryUnpackableFile: &memoryUnpackableFile{name: "release.7z.003"},
+		size:                 130,
+		resolvedSize:         120,
+	}
+	last := &sizedUnpackableFile{
+		memoryUnpackableFile: &memoryUnpackableFile{name: "release.7z.004"},
 		size:                 90,
 		resolvedSize:         80,
 	}
 
-	parts, err := filesToParts(context.Background(), []UnpackableFile{first, middle, last})
+	ctx := WithArchiveFastFailoverMode(context.Background(), true)
+	parts, err := filesToParts(ctx, []UnpackableFile{first, middle, extraMiddle, last})
 	if err != nil {
 		t.Fatalf("filesToParts returned error: %v", err)
 	}
 
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 parts, got %d", len(parts))
+	if len(parts) != 4 {
+		t.Fatalf("expected 4 parts, got %d", len(parts))
 	}
-	if parts[0].Size != 100 || parts[1].Size != 100 || parts[2].Size != 80 {
-		t.Fatalf("expected part sizes [100 100 80], got [%d %d %d]", parts[0].Size, parts[1].Size, parts[2].Size)
+	if parts[0].Size != 100 || parts[1].Size != 120 || parts[2].Size != 120 || parts[3].Size != 80 {
+		t.Fatalf("expected part sizes [100 120 120 80], got [%d %d %d %d]", parts[0].Size, parts[1].Size, parts[2].Size, parts[3].Size)
 	}
-	if first.ensureCalls != 1 {
-		t.Fatalf("expected first volume EnsureSegmentMap once, got %d", first.ensureCalls)
+	if first.ensureCalls != 1 || middle.ensureCalls != 1 || last.ensureCalls != 1 {
+		t.Fatalf("expected first/middle/last probes only, got first=%d middle=%d extra=%d last=%d",
+			first.ensureCalls, middle.ensureCalls, extraMiddle.ensureCalls, last.ensureCalls)
 	}
-	if middle.ensureCalls != 0 {
-		t.Fatalf("expected middle volume EnsureSegmentMap to be skipped, got %d", middle.ensureCalls)
+	if extraMiddle.ensureCalls != 0 {
+		t.Fatalf("expected trailing middle volume to reuse probed size, got %d ensure calls", extraMiddle.ensureCalls)
 	}
-	if last.ensureCalls != 1 {
-		t.Fatalf("expected last volume EnsureSegmentMap once, got %d", last.ensureCalls)
+}
+
+func TestFilesToPartsFullModeProbesEveryVolume(t *testing.T) {
+	files := make([]*sizedUnpackableFile, 4)
+	for i := range files {
+		files[i] = &sizedUnpackableFile{
+			memoryUnpackableFile: &memoryUnpackableFile{name: fmt.Sprintf("release.7z.%03d", i+1)},
+			size:                 int64(100 + i),
+			resolvedSize:         int64(90 + i),
+		}
+	}
+	unpackables := make([]UnpackableFile, len(files))
+	for i, f := range files {
+		unpackables[i] = f
+	}
+
+	parts, err := filesToParts(context.Background(), unpackables)
+	if err != nil {
+		t.Fatalf("filesToParts returned error: %v", err)
+	}
+	if len(parts) != 4 {
+		t.Fatalf("expected 4 parts, got %d", len(parts))
+	}
+	for i, f := range files {
+		if f.ensureCalls != 1 {
+			t.Fatalf("expected volume %d probed once in full mode, got %d", i+1, f.ensureCalls)
+		}
+		if parts[i].Size != int64(90+i) {
+			t.Fatalf("expected part %d size %d, got %d", i+1, 90+i, parts[i].Size)
+		}
+	}
+}
+
+func TestValidateSplit7zPartNamesDetectsSequenceGap(t *testing.T) {
+	parts := []string{
+		`[01/40] - "release.7z.001" yEnc`,
+		`[03/40] - "release.7z.003" yEnc`,
+	}
+
+	err := validateSplit7zPartNames(parts)
+	if err == nil {
+		t.Fatal("expected sequence gap error")
+	}
+	if !strings.Contains(err.Error(), "expected part .002") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSplit7zPartNamesAcceptsComplete29VolumeSet(t *testing.T) {
+	parts := make([]string, 29)
+	for i := range parts {
+		parts[i] = fmt.Sprintf(`[%.2d/40] - "release.7z.%03d" yEnc`, i+1, i+1)
+	}
+
+	if err := validateSplit7zPartNames(parts); err != nil {
+		t.Fatalf("expected complete 29-volume set to validate, got %v", err)
 	}
 }
 

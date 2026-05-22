@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Settings, LogOut,
-  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn
+  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle
 } from "lucide-react"
 import {
   Sidebar,
@@ -20,6 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
@@ -43,6 +44,7 @@ export function AppSidebar({
   onNavigate,
   version,
   currentUser,
+  forcePasswordResetEnabled,
   onLogout,
   theme,
   onThemeChange,
@@ -157,7 +159,26 @@ export function AppSidebar({
                     <Zap className="size-4" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <span className="truncate block text-sm font-medium">{currentUser}</span>
+                    <span className="truncate block text-sm font-medium flex items-center gap-1.5">
+                      <span className="truncate">{currentUser}</span>
+                      {forcePasswordResetEnabled && (
+                        <TooltipProvider delayDuration={100}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex items-center text-amber-600"
+                                aria-label="Forced password reset is enabled via environment variable"
+                              >
+                                <AlertTriangle className="size-3.5 shrink-0" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" align="start">
+                              Forced password reset is enabled via env var. Disable it after the password is changed.
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </span>
                     <span className="truncate block text-xs text-muted-foreground">Account</span>
                   </div>
                   <MoreVertical className="size-4 shrink-0 text-muted-foreground" />

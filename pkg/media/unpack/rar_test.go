@@ -3,8 +3,10 @@ package unpack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"streamnzb/pkg/core/logger"
@@ -139,5 +141,111 @@ func TestScanArchiveReturnsContextErrorWhenCanceled(t *testing.T) {
 	}, "", EpisodeTarget{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsClassifiesLikelyCorruption(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:      10,
+		evidenceScans:    9,
+		invalidBlocks:    7,
+		unexpectedEOF:    1,
+		decodeCorruption: 1,
+	}
+
+	err := diag.classifyArchiveError()
+	if err == nil {
+		t.Fatal("expected corruption classification error")
+	}
+	if !strings.Contains(err.Error(), likelyPAR2RepairRequiredMsg) {
+		t.Fatalf("expected PAR2 guidance in error, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsIgnoresWeakCorruptionSignal(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:   10,
+		invalidBlocks: 2,
+	}
+
+	if err := diag.classifyArchiveError(); err != nil {
+		t.Fatalf("expected no corruption classification, got %v", err)
+	}
+}
+
+func TestScanDiagnosticsDoesNotClassifyWithoutDecodeCorruptionEvidence(t *testing.T) {
+	diag := scanDiagnostics{
+		failedScans:   10,
+		invalidBlocks: 9,
+		unexpectedEOF: 1,
+	}
+
+	if err := diag.classifyArchiveError(); err != nil {
+		t.Fatalf("expected no corruption classification without decode evidence, got %v", err)
+	}
+}
+
+func TestShouldRetryExhaustiveRARScan(t *testing.T) {
+	if shouldRetryExhaustiveRARScan(nil) {
+		t.Fatal("expected nil error to skip exhaustive retry")
+	}
+
+	if shouldRetryExhaustiveRARScan(errors.New("archive data appears corrupted or incomplete: likely PAR2 repair required")) {
+		t.Fatal("expected PAR2-classified corruption to skip exhaustive retry")
+	}
+
+	if shouldRetryExhaustiveRARScan(fmt.Errorf("first volume unavailable: %w", ErrTooManyZeroFills)) {
+		t.Fatal("expected first-volume unavailable to skip exhaustive retry")
+	}
+
+	if !shouldRetryExhaustiveRARScan(errors.New("empty archive")) {
+		t.Fatal("expected ambiguous fast-scan failure to allow exhaustive retry")
+	}
+}
+
+func TestSelectFirstVolumesForFastScanPrefersLikelyFirstVolumes(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "zzz-obf.rar"},
+		&memoryUnpackableFile{name: "release.part002.rar"},
+		&memoryUnpackableFile{name: "release.part001.rar"},
+		&memoryUnpackableFile{name: "release.r00"},
+		&memoryUnpackableFile{name: "random.001"},
+		&memoryUnpackableFile{name: "release.r01"},
+	}
+
+	selected := selectFirstVolumesForFastScan(files, 3)
+	if len(selected) != 3 {
+		t.Fatalf("expected 3 selected files, got %d", len(selected))
+	}
+
+	got := []string{
+		strings.ToLower(selected[0].Name()),
+		strings.ToLower(selected[1].Name()),
+		strings.ToLower(selected[2].Name()),
+	}
+	want := []string{
+		"zzz-obf.rar",
+		"release.part001.rar",
+		"random.001",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected rank at %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseSubjectPartCounter(t *testing.T) {
+	part, ok := parseSubjectPartCounter(`abc [10/30] "file.rar"`)
+	if !ok || part != 10 {
+		t.Fatalf("expected part 10, got part=%d ok=%v", part, ok)
+	}
+
+	if _, ok := parseSubjectPartCounter(`abc [x/30] "file.rar"`); ok {
+		t.Fatal("expected invalid part token to fail parsing")
+	}
+
+	if _, ok := parseSubjectPartCounter(`abc no counter`); ok {
+		t.Fatal("expected missing counter to fail parsing")
 	}
 }

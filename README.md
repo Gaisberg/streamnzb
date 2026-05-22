@@ -68,6 +68,17 @@ For Docker, keep your existing `/app/data` volume mounted so `config.json` and t
 7. Save the stream and copy its manifest URL from the install action or stream list.
 8. Add that manifest URL to your Stremio client or [AIOStreams](https://github.com/Viren070/AIOStreams).
 
+### Force password reset on next startup
+
+If you need to force the admin account to land on the password-change screen after restart, set:
+
+```env
+ADMIN_FORCE_PASSWORD_RESET=true
+```
+
+After the password has been changed, remove or disable this env var.
+When it remains enabled, StreamNZB will keep forcing the password-reset prompt on startup.
+
 
 ## Stream model
 

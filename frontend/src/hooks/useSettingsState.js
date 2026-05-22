@@ -21,6 +21,7 @@ const ADVANCED_TAB_FIELDS = [
   'keep_log_files',
   'nzb_history_retention_days',
   'playback_startup_timeout_seconds',
+  'failover_fast_mode',
   'memory_limit_mb',
   'availnzb_mode',
   'availnzb_filter_reported_bad',
@@ -270,6 +271,11 @@ export function useSettingsState({
       trimmedFullData.nzb_history_retention_days = Math.min(3650, Math.max(0, Number.isNaN(nzbHistoryRetention) ? 90 : nzbHistoryRetention))
       const playbackStartupTimeout = Number(trimmedFullData.playback_startup_timeout_seconds)
       trimmedFullData.playback_startup_timeout_seconds = Math.min(60, Math.max(1, Number.isNaN(playbackStartupTimeout) ? 5 : playbackStartupTimeout))
+      if (trimmedFullData.failover_fast_mode == null) {
+        trimmedFullData.failover_fast_mode = true
+      } else {
+        trimmedFullData.failover_fast_mode = trimmedFullData.failover_fast_mode === true
+      }
 
       const payload = overrides
         ? Object.keys(overrides).reduce((acc, key) => {

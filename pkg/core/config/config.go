@@ -237,6 +237,13 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
 }
 
+func (c *Config) EffectiveFailoverFastMode() bool {
+	if c == nil {
+		return true
+	}
+	return c.FailoverFastMode
+}
+
 func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	if c != nil && NormalizeAvailNZBMode(c.AvailNZBMode) == "off" {
 		return false
@@ -244,7 +251,7 @@ func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	if c != nil && c.AvailNZBFilterReportedBad != nil {
 		return *c.AvailNZBFilterReportedBad
 	}
-	return true
+	return false
 }
 
 func NormalizeAvailNZBMode(mode string) string {
@@ -405,6 +412,9 @@ type Config struct {
 
 	// PlaybackStartupTimeoutSeconds bounds probe/open work before the first playable response is ready. Default 5.
 	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
+	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
+	// playback skips expensive archive checks that can delay startup.
+	FailoverFastMode bool `json:"failover_fast_mode"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.
@@ -633,6 +643,7 @@ func Load() (*Config, error) {
 		KeepLogFiles:                  9,
 		NZBHistoryRetentionDays:       90,
 		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
+		FailoverFastMode:              true,
 		LoadedPath:                    configPath,
 	}
 
@@ -677,7 +688,7 @@ func Load() (*Config, error) {
 		needSave = true
 	}
 	if cfg.AvailNZBFilterReportedBad == nil {
-		cfg.AvailNZBFilterReportedBad = ptrBool(true)
+		cfg.AvailNZBFilterReportedBad = ptrBool(false)
 		needSave = true
 	}
 
@@ -1139,6 +1150,9 @@ func ApplyEnvOverrides(cfg *Config, o env.ConfigOverrides, keys []string) {
 	if keySet(keys, env.KeyAdminUsername) {
 		cfg.AdminUsername = o.AdminUsername
 	}
+	if keySet(keys, env.KeyAdminMustChangePwd) {
+		cfg.AdminMustChangePassword = o.AdminMustChangePwd
+	}
 	if keySet(keys, env.KeyProviders) {
 		cfg.Providers = make([]Provider, len(o.Providers))
 		for i, p := range o.Providers {
@@ -1256,6 +1270,8 @@ func CopyEnvOverridesFrom(src, dst *Config) {
 			dst.ProxyAuthPass = src.ProxyAuthPass
 		case env.KeyAdminUsername:
 			dst.AdminUsername = src.AdminUsername
+		case env.KeyAdminMustChangePwd:
+			dst.AdminMustChangePassword = src.AdminMustChangePassword
 		case env.KeyProviders:
 			dst.Providers = make([]Provider, len(src.Providers))
 			for i, p := range src.Providers {

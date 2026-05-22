@@ -196,6 +196,30 @@ func TestMarkPlaybackValidatedSeparatesValidationFromPlaybackEnd(t *testing.T) {
 	}
 }
 
+func TestClearBlueprintCacheClearsOnlyBlueprints(t *testing.T) {
+	logger.Init("ERROR")
+
+	sWithBlueprint := &Session{ID: "sess-1", Blueprint: &struct{ Name string }{Name: "cached"}}
+	sWithoutBlueprint := &Session{ID: "sess-2"}
+	m := &Manager{
+		sessions: map[string]*Session{
+			"sess-1": sWithBlueprint,
+			"sess-2": sWithoutBlueprint,
+		},
+	}
+
+	cleared := m.ClearBlueprintCache()
+	if cleared != 1 {
+		t.Fatalf("ClearBlueprintCache() = %d, want 1", cleared)
+	}
+	if sWithBlueprint.Blueprint != nil {
+		t.Fatalf("expected blueprint to be cleared for sess-1")
+	}
+	if sWithoutBlueprint.Blueprint != nil {
+		t.Fatalf("expected nil blueprint to remain nil for sess-2")
+	}
+}
+
 func TestCreateSessionSelectsRequestedEpisode(t *testing.T) {
 	logger.Init("ERROR")
 

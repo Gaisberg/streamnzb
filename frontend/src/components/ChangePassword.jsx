@@ -4,9 +4,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertCircle, Loader2 } from "lucide-react"
-import { getApiUrl, apiFetch } from '../api'
+import { apiFetch } from '../api'
 
-export default function ChangePassword({ username, onPasswordChanged }) {
+export default function ChangePassword({ username, onPasswordChanged, requireCurrentPassword = true }) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -26,24 +26,26 @@ export default function ChangePassword({ username, onPasswordChanged }) {
     }
     setLoading(true)
     try {
-      const loginRes = await fetch(getApiUrl('/api/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ username, password: currentPassword }),
-      })
-      const loginData = await loginRes.json().catch(() => ({}))
-      if (!loginData.success) {
-        setError('Current password is incorrect')
-        setLoading(false)
-        return
+      if (requireCurrentPassword) {
+        const loginRes = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ username, password: currentPassword }),
+        })
+        const loginData = await loginRes.json().catch(() => ({}))
+        if (!loginData.success) {
+          setError('Current password is incorrect')
+          setLoading(false)
+          return
+        }
+        if (loginData.token) localStorage.setItem('auth_token', loginData.token)
       }
       await apiFetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password: newPassword }),
       })
-      if (loginData.token) localStorage.setItem('auth_token', loginData.token)
       onPasswordChanged()
     } catch (err) {
       setError(err.message || 'Failed to connect to server')
@@ -70,19 +72,21 @@ export default function ChangePassword({ username, onPasswordChanged }) {
               </div>
             )}
             
-            <div className="space-y-2">
-              <Label htmlFor="current-password">Current Password</Label>
-              <Input
-                id="current-password"
-                type="password"
-                placeholder="Enter current password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                required
-                autoFocus
-                disabled={loading}
-              />
-            </div>
+            {requireCurrentPassword && (
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current Password</Label>
+                <Input
+                  id="current-password"
+                  type="password"
+                  placeholder="Enter current password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  required
+                  autoFocus
+                  disabled={loading}
+                />
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="new-password">New Password</Label>
@@ -93,6 +97,7 @@ export default function ChangePassword({ username, onPasswordChanged }) {
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 required
+                autoFocus={!requireCurrentPassword}
                 disabled={loading}
               />
             </div>

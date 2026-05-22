@@ -399,10 +399,15 @@ func (s *Server) playbackStartupTimeout() time.Duration {
 	s.mu.RLock()
 	cfg := s.config
 	s.mu.RUnlock()
+	base := time.Duration(config.DefaultPlaybackStartupTimeoutSeconds) * time.Second
 	if cfg == nil {
-		return time.Duration(config.DefaultPlaybackStartupTimeoutSeconds) * time.Second
+		return base * 2
 	}
-	return cfg.EffectivePlaybackStartupTimeout()
+	base = cfg.EffectivePlaybackStartupTimeout()
+	if !cfg.EffectiveFailoverFastMode() {
+		return base * 2
+	}
+	return base
 }
 
 type StreamSlotKey struct {
@@ -1006,7 +1011,18 @@ func isPlayPrepareCancellation(err error) bool {
 	if err == nil || errors.Is(err, ErrPlaybackStartupTimeout) {
 		return false
 	}
+	if isLazyNZBDownloadTimeoutErr(err) {
+		return false
+	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func isLazyNZBDownloadTimeoutErr(err error) bool {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "failed to lazy download nzb")
 }
 
 func isIndexerLimitErr(err error) bool {
@@ -1139,7 +1155,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
 			}
 			availOutcome := availOutcomeForFailure(prepareErr)
-			if shouldReportBadRelease(prepareErr) && s.availReporter != nil {
+			if s.shouldReportBadReleaseToAvailNZB(prepareErr) && s.availReporter != nil {
 				if shouldReportBadReleaseAllProviders(prepareErr) {
 					availOutcome = s.availReporter.ReportBadAllProviders(sess, prepareErr.Error())
 				} else {
@@ -1247,7 +1263,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			}
 			errSess.ResetPlaybackStream()
 			availOutcome := availOutcomeForFailure(readErr)
-			if shouldReportBadRelease(readErr) && s.availReporter != nil {
+			if s.shouldReportBadReleaseToAvailNZB(readErr) && s.availReporter != nil {
 				if shouldReportBadReleaseAllProviders(readErr) {
 					availOutcome = s.availReporter.ReportBadAllProviders(errSess, readErr.Error())
 				} else {
@@ -1650,6 +1666,7 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 	}
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
+		FailoverFastMode:           s.failoverFastModeEnabled(),
 	}
 	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
 	cacheReturnedPlaybackBlueprint(sess, bp)
@@ -1843,6 +1860,35 @@ func shouldReportBadRelease(streamErr error) bool {
 	return true
 }
 
+func (s *Server) failoverFastModeEnabled() bool {
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	return cfg.EffectiveFailoverFastMode()
+}
+
+func (s *Server) shouldReportBadReleaseToAvailNZB(streamErr error) bool {
+	if errors.Is(streamErr, unpack.ErrArchiveFastProbe) {
+		return false
+	}
+	if s.failoverFastModeEnabled() {
+		// In fast mode we skip some deeper diagnostics (e.g. exhaustive archive checks).
+		// Only report bad availability when failure is still clearly definitive.
+		return isDefinitiveUnavailableStartupErr(streamErr) || isDataCorruptErr(streamErr)
+	}
+	if shouldReportBadRelease(streamErr) {
+		return true
+	}
+	// Keep corruption reportable when full diagnostics are enabled.
+	if isDataCorruptErr(streamErr) {
+		return true
+	}
+	return false
+}
+
 func shouldReportBadReleaseAllProviders(streamErr error) bool {
 	if streamErr == nil {
 		return false
@@ -1883,6 +1929,8 @@ func availOutcomeForFailure(err error) availnzb.ReportOutcome {
 	}
 	errMsg := strings.TrimSpace(err.Error())
 	switch {
+	case errors.Is(err, unpack.ErrArchiveFastProbe):
+		return availnzb.SkippedOutcome("Not reported to AvailNZB because fast mode used heuristic archive probing.")
 	case strings.Contains(strings.ToLower(errMsg), "playback startup timeout"):
 		return availnzb.SkippedOutcome("Not reported to AvailNZB because this startup timeout may be temporary and does not prove the release is bad.")
 	case isIndexerLimitErr(err):
@@ -2228,10 +2276,6 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID, 
 }
 
 func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
-	if streamConfig == nil || streamConfig.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
 	if debugValue := strings.ToLower(strings.TrimSpace(os.Getenv("STREAMNZB_DEBUG_PLAY"))); debugValue != "1" && debugValue != "true" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -2333,9 +2377,18 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
 	}
 	hints := unpack.StreamSelectionHints{
-		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
+		// Debug play should be permissive and mirror nzbdav-style direct playback
+		// behavior for odd/obfuscated NZBs where strict content typing is absent.
+		AllowLargestDirectFallback: true,
+		FailoverFastMode:           s.failoverFastModeEnabled(),
 	}
-	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(mergedCtx, unpackFiles, sess.Blueprint, password, target, hints)
+	startupTimeout := s.playbackStartupTimeout()
+	if startupTimeout < 2*time.Minute {
+		startupTimeout = 2 * time.Minute
+	}
+	openCtx, openCancel := context.WithTimeout(mergedCtx, startupTimeout)
+	defer openCancel()
+	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(openCtx, unpackFiles, sess.Blueprint, password, target, hints)
 	cacheReturnedPlaybackBlueprint(sess, bp)
 	if err != nil {
 		logger.Error("Failed to open media stream", "err", err)

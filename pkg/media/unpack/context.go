@@ -3,7 +3,41 @@ package unpack
 import (
 	"context"
 	"errors"
+	"fmt"
 )
+
+type archiveFastFailoverContextKey struct{}
+
+func WithArchiveFastFailoverMode(ctx context.Context, enabled bool) context.Context {
+	if !enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, archiveFastFailoverContextKey{}, true)
+}
+
+func IsArchiveFastFailoverModeEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(archiveFastFailoverContextKey{}).(bool)
+	return enabled
+}
+
+var ErrArchiveFastProbe = errors.New("archive fast probe incomplete")
+
+func markArchiveFastProbe(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", ErrArchiveFastProbe, err)
+}
+
+func maybeMarkArchiveFastProbe(ctx context.Context, err error) error {
+	if err == nil || !IsArchiveFastFailoverModeEnabled(ctx) {
+		return err
+	}
+	return markArchiveFastProbe(err)
+}
 
 type contextAwareSegmentMapEnsurer interface {
 	EnsureSegmentMapCtx(ctx context.Context) error

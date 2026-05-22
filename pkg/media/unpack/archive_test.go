@@ -201,6 +201,36 @@ func TestGetMediaStreamForEpisodeAllowsLargestDirectFallbackWhenHinted(t *testin
 	}
 }
 
+func TestGetMediaStreamForEpisodeSelectsUnknownNameByContentProbe(t *testing.T) {
+	discardTestLogger(t)
+
+	// Minimal MKV-like prefix (EBML header) is enough for probe validation.
+	data := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 1024)...)
+	files := []UnpackableFile{
+		&sizedUnpackableFile{
+			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: data},
+			size:                 80 * 1024 * 1024,
+		},
+	}
+
+	stream, name, _, _, err := GetMediaStreamForEpisodeWithHints(
+		context.Background(),
+		files,
+		nil,
+		"",
+		EpisodeTarget{},
+		StreamSelectionHints{AllowLargestDirectFallback: false},
+	)
+	if err != nil {
+		t.Fatalf("expected content probe fallback to succeed, got %v", err)
+	}
+	defer stream.Close()
+
+	if name != "abc12345" {
+		t.Fatalf("expected probed candidate name, got %q", name)
+	}
+}
+
 func TestPlausibleLargestDirectFallbackAllowsCommonReleasePunctuation(t *testing.T) {
 	if !isPlausibleLargestDirectFallbackName("Movie, Title '11 [1080p]") {
 		t.Fatal("expected common release punctuation to remain plausible")

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coreenv "streamnzb/pkg/core/env"
 )
 
 func TestMergeIndexerSearchDefaultsSeriesSeasonAndCompleteSearchOn(t *testing.T) {
@@ -292,15 +294,52 @@ func TestConfigEffectivePlaybackStartupTimeoutRejectsOutOfRangeValues(t *testing
 	}
 }
 
-func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsEnabled(t *testing.T) {
+func TestConfigEffectiveFailoverFastModeDefaultsEnabled(t *testing.T) {
+	var cfg *Config
+	if !cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = false, want true")
+	}
+}
+
+func TestConfigEffectiveFailoverFastModeHonorsEnabledValue(t *testing.T) {
+	cfg := &Config{FailoverFastMode: true}
+	if !cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = false, want true")
+	}
+}
+
+func TestConfigEffectiveFailoverFastModeHonorsDisabledValue(t *testing.T) {
+	cfg := &Config{FailoverFastMode: false}
+	if cfg.EffectiveFailoverFastMode() {
+		t.Fatalf("EffectiveFailoverFastMode() = true, want false")
+	}
+}
+
+func TestApplyEnvOverridesForcesAdminPasswordResetPrompt(t *testing.T) {
+	t.Setenv(coreenv.AdminForcePasswordResetEnv, "true")
+	o, keys := coreenv.ReadConfigOverrides()
 	cfg := &Config{}
-	if !cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+
+	ApplyEnvOverrides(cfg, o, keys)
+
+	if !cfg.AdminMustChangePassword {
+		t.Fatalf("AdminMustChangePassword = false, want true")
+	}
+}
+
+func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsDisabled(t *testing.T) {
+	cfg := &Config{}
+	if cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
 	}
 }
 
 func TestConfigEffectiveAvailNZBFilterReportedBadHonorsExplicitValue(t *testing.T) {
-	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(false)}
+	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(true)}
+	if !cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+	}
+	cfg = &Config{AvailNZBFilterReportedBad: ptrBool(false)}
 	if cfg.EffectiveAvailNZBFilterReportedBad() {
 		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
 	}
