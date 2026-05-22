@@ -301,21 +301,12 @@ func (e *encryptedRARStream) Close() error {
 // failing slowly across hundreds of volumes; we try a few and fail fast.
 const maxFirstVolumesToScan = 5
 
-type rarFastFailoverContextKey struct{}
-
 func withRARFastFailoverMode(ctx context.Context, enabled bool) context.Context {
-	if !enabled {
-		return ctx
-	}
-	return context.WithValue(ctx, rarFastFailoverContextKey{}, true)
+	return WithArchiveFastFailoverMode(ctx, enabled)
 }
 
 func isRARFastFailoverModeEnabled(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	enabled, _ := ctx.Value(rarFastFailoverContextKey{}).(bool)
-	return enabled
+	return IsArchiveFastFailoverModeEnabled(ctx)
 }
 
 type firstVolumeCandidate struct {

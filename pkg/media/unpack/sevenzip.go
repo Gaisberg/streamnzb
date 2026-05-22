@@ -15,12 +15,16 @@ import (
 )
 
 type SevenZipBlueprint struct {
-	MainFileName string
-	TotalSize    int64
-	FileOffset   int64
-	Files        []UnpackableFile
-	Encrypted    bool
-	Target       EpisodeTarget
+	MainFileName  string
+	TotalSize     int64
+	FileOffset    int64
+	PackedSize    int64
+	Files         []UnpackableFile
+	Encrypted     bool
+	AESSalt       []byte
+	AESIV         []byte
+	KDFIterations int
+	Target        EpisodeTarget
 }
 
 func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstVolName string, password string, target EpisodeTarget) (*SevenZipBlueprint, error) {
@@ -92,33 +96,47 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 
 	fi := fileInfos[bestIdx]
 	bp := &SevenZipBlueprint{
-		MainFileName: filepath.Base(fi.Name),
-		TotalSize:    int64(fi.Size),
-		FileOffset:   fi.Offset,
-		Files:        archiveFiles,
-		Encrypted:    fi.Encrypted,
-		Target:       target,
+		MainFileName:  filepath.Base(fi.Name),
+		TotalSize:     int64(fi.Size),
+		FileOffset:    fi.Offset,
+		PackedSize:    int64(fi.PackedSize),
+		Files:         archiveFiles,
+		Encrypted:     fi.Encrypted,
+		AESSalt:       append([]byte(nil), fi.AESSalt...),
+		AESIV:         append([]byte(nil), fi.AESIV...),
+		KDFIterations: fi.KDFIterations,
+		Target:        target,
 	}
-	logger.Debug("Created 7z blueprint", "name", bp.MainFileName, "offset", bp.FileOffset, "size", bp.TotalSize, "encrypted", bp.Encrypted)
+	logger.Debug("Created 7z blueprint", "name", bp.MainFileName, "offset", bp.FileOffset, "size", bp.TotalSize, "packed", bp.PackedSize, "encrypted", bp.Encrypted)
 
 	return bp, nil
 }
-
-var ErrEncrypted7zStreaming = errors.New("encrypted 7z cannot be streamed in reasonable time; try another release")
 
 func Open7zStreamFromBlueprint(ctx context.Context, bp *SevenZipBlueprint, password string) (ReadSeekCloser, string, int64, error) {
 	if bp == nil || len(bp.Files) == 0 {
 		return nil, "", 0, errors.New("invalid 7z blueprint or empty files")
 	}
 
-	if bp.Encrypted {
-		return nil, "", 0, ErrEncrypted7zStreaming
-	}
-
 	parts, err := filesToParts(ctx, bp.Files)
 	if err != nil {
 		return nil, "", 0, err
 	}
+
+	if bp.Encrypted {
+		packedSize := packed7zSize(bp)
+		streamParts, err := mapOffsetToParts(parts, bp.FileOffset, packedSize)
+		if err != nil {
+			return nil, "", 0, err
+		}
+		encStream := NewVirtualStream(ctx, streamParts, packedSize, 0)
+		decStream, err := newAES7zStream(encStream, password, bp)
+		if err != nil {
+			_ = encStream.Close()
+			return nil, "", 0, err
+		}
+		return decStream, bp.MainFileName, bp.TotalSize, nil
+	}
+
 	streamParts, err := mapOffsetToParts(parts, bp.FileOffset, bp.TotalSize)
 	if err != nil {
 		return nil, "", 0, err
@@ -148,21 +166,55 @@ func filesToParts(ctx context.Context, files []UnpackableFile) ([]Part, error) {
 		return parts, nil
 	}
 
+	if IsArchiveFastFailoverModeEnabled(ctx) {
+		return filesToPartsFast(ctx, files)
+	}
+	return filesToPartsFull(ctx, files)
+}
+
+func filesToPartsFull(ctx context.Context, files []UnpackableFile) ([]Part, error) {
+	parts := make([]Part, len(files))
+	for i, f := range files {
+		size, err := resolved7zVolumeSize(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		parts[i] = Part{Reader: f, Offset: 0, Size: size}
+	}
+	return parts, nil
+}
+
+func filesToPartsFast(ctx context.Context, files []UnpackableFile) ([]Part, error) {
+	parts := make([]Part, len(files))
+
 	firstSize, err := resolved7zVolumeSize(ctx, files[0])
 	if err != nil {
 		return nil, err
 	}
-	lastSize := firstSize
-	if len(files) > 1 {
-		lastSize, err = resolved7zVolumeSize(ctx, files[len(files)-1])
+	if len(files) == 1 {
+		parts[0] = Part{Reader: files[0], Offset: 0, Size: firstSize}
+		return parts, nil
+	}
+
+	lastSize, err := resolved7zVolumeSize(ctx, files[len(files)-1])
+	if err != nil {
+		return nil, err
+	}
+
+	middleSize := firstSize
+	if len(files) > 2 {
+		middleSize, err = resolved7zVolumeSize(ctx, files[1])
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	for i, f := range files {
-		size := firstSize
-		if i == len(files)-1 {
+		size := middleSize
+		switch i {
+		case 0:
+			size = firstSize
+		case len(files) - 1:
 			size = lastSize
 		}
 		parts[i] = Part{Reader: f, Offset: 0, Size: size}

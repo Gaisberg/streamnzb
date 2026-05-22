@@ -103,7 +103,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		"target", target,
 		"files", len(files),
 		"cached_type", fmt.Sprintf("%T", cachedBP))
-	rarScanCtx := withRARFastFailoverMode(ctx, hints.FailoverFastMode)
+	rarScanCtx := WithArchiveFastFailoverMode(ctx, hints.FailoverFastMode)
 	if cachedBP != nil {
 		switch bp := cachedBP.(type) {
 		case *ArchiveBlueprint:
@@ -123,7 +123,10 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 			if len(bp.Files) == 0 {
 				return nil, "", 0, nil, errors.New("7z set empty for cached blueprint")
 			}
-			s, n, sz, err := Open7zStreamFromBlueprint(ctx, bp, password)
+			s, n, sz, err := Open7zStreamFromBlueprint(rarScanCtx, bp, password)
+			if err != nil {
+				err = maybeMarkArchiveFastProbe(rarScanCtx, err)
+			}
 			return s, n, sz, bp, err
 		case *DirectBlueprint:
 			if !blueprintTargetMatches(bp.Target, target) {
@@ -175,17 +178,29 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 	}
 
 	archiveFiles, err := Identify7zParts(files)
-	if err == nil && len(archiveFiles) > 0 {
+	if err != nil && !errors.Is(err, ErrNo7zFiles) {
+		logger.Warn("7z archive identification failed", "target", target, "err", err)
+		return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
+	}
+	if len(archiveFiles) > 0 {
 		firstVolName := ExtractFilename(archiveFiles[0].Name())
-		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles))
-		newBp, err := CreateSevenZipBlueprint(ctx, archiveFiles, firstVolName, password, target)
+		mode := "full"
+		if IsArchiveFastFailoverModeEnabled(rarScanCtx) {
+			mode = "fast"
+		}
+		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles), "mode", mode)
+		newBp, err := CreateSevenZipBlueprint(rarScanCtx, archiveFiles, firstVolName, password, target)
 		if err != nil {
+			err = maybeMarkArchiveFastProbe(rarScanCtx, err)
 			if errors.Is(err, ErrEpisodeTargetNotFound) {
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
 			}
 			return nil, "", 0, nil, err
 		}
-		s, n, sz, err := Open7zStreamFromBlueprint(ctx, newBp, password)
+		s, n, sz, err := Open7zStreamFromBlueprint(rarScanCtx, newBp, password)
+		if err != nil {
+			err = maybeMarkArchiveFastProbe(rarScanCtx, err)
+		}
 		return s, n, sz, newBp, err
 	}
 

@@ -1871,6 +1871,9 @@ func (s *Server) failoverFastModeEnabled() bool {
 }
 
 func (s *Server) shouldReportBadReleaseToAvailNZB(streamErr error) bool {
+	if errors.Is(streamErr, unpack.ErrArchiveFastProbe) {
+		return false
+	}
 	if s.failoverFastModeEnabled() {
 		// In fast mode we skip some deeper diagnostics (e.g. exhaustive archive checks).
 		// Only report bad availability when failure is still clearly definitive.
@@ -1926,6 +1929,8 @@ func availOutcomeForFailure(err error) availnzb.ReportOutcome {
 	}
 	errMsg := strings.TrimSpace(err.Error())
 	switch {
+	case errors.Is(err, unpack.ErrArchiveFastProbe):
+		return availnzb.SkippedOutcome("Not reported to AvailNZB because fast mode used heuristic archive probing.")
 	case strings.Contains(strings.ToLower(errMsg), "playback startup timeout"):
 		return availnzb.SkippedOutcome("Not reported to AvailNZB because this startup timeout may be temporary and does not prove the release is bad.")
 	case isIndexerLimitErr(err):

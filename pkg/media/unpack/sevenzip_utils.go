@@ -9,6 +9,8 @@ import (
 	"streamnzb/pkg/media/nzb"
 )
 
+var ErrNo7zFiles = errors.New("no 7z files found")
+
 func Identify7zParts(files []UnpackableFile) ([]UnpackableFile, error) {
 	var candidates []UnpackableFile
 
@@ -32,7 +34,7 @@ func Identify7zParts(files []UnpackableFile) ([]UnpackableFile, error) {
 	}
 
 	if len(candidates) == 0 {
-		return nil, errors.New("no 7z files found")
+		return nil, ErrNo7zFiles
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
@@ -104,7 +106,52 @@ func Identify7zParts(files []UnpackableFile) ([]UnpackableFile, error) {
 		return Get7zVolumeNumber(bestSet[i].Name()) < Get7zVolumeNumber(bestSet[j].Name())
 	})
 
+	if err := validateSplit7zParts(bestSet); err != nil {
+		return nil, err
+	}
+
 	return bestSet, nil
+}
+
+func validateSplit7zParts(parts []UnpackableFile) error {
+	names := make([]string, len(parts))
+	for i, f := range parts {
+		names[i] = f.Name()
+	}
+	return validateSplit7zPartNames(names)
+}
+
+func validateSplit7zPartNames(partNames []string) error {
+	if len(partNames) == 0 {
+		return nil
+	}
+
+	isSplit := false
+	for _, name := range partNames {
+		if strings.Contains(strings.ToLower(ExtractFilename(name)), ".7z.") {
+			isSplit = true
+			break
+		}
+	}
+	if !isSplit {
+		return nil
+	}
+
+	firstRawSubject := partNames[0]
+	first := strings.ToLower(ExtractFilename(firstRawSubject))
+	if !strings.HasSuffix(first, ".001") {
+		return fmt.Errorf("split 7z archive missing part .001 (first found: %s)", first)
+	}
+
+	for i, name := range partNames {
+		expectedSuffix := fmt.Sprintf(".%03d", i+1)
+		extracted := strings.ToLower(ExtractFilename(name))
+		if !strings.HasSuffix(extracted, expectedSuffix) {
+			return fmt.Errorf("7z archive sequence error: expected part %s, found %s", expectedSuffix, extracted)
+		}
+	}
+
+	return nil
 }
 
 func Validate7zArchive(files []nzb.File) error {
@@ -191,74 +238,9 @@ func Validate7zArchive(files []nzb.File) error {
 		return nameI < nameJ
 	})
 
-	firstRawSubject := bestSet[0].Subject
-	first := strings.ToLower(ExtractFilename(firstRawSubject))
-
-	isSplit := false
-	for _, f := range bestSet {
-		if strings.Contains(strings.ToLower(ExtractFilename(f.Subject)), ".7z.") {
-			isSplit = true
-			break
-		}
-	}
-
-	if !isSplit {
-
-		return nil
-	}
-
-	if !strings.HasSuffix(first, ".001") {
-		return fmt.Errorf("split 7z archive missing part .001 (first found: %s)", first)
-	}
-
+	identified := make([]string, len(bestSet))
 	for i, f := range bestSet {
-		expectedSuffix := fmt.Sprintf(".%03d", i+1)
-		name := strings.ToLower(ExtractFilename(f.Subject))
-		if !strings.HasSuffix(name, expectedSuffix) {
-			return fmt.Errorf("7z archive sequence error: expected part %s, found %s", expectedSuffix, name)
-		}
+		identified[i] = f.Subject
 	}
-
-	totalParts := parseTotalParts(firstRawSubject)
-	if totalParts > 0 && len(bestSet) != totalParts {
-		return fmt.Errorf("7z archive missing parts: found %d, expected %d", len(bestSet), totalParts)
-	}
-
-	return nil
-}
-
-func parseTotalParts(subject string) int {
-
-	s := strings.ToLower(subject)
-
-	idx := strings.Index(s, "1/")
-	if idx == -1 {
-
-		idx = strings.Index(s, "01/")
-	}
-	if idx == -1 {
-
-		idx = strings.Index(s, "001/")
-	}
-
-	if idx != -1 {
-
-		slashIdx := strings.Index(s[idx:], "/") + idx
-		rest := s[slashIdx+1:]
-
-		end := 0
-		for end < len(rest) && isDigit(rest[end]) {
-			end++
-		}
-
-		if end > 0 {
-
-			var total int
-			if _, err := fmt.Sscanf(rest[:end], "%d", &total); err == nil {
-				return total
-			}
-		}
-	}
-
-	return 0
+	return validateSplit7zPartNames(identified)
 }

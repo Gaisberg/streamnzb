@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/media/unpack"
 )
 
 func TestPlaybackStartupTimeoutDoublesWhenFastModeDisabled(t *testing.T) {
@@ -46,6 +47,13 @@ func TestShouldReportBadReleaseToAvailNZBRespectsFastMode(t *testing.T) {
 	}
 	if !fast.shouldReportBadReleaseToAvailNZB(errors.New("[rapidyenc] data corruption detected")) {
 		t.Fatalf("expected data corruption to stay reportable in fast mode")
+	}
+}
+
+func TestShouldReportBadReleaseToAvailNZBSkipsArchiveFastProbe(t *testing.T) {
+	fast := &Server{config: &config.Config{FailoverFastMode: true}}
+	if fast.shouldReportBadReleaseToAvailNZB(unpack.ErrArchiveFastProbe) {
+		t.Fatalf("expected archive fast probe errors to be skipped")
 	}
 }
 
