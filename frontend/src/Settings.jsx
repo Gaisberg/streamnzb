@@ -134,6 +134,7 @@ function Settings({
         proxy_enabled: initialConfig.proxy_enabled !== false,
         availnzb_mode: normalizeAvailNZBMode(initialConfig.availnzb_mode),
         availnzb_filter_reported_bad: initialConfig.availnzb_filter_reported_bad !== false,
+        failover_fast_mode: initialConfig.failover_fast_mode != null ? initialConfig.failover_fast_mode === true : true,
         tmdb_api_key: initialConfig.tmdb_api_key ?? '',
         tvdb_api_key: initialConfig.tvdb_api_key ?? '',
         indexer_query_header: initialConfig.indexer_query_header ?? '',

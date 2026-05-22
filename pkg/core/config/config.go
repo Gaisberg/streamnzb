@@ -407,7 +407,7 @@ type Config struct {
 	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
 	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
 	// playback skips expensive archive checks that can delay startup.
-	FailoverFastMode bool `json:"failover_fast_mode,omitempty"`
+	FailoverFastMode bool `json:"failover_fast_mode"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.
