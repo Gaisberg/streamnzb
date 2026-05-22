@@ -36,7 +36,7 @@ function pickInitialValues(values = {}) {
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
     failover_fast_mode: values.failover_fast_mode == null ? true : values.failover_fast_mode === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
-    availnzb_filter_reported_bad: values.availnzb_filter_reported_bad !== false,
+    availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
     tmdb_api_key: values.tmdb_api_key ?? '',
     tvdb_api_key: values.tvdb_api_key ?? '',
   }
@@ -360,7 +360,7 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                         </div>
                         <FormControl>
                           <Switch
-                            checked={availNZBModeEnabled && field.value !== false}
+                            checked={availNZBModeEnabled && field.value === true}
                             onCheckedChange={(checked) => field.onChange(checked === true)}
                             disabled={!availNZBModeEnabled}
                             className={showUnsavedHighlights && formState.dirtyFields?.availnzb_filter_reported_bad ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}

@@ -244,7 +244,7 @@ func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	if c != nil && c.AvailNZBFilterReportedBad != nil {
 		return *c.AvailNZBFilterReportedBad
 	}
-	return true
+	return false
 }
 
 func NormalizeAvailNZBMode(mode string) string {
@@ -681,7 +681,7 @@ func Load() (*Config, error) {
 		needSave = true
 	}
 	if cfg.AvailNZBFilterReportedBad == nil {
-		cfg.AvailNZBFilterReportedBad = ptrBool(true)
+		cfg.AvailNZBFilterReportedBad = ptrBool(false)
 		needSave = true
 	}
 

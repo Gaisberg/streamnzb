@@ -327,15 +327,19 @@ func TestApplyEnvOverridesForcesAdminPasswordResetPrompt(t *testing.T) {
 	}
 }
 
-func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsEnabled(t *testing.T) {
+func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsDisabled(t *testing.T) {
 	cfg := &Config{}
-	if !cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+	if cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
 	}
 }
 
 func TestConfigEffectiveAvailNZBFilterReportedBadHonorsExplicitValue(t *testing.T) {
-	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(false)}
+	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(true)}
+	if !cfg.EffectiveAvailNZBFilterReportedBad() {
+		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+	}
+	cfg = &Config{AvailNZBFilterReportedBad: ptrBool(false)}
 	if cfg.EffectiveAvailNZBFilterReportedBad() {
 		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
 	}
