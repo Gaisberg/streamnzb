@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.6.0](https://github.com/Gaisberg/streamnzb/compare/v4.5.0...v4.6.0) (2026-05-22)
+
+
+### Features
+
+* **playback:** recover play requests after cache/session eviction ([0834fca](https://github.com/Gaisberg/streamnzb/commit/0834fcaca8cbdb93229309487202354ecbdabb1d))
+
+
+### Bug Fixes
+
+* **ci:** pass release metadata to Discord notify on workflow_run ([aa34865](https://github.com/Gaisberg/streamnzb/commit/aa3486566ae3ebf19e29bd1bbd138a6db5ae7f2e))
+
 ## [4.5.0](https://github.com/Gaisberg/streamnzb/compare/v4.4.0...v4.5.0) (2026-05-22)
 
 
