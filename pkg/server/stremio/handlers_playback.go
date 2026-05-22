@@ -284,26 +284,80 @@ func errorString(err error) string {
 }
 
 func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stream *auth.Stream, baseURL string) ([]Stream, *playlistResult, error) {
+	list, err := s.bootstrapPlaylistForPlay(ctx, key, stream)
+	if err != nil {
+		if strings.Contains(err.Error(), "no candidates found") {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	streamName := "StreamNZB"
+	showAll := streamResultsMode(stream) == "display_all"
+	return buildStreamsFromPlaylist(list, key, streamName, baseURL, showAll), list, nil
+}
+
+// bootstrapPlaylistForPlay rebuilds the play list and deferred sessions the same way as /stream.
+func (s *Server) bootstrapPlaylistForPlay(ctx context.Context, key StreamSlotKey, stream *auth.Stream) (*playlistResult, error) {
+	if key.StreamID == "" {
+		key.StreamID = defaultStreamID
+	}
 	isAIOStreams := streamUsesAIOStreamsProfile(stream)
 	list, err := s.buildPlaylist(ctx, key, isAIOStreams, stream)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if list == nil || len(list.Candidates) == 0 {
-		return nil, nil, nil
+		return nil, fmt.Errorf("no candidates found")
 	}
 	list = s.applyExposedPlaylistOrder(list, key, stream)
 	if list == nil || len(list.Candidates) == 0 {
-		return nil, nil, nil
+		return nil, fmt.Errorf("no candidates found")
 	}
 	for _, slotPath := range list.SlotPaths {
 		s.sessionManager.ClearSlotFailedDuringPlayback(slotPath)
 	}
-	// Create deferred sessions for each slot path we will expose, so handlePlay can serve without hitting indexers.
 	s.ensureDeferredSessionsForPlaylist(list, key, stream)
-	streamName := "StreamNZB"
-	showAll := streamResultsMode(stream) == "display_all"
-	return buildStreamsFromPlaylist(list, key, streamName, baseURL, showAll), list, nil
+	return list, nil
+}
+
+// recoverPlaySessionAfterEviction re-runs the /stream bootstrap and returns the first playable slot.
+// The index encoded in the requested play URL is ignored because rankings may have changed.
+func (s *Server) recoverPlaySessionAfterEviction(ctx context.Context, sessionID string, stream *auth.Stream) (*session.Session, string, error) {
+	streamId, contentType, id, _, ok := parseStreamSlotID(sessionID)
+	if !ok {
+		return nil, "", fmt.Errorf("invalid slot path %q", sessionID)
+	}
+	key := StreamSlotKey{StreamID: streamId, ContentType: contentType, ID: id}
+	list, err := s.bootstrapPlaylistForPlay(ctx, key, stream)
+	if err != nil {
+		return nil, "", err
+	}
+	currentID := ""
+	currentIndex := -1
+	for {
+		nextID := s.deriveNextSlotIDFromPlaylist(currentID, key, currentIndex, list, stream)
+		if nextID == "" {
+			return nil, "", fmt.Errorf("no playable slot in rebuilt play list")
+		}
+		nextSess, err := s.sessionManager.GetSession(nextID)
+		if err != nil {
+			_, _, _, nextIndex, nextOK := parseStreamSlotID(nextID)
+			if !nextOK {
+				return nil, "", fmt.Errorf("invalid recovered slot %q", nextID)
+			}
+			nextSess, err = s.resolveStreamSlotFromPlaylist(key, nextIndex, list, stream)
+		}
+		if err == nil {
+			return nextSess, nextID, nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, "", err
+		}
+		logger.Debug("Play recovery skipped unresolvable slot", "slot", nextID, "err", err)
+		s.sessionManager.SetSlotFailedDuringPlayback(nextID)
+		currentID = nextID
+		_, _, _, currentIndex, _ = parseStreamSlotID(currentID)
+	}
 }
 
 func (s *Server) applyExposedPlaylistOrder(list *playlistResult, key StreamSlotKey, stream *auth.Stream) *playlistResult {
@@ -1040,8 +1094,8 @@ type playbackSourceOpenResult struct {
 	err    error
 }
 
-// handlePlay: resolve session (by slot path or existing), optionally redirect if slot previously failed,
-// then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
+// handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,
+// optionally redirect if slot previously failed, then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
 func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/play/")
 	requestedSessionID := sessionID
@@ -1070,15 +1124,16 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			forceDisconnect(w, r, s.baseURL)
 			return
 		}
-		// Never resolve or create sessions in the play handler; do not hit indexers here.
-		// If the session was evicted (e.g. after pause), the client must get a new stream from the catalog.
-		logger.Debug("Play: session not found", "slot", sessionID, "err", err)
-		http.Error(w, "Session expired or not found", http.StatusNotFound)
-		return
-	}
-
-	// If this slot failed during playback (430), redirect client to next fallback so retries get a working stream.
-	if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
+		recoveredSess, recoveredID, recoverErr := s.recoverPlaySessionAfterEviction(r.Context(), sessionID, streamConfig)
+		if recoverErr != nil {
+			logger.Debug("Play: session not found", "slot", sessionID, "err", err, "recovery_err", recoverErr)
+			http.Error(w, "Session expired or not found", http.StatusNotFound)
+			return
+		}
+		logger.Info("Play: recovered after cache/session eviction", "requested", sessionID, "playing", recoveredID)
+		sess = recoveredSess
+		sessionID = recoveredID
+	} else if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
 		if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
 			nextURL := s.baseURLWithToken(streamConfig) + "/play/" + nextID
 			logger.Info("Redirecting to next fallback (slot failed during playback)", "from", sessionID, "to", nextID)

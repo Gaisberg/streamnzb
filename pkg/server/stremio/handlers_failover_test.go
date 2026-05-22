@@ -187,6 +187,38 @@ func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing
 	}
 }
 
+func TestRecoverPlaySessionAfterEvictionStartsFromFirstSlot(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	manager := session.NewManager(nil, nil, time.Minute)
+	t.Cleanup(manager.Shutdown)
+	server := &Server{config: &config.Config{}, sessionManager: manager}
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
+
+	server.playlistCache.Store(key.CacheKey(), &playlistCacheEntry{
+		result: &playlistResult{
+			Candidates: []triage.Candidate{
+				{Release: &release.Release{Link: "https://example.invalid/0"}},
+				{Release: &release.Release{Link: "https://example.invalid/1"}},
+			},
+			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+		},
+		until: time.Now().Add(time.Minute),
+	})
+
+	sess, recoveredID, err := server.recoverPlaySessionAfterEviction(context.Background(), key.SlotPath(3), nil)
+	if err != nil {
+		t.Fatalf("recoverPlaySessionAfterEviction returned error: %v", err)
+	}
+	if recoveredID != key.SlotPath(0) {
+		t.Fatalf("recoveredID = %q, want %q", recoveredID, key.SlotPath(0))
+	}
+	if sess == nil || sess.ID != key.SlotPath(0) {
+		t.Fatalf("recovered session = %#v, want id %q", sess, key.SlotPath(0))
+	}
+}
+
 func TestForceDisconnectRedirectsToErrorVideo(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
