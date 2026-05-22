@@ -131,3 +131,18 @@ jobs:
           GH_TOKEN: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
         run: |
           gh release upload ${{ github.ref_name }} release_assets/*
+
+      - name: GitHub Releases to Discord
+        if: github.event_name == 'release'
+        uses: SethCohen/github-releases-to-discord@v1
+        with:
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK }}
+          release_name: ${{ github.event.release.name }}
+          release_body: ${{ github.event.release.body }}
+          release_html_url: ${{ github.event.release.html_url }}
+          color: "2105893"
+          username: "Release Changelog"
+          avatar_url: "https://cdn.discordapp.com/icons/1470288400157380710/6f397b4a2e9561dc7ad43526588cfd67.png"
+          content: "||@everyone||"
+          footer_title: "Changelog"
+          reduce_headings: true
