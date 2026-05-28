@@ -110,6 +110,24 @@ func TestRecordAvailIndexerStatsSkipsDiscardedWhenAvailFilteringDisabled(t *test
 	}
 }
 
+func TestAddUniqueIndexerHitsAccumulatesAndSnapshots(t *testing.T) {
+	s := &Server{uniqueIndexerHits: make(map[string]int64)}
+
+	s.addUniqueIndexerHits(map[string]int{"A": 1, "B": 2})
+	s.addUniqueIndexerHits(map[string]int{"A": 3, "": 10, "B": -1})
+
+	got := s.GetUniqueIndexerHits()
+	if got["A"] != 4 {
+		t.Fatalf("A hits = %d, want 4", got["A"])
+	}
+	if got["B"] != 2 {
+		t.Fatalf("B hits = %d, want 2", got["B"])
+	}
+	if _, ok := got[""]; ok {
+		t.Fatal("empty indexer name should not be tracked")
+	}
+}
+
 func configPtrBool(v bool) *bool {
 	return &v
 }

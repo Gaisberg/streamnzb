@@ -1005,6 +1005,7 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 		if searchMode == "id" || len(queryVariants) == 0 {
 			queryVariants = []string{profileParams.Req.Query}
 		}
+		requestReleases := make([]*release.Release, 0)
 		for _, queryVariant := range queryVariants {
 			reqVariant := profileParams.Req
 			reqVariant.Limit = effectiveLimit
@@ -1016,16 +1017,49 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 			if runErr != nil {
 				return nil, executedRequests, runErr
 			}
+			if len(releases) > 0 {
+				requestReleases = append(requestReleases, releases...)
+			}
 			if streamCombinesResults(stream) {
 				indexerReleases = append(indexerReleases, releases...)
 				continue
 			}
 			if len(releases) > 0 {
+				if idxName, ok := singleIndexerFromReleases(requestReleases); ok {
+					s.addUniqueIndexerHits(map[string]int{idxName: 1})
+				}
 				return releases, executedRequests, nil
 			}
 		}
 	}
+	if idxName, ok := singleIndexerFromReleases(indexerReleases); ok {
+		s.addUniqueIndexerHits(map[string]int{idxName: 1})
+	}
 	return indexerReleases, executedRequests, nil
+}
+
+func singleIndexerFromReleases(releases []*release.Release) (string, bool) {
+	if len(releases) == 0 {
+		return "", false
+	}
+	out := make(map[string]struct{})
+	for _, rel := range releases {
+		if rel == nil {
+			continue
+		}
+		name := strings.TrimSpace(rel.Indexer)
+		if name == "" {
+			continue
+		}
+		out[name] = struct{}{}
+		if len(out) > 1 {
+			return "", false
+		}
+	}
+	for name := range out {
+		return name, true
+	}
+	return "", false
 }
 
 func dedupeCombinedSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, executedRequests int) []*release.Release {

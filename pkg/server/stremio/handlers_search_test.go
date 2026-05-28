@@ -8,6 +8,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/session"
 )
@@ -15,6 +16,8 @@ import (
 type recordingIndexer struct {
 	lastReq indexer.SearchRequest
 }
+
+type requestLabelIndexer struct{}
 
 func (r *recordingIndexer) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	r.lastReq = req
@@ -25,6 +28,34 @@ func (r *recordingIndexer) Name() string            { return "Recording" }
 func (r *recordingIndexer) GetUsage() indexer.Usage { return indexer.Usage{} }
 func (r *recordingIndexer) Ping() error             { return nil }
 func (r *recordingIndexer) DownloadNZB(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *requestLabelIndexer) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	itemFor := func(indexerName string) indexer.Item {
+		return indexer.Item{
+			Title:         "Zootopia 2 2025",
+			GUID:          "https://example.invalid/" + indexerName,
+			Comments:      "https://example.invalid/" + indexerName,
+			ActualIndexer: indexerName,
+		}
+	}
+	switch req.RequestLabel {
+	case "Q1":
+		return &indexer.SearchResponse{}, nil
+	case "Q2":
+		return &indexer.SearchResponse{Channel: indexer.Channel{Items: []indexer.Item{itemFor("IndexerB")}}}, nil
+	case "Q3":
+		return &indexer.SearchResponse{Channel: indexer.Channel{Items: []indexer.Item{itemFor("IndexerC")}}}, nil
+	default:
+		return &indexer.SearchResponse{}, nil
+	}
+}
+
+func (r *requestLabelIndexer) Name() string            { return "RequestLabelIndexer" }
+func (r *requestLabelIndexer) GetUsage() indexer.Usage { return indexer.Usage{} }
+func (r *requestLabelIndexer) Ping() error             { return nil }
+func (r *requestLabelIndexer) DownloadNZB(_ context.Context, _ string) ([]byte, error) {
 	return nil, nil
 }
 
@@ -1017,6 +1048,132 @@ func TestBuildRawSearchResultShortCircuitsWhenMetadataCannotBeResolved(t *testin
 	}
 	if len(raw.IndexerReleases) != 0 {
 		t.Fatalf("expected no releases after metadata short-circuit, got indexer=%d", len(raw.IndexerReleases))
+	}
+}
+
+func TestRunConfiguredSearchRequestsUniqueHitsOnlyFirstResultRequestInCombineMode(t *testing.T) {
+	srv := &Server{
+		config: &config.Config{
+			MovieSearchQueries: []config.SearchQueryConfig{
+				{Name: "Q1", SearchMode: "text"},
+				{Name: "Q2", SearchMode: "text"},
+				{Name: "Q3", SearchMode: "text"},
+			},
+		},
+		indexer:           &requestLabelIndexer{},
+		uniqueIndexerHits: make(map[string]int64),
+	}
+	params := &SearchParams{
+		ContentType: "movie",
+		ID:          "tmdb:1084242",
+		Req: indexer.SearchRequest{
+			TMDBID: "1084242",
+			IMDbID: "tt26443597",
+			Cat:    "2000",
+			Limit:  1000,
+		},
+		Metadata: &resolvedSearchMetadata{
+			MovieDetails: &tmdb.MovieDetails{
+				Title:            "Zootopia 2",
+				OriginalTitle:    "Zootopia 2",
+				OriginalLanguage: "en",
+				ReleaseDate:      "2025-11-26",
+			},
+		},
+		MovieTitleQueries:  make(map[string][]string),
+		SeriesTitleQueries: make(map[string][]string),
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt26443597",
+			TmdbID: "1084242",
+		},
+	}
+	releases, executed, err := srv.runConfiguredSearchRequests("movie", "tt123", "stream-01", nil, []string{"Q1", "Q2", "Q3"}, params)
+	if err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	if executed != 3 {
+		t.Fatalf("executedRequests = %d, want 3", executed)
+	}
+	if len(releases) != 2 {
+		t.Fatalf("releases len = %d, want 2", len(releases))
+	}
+	hits := srv.GetUniqueIndexerHits()
+	if got := hits["IndexerB"]; got != 0 {
+		t.Fatalf("IndexerB unique hits = %d, want 0", got)
+	}
+	if got := hits["IndexerC"]; got != 0 {
+		t.Fatalf("IndexerC unique hits = %d, want 0", got)
+	}
+}
+
+func TestRunConfiguredSearchRequestsUniqueHitsInFirstHitMode(t *testing.T) {
+	combine := false
+	stream := &auth.Stream{CombineResults: &combine}
+	srv := &Server{
+		config: &config.Config{
+			MovieSearchQueries: []config.SearchQueryConfig{
+				{Name: "Q1", SearchMode: "text"},
+				{Name: "Q2", SearchMode: "text"},
+			},
+		},
+		indexer:           &requestLabelIndexer{},
+		uniqueIndexerHits: make(map[string]int64),
+	}
+	params := &SearchParams{
+		ContentType: "movie",
+		ID:          "tmdb:1084242",
+		Req: indexer.SearchRequest{
+			TMDBID: "1084242",
+			IMDbID: "tt26443597",
+			Cat:    "2000",
+			Limit:  1000,
+		},
+		Metadata: &resolvedSearchMetadata{
+			MovieDetails: &tmdb.MovieDetails{
+				Title:            "Zootopia 2",
+				OriginalTitle:    "Zootopia 2",
+				OriginalLanguage: "en",
+				ReleaseDate:      "2025-11-26",
+			},
+		},
+		MovieTitleQueries:  make(map[string][]string),
+		SeriesTitleQueries: make(map[string][]string),
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt26443597",
+			TmdbID: "1084242",
+		},
+	}
+	releases, executed, err := srv.runConfiguredSearchRequests("movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, params)
+	if err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	if executed != 2 {
+		t.Fatalf("executedRequests = %d, want 2", executed)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("releases len = %d, want 1", len(releases))
+	}
+	hits := srv.GetUniqueIndexerHits()
+	if got := hits["IndexerB"]; got != 1 {
+		t.Fatalf("IndexerB unique hits = %d, want 1", got)
+	}
+}
+
+func TestSingleIndexerFromReleases(t *testing.T) {
+	one, ok := singleIndexerFromReleases([]*release.Release{
+		{Indexer: "IndexerA"},
+		{Indexer: "IndexerA"},
+	})
+	if !ok || one != "IndexerA" {
+		t.Fatalf("singleIndexerFromReleases single = (%q,%v), want (IndexerA,true)", one, ok)
+	}
+
+	_, ok = singleIndexerFromReleases([]*release.Release{
+		{Indexer: "IndexerA"},
+		{Indexer: "IndexerB"},
+	})
+	if ok {
+		t.Fatal("singleIndexerFromReleases should return false for mixed indexers")
 	}
 }
 

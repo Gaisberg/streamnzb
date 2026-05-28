@@ -115,6 +115,7 @@ const indexerMetricOptions = {
   speed: { label: 'Speed (req/s)', key: 'speedRps', suffix: ' req/s' },
   searches: { label: 'Searches', key: 'searchesCount', suffix: '' },
   downloads: { label: 'Downloads', key: 'downloadsCount', suffix: '' },
+  uniqueHits: { label: 'Unique hits', key: 'uniqueHitsCount', suffix: '' },
   availAvailable: { label: 'Available', key: 'availAvailableCount', suffix: '' },
   availDiscarded: { label: 'Unavailable', key: 'availDiscardedCount', suffix: '' },
 }
@@ -230,6 +231,7 @@ export function StatisticsPage() {
           speedRps: avgResponseMs > 0 ? 1000 / avgResponseMs : 0,
           searchesCount: toNumber(pick(indexer, 'searches_count', 'SearchesCount')),
           downloadsCount: toNumber(pick(indexer, 'downloads_used', 'DownloadsUsed')),
+          uniqueHitsCount: toNumber(pick(indexer, 'unique_hits_count', 'UniqueHitsCount')),
           availAvailableCount: toNumber(pick(indexer, 'avail_available_count', 'AvailAvailableCount')),
           availDiscardedCount: toNumber(pick(indexer, 'avail_discarded_count', 'AvailDiscardedCount')),
         }
@@ -261,6 +263,8 @@ export function StatisticsPage() {
           activeConns: toNumber(pick(provider, 'active_conns', 'ActiveConns')),
           maxConns: toNumber(pick(provider, 'max_conns', 'MaxConns')),
           usagePercent: toNumber(pick(provider, 'usage_percent', 'UsagePercent')),
+          articleAvailableCount: toNumber(pick(provider, 'article_available_count', 'ArticleAvailableCount')),
+          articleMissingCount: toNumber(pick(provider, 'article_missing_count', 'ArticleMissingCount')),
         }
       })
       .filter(Boolean)
@@ -393,6 +397,7 @@ export function StatisticsPage() {
                 <ToggleGroupItem value="speed">Speed</ToggleGroupItem>
                 <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
                 <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
+                <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
                 <ToggleGroupItem value="availAvailable">Available</ToggleGroupItem>
                 <ToggleGroupItem value="availDiscarded">Unavailable</ToggleGroupItem>
               </ToggleGroup>
@@ -418,6 +423,7 @@ export function StatisticsPage() {
                     <th className="px-3 py-2 text-right font-medium">Speed</th>
                     <th className="px-3 py-2 text-right font-medium">Searches</th>
                     <th className="px-3 py-2 text-right font-medium">Downloads</th>
+                    <th className="px-3 py-2 text-right font-medium">Unique hits</th>
                     <th className="px-3 py-2 text-right font-medium">Available</th>
                     <th className="px-3 py-2 text-right font-medium">Unavailable</th>
                   </tr>
@@ -430,13 +436,14 @@ export function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{row.speedRps > 0 ? `${row.speedRps.toFixed(2)} req/s` : 'N/A'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.searchesCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.downloadsCount}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{row.uniqueHitsCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.availAvailableCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.availDiscardedCount}</td>
                     </tr>
                   ))}
                   {indexerRows.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
+                      <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
                     </tr>
                   )}
                 </tbody>
@@ -472,6 +479,8 @@ export function StatisticsPage() {
                     <th className="px-3 py-2 text-right font-medium">Downloaded</th>
                     <th className="px-3 py-2 text-right font-medium">Connections</th>
                     <th className="px-3 py-2 text-right font-medium">Usage</th>
+                    <th className="px-3 py-2 text-right font-medium">Article available</th>
+                    <th className="px-3 py-2 text-right font-medium">Article missing</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -484,11 +493,13 @@ export function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{formatDownloadedMb(row.downloadedMb)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.activeConns}/{row.maxConns || 0}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.usagePercent.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{row.articleAvailableCount}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{row.articleMissingCount}</td>
                     </tr>
                   ))}
                   {providerRows.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">No provider statistics available.</td>
+                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">No provider statistics available.</td>
                     </tr>
                   )}
                 </tbody>

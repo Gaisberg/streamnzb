@@ -11,6 +11,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/session"
+	usenetpool "streamnzb/pkg/usenet/pool"
 )
 
 type SystemStats struct {
@@ -36,20 +37,23 @@ type IndexerStats struct {
 	DownloadsRemaining   int     `json:"downloads_remaining"`
 	AllTimeDownloadsUsed int     `json:"downloads_used_all_time"`
 	SearchesCount        int     `json:"searches_count"`
+	UniqueHitsCount      int64   `json:"unique_hits_count"`
 	AvgResponseMS        float64 `json:"avg_response_ms"`
 	AvailAvailableCount  int64   `json:"avail_available_count"`
 	AvailDiscardedCount  int64   `json:"avail_discarded_count"`
 }
 
 type ProviderStats struct {
-	Name         string  `json:"name"`
-	Host         string  `json:"host"`
-	ActiveConns  int     `json:"active_conns"`
-	IdleConns    int     `json:"idle_conns"`
-	MaxConns     int     `json:"max_conns"`
-	CurrentSpeed float64 `json:"current_speed_mbps"`
-	DownloadedMB float64 `json:"downloaded_mb"`
-	UsagePercent float64 `json:"usage_percent"`
+	Name                  string  `json:"name"`
+	Host                  string  `json:"host"`
+	ActiveConns           int     `json:"active_conns"`
+	IdleConns             int     `json:"idle_conns"`
+	MaxConns              int     `json:"max_conns"`
+	CurrentSpeed          float64 `json:"current_speed_mbps"`
+	DownloadedMB          float64 `json:"downloaded_mb"`
+	UsagePercent          float64 `json:"usage_percent"`
+	ArticleAvailableCount int64   `json:"article_available_count"`
+	ArticleMissingCount   int64   `json:"article_missing_count"`
 }
 
 func (s *Server) collectStats() SystemStats {
@@ -64,7 +68,20 @@ func (s *Server) collectStats() SystemStats {
 
 	s.mu.RLock()
 	pools := s.providerPools
+	application := s.app
 	s.mu.RUnlock()
+	articleByProvider := map[string]usenetpool.ProviderArticleStats{}
+	articleByHost := map[string]usenetpool.ProviderArticleStats{}
+	if application != nil {
+		if comp := application.Components(); comp != nil && comp.UsenetPool != nil {
+			for _, providerStat := range comp.UsenetPool.ProviderArticleStats() {
+				articleByProvider[providerStat.ProviderID] = providerStat
+				if providerStat.Host != "" {
+					articleByHost[providerStat.Host] = providerStat
+				}
+			}
+		}
+	}
 
 	for name, pool := range pools {
 		downloadedMB := pool.TotalMegabytes()
@@ -77,6 +94,13 @@ func (s *Server) collectStats() SystemStats {
 			MaxConns:     pool.MaxConn(),
 			CurrentSpeed: pool.GetSpeed(),
 			DownloadedMB: downloadedMB,
+		}
+		if articleStat, ok := articleByProvider[name]; ok {
+			pStats.ArticleAvailableCount = articleStat.AvailableCount
+			pStats.ArticleMissingCount = articleStat.UnavailableCount
+		} else if articleStat, ok := articleByHost[pStats.Host]; ok {
+			pStats.ArticleAvailableCount = articleStat.AvailableCount
+			pStats.ArticleMissingCount = articleStat.UnavailableCount
 		}
 
 		totalActive += pStats.ActiveConns
@@ -100,8 +124,10 @@ func (s *Server) collectStats() SystemStats {
 
 	if s.indexer != nil {
 		availIndexerStats := map[string]stremio.AvailIndexerStats{}
+		uniqueIndexerHits := map[string]int64{}
 		if s.strmServer != nil {
 			availIndexerStats = s.strmServer.GetAvailIndexerStats()
+			uniqueIndexerHits = s.strmServer.GetUniqueIndexerHits()
 		}
 
 		type indexerContainer interface {
@@ -128,6 +154,7 @@ func (s *Server) collectStats() SystemStats {
 				DownloadsRemaining:   usage.DownloadsRemaining,
 				AllTimeDownloadsUsed: usage.AllTimeDownloadsUsed,
 				SearchesCount:        usage.SearchesCount,
+				UniqueHitsCount:      uniqueIndexerHits[idx.Name()],
 				AvgResponseMS:        usage.AvgResponseMS,
 				AvailAvailableCount:  availIndexerStats[idx.Name()].AvailableReturned,
 				AvailDiscardedCount:  availIndexerStats[idx.Name()].Discarded,
@@ -224,6 +251,8 @@ func (s *Server) maybePersistMetrics(stats SystemStats) {
 			CurrentSpeedMbps: p.CurrentSpeed,
 			DownloadedMB:     p.DownloadedMB,
 			UsagePercent:     p.UsagePercent,
+			ArticleAvailable: p.ArticleAvailableCount,
+			ArticleMissing:   p.ArticleMissingCount,
 		})
 	}
 
@@ -237,6 +266,7 @@ func (s *Server) maybePersistMetrics(stats SystemStats) {
 			DownloadsUsed:       idx.DownloadsUsed,
 			DownloadsLimit:      idx.DownloadsLimit,
 			SearchesCount:       idx.SearchesCount,
+			UniqueHitsCount:     idx.UniqueHitsCount,
 			AvgResponseMS:       idx.AvgResponseMS,
 			AvailAvailableCount: idx.AvailAvailableCount,
 			AvailDiscardedCount: idx.AvailDiscardedCount,

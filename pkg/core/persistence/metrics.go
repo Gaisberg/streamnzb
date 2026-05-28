@@ -17,6 +17,8 @@ type ProviderMetric struct {
 	CurrentSpeedMbps float64   `json:"current_speed_mbps"`
 	DownloadedMB     float64   `json:"downloaded_mb"`
 	UsagePercent     float64   `json:"usage_percent"`
+	ArticleAvailable int64     `json:"article_available_count"`
+	ArticleMissing   int64     `json:"article_missing_count"`
 }
 
 type IndexerMetric struct {
@@ -27,6 +29,7 @@ type IndexerMetric struct {
 	DownloadsUsed       int       `json:"downloads_used"`
 	DownloadsLimit      int       `json:"downloads_limit"`
 	SearchesCount       int       `json:"searches_count"`
+	UniqueHitsCount     int64     `json:"unique_hits_count"`
 	AvgResponseMS       float64   `json:"avg_response_ms"`
 	AvailAvailableCount int64     `json:"avail_available_count"`
 	AvailDiscardedCount int64     `json:"avail_discarded_count"`
@@ -63,7 +66,9 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 			max_conns,
 			current_speed_mbps,
 			downloaded_mb,
-			usage_percent
+			usage_percent,
+			article_available_count,
+			article_missing_count
 		FROM provider_metrics
 	`, from, to)
 	rows, err := m.db.Query(query, args...)
@@ -88,6 +93,8 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 			&mx.CurrentSpeedMbps,
 			&mx.DownloadedMB,
 			&mx.UsagePercent,
+			&mx.ArticleAvailable,
+			&mx.ArticleMissing,
 		); err != nil {
 			return nil, err
 		}
@@ -123,6 +130,12 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 		if mx.UsagePercent > prev.UsagePercent {
 			prev.UsagePercent = mx.UsagePercent
 		}
+		if mx.ArticleAvailable > prev.ArticleAvailable {
+			prev.ArticleAvailable = mx.ArticleAvailable
+		}
+		if mx.ArticleMissing > prev.ArticleMissing {
+			prev.ArticleMissing = mx.ArticleMissing
+		}
 		agg[key] = prev
 	}
 	if err := rows.Err(); err != nil {
@@ -148,6 +161,7 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			downloads_used,
 			downloads_limit,
 			searches_count,
+			unique_hits_count,
 			avg_response_ms,
 			avail_available_count,
 			avail_discarded_count
@@ -173,6 +187,7 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			&mx.DownloadsUsed,
 			&mx.DownloadsLimit,
 			&mx.SearchesCount,
+			&mx.UniqueHitsCount,
 			&mx.AvgResponseMS,
 			&mx.AvailAvailableCount,
 			&mx.AvailDiscardedCount,
@@ -207,6 +222,9 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		}
 		if mx.SearchesCount > prev.SearchesCount {
 			prev.SearchesCount = mx.SearchesCount
+		}
+		if mx.UniqueHitsCount > prev.UniqueHitsCount {
+			prev.UniqueHitsCount = mx.UniqueHitsCount
 		}
 		if isNewer {
 			prev.AvgResponseMS = mx.AvgResponseMS
@@ -256,8 +274,8 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		if len(providers) > 0 {
 			stmt, err := tx.Prepare(`
 				INSERT INTO provider_metrics (
-					collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`)
 			if err != nil {
 				return err
@@ -278,6 +296,8 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 					p.CurrentSpeedMbps,
 					p.DownloadedMB,
 					p.UsagePercent,
+					p.ArticleAvailable,
+					p.ArticleMissing,
 				); err != nil {
 					return err
 				}
@@ -287,8 +307,8 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		if len(indexers) > 0 {
 			stmt, err := tx.Prepare(`
 				INSERT INTO indexer_metrics (
-					collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, avg_response_ms, avail_available_count, avail_discarded_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`)
 			if err != nil {
 				return err
@@ -307,6 +327,7 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 					idx.DownloadsUsed,
 					idx.DownloadsLimit,
 					idx.SearchesCount,
+					idx.UniqueHitsCount,
 					idx.AvgResponseMS,
 					idx.AvailAvailableCount,
 					idx.AvailDiscardedCount,

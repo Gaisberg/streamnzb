@@ -67,8 +67,22 @@ type Pool struct {
 	sf            *singleflight.Group
 	missing       *permanentMissingSegments
 	providerSig   string
+	articleStats  map[string]*providerArticleCounter
 	mu            sync.RWMutex
 	activeFetches atomic.Int64
+}
+
+type providerArticleCounter struct {
+	host             string
+	availableCount   atomic.Int64
+	unavailableCount atomic.Int64
+}
+
+type ProviderArticleStats struct {
+	ProviderID       string
+	Host             string
+	AvailableCount   int64
+	UnavailableCount int64
 }
 
 type permanentMissingSegments struct {
@@ -304,13 +318,87 @@ func NewPool(cfg *Config) (*Pool, error) {
 	if cache == nil {
 		cache = NoopSegmentCache()
 	}
+	articleStats := make(map[string]*providerArticleCounter, len(providers))
+	for i := range providers {
+		providerID := strings.TrimSpace(providers[i].ID)
+		if providerID == "" {
+			continue
+		}
+		host := ""
+		if providers[i].ClientPool != nil {
+			host = providers[i].ClientPool.Host()
+		}
+		articleStats[providerID] = &providerArticleCounter{host: host}
+	}
 	return &Pool{
-		providers:   providers,
-		cache:       cache,
-		sf:          &singleflight.Group{},
-		missing:     newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
-		providerSig: providerSignature(providers),
+		providers:    providers,
+		cache:        cache,
+		sf:           &singleflight.Group{},
+		missing:      newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
+		providerSig:  providerSignature(providers),
+		articleStats: articleStats,
 	}, nil
+}
+
+func (p *Pool) recordArticleResult(providerID string, available bool) {
+	providerID = strings.TrimSpace(providerID)
+	if p == nil || providerID == "" {
+		return
+	}
+	p.mu.RLock()
+	counter := p.articleStats[providerID]
+	p.mu.RUnlock()
+	if counter == nil {
+		p.mu.Lock()
+		if p.articleStats == nil {
+			p.articleStats = make(map[string]*providerArticleCounter)
+		}
+		counter = p.articleStats[providerID]
+		if counter == nil {
+			host := ""
+			for i := range p.providers {
+				if p.providers[i].ID == providerID && p.providers[i].ClientPool != nil {
+					host = p.providers[i].ClientPool.Host()
+					break
+				}
+			}
+			counter = &providerArticleCounter{host: host}
+			p.articleStats[providerID] = counter
+		}
+		p.mu.Unlock()
+	}
+	if available {
+		counter.availableCount.Add(1)
+		return
+	}
+	counter.unavailableCount.Add(1)
+}
+
+func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	ids := make([]string, 0, len(p.articleStats))
+	for providerID := range p.articleStats {
+		ids = append(ids, providerID)
+	}
+	sort.Strings(ids)
+	out := make([]ProviderArticleStats, 0, len(ids))
+	for _, providerID := range ids {
+		counter := p.articleStats[providerID]
+		if counter == nil {
+			continue
+		}
+		out = append(out, ProviderArticleStats{
+			ProviderID:       providerID,
+			Host:             counter.host,
+			AvailableCount:   counter.availableCount.Load(),
+			UnavailableCount: counter.unavailableCount.Load(),
+		})
+	}
+	p.mu.RUnlock()
+	return out
 }
 
 func (p *Pool) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []string) (SegmentData, error) {
@@ -365,9 +453,10 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	}
 
 	type segResult struct {
-		data SegmentData
-		err  error
-		host string
+		data       SegmentData
+		err        error
+		host       string
+		providerID string
 	}
 	ch := make(chan segResult, len(providers))
 
@@ -406,14 +495,14 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			if len(groups) > 0 {
 				if err := conn.Group(groups[0]); err != nil {
 					logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
-					ch <- segResult{err: err, host: host}
+					ch <- segResult{err: err, host: host, providerID: providerID}
 					return
 				}
 			}
 			r, err := conn.Body(messageID)
 			if err != nil {
 				logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
-				ch <- segResult{err: err, host: host}
+				ch <- segResult{err: err, host: host, providerID: providerID}
 				return
 			}
 			cr := &countReader{Reader: r}
@@ -437,14 +526,14 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 						"raw_body_bytes", cr.n,
 						"ctx_err", ctxErr)
 				}
-				ch <- segResult{err: err, host: host}
+				ch <- segResult{err: err, host: host, providerID: providerID}
 				return
 			}
 			ch <- segResult{data: SegmentData{
 				Body:         frame.Data,
 				Size:         int64(len(frame.Data)),
 				ProviderHost: host,
-			}}
+			}, providerID: providerID}
 		}(exclude)
 	}
 
@@ -459,6 +548,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			// no-op, keep host tracking for wrapped error context
 		}
 		if res.err == nil {
+			p.recordArticleResult(res.providerID, true)
 			if !shouldCacheFetchedSegment(fetchCtx) {
 				cancel()
 				return SegmentData{}, fetchCtx.Err()
@@ -473,6 +563,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		}
 		lastErr = res.err
 		if isArticleNotFound(res.err) {
+			p.recordArticleResult(res.providerID, false)
 			if articleNotFoundErr == nil {
 				articleNotFoundErr = res.err
 			}
@@ -599,6 +690,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		if err != nil {
 			lastErr = err
 			if articleNotFound {
+				p.recordArticleResult(providerID, false)
 				if articleNotFoundErr == nil {
 					articleNotFoundErr = err
 				}
@@ -608,6 +700,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			exclude = append(exclude, providerID)
 			continue
 		}
+		p.recordArticleResult(providerID, true)
 
 		if !shouldCacheFetchedSegment(fetchCtx) {
 			return SegmentData{}, fetchCtx.Err()
@@ -657,9 +750,10 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	}
 
 	type statResult struct {
-		exists bool
-		err    error
-		host   string
+		exists     bool
+		err        error
+		host       string
+		providerID string
 	}
 	ch := make(chan statResult, len(providers))
 
@@ -706,7 +800,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 					logger.Debug("stat segment group failed", "provider", providerID, "err", groupErr)
 					doRelease = false
 					discard()
-					ch <- statResult{err: groupErr, host: host}
+					ch <- statResult{err: groupErr, host: host, providerID: providerID}
 					return
 				}
 			}
@@ -715,10 +809,10 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 				logger.Debug("stat segment failed", "provider", providerID, "err", statErr)
 				doRelease = false
 				discard()
-				ch <- statResult{err: statErr, host: host}
+				ch <- statResult{err: statErr, host: host, providerID: providerID}
 				return
 			}
-			ch <- statResult{exists: exists, host: host}
+			ch <- statResult{exists: exists, host: host, providerID: providerID}
 		}(exclude)
 	}
 
@@ -739,17 +833,22 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 			}
 		}
 		if res.err == nil && res.exists {
+			p.recordArticleResult(res.providerID, true)
 			p.clearKnownMissing(messageID)
 			cancel()
 			logger.Trace("stat segment ok", "message_id", messageID)
 			return true, nil
 		}
 		if res.err != nil {
+			if isArticleNotFound(res.err) {
+				p.recordArticleResult(res.providerID, false)
+			}
 			lastErr = res.err
 			sawError = true
 			continue
 		}
 		if !res.exists {
+			p.recordArticleResult(res.providerID, false)
 			sawNotFound = true
 		}
 	}
@@ -923,11 +1022,12 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		return nil
 	}
 	return &Pool{
-		providers:   subset,
-		cache:       p.cache,
-		sf:          p.sf,
-		missing:     p.missing,
-		providerSig: providerSignature(subset),
+		providers:    subset,
+		cache:        p.cache,
+		sf:           p.sf,
+		missing:      p.missing,
+		providerSig:  providerSignature(subset),
+		articleStats: p.articleStats,
 	}
 }
 

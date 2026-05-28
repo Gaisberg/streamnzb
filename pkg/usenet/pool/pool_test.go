@@ -126,3 +126,33 @@ func TestMemorySegmentCache_Stats(t *testing.T) {
 		t.Fatalf("expected empty cache after purge, got %+v", stats)
 	}
 }
+
+func TestProviderArticleStatsCounters(t *testing.T) {
+	p, err := NewPool(&Config{
+		Providers: []ProviderConfig{
+			{ID: "provider-a", Priority: 0},
+			{ID: "provider-b", Priority: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+
+	p.recordArticleResult("provider-a", true)
+	p.recordArticleResult("provider-a", true)
+	p.recordArticleResult("provider-a", false)
+	p.recordArticleResult("provider-b", false)
+	p.recordArticleResult("provider-b", false)
+
+	stats := p.ProviderArticleStats()
+	if len(stats) != 2 {
+		t.Fatalf("ProviderArticleStats len = %d, want 2", len(stats))
+	}
+
+	if stats[0].ProviderID != "provider-a" || stats[0].AvailableCount != 2 || stats[0].UnavailableCount != 1 {
+		t.Fatalf("provider-a stats = %+v", stats[0])
+	}
+	if stats[1].ProviderID != "provider-b" || stats[1].AvailableCount != 0 || stats[1].UnavailableCount != 2 {
+		t.Fatalf("provider-b stats = %+v", stats[1])
+	}
+}

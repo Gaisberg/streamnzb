@@ -55,6 +55,7 @@ type Server struct {
 	attemptRecorder           *persistence.StateManager
 	onAttemptRecorded         func()
 	availIndexerStats         map[string]AvailIndexerStats
+	uniqueIndexerHits         map[string]int64
 }
 
 // AvailIndexerStats stores per-indexer availability outcomes aggregated from
@@ -121,6 +122,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),
+		uniqueIndexerHits:    make(map[string]int64),
 	}
 
 	if err := s.CheckPort(opts.Port); err != nil {
@@ -202,6 +204,20 @@ func (s *Server) addAvailIndexerStats(availableByIndexer, discardedByIndexer map
 	}
 }
 
+func (s *Server) addUniqueIndexerHits(hitsByIndexer map[string]int) {
+	if len(hitsByIndexer) == 0 {
+		return
+	}
+	s.availStatsMu.Lock()
+	defer s.availStatsMu.Unlock()
+	for name, n := range hitsByIndexer {
+		if strings.TrimSpace(name) == "" || n <= 0 {
+			continue
+		}
+		s.uniqueIndexerHits[name] += int64(n)
+	}
+}
+
 // GetAvailIndexerStats returns a snapshot copy of availIndexerStats keyed by
 // indexer name. The copy is read under availStatsMu to avoid exposing internal
 // mutable state to callers.
@@ -210,6 +226,19 @@ func (s *Server) GetAvailIndexerStats() map[string]AvailIndexerStats {
 	defer s.availStatsMu.RUnlock()
 	out := make(map[string]AvailIndexerStats, len(s.availIndexerStats))
 	for k, v := range s.availIndexerStats {
+		out[k] = v
+	}
+	return out
+}
+
+// GetUniqueIndexerHits returns a snapshot copy of uniqueIndexerHits keyed by
+// indexer name. The copy is read under availStatsMu to avoid exposing internal
+// mutable state to callers.
+func (s *Server) GetUniqueIndexerHits() map[string]int64 {
+	s.availStatsMu.RLock()
+	defer s.availStatsMu.RUnlock()
+	out := make(map[string]int64, len(s.uniqueIndexerHits))
+	for k, v := range s.uniqueIndexerHits {
 		out[k] = v
 	}
 	return out
