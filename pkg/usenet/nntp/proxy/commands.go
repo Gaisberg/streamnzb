@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/usenet/nntp"
+	"streamnzb/pkg/usenet/pool"
 )
 
 const poolGetTimeout = 60 * time.Second
@@ -158,10 +159,14 @@ func (s *Session) handleArticle(args []string) error {
 		article, err := client.GetArticle(messageID)
 		release()
 		if err != nil {
+			if pool.IsArticleNotFoundError(err) {
+				s.usenet.RecordProviderArticleResult(pid, false)
+			}
 			logger.Debug("NNTP proxy: GetArticle failed", "messageID", messageID, "err", err)
 			exclude = append(exclude, pid) // always exclude on error; prevents infinite retry
 			continue
 		}
+		s.usenet.RecordProviderArticleResult(pid, true)
 		lines := []string{fmt.Sprintf("220 0 %s", messageID)}
 		for _, line := range strings.Split(strings.ReplaceAll(article, "\r\n", "\n"), "\n") {
 			lines = append(lines, strings.TrimSuffix(line, "\r"))
@@ -203,12 +208,16 @@ func (s *Session) handleBody(args []string) error {
 				discard()
 				return err
 			}
+			if pool.IsArticleNotFoundError(err) {
+				s.usenet.RecordProviderArticleResult(pid, false)
+			}
 			logger.Debug("NNTP proxy: StreamBody failed", "messageID", messageID, "err", err)
 			discard()
 			exclude = append(exclude, pid) // always exclude on error; prevents infinite retry
 			continue
 		}
 		release()
+		s.usenet.RecordProviderArticleResult(pid, true)
 		return nil
 	}
 
@@ -243,10 +252,14 @@ func (s *Session) handleHead(args []string) error {
 		head, err := client.GetHead(messageID)
 		release()
 		if err != nil {
+			if pool.IsArticleNotFoundError(err) {
+				s.usenet.RecordProviderArticleResult(pid, false)
+			}
 			logger.Debug("NNTP proxy: GetHead failed", "messageID", messageID, "err", err)
 			exclude = append(exclude, pid) // always exclude on error; prevents infinite retry
 			continue
 		}
+		s.usenet.RecordProviderArticleResult(pid, true)
 		lines := []string{fmt.Sprintf("221 0 %s", messageID)}
 		for _, line := range strings.Split(strings.ReplaceAll(head, "\r\n", "\n"), "\n") {
 			lines = append(lines, strings.TrimSuffix(line, "\r"))
@@ -285,13 +298,18 @@ func (s *Session) handleStat(args []string) error {
 		exists, err := client.CheckArticle(messageID)
 		release()
 		if err != nil {
+			if pool.IsArticleNotFoundError(err) {
+				s.usenet.RecordProviderArticleResult(pid, false)
+			}
 			logger.Debug("NNTP proxy: CheckArticle failed", "messageID", messageID, "err", err)
 			exclude = append(exclude, pid) // always exclude on error; prevents infinite retry
 			continue
 		}
 		if exists {
+			s.usenet.RecordProviderArticleResult(pid, true)
 			return s.WriteLine(fmt.Sprintf("223 0 %s", messageID))
 		}
+		s.usenet.RecordProviderArticleResult(pid, false)
 		exclude = append(exclude, pid)
 	}
 

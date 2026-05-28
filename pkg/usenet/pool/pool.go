@@ -44,6 +44,11 @@ func isArticleNotFound(err error) bool {
 	return strings.Contains(s, "430") || strings.Contains(s, "no such article")
 }
 
+// IsArticleNotFoundError reports whether err indicates 430 No Such Article.
+func IsArticleNotFoundError(err error) bool {
+	return isArticleNotFound(err)
+}
+
 func shouldCacheFetchedSegment(ctx context.Context) bool {
 	return ctx == nil || ctx.Err() == nil
 }
@@ -372,6 +377,12 @@ func (p *Pool) recordArticleResult(providerID string, available bool) {
 		return
 	}
 	counter.unavailableCount.Add(1)
+}
+
+// RecordProviderArticleResult records an article operation outcome for a provider.
+// available=true increments available count; false increments missing count.
+func (p *Pool) RecordProviderArticleResult(providerID string, available bool) {
+	p.recordArticleResult(providerID, available)
 }
 
 func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
