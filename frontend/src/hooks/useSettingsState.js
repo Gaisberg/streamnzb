@@ -306,19 +306,20 @@ export function useSettingsState({
         movie_search_queries: getValues('movie_search_queries'),
         series_search_queries: getValues('series_search_queries'),
       })
+      let errorMessage = error?.message || 'Failed to save configuration.'
       if (summary) {
-        error.message = summary
+        errorMessage = summary
       } else if (error?.fieldErrors) {
         const firstFieldError = Object.values(error.fieldErrors).find((message) => typeof message === 'string' && message.trim() !== '')
         if (firstFieldError) {
-          error.message = firstFieldError
+          errorMessage = firstFieldError
         }
       }
-      console.error('Error saving configuration:', error)
+      console.error('Error saving configuration:', errorMessage, error)
       if (sourceTab !== 'network' && sourceTab !== 'advanced' && sourceTab !== 'providers' && sourceTab !== 'indexers') {
-        showFooterStatus({ type: 'error', message: error.message || 'Failed to save configuration.' })
+        showFooterStatus({ type: 'error', message: errorMessage })
       }
-      setError('root', { message: `Failed to save configuration: ${error.message}` })
+      setError('root', { message: `Failed to save configuration: ${errorMessage}` })
       throw error
     }
   }, [activeTab, configSnapshot, getValues, sendCommand, setConfigSnapshot, setError, showFooterStatus])

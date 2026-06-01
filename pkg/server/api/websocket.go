@@ -234,6 +234,13 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 		newCfg.AdminToken = currentCfg.AdminToken
 		newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
 		newCfg.Streams = cloneStreamEntries(currentCfg.Streams)
+		providerRenames := renamedNamesByIndex(currentCfg.Providers, newCfg.Providers, func(provider config.Provider) string {
+			return provider.Name
+		})
+		indexerRenames := renamedNamesByIndex(currentCfg.Indexers, newCfg.Indexers, func(indexer config.IndexerConfig) string {
+			return indexer.Name
+		})
+		applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
 		newCfg.ApplyProviderDefaults()
 		applyStreamAutoSelections(&newCfg)
 

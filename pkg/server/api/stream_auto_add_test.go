@@ -82,3 +82,55 @@ func TestApplyStreamAutoSelectionsSkipsWhenFlagMissing(t *testing.T) {
 		t.Fatalf("provider selections = %#v", got)
 	}
 }
+
+func TestApplyStreamNameRenamesRenamesSelectionsAndOverrides(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"stream": {
+			ProviderSelections: []string{"ProviderOne", "ProviderTwo"},
+			IndexerSelections:  []string{"IndexerOne", "IndexerTwo"},
+			IndexerOverrides: map[string]config.IndexerSearchConfig{
+				"IndexerOne": {SearchResultLimit: 10},
+				"IndexerTwo": {SearchResultLimit: 20},
+			},
+		},
+	}
+
+	applyStreamNameRenames(
+		streams,
+		map[string]string{"providerone": "ProviderRenamed"},
+		map[string]string{"indexerone": "IndexerRenamed"},
+	)
+
+	if got := streams["stream"].ProviderSelections; !reflect.DeepEqual(got, []string{"ProviderRenamed", "ProviderTwo"}) {
+		t.Fatalf("provider selections = %#v", got)
+	}
+	if got := streams["stream"].IndexerSelections; !reflect.DeepEqual(got, []string{"IndexerRenamed", "IndexerTwo"}) {
+		t.Fatalf("indexer selections = %#v", got)
+	}
+	if _, ok := streams["stream"].IndexerOverrides["IndexerRenamed"]; !ok {
+		t.Fatalf("expected renamed override to exist")
+	}
+	if _, ok := streams["stream"].IndexerOverrides["IndexerOne"]; ok {
+		t.Fatalf("expected old override key to be removed")
+	}
+}
+
+func TestRenamedNamesByIndexDetectsNameChanges(t *testing.T) {
+	currentProviders := []config.Provider{
+		{Name: "ProviderOne"},
+		{Name: "ProviderTwo"},
+	}
+	nextProviders := []config.Provider{
+		{Name: "ProviderRenamed"},
+		{Name: "ProviderTwo"},
+	}
+	providerRenames := renamedNamesByIndex(currentProviders, nextProviders, func(provider config.Provider) string {
+		return provider.Name
+	})
+	if got := providerRenames["providerone"]; got != "ProviderRenamed" {
+		t.Fatalf("provider rename map = %#v", providerRenames)
+	}
+	if _, exists := providerRenames["providertwo"]; exists {
+		t.Fatalf("unexpected rename for unchanged provider: %#v", providerRenames)
+	}
+}

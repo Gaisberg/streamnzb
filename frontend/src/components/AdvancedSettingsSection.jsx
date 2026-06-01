@@ -73,7 +73,6 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
   const [savingCard, setSavingCard] = useState('')
   const [clearingCache, setClearingCache] = useState(false)
   const [showClearCacheConfirm, setShowClearCacheConfirm] = useState(false)
-  const [showUnlockConfirm, setShowUnlockConfirm] = useState(false)
   const [showRestartConfirm, setShowRestartConfirm] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [pendingTabChange, setPendingTabChange] = useState('')
@@ -116,7 +115,7 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
       setShowDiscardConfirm(true)
       return false
     },
-  }), [lastSavedValues, onProceedTabChange, reset])
+  }), [lastSavedValues, onDirtyChange, onProceedTabChange, reset])
 
   const saveCard = async (cardId) => {
     setSavingCard(cardId)
@@ -173,7 +172,6 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
     showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
   )
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
-  const controlWideClass = "w-full min-w-0 sm:max-w-xs"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
   const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
   const labelClass = "min-w-0 text-sm font-medium"

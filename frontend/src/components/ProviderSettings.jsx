@@ -292,7 +292,7 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
                 <Label className="text-sm font-medium">Name</Label>
               </div>
               <div className={controlNameClass}>
-                <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Newshosting" disabled={editing} />
+                <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Newshosting" />
                 {!editing && (
                   <>
                     <DropdownMenu>
@@ -477,7 +477,7 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
   )
 }
 
-export function ProviderSettings({ fields = [], append, remove, replace, onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
+export function ProviderSettings({ fields = [], replace, onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
   const providers = fields
   const [editingIndex, setEditingIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)

@@ -62,6 +62,86 @@ func applyStreamAutoSelections(nextCfg *config.Config) {
 	}
 }
 
+func applyStreamNameRenames(streams map[string]*config.StreamEntry, providerRenames, indexerRenames map[string]string) {
+	if len(providerRenames) == 0 && len(indexerRenames) == 0 {
+		return
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if len(providerRenames) > 0 {
+			stream.ProviderSelections = renameSelectionList(stream.ProviderSelections, providerRenames)
+		}
+		if len(indexerRenames) > 0 {
+			stream.IndexerSelections = renameSelectionList(stream.IndexerSelections, indexerRenames)
+			stream.IndexerOverrides = renameIndexerOverrides(stream.IndexerOverrides, indexerRenames)
+		}
+	}
+}
+
+func renamedNamesByIndex[TCfg any](current, next []TCfg, nameOf func(TCfg) string) map[string]string {
+	limit := len(current)
+	if len(next) < limit {
+		limit = len(next)
+	}
+	renamed := make(map[string]string)
+	for i := 0; i < limit; i++ {
+		currentName := strings.TrimSpace(nameOf(current[i]))
+		nextName := strings.TrimSpace(nameOf(next[i]))
+		if currentName == "" || nextName == "" {
+			continue
+		}
+		if strings.EqualFold(currentName, nextName) {
+			continue
+		}
+		renamed[strings.ToLower(currentName)] = nextName
+	}
+	return renamed
+}
+
+func renameSelectionList(existing []string, renamedByLower map[string]string) []string {
+	if len(existing) == 0 || len(renamedByLower) == 0 {
+		return existing
+	}
+	next := make([]string, 0, len(existing))
+	seen := make(map[string]bool, len(existing))
+	for _, item := range existing {
+		name := strings.TrimSpace(item)
+		if name == "" {
+			continue
+		}
+		if renamed, ok := renamedByLower[strings.ToLower(name)]; ok {
+			name = renamed
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		next = append(next, name)
+	}
+	return next
+}
+
+func renameIndexerOverrides(overrides map[string]config.IndexerSearchConfig, renamedByLower map[string]string) map[string]config.IndexerSearchConfig {
+	if len(overrides) == 0 || len(renamedByLower) == 0 {
+		return overrides
+	}
+	next := make(map[string]config.IndexerSearchConfig, len(overrides))
+	for name, override := range overrides {
+		target := strings.TrimSpace(name)
+		if renamed, ok := renamedByLower[strings.ToLower(target)]; ok {
+			target = renamed
+		}
+		if target == "" {
+			continue
+		}
+		next[target] = override
+	}
+	return next
+}
+
 func syncOrderedSelections(existing []string, enabled []string) []string {
 	if len(enabled) == 0 {
 		return []string{}

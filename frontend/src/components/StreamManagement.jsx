@@ -160,7 +160,7 @@ function copyToClipboard(text) {
   textarea.style.opacity = '0'
   document.body.appendChild(textarea)
   textarea.select()
-  try { document.execCommand('copy') } catch (_) {}
+  try { document.execCommand('copy') } catch { void 0 }
   document.body.removeChild(textarea)
   return Promise.resolve()
 }
@@ -777,7 +777,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
   const [dialogSaving, setDialogSaving] = useState(false)
-  const [error, setError] = useState('')
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [addDialogDraft, setAddDialogDraft] = useState(null)
   const [editingStream, setEditingStream] = useState(null)
@@ -829,13 +828,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   }, [initialStreams, initialStreamsSignature])
 
   const showStatus = useCallback((status) => {
-    if (status?.type === 'error') {
-      setError(status.message || '')
-    } else if (status?.type === 'success') {
-      setError('')
-    } else {
-      setError('')
-    }
     onStatus?.(status)
   }, [onStatus])
 
@@ -867,7 +859,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       const nextStreams = await apiFetch('/api/streams')
       setStreams(Array.isArray(nextStreams) ? nextStreams : [])
       onStreamsChange?.(mapStreamsByUsername(nextStreams))
-      setError('')
       return nextStreams
     } catch (err) {
       if (!silent) {
@@ -879,7 +870,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     } finally {
       if (showLoader) setLoading(false)
     }
-  }, [onStreamsChange, showStatus])
+  }, [onStreamsChange, showFooterStatus, showStatus])
 
   useEffect(() => {
     fetchStreams(false, { silent: true }).catch(() => {})

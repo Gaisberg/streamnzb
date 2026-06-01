@@ -28,7 +28,6 @@ export function ProfilePage({
   currentUser,
   config,
   sendCommand,
-  ws,
   onUsernameChanged,
   onPasswordChanged,
 }) {

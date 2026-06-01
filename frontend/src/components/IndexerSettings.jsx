@@ -280,7 +280,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                   <Label className="text-sm font-medium">Name</Label>
                 </div>
                 <div className={controlNameClass}>
-                  <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. NzbPlanet" disabled={editing} />
+                  <Input ref={nameInputRef} className={`h-9 ${fieldClass('name')}`} value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. NzbPlanet" />
                   {!editing && (
                     <TooltipProvider delayDuration={100}>
                       <Tooltip open={presetTooltipOpen && !presetMenuOpen} onOpenChange={setPresetTooltipOpen}>
@@ -577,7 +577,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
   )
 }
 
-export function IndexerSettings({ fields = [], append, update, remove, replace, indexerCaps = {}, defaultProxyURL = '', onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
+export function IndexerSettings({ fields = [], append, update, replace, defaultProxyURL = '', onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
   const indexers = fields
   const [editingIndex, setEditingIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
@@ -607,10 +607,6 @@ export function IndexerSettings({ fields = [], append, update, remove, replace, 
   useEffect(() => () => {
     onClearStatus?.()
   }, [onClearStatus])
-
-  const replaceIndexers = (nextIndexers) => {
-    replace(nextIndexers.map((indexer) => normalizeIndexerDraft(indexer)))
-  }
 
   const handleCreate = async (draft) => {
     const nextIndexers = [...indexers.map((indexer) => normalizeIndexerDraft(indexer)), normalizeIndexerDraft(draft)]

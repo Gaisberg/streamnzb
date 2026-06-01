@@ -37,7 +37,7 @@ export default function Login({ onLogin, version }) {
       } else {
         setError(data.error || 'Login failed')
       }
-    } catch (err) {
+    } catch {
       setError('Failed to connect to server')
     } finally {
       setLoading(false)

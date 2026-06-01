@@ -24,7 +24,9 @@ export async function apiFetch(path, options = {}) {
   if (contentType && contentType.includes('application/json')) {
     try {
       data = await res.json()
-    } catch (_) {}
+    } catch {
+      data = null
+    }
   }
   if (!res.ok) {
     if (res.status === 401) {

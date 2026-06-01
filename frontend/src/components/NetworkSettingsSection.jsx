@@ -102,7 +102,7 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
       setShowDiscardConfirm(true)
       return false
     },
-  }), [lastSavedValues, onProceedTabChange, reset])
+  }), [lastSavedValues, onDirtyChange, onProceedTabChange, reset])
 
   const saveCard = async (cardId) => {
     setSavingCard(cardId)

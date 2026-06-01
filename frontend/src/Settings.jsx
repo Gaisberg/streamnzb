@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
 import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Save } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
@@ -76,7 +76,6 @@ function Settings({
   clearSaveStatus,
   isSaving,
   onRefreshAvailNZBStatus,
-  adminToken,
   indexerCaps,
   stats,
 }) {
@@ -103,7 +102,7 @@ function Settings({
   })
 
   const envOverrides = initialConfig?.env_overrides ?? []
-  const { control, handleSubmit, reset, setError, clearErrors, formState, setValue, watch, getValues } = form
+  const { control, reset, setError, clearErrors, watch, getValues } = form
   const { fields, append, remove, replace } = useFieldArray({
     control,
     name: 'providers'
