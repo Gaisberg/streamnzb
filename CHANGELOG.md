@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.7.0](https://github.com/Gaisberg/streamnzb/compare/v4.6.0...v4.7.0) (2026-06-01)
+
+
+### Features
+
+* **settings:** allow renaming configured providers and indexers ([f698a18](https://github.com/Gaisberg/streamnzb/commit/f698a18354c8b6e88198a8a0a6793f2eab5b7a7c))
+* **stats:** article and unique indexer hits ([82eefe3](https://github.com/Gaisberg/streamnzb/commit/82eefe3df551dc65ad7fda2f9f2b52689612c483))
+* **ui:** add full-screen Plyr overlay for direct NZB playback ([a0d3142](https://github.com/Gaisberg/streamnzb/commit/a0d31423cb517271982d8d5fbe969b32d4fb0553))
+
+
+### Bug Fixes
+
+* **frontend:** download logs with authenticated fetch ([f5f021d](https://github.com/Gaisberg/streamnzb/commit/f5f021da794d477e80b51de496c6d3a0e7f6f700))
+
 ## [4.6.0](https://github.com/Gaisberg/streamnzb/compare/v4.5.0...v4.6.0) (2026-05-22)
 
 
