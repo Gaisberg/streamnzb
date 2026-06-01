@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from '@/components/ui/button'
@@ -9,14 +9,41 @@ import { cn } from "@/lib/utils"
 export function LogsPage({ logs = [] }) {
 	const scrollAreaRef = useRef(null)
 	const stickToBottomRef = useRef(true)
+  const [downloadError, setDownloadError] = useState('')
+  const [downloading, setDownloading] = useState(false)
 
-	const handleDownloadLogs = () => {
-		const link = document.createElement('a')
-		link.href = getApiUrl('/api/logs/download')
-		link.download = 'streamnzb.log'
-		document.body.appendChild(link)
-		link.click()
-		link.remove()
+	const handleDownloadLogs = async () => {
+    if (downloading) return
+    setDownloadError('')
+    setDownloading(true)
+    try {
+      const headers = new Headers()
+      const token = window.localStorage.getItem('auth_token') || ''
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`)
+      }
+      const response = await fetch(getApiUrl('/api/logs/download'), {
+        method: 'GET',
+        credentials: 'include',
+        headers,
+      })
+      if (!response.ok) {
+        throw new Error(`Download failed (${response.status})`)
+      }
+      const blob = await response.blob()
+      const objectUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = 'streamnzb.log'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(objectUrl)
+    } catch (error) {
+      setDownloadError(error?.message || 'Failed to download logs')
+    } finally {
+      setDownloading(false)
+    }
 	}
 
 	useEffect(() => {
@@ -53,11 +80,12 @@ export function LogsPage({ logs = [] }) {
 					Live recent logs are shown below. Download the current log file when reporting issues.
 				  </CardDescription>
 				</div>
-				<Button type="button" variant="outline" size="sm" onClick={handleDownloadLogs} className="shrink-0">
+				<Button type="button" variant="outline" size="sm" onClick={handleDownloadLogs} className="shrink-0" disabled={downloading}>
 				  <Download className="size-4" />
-				  Download logs
+				  {downloading ? 'Downloading...' : 'Download logs'}
 				</Button>
 			  </div>
+        {downloadError ? <p className="text-sm text-destructive">{downloadError}</p> : null}
         </CardHeader>
 	        <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden">
 	          <div className="flex flex-1 min-h-0 overflow-hidden rounded-lg border border-border/60 bg-muted/30">
