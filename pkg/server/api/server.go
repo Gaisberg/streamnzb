@@ -374,6 +374,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/tmdb/tv/", authMiddleware(http.HandlerFunc(s.handleTMDBTV)))
 	mux.Handle("/api/search/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
 	mux.Handle("/api/search/releases", authMiddleware(http.HandlerFunc(s.handleSearchReleases)))
+	mux.Handle("/api/play/nzb", authMiddleware(http.HandlerFunc(s.handleDirectPlayNZB)))
 
 	mux.Handle("/api/logs/download", authMiddleware(http.HandlerFunc(s.handleDownloadLogs)))
 	mux.Handle("/api/nzb-attempts", authMiddleware(http.HandlerFunc(s.handleNZBAttempts)))

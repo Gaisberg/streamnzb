@@ -10,6 +10,7 @@ import { StatisticsPage } from "@/components/StatisticsPage"
 import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
+import { DirectPlayPage } from "@/components/DirectPlayPage"
 import StreamManagement from './components/StreamManagement'
 import { apiFetch, getApiUrl, UNAUTHORIZED_EVENT } from './api'
 import { AlertCircle, Loader2 } from "lucide-react"
@@ -279,6 +280,9 @@ function App() {
           )}
           {activePage === 'nzb-history' && (
             <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />
+          )}
+          {activePage === 'direct-play' && (
+            <DirectPlayPage />
           )}
           {activePage === 'install' && (
             <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">

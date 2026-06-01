@@ -5,16 +5,13 @@ const pageTitles = {
   statistics: "Statistics",
   install: "Streams",
   "nzb-history": "NZB History",
+  "direct-play": "Direct Play",
   logs: "Logs",
   profile: "Profile",
   settings: "Settings",
 }
 
-/* ═══════════════════════════════════════════════════════════
-   SiteHeader – Obsidian Engine design system
-   • No border-bottom — uses tonal bg step only
-   • Space Grotesk page title
-   ═══════════════════════════════════════════════════════════ */
+
 export function SiteHeader({ activePage }) {
   return (
     <header className="flex h-14 shrink-0 items-center bg-background/80 backdrop-blur-sm transition-[width,height] ease-linear">
