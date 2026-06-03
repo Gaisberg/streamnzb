@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +31,8 @@ type VirtualPartDef struct {
 	VirtualEnd   int64
 	VolFile      UnpackableFile
 	VolOffset    int64
+	AesKey       []byte
+	AesIV        []byte
 }
 
 func StreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint, password string) (io.ReadSeekCloser, string, int64, error) {
@@ -40,7 +40,10 @@ func StreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint, password str
 		return nil, "", 0, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", bp.MainFileName)
 	}
 
-	if bp.AnyEncrypted {
+	// Password-protected RAR5 releases sometimes list the first volume without
+	// AnyEncrypted/file Encrypted flags (ListTolerant on part01 only). Route any
+	// passworded release through rardecode so playback sees decrypted bytes.
+	if bp.AnyEncrypted || password != "" {
 		if password == "" {
 			return nil, "", 0, fmt.Errorf("password-protected RAR (file: %s) -- password required from NZB head", bp.MainFileName)
 		}
@@ -58,243 +61,37 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 	if err := contextErr(ctx); err != nil {
 		return nil, "", 0, err
 	}
-	fileMap := make(map[string]UnpackableFile, len(bp.Parts))
-	for _, p := range bp.Parts {
-		name := ExtractFilename(p.VolFile.Name())
-		fileMap[name] = p.VolFile
-	}
-	firstName := ExtractFilename(bp.Parts[0].VolFile.Name())
-	fsys := NewNZBFSFromMapCtx(ctx, fileMap)
 
-	opts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.Password(password)}
-	rc, err := rardecode.OpenReader(firstName, opts...)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("open encrypted RAR: %w", err)
+	var aesKey, aesIV []byte
+	var packedSize int64
+	parts := make([]virtualPart, len(bp.Parts))
+	for i, p := range bp.Parts {
+		parts[i] = virtualPart{
+			VirtualStart: p.VirtualStart,
+			VirtualEnd:   p.VirtualEnd,
+			VolFile:      p.VolFile,
+			VolOffset:    p.VolOffset,
+			AesKey:       p.AesKey,
+			AesIV:        p.AesIV,
+		}
+		packedSize += (p.VirtualEnd - p.VirtualStart)
+		if len(p.AesKey) > 0 && len(aesKey) == 0 {
+			aesKey = p.AesKey
+			aesIV = p.AesIV
+		}
 	}
 
-	mainBase := filepath.Base(bp.MainFileName)
-	for {
-		if err := contextErr(ctx); err != nil {
-			rc.Close()
-			return nil, "", 0, err
-		}
-		h, err := rc.Next()
-		if err != nil {
-			rc.Close()
-			if err == io.EOF {
-				return nil, "", 0, fmt.Errorf("encrypted RAR: file %q not found", bp.MainFileName)
-			}
-			return nil, "", 0, fmt.Errorf("encrypted RAR next: %w", err)
-		}
-		if h.Name == bp.MainFileName || filepath.Base(h.Name) == mainBase {
-			stream, err := newEncryptedRARStream(
-				ctx,
-				rc,
-				bp.TotalSize,
-				firstName,
-				fileMap,
-				password,
-				bp.MainFileName,
-				mainBase,
-			)
-			if err != nil {
-				rc.Close()
-				return nil, "", 0, err
-			}
-			return stream, bp.MainFileName, bp.TotalSize, nil
-		}
-
-		_, _ = io.Copy(io.Discard, io.LimitReader(rc, h.UnPackedSize))
+	if len(aesKey) == 0 {
+		// Fall back to standard unencrypted stream. The archive is either not
+		// encrypted, or we don't have the correct password/keys to decrypt it.
+		logger.Debug("Encrypted virtual stream fallback to plaintext", "file", bp.MainFileName)
+		return NewVirtualStream(ctx, parts, bp.TotalSize, 0), bp.MainFileName, bp.TotalSize, nil
 	}
+
+	stream := NewEncryptedVirtualStream(ctx, parts, bp.TotalSize, packedSize, aesKey, aesIV, 0)
+	return stream, bp.MainFileName, bp.TotalSize, nil
 }
 
-func newEncryptedRARStream(
-	ctx context.Context,
-	rc *rardecode.ReadCloser,
-	limit int64,
-	firstVolName string,
-	fileMap map[string]UnpackableFile,
-	password string,
-	mainFileName string,
-	mainBase string,
-) (*encryptedRARStream, error) {
-	tmp, err := os.CreateTemp("", "streamnzb-encrypted-rar-*")
-	if err != nil {
-		return nil, fmt.Errorf("create encrypted RAR cache file: %w", err)
-	}
-	return &encryptedRARStream{
-		ctx:          ctx,
-		rc:           rc,
-		limit:        limit,
-		firstVolName: firstVolName,
-		fileMap:      fileMap,
-		password:     password,
-		mainFileName: mainFileName,
-		mainBase:     mainBase,
-		cacheFile:    tmp,
-		cachePath:    tmp.Name(),
-		copyBuf:      make([]byte, 256*1024),
-	}, nil
-}
-
-type encryptedRARStream struct {
-	ctx          context.Context
-	rc           *rardecode.ReadCloser
-	limit        int64
-	read         int64
-	firstVolName string
-	fileMap      map[string]UnpackableFile
-	password     string
-	mainFileName string
-	mainBase     string
-	cacheFile    *os.File
-	cachePath    string
-	cachedBytes  int64
-	sourceEOF    bool
-	copyBuf      []byte
-	mu           sync.Mutex
-}
-
-func (e *encryptedRARStream) Read(p []byte) (n int, err error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if err := contextErr(e.ctx); err != nil {
-		return 0, err
-	}
-	if e.read >= e.limit {
-		return 0, io.EOF
-	}
-	max := int64(len(p))
-	if max > e.limit-e.read {
-		max = e.limit - e.read
-	}
-	if max <= 0 {
-		return 0, io.EOF
-	}
-
-	target := e.read + max
-	if err := e.ensureCachedUntilLocked(target); err != nil && !errors.Is(err, io.EOF) {
-		return 0, err
-	}
-
-	available := e.cachedBytes - e.read
-	if available <= 0 {
-		return 0, io.EOF
-	}
-	if available > max {
-		available = max
-	}
-
-	n, readErr := e.cacheFile.ReadAt(p[:available], e.read)
-	if n > 0 {
-		e.read += int64(n)
-	}
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return n, readErr
-	}
-	if int64(n) < max {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
-func (e *encryptedRARStream) ensureCachedUntilLocked(target int64) error {
-	if target > e.limit {
-		target = e.limit
-	}
-	for e.cachedBytes < target {
-		if err := contextErr(e.ctx); err != nil {
-			return err
-		}
-		if e.sourceEOF {
-			break
-		}
-		remaining := target - e.cachedBytes
-		chunk := int64(len(e.copyBuf))
-		if remaining < chunk {
-			chunk = remaining
-		}
-		n, err := e.rc.Read(e.copyBuf[:chunk])
-		if n > 0 {
-			if err := writeAllAt(e.cacheFile, e.copyBuf[:n], e.cachedBytes); err != nil {
-				return err
-			}
-			e.cachedBytes += int64(n)
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				e.sourceEOF = true
-				break
-			}
-			return err
-		}
-		if n == 0 {
-			break
-		}
-	}
-	if e.cachedBytes < target {
-		return io.EOF
-	}
-	return nil
-}
-
-func writeAllAt(file *os.File, data []byte, off int64) error {
-	for len(data) > 0 {
-		n, err := file.WriteAt(data, off)
-		if err != nil {
-			return err
-		}
-		data = data[n:]
-		off += int64(n)
-	}
-	return nil
-}
-
-func (e *encryptedRARStream) Seek(offset int64, whence int) (int64, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	var abs int64
-	switch whence {
-	case io.SeekStart:
-		abs = offset
-	case io.SeekCurrent:
-		abs = e.read + offset
-	case io.SeekEnd:
-		abs = e.limit + offset
-	default:
-		return e.read, fmt.Errorf("invalid whence %d", whence)
-	}
-	if abs < 0 {
-		return e.read, fmt.Errorf("negative position")
-	}
-	e.read = abs
-	return e.read, nil
-}
-
-func (e *encryptedRARStream) Close() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	var closeErr error
-	if e.rc != nil {
-		if err := e.rc.Close(); err != nil {
-			closeErr = err
-		}
-		e.rc = nil
-	}
-	if e.cacheFile != nil {
-		if err := e.cacheFile.Close(); err != nil && closeErr == nil {
-			closeErr = err
-		}
-		e.cacheFile = nil
-	}
-	if e.cachePath != "" {
-		if err := os.Remove(e.cachePath); err != nil && !errors.Is(err, os.ErrNotExist) && closeErr == nil {
-			closeErr = err
-		}
-		e.cachePath = ""
-	}
-	return closeErr
-}
 
 // maxFirstVolumesToScan caps how many "first" volumes we try when many files are
 // treated as first volumes (e.g. non-standard names like .100, .101). Prevents
@@ -426,6 +223,8 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
+	ctx = WithArchiveScanIOTrace(ctx)
+	scanTraceReadPos.Store(0)
 	rarFiles := filterRarFiles(files)
 	if len(rarFiles) == 0 {
 		return nil, errors.New("no RAR files found")
@@ -566,6 +365,8 @@ type filePart struct {
 	isMedia      bool
 	isCompressed bool
 	isEncrypted  bool
+	aesKey       []byte
+	aesIV        []byte
 }
 
 type scanDiagnostics struct {
@@ -647,7 +448,10 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 
 			cleanName := ExtractFilename(f.Name())
 			fsys := NewNZBFSFromMapCtx(ctx, map[string]UnpackableFile{cleanName: f})
-			listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(true), rardecode.SkipVolumeCheck}
+			// ListTolerant: this maps only the single first volume; a split file that
+			// continues into sibling volumes must still be discoverable here. The full
+			// per-volume layout is stitched later by aggregateRemainingVolumes.
+			listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant}
 			if password != "" {
 				listOpts = append(listOpts, rardecode.Password(password))
 			}
@@ -657,7 +461,8 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 					setFirstErr(ctxErr)
 					return
 				}
-				logger.Debug("Scan failure", "name", cleanName, "err", err)
+				logger.Debug("Scan failure", "name", cleanName, "err", err, "virtual_size", f.Size())
+				logRARScanDebug(f, err)
 				mu.Lock()
 				diag.failedScans++
 				msg := strings.ToLower(err.Error())
@@ -700,6 +505,16 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 					}
 				}
 
+				fileEncrypted := info.AnyEncrypted
+				if !fileEncrypted {
+					for _, p := range info.Parts {
+						if p.Encrypted || len(p.AesKey) > 0 {
+							fileEncrypted = true
+							break
+						}
+					}
+				}
+
 				for _, p := range info.Parts {
 					mu.Lock()
 					result = append(result, filePart{
@@ -711,7 +526,9 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 						volName:      f.Name(),
 						isMedia:      isMediaFile(info),
 						isCompressed: compressed,
-						isEncrypted:  info.AnyEncrypted,
+						isEncrypted:  fileEncrypted,
+						aesKey:       p.AesKey,
+						aesIV:        p.AesIV,
 					})
 					mu.Unlock()
 				}
@@ -787,6 +604,9 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 			anyEncrypted = true
 		}
 	}
+	if password != "" {
+		anyEncrypted = true
+	}
 
 	bp := &ArchiveBlueprint{
 		MainFileName: bestName,
@@ -803,6 +623,8 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 			VirtualEnd:   vOffset + p.packedSize,
 			VolFile:      p.volFile,
 			VolOffset:    p.dataOffset,
+			AesKey:       p.aesKey,
+			AesIV:        p.aesIV,
 		})
 		if i < 3 || i >= len(mainParts)-2 {
 			logger.Trace("Blueprint part", "idx", i, "vStart", vOffset, "vEnd", vOffset+p.packedSize, "volOff", p.dataOffset, "packed", p.packedSize)
@@ -812,7 +634,9 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 
 	logger.Trace("Blueprint total", "vOffset", vOffset, "headerSize", headerSize, "parts", len(mainParts))
 
-	if vOffset < headerSize {
+	// Packed volume totals can be smaller than unpacked media size; only clamp
+	// for direct VirtualStream reads. Decrypting streams must keep unpacked size.
+	if vOffset < headerSize && !anyEncrypted && password == "" {
 		logger.Debug("Adjusting stream size", "header", headerSize, "actual", vOffset)
 		bp.TotalSize = vOffset
 	}
@@ -928,6 +752,16 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 	contPackedSize := probe.packedSize
 	contDataOffset := probe.dataOffset
 
+	// When the fast continuation probe is unavailable we must learn each remaining
+	// volume's decoded size. Probing volumes one-by-one is the dominant startup
+	// cost (each probe is a round of segment downloads), so prime them concurrently
+	// up front; the sequential loop below then hits already-cached segment maps.
+	if contPackedSize <= 0 {
+		if err := primeContinuationSegmentMaps(ctx, allRarFiles[startIdx+1:]); err != nil {
+			return nil, err
+		}
+	}
+
 	var lastPartData int64
 	if contPackedSize > 0 && numContVolumes > 1 {
 		lastPartData = headerSize - first.packedSize - int64(numContVolumes-1)*contPackedSize
@@ -971,19 +805,87 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 		if dataSize <= 0 {
 			continue
 		}
+		volDataOffset := contDataOffset
+
 		result = append(result, filePart{
 			name:         name,
 			unpackedSize: headerSize,
-			dataOffset:   contDataOffset,
+			dataOffset:   volDataOffset,
 			packedSize:   dataSize,
 			volFile:      f,
 			volName:      f.Name(),
 			isMedia:      true,
+			isCompressed: first.isCompressed,
+			isEncrypted:  first.isEncrypted,
+			aesKey:       first.aesKey,
+			aesIV:        first.aesIV,
 		})
 		added++
 	}
 	logger.Trace("Manual volume aggregation", "added", added, "total", len(result))
 	return result, nil
+}
+
+// maxContinuationProbeConcurrency bounds how many continuation volumes we probe
+// at once so we speed up startup without flooding the NNTP connection pool.
+// Each volume probe fans out into ~60 segment fetches, so keep this small to
+// avoid saturating the pool (which shows up as "NNTP pool wait exceeded
+// threshold" and stalls real playback reads).
+const maxContinuationProbeConcurrency = 3
+
+// primeContinuationSegmentMaps probes the segment maps of the given volumes
+// concurrently so the subsequent sequential aggregation hits cached maps. It
+// returns the first error encountered (other than per-volume sizing issues,
+// which the aggregation loop already tolerates by skipping empty volumes).
+func primeContinuationSegmentMaps(ctx context.Context, files []UnpackableFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+		sem      = make(chan struct{}, maxContinuationProbeConcurrency)
+	)
+
+	for _, f := range files {
+		f := f
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				mu.Unlock()
+				return
+			}
+			defer func() { <-sem }()
+
+			if err := ensureSegmentMap(ctx, f); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Only surface context cancellation as fatal; individual volume probe errors
+	// are handled (and may be retried) by the aggregation loop.
+	if firstErr != nil && isContextErr(firstErr) {
+		return firstErr
+	}
+	return nil
 }
 
 type continuationProbe struct {
@@ -1008,7 +910,10 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 		firstName:  firstFile,
 		secondName: secondFile,
 	})
-	listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(true)}
+	// ListTolerant lets the split file resolve across the two mounted volumes and
+	// return both parts even though the archive continues into volumes not mounted
+	// here; we only need Parts[1] (the per-continuation-volume packed size).
+	listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant}
 	if password != "" {
 		listOpts = append(listOpts, rardecode.Password(password))
 	}
@@ -1021,7 +926,14 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 		return continuationProbe{}, nil
 	}
 
+	// Gather every part of the target file across all returned entries, in the
+	// order rardecode discovered them (volume order). Depending on how the split
+	// continuation block in the second volume is flagged, rardecode may either
+	// merge both volumes into a single entry with 2 parts, or emit two separate
+	// single-part entries for the same name. Both layouts mean the same thing:
+	// the second part overall is the per-continuation-volume data block we want.
 	lowerTarget := strings.ToLower(targetName)
+	var targetParts []rardecode.FilePartInfo
 	for _, info := range infos {
 		if err := contextErr(ctx); err != nil {
 			return continuationProbe{}, err
@@ -1029,14 +941,43 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 		if strings.ToLower(info.Name) != lowerTarget {
 			continue
 		}
-		if len(info.Parts) >= 2 {
-			return continuationProbe{
-				dataOffset: info.Parts[1].DataOffset,
-				packedSize: info.Parts[1].PackedSize,
-			}, nil
-		}
+		targetParts = append(targetParts, info.Parts...)
+	}
+
+	logger.Debug("Continuation probe result",
+		"target", targetName,
+		"infos", len(infos),
+		"target_parts", len(targetParts),
+		"first_volume", firstName,
+		"second_volume", secondName)
+
+	if len(targetParts) >= 2 {
+		probe := normalizeContinuationProbe(targetParts)
+		logger.Debug("Continuation probe metadata",
+			"target", targetName,
+			"dataOffset", probe.dataOffset,
+			"packedSize", probe.packedSize,
+			"first_part_packed", targetParts[0].PackedSize,
+			"second_part_packed", targetParts[1].PackedSize)
+		return probe, nil
 	}
 	return continuationProbe{}, nil
+}
+
+func normalizeContinuationProbe(parts []rardecode.FilePartInfo) continuationProbe {
+	if len(parts) < 2 {
+		return continuationProbe{}
+	}
+	probe := continuationProbe{
+		dataOffset: parts[1].DataOffset,
+		packedSize: parts[1].PackedSize,
+	}
+	// RAR5 split continuations can expose a valid dataOffset while PackedSize is
+	// left zero on the second list entry; reuse the first part's packed span.
+	if probe.packedSize <= 0 && parts[0].PackedSize > 0 {
+		probe.packedSize = parts[0].PackedSize
+	}
+	return probe
 }
 
 func tryNestedArchive(ctx context.Context, parts []filePart, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {

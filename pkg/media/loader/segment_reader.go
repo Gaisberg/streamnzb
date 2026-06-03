@@ -116,12 +116,35 @@ func (r *SegmentReader) traceDetail() string {
 }
 
 func (r *SegmentReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	total := 0
+	for total < len(p) {
+		n, err := r.readInto(p[total:])
+		total += n
+		if err != nil {
+			if err == io.EOF && total > 0 {
+				return total, nil
+			}
+			if total > 0 && err != io.EOF {
+				return total, err
+			}
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func (r *SegmentReader) readInto(p []byte) (int, error) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return 0, io.ErrClosedPipe
 	}
-	if r.segIdx >= len(r.file.segments) {
+	if r.segIdx >= len(r.file.segments) || r.offset >= r.file.Size() {
+		r.logEOFBeforeVirtualSize()
 		r.mu.Unlock()
 		return 0, io.EOF
 	}
@@ -129,29 +152,50 @@ func (r *SegmentReader) Read(p []byte) (int, error) {
 	segOff := r.segOff
 	r.mu.Unlock()
 
+	decodedLen := r.file.segmentDecodedLen(segIdx)
+	if segOff >= decodedLen {
+		r.mu.Lock()
+		r.segIdx++
+		r.segOff = 0
+		r.mu.Unlock()
+		return r.readInto(p)
+	}
+
 	data, err := r.file.DownloadSegment(r.ctx, segIdx)
 	if err != nil {
 		return 0, err
 	}
 
-	if segOff >= int64(len(data)) {
+	remain := decodedLen - segOff
+	avail := int64(len(data)) - segOff
+	if avail < 0 {
+		avail = 0
+	}
+	toCopy := int64(len(p))
+	if remain < toCopy {
+		toCopy = remain
+	}
+	if avail < toCopy {
+		toCopy = avail
+	}
+	if toCopy <= 0 {
+		if remain > 0 && avail == 0 {
+			return 0, fmt.Errorf("segment %d data shorter than mapped size (have %d decoded %d at off %d)",
+				segIdx, len(data), decodedLen, segOff)
+		}
 		r.mu.Lock()
 		r.segIdx++
 		r.segOff = 0
-		nextSegIdx := r.segIdx
 		r.mu.Unlock()
-		if nextSegIdx >= len(r.file.segments) {
-			return 0, io.EOF
-		}
-		return r.Read(p)
+		return r.readInto(p)
 	}
 
-	n := copy(p, data[segOff:])
+	n := copy(p, data[segOff:segOff+toCopy])
 
 	r.mu.Lock()
 	r.segOff += int64(n)
 	r.offset += int64(n)
-	if r.segOff >= int64(len(data)) {
+	if r.segOff >= decodedLen {
 		r.segIdx++
 		r.segOff = 0
 	}
@@ -161,6 +205,18 @@ func (r *SegmentReader) Read(p []byte) (int, error) {
 	r.triggerReadAhead(currentSeg)
 
 	return n, nil
+}
+
+func (r *SegmentReader) logEOFBeforeVirtualSize() {
+	if r.file == nil || r.offset >= r.file.Size() {
+		return
+	}
+	logger.Debug("SegmentReader EOF before virtual size",
+		"file", r.file.Name(),
+		"offset", r.offset,
+		"virtual_size", r.file.Size(),
+		"seg_idx", r.segIdx,
+		"seg_off", r.segOff)
 }
 
 // triggerReadAhead fires off background downloads for the next readAheadSize

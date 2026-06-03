@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"streamnzb/pkg/core/logger"
+
+	"github.com/javi11/rardecode/v2"
 )
 
 func discardTestLogger(t *testing.T) {
@@ -24,11 +26,32 @@ func discardTestLogger(t *testing.T) {
 type trackingUnpackableFile struct {
 	*memoryUnpackableFile
 	ensureCalls int
+	detected    bool
 }
 
+// EnsureSegmentMap mirrors the real *File: detection runs once and subsequent
+// calls are cheap cache hits. ensureCalls therefore counts actual detection
+// work, not the number of (possibly redundant) invocations.
 func (f *trackingUnpackableFile) EnsureSegmentMap() error {
+	if f.detected {
+		return nil
+	}
+	f.detected = true
 	f.ensureCalls++
 	return nil
+}
+
+func TestNormalizeContinuationProbeFallsBackToFirstPartPackedSize(t *testing.T) {
+	probe := normalizeContinuationProbe([]rardecode.FilePartInfo{
+		{DataOffset: 100, PackedSize: 49_999_328},
+		{DataOffset: 24, PackedSize: 0},
+	})
+	if probe.dataOffset != 24 {
+		t.Fatalf("dataOffset = %d, want 24", probe.dataOffset)
+	}
+	if probe.packedSize != 49_999_328 {
+		t.Fatalf("packedSize = %d, want 49999328", probe.packedSize)
+	}
 }
 
 func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvidesPackedSize(t *testing.T) {
@@ -59,6 +82,12 @@ func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvide
 	}
 	if got := parts[2].packedSize; got != 500 {
 		t.Fatalf("expected final continuation packed size 500, got %d", got)
+	}
+	if got := parts[1].dataOffset; got != 24 {
+		t.Fatalf("expected first continuation dataOffset 24, got %d", got)
+	}
+	if got := parts[2].dataOffset; got != 24 {
+		t.Fatalf("expected later continuation dataOffset 24, got %d", got)
 	}
 	if secondFile.ensureCalls != 0 || thirdFile.ensureCalls != 0 {
 		t.Fatalf("expected no EnsureSegmentMap calls with probe metadata, got second=%d third=%d", secondFile.ensureCalls, thirdFile.ensureCalls)

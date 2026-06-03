@@ -1632,6 +1632,15 @@ func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session,
 		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
 	}
 	if !startInfo.HeaderValid {
+		if peek, err := readProbePrefix(probeStream, 16); err == nil && len(peek) > 0 {
+			logger.Debug("Probe rejected container header",
+				"session", sess.ID,
+				"name", probeName,
+				"size", probeSize,
+				"prefix_hex", fmt.Sprintf("% x", peek),
+				"encrypted_blueprint", blueprintAnyEncrypted(sess),
+				"password_len", nzbPasswordLen(sess))
+		}
 		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe: invalid container header for %s", probeName)
 	}
 
@@ -1653,6 +1662,38 @@ func cacheReturnedPlaybackBlueprint(sess *session.Session, bp interface{}) {
 		return
 	}
 	sess.SetBlueprint(bp)
+}
+
+func readProbePrefix(stream io.ReadSeeker, n int) ([]byte, error) {
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, n)
+	got, err := io.ReadFull(stream, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && err != io.EOF {
+		return buf[:got], err
+	}
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		return buf[:got], err
+	}
+	return buf[:got], nil
+}
+
+func blueprintAnyEncrypted(sess *session.Session) bool {
+	if sess == nil || sess.Blueprint == nil {
+		return false
+	}
+	if bp, ok := sess.Blueprint.(*unpack.ArchiveBlueprint); ok {
+		return bp.AnyEncrypted
+	}
+	return false
+}
+
+func nzbPasswordLen(sess *session.Session) int {
+	if sess == nil || sess.NZB == nil {
+		return 0
+	}
+	return len(sess.NZB.Password())
 }
 
 // openPlaybackSource opens a fresh reader for the currently selected playback source.

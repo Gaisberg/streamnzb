@@ -7,12 +7,41 @@ import (
 )
 
 type archiveFastFailoverContextKey struct{}
+type archiveScanIOTraceContextKey struct{}
+type skipGapProbingContextKey struct{}
+
+func WithSkipGapProbing(ctx context.Context, enabled bool) context.Context {
+	if !enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, skipGapProbingContextKey{}, true)
+}
+
+func IsSkipGapProbingEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(skipGapProbingContextKey{}).(bool)
+	return enabled
+}
 
 func WithArchiveFastFailoverMode(ctx context.Context, enabled bool) context.Context {
 	if !enabled {
 		return ctx
 	}
 	return context.WithValue(ctx, archiveFastFailoverContextKey{}, true)
+}
+
+func WithArchiveScanIOTrace(ctx context.Context) context.Context {
+	return context.WithValue(ctx, archiveScanIOTraceContextKey{}, true)
+}
+
+func IsArchiveScanIOTraceEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(archiveScanIOTraceContextKey{}).(bool)
+	return enabled
 }
 
 func IsArchiveFastFailoverModeEnabled(ctx context.Context) bool {

@@ -40,6 +40,8 @@ type options struct {
 	skipVolumeCheck      bool
 	openCheck            bool
 	parallelRead         bool
+	listTolerant         bool
+	streamLazyVolumes    bool
 	maxConcurrentVolumes int
 }
 
@@ -70,6 +72,16 @@ func OpenFSCheck(o *options) { o.openCheck = true }
 func ParallelRead(enable bool) Option {
 	return func(o *options) { o.parallelRead = enable }
 }
+
+// ListTolerant makes listing return a split file found in the available volume(s)
+// instead of failing when continuation volumes are missing. Intended for listing
+// a single first volume of a multi-volume set to discover file names/layout.
+func ListTolerant(o *options) { o.listTolerant = true }
+
+// StreamLazyVolumes defers opening continuation volumes until their packed data is
+// read. Use when streaming a split file across many volumes so Next() does not
+// have to scan every volume before the first Read.
+func StreamLazyVolumes(o *options) { o.streamLazyVolumes = true }
 
 func MaxConcurrentVolumes(n int) Option {
 	return func(o *options) { o.maxConcurrentVolumes = n }
