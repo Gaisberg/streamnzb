@@ -320,10 +320,10 @@ func (s *Server) bootstrapPlaylistForPlay(ctx context.Context, key StreamSlotKey
 	return list, nil
 }
 
-// recoverPlaySessionAfterEviction re-runs the /stream bootstrap and returns the first playable slot.
-// The index encoded in the requested play URL is ignored because rankings may have changed.
+// recoverPlaySessionAfterEviction re-runs the /stream bootstrap and resolves to a playable slot.
+// Prioritizes the requested slot index from sessionID, falling back sequentially and wrapping around.
 func (s *Server) recoverPlaySessionAfterEviction(ctx context.Context, sessionID string, stream *auth.Stream) (*session.Session, string, error) {
-	streamId, contentType, id, _, ok := parseStreamSlotID(sessionID)
+	streamId, contentType, id, requestedIndex, ok := parseStreamSlotID(sessionID)
 	if !ok {
 		return nil, "", fmt.Errorf("invalid slot path %q", sessionID)
 	}
@@ -334,9 +334,22 @@ func (s *Server) recoverPlaySessionAfterEviction(ctx context.Context, sessionID 
 	}
 	currentID := ""
 	currentIndex := -1
+	startAtRequested := false
+	if ok && requestedIndex < len(list.Candidates) {
+		currentIndex = requestedIndex - 1
+		startAtRequested = true
+	}
+	scannedFromStart := !startAtRequested
+
 	for {
 		nextID := s.deriveNextSlotIDFromPlaylist(currentID, key, currentIndex, list, stream)
 		if nextID == "" {
+			if !scannedFromStart {
+				scannedFromStart = true
+				currentID = ""
+				currentIndex = -1
+				continue
+			}
 			return nil, "", fmt.Errorf("no playable slot in rebuilt play list")
 		}
 		nextSess, err := s.sessionManager.GetSession(nextID)
@@ -1145,10 +1158,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		return
 	}
 
-	tSec, hasTimeOffset := seek.ParseTSeconds(r.URL.Query().Get("t"))
-	wantTimeOffset := r.Header.Get("Range") == "" && hasTimeOffset
-	var startupInfo seek.StreamStartInfo
-	var haveStartupInfo bool
 	streamMode := ""
 
 	var mergedCtx context.Context
@@ -1192,7 +1201,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		}
 
 		s.sessionManager.BeginPlaybackStartup(sessionID)
-		preparedStream, prepareErr := s.preparePlaybackStream(mergedCtx, sess, requestedSessionID, sessionID, wantTimeOffset)
+		preparedStream, prepareErr := s.preparePlaybackStream(mergedCtx, sess)
 		s.sessionManager.EndPlaybackStartup(sessionID)
 		if prepareErr != nil {
 			mergedCancel()
@@ -1243,15 +1252,26 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		stream = preparedStream.Stream
 		name = preparedStream.Spec.Name
 		size = preparedStream.Spec.Size
-		startupInfo = preparedStream.StartupInfo
-		haveStartupInfo = preparedStream.HasStartupInfo
 		streamMode = preparedStream.Mode
 		break
+	}
+	if sessionID != requestedSessionID {
+		if stream != nil {
+			stream.Close()
+		}
+		nextURL := s.baseURLWithToken(streamConfig) + "/play/" + sessionID
+		if r.URL.RawQuery != "" {
+			nextURL += "?" + r.URL.RawQuery
+		}
+		logger.Info("Redirecting client to resolved/failover slot", "from", requestedSessionID, "to", sessionID)
+		w.Header().Set("Location", nextURL)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		return
 	}
 	defer mergedCancel()
 	servedSessionID := sessionID
 	requestedRange := r.Header.Get("Range")
-	requestedTimeOffset := r.URL.Query().Get("t")
 	userAgent := r.Header.Get("User-Agent")
 	var closeReason atomic.Value
 	var closeStreamOnce sync.Once
@@ -1270,15 +1290,10 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		closeStream("playback canceled")
 	}(mergedCtx.Done())
 
-	// After internal failover we serve a different file; don't apply the original request's Range or t= to it.
+	// After internal failover we serve a different file; don't apply the original request's Range to it.
 	failedOver := sessionID != requestedSessionID
 	if failedOver {
 		r.Header.Del("Range")
-	}
-	if !failedOver && wantTimeOffset && r.Header.Get("Range") == "" && haveStartupInfo {
-		if byteOffset, seekOK := seek.TimeToByteOffsetFromDuration(size, startupInfo.DurationSec, tSec); seekOK {
-			r.Header.Set("Range", "bytes="+strconv.FormatInt(byteOffset, 10)+"-")
-		}
 	}
 
 	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
@@ -1365,7 +1380,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		"method", r.Method,
 		"requested_range", requestedRange,
 		"effective_range", effectiveRange,
-		"time_offset", requestedTimeOffset,
 		"user_agent", userAgent,
 		"client_ip", clientIP,
 		"failed_over", failedOver,
@@ -1391,7 +1405,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			"method", r.Method,
 			"requested_range", requestedRange,
 			"effective_range", effectiveRange,
-			"time_offset", requestedTimeOffset,
 			"user_agent", userAgent,
 			"response_status", responseStats.StatusCode,
 			"response_wrote_header", responseStats.WroteHeader,
@@ -1512,9 +1525,8 @@ type preparedPlaybackStream struct {
 // preparePlaybackStream probes with a temporary reader when startup metadata is missing,
 // then opens a fresh playback reader for the current HTTP request while caching the
 // validated playback spec/startup metadata on the session.
-func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Session, requestedSessionID, currentSessionID string, wantTimeOffset bool) (preparedPlaybackStream, error) {
+func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Session) (preparedPlaybackStream, error) {
 	preparedStream := preparedPlaybackStream{}
-	needDurationProbe := wantTimeOffset && currentSessionID == requestedSessionID
 
 	snapshot, haveSnapshot := sess.PlaybackStreamSnapshot()
 	if haveSnapshot {
@@ -1523,11 +1535,11 @@ func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Sessio
 		preparedStream.HasStartupInfo = snapshot.HasStartupInfo
 	}
 
-	needProbe := !haveSnapshot || !snapshot.HasStartupInfo || (needDurationProbe && !snapshot.StartupInfo.DurationKnown)
+	needProbe := !haveSnapshot || !snapshot.HasStartupInfo
 	if needProbe {
 		startupTimeout := s.playbackStartupTimeout()
 		probeCtx, cancel := context.WithTimeout(ctx, startupTimeout)
-		spec, startupInfo, err := s.probePlaybackSource(probeCtx, sess, needDurationProbe)
+		spec, startupInfo, err := s.probePlaybackSource(probeCtx, sess)
 		err = classifyPlaybackStartupErr("probe", startupTimeout, probeCtx, err)
 		cancel()
 		if err != nil {
@@ -1615,19 +1627,14 @@ func (s *Server) openExpectedPlaybackSource(ctx context.Context, sess *session.S
 
 // probePlaybackSource validates the selected media and gathers startup metadata using
 // a disposable probe reader so that small scans never disturb the session body stream.
-func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session, needDurationProbe bool) (session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
+func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session) (session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
 	probeStream, probeName, probeSize, err := s.openPlaybackSource(ctx, sess)
 	if err != nil {
 		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, err
 	}
 	defer probeStream.Close()
 
-	inspectBytes := unpack.ProbeSize
-	if needDurationProbe && seek.MaxBytesToRead > inspectBytes {
-		inspectBytes = seek.MaxBytesToRead
-	}
-
-	startInfo, inspectErr := seek.InspectStreamStart(probeStream, probeSize, probeName, inspectBytes)
+	startInfo, inspectErr := seek.InspectStreamStart(probeStream, probeSize, probeName, unpack.ProbeSize)
 	if inspectErr != nil {
 		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
 	}
@@ -2506,16 +2513,6 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		<-done
 		closeStream("playback canceled")
 	}(mergedCtx.Done())
-
-	if tStr := r.URL.Query().Get("t"); tStr != "" && r.Header.Get("Range") == "" {
-		if tSec, parseOK := seek.ParseTSeconds(tStr); parseOK {
-			if startInfo, err := seek.InspectStreamStart(stream, size, name, seek.MaxBytesToRead); err == nil {
-				if byteOffset, seekOK := seek.TimeToByteOffsetFromDuration(size, startInfo.DurationSec, tSec); seekOK {
-					r.Header.Set("Range", "bytes="+strconv.FormatInt(byteOffset, 10)+"-")
-				}
-			}
-		}
-	}
 
 	clientIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if clientIP == "" {

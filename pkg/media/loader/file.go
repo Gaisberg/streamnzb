@@ -195,6 +195,44 @@ func (f *File) EnsureSegmentMapCtx(ctx context.Context) error {
 	return f.detectSegmentSizeLocked(ctx)
 }
 
+// PrimeUniformSegmentMapFromEstimator builds a segment map without NNTP probes when
+// every segment (including the last) shares the same NZB bytes and the estimator
+// already knows the decoded size from an earlier volume in the same release.
+func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
+	if f == nil || len(f.segments) == 0 || f.estimator == nil {
+		return false
+	}
+	if !hasUniformNZBSegmentBytes(f.segments) {
+		return false
+	}
+	last := f.segments[len(f.segments)-1]
+	first := f.segments[0]
+	if last.Bytes != first.Bytes {
+		return false
+	}
+	decoded, ok := f.estimator.Get(first.Bytes)
+	if !ok || decoded <= 0 {
+		return false
+	}
+
+	knownByNZBBytes := map[int64]int64{first.Bytes: decoded}
+	sizes := buildSegmentDecodedSizesFromProbes(f.segments, nil, knownByNZBBytes, true)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.detected {
+		return true
+	}
+	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
+	f.detected = true
+	logger.Trace("Primed uniform segment map from estimator",
+		"name", f.Name(),
+		"size", f.totalSize,
+		"segments", len(f.segments),
+		"decoded", decoded)
+	return true
+}
+
 func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	if ctx == nil {
 		ctx = f.ctx
@@ -212,6 +250,10 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		return nil
 	}
 	f.mu.Unlock()
+
+	if unpack.IsArchiveFastFailoverModeEnabled(ctx) && f.PrimeUniformSegmentMapFromEstimator() {
+		return nil
+	}
 
 	if len(f.segments) == 0 {
 		f.mu.Lock()
@@ -268,7 +310,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		}
 	}
 
-	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, unpack.IsSkipGapProbingEnabled(ctx))
+	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, knownByNZBBytes, unpack.IsSkipGapProbingEnabled(ctx))
 	if includeMiddle {
 		mid := middleProbeIndex(len(f.segments))
 		if midDecoded, ok := probedByIndex[mid]; ok {
@@ -709,6 +751,34 @@ func (f *File) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, e
 		return nil, err
 	}
 	return NewSegmentReader(ctx, f, offset), nil
+}
+
+// OpenPlaybackReaderAt opens a reader with a larger read-ahead window for archive
+// playback seeks that cross RAR volume boundaries.
+func (f *File) OpenPlaybackReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		return nil, err
+	}
+	return NewSegmentReaderWithReadAhead(ctx, f, offset, unpack.PlaybackReadAheadSegments), nil
+}
+
+// PrefetchPlaybackOffset warms the segment cache ahead of an upcoming volume switch.
+func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		return
+	}
+	idx := f.FindSegmentIndex(offset)
+	if idx < 0 {
+		return
+	}
+	end := idx + unpack.PlaybackReadAheadSegments
+	if end > len(f.segments) {
+		end = len(f.segments)
+	}
+	bgCtx := context.WithoutCancel(ctx)
+	for i := idx; i < end; i++ {
+		f.ReadAheadSegment(bgCtx, i)
+	}
 }
 
 // MaxSegmentSizeEstimatorEntries caps the number of size entries to prevent unbounded growth.

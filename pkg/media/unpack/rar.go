@@ -15,7 +15,7 @@ import (
 	"github.com/javi11/rardecode/v2"
 )
 
-const likelyPAR2RepairRequiredMsg = "likely PAR2 repair required"
+var ErrPAR2RepairRequired = errors.New("likely PAR2 repair required")
 
 type ArchiveBlueprint struct {
 	MainFileName string
@@ -50,16 +50,33 @@ func StreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint, password str
 		return streamEncryptedRAR(ctx, bp, password)
 	}
 
+	// Blueprint virtual stream jumps straight to the target volume/offset
+	// (OpenReaderAt). rardecode seek walks packed blocks across every volume
+	// sequentially, which makes HTTP range seeks stall for minutes on huge sets.
+	stream, name, size := newVirtualStreamFromBlueprint(ctx, bp)
+	if len(bp.Parts) > 1 {
+		logger.Debug("Serving multi-volume RAR via virtual blueprint", "file", name, "parts", len(bp.Parts))
+	}
+	return stream, name, size, nil
+}
+
+func newVirtualStreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint) (io.ReadSeekCloser, string, int64) {
 	parts := make([]virtualPart, len(bp.Parts))
 	for i, p := range bp.Parts {
 		parts[i] = virtualPart(p)
 	}
-	return NewVirtualStream(ctx, parts, bp.TotalSize, 0), bp.MainFileName, bp.TotalSize, nil
+	return NewVirtualStream(ctx, parts, bp.TotalSize, 0), bp.MainFileName, bp.TotalSize
 }
 
 func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password string) (io.ReadSeekCloser, string, int64, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, "", 0, err
+	}
+
+	if !bp.AnyEncrypted {
+		logger.Debug("Archive has no encrypted parts in blueprint, serving via plaintext virtual stream", "file", bp.MainFileName)
+		stream, name, size := newVirtualStreamFromBlueprint(ctx, bp)
+		return stream, name, size, nil
 	}
 
 	var aesKey, aesIV []byte
@@ -81,17 +98,27 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 		}
 	}
 
-	if len(aesKey) == 0 {
-		// Fall back to standard unencrypted stream. The archive is either not
-		// encrypted, or we don't have the correct password/keys to decrypt it.
-		logger.Debug("Encrypted virtual stream fallback to plaintext", "file", bp.MainFileName)
-		return NewVirtualStream(ctx, parts, bp.TotalSize, 0), bp.MainFileName, bp.TotalSize, nil
+	if len(aesKey) > 0 {
+		logger.Debug("Serving multi-volume encrypted RAR via encrypted virtual stream", "file", bp.MainFileName, "parts", len(bp.Parts))
+		stream := NewEncryptedVirtualStream(ctx, parts, bp.TotalSize, packedSize, aesKey, aesIV, 0)
+		return stream, bp.MainFileName, bp.TotalSize, nil
 	}
 
-	stream := NewEncryptedVirtualStream(ctx, parts, bp.TotalSize, packedSize, aesKey, aesIV, 0)
-	return stream, bp.MainFileName, bp.TotalSize, nil
-}
+	if len(bp.Parts) > 1 {
+		stream, name, size, decErr := streamRARFromDecoder(ctx, bp, password)
+		if decErr == nil {
+			logger.Debug("Serving multi-volume encrypted RAR via rardecode fallback", "file", name, "parts", len(bp.Parts))
+			return stream, name, size, nil
+		}
+		logger.Debug("Multi-volume rardecode stream fallback failed for encrypted archive, trying standard virtual path", "file", bp.MainFileName, "err", decErr)
+	}
 
+	// Fall back to standard unencrypted stream. The archive is either not
+	// encrypted, or we don't have the correct password/keys to decrypt it.
+	logger.Debug("Encrypted virtual stream fallback to plaintext", "file", bp.MainFileName)
+	stream, name, size := newVirtualStreamFromBlueprint(ctx, bp)
+	return stream, name, size, nil
+}
 
 // maxFirstVolumesToScan caps how many "first" volumes we try when many files are
 // treated as first volumes (e.g. non-standard names like .100, .101). Prevents
@@ -216,7 +243,7 @@ func shouldRetryExhaustiveRARScan(err error) bool {
 	if errors.Is(err, ErrTooManyZeroFills) {
 		return false
 	}
-	return !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(likelyPAR2RepairRequiredMsg))
+	return !errors.Is(err, ErrPAR2RepairRequired)
 }
 
 func ScanArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {
@@ -396,13 +423,13 @@ func (d scanDiagnostics) classifyArchiveError() error {
 		return nil
 	}
 	return fmt.Errorf(
-		"archive data appears corrupted or incomplete (%d/%d corrupt scans; invalid_blocks=%d unexpected_eof=%d decode_corruption=%d): %s",
+		"archive data appears corrupted or incomplete (%d/%d corrupt scans; invalid_blocks=%d unexpected_eof=%d decode_corruption=%d): %w",
 		evidence,
 		d.failedScans,
 		d.invalidBlocks,
 		d.unexpectedEOF,
 		d.decodeCorruption,
-		likelyPAR2RepairRequiredMsg,
+		ErrPAR2RepairRequired,
 	)
 }
 
@@ -587,15 +614,30 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 	headerSize := mainParts[0].unpackedSize
 	scannedSize := totalPackedSize(mainParts)
 
-	if scannedSize < headerSize && len(allRarFiles) > len(mainParts) {
-		mainParts, err = aggregateRemainingVolumes(ctx, mainParts, allRarFiles, bestName, headerSize, password)
+	anyEncrypted := false
+	for _, p := range mainParts {
+		if p.isEncrypted {
+			anyEncrypted = true
+			break
+		}
+	}
+
+	targetSize := headerSize
+	if anyEncrypted {
+		targetSize = roundUpTo16(headerSize)
+	}
+
+	if scannedSize < targetSize && len(allRarFiles) > len(mainParts) {
+		mainParts, err = aggregateRemainingVolumes(ctx, mainParts, allRarFiles, bestName, targetSize, password)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	mainParts = reconcileMainPartsPackedSpan(mainParts, targetSize)
+
 	compressed := false
-	anyEncrypted := false
+	anyEncrypted = false
 	for _, p := range mainParts {
 		if p.isCompressed {
 			compressed = true
@@ -603,9 +645,6 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 		if p.isEncrypted {
 			anyEncrypted = true
 		}
-	}
-	if password != "" {
-		anyEncrypted = true
 	}
 
 	bp := &ArchiveBlueprint{
@@ -634,6 +673,11 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 
 	logger.Trace("Blueprint total", "vOffset", vOffset, "headerSize", headerSize, "parts", len(mainParts))
 
+	if vOffset != headerSize {
+		logger.Debug("Blueprint packed span differs from unpacked header",
+			"header", headerSize, "packed", vOffset, "parts", len(mainParts))
+	}
+
 	// Packed volume totals can be smaller than unpacked media size; only clamp
 	// for direct VirtualStream reads. Decrypting streams must keep unpacked size.
 	if vOffset < headerSize && !anyEncrypted && password == "" {
@@ -641,7 +685,25 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 		bp.TotalSize = vOffset
 	}
 
+	primeUniformSegmentMapsForPlayback(allRarFiles)
+
 	return bp, nil
+}
+
+type uniformSegmentMapPrimer interface {
+	PrimeUniformSegmentMapFromEstimator() bool
+}
+
+func primeUniformSegmentMapsForPlayback(files []UnpackableFile) {
+	var primed int
+	for _, f := range files {
+		if p, ok := f.(uniformSegmentMapPrimer); ok && p.PrimeUniformSegmentMapFromEstimator() {
+			primed++
+		}
+	}
+	if primed > 0 {
+		logger.Debug("Primed uniform segment maps for playback", "files", primed, "total", len(files))
+	}
 }
 
 func selectMainFile(parts []filePart, target EpisodeTarget) (string, error) {
@@ -706,6 +768,40 @@ func totalPackedSize(parts []filePart) int64 {
 	return total
 }
 
+// reconcileMainPartsPackedSpan trims the final part when summed packed spans exceed
+// the MKV header size. Continuation aggregation can overshoot by trailing RAR bytes
+// on the last volume (decoded file size minus dataOffset > MKV contribution).
+func reconcileMainPartsPackedSpan(parts []filePart, headerSize int64) []filePart {
+	if len(parts) == 0 || headerSize <= 0 {
+		return parts
+	}
+	packed := totalPackedSize(parts)
+	delta := packed - headerSize
+	if delta <= 0 {
+		return parts
+	}
+	out := append([]filePart(nil), parts...)
+	last := len(out) - 1
+	newPacked := out[last].packedSize - delta
+	if newPacked <= 0 {
+		return parts
+	}
+	out[last].packedSize = newPacked
+	logger.Debug("Reconciled last blueprint part packed span to header",
+		"header", headerSize,
+		"was_packed", packed,
+		"delta", delta,
+		"last_packed", newPacked)
+	return out
+}
+
+func roundUpTo16(val int64) int64 {
+	if val%16 == 0 {
+		return val
+	}
+	return (val/16 + 1) * 16
+}
+
 func aggregateRemainingVolumes(ctx context.Context, mainParts []filePart, allRarFiles []UnpackableFile, name string, headerSize int64, password string) ([]filePart, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, err
@@ -734,15 +830,79 @@ func aggregateRemainingVolumes(ctx context.Context, mainParts []filePart, allRar
 		logger.Trace("Probed continuation volume", "dataOffset", probe.dataOffset, "packedSize", probe.packedSize)
 	}
 
+	mainParts = applyContinuationProbeToMainParts(mainParts, probe)
+
 	return aggregateRemainingVolumesFromStart(ctx, mainParts, allRarFiles, startIdx, name, headerSize, probe)
+}
+
+// applyContinuationProbeToMainParts aligns the first-volume block with metadata from
+// the two-volume ListTolerant probe. Single-volume scans can report a different
+// dataOffset than continuation volumes; that skew breaks every seek past ~100MB.
+func applyContinuationProbeToMainParts(parts []filePart, probe continuationProbe) []filePart {
+	if len(parts) == 0 || (probe.firstDataOffset <= 0 && probe.firstPackedSize <= 0) {
+		return parts
+	}
+	out := make([]filePart, len(parts))
+	copy(out, parts)
+	firstVol := out[0].volName
+	for i := range out {
+		if out[i].volName != firstVol || i != 0 {
+			continue
+		}
+		beforeOff, beforePacked := out[i].dataOffset, out[i].packedSize
+		if probe.firstDataOffset > 0 {
+			out[i].dataOffset = probe.firstDataOffset
+		}
+		packed := probe.firstPackedSize
+		if probe.packedSize > 0 && packed > 0 {
+			switch {
+			case packed == probe.packedSize:
+				// already aligned with continuation span
+			case packed == probe.packedSize+1:
+				// Keep the first-volume STORE span. Shrinking by one byte shifts the
+				// ~100MB part boundary and breaks MKV seek/resume past the first RAR.
+			case packed == probe.packedSize-1:
+				packed = probe.packedSize
+			}
+		}
+		if packed > 0 {
+			out[i].packedSize = packed
+		}
+		if out[i].dataOffset != beforeOff || out[i].packedSize != beforePacked {
+			logger.Debug("Aligned first-volume part with continuation probe",
+				"vol", firstVol,
+				"data_offset", out[i].dataOffset,
+				"packed_size", out[i].packedSize,
+				"was_data_offset", beforeOff,
+				"was_packed_size", beforePacked)
+		}
+	}
+	return out
+}
+
+func uvarintSize(v uint64) int64 {
+	if v == 0 {
+		return 1
+	}
+	var size int64
+	for v > 0 {
+		size++
+		v >>= 7
+	}
+	return size
 }
 
 func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePart, allRarFiles []UnpackableFile, startIdx int, name string, headerSize int64, probe continuationProbe) ([]filePart, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
+	if len(mainParts) == 0 {
+		return nil, fmt.Errorf("aggregate remaining volumes: no main parts")
+	}
 	first := mainParts[0]
-	result := []filePart{first}
+	// Keep every split block discovered on the first volume. Using only mainParts[0]
+	// shifts all later virtual offsets and breaks seeks past the first ~100MB.
+	result := append([]filePart(nil), mainParts...)
 
 	numContVolumes := len(allRarFiles) - startIdx - 1
 	if numContVolumes <= 0 {
@@ -760,13 +920,30 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 		if err := primeContinuationSegmentMaps(ctx, allRarFiles[startIdx+1:]); err != nil {
 			return nil, err
 		}
+	} else if len(allRarFiles) > 1 {
+		// Prime the last volume's segment map in the background so player seeks to the end (Matroska cues) do not stall.
+		lastVol := allRarFiles[len(allRarFiles)-1]
+		bgCtx := playbackSegmentMapCtx(context.Background())
+		go func() {
+			_ = ensureSegmentMap(bgCtx, lastVol)
+		}()
 	}
 
+	firstVolumePacked := totalPackedSize(mainParts)
+	firstVolNum := GetRARVolumeNumber(allRarFiles[startIdx].Name())
+
 	var lastPartData int64
-	if contPackedSize > 0 && numContVolumes > 1 {
-		lastPartData = headerSize - first.packedSize - int64(numContVolumes-1)*contPackedSize
-	} else if contPackedSize > 0 && numContVolumes == 1 {
-		lastPartData = headerSize - first.packedSize
+	if contPackedSize > 0 {
+		var sumNonLastContPacked int64
+		for i := startIdx + 1; i < len(allRarFiles)-1; i++ {
+			volIdx := int64(GetRARVolumeNumber(allRarFiles[i].Name()) - firstVolNum)
+			if volIdx < 0 {
+				volIdx = int64(i - startIdx)
+			}
+			volDataOffset := contDataOffset + uvarintSize(uint64(volIdx)) - 1
+			sumNonLastContPacked += contPackedSize - (volDataOffset - contDataOffset)
+		}
+		lastPartData = headerSize - firstVolumePacked - sumNonLastContPacked
 	}
 
 	added := 0
@@ -786,26 +963,38 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 			}
 		}
 
+		volIdx := int64(GetRARVolumeNumber(f.Name()) - firstVolNum)
+		if volIdx < 0 {
+			volIdx = int64(i - startIdx)
+		}
+		volDataOffset := contDataOffset + uvarintSize(uint64(volIdx)) - 1
+
 		isLastVolume := i == len(allRarFiles)-1
 		var dataSize int64
 		if contPackedSize > 0 {
-			if isLastVolume && lastPartData > 0 {
-				dataSize = lastPartData
-			} else if !isLastVolume {
-				dataSize = contPackedSize
+			if isLastVolume {
+				// Prefer the header-reconciled tail size. Measured fileSize-dataOffset
+				// includes trailing non-MKV bytes after the STORE block and overshoots
+				// TotalUnpackedSize (e.g. +744 on 761-volume sets).
+				if lastPartData > 0 {
+					dataSize = lastPartData
+				} else if err := ensureSegmentMap(ctx, f); err == nil {
+					if fileSize = f.Size(); fileSize > volDataOffset {
+						if measured := fileSize - volDataOffset; measured > 0 {
+							dataSize = measured
+						}
+					}
+				}
 			} else {
-
-				dataSize = contPackedSize
+				dataSize = contPackedSize - (volDataOffset - contDataOffset)
 			}
 		} else {
-
-			dataSize = fileSize - contDataOffset
+			dataSize = fileSize - volDataOffset
 		}
 
 		if dataSize <= 0 {
 			continue
 		}
-		volDataOffset := contDataOffset
 
 		result = append(result, filePart{
 			name:         name,
@@ -889,8 +1078,10 @@ func primeContinuationSegmentMaps(ctx context.Context, files []UnpackableFile) e
 }
 
 type continuationProbe struct {
-	dataOffset int64
-	packedSize int64
+	dataOffset      int64 // per-continuation-volume payload offset (parts[1+])
+	packedSize      int64 // per-continuation-volume packed span (parts[1+])
+	firstDataOffset int64 // opening block on the first volume (parts[0])
+	firstPackedSize int64 // opening block packed span on the first volume (parts[0])
 }
 
 func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startIdx int, targetName string, password string) (continuationProbe, error) {
@@ -953,11 +1144,14 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 
 	if len(targetParts) >= 2 {
 		probe := normalizeContinuationProbe(targetParts)
+		probe.firstDataOffset = targetParts[0].DataOffset
+		probe.firstPackedSize = targetParts[0].PackedSize
 		logger.Debug("Continuation probe metadata",
 			"target", targetName,
 			"dataOffset", probe.dataOffset,
 			"packedSize", probe.packedSize,
-			"first_part_packed", targetParts[0].PackedSize,
+			"first_data_offset", probe.firstDataOffset,
+			"first_part_packed", probe.firstPackedSize,
 			"second_part_packed", targetParts[1].PackedSize)
 		return probe, nil
 	}

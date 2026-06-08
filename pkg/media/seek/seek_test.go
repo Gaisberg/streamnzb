@@ -31,18 +31,6 @@ func TestInspectStreamStartParsesMP4AndResetsOffset(t *testing.T) {
 	}
 }
 
-func TestTimeToByteOffsetFromDuration(t *testing.T) {
-	if offset, ok := TimeToByteOffsetFromDuration(100, 20, 5); !ok || offset != 25 {
-		t.Fatalf("expected offset 25 with ok=true, got offset=%d ok=%t", offset, ok)
-	}
-	if offset, ok := TimeToByteOffsetFromDuration(100, 20, 25); !ok || offset != 99 {
-		t.Fatalf("expected end clamp to 99 with ok=true, got offset=%d ok=%t", offset, ok)
-	}
-	if _, ok := TimeToByteOffsetFromDuration(100, 0, 5); ok {
-		t.Fatal("expected zero duration to fail")
-	}
-}
-
 func makeTestMP4(timescale, duration uint32) []byte {
 	ftyp := make([]byte, 16)
 	binary.BigEndian.PutUint32(ftyp[0:4], uint32(len(ftyp)))

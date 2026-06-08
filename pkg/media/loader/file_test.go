@@ -586,3 +586,27 @@ func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
 		t.Fatalf("expected only first and last segment probes, got %v", calls)
 	}
 }
+
+func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	estimator := NewSegmentSizeEstimator()
+	estimator.Set(768000, 768000)
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{768000, 768000, 768000}}
+	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	f := NewFile(ctx, testNZBFileWithSegments(768000, 768000, 768000), nil, estimator, fetcher)
+
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
+	}
+	if got := f.Size(); got != 3*768000 {
+		t.Fatalf("expected decoded size %d, got %d", 3*768000, got)
+	}
+	if calls := fetcher.Calls(); len(calls) != 0 {
+		t.Fatalf("expected no NNTP probes for uniform primed volume, got %v", calls)
+	}
+}

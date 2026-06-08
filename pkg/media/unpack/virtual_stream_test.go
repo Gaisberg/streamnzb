@@ -166,3 +166,118 @@ func TestEncryptedVirtualStreamCorrectDecryptionAndSeeking(t *testing.T) {
 		}
 	}
 }
+
+func TestVirtualStreamSeekToDifferentPartAndRead(t *testing.T) {
+	stream := NewVirtualStream(context.Background(), []virtualPart{
+		{VirtualStart: 0, VirtualEnd: 3, VolFile: &memoryUnpackableFile{name: "part1", data: []byte("abc")}},
+		{VirtualStart: 3, VirtualEnd: 7, VolFile: &memoryUnpackableFile{name: "part2", data: []byte("defg")}},
+		{VirtualStart: 7, VirtualEnd: 12, VolFile: &memoryUnpackableFile{name: "part3", data: []byte("hijkl")}},
+	}, 12, 0)
+	defer stream.Close()
+
+	if _, err := stream.Seek(4, io.SeekStart); err != nil {
+		t.Fatalf("Seek to 4 failed: %v", err)
+	}
+
+	buf := make([]byte, 5)
+	n, err := stream.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected to read 3 bytes, got %d", n)
+	}
+	if string(buf[:n]) != "efg" {
+		t.Fatalf("expected %q, got %q", "efg", string(buf[:n]))
+	}
+
+	n, err = stream.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("expected to read 5 bytes, got %d", n)
+	}
+	if string(buf[:n]) != "hijkl" {
+		t.Fatalf("expected %q, got %q", "hijkl", string(buf[:n]))
+	}
+}
+
+type seekableMemoryReader struct {
+	*bytes.Reader
+}
+
+func (s *seekableMemoryReader) Close() error { return nil }
+
+type seekableMemoryUnpackableFile struct {
+	name string
+	data []byte
+}
+
+func (f *seekableMemoryUnpackableFile) Name() string { return f.name }
+func (f *seekableMemoryUnpackableFile) Size() int64 { return int64(len(f.data)) }
+func (f *seekableMemoryUnpackableFile) EnsureSegmentMap() error { return nil }
+func (f *seekableMemoryUnpackableFile) OpenStream() (io.ReadSeekCloser, error) {
+	return &nopReadSeekCloser{Reader: bytes.NewReader(f.data)}, nil
+}
+func (f *seekableMemoryUnpackableFile) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
+	return &nopReadSeekCloser{Reader: bytes.NewReader(f.data)}, nil
+}
+func (f *seekableMemoryUnpackableFile) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > int64(len(f.data)) {
+		offset = int64(len(f.data))
+	}
+	r := bytes.NewReader(f.data)
+	_, _ = r.Seek(offset, io.SeekStart)
+	return &seekableMemoryReader{Reader: r}, nil
+}
+func (f *seekableMemoryUnpackableFile) ReadAt(p []byte, off int64) (int, error) {
+	return bytes.NewReader(f.data).ReadAt(p, off)
+}
+
+func TestVirtualStreamAbsoluteSeekInsideSamePart(t *testing.T) {
+	fileData := []byte("abcdefghijklmnopqrstuvwxyz")
+	f := &seekableMemoryUnpackableFile{name: "part1", data: fileData}
+	parts := []virtualPart{
+		{VirtualStart: 0, VirtualEnd: int64(len(fileData)), VolFile: f, VolOffset: 0},
+	}
+	stream := NewVirtualStream(context.Background(), parts, int64(len(fileData)), 0)
+	defer stream.Close()
+
+	// Read first 5 bytes ("abcde")
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(stream, buf); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+	if string(buf) != "abcde" {
+		t.Fatalf("expected abcde, got %s", string(buf))
+	}
+
+	// Seek to offset 10 ("klmno...")
+	if _, err := stream.Seek(10, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+
+	// Verify that it reads "klmno"
+	if _, err := io.ReadFull(stream, buf); err != nil {
+		t.Fatalf("ReadFull after seek: %v", err)
+	}
+	if string(buf) != "klmno" {
+		t.Fatalf("expected klmno, got %s", string(buf))
+	}
+
+	// Seek back to offset 2 ("cdefg...")
+	if _, err := stream.Seek(2, io.SeekStart); err != nil {
+		t.Fatalf("Seek back: %v", err)
+	}
+	if _, err := io.ReadFull(stream, buf); err != nil {
+		t.Fatalf("ReadFull after seek back: %v", err)
+	}
+	if string(buf) != "cdefg" {
+		t.Fatalf("expected cdefg, got %s", string(buf))
+	}
+}
+

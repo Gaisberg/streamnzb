@@ -52,6 +52,16 @@ func IsArchiveFastFailoverModeEnabled(ctx context.Context) bool {
 	return enabled
 }
 
+// playbackSegmentMapCtx returns a context for on-demand segment-map detection during
+// playback reads/seeks. It skips expensive gap probing and middle calibration that
+// are only needed for one-time archive sizing.
+func playbackSegmentMapCtx(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return WithArchiveFastFailoverMode(WithSkipGapProbing(ctx, true), true)
+}
+
 var ErrArchiveFastProbe = errors.New("archive fast probe incomplete")
 
 func markArchiveFastProbe(err error) error {

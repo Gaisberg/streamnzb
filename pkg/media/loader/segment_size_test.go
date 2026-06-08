@@ -72,7 +72,7 @@ func TestBuildSegmentDecodedSizesFromProbesVariableNZBBytes(t *testing.T) {
 		{Segment: nzbSegment(10)},
 	}
 	probed := map[int]int64{0: 8, 1: 12, 2: 5}
-	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, false)
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, nil, false)
 	want := []int64{8, 12, 5}
 	for i, w := range want {
 		if sizes[i] != w {
@@ -156,7 +156,7 @@ func TestBuildSegmentDecodedSizesFromProbesGroupsSimilarSizesInSkipGapProbing(t 
 		{Segment: nzbSegment(82924)},
 	}
 	probed := map[int]int64{0: 768000, 3: 80000}
-	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, true)
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, nil, true)
 	want := []int64{768000, 768000, 768000, 80000}
 	for i, w := range want {
 		if sizes[i] != w {
@@ -164,3 +164,21 @@ func TestBuildSegmentDecodedSizesFromProbesGroupsSimilarSizesInSkipGapProbing(t 
 		}
 	}
 }
+
+func TestBuildSegmentDecodedSizesFromProbesPreservesEstimator(t *testing.T) {
+	segments := []*Segment{
+		{Segment: nzbSegment(768000)},
+		{Segment: nzbSegment(768000)},
+		{Segment: nzbSegment(366792)},
+	}
+	probed := map[int]int64{2: 350762}
+	known := map[int64]int64{768000: 768000}
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, known, true)
+	want := []int64{768000, 768000, 350762}
+	for i, w := range want {
+		if sizes[i] != w {
+			t.Fatalf("sizes[%d] = %d, want %d (full=%v)", i, sizes[i], w, sizes)
+		}
+	}
+}
+

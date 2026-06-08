@@ -29,8 +29,8 @@ func wrapFileForScanTrace(fw *fileWrapper) fs.File {
 	return &scanTraceFileWrapper{inner: fw}
 }
 
-func (w *scanTraceFileWrapper) Stat() (fs.FileInfo, error)  { return w.inner.Stat() }
-func (w *scanTraceFileWrapper) Close() error                  { return w.inner.Close() }
+func (w *scanTraceFileWrapper) Stat() (fs.FileInfo, error) { return w.inner.Stat() }
+func (w *scanTraceFileWrapper) Close() error               { return w.inner.Close() }
 func (w *scanTraceFileWrapper) Seek(off int64, whence int) (int64, error) {
 	newPos, err := w.inner.Seek(off, whence)
 	if err == nil {

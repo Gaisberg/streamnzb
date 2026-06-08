@@ -166,7 +166,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
 			}
 			rarScanFailed = true
-			rarScanErr = err
+			rarScanErr = maybeMarkArchiveFastProbe(rarScanCtx, err)
 			logger.Warn("ScanArchive failed, falling back to other methods", "err", err)
 		} else {
 			s, name, size, err := StreamFromBlueprint(rarScanCtx, bp, password)

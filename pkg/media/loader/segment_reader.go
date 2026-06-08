@@ -57,7 +57,19 @@ func LiveSegmentReaderDetails() []string {
 	return details
 }
 
+func NewSegmentReaderWithReadAhead(parent context.Context, f *File, startOffset int64, readAhead int) *SegmentReader {
+	sr := newSegmentReader(parent, f, startOffset)
+	if readAhead > 0 {
+		sr.readAheadSize = readAhead
+	}
+	return sr
+}
+
 func NewSegmentReader(parent context.Context, f *File, startOffset int64) *SegmentReader {
+	return newSegmentReader(parent, f, startOffset)
+}
+
+func newSegmentReader(parent context.Context, f *File, startOffset int64) *SegmentReader {
 	if parent == nil {
 		parent = context.Background()
 	}

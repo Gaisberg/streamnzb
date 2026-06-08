@@ -178,7 +178,7 @@ func segmentUnprobedIndices(segmentCount int, probedIndices []int) []int {
 	return missing
 }
 
-func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[int]int64, skipGapProbing bool) []int64 {
+func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[int]int64, knownByNZBBytes map[int64]int64, skipGapProbing bool) []int64 {
 	n := len(segments)
 	sizes := make([]int64, n)
 	if n == 0 {
@@ -189,7 +189,22 @@ func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[i
 	if firstEncoded <= 0 {
 		firstEncoded = 1
 	}
+
+	decodedByBytes := make(map[int64]int64)
+	for sz, dec := range knownByNZBBytes {
+		decodedByBytes[sz] = dec
+	}
+	for idx, dec := range probedByIndex {
+		if idx < 0 || idx >= n || dec <= 0 {
+			continue
+		}
+		decodedByBytes[segments[idx].Bytes] = dec
+	}
+
 	firstDecoded := probedByIndex[0]
+	if firstDecoded <= 0 {
+		firstDecoded = decodedByBytes[firstEncoded]
+	}
 	if firstDecoded <= 0 {
 		for _, dec := range probedByIndex {
 			if dec > 0 {
@@ -197,14 +212,6 @@ func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[i
 				break
 			}
 		}
-	}
-
-	decodedByBytes := make(map[int64]int64)
-	for idx, dec := range probedByIndex {
-		if idx < 0 || idx >= n || dec <= 0 {
-			continue
-		}
-		decodedByBytes[segments[idx].Bytes] = dec
 	}
 
 	findNearbyProbedDecoded := func(nzbBytes int64) (int64, bool) {
