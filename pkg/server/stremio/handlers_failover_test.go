@@ -298,3 +298,38 @@ func TestIsIndexerLimitErr(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoverPlaySessionAfterEvictionPrioritizesRequestedSlot(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	manager := session.NewManager(nil, nil, time.Minute)
+	t.Cleanup(manager.Shutdown)
+	server := &Server{config: &config.Config{}, sessionManager: manager}
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
+
+	server.playlistCache.Store(key.CacheKey(), &playlistCacheEntry{
+		result: &playlistResult{
+			Candidates: []triage.Candidate{
+				{Release: &release.Release{Link: "https://example.invalid/0"}},
+				{Release: &release.Release{Link: "https://example.invalid/1"}},
+				{Release: &release.Release{Link: "https://example.invalid/2"}},
+			},
+			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+		},
+		until: time.Now().Add(time.Minute),
+	})
+
+	// When slot index 1 is requested and is valid, recoverPlaySessionAfterEviction should try index 1 first.
+	sess, recoveredID, err := server.recoverPlaySessionAfterEviction(context.Background(), key.SlotPath(1), nil)
+	if err != nil {
+		t.Fatalf("recoverPlaySessionAfterEviction returned error: %v", err)
+	}
+	if recoveredID != key.SlotPath(1) {
+		t.Fatalf("recoveredID = %q, want %q", recoveredID, key.SlotPath(1))
+	}
+	if sess == nil || sess.ID != key.SlotPath(1) {
+		t.Fatalf("recovered session = %#v, want id %q", sess, key.SlotPath(1))
+	}
+}
+

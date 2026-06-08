@@ -96,6 +96,37 @@ func TestSegmentReaderSeekIsNonBlocking(t *testing.T) {
 	}
 }
 
+func TestSegmentReaderDoesNotAdvanceBeforeMappedEnd(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := &fixedLenSegmentFetcher{length: 8}
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10), nil, nil, fetcher)
+	f.mu.Lock()
+	f.detected = true
+	f.segments[0].StartOffset = 0
+	f.segments[0].EndOffset = 10
+	f.segments[1].StartOffset = 10
+	f.segments[1].EndOffset = 16
+	f.totalSize = 16
+	f.mu.Unlock()
+
+	r := NewSegmentReader(context.Background(), f, 0)
+	defer func() { _ = r.Close() }()
+
+	buf := make([]byte, 16)
+	n, err := r.Read(buf)
+	if n != 8 {
+		t.Fatalf("expected first read of 8 bytes, got %d", n)
+	}
+	if err == nil {
+		t.Fatal("expected short-segment error on second segment, got nil")
+	}
+}
+
 func TestSegmentReaderSeekDoesNotCancelInFlightForegroundRead(t *testing.T) {
 	oldLogger := logger.Log
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -201,6 +232,14 @@ func waitForInflightWaiters(t *testing.T, f *File, index, want int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for inflight segment %d to reach %d waiters", index, want)
+}
+
+type fixedLenSegmentFetcher struct {
+	length int64
+}
+
+func (f *fixedLenSegmentFetcher) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []string) (pool.SegmentData, error) {
+	return pool.SegmentData{Body: bytesForSegment(segment.Number, f.length), Size: f.length}, nil
 }
 
 type staticSegmentFetcher struct{}

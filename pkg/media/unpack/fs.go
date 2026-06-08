@@ -6,6 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,6 +33,27 @@ func (n *NZBFS) Open(name string) (fs.File, error) {
 		f, ok = n.files[filepath.Base(name)]
 	}
 	if !ok {
+		// Try volume-number matching for multi-volume archives to handle padded digits mismatches (e.g. part10 vs part010)
+		reqPrefix := archivePrefix(name)
+		if volNum := GetRARVolumeNumber(name); volNum >= 0 {
+			for k, file := range n.files {
+				if GetRARVolumeNumber(k) == volNum && archivePrefix(k) == reqPrefix {
+					f = file
+					ok = true
+					break
+				}
+			}
+		} else if volNum7z := Get7zVolumeNumber(name); volNum7z >= 0 {
+			for k, file := range n.files {
+				if Get7zVolumeNumber(k) == volNum7z && archivePrefix(k) == reqPrefix {
+					f = file
+					ok = true
+					break
+				}
+			}
+		}
+	}
+	if !ok {
 		return nil, fs.ErrNotExist
 	}
 
@@ -39,13 +62,17 @@ func (n *NZBFS) Open(name string) (fs.File, error) {
 		return nil, fmt.Errorf("failed to open stream: %w", err)
 	}
 
-	return &fileWrapper{
+	fw := &fileWrapper{
 		ctx:    n.ctx,
 		stream: stream,
 		file:   f,
 		name:   ExtractFilename(f.Name()),
 		size:   f.Size(),
-	}, nil
+	}
+	if IsArchiveScanIOTraceEnabled(n.ctx) {
+		return wrapFileForScanTrace(fw), nil
+	}
+	return fw, nil
 }
 
 type fileWrapper struct {
@@ -54,14 +81,63 @@ type fileWrapper struct {
 	file   UnpackableFile
 	name   string
 	size   int64
+
+	readMu  sync.Mutex
+	readPos int64
 }
 
 func (fw *fileWrapper) Stat() (fs.FileInfo, error) {
 	return &fileInfo{name: fw.name, size: fw.size}, nil
 }
 
-func (fw *fileWrapper) Read(p []byte) (int, error)                { return fw.stream.Read(p) }
-func (fw *fileWrapper) Seek(off int64, whence int) (int64, error) { return fw.stream.Seek(off, whence) }
+// Read serves sequential archive parsers via ReadAt so virtual file offsets stay
+// aligned with the detected segment map (SegmentReader sequential reads can stop early).
+func (fw *fileWrapper) Read(p []byte) (int, error) {
+	fw.readMu.Lock()
+	off := fw.readPos
+	fw.readMu.Unlock()
+
+	n, err := fw.file.ReadAt(p, off)
+	if n > 0 {
+		fw.readMu.Lock()
+		fw.readPos += int64(n)
+		fw.readMu.Unlock()
+	}
+	return n, err
+}
+
+// Seek tracks readPos arithmetically to stay consistent with the ReadAt-based
+// Read path. It must NOT delegate to fw.stream: Read serves bytes via
+// fw.file.ReadAt(readPos) and never advances the stream, so the stream's own
+// position is stale. A relative (SeekCurrent) delegate — which is how archive
+// parsers discard data blocks — would then compute from the wrong base and
+// corrupt readPos, making the next read land at the wrong offset.
+//
+// We also must not clamp the target: callers such as rardecode set their own
+// internal offset to the requested value regardless of the returned position,
+// so clamping here would desync the next relative seek. Reads past EOF are
+// handled by ReadAt returning io.EOF.
+func (fw *fileWrapper) Seek(off int64, whence int) (int64, error) {
+	fw.readMu.Lock()
+	defer fw.readMu.Unlock()
+
+	var target int64
+	switch whence {
+	case io.SeekStart:
+		target = off
+	case io.SeekCurrent:
+		target = fw.readPos + off
+	case io.SeekEnd:
+		target = fw.size + off
+	default:
+		return fw.readPos, fmt.Errorf("invalid whence %d", whence)
+	}
+	if target < 0 {
+		return fw.readPos, fmt.Errorf("negative seek position %d", target)
+	}
+	fw.readPos = target
+	return target, nil
+}
 func (fw *fileWrapper) Close() error                              { return fw.stream.Close() }
 func (fw *fileWrapper) ReadAt(p []byte, off int64) (int, error) {
 	reader, err := fw.file.OpenReaderAt(fw.ctx, off)
@@ -88,3 +164,26 @@ func (fi *fileInfo) Mode() fs.FileMode  { return 0444 }
 func (fi *fileInfo) ModTime() time.Time { return time.Time{} }
 func (fi *fileInfo) IsDir() bool        { return false }
 func (fi *fileInfo) Sys() interface{}   { return nil }
+
+func archivePrefix(filename string) string {
+	lower := strings.ToLower(ExtractFilename(filename))
+	if idx := strings.Index(lower, ".part"); idx >= 0 && strings.HasSuffix(lower, ".rar") {
+		return lower[:idx]
+	}
+	if len(lower) >= 4 && lower[len(lower)-4:len(lower)-2] == ".r" {
+		suffix := lower[len(lower)-2:]
+		if suffix[0] >= '0' && suffix[0] <= '9' && suffix[1] >= '0' && suffix[1] <= '9' {
+			return lower[:len(lower)-4]
+		}
+	}
+	if strings.HasSuffix(lower, ".rar") {
+		return lower[:len(lower)-4]
+	}
+	if idx := strings.LastIndex(lower, ".7z."); idx >= 0 {
+		return lower[:idx]
+	}
+	if strings.HasSuffix(lower, ".7z") {
+		return lower[:len(lower)-3]
+	}
+	return lower
+}

@@ -2,6 +2,8 @@ package unpack
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,8 @@ type virtualPart struct {
 	VirtualEnd   int64
 	VolFile      UnpackableFile
 	VolOffset    int64
+	AesKey       []byte
+	AesIV        []byte
 }
 
 type VirtualStream struct {
@@ -46,61 +50,97 @@ func NewVirtualStream(ctx context.Context, parts []virtualPart, totalSize int64,
 }
 
 func (s *VirtualStream) Read(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.readLocked(p)
-}
-
-func (s *VirtualStream) readLocked(p []byte) (int, error) {
-	if s.closed {
-		return 0, io.ErrClosedPipe
+	if len(p) == 0 {
+		return 0, nil
 	}
 
-	if s.offset >= s.totalSize {
-		return 0, io.EOF
-	}
-
-	select {
-	case <-s.ctx.Done():
-		return 0, s.ctx.Err()
-	default:
-	}
-
-	part, partIdx := s.findPart(s.offset)
-	if part == nil {
-		return 0, fmt.Errorf("offset %d not mapped in %d parts", s.offset, len(s.parts))
-	}
-
-	if err := s.ensureReader(part, partIdx); err != nil {
-		return 0, err
-	}
-
-	remaining := part.VirtualEnd - s.offset
-	buf := p
-	if int64(len(buf)) > remaining {
-		buf = buf[:remaining]
-	}
-
-	n, err := s.currentReader.Read(buf)
-	s.offset += int64(n)
-
-	if err == io.EOF {
-		s.closeReader()
-
-		if s.offset < part.VirtualEnd {
-			s.offset = part.VirtualEnd
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return 0, io.ErrClosedPipe
 		}
-		if n > 0 {
-			return n, nil
-		}
-		if s.offset < s.totalSize {
-			return s.readLocked(p)
-		}
-		return 0, io.EOF
-	}
 
-	return n, err
+		if s.offset >= s.totalSize {
+			s.mu.Unlock()
+			return 0, io.EOF
+		}
+
+		select {
+		case <-s.ctx.Done():
+			s.mu.Unlock()
+			return 0, s.ctx.Err()
+		default:
+		}
+
+		part, partIdx := s.findPart(s.offset)
+		if part == nil {
+			s.mu.Unlock()
+			return 0, fmt.Errorf("offset %d not mapped in %d parts", s.offset, len(s.parts))
+		}
+
+		if err := s.ensureReader(part, partIdx); err != nil {
+			s.mu.Unlock()
+			return 0, err
+		}
+
+		remaining := part.VirtualEnd - s.offset
+		buf := p
+		if int64(len(buf)) > remaining {
+			buf = buf[:remaining]
+		}
+
+		expectedOffset := s.offset
+		reader := s.currentReader
+		s.mu.Unlock()
+
+		n, err := reader.Read(buf)
+
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return n, io.ErrClosedPipe
+		}
+
+		if s.offset != expectedOffset || s.currentReader != reader {
+			s.mu.Unlock()
+			return 0, fmt.Errorf("virtual stream: concurrent seek or read detected")
+		}
+
+		s.offset += int64(n)
+
+		if err == io.EOF {
+			if s.currentReader == reader {
+				s.closeReader()
+			}
+
+			if n == 0 && s.offset < part.VirtualEnd {
+				// Exhausted this volume before the packed span ends (trailing RAR bytes).
+				// Advance to the next virtual part instead of stalling on a dead reader.
+				s.offset = part.VirtualEnd
+			}
+			if n > 0 {
+				if s.offset >= part.VirtualEnd && s.offset < s.totalSize {
+					s.prefetchPart(partIdx + 1)
+				}
+				s.mu.Unlock()
+				return n, nil
+			}
+			if s.offset < s.totalSize {
+				s.mu.Unlock()
+				continue
+			}
+			s.mu.Unlock()
+			return 0, io.EOF
+		}
+
+		if s.offset >= part.VirtualEnd && s.offset < s.totalSize {
+			s.prefetchPart(partIdx + 1)
+		}
+
+		s.mu.Unlock()
+		return n, err
+	}
 }
 
 func (s *VirtualStream) Seek(offset int64, whence int) (int64, error) {
@@ -137,17 +177,8 @@ func (s *VirtualStream) Seek(offset int64, whence int) (int64, error) {
 		volOff := part.VolOffset + localOff
 
 		if seeker, ok := s.currentReader.(io.Seeker); ok {
-
-			currentLocalOff := s.offset - part.VirtualStart
-			currentVolOff := part.VolOffset + currentLocalOff
-			seekDelta := volOff - currentVolOff
-			if seekDelta != 0 {
-				_, err := seeker.Seek(seekDelta, io.SeekCurrent)
-				if err == nil {
-					s.offset = target
-					return target, nil
-				}
-			} else {
+			_, err := seeker.Seek(volOff, io.SeekStart)
+			if err == nil {
 				s.offset = target
 				return target, nil
 			}
@@ -199,7 +230,7 @@ func (s *VirtualStream) ensureReader(part *virtualPart, partIdx int) error {
 	localOff := s.offset - part.VirtualStart
 	volOff := part.VolOffset + localOff
 
-	r, err := part.VolFile.OpenReaderAt(s.ctx, volOff)
+	r, err := openPlaybackReaderAt(part.VolFile, playbackSegmentMapCtx(s.ctx), volOff)
 	if err != nil {
 		return fmt.Errorf("open volume part %d at offset %d: %w", partIdx, volOff, err)
 	}
@@ -209,10 +240,187 @@ func (s *VirtualStream) ensureReader(part *virtualPart, partIdx int) error {
 	return nil
 }
 
+func (s *VirtualStream) prefetchPart(partIdx int) {
+	if partIdx < 0 || partIdx >= len(s.parts) {
+		return
+	}
+	part := &s.parts[partIdx]
+	if prefetcher, ok := part.VolFile.(playbackPrefetcher); ok {
+		prefetcher.PrefetchPlaybackOffset(playbackSegmentMapCtx(s.ctx), part.VolOffset)
+	}
+}
+
 func (s *VirtualStream) closeReader() {
 	if s.currentReader != nil {
 		s.currentReader.Close()
 		s.currentReader = nil
 		s.currentPart = -1
 	}
+}
+
+type EncryptedVirtualStream struct {
+	source     *VirtualStream
+	totalSize  int64 // Unpacked size
+	packedSize int64 // Ciphertext size
+	aesKey     []byte
+	aesIV      []byte
+	offset     int64
+	mu         sync.Mutex
+	closed     bool
+}
+
+func NewEncryptedVirtualStream(
+	ctx context.Context,
+	parts []virtualPart,
+	totalSize int64,
+	packedSize int64,
+	aesKey []byte,
+	aesIV []byte,
+	startOffset int64,
+) *EncryptedVirtualStream {
+	source := NewVirtualStream(ctx, parts, packedSize, 0)
+	return &EncryptedVirtualStream{
+		source:     source,
+		totalSize:  totalSize,
+		packedSize: packedSize,
+		aesKey:     aesKey,
+		aesIV:      aesIV,
+		offset:     startOffset,
+	}
+}
+
+func (s *EncryptedVirtualStream) Read(p []byte) (int, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return 0, io.ErrClosedPipe
+	}
+	if s.offset >= s.totalSize {
+		s.mu.Unlock()
+		return 0, io.EOF
+	}
+
+	n := len(p)
+	if n == 0 {
+		s.mu.Unlock()
+		return 0, nil
+	}
+
+	// Clamp the requested size to the remaining unpacked bytes
+	if s.offset+int64(n) > s.totalSize {
+		n = int(s.totalSize - s.offset)
+	}
+	if n <= 0 {
+		s.mu.Unlock()
+		return 0, io.EOF
+	}
+
+	alignedStart := s.offset - (s.offset % 16)
+	alignedEnd := s.offset + int64(n)
+	// Align alignedEnd to 16 bytes
+	if alignedEnd%16 != 0 {
+		alignedEnd = (alignedEnd/16 + 1) * 16
+	}
+	if alignedEnd > s.packedSize {
+		alignedEnd = s.packedSize
+	}
+
+	expectedOffset := s.offset
+	s.mu.Unlock()
+
+	// 1. Obtain the IV (no lock held)
+	var iv []byte
+	if alignedStart == 0 {
+		iv = make([]byte, 16)
+		copy(iv, s.aesIV)
+	} else {
+		iv = make([]byte, 16)
+		if _, err := s.source.Seek(alignedStart-16, io.SeekStart); err != nil {
+			return 0, fmt.Errorf("seek to IV offset %d: %w", alignedStart-16, err)
+		}
+		if _, err := io.ReadFull(s.source, iv); err != nil {
+			return 0, fmt.Errorf("read IV at offset %d: %w", alignedStart-16, err)
+		}
+	}
+
+	// 2. Read the ciphertext (no lock held)
+	cipherLen := alignedEnd - alignedStart
+	if cipherLen <= 0 {
+		return 0, io.EOF
+	}
+	ciphertext := make([]byte, cipherLen)
+	if _, err := s.source.Seek(alignedStart, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("seek to ciphertext offset %d: %w", alignedStart, err)
+	}
+	if _, err := io.ReadFull(s.source, ciphertext); err != nil {
+		return 0, fmt.Errorf("read ciphertext at offset %d: %w", alignedStart, err)
+	}
+
+	// 3. Decrypt ciphertext (no lock held)
+	block, err := aes.NewCipher(s.aesKey)
+	if err != nil {
+		return 0, fmt.Errorf("new aes cipher: %w", err)
+	}
+	decryptLen := (cipherLen / 16) * 16
+	if decryptLen > 0 {
+		mode := cipher.NewCBCDecrypter(block, iv)
+		mode.CryptBlocks(ciphertext[:decryptLen], ciphertext[:decryptLen])
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return 0, io.ErrClosedPipe
+	}
+	if s.offset != expectedOffset {
+		s.mu.Unlock()
+		return 0, fmt.Errorf("encrypted virtual stream: concurrent seek or read detected")
+	}
+
+	// 4. Copy to user buffer
+	startInBuf := s.offset - alignedStart
+	copied := copy(p[:n], ciphertext[startInBuf:])
+	s.offset += int64(copied)
+
+	s.mu.Unlock()
+	return copied, nil
+}
+
+func (s *EncryptedVirtualStream) Seek(offset int64, whence int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return 0, io.ErrClosedPipe
+	}
+
+	var target int64
+	switch whence {
+	case io.SeekStart:
+		target = offset
+	case io.SeekCurrent:
+		target = s.offset + offset
+	case io.SeekEnd:
+		target = s.totalSize + offset
+	default:
+		return 0, errors.New("invalid whence")
+	}
+
+	if target < 0 || target > s.totalSize {
+		return 0, errors.New("seek out of bounds")
+	}
+
+	s.offset = target
+	return target, nil
+}
+
+func (s *EncryptedVirtualStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.source.Close()
 }

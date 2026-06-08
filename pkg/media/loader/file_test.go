@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/decode"
 	"streamnzb/pkg/media/nzb"
+	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/usenet/pool"
 )
 
@@ -430,8 +432,8 @@ func TestEnsureSegmentMapUsesActualLastSegmentSize(t *testing.T) {
 		t.Fatalf("expected last segment end offset %d, got %d", 21, got)
 	}
 	calls := fetcher.Calls()
-	if len(calls) != 2 || calls[0] != 1 || calls[1] != 3 {
-		t.Fatalf("expected first and last segment detection fetches, got %v", calls)
+	if !segmentProbeCallsMatch(calls, []int{1, 2, 3}) {
+		t.Fatalf("expected first, middle, and last segment probes, got %v", calls)
 	}
 	reader, err := f.OpenReaderAt(context.Background(), 16)
 	if err != nil {
@@ -445,6 +447,96 @@ func TestEnsureSegmentMapUsesActualLastSegmentSize(t *testing.T) {
 	if got := string(data); got != "ccccc" {
 		t.Fatalf("expected tail data %q, got %q", "ccccc", got)
 	}
+}
+
+func TestEnsureSegmentMapUsesPerSegmentNZBBytes(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 12, 5}}
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 15, 10), nil, nil, fetcher)
+
+	if err := f.EnsureSegmentMap(); err != nil {
+		t.Fatalf("EnsureSegmentMap returned error: %v", err)
+	}
+	if got := f.Size(); got != 25 {
+		t.Fatalf("expected decoded size %d, got %d", 25, got)
+	}
+	segs := f.Segments()
+	if got := segs[1].StartOffset; got != 8 {
+		t.Fatalf("expected second segment start offset %d, got %d", 8, got)
+	}
+	if got := segs[1].EndOffset; got != 20 {
+		t.Fatalf("expected second segment end offset %d, got %d", 20, got)
+	}
+	calls := fetcher.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("expected three parallel probe fetches (distinct NZB bytes + last), got %v", calls)
+	}
+}
+
+func TestEnsureSegmentMapSlowModeCalibratesUniformNZB(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
+
+	if err := f.EnsureSegmentMap(); err != nil {
+		t.Fatalf("EnsureSegmentMap returned error: %v", err)
+	}
+	if got := f.Size(); got != 23 {
+		t.Fatalf("expected decoded size %d, got %d", 23, got)
+	}
+	calls := fetcher.Calls()
+	if !segmentProbeCallsMatch(calls, []int{1, 2, 3}) {
+		t.Fatalf("expected first, middle, and last segment probes, got %v", calls)
+	}
+}
+
+func TestEnsureSegmentMapFastModeGapProbesSkippedMiddle(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
+	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
+
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
+	}
+	if got := f.Size(); got != 23 {
+		t.Fatalf("expected decoded size %d after gap probe, got %d", 23, got)
+	}
+	calls := fetcher.Calls()
+	if !segmentProbeCallsMatch(calls, []int{1, 2, 3}) {
+		t.Fatalf("expected first, gap middle, and last probes in fast mode, got %v", calls)
+	}
+}
+
+func segmentProbeCallsMatch(calls []int, want []int) bool {
+	if len(calls) != len(want) {
+		return false
+	}
+	got := append([]int(nil), calls...)
+	sort.Ints(got)
+	expected := append([]int(nil), want...)
+	sort.Ints(expected)
+	for i := range expected {
+		if got[i] != expected[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEnsureSegmentMapEstimatorStillUsesActualLastSegmentSize(t *testing.T) {
@@ -466,7 +558,55 @@ func TestEnsureSegmentMapEstimatorStillUsesActualLastSegmentSize(t *testing.T) {
 		t.Fatalf("expected decoded size %d, got %d", 21, got)
 	}
 	calls := fetcher.Calls()
-	if len(calls) != 1 || calls[0] != 3 {
-		t.Fatalf("expected estimator hit plus last-segment fetch, got %v", calls)
+	if !segmentProbeCallsMatch(calls, []int{1, 2, 3}) {
+		t.Fatalf("expected gap first, middle, and last segment probes with estimator, got %v", calls)
+	}
+}
+
+func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
+	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	ctx = unpack.WithSkipGapProbing(ctx, true)
+	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 6), nil, nil, fetcher)
+
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
+	}
+	if got := f.Size(); got != 21 {
+		t.Fatalf("expected decoded size %d, got %d", 21, got)
+	}
+	calls := fetcher.Calls()
+	if !segmentProbeCallsMatch(calls, []int{1, 3}) {
+		t.Fatalf("expected only first and last segment probes, got %v", calls)
+	}
+}
+
+func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
+	oldLogger := logger.Log
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defer func() {
+		logger.Log = oldLogger
+	}()
+
+	estimator := NewSegmentSizeEstimator()
+	estimator.Set(768000, 768000)
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{768000, 768000, 768000}}
+	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	f := NewFile(ctx, testNZBFileWithSegments(768000, 768000, 768000), nil, estimator, fetcher)
+
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
+	}
+	if got := f.Size(); got != 3*768000 {
+		t.Fatalf("expected decoded size %d, got %d", 3*768000, got)
+	}
+	if calls := fetcher.Calls(); len(calls) != 0 {
+		t.Fatalf("expected no NNTP probes for uniform primed volume, got %v", calls)
 	}
 }

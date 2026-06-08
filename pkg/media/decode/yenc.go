@@ -12,49 +12,67 @@ import (
 
 var sizeMismatchRE = regexp.MustCompile(`expected size (\d+) but got (\d+)`)
 
-type crlfReader struct {
+// yencInputReader prepares a textproto.DotReader article body for rapidyenc.
+//
+// It does two things:
+//  1. Converts bare-LF line endings to CRLF, which rapidyenc requires to detect
+//     line boundaries, the "=y" control, and the "=yend" trailer.
+//  2. Rewrites a '.' that begins a line into the yEnc escape "=n". A literal '.'
+//     and the escape "=n" both decode to byte 0x04, but rapidyenc performs its
+//     own NNTP dot-unstuffing on a line-leading '.' (it expects the raw,
+//     still-stuffed article). Our input has ALREADY been dot-unstuffed by
+//     textproto.DotReader, so a line-leading '.' here is genuine data; without
+//     this rewrite rapidyenc would strip it and silently drop one byte per such
+//     line, corrupting the decoded stream.
+type yencInputReader struct {
 	r    io.Reader
-	buf  []byte
+	in   [8192]byte
+	out  []byte
 	last byte
-	off  int
+	err  error
 }
 
-func (c *crlfReader) Read(p []byte) (int, error) {
-	out := 0
-	for out < len(p) {
-		if c.off < len(c.buf) {
-			b := c.buf[c.off]
-			c.off++
-			if b == '\n' && c.last != '\r' {
-				p[out] = '\r'
-				out++
-				c.last = '\r'
-				if out >= len(p) {
-					c.off--
-					return out, nil
-				}
+func (y *yencInputReader) Read(p []byte) (int, error) {
+	for len(y.out) == 0 {
+		if y.err != nil {
+			return 0, y.err
+		}
+		n, err := y.r.Read(y.in[:])
+		if n > 0 {
+			y.out = y.transform(y.in[:n])
+		}
+		if err != nil {
+			y.err = err
+			if len(y.out) == 0 {
+				return 0, err
 			}
-			p[out] = b
-			out++
-			c.last = b
-			continue
-		}
-		// Reuse the existing backing array instead of allocating a new one each time.
-		buf := c.buf[:cap(c.buf)]
-		if len(buf) == 0 {
-			buf = make([]byte, 4096)
-		}
-		n, err := c.r.Read(buf)
-		c.buf = buf[:n]
-		c.off = 0
-		if n == 0 {
-			return out, err
 		}
 	}
-	return out, nil
+	n := copy(p, y.out)
+	y.out = y.out[n:]
+	return n, nil
 }
 
-func normalizeCRLF(r io.Reader) io.Reader { return &crlfReader{r: r} }
+func (y *yencInputReader) transform(src []byte) []byte {
+	dst := make([]byte, 0, len(src)+len(src)/16+8)
+	for _, b := range src {
+		switch {
+		case b == '\n' && y.last != '\r':
+			dst = append(dst, '\r', '\n')
+			y.last = '\n'
+		case b == '.' && y.last == '\n':
+			// Line-leading data dot -> escaped form so rapidyenc won't unstuff it.
+			dst = append(dst, '=', 'n')
+			y.last = 'n'
+		default:
+			dst = append(dst, b)
+			y.last = b
+		}
+	}
+	return dst
+}
+
+func normalizeCRLF(r io.Reader) io.Reader { return &yencInputReader{r: r} }
 
 type Frame struct {
 	Data     []byte
@@ -79,6 +97,11 @@ func DecodeToBytes(r io.Reader) (*Frame, error) {
 		got, _ := strconv.ParseInt(sub[2], 10, 64)
 		shortfall := expected - got
 		if shortfall > 0 && shortfall <= maxDecodeSizeTolerance && int64(buf.Len()) == got {
+			// Keep the actually-decoded bytes. The =yend "size" is frequently a
+			// nominal/rounded value the poster wrote (e.g. 768000) while the real
+			// payload is a few bytes smaller; the decoded bytes are the true file
+			// content. Padding up to the declared size would splice phantom bytes
+			// at every segment boundary and corrupt the concatenated archive.
 			return &Frame{Data: cloneExact(buf.Bytes()), FileName: dec.Meta.FileName}, nil
 		}
 	}

@@ -202,6 +202,27 @@ type packedFileReader struct {
 	blocks     *fileBlockList
 	opt        *options
 	peekedNext *fileBlockHeader
+	exhausted  bool
+}
+
+// isListEndOfData reports whether err means the current (available) volume data ended.
+// Used in tolerant listing to return a split file discovered in the mounted volume(s).
+//
+// ErrBadHeaderCRC / ErrCorruptBlockHeader are tolerated here as well: when only the
+// first volume of a multi-volume set is mounted, a file whose data block continues
+// into a sibling volume can leave a trailing region that rardecode tries to parse as
+// the next block header. Without the continuation volume those bytes are not a valid
+// header and fail the CRC check. Since the file entry we care about has already been
+// recorded (guarded by len(blocks) > 0 at the call sites), treat this as the end of
+// the available data rather than aborting discovery.
+func isListEndOfData(err error) bool {
+	return err == io.EOF ||
+		err == errVolumeOrArchiveEnd ||
+		err == io.ErrUnexpectedEOF ||
+		err == ErrUnexpectedArcEnd ||
+		err == ErrBadHeaderCRC ||
+		err == ErrCorruptBlockHeader ||
+		errors.Is(err, fs.ErrNotExist)
 }
 
 func (f *packedFileReader) init(blocks *fileBlockList) error {
@@ -248,12 +269,19 @@ func (f *packedFileReader) nextBlock() error {
 }
 
 func (f *packedFileReader) nextFile() (*fileBlockList, error) {
+	if f.exhausted {
+		return nil, io.EOF
+	}
 
 	var err error
 	for err == nil {
 		err = f.nextBlock()
 	}
 	if err != io.EOF {
+		if f.opt != nil && f.opt.listTolerant && f.blocks != nil && len(f.blocks.blocks) > 0 && isListEndOfData(err) {
+			f.exhausted = true
+			return f.blocks, nil
+		}
 		return nil, err
 	}
 
@@ -282,8 +310,15 @@ func (f *packedFileReader) nextFile() (*fileBlockList, error) {
 	}
 
 	for !f.h.last {
+		if f.opt != nil && f.opt.streamLazyVolumes {
+			break
+		}
 		nextH, err := f.v.nextBlock()
 		if err != nil {
+			if f.opt != nil && f.opt.listTolerant && len(blocks.blocks) > 0 && isListEndOfData(err) {
+				f.exhausted = true
+				return blocks, nil
+			}
 			if err == io.EOF || err == errVolumeOrArchiveEnd {
 
 				return nil, ErrUnexpectedArcEnd
