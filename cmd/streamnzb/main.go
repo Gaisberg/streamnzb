@@ -185,8 +185,11 @@ func main() {
 		initialization.WaitForInputAndExit(fmt.Errorf("failed to build components: %w", err))
 	}
 
-	sessionManager := session.NewManager(comp.StreamingPools, comp.UsenetPool, 30*time.Minute)
-	logger.Info("Session manager initialized", "ttl", 30*time.Minute)
+	sessionTTL := time.Duration(cfg.EffectiveSessionTTLSeconds()) * time.Second
+	postPlaybackTTL := time.Duration(cfg.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second
+	sessionManager := session.NewManager(comp.StreamingPools, comp.UsenetPool, sessionTTL)
+	sessionManager.SetPostPlaybackEvictTTL(postPlaybackTTL)
+	logger.Info("Session manager initialized", "ttl", sessionTTL, "post_playback_ttl", postPlaybackTTL)
 
 	saveConfig := func() error { return cfg.Save() }
 	streamManager, err := auth.NewStreamManagerFromConfig(cfg, saveConfig)

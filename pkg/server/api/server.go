@@ -218,6 +218,10 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 	}
 
 	s.config = comp.Config
+	if s.sessionMgr != nil {
+		s.sessionMgr.SetTTL(time.Duration(comp.Config.EffectiveSessionTTLSeconds()) * time.Second)
+		s.sessionMgr.SetPostPlaybackEvictTTL(time.Duration(comp.Config.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second)
+	}
 	s.tmdbAPIKey = strings.TrimSpace(comp.Config.TMDBAPIKey)
 	s.tvdbAPIKey = strings.TrimSpace(comp.Config.TVDBAPIKey)
 	if s.app != nil {

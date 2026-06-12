@@ -438,6 +438,7 @@ type Manager struct {
 	usenetPool               *pool.Pool
 	estimator                *loader.SegmentSizeEstimator
 	ttl                      time.Duration
+	postPlaybackEvictTTL     time.Duration
 	maxPlaybackDuration      time.Duration
 	mu                       sync.RWMutex
 	failoverOrder            sync.Map
@@ -680,17 +681,30 @@ func (l *playbackLease) Close() error {
 
 func NewManager(pools []*nntp.ClientPool, usenetPool *pool.Pool, ttl time.Duration) *Manager {
 	m := &Manager{
-		sessions:            make(map[string]*Session),
-		pools:               pools,
-		usenetPool:          usenetPool,
-		estimator:           loader.NewSegmentSizeEstimator(),
-		ttl:                 ttl,
-		maxPlaybackDuration: MaxPlaybackDuration,
-		stopCh:              make(chan struct{}),
+		sessions:             make(map[string]*Session),
+		pools:                pools,
+		usenetPool:           usenetPool,
+		estimator:            loader.NewSegmentSizeEstimator(),
+		ttl:                  ttl,
+		postPlaybackEvictTTL: 4 * time.Hour,
+		maxPlaybackDuration:  MaxPlaybackDuration,
+		stopCh:               make(chan struct{}),
 	}
 
 	go m.cleanupLoop()
 	return m
+}
+
+func (m *Manager) SetTTL(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ttl = d
+}
+
+func (m *Manager) SetPostPlaybackEvictTTL(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.postPlaybackEvictTTL = d
 }
 
 // Shutdown stops the background cleanup goroutine. Call during application shutdown.
@@ -1432,7 +1446,7 @@ func (m *Manager) cleanup() {
 		}
 		hasActivePlayback := session.ActivePlays > 0 || len(session.Clients) > 0
 		evictIdle := !hasActivePlayback && now.Sub(session.LastAccess) > m.ttl
-		evictPostPlayback := !hasActivePlayback && !session.PlaybackEndedAt.IsZero() && now.Sub(session.PlaybackEndedAt) > PostPlaybackEvictTTL
+		evictPostPlayback := !hasActivePlayback && !session.PlaybackEndedAt.IsZero() && now.Sub(session.PlaybackEndedAt) > m.postPlaybackEvictTTL
 		evictStuckPlayback := hasActivePlayback && !session.PlaybackStartedAt.IsZero() && now.Sub(session.PlaybackStartedAt) > m.maxPlaybackDuration
 		if evictIdle || evictPostPlayback || evictStuckPlayback {
 			delete(m.sessions, id)

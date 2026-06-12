@@ -145,6 +145,8 @@ function Settings({
         memory_limit_mb: Number(initialConfig.memory_limit_mb || 0),
         keep_log_files: Number(initialConfig.keep_log_files ?? 9) || 9,
         nzb_history_retention_days: initialConfig.nzb_history_retention_days == null ? 90 : Number(initialConfig.nzb_history_retention_days),
+        session_ttl_minutes: initialConfig.session_ttl_minutes == null ? 30 : Number(initialConfig.session_ttl_minutes),
+        session_post_playback_ttl_minutes: initialConfig.session_post_playback_ttl_minutes == null ? 240 : Number(initialConfig.session_post_playback_ttl_minutes),
         providers: initialConfig.providers?.map((p, index) => ({
           ...p,
           priority: p.priority != null ? p.priority : index + 1,

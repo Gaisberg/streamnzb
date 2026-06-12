@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode'],
+  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode', 'session_ttl_minutes', 'session_post_playback_ttl_minutes'],
   availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -27,6 +27,12 @@ function pickInitialValues(values = {}) {
   const parsedPlaybackStartupTimeout = values.playback_startup_timeout_seconds == null
     ? 5
     : Number(values.playback_startup_timeout_seconds)
+  const parsedSessionTtl = values.session_ttl_minutes == null
+    ? 30
+    : Number(values.session_ttl_minutes)
+  const parsedSessionPostPlaybackTtl = values.session_post_playback_ttl_minutes == null
+    ? 240
+    : Number(values.session_post_playback_ttl_minutes)
   return {
     log_level: values.log_level ?? 'INFO',
     verbose_nntp_logging: values.verbose_nntp_logging === true,
@@ -34,6 +40,8 @@ function pickInitialValues(values = {}) {
     nzb_history_retention_days: Number.isFinite(parsedRetentionDays) ? parsedRetentionDays : 90,
     memory_limit_mb: Number(values.memory_limit_mb ?? 512),
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
+    session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
+    session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     failover_fast_mode: values.failover_fast_mode == null ? true : values.failover_fast_mode === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
@@ -309,6 +317,60 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                       <FormDescription className="mt-3">
                         When enabled, failover prioritizes faster startup and may skip deeper checks.
                         When disabled, failover spends longer exhausting all options before moving on.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="session_ttl_minutes" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Session inactive TTL (m)</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={1440}
+                            className={fieldClassName('session_ttl_minutes', `h-9 ${controlMediumClass}`)}
+                            {...field}
+                            value={field.value ?? ''}
+                            onChange={e => {
+                              const v = e.target.value;
+                              const next = Number(v);
+                              field.onChange(v === '' ? 30 : Math.min(1440, Math.max(1, Number.isNaN(next) ? 30 : next)))
+                            }}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        How long inactive or deferred catalog sessions stay in memory before being evicted.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="session_post_playback_ttl_minutes" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Paused playback TTL (m)</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={1440}
+                            className={fieldClassName('session_post_playback_ttl_minutes', `h-9 ${controlMediumClass}`)}
+                            {...field}
+                            value={field.value ?? ''}
+                            onChange={e => {
+                              const v = e.target.value;
+                              const next = Number(v);
+                              field.onChange(v === '' ? 240 : Math.min(1440, Math.max(1, Number.isNaN(next) ? 240 : next)))
+                            }}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        How long a session stays in memory after active playback ends (e.g. when paused). Keeping this long prevents needing to reload the catalog to resume.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

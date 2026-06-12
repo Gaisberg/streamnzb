@@ -22,6 +22,8 @@ const ADVANCED_TAB_FIELDS = [
   'nzb_history_retention_days',
   'playback_startup_timeout_seconds',
   'failover_fast_mode',
+  'session_ttl_minutes',
+  'session_post_playback_ttl_minutes',
   'memory_limit_mb',
   'availnzb_mode',
   'availnzb_filter_reported_bad',
@@ -271,6 +273,10 @@ export function useSettingsState({
       trimmedFullData.nzb_history_retention_days = Math.min(3650, Math.max(0, Number.isNaN(nzbHistoryRetention) ? 90 : nzbHistoryRetention))
       const playbackStartupTimeout = Number(trimmedFullData.playback_startup_timeout_seconds)
       trimmedFullData.playback_startup_timeout_seconds = Math.min(60, Math.max(1, Number.isNaN(playbackStartupTimeout) ? 5 : playbackStartupTimeout))
+      const sessionTtl = Number(trimmedFullData.session_ttl_minutes)
+      trimmedFullData.session_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(sessionTtl) ? 30 : sessionTtl))
+      const postPlaybackTtl = Number(trimmedFullData.session_post_playback_ttl_minutes)
+      trimmedFullData.session_post_playback_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(postPlaybackTtl) ? 240 : postPlaybackTtl))
       if (trimmedFullData.failover_fast_mode == null) {
         trimmedFullData.failover_fast_mode = true
       } else {

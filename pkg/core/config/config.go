@@ -26,6 +26,12 @@ const (
 	DefaultEasynewsIndexerTimeoutSeconds   = 15
 	DefaultPlaybackStartupTimeoutSeconds   = 5
 	MaxPlaybackStartupTimeoutSeconds       = 60
+	DefaultSessionTTLMinutes               = 30
+	MinSessionTTLMinutes                   = 1
+	MaxSessionTTLMinutes                   = 1440
+	DefaultSessionPostPlaybackTTLMinutes   = 240
+	MinSessionPostPlaybackTTLMinutes       = 1
+	MaxSessionPostPlaybackTTLMinutes       = 1440
 	CurrentConfigVersion                   = 2
 	StreamModelConfigVersion               = 2
 	defaultMigratedStreamID                = "default"
@@ -244,6 +250,34 @@ func (c *Config) EffectiveFailoverFastMode() bool {
 	return c.FailoverFastMode
 }
 
+func normalizeSessionTTLMinutes(ttl int) int {
+	if ttl < MinSessionTTLMinutes || ttl > MaxSessionTTLMinutes {
+		return DefaultSessionTTLMinutes
+	}
+	return ttl
+}
+
+func normalizeSessionPostPlaybackTTLMinutes(ttl int) int {
+	if ttl < MinSessionPostPlaybackTTLMinutes || ttl > MaxSessionPostPlaybackTTLMinutes {
+		return DefaultSessionPostPlaybackTTLMinutes
+	}
+	return ttl
+}
+
+func (c *Config) EffectiveSessionTTLSeconds() int {
+	if c != nil {
+		return normalizeSessionTTLMinutes(c.SessionTTLMinutes) * 60
+	}
+	return DefaultSessionTTLMinutes * 60
+}
+
+func (c *Config) EffectiveSessionPostPlaybackTTLSeconds() int {
+	if c != nil {
+		return normalizeSessionPostPlaybackTTLMinutes(c.SessionPostPlaybackTTLMinutes) * 60
+	}
+	return DefaultSessionPostPlaybackTTLMinutes * 60
+}
+
 func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	if c != nil && NormalizeAvailNZBMode(c.AvailNZBMode) == "off" {
 		return false
@@ -412,6 +446,10 @@ type Config struct {
 
 	// PlaybackStartupTimeoutSeconds bounds probe/open work before the first playable response is ready. Default 5.
 	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
+	// SessionTTLMinutes controls how long a deferred/inactive stream session is kept in memory. Default 30.
+	SessionTTLMinutes int `json:"session_ttl_minutes,omitempty"`
+	// SessionPostPlaybackTTLMinutes controls how long a session stays in memory after playback ends (paused/stopped). Default 240 (4 hours).
+	SessionPostPlaybackTTLMinutes int `json:"session_post_playback_ttl_minutes,omitempty"`
 	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
 	// playback skips expensive archive checks that can delay startup.
 	FailoverFastMode bool `json:"failover_fast_mode"`
@@ -643,6 +681,8 @@ func Load() (*Config, error) {
 		KeepLogFiles:                  9,
 		NZBHistoryRetentionDays:       90,
 		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
+		SessionTTLMinutes:             DefaultSessionTTLMinutes,
+		SessionPostPlaybackTTLMinutes: DefaultSessionPostPlaybackTTLMinutes,
 		FailoverFastMode:              true,
 		LoadedPath:                    configPath,
 	}
@@ -681,6 +721,14 @@ func Load() (*Config, error) {
 	}
 	if normalized := normalizePlaybackStartupTimeoutSeconds(cfg.PlaybackStartupTimeoutSeconds); normalized != cfg.PlaybackStartupTimeoutSeconds {
 		cfg.PlaybackStartupTimeoutSeconds = normalized
+		needSave = true
+	}
+	if normalized := normalizeSessionTTLMinutes(cfg.SessionTTLMinutes); normalized != cfg.SessionTTLMinutes {
+		cfg.SessionTTLMinutes = normalized
+		needSave = true
+	}
+	if normalized := normalizeSessionPostPlaybackTTLMinutes(cfg.SessionPostPlaybackTTLMinutes); normalized != cfg.SessionPostPlaybackTTLMinutes {
+		cfg.SessionPostPlaybackTTLMinutes = normalized
 		needSave = true
 	}
 	if normalizedMode := NormalizeAvailNZBMode(cfg.AvailNZBMode); normalizedMode != cfg.AvailNZBMode {
