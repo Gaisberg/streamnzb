@@ -331,6 +331,9 @@ func buildAllReleasesFromRaw(raw *rawSearchResult) []*release.Release {
 		if rel == nil {
 			continue
 		}
+		if release.IsFullDiscRelease(rel.Title) {
+			continue
+		}
 		out = append(out, rel)
 	}
 	return out

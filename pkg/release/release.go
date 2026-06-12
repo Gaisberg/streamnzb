@@ -201,3 +201,24 @@ func isTitleJoinerRune(r rune) bool {
 		return false
 	}
 }
+
+func IsFullDiscRelease(title string) bool {
+	lower := strings.ToLower(title)
+	// Match common full Blu-ray disc keywords or ISO extensions
+	if strings.Contains(lower, "complete.uhd.bluray") ||
+		strings.Contains(lower, "complete.bluray") ||
+		strings.Contains(lower, "complete.bd") ||
+		strings.Contains(lower, "bd25") ||
+		strings.Contains(lower, "bd50") ||
+		strings.Contains(lower, "bdmv") ||
+		strings.Contains(lower, "complete.mpeg") ||
+		strings.HasSuffix(lower, ".iso") ||
+		strings.Contains(lower, ".iso.") ||
+		strings.Contains(lower, "-iso") ||
+		strings.Contains(lower, " iso ") ||
+		strings.Contains(lower, " iso.") {
+		return true
+	}
+	return false
+}
+

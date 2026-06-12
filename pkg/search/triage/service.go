@@ -29,6 +29,9 @@ func (s *Service) Filter(releases []*release.Release) []Candidate {
 		if rel == nil {
 			continue
 		}
+		if release.IsFullDiscRelease(rel.Title) {
+			continue
+		}
 		parsed := parser.ParseReleaseTitle(rel.Title)
 		group := parsed.ResolutionGroup()
 		score := basicScore(rel)
