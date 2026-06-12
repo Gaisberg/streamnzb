@@ -458,8 +458,17 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 			setFirstErr(err)
 			break
 		}
+		var acquired bool
+		select {
+		case sem <- struct{}{}:
+			acquired = true
+		case <-ctx.Done():
+			setFirstErr(ctx.Err())
+		}
+		if !acquired {
+			break
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(f UnpackableFile) {
 			defer wg.Done()
 			defer func() { <-sem }()
