@@ -67,14 +67,16 @@ type Config struct {
 }
 
 type Pool struct {
-	providers     []ProviderConfig
-	cache         SegmentCache
-	sf            *singleflight.Group
-	missing       *permanentMissingSegments
-	providerSig   string
-	articleStats  map[string]*providerArticleCounter
-	mu            sync.RWMutex
-	activeFetches atomic.Int64
+	providers            []ProviderConfig
+	cache                SegmentCache
+	sf                   *singleflight.Group
+	missing              *permanentMissingSegments
+	providerSig          string
+	articleStats         map[string]*providerArticleCounter
+	consecutive430s      map[string]int
+	consecutiveSuccesses map[string]int
+	mu                   sync.RWMutex
+	activeFetches        atomic.Int64
 }
 
 type providerArticleCounter struct {
@@ -336,12 +338,14 @@ func NewPool(cfg *Config) (*Pool, error) {
 		articleStats[providerID] = &providerArticleCounter{host: host}
 	}
 	return &Pool{
-		providers:    providers,
-		cache:        cache,
-		sf:           &singleflight.Group{},
-		missing:      newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
-		providerSig:  providerSignature(providers),
-		articleStats: articleStats,
+		providers:            providers,
+		cache:                cache,
+		sf:                   &singleflight.Group{},
+		missing:              newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
+		providerSig:          providerSignature(providers),
+		articleStats:         articleStats,
+		consecutive430s:      make(map[string]int),
+		consecutiveSuccesses: make(map[string]int),
 	}, nil
 }
 
@@ -383,6 +387,46 @@ func (p *Pool) recordArticleResult(providerID string, available bool) {
 // available=true increments available count; false increments missing count.
 func (p *Pool) RecordProviderArticleResult(providerID string, available bool) {
 	p.recordArticleResult(providerID, available)
+}
+
+func (p *Pool) record430Error(providerID string) {
+	providerID = strings.TrimSpace(providerID)
+	if p == nil || providerID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.consecutive430s == nil {
+		p.consecutive430s = make(map[string]int)
+	}
+	p.consecutive430s[providerID]++
+
+	if p.consecutiveSuccesses == nil {
+		p.consecutiveSuccesses = make(map[string]int)
+	}
+	p.consecutiveSuccesses[providerID] = 0
+
+	logger.Debug("provider demotion increment consecutive 430", "provider", providerID, "count", p.consecutive430s[providerID])
+}
+
+func (p *Pool) recordSuccess(providerID string) {
+	providerID = strings.TrimSpace(providerID)
+	if p == nil || providerID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.consecutiveSuccesses == nil {
+		p.consecutiveSuccesses = make(map[string]int)
+	}
+	p.consecutiveSuccesses[providerID]++
+
+	if p.consecutiveSuccesses[providerID] >= 10 {
+		if p.consecutive430s != nil && p.consecutive430s[providerID] > 0 {
+			logger.Debug("provider demotion reset consecutive 430 after 10 consecutive successes", "provider", providerID)
+			p.consecutive430s[providerID] = 0
+		}
+	}
 }
 
 func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
@@ -560,6 +604,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		}
 		if res.err == nil {
 			p.recordArticleResult(res.providerID, true)
+			p.recordSuccess(res.providerID)
 			if !shouldCacheFetchedSegment(fetchCtx) {
 				cancel()
 				return SegmentData{}, fetchCtx.Err()
@@ -575,6 +620,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		lastErr = res.err
 		if isArticleNotFound(res.err) {
 			p.recordArticleResult(res.providerID, false)
+			p.record430Error(res.providerID)
 			if articleNotFoundErr == nil {
 				articleNotFoundErr = res.err
 			}
@@ -702,6 +748,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			lastErr = err
 			if articleNotFound {
 				p.recordArticleResult(providerID, false)
+				p.record430Error(providerID)
 				if articleNotFoundErr == nil {
 					articleNotFoundErr = err
 				}
@@ -712,6 +759,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			continue
 		}
 		p.recordArticleResult(providerID, true)
+		p.recordSuccess(providerID)
 
 		if !shouldCacheFetchedSegment(fetchCtx) {
 			return SegmentData{}, fetchCtx.Err()
@@ -876,6 +924,11 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority int, useBackup bool) (client *nntp.Client, release, discard func(), providerID string, err error) {
 	p.mu.RLock()
 	providers := p.providers
+	// Create a local snapshot of consecutive 430s to avoid holding the lock during blocking Get()
+	consecutive := make(map[string]int, len(p.consecutive430s))
+	for k, v := range p.consecutive430s {
+		consecutive[k] = v
+	}
 	p.mu.RUnlock()
 
 	excludeSet := make(map[string]bool)
@@ -883,6 +936,7 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		excludeSet[id] = true
 	}
 
+	// Pass 1: Try healthy providers first (consecutive 430 errors < 3)
 	for i := range providers {
 		prov := &providers[i]
 		if excludeSet[prov.ID] {
@@ -892,6 +946,53 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 			continue
 		}
 		if prov.IsBackup != useBackup {
+			continue
+		}
+		if consecutive[prov.ID] >= 3 {
+			continue
+		}
+
+		c, ok := prov.ClientPool.TryGet(ctx)
+		if !ok {
+			var getErr error
+			c, getErr = prov.ClientPool.Get(ctx)
+			if getErr != nil {
+				if errors.Is(getErr, context.Canceled) {
+					return nil, nil, nil, "", getErr
+				}
+				continue
+			}
+		}
+
+		pool := prov.ClientPool
+		pid := prov.ID
+		var once sync.Once
+		release := func() {
+			once.Do(func() {
+				pool.Put(c)
+			})
+		}
+		discard := func() {
+			once.Do(func() {
+				pool.Discard(c)
+			})
+		}
+		return c, release, discard, pid, nil
+	}
+
+	// Pass 2: Fall back to demoted providers (consecutive 430 errors >= 3)
+	for i := range providers {
+		prov := &providers[i]
+		if excludeSet[prov.ID] {
+			continue
+		}
+		if prov.Priority > maxPriority {
+			continue
+		}
+		if prov.IsBackup != useBackup {
+			continue
+		}
+		if consecutive[prov.ID] < 3 {
 			continue
 		}
 
@@ -1005,40 +1106,42 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
+	var subset []ProviderConfig
 	if len(providerIDs) == 0 {
-		return &Pool{
-			providers:   p.providers,
-			cache:       p.cache,
-			sf:          p.sf,
-			missing:     p.missing,
-			providerSig: p.providerSig,
+		subset = make([]ProviderConfig, len(p.providers))
+		copy(subset, p.providers)
+	} else {
+		byID := make(map[string]ProviderConfig, len(p.providers))
+		for i := range p.providers {
+			byID[p.providers[i].ID] = p.providers[i]
+		}
+		subset = make([]ProviderConfig, 0, len(providerIDs))
+		for _, id := range providerIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if cfg, ok := byID[id]; ok {
+				cfg.Priority = len(subset)
+				subset = append(subset, cfg)
+			}
 		}
 	}
-	byID := make(map[string]ProviderConfig, len(p.providers))
-	for i := range p.providers {
-		byID[p.providers[i].ID] = p.providers[i]
-	}
-	subset := make([]ProviderConfig, 0, len(providerIDs))
-	for _, id := range providerIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if cfg, ok := byID[id]; ok {
-			cfg.Priority = len(subset)
-			subset = append(subset, cfg)
-		}
-	}
+
 	if len(subset) == 0 {
 		return nil
 	}
+
 	return &Pool{
-		providers:    subset,
-		cache:        p.cache,
-		sf:           p.sf,
-		missing:      p.missing,
-		providerSig:  providerSignature(subset),
-		articleStats: p.articleStats,
+		providers:            subset,
+		cache:                p.cache,
+		sf:                   p.sf,
+		missing:              p.missing,
+		providerSig:          providerSignature(subset),
+		articleStats:         p.articleStats,
+		consecutive430s:      make(map[string]int),
+		consecutiveSuccesses: make(map[string]int),
 	}
 }
 

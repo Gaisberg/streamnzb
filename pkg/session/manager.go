@@ -1682,9 +1682,6 @@ func (m *Manager) SegmentFetcherForProviders(providerIDs []string) loader.Segmen
 	if m.usenetPool == nil {
 		return nil
 	}
-	if len(providerIDs) == 0 {
-		return m.usenetPool
-	}
 	subset := m.usenetPool.Subset(providerIDs)
 	if subset == nil {
 		return m.usenetPool
