@@ -205,11 +205,7 @@ func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
 	if !hasUniformNZBSegmentBytes(f.segments) {
 		return false
 	}
-	last := f.segments[len(f.segments)-1]
 	first := f.segments[0]
-	if last.Bytes != first.Bytes {
-		return false
-	}
 	decoded, ok := f.estimator.Get(first.Bytes)
 	if !ok || decoded <= 0 {
 		return false
@@ -775,7 +771,12 @@ func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if end > len(f.segments) {
 		end = len(f.segments)
 	}
-	bgCtx := context.WithoutCancel(ctx)
+	// Bind prefetch to the lifetime of the session file context (f.ctx) rather than using context.WithoutCancel.
+	// This ensures that when the session closes, the prefetches are aborted, but they aren't cancelled by transient HTTP request timeouts.
+	bgCtx := f.ctx
+	if bgCtx == nil {
+		bgCtx = context.Background()
+	}
 	for i := idx; i < end; i++ {
 		f.ReadAheadSegment(bgCtx, i)
 	}
