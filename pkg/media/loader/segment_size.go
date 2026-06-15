@@ -317,7 +317,20 @@ func (f *File) probeSegmentIndicesParallel(ctx context.Context, indices []int) (
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			var acquired bool
+			select {
+			case sem <- struct{}{}:
+				acquired = true
+			case <-ctx.Done():
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				mu.Unlock()
+			}
+			if !acquired {
+				return
+			}
 			defer func() { <-sem }()
 
 			if err := ctx.Err(); err != nil {

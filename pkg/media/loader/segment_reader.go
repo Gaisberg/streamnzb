@@ -173,7 +173,9 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 		return r.readInto(p)
 	}
 
+	logger.Debug("SegmentReader readInto: calling DownloadSegment", "file", r.file.Name(), "segIdx", segIdx, "segOff", segOff)
 	data, err := r.file.DownloadSegment(r.ctx, segIdx)
+	logger.Debug("SegmentReader readInto: DownloadSegment returned", "file", r.file.Name(), "segIdx", segIdx, "err", err, "dataLen", len(data))
 	if err != nil {
 		return 0, err
 	}

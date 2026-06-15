@@ -884,6 +884,9 @@ func TestGetOrDownloadNZBWithContextPropagatesLeaderFailureToWaiters(t *testing.
 		t.Fatal("timed out waiting for NZB download to start")
 	}
 
+	// Give the second goroutine time to start and see the inflight download
+	time.Sleep(50 * time.Millisecond)
+
 	close(wait)
 
 	for i := 0; i < 2; i++ {

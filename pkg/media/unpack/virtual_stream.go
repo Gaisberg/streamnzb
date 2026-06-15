@@ -9,6 +9,8 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+
+	"streamnzb/pkg/core/logger"
 )
 
 type virtualPart struct {
@@ -33,6 +35,7 @@ type VirtualStream struct {
 }
 
 var liveVirtualStreams atomic.Int64
+var errOffsetChanged = errors.New("virtual stream offset changed")
 
 func LiveVirtualStreams() int64 {
 	return liveVirtualStreams.Load()
@@ -80,6 +83,10 @@ func (s *VirtualStream) Read(p []byte) (int, error) {
 		}
 
 		if err := s.ensureReader(part, partIdx); err != nil {
+			if errors.Is(err, errOffsetChanged) {
+				s.mu.Unlock()
+				continue
+			}
 			s.mu.Unlock()
 			return 0, err
 		}
@@ -167,6 +174,8 @@ func (s *VirtualStream) Seek(offset int64, whence int) (int64, error) {
 		return 0, errors.New("seek out of bounds")
 	}
 
+	logger.Debug("VirtualStream Seek", "offset", offset, "whence", whence, "target", target, "currentOffset", s.offset)
+
 	if target == s.offset {
 		return target, nil
 	}
@@ -194,6 +203,7 @@ func (s *VirtualStream) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logger.Debug("VirtualStream Close", "offset", s.offset)
 	if s.closed {
 		return nil
 	}
@@ -225,14 +235,35 @@ func (s *VirtualStream) ensureReader(part *virtualPart, partIdx int) error {
 		return nil
 	}
 
+	logger.Debug("VirtualStream ensureReader: entering", "partIdx", partIdx, "volName", part.VolFile.Name(), "offset", s.offset)
 	s.closeReader()
 
 	localOff := s.offset - part.VirtualStart
 	volOff := part.VolOffset + localOff
+	expectedOffset := s.offset
 
-	r, err := openPlaybackReaderAt(part.VolFile, playbackSegmentMapCtx(s.ctx), volOff)
-	if err != nil {
-		return fmt.Errorf("open volume part %d at offset %d: %w", partIdx, volOff, err)
+	s.mu.Unlock()
+	r, openErr := openPlaybackReaderAt(part.VolFile, playbackSegmentMapCtx(s.ctx), volOff)
+	s.mu.Lock()
+
+	logger.Debug("VirtualStream ensureReader: openPlaybackReaderAt completed", "partIdx", partIdx, "err", openErr)
+
+	if s.closed {
+		if r != nil {
+			r.Close()
+		}
+		return io.ErrClosedPipe
+	}
+
+	if s.offset != expectedOffset {
+		if r != nil {
+			r.Close()
+		}
+		return errOffsetChanged
+	}
+
+	if openErr != nil {
+		return fmt.Errorf("open volume part %d at offset %d: %w", partIdx, volOff, openErr)
 	}
 
 	s.currentReader = r

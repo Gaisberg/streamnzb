@@ -413,6 +413,7 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 	// context so short-lived probe/prefetch/read cancellations do not poison a
 	// segment download that another reader may still need moments later.
 	req, leader := f.startInflightDownload(index, countFailures)
+	logger.Debug("File doDownloadSegment: start", "file", f.Name(), "index", index, "leader", leader, "countFailures", countFailures)
 	if leader {
 		go f.runInflightDownload(index, req)
 	}
@@ -420,8 +421,10 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 
 	select {
 	case <-ctx.Done():
+		logger.Debug("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
 		return nil, ctx.Err()
 	case <-req.done:
+		logger.Debug("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
 		return req.data, req.err
 	}
 }
@@ -469,6 +472,7 @@ func (f *File) releaseInflightDownloadWaiter(index int, req *inflightSegmentDown
 }
 
 func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
+	logger.Debug("File runInflightDownload: start fetch", "file", f.Name(), "index", index, "viaFetcher", f.fetcher != nil)
 	var data []byte
 	var err error
 	if f.fetcher != nil {
@@ -476,6 +480,7 @@ func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
 	} else {
 		data, err = f.doDownloadSegmentViaPools(req.ctx, index)
 	}
+	logger.Debug("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
 
 	f.downloadMu.Lock()
 	defer f.downloadMu.Unlock()
@@ -573,6 +578,7 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 	for attempt := 0; attempt < len(f.pools); attempt++ {
 		select {
 		case <-downloadCtx.Done():
+			logger.Debug("File doDownloadSegmentViaPools: downloadCtx done before attempt", "file", f.Name(), "index", index, "err", downloadCtx.Err())
 			return nil, downloadCtx.Err()
 		default:
 		}
@@ -583,6 +589,7 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 
 		for i, p := range f.pools {
 			if !tried[i] {
+				logger.Debug("File doDownloadSegmentViaPools: trying pool TryGet", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host())
 				if c, ok := p.TryGet(downloadCtx); ok {
 					client = c
 					clientPool = p
@@ -595,9 +602,11 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 		if client == nil {
 			for i, p := range f.pools {
 				if !tried[i] {
+					logger.Debug("File doDownloadSegmentViaPools: pool Get blocking", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host())
 					var err error
 					client, err = p.Get(downloadCtx)
 					if err != nil {
+						logger.Debug("File doDownloadSegmentViaPools: pool Get failed", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host(), "err", err)
 						tried[i] = true
 						lastErr = err
 						if errors.Is(err, context.Canceled) {
@@ -613,6 +622,7 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 		}
 
 		if client == nil {
+			logger.Debug("File doDownloadSegmentViaPools: no client available from any pool", "file", f.Name(), "index", index)
 			break
 		}
 
@@ -620,8 +630,10 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 			client.Group(f.nzbFile.Groups[0])
 		}
 
+		logger.Debug("File doDownloadSegmentViaPools: client body read start", "file", f.Name(), "index", index, "provider", clientPool.Host(), "article", seg.ID)
 		r, err := client.Body(seg.ID)
 		if err != nil {
+			logger.Debug("File doDownloadSegmentViaPools: client body command failed", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
 			clientPool.Put(client)
 			tried[poolIdx] = true
 			lastErr = err
@@ -640,9 +652,11 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 
 		select {
 		case <-downloadCtx.Done():
+			logger.Debug("File doDownloadSegmentViaPools: downloadCtx done during body read", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", downloadCtx.Err())
 			clientPool.Discard(client)
 			return nil, downloadCtx.Err()
 		case res := <-done:
+			logger.Debug("File doDownloadSegmentViaPools: body read done", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", res.err)
 			if res.err != nil {
 				clientPool.Put(client)
 				tried[poolIdx] = true
