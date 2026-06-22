@@ -413,7 +413,7 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 	// context so short-lived probe/prefetch/read cancellations do not poison a
 	// segment download that another reader may still need moments later.
 	req, leader := f.startInflightDownload(index, countFailures)
-	logger.Debug("File doDownloadSegment: start", "file", f.Name(), "index", index, "leader", leader, "countFailures", countFailures)
+	logger.Trace("File doDownloadSegment: start", "file", f.Name(), "index", index, "leader", leader, "countFailures", countFailures)
 	if leader {
 		go f.runInflightDownload(index, req)
 	}
@@ -424,7 +424,7 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 		logger.Debug("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
 		return nil, ctx.Err()
 	case <-req.done:
-		logger.Debug("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
+		logger.Trace("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
 		return req.data, req.err
 	}
 }
@@ -472,7 +472,7 @@ func (f *File) releaseInflightDownloadWaiter(index int, req *inflightSegmentDown
 }
 
 func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
-	logger.Debug("File runInflightDownload: start fetch", "file", f.Name(), "index", index, "viaFetcher", f.fetcher != nil)
+	logger.Trace("File runInflightDownload: start fetch", "file", f.Name(), "index", index, "viaFetcher", f.fetcher != nil)
 	var data []byte
 	var err error
 	if f.fetcher != nil {
@@ -480,7 +480,7 @@ func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
 	} else {
 		data, err = f.doDownloadSegmentViaPools(req.ctx, index)
 	}
-	logger.Debug("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
+	logger.Trace("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
 
 	f.downloadMu.Lock()
 	defer f.downloadMu.Unlock()
