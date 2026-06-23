@@ -1078,18 +1078,7 @@ func isPlayPrepareCancellation(err error) bool {
 	if err == nil || errors.Is(err, ErrPlaybackStartupTimeout) {
 		return false
 	}
-	if isLazyNZBDownloadTimeoutErr(err) {
-		return false
-	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
-
-func isLazyNZBDownloadTimeoutErr(err error) bool {
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "failed to lazy download nzb")
+	return errors.Is(err, context.Canceled)
 }
 
 func isIndexerLimitErr(err error) bool {

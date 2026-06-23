@@ -965,96 +965,95 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		s.nzbDownloadDone = done
 		s.mu.Unlock()
 
-		downloadCtx, cancel := context.WithTimeout(effectiveCtx, 60*time.Second)
-		if err := downloadCtx.Err(); err != nil {
-			cancel()
-			releaseEffectiveCtx()
-			preflightErr := fmt.Errorf("failed to lazy download NZB: %w", err)
+		go func() {
+			downloadCtx, cancel := context.WithTimeout(sessionFileCtx, 60*time.Second)
+			defer cancel()
+
+			logger.Trace("Lazy Downloading NZB (direct)...", "title", itemTitle, "indexer", indexerName)
+			data, err := idx.DownloadNZB(downloadCtx, nzbURL)
+
+			var parsedNZB *nzb.NZB
+			var loaderFiles []*loader.File
+			if err == nil {
+				if len(data) == 0 {
+					logger.Debug("NZB download returned empty body", "indexer", indexerName, "title", itemTitle)
+					err = fmt.Errorf("NZB download returned empty body (indexer: %s)", indexerName)
+				} else {
+					parsedNZB, err = nzb.Parse(bytes.NewReader(data))
+					if err != nil {
+						snippet := string(data)
+						if len(snippet) > 200 {
+							snippet = snippet[:200] + "..."
+						}
+						logger.Debug("Failed to parse NZB", "indexer", indexerName, "title", itemTitle, "len", len(data), "snippet", snippet, "err", err)
+						err = fmt.Errorf("failed to parse lazy downloaded NZB: %w", err)
+					}
+				}
+			}
+
+			if err == nil {
+				contentFiles := selectSessionContentFiles(parsedNZB, contentIDs)
+				if len(contentFiles) == 0 {
+					logger.Error("Lazy load: no content files in NZB",
+						"title", itemTitle,
+						"indexer", indexerName,
+						"nzb_files", len(parsedNZB.Files),
+						"details", "see DEBUG log GetContentFiles returned empty for file list")
+					err = fmt.Errorf("no content files found in lazy NZB")
+				} else {
+					manager.mu.RLock()
+					pools := manager.pools
+					usenetPool := manager.usenetPool
+					estimator := manager.estimator
+					manager.mu.RUnlock()
+					if segmentFetcher == nil {
+						segmentFetcher = usenetPool
+					}
+					loaderFiles = buildLoaderFiles(sessionFileCtx, sessionID, contentFiles, pools, segmentFetcher, estimator)
+				}
+			}
+
+			finalErr := err
+			if finalErr != nil {
+				if !(strings.Contains(finalErr.Error(), "failed to lazy download NZB") ||
+					strings.Contains(finalErr.Error(), "no content files found in lazy NZB") ||
+					strings.Contains(finalErr.Error(), "NZB download returned empty body")) {
+					finalErr = fmt.Errorf("failed to lazy download NZB: %w", finalErr)
+				}
+			}
+
 			s.mu.Lock()
-			s.nzbDownloadErr = preflightErr
+			if finalErr == nil && sessionFileCtx.Err() != nil {
+				finalErr = fmt.Errorf("failed to lazy download NZB: %w", sessionFileCtx.Err())
+			}
+			if finalErr == nil && s.NZB == nil {
+				s.NZB = parsedNZB
+				s.Files = loaderFiles
+				s.File = loaderFiles[0]
+				logger.Debug("session GetOrDownloadNZB created loader files", "id", s.ID, "files", len(loaderFiles))
+			}
+			s.nzbDownloadErr = finalErr
 			s.nzbDownloadInFlight = false
 			s.nzbDownloadDone = nil
 			close(done)
 			s.mu.Unlock()
-			return nil, preflightErr
-		}
+		}()
 
-		logger.Trace("Lazy Downloading NZB (direct)...", "title", itemTitle, "indexer", indexerName)
-		data, err := idx.DownloadNZB(downloadCtx, nzbURL)
-		cancel()
-		releaseEffectiveCtx()
-
-		var parsedNZB *nzb.NZB
-		var loaderFiles []*loader.File
-		if err == nil {
-			if len(data) == 0 {
-				logger.Debug("NZB download returned empty body", "indexer", indexerName, "title", itemTitle)
-				err = fmt.Errorf("NZB download returned empty body (indexer: %s)", indexerName)
-			} else {
-				parsedNZB, err = nzb.Parse(bytes.NewReader(data))
-				if err != nil {
-					snippet := string(data)
-					if len(snippet) > 200 {
-						snippet = snippet[:200] + "..."
-					}
-					logger.Debug("Failed to parse NZB", "indexer", indexerName, "title", itemTitle, "len", len(data), "snippet", snippet, "err", err)
-					err = fmt.Errorf("failed to parse lazy downloaded NZB: %w", err)
-				}
+		select {
+		case <-done:
+			releaseEffectiveCtx()
+			s.mu.Lock()
+			nzb := s.NZB
+			downloadErr := s.nzbDownloadErr
+			s.mu.Unlock()
+			if nzb != nil {
+				return nzb, nil
 			}
+			return nil, downloadErr
+		case <-effectiveCtx.Done():
+			releaseEffectiveCtx()
+			return nil, fmt.Errorf("failed to lazy download NZB: %w", effectiveCtx.Err())
 		}
-
-		if err == nil {
-			contentFiles := selectSessionContentFiles(parsedNZB, contentIDs)
-			if len(contentFiles) == 0 {
-				logger.Error("Lazy load: no content files in NZB",
-					"title", itemTitle,
-					"indexer", indexerName,
-					"nzb_files", len(parsedNZB.Files),
-					"details", "see DEBUG log GetContentFiles returned empty for file list")
-				err = fmt.Errorf("no content files found in lazy NZB")
-			} else {
-				manager.mu.RLock()
-				pools := manager.pools
-				usenetPool := manager.usenetPool
-				estimator := manager.estimator
-				manager.mu.RUnlock()
-				if segmentFetcher == nil {
-					segmentFetcher = usenetPool
-				}
-				loaderFiles = buildLoaderFiles(sessionFileCtx, sessionID, contentFiles, pools, segmentFetcher, estimator)
-			}
-		}
-
-		finalErr := err
-		if finalErr != nil {
-			if !(strings.Contains(finalErr.Error(), "failed to parse lazy downloaded NZB") ||
-				strings.Contains(finalErr.Error(), "no content files found in lazy NZB") ||
-				strings.Contains(finalErr.Error(), "NZB download returned empty body")) {
-				finalErr = fmt.Errorf("failed to lazy download NZB: %w", finalErr)
-			}
-		}
-
-		s.mu.Lock()
-		if finalErr == nil && sessionCtx != nil && sessionCtx.Err() != nil {
-			finalErr = fmt.Errorf("failed to lazy download NZB: %w", sessionCtx.Err())
-		}
-		if finalErr == nil && s.NZB == nil {
-			s.NZB = parsedNZB
-			s.Files = loaderFiles
-			s.File = loaderFiles[0]
-			logger.Debug("session GetOrDownloadNZB created loader files", "id", s.ID, "files", len(loaderFiles))
-		}
-		nzb := s.NZB
-		s.nzbDownloadErr = finalErr
-		s.nzbDownloadInFlight = false
-		s.nzbDownloadDone = nil
-		close(done)
-		s.mu.Unlock()
-
-		if finalErr != nil {
-			return nil, finalErr
-		}
-		return nzb, nil
 	}
 }
 
