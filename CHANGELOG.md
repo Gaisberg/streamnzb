@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.8.0](https://github.com/Gaisberg/streamnzb/compare/v4.7.0...v4.8.0) (2026-06-23)
+
+
+### Features
+
+* **session:** make session inactive and paused playback TTLs configurable ([d9611fd](https://github.com/Gaisberg/streamnzb/commit/d9611fdfa0858fca4e2c6aac7986d36f5b987bd3))
+* **unpack:** implement seekable CBC decryption and fix volume offset… ([#154](https://github.com/Gaisberg/streamnzb/issues/154)) ([1ad148f](https://github.com/Gaisberg/streamnzb/commit/1ad148f0970cfe855ffdbcede6528e2b5e1fa023))
+* **usenet:** implement defensive 430 provider backoff and demotion ([6b9ffa0](https://github.com/Gaisberg/streamnzb/commit/6b9ffa077bb8f0e7b53ea6f3d0467b9b34ceafd5))
+
+
+### Bug Fixes
+
+* **media/unpack:** prevent hang in scanVolumesParallel when context is cancelled ([a24620f](https://github.com/Gaisberg/streamnzb/commit/a24620fe64d96063be550fdfe033c123cacd691a))
+* **media:** attempt resolve lock starvation and context-cancel hangs during RAR playback ([df06c8f](https://github.com/Gaisberg/streamnzb/commit/df06c8faec8393d8f159382cf06fc6e15ed8518a))
+* **playback:** prevent timeouts and concurrent cancellations from suppressing failover ([bd2d638](https://github.com/Gaisberg/streamnzb/commit/bd2d6388f32abde383f424385f1a6c478b4f115d))
+* **search:** filter out unplayable full disc rips and ISO releases ([0541fe6](https://github.com/Gaisberg/streamnzb/commit/0541fe6f05f5750742fb10be50ac4f687f5b891b))
+
+
+### Performance Improvements
+
+* **loader:** optimize multivolume archive playback priming and prefetch lifecycles ([3719980](https://github.com/Gaisberg/streamnzb/commit/371998063c9e0a17cdeed51fe07468c3a80c741d))
+
 ## [4.7.0](https://github.com/Gaisberg/streamnzb/compare/v4.6.0...v4.7.0) (2026-06-01)
 
 
