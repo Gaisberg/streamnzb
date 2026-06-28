@@ -332,4 +332,3 @@ func TestRecoverPlaySessionAfterEvictionPrioritizesRequestedSlot(t *testing.T) {
 		t.Fatalf("recovered session = %#v, want id %q", sess, key.SlotPath(1))
 	}
 }
-

@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { AlertCircle, AlertTriangle, Loader2, Save, User } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/api"
 
 function EnvOverrideIndicator({ show, message = 'Overwritten by environment variable on restart.' }) {
   if (!show) return null
@@ -24,7 +25,7 @@ function EnvOverrideIndicator({ show, message = 'Overwritten by environment vari
   )
 }
 
-export function ProfilePage({
+export const ProfilePage = React.memo(function ProfilePage({
   currentUser,
   config,
   sendCommand,
@@ -65,18 +66,15 @@ export function ProfilePage({
       return
     }
     setUsernameSaving(true)
-    window.profileUsernameCallback = (payload) => {
+    try {
+      await sendCommand('save_config', { admin_username: trimmed })
+      setUsernameMessage({ type: 'success', text: 'Username saved. Use it to log in next time.' })
+      onUsernameChanged?.(trimmed)
+    } catch (error) {
+      setUsernameMessage({ type: 'error', text: error.message || 'Save failed.' })
+    } finally {
       setUsernameSaving(false)
-      const ok = payload.status === 'success'
-      if (!ok) {
-        setUsernameMessage({ type: 'error', text: payload.message || payload.error || 'Save failed.' })
-      } else {
-        setUsernameMessage({ type: 'success', text: 'Username saved. Use it to log in next time.' })
-        onUsernameChanged?.(trimmed)
-      }
-      delete window.profileUsernameCallback
     }
-    sendCommand('save_config', { admin_username: trimmed })
   }
 
   const handleChangePassword = async (e) => {
@@ -98,40 +96,27 @@ export function ProfilePage({
 
     setPasswordLoading(true)
     try {
-      const loginRes = await fetch('/api/login', {
+      const loginData = await apiFetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ username: currentUser, password: currentPassword }),
+        skipAuthNotify: true,
       })
-      const loginData = await loginRes.json()
       if (!loginData.success) {
         setPasswordError('Current password is incorrect')
         setPasswordLoading(false)
         return
       }
 
-      window.passwordChangeCallback = (payload) => {
-        setPasswordLoading(false)
-        if (payload.error) {
-          setPasswordError(payload.error)
-        } else {
-          setCurrentPassword('')
-          setNewPassword('')
-          setConfirmPassword('')
-          onPasswordChanged?.()
-        }
-        delete window.passwordChangeCallback
-      }
-      if (!sendCommand('update_password', { username: currentUser, password: newPassword })) {
-        setPasswordError('Failed to send update request')
-        setPasswordLoading(false)
-        delete window.passwordChangeCallback
-      }
-    } catch {
-      setPasswordError('Failed to connect to server')
+      await sendCommand('update_password', { username: currentUser, password: newPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      onPasswordChanged?.()
+    } catch (err) {
+      setPasswordError(err.message || 'Failed to connect to server')
+    } finally {
       setPasswordLoading(false)
-      delete window.passwordChangeCallback
     }
   }
 
@@ -301,4 +286,4 @@ export function ProfilePage({
       </form>
     </div>
   )
-}
+})

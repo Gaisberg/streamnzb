@@ -696,6 +696,7 @@ type configValidationPlan struct {
 	changedIndexerIndexes          map[int]bool
 	validateTMDBAPIKey             bool
 	validateTVDBAPIKey             bool
+	validateSpeculativePreProbing  bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
@@ -711,6 +712,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateIndexers:               true,
 		validateTMDBAPIKey:             true,
 		validateTVDBAPIKey:             true,
+		validateSpeculativePreProbing:  true,
 	}
 }
 
@@ -735,6 +737,9 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["playback_startup_timeout_seconds"]; ok {
 		plan.validatePlaybackStartupTimeout = true
+	}
+	if _, ok := raw["speculative_pre_probing_count"]; ok {
+		plan.validateSpeculativePreProbing = true
 	}
 	if _, ok := raw["indexer_proxy_url"]; ok {
 		plan.validateIndexerProxyURL = true
@@ -910,6 +915,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	}
 	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > config.MaxPlaybackStartupTimeoutSeconds) {
 		errors["playback_startup_timeout_seconds"] = "Must be between 1 and 60 seconds"
+	}
+	if plan.validateSpeculativePreProbing && (cfg.SpeculativePreProbingCount < 0 || cfg.SpeculativePreProbingCount > 5) {
+		errors["speculative_pre_probing_count"] = "Must be between 0 and 5"
 	}
 	if plan.validateIndexerProxyURL {
 		if err := config.ValidateIndexerProxyURL(cfg.IndexerProxyURL); err != nil {

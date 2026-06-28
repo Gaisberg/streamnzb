@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	segmentSizeSlop              = 256
-	maxSegmentProbeConcurrency     = 16
+	segmentSizeSlop            = 256
+	maxSegmentProbeConcurrency = 16
 )
 
 func sumNZBSegmentBytes(segments []*Segment) int64 {

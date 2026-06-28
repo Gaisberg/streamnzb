@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { apiFetch } from "@/api"
+import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from "@/lib/config"
 import { CircleHelp, Copy, Plus, Settings, Trash2, X } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
@@ -175,31 +176,6 @@ function truncateCompactValue(value, maxLength = 28) {
   const text = String(value || '').trim()
   if (text.length <= maxLength) return text
   return `${text.slice(0, maxLength - 3)}...`
-}
-
-function normalizeQueryYearSetting(searchMode, includeYear, legacyIncludeYearInTextSearch) {
-  if (includeYear != null) return includeYear === true
-  if (legacyIncludeYearInTextSearch != null) return legacyIncludeYearInTextSearch === true
-  return String(searchMode || '').trim().toLowerCase() !== 'id'
-}
-
-function normalizeSearchTitleLanguage(value) {
-  const trimmed = String(value || '').trim()
-  return trimmed.toLowerCase() === 'original' ? '' : trimmed
-}
-
-function normalizeSearchTitleLanguages(values) {
-  const list = Array.isArray(values) ? values : []
-  const normalized = []
-  const seen = new Set()
-  for (const value of list) {
-    const language = normalizeSearchTitleLanguage(value)
-    const key = language.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    normalized.push(language)
-  }
-  return normalized
 }
 
 function defaultIDTitleLanguages() {
@@ -1188,7 +1164,7 @@ function AddQueryButton({ kind, title, existingNames, existingQueries, onCreate,
   )
 }
 
-export function SearchQuerySettings({
+export const SearchQuerySettings = React.memo(function SearchQuerySettings({
   watch,
   movieFields,
   seriesFields,
@@ -1250,4 +1226,4 @@ export function SearchQuerySettings({
     </div>
     </TooltipProvider>
   )
-}
+})

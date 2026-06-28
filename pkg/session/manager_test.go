@@ -1267,4 +1267,3 @@ func TestManagerTTLConfigurationAndEviction(t *testing.T) {
 		t.Fatalf("session should have been evicted under 5m post-playback TTL")
 	}
 }
-

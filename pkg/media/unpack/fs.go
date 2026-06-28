@@ -138,7 +138,7 @@ func (fw *fileWrapper) Seek(off int64, whence int) (int64, error) {
 	fw.readPos = target
 	return target, nil
 }
-func (fw *fileWrapper) Close() error                              { return fw.stream.Close() }
+func (fw *fileWrapper) Close() error { return fw.stream.Close() }
 func (fw *fileWrapper) ReadAt(p []byte, off int64) (int, error) {
 	reader, err := fw.file.OpenReaderAt(fw.ctx, off)
 	if err != nil {

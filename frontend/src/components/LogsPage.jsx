@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from '@/components/ui/button'
 import { Download, FileText } from "lucide-react"
-import { getApiUrl } from '../api'
+import { getApiUrl } from '@/api'
 import { cn } from "@/lib/utils"
 
-export function LogsPage({ logs = [] }) {
+export const LogsPage = memo(function LogsPage({ logs = [] }) {
 	const scrollAreaRef = useRef(null)
 	const stickToBottomRef = useRef(true)
   const [downloadError, setDownloadError] = useState('')
@@ -112,4 +112,4 @@ export function LogsPage({ logs = [] }) {
       </Card>
     </div>
   )
-}
+})

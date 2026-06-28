@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { apiFetch, getApiUrl, notifyUnauthorized } from '../api'
+import { apiFetch, getApiUrl, notifyUnauthorized } from '@/api'
 
 const MAX_HISTORY = 60
 const MAX_LOGS = 200
@@ -55,8 +55,7 @@ export function useAdminRuntime({
   }, [])
 
   useEffect(() => {
-    fetch(getApiUrl('/api/info'))
-      .then((res) => (res.ok ? res.json() : null))
+    apiFetch('/api/info', { skipAuthNotify: true })
       .then((data) => data?.version && setVersion(data.version))
       .catch(() => {})
   }, [])
@@ -226,21 +225,16 @@ export function useAdminRuntime({
       })
         .then((data) => {
           setSaveStatus({ type: 'success', msg: data.message || 'Saved.', errors: data.errors || null })
-          if (window.profileUsernameCallback) {
-            window.profileUsernameCallback(data)
-            delete window.profileUsernameCallback
-          }
           return apiFetch(`/api/config?_=${Date.now()}`)
-            .then((cfg) => { if (cfg) setConfig(cfg) })
-            .catch(() => {})
+            .then((cfg) => {
+              if (cfg) setConfig(cfg)
+              return data
+            })
+            .catch(() => data)
         })
         .catch((err) => {
           const msg = err.message || 'Save failed'
           setSaveStatus({ type: 'error', msg, errors: err.fieldErrors || null })
-          if (window.profileUsernameCallback) {
-            window.profileUsernameCallback({ status: 'error', message: msg })
-            delete window.profileUsernameCallback
-          }
           throw err
         })
         .finally(() => setIsSaving(false))
@@ -271,15 +265,6 @@ export function useAdminRuntime({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: payload?.username, password: payload?.password }),
       })
-        .then(() => {
-          if (window.passwordChangeCallback) window.passwordChangeCallback({})
-        })
-        .catch((err) => {
-          if (window.passwordChangeCallback) window.passwordChangeCallback({ error: err.message })
-        })
-        .finally(() => {
-          delete window.passwordChangeCallback
-        })
     }
 
     if (ws && ws.readyState === WebSocket.OPEN) {

@@ -32,6 +32,7 @@ const (
 	DefaultSessionPostPlaybackTTLMinutes   = 240
 	MinSessionPostPlaybackTTLMinutes       = 1
 	MaxSessionPostPlaybackTTLMinutes       = 1440
+	DefaultSpeculativePreProbingCount      = 1
 	CurrentConfigVersion                   = 2
 	StreamModelConfigVersion               = 2
 	defaultMigratedStreamID                = "default"
@@ -243,6 +244,14 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
 }
 
+func (c *Config) EffectiveSpeculativePreProbingCount() int {
+	if c != nil {
+		return normalizeSpeculativePreProbingCount(c.SpeculativePreProbingCount)
+	}
+	return DefaultSpeculativePreProbingCount
+}
+
+
 func (c *Config) EffectiveFailoverFastMode() bool {
 	if c == nil {
 		return true
@@ -262,6 +271,16 @@ func normalizeSessionPostPlaybackTTLMinutes(ttl int) int {
 		return DefaultSessionPostPlaybackTTLMinutes
 	}
 	return ttl
+}
+
+func normalizeSpeculativePreProbingCount(count int) int {
+	if count < 0 {
+		return 0
+	}
+	if count > 5 {
+		return 5
+	}
+	return count
 }
 
 func (c *Config) EffectiveSessionTTLSeconds() int {
@@ -453,6 +472,9 @@ type Config struct {
 	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
 	// playback skips expensive archive checks that can delay startup.
 	FailoverFastMode bool `json:"failover_fast_mode"`
+
+	// SpeculativePreProbingCount controls how many top releases to pre-probe in background. Default 1.
+	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.
@@ -684,6 +706,7 @@ func Load() (*Config, error) {
 		SessionTTLMinutes:             DefaultSessionTTLMinutes,
 		SessionPostPlaybackTTLMinutes: DefaultSessionPostPlaybackTTLMinutes,
 		FailoverFastMode:              true,
+		SpeculativePreProbingCount:    DefaultSpeculativePreProbingCount,
 		LoadedPath:                    configPath,
 	}
 
@@ -729,6 +752,10 @@ func Load() (*Config, error) {
 	}
 	if normalized := normalizeSessionPostPlaybackTTLMinutes(cfg.SessionPostPlaybackTTLMinutes); normalized != cfg.SessionPostPlaybackTTLMinutes {
 		cfg.SessionPostPlaybackTTLMinutes = normalized
+		needSave = true
+	}
+	if normalized := normalizeSpeculativePreProbingCount(cfg.SpeculativePreProbingCount); normalized != cfg.SpeculativePreProbingCount {
+		cfg.SpeculativePreProbingCount = normalized
 		needSave = true
 	}
 	if normalizedMode := NormalizeAvailNZBMode(cfg.AvailNZBMode); normalizedMode != cfg.AvailNZBMode {

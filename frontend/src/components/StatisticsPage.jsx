@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -120,7 +120,7 @@ const indexerMetricOptions = {
   availDiscarded: { label: 'Unavailable', key: 'availDiscardedCount', suffix: '' },
 }
 
-export function StatisticsPage() {
+export const StatisticsPage = memo(function StatisticsPage() {
   const [historyStats, setHistoryStats] = useState({ providers: [], indexers: [] })
   const [preset, setPreset] = useState('30d')
   const [customRange, setCustomRange] = useState(defaultDateRange())
@@ -511,5 +511,5 @@ export function StatisticsPage() {
 
     </div>
   )
-}
+})
 

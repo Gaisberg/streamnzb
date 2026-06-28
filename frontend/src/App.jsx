@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import Settings from './Settings'
-import Login from './components/Login'
-import ChangePassword from './components/ChangePassword'
+import Settings from '@/Settings'
+import Login from '@/components/Login'
+import ChangePassword from '@/components/ChangePassword'
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/AppSidebar"
 import { SiteHeader } from "@/components/SiteHeader"
@@ -11,12 +11,12 @@ import { LogsPage } from "@/components/LogsPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import { DirectPlayPage } from "@/components/DirectPlayPage"
-import StreamManagement from './components/StreamManagement'
-import { apiFetch, getApiUrl, UNAUTHORIZED_EVENT } from './api'
+import StreamManagement from '@/components/StreamManagement'
+import { apiFetch, UNAUTHORIZED_EVENT } from '@/api'
 import { AlertCircle, Loader2 } from "lucide-react"
 
-import { useAdminRuntime } from './hooks/useAdminRuntime'
-import { isAvailNZBEnabled } from './lib/availnzb'
+import { useAdminRuntime } from '@/hooks/useAdminRuntime'
+import { isAvailNZBEnabled } from '@/lib/availnzb'
 
 function App() {
   const [authChecked, setAuthChecked] = useState(false)
@@ -85,13 +85,9 @@ function App() {
     // We intentionally always check the server session cookie as well,
     // so a valid cookie keeps the admin logged in even if localStorage
     // was cleared or not yet populated.
-    fetch('/api/auth/check', {
-      credentials: 'include',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    })
-      .then(res => res.json().then(data => ({ ok: res.ok, data })))
-      .then(({ ok, data }) => {
-        if (ok && data.authenticated) {
+    apiFetch('/api/auth/check', { skipAuthNotify: true })
+      .then(data => {
+        if (data && data.authenticated) {
           const restoredToken = data.token || token || ''
           hasLoggedOutRef.current = false
           setAuthToken(restoredToken)
@@ -111,6 +107,8 @@ function App() {
       .catch(() => {
         // Server unreachable on startup — fall back to login screen
         setAuthenticated(false)
+        setAuthToken('')
+        if (token) localStorage.removeItem('auth_token')
       })
       .finally(() => {
         setAuthChecked(true)
@@ -141,10 +139,7 @@ function App() {
 
   const handleLogout = useCallback(() => {
     hasLoggedOutRef.current = true
-    fetch(getApiUrl('/api/auth/logout'), {
-      method: 'POST',
-      credentials: 'include',
-    }).catch(() => {})
+    apiFetch('/api/auth/logout', { method: 'POST', skipAuthNotify: true }).catch(() => {})
     clearAuthState()
   }, [clearAuthState])
 

@@ -492,3 +492,26 @@ func TestSaveFileDoesNotPersistAvailNZBAPIKey(t *testing.T) {
 		t.Fatalf("config.json should not contain AvailNZBAPIKey value")
 	}
 }
+
+func TestConfigNormalizeSpeculativePreProbingCount(t *testing.T) {
+	cfg := &Config{SpeculativePreProbingCount: 6}
+	if got := cfg.EffectiveSpeculativePreProbingCount(); got != 5 {
+		t.Fatalf("expected count normalized to 5, got %d", got)
+	}
+
+	cfgNegative := &Config{SpeculativePreProbingCount: -1}
+	if got := cfgNegative.EffectiveSpeculativePreProbingCount(); got != 0 {
+		t.Fatalf("expected count normalized to 0, got %d", got)
+	}
+
+	cfgDefault := &Config{}
+	if got := cfgDefault.EffectiveSpeculativePreProbingCount(); got != 0 {
+		t.Fatalf("expected count 0 for zero-value count field, got %d", got)
+	}
+
+	var cfgNil *Config
+	if got := cfgNil.EffectiveSpeculativePreProbingCount(); got != DefaultSpeculativePreProbingCount {
+		t.Fatalf("expected default count %d for nil config, got %d", DefaultSpeculativePreProbingCount, got)
+	}
+}
+

@@ -221,4 +221,3 @@ func IsFullDiscRelease(title string) bool {
 	}
 	return false
 }
-

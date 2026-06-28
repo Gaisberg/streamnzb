@@ -482,4 +482,3 @@ func TestBuildBlueprintCiphertextBlockAlignmentForEncryptedRAR(t *testing.T) {
 		t.Fatalf("expected blueprint TotalSize (unpacked) to remain 1000, got %d", bp.TotalSize)
 	}
 }
-

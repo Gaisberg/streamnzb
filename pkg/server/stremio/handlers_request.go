@@ -203,6 +203,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	json.NewEncoder(w).Encode(response)
+
+	go s.speculativelyPreProbeTopPlaylistCandidates(key, list, stream)
 }
 
 type failoverOrderRequest struct {
@@ -297,6 +299,7 @@ func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, str
 	}
 	token := streamToken(stream)
 	s.sessionManager.SetStreamFailoverOrder(token, streamKey, order)
+	go s.speculativelyPreProbeTopFailoverOrder(order)
 	sample := ""
 	if len(order) > 0 {
 		sample = order[0]

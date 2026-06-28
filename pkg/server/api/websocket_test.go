@@ -407,4 +407,3 @@ func TestValidateConfigTMDBAndTVDBAPIKeys(t *testing.T) {
 		t.Fatalf("expected empty keys to pass, got errors: %#v", errs)
 	}
 }
-

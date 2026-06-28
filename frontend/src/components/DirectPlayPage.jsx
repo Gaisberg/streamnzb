@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState, memo } from "react"
 import { Upload, Link2, PlayCircle, Loader2, X } from "lucide-react"
 import { Plyr } from "plyr-react"
 import "plyr-react/plyr.css"
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-export function DirectPlayPage() {
+export const DirectPlayPage = memo(function DirectPlayPage() {
   const fileInputRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [url, setUrl] = useState("")
@@ -219,4 +219,4 @@ export function DirectPlayPage() {
       )}
     </div>
   )
-}
+})

@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertCircle, Loader2 } from "lucide-react"
+import { apiFetch } from "@/api"
 
 export default function Login({ onLogin, version }) {
   const [username, setUsername] = useState('')
@@ -17,16 +18,14 @@ export default function Login({ onLogin, version }) {
     setLoading(true)
 
     try {
-      const response = await fetch('/api/login', {
+      const data = await apiFetch('/api/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        credentials: 'include',
         body: JSON.stringify({ username, password }),
+        skipAuthNotify: true,
       })
-
-      const data = await response.json()
 
       if (data.success) {
         // Store token in localStorage for API calls
@@ -37,8 +36,8 @@ export default function Login({ onLogin, version }) {
       } else {
         setError(data.error || 'Login failed')
       }
-    } catch {
-      setError('Failed to connect to server')
+    } catch (err) {
+      setError(err.message || 'Failed to connect to server')
     } finally {
       setLoading(false)
     }

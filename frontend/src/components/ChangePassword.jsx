@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertCircle, Loader2 } from "lucide-react"
-import { apiFetch } from '../api'
+import { apiFetch } from '@/api'
 
 export default function ChangePassword({ username, onPasswordChanged, requireCurrentPassword = true }) {
   const [currentPassword, setCurrentPassword] = useState('')
@@ -27,13 +27,12 @@ export default function ChangePassword({ username, onPasswordChanged, requireCur
     setLoading(true)
     try {
       if (requireCurrentPassword) {
-        const loginRes = await fetch('/api/login', {
+        const loginData = await apiFetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify({ username, password: currentPassword }),
+          skipAuthNotify: true,
         })
-        const loginData = await loginRes.json().catch(() => ({}))
         if (!loginData.success) {
           setError('Current password is incorrect')
           setLoading(false)

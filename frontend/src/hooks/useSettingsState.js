@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { apiFetch } from '../api'
+import { apiFetch } from '@/api'
 
 const NETWORK_TAB_FIELDS = [
   'addon_port',
@@ -24,6 +24,7 @@ const ADVANCED_TAB_FIELDS = [
   'failover_fast_mode',
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
+  'speculative_pre_probing_count',
   'memory_limit_mb',
   'availnzb_mode',
   'availnzb_filter_reported_bad',
@@ -277,6 +278,8 @@ export function useSettingsState({
       trimmedFullData.session_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(sessionTtl) ? 30 : sessionTtl))
       const postPlaybackTtl = Number(trimmedFullData.session_post_playback_ttl_minutes)
       trimmedFullData.session_post_playback_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(postPlaybackTtl) ? 240 : postPlaybackTtl))
+      const preProbeCount = Number(trimmedFullData.speculative_pre_probing_count)
+      trimmedFullData.speculative_pre_probing_count = Math.min(5, Math.max(0, Number.isNaN(preProbeCount) ? 1 : preProbeCount))
       if (trimmedFullData.failover_fast_mode == null) {
         trimmedFullData.failover_fast_mode = true
       } else {

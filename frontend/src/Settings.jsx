@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { useSettingsState } from './hooks/useSettingsState'
-import { normalizeAvailNZBMode } from './lib/availnzb'
+import { useSettingsState } from '@/hooks/useSettingsState'
+import { normalizeAvailNZBMode } from '@/lib/availnzb'
+import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from '@/lib/config'
 
 const TABS = [
   { id: 'network', label: 'Network', icon: Network },
@@ -25,36 +26,11 @@ const TABS = [
 
 const ACTIVE_TAB_STORAGE_KEY = 'streamnzb.settings.activeTab'
 
-function normalizeQueryYearSetting(searchMode, includeYear, legacyIncludeYearInTextSearch) {
-  if (includeYear != null) return includeYear === true
-  if (legacyIncludeYearInTextSearch != null) return legacyIncludeYearInTextSearch === true
-  return String(searchMode || '').trim().toLowerCase() !== 'id'
-}
-
 function normalizeSeriesScopeFromLegacy(scope, legacyUseSeasonEpisodeParams) {
   const normalizedScope = String(scope || '').trim().toLowerCase()
   if (normalizedScope) return normalizedScope
   if (legacyUseSeasonEpisodeParams != null) return 'season_episode'
   return ''
-}
-
-function normalizeSearchTitleLanguage(value) {
-  const trimmed = String(value || '').trim()
-  return trimmed.toLowerCase() === 'original' ? '' : trimmed
-}
-
-function normalizeSearchTitleLanguages(values) {
-  const list = Array.isArray(values) ? values : []
-  const normalized = []
-  const seen = new Set()
-  for (const value of list) {
-    const language = normalizeSearchTitleLanguage(value)
-    const key = language.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    normalized.push(language)
-  }
-  return normalized
 }
 
 function normalizeSearchQueryLanguages(query) {
@@ -147,6 +123,7 @@ function Settings({
         nzb_history_retention_days: initialConfig.nzb_history_retention_days == null ? 90 : Number(initialConfig.nzb_history_retention_days),
         session_ttl_minutes: initialConfig.session_ttl_minutes == null ? 30 : Number(initialConfig.session_ttl_minutes),
         session_post_playback_ttl_minutes: initialConfig.session_post_playback_ttl_minutes == null ? 240 : Number(initialConfig.session_post_playback_ttl_minutes),
+        speculative_pre_probing_count: initialConfig.speculative_pre_probing_count == null ? 1 : Number(initialConfig.speculative_pre_probing_count),
         providers: initialConfig.providers?.map((p, index) => ({
           ...p,
           priority: p.priority != null ? p.priority : index + 1,

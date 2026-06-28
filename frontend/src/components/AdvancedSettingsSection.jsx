@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode', 'session_ttl_minutes', 'session_post_playback_ttl_minutes'],
+  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count'],
   availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -33,6 +33,9 @@ function pickInitialValues(values = {}) {
   const parsedSessionPostPlaybackTtl = values.session_post_playback_ttl_minutes == null
     ? 240
     : Number(values.session_post_playback_ttl_minutes)
+  const parsedSpeculativePreProbingCount = values.speculative_pre_probing_count == null
+    ? 1
+    : Number(values.speculative_pre_probing_count)
   return {
     log_level: values.log_level ?? 'INFO',
     verbose_nntp_logging: values.verbose_nntp_logging === true,
@@ -42,6 +45,7 @@ function pickInitialValues(values = {}) {
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
     session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
+    speculative_pre_probing_count: Number.isFinite(parsedSpeculativePreProbingCount) ? parsedSpeculativePreProbingCount : 1,
     failover_fast_mode: values.failover_fast_mode == null ? true : values.failover_fast_mode === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
@@ -66,7 +70,7 @@ function EnvOverrideIndicator({ show, message = 'Overwritten by environment vari
   )
 }
 
-export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSection({
+export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSettingsSection({
   initialValues,
   envOverrides,
   isSaving,
@@ -388,6 +392,33 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
                       <FormMessage />
                     </FormItem>
                   )} />
+                  <FormField control={control} name="speculative_pre_probing_count" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Speculative pre-probing (results)</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={5}
+                            className={fieldClassName('speculative_pre_probing_count', `h-9 ${controlMediumClass}`)}
+                            {...field}
+                            value={field.value ?? ''}
+                            onChange={e => {
+                              const v = e.target.value;
+                              const next = Number(v);
+                              field.onChange(v === '' ? 1 : Math.min(5, Math.max(0, Number.isNaN(next) ? 1 : next)))
+                            }}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        How many top search results to pre-probe (download NZB & verify) when loading a stream list. Set 0 to disable. Pre-probing reduces cold-start latency but consumes indexer API downloads.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
                 </div>
               </CardContent>
             </Card>
@@ -579,4 +610,4 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
       </form>
     </Form>
   )
-})
+}))

@@ -214,8 +214,8 @@ type seekableMemoryUnpackableFile struct {
 	data []byte
 }
 
-func (f *seekableMemoryUnpackableFile) Name() string { return f.name }
-func (f *seekableMemoryUnpackableFile) Size() int64 { return int64(len(f.data)) }
+func (f *seekableMemoryUnpackableFile) Name() string            { return f.name }
+func (f *seekableMemoryUnpackableFile) Size() int64             { return int64(len(f.data)) }
 func (f *seekableMemoryUnpackableFile) EnsureSegmentMap() error { return nil }
 func (f *seekableMemoryUnpackableFile) OpenStream() (io.ReadSeekCloser, error) {
 	return &nopReadSeekCloser{Reader: bytes.NewReader(f.data)}, nil
@@ -280,4 +280,3 @@ func TestVirtualStreamAbsoluteSeekInsideSamePart(t *testing.T) {
 		t.Fatalf("expected cdefg, got %s", string(buf))
 	}
 }
-

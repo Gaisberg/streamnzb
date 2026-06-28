@@ -118,6 +118,24 @@ func (s *Session) Context() context.Context {
 	return s.ctx
 }
 
+func (s *Session) IsWarm() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.NZB != nil
+}
+
+func (s *Session) IsNZBDownloadInFlight() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nzbDownloadInFlight
+}
+
 func (s *Session) ReleaseURL() string {
 	if s.Release != nil && s.Release.DetailsURL != "" {
 		return s.Release.DetailsURL

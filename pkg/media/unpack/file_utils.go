@@ -14,7 +14,7 @@ const (
 	ExtMkv  = ".mkv"
 	ExtMp4  = ".mp4"
 	ExtAvi  = ".avi"
-	ExtTs = ".ts"
+	ExtTs   = ".ts"
 	ExtVob  = ".vob"
 	ExtWmv  = ".wmv"
 	ExtFlv  = ".flv"

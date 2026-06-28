@@ -53,7 +53,6 @@ func (c *Client) Ping() error {
 	return err
 }
 
-
 type loginResponse struct {
 	Status string `json:"status"`
 	Data   struct {

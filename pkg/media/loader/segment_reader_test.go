@@ -195,8 +195,6 @@ func TestSegmentReaderSeekDoesNotCancelInFlightForegroundRead(t *testing.T) {
 	}
 }
 
-
-
 type blockingForegroundSegmentFetcher struct {
 	started   chan struct{}
 	release   chan struct{}

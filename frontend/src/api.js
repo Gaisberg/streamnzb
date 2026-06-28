@@ -29,7 +29,7 @@ export async function apiFetch(path, options = {}) {
     }
   }
   if (!res.ok) {
-    if (res.status === 401) {
+    if (res.status === 401 && !options.skipAuthNotify) {
       notifyUnauthorized({ path, status: res.status })
     }
     const err = new Error((data && (data.error || data.message)) || res.statusText)

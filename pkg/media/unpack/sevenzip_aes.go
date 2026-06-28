@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	aes7zBlockSize         = aes.BlockSize
-	aes7zPlainBufferSize   = 4096
+	aes7zBlockSize          = aes.BlockSize
+	aes7zPlainBufferSize    = 4096
 	aes7zCipherBufferBlocks = 8
 )
 

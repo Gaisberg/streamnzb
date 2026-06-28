@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
-import { getApiUrl, apiFetch } from '../api'
+import { apiFetch } from '@/api'
 import { cn } from '@/lib/utils'
 
 function formatSize(bytes) {
@@ -364,7 +364,7 @@ function formatResultFilterLabel(value) {
   return 'All'
 }
 
-export function NZBHistoryPage({ refreshTrigger }) {
+export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
   const [attempts, setAttempts] = useState([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -384,8 +384,7 @@ export function NZBHistoryPage({ refreshTrigger }) {
     if (showLoadingSpinner) setLoading(true)
     else setRefreshing(true)
     setError(null)
-    const url = getApiUrl('/api/nzb-attempts?limit=200')
-    apiFetch(url)
+    apiFetch('/api/nzb-attempts?limit=200')
       .then((data) => {
         if (Array.isArray(data)) setAttempts(data)
       })
@@ -885,4 +884,4 @@ export function NZBHistoryPage({ refreshTrigger }) {
       </Card>
     </div>
   )
-}
+})

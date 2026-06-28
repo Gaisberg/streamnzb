@@ -48,7 +48,7 @@ function EnvOverrideIndicator({ show, message = 'Overwritten by environment vari
   )
 }
 
-export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection({
+export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSettingsSection({
   initialValues,
   envOverrides,
   isSaving,
@@ -394,4 +394,4 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
       </form>
     </Form>
   )
-})
+}))

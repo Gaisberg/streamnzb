@@ -52,7 +52,6 @@ func (c *Client) Ping() error {
 	return nil
 }
 
-
 type FindResponse struct {
 	MovieResults     []Result `json:"movie_results"`
 	PersonResults    []Result `json:"person_results"`
