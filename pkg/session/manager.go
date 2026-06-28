@@ -1462,7 +1462,7 @@ func (m *Manager) cleanup() {
 			}
 		}
 		hasActivePlayback := session.ActivePlays > 0 || len(session.Clients) > 0
-		evictIdle := !hasActivePlayback && now.Sub(session.LastAccess) > m.ttl
+		evictIdle := !hasActivePlayback && session.PlaybackEndedAt.IsZero() && now.Sub(session.LastAccess) > m.ttl
 		evictPostPlayback := !hasActivePlayback && !session.PlaybackEndedAt.IsZero() && now.Sub(session.PlaybackEndedAt) > m.postPlaybackEvictTTL
 		evictStuckPlayback := hasActivePlayback && !session.PlaybackStartedAt.IsZero() && now.Sub(session.PlaybackStartedAt) > m.maxPlaybackDuration
 		if evictIdle || evictPostPlayback || evictStuckPlayback {
