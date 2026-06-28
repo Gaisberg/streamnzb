@@ -694,6 +694,8 @@ type configValidationPlan struct {
 	indexerDeletionOnly            bool
 	changedProviderIndexes         map[int]bool
 	changedIndexerIndexes          map[int]bool
+	validateTMDBAPIKey             bool
+	validateTVDBAPIKey             bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
@@ -707,6 +709,8 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateDeviceAssignments:      true,
 		validateProviders:              true,
 		validateIndexers:               true,
+		validateTMDBAPIKey:             true,
+		validateTVDBAPIKey:             true,
 	}
 }
 
@@ -758,6 +762,12 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 		} else {
 			plan.changedIndexerIndexes = changedIndexes(currentCfg.Indexers, nextCfg.Indexers)
 		}
+	}
+	if _, ok := raw["tmdb_api_key"]; ok {
+		plan.validateTMDBAPIKey = true
+	}
+	if _, ok := raw["tvdb_api_key"]; ok {
+		plan.validateTVDBAPIKey = true
 	}
 
 	return plan
@@ -1095,6 +1105,32 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				}
 			}(i, idx)
 		}
+	}
+
+	if plan.validateTMDBAPIKey && strings.TrimSpace(cfg.TMDBAPIKey) != "" {
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			client := tmdb.NewClient(key)
+			if err := client.Ping(); err != nil {
+				mu.Lock()
+				errors["tmdb_api_key"] = err.Error()
+				mu.Unlock()
+			}
+		}(strings.TrimSpace(cfg.TMDBAPIKey))
+	}
+
+	if plan.validateTVDBAPIKey && strings.TrimSpace(cfg.TVDBAPIKey) != "" {
+		wg.Add(1)
+		go func(key string) {
+			defer wg.Done()
+			client := tvdb.NewClient(key, paths.GetDataDir())
+			if err := client.Ping(); err != nil {
+				mu.Lock()
+				errors["tvdb_api_key"] = err.Error()
+				mu.Unlock()
+			}
+		}(strings.TrimSpace(cfg.TVDBAPIKey))
 	}
 
 	wg.Wait()

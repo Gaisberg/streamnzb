@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
@@ -13,18 +14,44 @@ import (
 )
 
 type Client struct {
-	apiKey string
-	client *http.Client
+	apiKey  string
+	client  *http.Client
+	BaseURL string
 }
 
 func NewClient(apiKey string) *Client {
+	baseURL := "https://api.themoviedb.org/3"
+	if envURL := os.Getenv("STREAMNZB_TMDB_BASE_URL"); envURL != "" {
+		baseURL = envURL
+	}
 	return &Client{
 		apiKey: apiKey,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		BaseURL: baseURL,
 	}
 }
+
+func (c *Client) Ping() error {
+	if c.apiKey == "" {
+		return fmt.Errorf("TMDB Read Access Token not configured")
+	}
+
+	urlStr := c.BaseURL + "/configuration"
+	resp, err := c.doRequest(urlStr, url.Values{})
+	if err != nil {
+		return fmt.Errorf("TMDB ping request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TMDB returned status: %d (verify your Read Access Token)", resp.StatusCode)
+	}
+
+	return nil
+}
+
 
 type FindResponse struct {
 	MovieResults     []Result `json:"movie_results"`
@@ -146,7 +173,7 @@ func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, 
 
 func (c *Client) Find(externalID, source string) (*FindResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/find/%s", externalID)
@@ -173,7 +200,7 @@ func (c *Client) Find(externalID, source string) (*FindResponse, error) {
 
 func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	if query == "" {
 		return &SearchMultiResponse{Results: []SearchMultiResult{}}, nil
@@ -211,7 +238,7 @@ func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
 
 func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/%s/%d/external_ids", mediaType, tmdbID)
@@ -341,7 +368,7 @@ func (c *Client) GetMovieDetails(tmdbID int) (*MovieDetails, error) {
 
 func (c *Client) GetMovieDetailsWithLanguage(tmdbID int, language string) (*MovieDetails, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d", tmdbID)
 	params := url.Values{}
@@ -365,7 +392,7 @@ func (c *Client) GetMovieDetailsWithLanguage(tmdbID int, language string) (*Movi
 
 func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations", movieID)
 	resp, err := c.doRequest(endpoint, url.Values{})
@@ -385,7 +412,7 @@ func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, 
 
 func (c *Client) GetMovieAlternativeTitles(movieID int) (*MovieAlternativeTitlesResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles", movieID)
 	resp, err := c.doRequest(endpoint, url.Values{})
@@ -507,7 +534,7 @@ func (c *Client) GetTVDetails(tmdbID int) (*TVDetails, error) {
 
 func (c *Client) GetTVDetailsWithLanguage(tmdbID int, language string) (*TVDetails, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d", tmdbID)
 	params := url.Values{}
@@ -531,7 +558,7 @@ func (c *Client) GetTVDetailsWithLanguage(tmdbID int, language string) (*TVDetai
 
 func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations", tmdbID)
 	resp, err := c.doRequest(endpoint, url.Values{})
@@ -551,7 +578,7 @@ func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) 
 
 func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesResponse, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles", tmdbID)
 	resp, err := c.doRequest(endpoint, url.Values{})
@@ -571,7 +598,7 @@ func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesRespons
 
 func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {
 	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB API key not configured")
+		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
 	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/season/%d", seriesID, seasonNumber)
 	resp, err := c.doRequest(endpoint, url.Values{})

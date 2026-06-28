@@ -322,3 +322,89 @@ func TestValidateConfigWithPlanIndexerProxyChecksIndexerConnection(t *testing.T)
 		t.Fatalf("expected no standalone proxy reachability error, got %q", got)
 	}
 }
+
+func TestValidateConfigTMDBAndTVDBAPIKeys(t *testing.T) {
+	// 1. Setup mock TMDB server
+	tmdbMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/configuration" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.Contains(authHeader, "correct_tmdb_key") {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"images":{}}`))
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer tmdbMock.Close()
+
+	// 2. Setup mock TVDB server
+	tvdbMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+				if body["apikey"] == "correct_tvdb_key" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"status":"success","data":{"token":"test_token"}}`))
+					return
+				}
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"status":"failure","data":{}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer tvdbMock.Close()
+
+	// Set env overrides
+	t.Setenv("STREAMNZB_TMDB_BASE_URL", tmdbMock.URL)
+	t.Setenv("STREAMNZB_TVDB_BASE_URL", tvdbMock.URL)
+
+	s := &Server{}
+
+	// Test 1: Valid keys pass validation
+	cfgValid := &config.Config{
+		TMDBAPIKey: "correct_tmdb_key",
+		TVDBAPIKey: "correct_tvdb_key",
+	}
+	errs := s.validateConfigWithPlan(cfgValid, configValidationPlan{
+		validateTMDBAPIKey: true,
+		validateTVDBAPIKey: true,
+	})
+	if len(errs) > 0 {
+		t.Fatalf("expected valid TMDB/TVDB keys to pass, got errors: %#v", errs)
+	}
+
+	// Test 2: Invalid keys fail validation
+	cfgInvalid := &config.Config{
+		TMDBAPIKey: "wrong_tmdb_key",
+		TVDBAPIKey: "wrong_tvdb_key",
+	}
+	errs = s.validateConfigWithPlan(cfgInvalid, configValidationPlan{
+		validateTMDBAPIKey: true,
+		validateTVDBAPIKey: true,
+	})
+	if errs["tmdb_api_key"] == "" {
+		t.Error("expected tmdb_api_key error, got none")
+	}
+	if errs["tvdb_api_key"] == "" {
+		t.Error("expected tvdb_api_key error, got none")
+	}
+
+	// Test 3: Empty keys are skipped/pass validation
+	cfgEmpty := &config.Config{
+		TMDBAPIKey: "",
+		TVDBAPIKey: "",
+	}
+	errs = s.validateConfigWithPlan(cfgEmpty, configValidationPlan{
+		validateTMDBAPIKey: true,
+		validateTVDBAPIKey: true,
+	})
+	if len(errs) > 0 {
+		t.Fatalf("expected empty keys to pass, got errors: %#v", errs)
+	}
+}
+

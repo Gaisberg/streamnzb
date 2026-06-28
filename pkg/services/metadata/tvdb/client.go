@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
@@ -26,17 +27,32 @@ type Client struct {
 	dataDir    string
 	client     *http.Client
 	tokenCache string
+	BaseURL    string
 }
 
 func NewClient(apiKey, dataDir string) *Client {
+	baseURL := "https://api4.thetvdb.com/v4"
+	if envURL := os.Getenv("STREAMNZB_TVDB_BASE_URL"); envURL != "" {
+		baseURL = envURL
+	}
 	return &Client{
 		apiKey:  apiKey,
 		dataDir: dataDir,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		BaseURL: baseURL,
 	}
 }
+
+func (c *Client) Ping() error {
+	if c.apiKey == "" {
+		return fmt.Errorf("TVDB API key not configured")
+	}
+	_, err := c.login()
+	return err
+}
+
 
 type loginResponse struct {
 	Status string `json:"status"`
@@ -112,7 +128,7 @@ func (c *Client) login() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequest("POST", baseURL+"/login", bytes.NewReader(b))
+	req, err := http.NewRequest("POST", c.BaseURL+"/login", bytes.NewReader(b))
 	if err != nil {
 		return "", err
 	}
@@ -149,9 +165,9 @@ func (c *Client) doRequest(method, path string, body []byte) (*http.Response, er
 	}
 	var req *http.Request
 	if body != nil {
-		req, err = http.NewRequest(method, baseURL+path, bytes.NewReader(body))
+		req, err = http.NewRequest(method, c.BaseURL+path, bytes.NewReader(body))
 	} else {
-		req, err = http.NewRequest(method, baseURL+path, nil)
+		req, err = http.NewRequest(method, c.BaseURL+path, nil)
 	}
 	if err != nil {
 		return nil, err

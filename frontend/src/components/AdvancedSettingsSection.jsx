@@ -75,6 +75,7 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
   onRefreshAvailNZBStatus,
   onDirtyChange,
   onProceedTabChange,
+  saveStatus,
 }, ref) {
   const defaults = useMemo(() => pickInitialValues(initialValues), [initialValues])
   const [lastSavedValues, setLastSavedValues] = useState(defaults)
@@ -88,9 +89,21 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
   const dirtyRef = useRef(false)
 
   const form = useForm({ defaultValues: defaults })
-  const { control, handleSubmit, reset, getValues, formState } = form
+  const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
   const watchedValues = useWatch({ control })
   const availNZBModeEnabled = normalizeAvailNZBMode(watchedValues?.availnzb_mode) === 'on'
+
+  useEffect(() => {
+    if (saveStatus?.type === 'error' && saveStatus.errors) {
+      Object.entries(saveStatus.errors).forEach(([key, msg]) => {
+        if (Object.values(CARD_FIELDS).flat().includes(key)) {
+          setError(key, { type: 'server', message: msg })
+        }
+      })
+    } else {
+      clearErrors()
+    }
+  }, [saveStatus, setError, clearErrors])
 
   useEffect(() => {
     const currentValues = pickInitialValues(watchedValues)
@@ -484,7 +497,7 @@ export const AdvancedSettingsSection = forwardRef(function AdvancedSettingsSecti
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1 max-w-[34rem] space-y-0.5">
                 <CardTitle>Metadata APIs</CardTitle>
-                <CardDescription>Optional API keys for metadata enrichment during search and matching. Built-in defaults are available, but using your own keys is recommended.</CardDescription>
+                <CardDescription>Optional API keys and tokens for metadata enrichment during search and matching. Built-in defaults are available, but using your own credentials is recommended.</CardDescription>
               </div>
               <div className="shrink-0">{renderSaveButton('metadata')}</div>
             </div>

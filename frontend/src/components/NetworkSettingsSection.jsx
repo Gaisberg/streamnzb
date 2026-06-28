@@ -55,6 +55,7 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
   onPersist,
   onDirtyChange,
   onProceedTabChange,
+  saveStatus,
 }, ref) {
   const defaults = useMemo(() => pickInitialValues(initialValues), [initialValues])
   const [lastSavedValues, setLastSavedValues] = useState(defaults)
@@ -67,9 +68,21 @@ export const NetworkSettingsSection = forwardRef(function NetworkSettingsSection
   const dirtyRef = useRef(false)
 
   const form = useForm({ defaultValues: defaults })
-  const { control, handleSubmit, reset, getValues, formState } = form
+  const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
   const watchedValues = useWatch({ control })
   const proxyEnabled = form.watch('proxy_enabled') !== false
+
+  useEffect(() => {
+    if (saveStatus?.type === 'error' && saveStatus.errors) {
+      Object.entries(saveStatus.errors).forEach(([key, msg]) => {
+        if (Object.values(CARD_FIELDS).flat().includes(key)) {
+          setError(key, { type: 'server', message: msg })
+        }
+      })
+    } else {
+      clearErrors()
+    }
+  }, [saveStatus, setError, clearErrors])
 
   useEffect(() => {
     const currentValues = pickInitialValues(watchedValues)

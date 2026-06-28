@@ -322,6 +322,7 @@ function Settings({
           onDirtyChange={handleNetworkDirtyChange}
           onProceedTabChange={handleNetworkProceedTabChange}
           onPersist={handleNetworkPersist}
+          saveStatus={saveStatus}
           />
         )}
 
@@ -336,6 +337,7 @@ function Settings({
           onPersist={handleAdvancedPersist}
           onClearCache={handleClearCache}
           onRefreshAvailNZBStatus={onRefreshAvailNZBStatus}
+          saveStatus={saveStatus}
           />
         )}
 
