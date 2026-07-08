@@ -13,6 +13,9 @@ func newTestStateManager(t *testing.T) *StateManager {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	t.Cleanup(func() {
+		if globalManager != nil {
+			_ = globalManager.Close()
+		}
 		globalManager = nil
 		_ = os.RemoveAll(tempDir)
 	})

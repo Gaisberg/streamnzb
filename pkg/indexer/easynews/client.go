@@ -306,27 +306,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 }
 
 func prepareEasynewsQuery(baseQuery, searchMode string, overrides *config.IndexerSearchConfig) string {
-	query := release.NormalizeTitleForSearchQuery(baseQuery)
-	extraTerms := ""
-	if overrides != nil && overrides.ExtraSearchTerms != nil {
-		extraTerms = strings.TrimSpace(*overrides.ExtraSearchTerms)
-	}
-	if extraTerms != "" {
-		if strings.EqualFold(strings.TrimSpace(searchMode), "id") {
-			if query != "" {
-				query = extraTerms + " " + query
-			} else {
-				query = extraTerms
-			}
-		} else {
-			if query != "" {
-				query = query + " " + extraTerms
-			} else {
-				query = extraTerms
-			}
-		}
-	}
-	return query
+	return release.NormalizeTitleForSearchQuery(baseQuery)
 }
 
 func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error) {

@@ -509,9 +509,39 @@ func TestConfigNormalizeSpeculativePreProbingCount(t *testing.T) {
 		t.Fatalf("expected count 0 for zero-value count field, got %d", got)
 	}
 
-	var cfgNil *Config
+	cfgNil := (*Config)(nil)
 	if got := cfgNil.EffectiveSpeculativePreProbingCount(); got != DefaultSpeculativePreProbingCount {
 		t.Fatalf("expected default count %d for nil config, got %d", DefaultSpeculativePreProbingCount, got)
+	}
+}
+
+func TestConfigBootstrapsDefaultFilterProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("STREAMNZB_DATA_DIR", tmpDir)
+	t.Setenv("LOCALAPPDATA", tmpDir)
+
+	res, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if len(res.FilterProfiles) != 1 {
+		t.Fatalf("expected 1 default filter profile, got %d", len(res.FilterProfiles))
+	}
+
+	p := res.FilterProfiles[0]
+	t.Logf("bootstrapped profile: %+v", p)
+	if p.Name != "Default Profile" {
+		t.Errorf("expected default profile name 'Default Profile', got %q", p.Name)
+	}
+	if len(p.AllowedResolutions) != 3 {
+		t.Errorf("expected 3 allowed resolutions, got %v", p.AllowedResolutions)
+	}
+	if len(p.BlockedQualities) != 1 || p.BlockedQualities[0] != "CAM" {
+		t.Errorf("expected BlockedQualities = [CAM], got %v", p.BlockedQualities)
+	}
+	if len(p.SortOrder) != 4 || p.SortOrder[0] != "resolution" {
+		t.Errorf("expected default SortOrder, got %v", p.SortOrder)
 	}
 }
 

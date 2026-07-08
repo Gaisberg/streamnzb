@@ -76,31 +76,43 @@ type IndexerSearchConfig struct {
 	SearchTitleLanguage        *string `json:"search_title_language,omitempty"`
 	MovieCategories            *string `json:"movie_categories,omitempty"`
 	TVCategories               *string `json:"tv_categories,omitempty"`
-	ExtraSearchTerms           *string `json:"extra_search_terms,omitempty"`
 	DisableIdSearch            *bool   `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool   `json:"disable_string_search,omitempty"`
 }
 
 type SearchQueryConfig struct {
-	Name              string `json:"name"`
-	SearchMode        string `json:"search_mode,omitempty"`
-	SearchResultLimit int    `json:"search_result_limit,omitempty"`
-	IncludeYear       *bool  `json:"include_year,omitempty"`
-	// Legacy transport-vs-query hint kept only so older local draft configs still load cleanly.
-	UseSeasonEpisodeParams     *bool    `json:"use_season_episode_params,omitempty"`
-	SeriesSearchScope          string   `json:"series_search_scope,omitempty"`
-	EnableSeriesSeasonSearch   *bool    `json:"enable_series_season_search,omitempty"`
-	EnableSeriesCompleteSearch *bool    `json:"enable_series_complete_search,omitempty"`
-	EnableSeriesPackSearch     *bool    `json:"enable_series_pack_search,omitempty"`
-	SearchTitleLanguage        string   `json:"search_title_language,omitempty"`
-	SearchTitleLanguages       []string `json:"search_title_languages,omitempty"`
-	// Legacy year field kept only so older local draft configs still load cleanly.
-	LegacyIncludeYearInTextSearch *bool  `json:"include_year_in_text_search,omitempty"`
-	MovieCategories               string `json:"movie_categories,omitempty"`
-	TVCategories                  string `json:"tv_categories,omitempty"`
-	ExtraSearchTerms              string `json:"extra_search_terms,omitempty"`
-	DisableIdSearch               *bool  `json:"disable_id_search,omitempty"`
-	DisableStringSearch           *bool  `json:"disable_string_search,omitempty"`
+	Name                          string   `json:"name"`
+	SearchMode                    string   `json:"search_mode,omitempty"`
+	SearchResultLimit             int      `json:"search_result_limit,omitempty"`
+	IncludeYear                   *bool    `json:"include_year,omitempty"`
+	UseSeasonEpisodeParams        *bool    `json:"use_season_episode_params,omitempty"`
+	SeriesSearchScope             string   `json:"series_search_scope,omitempty"`
+	EnableSeriesSeasonSearch      *bool    `json:"enable_series_season_search,omitempty"`
+	EnableSeriesCompleteSearch    *bool    `json:"enable_series_complete_search,omitempty"`
+	EnableSeriesPackSearch        *bool    `json:"enable_series_pack_search,omitempty"`
+	SearchTitleLanguage           string   `json:"search_title_language,omitempty"`
+	SearchTitleLanguages          []string `json:"search_title_languages,omitempty"`
+	LegacyIncludeYearInTextSearch *bool    `json:"include_year_in_text_search,omitempty"`
+	MovieCategories               string   `json:"movie_categories,omitempty"`
+	TVCategories                  string   `json:"tv_categories,omitempty"`
+	DisableIdSearch               *bool    `json:"disable_id_search,omitempty"`
+	DisableStringSearch           *bool    `json:"disable_string_search,omitempty"`
+}
+
+type FilterProfileConfig struct {
+	Name               string   `json:"name"`
+	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
+	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
+	AllowedQualities   []string `json:"allowed_qualities,omitempty"`
+	BlockedQualities   []string `json:"blocked_qualities,omitempty"`
+	AllowedCodecs      []string `json:"allowed_codecs,omitempty"`
+	BlockedCodecs      []string `json:"blocked_codecs,omitempty"`
+	RequireHDR         *bool    `json:"require_hdr,omitempty"`
+	AllowedHDRs        []string `json:"allowed_hdrs,omitempty"`
+	BlockedHDRs        []string `json:"blocked_hdrs,omitempty"`
+	RequiredKeywords   []string `json:"required_keywords,omitempty"`
+	ExcludedKeywords   []string `json:"excluded_keywords,omitempty"`
+	SortOrder          []string `json:"sort_order,omitempty"`
 }
 
 type IndexerConfig struct {
@@ -121,7 +133,6 @@ type IndexerConfig struct {
 
 	MovieCategories            string `json:"movie_categories,omitempty"`
 	TVCategories               string `json:"tv_categories,omitempty"`
-	ExtraSearchTerms           string `json:"extra_search_terms,omitempty"`
 	SearchResultLimit          int    `json:"search_result_limit,omitempty"`
 	EnableSeriesSeasonSearch   *bool  `json:"enable_series_season_search,omitempty"`
 	EnableSeriesCompleteSearch *bool  `json:"enable_series_complete_search,omitempty"`
@@ -449,8 +460,9 @@ type Config struct {
 
 	Streams map[string]*StreamEntry `json:"streams,omitempty"`
 
-	MovieSearchQueries  []SearchQueryConfig `json:"movie_search_queries,omitempty"`
-	SeriesSearchQueries []SearchQueryConfig `json:"series_search_queries,omitempty"`
+	MovieSearchQueries  []SearchQueryConfig   `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries []SearchQueryConfig   `json:"series_search_queries,omitempty"`
+	FilterProfiles      []FilterProfileConfig `json:"filter_profiles,omitempty"`
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.
@@ -507,6 +519,7 @@ type StreamEntry struct {
 	IndexerOverrides    map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
 	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
+	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
@@ -545,10 +558,6 @@ func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
 	if sq.TVCategories != "" {
 		s := sq.TVCategories
 		out.TVCategories = &s
-	}
-	if sq.ExtraSearchTerms != "" {
-		s := sq.ExtraSearchTerms
-		out.ExtraSearchTerms = &s
 	}
 	return out
 }
@@ -642,16 +651,6 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		out.TVCategories = &tc
 	}
 
-	et := ""
-	if ic != nil {
-		et = ic.ExtraSearchTerms
-	}
-	if override != nil && override.ExtraSearchTerms != nil {
-		et = *override.ExtraSearchTerms
-	}
-	if et != "" {
-		out.ExtraSearchTerms = &et
-	}
 
 	disableID := false
 	if ic != nil && ic.DisableIdSearch != nil {
@@ -733,6 +732,17 @@ func Load() (*Config, error) {
 	}
 	if cfg.ConfigVersion < CurrentConfigVersion {
 		cfg.ConfigVersion = CurrentConfigVersion
+		needSave = true
+	}
+	if len(cfg.FilterProfiles) == 0 {
+		cfg.FilterProfiles = []FilterProfileConfig{
+			{
+				Name:               "Default Profile",
+				AllowedResolutions: []string{"2160p", "1080p", "720p"},
+				BlockedQualities:   []string{"CAM"},
+				SortOrder:          []string{"resolution", "quality", "size", "age"},
+			},
+		}
 		needSave = true
 	}
 	if cfg.KeepLogFiles < 1 {

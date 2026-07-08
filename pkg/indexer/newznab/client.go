@@ -527,10 +527,6 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	rawQuery := req.Query
 	query := rawQuery
 	isTextMode := !strings.EqualFold(strings.TrimSpace(req.SearchMode), "id") && query != ""
-	extraTerms := c.cfg.ExtraSearchTerms
-	if o := req.OptionalOverrides; o != nil && o.ExtraSearchTerms != nil {
-		extraTerms = *o.ExtraSearchTerms
-	}
 
 	useTVSearchParams := false
 	searchSeason, searchEpisode := "", ""
@@ -626,26 +622,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		}
 	}
 
-	if extraTerms != "" {
-		switch {
-		case !isTextMode && useTVSearchParams:
-			query = extraTerms
-		case strings.EqualFold(strings.TrimSpace(req.SearchMode), "id"):
-			if query != "" {
-				query = extraTerms + " " + query
-			} else {
-				query = extraTerms
-			}
-		default:
-			if query != "" {
-				query = query + " " + extraTerms
-			} else {
-				query = extraTerms
-			}
-		}
-	}
-
-	if query != "" && (isTextMode || !useTVSearchParams || (!isTextMode && useTVSearchParams && query != rawQuery)) {
+	if query != "" && isTextMode {
 		params.Set("q", query)
 	}
 	if c.cfg.SearchResultsCacheTime > 0 && config.IsAggregatorIndexerType(c.cfg.Type) {

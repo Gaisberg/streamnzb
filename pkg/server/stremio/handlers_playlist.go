@@ -2,14 +2,17 @@ package stremio
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
 	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 )
@@ -366,7 +369,12 @@ func releasesToCandidates(releases []*release.Release) []triage.Candidate {
 		if rel == nil {
 			continue
 		}
-		out = append(out, triage.Candidate{Release: rel, Score: 0})
+		parsed := parser.ParseReleaseTitle(rel.Title)
+		out = append(out, triage.Candidate{
+			Release:  rel,
+			Metadata: parsed,
+			Score:    0,
+		})
 	}
 	return out
 }
@@ -376,7 +384,7 @@ func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, s
 	source := buildPlaylistSource(raw, filteringActive)
 	inputCandidates := buildPlaylistCandidates(source)
 	candidates := s.applyPlaylistFiltering(inputCandidates, source, isAIOStreams, filteringActive, filterMode, stream)
-	candidates = applyPlaylistSorting(candidates, s.triageService, filteringActive, filterMode, stream)
+	candidates = s.applyPlaylistSorting(candidates, filteringActive, filterMode, stream)
 	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive)
 	return buildPlaylistResult(source, candidates), nil
 }
@@ -768,22 +776,334 @@ func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *p
 	}
 	logAvailReportedBadFiltering(stream, availReportedBadFilteringEnabled, availFilteredOut, unavailableKnownCount)
 	if !filteringActive {
+		// Apply custom Filter Profile even if general healthy filtering is inactive
+		if stream != nil && stream.FilterProfileName != "" {
+			candidates = s.applyCustomFilterProfile(candidates, stream.FilterProfileName)
+		}
 		return candidates
 	}
 	inputResults := len(candidates)
 	candidates = s.filterCachedUnhealthyCandidates(candidates, source.Avail, filteringActive, stream)
+	if stream != nil && stream.FilterProfileName != "" {
+		candidates = s.applyCustomFilterProfile(candidates, stream.FilterProfileName)
+	}
 	logStreamFiltering(stream, filterMode, inputResults, len(candidates))
 	return candidates
 }
 
-func applyPlaylistSorting(candidates []triage.Candidate, triageService *triage.Service, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
-	if !filteringActive {
+func (s *Server) applyCustomFilterProfile(candidates []triage.Candidate, profileName string) []triage.Candidate {
+	s.mu.RLock()
+	var selectedProfile *config.FilterProfileConfig
+	for i := range s.config.FilterProfiles {
+		if strings.EqualFold(s.config.FilterProfiles[i].Name, profileName) {
+			selectedProfile = &s.config.FilterProfiles[i]
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if selectedProfile == nil {
 		return candidates
 	}
+
+	var filtered []triage.Candidate
+	for _, cand := range candidates {
+		if matchFilterProfile(cand, selectedProfile) {
+			filtered = append(filtered, cand)
+		}
+	}
+	return filtered
+}
+
+func matchFilterProfile(cand triage.Candidate, profile *config.FilterProfileConfig) bool {
+	parsed := cand.Metadata
+	titleLower := strings.ToLower(cand.Release.Title)
+
+	// 1. Excluded Keywords (in title)
+	for _, kw := range profile.ExcludedKeywords {
+		trimmed := strings.ToLower(strings.TrimSpace(kw))
+		if trimmed != "" && strings.Contains(titleLower, trimmed) {
+			return false
+		}
+	}
+
+	// 2. Required Keywords (in title)
+	for _, kw := range profile.RequiredKeywords {
+		trimmed := strings.ToLower(strings.TrimSpace(kw))
+		if trimmed != "" && !strings.Contains(titleLower, trimmed) {
+			return false
+		}
+	}
+
+	if parsed == nil {
+		hasPttRules := len(profile.AllowedResolutions) > 0 || len(profile.BlockedResolutions) > 0 ||
+			len(profile.AllowedQualities) > 0 || len(profile.BlockedQualities) > 0 ||
+			len(profile.AllowedCodecs) > 0 || len(profile.BlockedCodecs) > 0 ||
+			(profile.RequireHDR != nil && *profile.RequireHDR) ||
+			len(profile.AllowedHDRs) > 0 || len(profile.BlockedHDRs) > 0
+		return !hasPttRules
+	}
+
+	containsCaseInsensitive := func(list []string, val string) bool {
+		valLower := strings.ToLower(strings.TrimSpace(val))
+		for _, item := range list {
+			if strings.EqualFold(strings.TrimSpace(item), valLower) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 3. Resolutions
+	if len(profile.AllowedResolutions) > 0 {
+		if !containsCaseInsensitive(profile.AllowedResolutions, parsed.Resolution) {
+			return false
+		}
+	}
+	if len(profile.BlockedResolutions) > 0 {
+		if containsCaseInsensitive(profile.BlockedResolutions, parsed.Resolution) {
+			return false
+		}
+	}
+
+	// 4. Qualities
+	if len(profile.AllowedQualities) > 0 {
+		if !containsCaseInsensitive(profile.AllowedQualities, parsed.Quality) {
+			return false
+		}
+	}
+	if len(profile.BlockedQualities) > 0 {
+		if containsCaseInsensitive(profile.BlockedQualities, parsed.Quality) {
+			return false
+		}
+	}
+
+	// 5. Codecs
+	if len(profile.AllowedCodecs) > 0 {
+		if !containsCaseInsensitive(profile.AllowedCodecs, parsed.Codec) {
+			return false
+		}
+	}
+	if len(profile.BlockedCodecs) > 0 {
+		if containsCaseInsensitive(profile.BlockedCodecs, parsed.Codec) {
+			return false
+		}
+	}
+
+	// 6. HDR
+	if profile.RequireHDR != nil && *profile.RequireHDR {
+		hasHDR := false
+		for _, tag := range parsed.HDR {
+			tagLower := strings.ToLower(strings.TrimSpace(tag))
+			if tagLower != "sdr" && tagLower != "" {
+				hasHDR = true
+				break
+			}
+		}
+		if !hasHDR {
+			return false
+		}
+	}
+	if len(profile.AllowedHDRs) > 0 {
+		hasAllowedHDR := false
+		for _, tag := range parsed.HDR {
+			if containsCaseInsensitive(profile.AllowedHDRs, tag) {
+				hasAllowedHDR = true
+				break
+			}
+		}
+		if !hasAllowedHDR {
+			return false
+		}
+	}
+	if len(profile.BlockedHDRs) > 0 {
+		for _, tag := range parsed.HDR {
+			if containsCaseInsensitive(profile.BlockedHDRs, tag) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func (s *Server) applyPlaylistSorting(candidates []triage.Candidate, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
+	var customSortOrder []string
+	var hasCustomSort bool
+	if stream != nil && stream.FilterProfileName != "" {
+		s.mu.RLock()
+		for i := range s.config.FilterProfiles {
+			if strings.EqualFold(s.config.FilterProfiles[i].Name, stream.FilterProfileName) {
+				customSortOrder = s.config.FilterProfiles[i].SortOrder
+				hasCustomSort = true
+				break
+			}
+		}
+		s.mu.RUnlock()
+	}
+
+	if hasCustomSort {
+		// Even if general healthy filtering is off, we still trigger metadata population/scoring first.
+		sortCandidates(s.triageService, candidates)
+		customSortCandidates(candidates, customSortOrder)
+	} else if filteringActive {
+		sortCandidates(s.triageService, candidates)
+	}
+
 	inputResults := len(candidates)
-	sortCandidates(triageService, candidates)
 	logStreamSorting(stream, filterMode, inputResults, len(candidates))
 	return candidates
+}
+
+func customSortCandidates(candidates []triage.Candidate, sortOrder []string) {
+	if len(sortOrder) == 0 {
+		sortOrder = []string{"resolution", "quality", "size", "age"}
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		candI := candidates[i]
+		candJ := candidates[j]
+
+		for _, criterion := range sortOrder {
+			switch strings.ToLower(criterion) {
+			case "resolution":
+				resI := resolutionRank(candI.Metadata.Resolution)
+				resJ := resolutionRank(candJ.Metadata.Resolution)
+				if resI != resJ {
+					return resI > resJ
+				}
+			case "quality":
+				qI := qualityRank(candI.Metadata.Quality)
+				qJ := qualityRank(candJ.Metadata.Quality)
+				if qI != qJ {
+					return qI > qJ
+				}
+			case "hdr":
+				hdrI := hdrRank(candI.Metadata.HDR)
+				hdrJ := hdrRank(candJ.Metadata.HDR)
+				if hdrI != hdrJ {
+					return hdrI > hdrJ
+				}
+			case "size":
+				sizeI := candI.Release.Size
+				sizeJ := candJ.Release.Size
+				if sizeI != sizeJ {
+					return sizeI > sizeJ
+				}
+			case "age":
+				ageI := pubDateUnix(candI.Release.PubDate)
+				ageJ := pubDateUnix(candJ.Release.PubDate)
+				if ageI != ageJ {
+					return ageI > ageJ
+				}
+			case "seeders", "grabs":
+				grabsI := candI.Release.Grabs
+				grabsJ := candJ.Release.Grabs
+				if grabsI != grabsJ {
+					return grabsI > grabsJ
+				}
+			case "codec":
+				codI := codecRank(candI.Metadata.Codec)
+				codJ := codecRank(candJ.Metadata.Codec)
+				if codI != codJ {
+					return codI > codJ
+				}
+			}
+		}
+
+		return candI.Score > candJ.Score
+	})
+}
+
+func resolutionRank(res string) int {
+	switch strings.ToLower(res) {
+	case "2160p", "4k", "uhd":
+		return 5
+	case "1080p", "fhd":
+		return 4
+	case "720p", "hd":
+		return 3
+	case "576p", "480p":
+		return 2
+	case "":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func qualityRank(q string) int {
+	switch strings.ToLower(q) {
+	case "remux", "bdremux", "bluray remux":
+		return 7
+	case "bluray", "bdrip", "brrip", "bd":
+		return 6
+	case "web-dl", "webdl", "webrip", "web":
+		return 5
+	case "hdtv", "tvrip", "dsr":
+		return 4
+	case "dvd", "dvdrip", "r5":
+		return 3
+	case "scr", "screener", "tc", "telecine", "ts", "telesync":
+		return 2
+	case "camrip", "cam":
+		return 1
+	case "":
+		return 0
+	default:
+		return 0
+	}
+}
+
+func hdrRank(hdr []string) int {
+	if len(hdr) == 0 {
+		return 0
+	}
+	rank := 1
+	for _, val := range hdr {
+		valLower := strings.ToLower(val)
+		if strings.Contains(valLower, "dv") || strings.Contains(valLower, "vision") {
+			if rank < 4 {
+				rank = 4
+			}
+		} else if strings.Contains(valLower, "hdr10+") {
+			if rank < 3 {
+				rank = 3
+			}
+		} else if strings.Contains(valLower, "hdr") {
+			if rank < 2 {
+				rank = 2
+			}
+		}
+	}
+	return rank
+}
+
+func codecRank(codec string) int {
+	switch strings.ToLower(codec) {
+	case "hevc", "x265", "h265":
+		return 3
+	case "avc", "x264", "h264":
+		return 2
+	case "mpeg-2", "mpeg2":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func pubDateUnix(pubDate string) int64 {
+	if pubDate == "" {
+		return 0
+	}
+	pubTime, err := time.Parse(time.RFC1123Z, pubDate)
+	if err != nil {
+		pubTime, err = time.Parse(time.RFC1123, pubDate)
+	}
+	if err != nil {
+		return 0
+	}
+	return pubTime.Unix()
 }
 
 func buildPlaylistResult(source *playlistSource, candidates []triage.Candidate) *playlistResult {

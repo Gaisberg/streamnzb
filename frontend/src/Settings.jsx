@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Save } from "lucide-react"
+import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Save, Filter } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
+import { FilterSettings } from "@/components/FilterSettings"
 import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'network', label: 'Network', icon: Network },
   { id: 'indexers', label: 'Indexers', icon: Server },
   { id: 'providers', label: 'Providers', icon: Globe },
+  { id: 'filters', label: 'Filters', icon: Filter },
   { id: 'search_query', label: 'Search', icon: Search },
   { id: 'advanced', label: 'Advanced', icon: SlidersHorizontal },
 ]
@@ -73,7 +75,8 @@ function Settings({
       providers: [],
       indexers: [],
       movie_search_queries: [],
-      series_search_queries: []
+      series_search_queries: [],
+      filter_profiles: []
     }
   })
 
@@ -148,7 +151,6 @@ function Settings({
           name: query.name || '',
           search_mode: query.search_mode || 'id',
           movie_categories: query.movie_categories || '',
-          extra_search_terms: query.extra_search_terms || '',
           search_result_limit: Number(query.search_result_limit || 0),
           search_title_language: normalizeSearchTitleLanguage(query.search_title_language || ''),
           search_title_languages: normalizeSearchQueryLanguages(query),
@@ -158,19 +160,34 @@ function Settings({
           name: query.name || '',
           search_mode: query.search_mode || 'id',
           tv_categories: query.tv_categories || '',
-          extra_search_terms: query.extra_search_terms || '',
           search_result_limit: Number(query.search_result_limit || 0),
           search_title_language: normalizeSearchTitleLanguage(query.search_title_language || ''),
           search_title_languages: normalizeSearchQueryLanguages(query),
           include_year: normalizeQueryYearSetting(query.search_mode, query.include_year, query.include_year_in_text_search),
           series_search_scope: normalizeSeriesScopeFromLegacy(query.series_search_scope, query.use_season_episode_params),
-        })) || []
+        })) || [],
+        filter_profiles: initialConfig.filter_profiles?.map((profile) => ({
+          name: profile.name || '',
+          allowed_resolutions: profile.allowed_resolutions || [],
+          blocked_resolutions: profile.blocked_resolutions || [],
+          allowed_qualities: profile.allowed_qualities || [],
+          blocked_qualities: profile.blocked_qualities || [],
+          allowed_codecs: profile.allowed_codecs || [],
+          blocked_codecs: profile.blocked_codecs || [],
+          require_hdr: !!profile.require_hdr,
+          allowed_hdrs: profile.allowed_hdrs || [],
+          blocked_hdrs: profile.blocked_hdrs || [],
+          required_keywords: profile.required_keywords || [],
+          excluded_keywords: profile.excluded_keywords || [],
+          sort_order: profile.sort_order || [],
+        })) || [],
       }
       reset({
         providers: formattedData.providers,
         indexers: formattedData.indexers,
         movie_search_queries: formattedData.movie_search_queries,
         series_search_queries: formattedData.series_search_queries,
+        filter_profiles: formattedData.filter_profiles,
       })
       setConfigSnapshot(formattedData)
       const normalizedProxyURL = formattedData.indexer_proxy_url || ''
@@ -417,6 +434,16 @@ function Settings({
               onClearStatus={clearTransientStatus}
               onPersist={(nextProviders) => submitSettings({ providers: nextProviders }, 'providers')}
               onStatus={(status) => showFooterStatus(status)}
+            />
+          </div>
+        )}
+
+        {activeTab === 'filters' && (
+          <div className="space-y-4">
+            <FilterSettings
+              value={watch('filter_profiles') || []}
+              onChange={(nextFilters) => submitSettings({ filter_profiles: nextFilters }, 'filters')}
+              fieldErrors={saveStatus.errors || {}}
             />
           </div>
         )}

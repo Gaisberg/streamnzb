@@ -254,7 +254,6 @@ function emptyDraft(kind) {
     search_mode: 'id',
     movie_categories: kind === 'movie' ? '2000' : undefined,
     tv_categories: kind === 'series' ? '5000' : undefined,
-    extra_search_terms: '',
     search_result_limit: 0,
     search_title_language: '',
     search_title_languages: defaultIDTitleLanguages(),
@@ -270,7 +269,6 @@ function normalizeDraft(kind, draft) {
   return {
     name: (value.name || '').trim(),
     search_mode: searchMode,
-    extra_search_terms: value.extra_search_terms || '',
     search_result_limit: value.search_result_limit ?? 0,
     movie_categories: kind === 'movie' ? (value.movie_categories ?? '2000') : undefined,
     tv_categories: kind === 'series' ? (value.tv_categories ?? '5000') : undefined,
@@ -304,7 +302,6 @@ function comparableQuerySignature(kind, draft) {
     search_mode: value.search_mode || 'id',
     movie_categories: kind === 'movie' ? String(value.movie_categories ?? '').trim() : '',
     tv_categories: kind === 'series' ? String(value.tv_categories ?? '').trim() : '',
-    extra_search_terms: String(value.extra_search_terms || '').trim(),
     search_result_limit: Number(value.search_result_limit || 0),
     search_title_language: value.search_title_language === null
       ? null
@@ -357,8 +354,6 @@ function summarizeQuery(query, kind) {
     const scopeLabel = SERIES_SCOPE_OPTIONS.find((option) => option.value === scope)?.label || 'Season/Episode'
     validation.push(`Scope: ${scopeLabel}`)
   }
-
-  if (query.extra_search_terms) extra.push(`Extra: ${truncateCompactValue(query.extra_search_terms)}`)
 
   return { primary, validation, extra }
 }
@@ -733,18 +728,6 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
         )}
       </div>
 
-      <div className={`${sectionCardClass} p-3`}>
-        <div className={rowClass}>
-          <div className="space-y-3">
-            <div>
-              <LabelWithHelp label="Extra Terms" items={EXTRA_TERMS_HINT_ITEMS} />
-            </div>
-            <div className="w-full">
-              <Input className={`h-9 ${fieldClass('extra_search_terms')}`} placeholder={'"The Walking Dead" !cam (1080p|720p)'} value={draft.extra_search_terms || ''} onChange={(event) => update('extra_search_terms', event.target.value)} />
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

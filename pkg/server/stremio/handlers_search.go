@@ -962,7 +962,6 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 			"type", contentType,
 			"id", id,
 			"year", profileParams.Req.EnableYearValidation,
-			"extra_terms", searchQuery.ExtraSearchTerms,
 			"limit", searchLimitForLog(effectiveLimit),
 		}
 		if searchMode == "id" {

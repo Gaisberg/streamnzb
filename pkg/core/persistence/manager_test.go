@@ -21,6 +21,7 @@ func TestStateManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get manager: %v", err)
 	}
+	defer mgr.Close()
 
 	key := "test_key"
 	value := map[string]string{"foo": "bar"}
@@ -44,11 +45,13 @@ func TestStateManager(t *testing.T) {
 		t.Fatalf("failed to flush: %v", err)
 	}
 
+	mgr.Close()
 	globalManager = nil
 	mgr2, err := GetManager(tempDir)
 	if err != nil {
 		t.Fatalf("failed to reload manager: %v", err)
 	}
+	defer mgr2.Close()
 
 	var retrieved2 map[string]string
 	found2, err := mgr2.Get(key, &retrieved2)
@@ -86,6 +89,7 @@ func TestMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get manager: %v", err)
 	}
+	defer mgr.Close()
 
 	var migratedUsage map[string]interface{}
 	found, err := mgr.Get("indexer_usage", &migratedUsage)
@@ -161,6 +165,7 @@ func TestGetManagerMergesMisplacedSiblingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetManager: %v", err)
 	}
+	defer mgr.Close()
 
 	list, err := mgr.ListAttempts(ListAttemptsOptions{Limit: 10})
 	if err != nil {

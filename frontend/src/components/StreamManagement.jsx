@@ -53,6 +53,7 @@ function normalizeStreamDraft(draft) {
     indexer_overrides: draft?.indexer_overrides || {},
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
+    filter_profile_name: draft?.filter_profile_name || '',
   }
 }
 
@@ -72,6 +73,7 @@ function buildStreamDraft(stream) {
     indexer_overrides: stream?.indexer_overrides || {},
     movie_search_queries: stream?.movie_search_queries || [],
     series_search_queries: stream?.series_search_queries || [],
+    filter_profile_name: stream?.filter_profile_name || '',
   })
 }
 
@@ -99,6 +101,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
     movie_search_queries: draft.movie_search_queries || [],
     series_search_queries: draft.series_search_queries || [],
+    filter_profile_name: draft.filter_profile_name || '',
   }
 }
 
@@ -107,7 +110,7 @@ function generalCompactValues(stream) {
 }
 
 function generalDetailValues(stream) {
-  return [
+  const parts = [
     `AvailNZB ${stream?.use_availnzb !== false ? 'On' : 'Off'}`,
     `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
@@ -116,6 +119,10 @@ function generalDetailValues(stream) {
     `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
     `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
   ]
+  if (stream?.filter_profile_name) {
+    parts.push(`Filter Profile: ${stream.filter_profile_name}`)
+  }
+  return parts
 }
 
 function filterSortingSummaryValues(stream) {
@@ -371,6 +378,7 @@ function StreamDialog({
   enabledIndexerNames,
   movieQueryNames,
   seriesQueryNames,
+  filterProfiles = [],
   onSave,
   saving,
 }) {
@@ -534,6 +542,36 @@ function StreamDialog({
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
                   Apply a predefined stream profile. AIOStreams keeps the filter behavior, but only forces Results to Display all.
+                </p>
+              </div>
+
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Filter Profile</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-48 justify-between">
+                        <span>{draft.filter_profile_name || 'None'}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48 max-h-60 overflow-y-auto">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, filter_profile_name: '' }))}>
+                        None
+                      </DropdownMenuItem>
+                      {(filterProfiles || []).map((fp) => (
+                        <DropdownMenuItem
+                          key={fp.name}
+                          onClick={() => setDraft((current) => ({ ...current, filter_profile_name: fp.name }))}
+                        >
+                          {fp.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Apply a local Filter Profile to this stream to restrict resolutions, block qualities (like CAM), or exclude keywords.
                 </p>
               </div>
 
@@ -912,6 +950,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         indexer_overrides: buildIndexerOverrides(draft.indexers, existingStream?.indexer_overrides),
         movie_search_queries: draft.movie_search_queries || [],
         series_search_queries: draft.series_search_queries || [],
+        filter_profile_name: draft.filter_profile_name || '',
       },
     }
     await apiFetch('/api/streams/configs', {
@@ -989,6 +1028,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       indexer_overrides: stream.indexer_overrides || {},
       movie_search_queries: stream.movie_search_queries || [],
       series_search_queries: stream.series_search_queries || [],
+      filter_profile_name: stream.filter_profile_name || '',
     })
     setAddDialogDraft(draft)
     setShowAddDialog(true)
@@ -1297,6 +1337,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             enabledIndexerNames={enabledIndexerNames}
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
+            filterProfiles={globalConfig?.filter_profiles || []}
             onSave={handleCreateStream}
             saving={dialogSaving}
           />
@@ -1314,6 +1355,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             enabledIndexerNames={enabledIndexerNames}
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
+            filterProfiles={globalConfig?.filter_profiles || []}
             onSave={handleSaveStream}
             saving={dialogSaving}
           />

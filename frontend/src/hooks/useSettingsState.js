@@ -37,7 +37,6 @@ export function fieldToTab(fieldName) {
     const searchQueryFields = [
       'movie_categories',
       'tv_categories',
-      'extra_search_terms',
       'disable_id_search',
       'disable_string_search',
       'search_result_limit',
@@ -49,6 +48,7 @@ export function fieldToTab(fieldName) {
     return 'indexers'
   }
   if (fieldName.startsWith('providers')) return 'providers'
+  if (fieldName.startsWith('filter_profiles')) return 'filters'
   if (fieldName.startsWith('movie_search_queries') || fieldName.startsWith('series_search_queries')) return 'search_query'
   if (NETWORK_TAB_FIELDS.includes(fieldName)) return 'network'
   if (ADVANCED_TAB_FIELDS.includes(fieldName)) return 'advanced'
@@ -103,6 +103,9 @@ function summarizeConfigErrors(errors, sourceTab, values) {
     const seriesSummary = buildNamedValidationSummary(errors, 'series_search_queries', values?.series_search_queries, 'Show Query')
     if (movieSummary && seriesSummary) return `${movieSummary} | ${seriesSummary}`
     return movieSummary || seriesSummary
+  }
+  if (sourceTab === 'filters') {
+    return buildNamedValidationSummary(errors, 'filter_profiles', values?.filter_profiles, 'Filter Profile')
   }
   return ''
 }
@@ -261,6 +264,7 @@ export function useSettingsState({
         indexers: getValues('indexers'),
         movie_search_queries: getValues('movie_search_queries'),
         series_search_queries: getValues('series_search_queries'),
+        filter_profiles: getValues('filter_profiles'),
       }
       const nextValues = overrides ? { ...baseValues, ...overrides } : baseValues
       const trimmedFullData = trimData(nextValues)

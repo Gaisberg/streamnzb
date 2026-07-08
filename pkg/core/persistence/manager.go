@@ -396,3 +396,29 @@ func (m *StateManager) Flush() error {
 	m.saveMu.Unlock()
 	return nil
 }
+
+func (m *StateManager) Close() error {
+	managerMu.Lock()
+	defer managerMu.Unlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.saveMu.Lock()
+	if m.saveTimer != nil {
+		m.saveTimer.Stop()
+		m.saveTimer = nil
+	}
+	m.saveMu.Unlock()
+
+	var err error
+	if m.db != nil {
+		err = m.db.Close()
+		m.db = nil
+	}
+
+	if globalManager == m {
+		globalManager = nil
+	}
+	return err
+}

@@ -830,47 +830,6 @@ func TestSearchTVIDModeOmitsQueryWhenUsingTVSearchParams(t *testing.T) {
 	}
 }
 
-func TestSearchTVIDModeKeepsExtraTermsQueryWhenUsingTVSearchParams(t *testing.T) {
-	var gotQuery url.Values
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query()
-		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
-	}))
-	defer server.Close()
-
-	extra := "remux"
-	client := NewClient(config.IndexerConfig{
-		Name:             "MockIndexer",
-		URL:              server.URL,
-		APIKey:           "test-api-key",
-		ExtraSearchTerms: extra,
-	}, nil)
-	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
-
-	_, err := client.Search(indexer.SearchRequest{
-		Cat:               "5000",
-		Query:             "Star Wars Maul Shadow Lord S01E01",
-		TVDBID:            "462715",
-		Season:            "1",
-		Episode:           "1",
-		SeriesSearchScope: config.SeriesSearchScopeSeasonEpisode,
-		SearchMode:        "id",
-	})
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-
-	if got := gotQuery.Get("season"); got != "1" {
-		t.Fatalf("season = %q, want %q", got, "1")
-	}
-	if got := gotQuery.Get("ep"); got != "1" {
-		t.Fatalf("ep = %q, want %q", got, "1")
-	}
-	if got := gotQuery.Get("q"); got != extra {
-		t.Fatalf("q = %q, want %q", got, extra)
-	}
-}
 
 func TestSearchTextModeOrdersQueryParams(t *testing.T) {
 	var gotRawQuery string

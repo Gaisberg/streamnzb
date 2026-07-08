@@ -697,6 +697,7 @@ type configValidationPlan struct {
 	validateTMDBAPIKey             bool
 	validateTVDBAPIKey             bool
 	validateSpeculativePreProbing  bool
+	validateFilterProfiles         bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
@@ -713,6 +714,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateTMDBAPIKey:             true,
 		validateTVDBAPIKey:             true,
 		validateSpeculativePreProbing:  true,
+		validateFilterProfiles:         true,
 	}
 }
 
@@ -773,6 +775,10 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["tvdb_api_key"]; ok {
 		plan.validateTVDBAPIKey = true
+	}
+	if _, ok := raw["filter_profiles"]; ok {
+		plan.validateFilterProfiles = true
+		plan.validateDeviceAssignments = true
 	}
 
 	return plan
@@ -980,6 +986,22 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		validateSearchQueries("series_search_queries", cfg.SeriesSearchQueries)
 	}
 
+	if plan.validateFilterProfiles {
+		seen := make(map[string]bool)
+		for i, fp := range cfg.FilterProfiles {
+			name := strings.TrimSpace(fp.Name)
+			if name == "" {
+				errors[fmt.Sprintf("filter_profiles.%d.name", i)] = "Name is required"
+			} else {
+				key := strings.ToLower(name)
+				if seen[key] {
+					errors[fmt.Sprintf("filter_profiles.%d.name", i)] = "Name must be unique"
+				}
+				seen[key] = true
+			}
+		}
+	}
+
 	if plan.validateDeviceAssignments {
 		movieQueryNames := make(map[string]bool, len(cfg.MovieSearchQueries))
 		for _, query := range cfg.MovieSearchQueries {
@@ -991,6 +1013,12 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		for _, query := range cfg.SeriesSearchQueries {
 			if name := strings.ToLower(strings.TrimSpace(query.Name)); name != "" {
 				seriesQueryNames[name] = true
+			}
+		}
+		filterProfileNames := make(map[string]bool, len(cfg.FilterProfiles))
+		for _, fp := range cfg.FilterProfiles {
+			if name := strings.ToLower(strings.TrimSpace(fp.Name)); name != "" {
+				filterProfileNames[name] = true
 			}
 		}
 		for username, stream := range cfg.Streams {
@@ -1006,6 +1034,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" && !seriesQueryNames[normalized] {
 					errors[fmt.Sprintf("streams.%s.series_search_queries.%d", username, i)] = "Assigned show search query does not exist"
 				}
+			}
+			if fpName := strings.ToLower(strings.TrimSpace(stream.FilterProfileName)); fpName != "" && !filterProfileNames[fpName] {
+				errors[fmt.Sprintf("streams.%s.filter_profile_name", username)] = "Assigned filter profile does not exist"
 			}
 		}
 	}

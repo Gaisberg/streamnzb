@@ -939,6 +939,11 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		}
 		sessionCtx := s.ctx
 		effectiveCtx, releaseEffectiveCtx := mergeCancellationContexts(ctx, sessionCtx)
+		if err := effectiveCtx.Err(); err != nil {
+			s.mu.Unlock()
+			releaseEffectiveCtx()
+			return nil, fmt.Errorf("failed to lazy download NZB: %w", err)
+		}
 		if s.nzbDownloadInFlight {
 			done := s.nzbDownloadDone
 			s.mu.Unlock()

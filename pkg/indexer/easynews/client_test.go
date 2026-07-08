@@ -244,53 +244,10 @@ func TestNormalizeTitleForSearchQuery(t *testing.T) {
 	}
 }
 
-func TestPrepareEasynewsQueryIncludesExtraSearchTerms(t *testing.T) {
-	overrideTerms := "GERMAN"
-	uhdTerms := "2160p"
-	punctuatedTerms := "x265-GER"
-
-	tests := []struct {
-		name             string
-		baseQuery        string
-		searchMode       string
-		overrides        *config.IndexerSearchConfig
-		wantPreparedText string
-	}{
-		{
-			name:             "text search appends override extra terms",
-			baseQuery:        "Avatar Fire and Ash",
-			searchMode:       "text",
-			overrides:        &config.IndexerSearchConfig{ExtraSearchTerms: &uhdTerms},
-			wantPreparedText: "Avatar Fire and Ash 2160p",
-		},
-		{
-			name:             "id search prepends override extra terms",
-			baseQuery:        "S01E01",
-			searchMode:       "id",
-			overrides:        &config.IndexerSearchConfig{ExtraSearchTerms: &overrideTerms},
-			wantPreparedText: "GERMAN S01E01",
-		},
-		{
-			name:             "without override leaves query unchanged",
-			baseQuery:        "Lock Stock Two Smoking Barrels",
-			searchMode:       "text",
-			overrides:        nil,
-			wantPreparedText: "Lock Stock Two Smoking Barrels",
-		},
-		{
-			name:             "extra terms are not normalized",
-			baseQuery:        "Bube, Dame, König, grAS",
-			searchMode:       "text",
-			overrides:        &config.IndexerSearchConfig{ExtraSearchTerms: &punctuatedTerms},
-			wantPreparedText: "Bube Dame Koenig grAS x265-GER",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := prepareEasynewsQuery(tt.baseQuery, tt.searchMode, tt.overrides); got != tt.wantPreparedText {
-				t.Fatalf("prepareEasynewsQuery() = %q, want %q", got, tt.wantPreparedText)
-			}
-		})
+func TestPrepareEasynewsQuery(t *testing.T) {
+	got := prepareEasynewsQuery("Bube, Dame, König, grAS", "text", nil)
+	want := "Bube Dame Koenig grAS"
+	if got != want {
+		t.Fatalf("prepareEasynewsQuery() = %q, want %q", got, want)
 	}
 }
