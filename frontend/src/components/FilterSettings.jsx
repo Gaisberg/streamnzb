@@ -12,6 +12,8 @@ const RESOLUTION_OPTIONS = ["2160p", "1080p", "720p", "576p", "480p"]
 const QUALITY_OPTIONS = ["CAM", "TeleSync", "TeleCine", "SCR", "WEB-DL", "WEBRip", "BluRay", "Remux", "BDRip", "BRRip", "HDTV", "DVD"]
 const CODEC_OPTIONS = ["HEVC", "AVC", "MPEG-2", "x264", "x265"]
 const HDR_OPTIONS = ["DV", "HDR10+", "HDR", "SDR"]
+const LANGUAGE_OPTIONS = ["en", "ja", "ko", "zh", "fr", "es", "pt", "it", "de", "ru", "uk", "nl", "da", "fi", "sv", "no", "el", "pl", "cs", "sk", "hu", "ro", "bg", "sr", "hr", "sl", "hi", "ar", "tr", "he", "fa", "vi", "id", "th", "ms"]
+const LANGUAGE_ALIASES = ["nordic", "scandinavian", "baltic", "benelux", "iberian", "slavic"]
 
 const DEFAULT_PROFILE = {
   name: "New Filter Profile",
@@ -26,6 +28,9 @@ const DEFAULT_PROFILE = {
   blocked_hdrs: [],
   required_keywords: [],
   excluded_keywords: [],
+  allowed_languages: [],
+  blocked_languages: [],
+  preferred_languages: [],
   sort_order: [],
 }
 
@@ -38,7 +43,7 @@ export function FilterSettings({ value = [], onChange, fieldErrors = {} }) {
   const profiles = Array.isArray(value) ? value : []
 
   const getSortOrder = (profile) => {
-    const defaults = ["resolution", "quality", "size", "age", "hdr", "codec", "grabs"]
+    const defaults = ["resolution", "quality", "size", "age", "hdr", "codec", "language", "grabs"]
     const current = profile?.sort_order || []
     const result = [...current]
     defaults.forEach(item => {
@@ -103,6 +108,9 @@ export function FilterSettings({ value = [], onChange, fieldErrors = {} }) {
       blocked_hdrs: profile.blocked_hdrs || [],
       required_keywords: profile.required_keywords || [],
       excluded_keywords: profile.excluded_keywords || [],
+      allowed_languages: profile.allowed_languages || [],
+      blocked_languages: profile.blocked_languages || [],
+      preferred_languages: profile.preferred_languages || [],
       sort_order: getSortOrder(profile),
     })
     setEditingIndex(index)
@@ -325,6 +333,66 @@ export function FilterSettings({ value = [], onChange, fieldErrors = {} }) {
                 </div>
               </div>
 
+              {/* Languages */}
+              <div className="border-t border-border pt-4 space-y-3">
+                <div>
+                  <Label className="text-base font-semibold">Languages</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Filter and rank releases by parsed languages. Alias words like "NORDIC" are expanded automatically (da, fi, no, sv).
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="mb-2 block">Allowed Languages</Label>
+                    <div className="flex flex-wrap gap-1">
+                      {LANGUAGE_OPTIONS.filter((l) => !editingProfile.blocked_languages?.includes(l)).map((l) => (
+                        <Badge
+                          key={l}
+                          variant={editingProfile.allowed_languages?.includes(l) ? "default" : "outline"}
+                          className="cursor-pointer"
+                          onClick={() => toggleArrayValue("allowed_languages", l)}
+                        >
+                          {l}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="mb-2 block">Blocked Languages</Label>
+                    <div className="flex flex-wrap gap-1">
+                      {LANGUAGE_OPTIONS.filter((l) => !editingProfile.allowed_languages?.includes(l)).map((l) => (
+                        <Badge
+                          key={l}
+                          variant={editingProfile.blocked_languages?.includes(l) ? "destructive" : "outline"}
+                          className="cursor-pointer"
+                          onClick={() => toggleArrayValue("blocked_languages", l)}
+                        >
+                          {l}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <Label className="mb-2 block">Preferred Languages (for Language sorting)</Label>
+                  <div className="flex flex-wrap gap-1">
+                    {LANGUAGE_OPTIONS.map((l) => (
+                      <Badge
+                        key={l}
+                        variant={editingProfile.preferred_languages?.includes(l) ? "default" : "outline"}
+                        className="cursor-pointer"
+                        onClick={() => toggleArrayValue("preferred_languages", l)}
+                      >
+                        {l}
+                      </Badge>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Tip: You can also add alias words (e.g. {LANGUAGE_ALIASES.join(", ")}) as preferred languages; releases whose titles contain them will rank higher.
+                  </p>
+                </div>
+              </div>
+
               {/* Stream Sorting & Ranking Priority */}
               <div className="border-t border-border pt-4 space-y-3">
                 <div>
@@ -342,6 +410,7 @@ export function FilterSettings({ value = [], onChange, fieldErrors = {} }) {
                       age: { title: "Release Age", desc: "Newer releases rank higher" },
                       hdr: { title: "HDR Status", desc: "Dolby Vision > HDR10+ > HDR > SDR" },
                       codec: { title: "Codec", desc: "HEVC > AVC > MPEG-2" },
+                      language: { title: "Language", desc: "Preferred languages rank higher" },
                       grabs: { title: "Grabs count", desc: "More grabs rank higher" },
                     };
                     const info = labelMap[item] || { title: item, desc: "" };

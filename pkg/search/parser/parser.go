@@ -12,6 +12,19 @@ import (
 
 var dashedSeasonEpisodePattern = regexp.MustCompile(`(?i)\bS(?:eason)?\s*0*([0-9]{1,2})\s*-\s*0*([0-9]{1,3})(?:$|[\s._()[\]])`)
 
+// languageAliasPattern matches release-title alias words (e.g. "NORDIC") as whole words,
+// case-insensitively, across common release-name separators (space, dot, underscore, dash).
+var languageAliasPattern = func() *regexp.Regexp {
+	words := pttoptions.LanguageAliasWords()
+	parts := make([]string, 0, len(words))
+	for _, w := range words {
+		parts = append(parts, regexp.QuoteMeta(w))
+	}
+	// \b doesn't always play well with dots/underscores, so we use explicit boundaries.
+	pattern := `(?i)(?:^|[\s._\-(\[])(` + strings.Join(parts, "|") + `)(?:$|[\s._\-)\]])`
+	return regexp.MustCompile(pattern)
+}()
+
 type ParsedRelease struct {
 	Title      string
 	Year       int
@@ -133,8 +146,43 @@ func ParseReleaseTitleWithParser(title string, parse func(string) *ptt.Result) *
 		parsed.Episode = parsed.Episodes[0]
 	}
 	applyDashedSeasonEpisodeFallback(title, parsed)
+	expandLanguageAliases(title, parsed)
 
 	return parsed
+}
+
+// expandLanguageAliases scans the raw release title for group/region alias words
+// (e.g. "NORDIC") and merges the corresponding language codes into parsed.Languages.
+// ptt already extracts explicit language codes, so we only add codes that are missing.
+func expandLanguageAliases(rawTitle string, parsed *ParsedRelease) {
+	if parsed == nil {
+		return
+	}
+	matches := languageAliasPattern.FindAllStringSubmatch(rawTitle, -1)
+	if len(matches) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(parsed.Languages))
+	for _, lang := range parsed.Languages {
+		seen[strings.ToLower(strings.TrimSpace(lang))] = true
+	}
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		alias := strings.ToLower(strings.TrimSpace(m[1]))
+		codes, ok := pttoptions.LanguageAliases[alias]
+		if !ok {
+			continue
+		}
+		for _, code := range codes {
+			key := strings.ToLower(code)
+			if !seen[key] {
+				seen[key] = true
+				parsed.Languages = append(parsed.Languages, code)
+			}
+		}
+	}
 }
 
 func applyDashedSeasonEpisodeFallback(rawTitle string, parsed *ParsedRelease) {

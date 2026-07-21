@@ -19,6 +19,8 @@ func TestMatchFilterProfile(t *testing.T) {
 		RequireHDR:         ptrBool(true),
 		ExcludedKeywords:   []string{"subbed", "dubbed"},
 		RequiredKeywords:   []string{"Obsession"},
+		AllowedLanguages:   []string{"en", "fi"},
+		BlockedLanguages:   []string{"ru"},
 	}
 
 	tests := []struct {
@@ -32,6 +34,7 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
+				Languages:  []string{"en"},
 			},
 			expected: true,
 		},
@@ -41,6 +44,7 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "1080p",
 				Quality:    "CAM",
 				HDR:        []string{"HDR"},
+				Languages:  []string{"en"},
 			},
 			expected: false, // Blocked quality
 		},
@@ -50,6 +54,7 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "2160p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
+				Languages:  []string{"en"},
 			},
 			expected: false, // Not allowed resolution
 		},
@@ -59,6 +64,7 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"SDR"},
+				Languages:  []string{"en"},
 			},
 			expected: false, // HDR required
 		},
@@ -68,6 +74,7 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
+				Languages:  []string{"en"},
 			},
 			expected: false, // Excluded keyword "subbed"
 		},
@@ -77,8 +84,40 @@ func TestMatchFilterProfile(t *testing.T) {
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
+				Languages:  []string{"en"},
 			},
 			expected: false, // Required keyword "Obsession" missing
+		},
+		{
+			title: "Obsession 2026 1080p BluRay HDR RU",
+			metadata: &parser.ParsedRelease{
+				Resolution: "1080p",
+				Quality:    "BluRay",
+				HDR:        []string{"HDR"},
+				Languages:  []string{"ru"},
+			},
+			expected: false, // Blocked language "ru"
+		},
+		{
+			title: "Obsession 2026 1080p BluRay HDR",
+			metadata: &parser.ParsedRelease{
+				Resolution: "1080p",
+				Quality:    "BluRay",
+				HDR:        []string{"HDR"},
+				Languages:  []string{"de"}, // not in allowed languages
+			},
+			expected: false, // Allowed languages en/fi, release is de
+		},
+		{
+			title: "Obsession 2026 1080p BluRay HDR NORDIC",
+			metadata: &parser.ParsedRelease{
+				Resolution: "1080p",
+				Quality:    "BluRay",
+				HDR:        []string{"HDR"},
+				// Alias expansion: "nordic" -> da, fi, no, sv; fi is allowed.
+				Languages: []string{"da", "fi", "no", "sv"},
+			},
+			expected: true, // fi is in allowed languages
 		},
 	}
 
@@ -120,21 +159,76 @@ func TestCustomSortCandidates(t *testing.T) {
 	}
 
 	// 1. Sort by Resolution first
-	customSortCandidates(candidates, []string{"resolution"})
+	customSortCandidates(candidates, []string{"resolution"}, nil)
 	if candidates[0].Release.Title != "Release B" { // B is 2160p, others are 1080p
 		t.Errorf("Expected first to be Release B, got %q", candidates[0].Release.Title)
 	}
 
 	// 2. Sort by Quality first
-	customSortCandidates(candidates, []string{"quality"})
+	customSortCandidates(candidates, []string{"quality"}, nil)
 	if candidates[0].Release.Title != "Release C" { // C is BluRay, others WEB-DL
 		t.Errorf("Expected first to be Release C, got %q", candidates[0].Release.Title)
 	}
 
 	// 3. Sort by Size first
-	customSortCandidates(candidates, []string{"size"})
+	customSortCandidates(candidates, []string{"size"}, nil)
 	if candidates[0].Release.Title != "Release C" { // C is 12GB, B is 8GB, A is 5GB
 		t.Errorf("Expected first to be Release C, got %q", candidates[0].Release.Title)
+	}
+}
+
+func TestCustomSortCandidatesByLanguage(t *testing.T) {
+	candidates := []triage.Candidate{
+		{
+			Release: &release.Release{Title: "Release A"},
+			Metadata: &parser.ParsedRelease{
+				Languages: []string{"en"},
+			},
+		},
+		{
+			Release: &release.Release{Title: "Release B"},
+			Metadata: &parser.ParsedRelease{
+				// Alias-expanded nordic release includes fi.
+				Languages: []string{"da", "fi", "no", "sv"},
+			},
+		},
+		{
+			Release: &release.Release{Title: "Release C"},
+			Metadata: &parser.ParsedRelease{
+				Languages: []string{"de"},
+			},
+		},
+		{
+			// Release D has no title-parsed languages but the indexer reported fi.
+			Release: &release.Release{Title: "Release D", Languages: []string{"fi"}},
+			Metadata: &parser.ParsedRelease{
+				Languages: nil,
+			},
+		},
+		{
+			Release: &release.Release{Title: "Release E"},
+			Metadata: &parser.ParsedRelease{
+				Languages: nil,
+			},
+		},
+	}
+
+	// Preferred languages: fi and en. Releases A (en), B (fi), D (fi via release.Languages)
+	// should rank above C (de, no preferred match) and E (no languages at all).
+	customSortCandidates(candidates, []string{"language"}, []string{"fi", "en"})
+
+	top3 := map[string]bool{candidates[0].Release.Title: true, candidates[1].Release.Title: true, candidates[2].Release.Title: true}
+	if !top3["Release A"] {
+		t.Errorf("Expected Release A in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
+	}
+	if !top3["Release B"] {
+		t.Errorf("Expected Release B in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
+	}
+	if !top3["Release D"] {
+		t.Errorf("Expected Release D (fi via release.Languages) in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
+	}
+	if candidates[4].Release.Title != "Release E" {
+		t.Errorf("Expected Release E (no languages) last, got %q", candidates[4].Release.Title)
 	}
 }
 

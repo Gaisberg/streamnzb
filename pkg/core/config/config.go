@@ -112,6 +112,15 @@ type FilterProfileConfig struct {
 	BlockedHDRs        []string `json:"blocked_hdrs,omitempty"`
 	RequiredKeywords   []string `json:"required_keywords,omitempty"`
 	ExcludedKeywords   []string `json:"excluded_keywords,omitempty"`
+	// AllowedLanguages filters releases to those whose parsed Languages include at least
+	// one of the listed codes (e.g. "en", "fi"). Alias words like "nordic" are expanded
+	// by the parser, so a release titled "...NORDIC..." will match "da","fi","no","sv".
+	AllowedLanguages []string `json:"allowed_languages,omitempty"`
+	// BlockedLanguages drops releases whose parsed Languages include any of the listed codes.
+	BlockedLanguages []string `json:"blocked_languages,omitempty"`
+	// PreferredLanguages is used by the "language" sort criterion: releases that include
+	// any preferred language rank higher than releases that do not.
+	PreferredLanguages []string `json:"preferred_languages,omitempty"`
 	SortOrder          []string `json:"sort_order,omitempty"`
 }
 

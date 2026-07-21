@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/config/pttoptions"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/loader"
@@ -840,7 +841,8 @@ func matchFilterProfile(cand triage.Candidate, profile *config.FilterProfileConf
 			len(profile.AllowedQualities) > 0 || len(profile.BlockedQualities) > 0 ||
 			len(profile.AllowedCodecs) > 0 || len(profile.BlockedCodecs) > 0 ||
 			(profile.RequireHDR != nil && *profile.RequireHDR) ||
-			len(profile.AllowedHDRs) > 0 || len(profile.BlockedHDRs) > 0
+			len(profile.AllowedHDRs) > 0 || len(profile.BlockedHDRs) > 0 ||
+			len(profile.AllowedLanguages) > 0 || len(profile.BlockedLanguages) > 0
 		return !hasPttRules
 	}
 
@@ -855,14 +857,28 @@ func matchFilterProfile(cand triage.Candidate, profile *config.FilterProfileConf
 	}
 
 	// 3. Resolutions
+	// Normalize both the profile entries and the parsed resolution to groups so that
+	// "2160p" in the profile matches releases parsed as "4k" or "uhd", and vice versa.
+	releaseResGroup := pttoptions.NormalizeResolutionToGroup(parsed.Resolution)
 	if len(profile.AllowedResolutions) > 0 {
-		if !containsCaseInsensitive(profile.AllowedResolutions, parsed.Resolution) {
+		matched := false
+		for _, allowed := range profile.AllowedResolutions {
+			if strings.EqualFold(strings.TrimSpace(allowed), parsed.Resolution) ||
+				pttoptions.NormalizeResolutionToGroup(allowed) == releaseResGroup {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
 	if len(profile.BlockedResolutions) > 0 {
-		if containsCaseInsensitive(profile.BlockedResolutions, parsed.Resolution) {
-			return false
+		for _, blocked := range profile.BlockedResolutions {
+			if strings.EqualFold(strings.TrimSpace(blocked), parsed.Resolution) ||
+				pttoptions.NormalizeResolutionToGroup(blocked) == releaseResGroup {
+				return false
+			}
 		}
 	}
 
@@ -924,17 +940,55 @@ func matchFilterProfile(cand triage.Candidate, profile *config.FilterProfileConf
 		}
 	}
 
+	// 7. Languages
+	// Merge languages from the parsed title (which includes alias expansions like
+	// "NORDIC" -> da,fi,no,sv) with languages reported by the indexer on the release.
+	allLanguages := append([]string(nil), parsed.Languages...)
+	if cand.Release != nil {
+		allLanguages = append(allLanguages, cand.Release.Languages...)
+	}
+	if len(profile.AllowedLanguages) > 0 {
+		if !releaseHasAnyLanguage(allLanguages, profile.AllowedLanguages) {
+			return false
+		}
+	}
+	if len(profile.BlockedLanguages) > 0 {
+		if releaseHasAnyLanguage(allLanguages, profile.BlockedLanguages) {
+			return false
+		}
+	}
+
 	return true
+}
+
+// releaseHasAnyLanguage reports whether any of the release's languages match any of the
+// requested codes, case-insensitively. An empty release language list never matches.
+func releaseHasAnyLanguage(releaseLanguages, requested []string) bool {
+	if len(releaseLanguages) == 0 || len(requested) == 0 {
+		return false
+	}
+	requestedLower := make(map[string]bool, len(requested))
+	for _, r := range requested {
+		requestedLower[strings.ToLower(strings.TrimSpace(r))] = true
+	}
+	for _, lang := range releaseLanguages {
+		if requestedLower[strings.ToLower(strings.TrimSpace(lang))] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) applyPlaylistSorting(candidates []triage.Candidate, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
 	var customSortOrder []string
+	var preferredLanguages []string
 	var hasCustomSort bool
 	if stream != nil && stream.FilterProfileName != "" {
 		s.mu.RLock()
 		for i := range s.config.FilterProfiles {
 			if strings.EqualFold(s.config.FilterProfiles[i].Name, stream.FilterProfileName) {
 				customSortOrder = s.config.FilterProfiles[i].SortOrder
+				preferredLanguages = s.config.FilterProfiles[i].PreferredLanguages
 				hasCustomSort = true
 				break
 			}
@@ -945,7 +999,7 @@ func (s *Server) applyPlaylistSorting(candidates []triage.Candidate, filteringAc
 	if hasCustomSort {
 		// Even if general healthy filtering is off, we still trigger metadata population/scoring first.
 		sortCandidates(s.triageService, candidates)
-		customSortCandidates(candidates, customSortOrder)
+		customSortCandidates(candidates, customSortOrder, preferredLanguages)
 	} else if filteringActive {
 		sortCandidates(s.triageService, candidates)
 	}
@@ -955,7 +1009,7 @@ func (s *Server) applyPlaylistSorting(candidates []triage.Candidate, filteringAc
 	return candidates
 }
 
-func customSortCandidates(candidates []triage.Candidate, sortOrder []string) {
+func customSortCandidates(candidates []triage.Candidate, sortOrder []string, preferredLanguages []string) {
 	if len(sortOrder) == 0 {
 		sortOrder = []string{"resolution", "quality", "size", "age"}
 	}
@@ -1007,6 +1061,12 @@ func customSortCandidates(candidates []triage.Candidate, sortOrder []string) {
 				codJ := codecRank(candJ.Metadata.Codec)
 				if codI != codJ {
 					return codI > codJ
+				}
+			case "language":
+				langI := languageRank(candI, preferredLanguages)
+				langJ := languageRank(candJ, preferredLanguages)
+				if langI != langJ {
+					return langI > langJ
 				}
 			}
 		}
@@ -1090,6 +1150,33 @@ func codecRank(codec string) int {
 	default:
 		return 0
 	}
+}
+
+// languageRank scores a release's languages against the profile's preferred languages.
+// It merges languages from the parsed title (which includes alias expansions like
+// "NORDIC" -> da,fi,no,sv) with languages reported by the indexer on the release
+// itself. Releases that include a preferred language rank higher (2) than releases
+// with languages but no preferred match (1), which in turn rank higher than releases
+// with no languages at all (0).
+func languageRank(cand triage.Candidate, preferredLanguages []string) int {
+	var languages []string
+	if cand.Metadata != nil {
+		languages = append(languages, cand.Metadata.Languages...)
+	}
+	if cand.Release != nil {
+		languages = append(languages, cand.Release.Languages...)
+	}
+	if len(languages) == 0 {
+		return 0
+	}
+	if len(preferredLanguages) == 0 {
+		// No preferences configured: any language-tagged release ranks equally.
+		return 1
+	}
+	if releaseHasAnyLanguage(languages, preferredLanguages) {
+		return 2
+	}
+	return 1
 }
 
 func pubDateUnix(pubDate string) int64 {

@@ -178,6 +178,9 @@ function Settings({
           blocked_hdrs: profile.blocked_hdrs || [],
           required_keywords: profile.required_keywords || [],
           excluded_keywords: profile.excluded_keywords || [],
+          allowed_languages: profile.allowed_languages || [],
+          blocked_languages: profile.blocked_languages || [],
+          preferred_languages: profile.preferred_languages || [],
           sort_order: profile.sort_order || [],
         })) || [],
       }

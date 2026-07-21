@@ -54,6 +54,23 @@ var languageFullNameToCode = map[string]string{
 	"arabic": "ar", "turkish": "tr", "hebrew": "he", "persian": "fa",
 }
 
+// LanguageAliases maps release-title alias words to the language codes they represent.
+// These are group/region terms commonly used in release names (e.g. "NORDIC" in a title
+// means the release includes Danish, Finnish, Norwegian and Swedish audio/subs).
+var LanguageAliases = map[string][]string{
+	"nordic":       {"da", "fi", "no", "sv"},
+	"scandinavian": {"da", "no", "sv"},
+	"baltic":       {"et", "lv", "lt"},
+	"benelux":      {"nl", "be"},
+	"iberian":      {"es", "pt"},
+	"slavic":       {"ru", "uk", "pl", "cs", "sk", "bg", "sr", "hr", "sl"},
+}
+
+// LanguageAliasWords returns the alias keys in a stable order for regex building.
+func LanguageAliasWords() []string {
+	return []string{"nordic", "scandinavian", "baltic", "benelux", "iberian", "slavic"}
+}
+
 func NormalizeLanguageToCode(value string) string {
 	v := strings.TrimSpace(strings.ToLower(value))
 	if v == "" {

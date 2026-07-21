@@ -73,3 +73,84 @@ func TestDashedSeasonEpisodePatternDoesNotFalseMatchInsideLongerToken(t *testing
 		t.Fatalf("expected no regex match inside longer token, got %v", matches)
 	}
 }
+
+func TestParseReleaseTitleExpandsLanguageAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		want    []string
+		wantAny []string
+	}{
+		{
+			name:    "nordic expands to da fi no sv",
+			title:   "Some.Movie.2024.1080p.BluRay.NORDIC.x264-RG",
+			wantAny: []string{"da", "fi", "no", "sv"},
+		},
+		{
+			name:    "scandinavian expands to da no sv",
+			title:   "Some.Movie.2024.1080p.BluRay.SCANDINAVIAN.x264-RG",
+			wantAny: []string{"da", "no", "sv"},
+		},
+		{
+			name:    "baltic expands to et lv lt",
+			title:   "Some.Movie.2024.1080p.BluRay.BALTIC.x264-RG",
+			wantAny: []string{"et", "lv", "lt"},
+		},
+		{
+			name:  "no alias leaves languages from ptt only",
+			title: "Some.Movie.2024.1080p.BluRay.FRENCH.x264-RG",
+			want:  []string{"fr"},
+		},
+		{
+			name:  "alias with explicit language merges both",
+			title: "Some.Movie.2024.1080p.BluRay.NORDIC.FRENCH.x264-RG",
+			want:  []string{"fr", "da", "fi", "no", "sv"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := ParseReleaseTitle(tc.title)
+			if parsed == nil {
+				t.Fatal("expected parsed release")
+			}
+			if tc.want != nil {
+				if !sameSet(parsed.Languages, tc.want) {
+					t.Fatalf("expected languages %v, got %v", tc.want, parsed.Languages)
+				}
+			}
+			if tc.wantAny != nil {
+				for _, code := range tc.wantAny {
+					if !containsString(parsed.Languages, code) {
+						t.Fatalf("expected languages to include %q, got %v", code, parsed.Languages)
+					}
+				}
+			}
+		})
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for _, v := range a {
+		seen[v] = true
+	}
+	for _, v := range b {
+		if !seen[v] {
+			return false
+		}
+	}
+	return true
+}
