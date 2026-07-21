@@ -466,15 +466,10 @@ func (s *Server) playbackStartupTimeout() time.Duration {
 	s.mu.RLock()
 	cfg := s.config
 	s.mu.RUnlock()
-	base := time.Duration(config.DefaultPlaybackStartupTimeoutSeconds) * time.Second
 	if cfg == nil {
-		return base * 2
+		return time.Duration(config.DefaultPlaybackStartupTimeoutSeconds) * time.Second
 	}
-	base = cfg.EffectivePlaybackStartupTimeout()
-	if !cfg.EffectiveFailoverFastMode() {
-		return base * 2
-	}
-	return base
+	return cfg.EffectivePlaybackStartupTimeout()
 }
 
 type StreamSlotKey struct {
@@ -1758,7 +1753,6 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 	}
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
-		FailoverFastMode:           s.failoverFastModeEnabled(),
 	}
 	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
 	cacheReturnedPlaybackBlueprint(sess, bp)
@@ -1939,46 +1933,13 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 	}, detailsURL, sess.ID)
 }
 
-func shouldReportBadRelease(streamErr error) bool {
-	if isDefinitiveUnavailableStartupErr(streamErr) {
-		return true
-	}
-	errMsg := streamErr.Error()
-	if !strings.Contains(errMsg, "compressed") && !strings.Contains(errMsg, "encrypted") &&
-		!strings.Contains(errMsg, "EOF") && !errors.Is(streamErr, unpack.ErrTooManyZeroFills) &&
-		!errors.Is(streamErr, unpack.ErrEpisodeTargetNotFound) {
-		return false
-	}
-	return true
-}
-
-func (s *Server) failoverFastModeEnabled() bool {
-	s.mu.RLock()
-	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil {
-		return false
-	}
-	return cfg.EffectiveFailoverFastMode()
-}
-
 func (s *Server) shouldReportBadReleaseToAvailNZB(streamErr error) bool {
 	if errors.Is(streamErr, unpack.ErrArchiveFastProbe) {
 		return false
 	}
-	if s.failoverFastModeEnabled() {
-		// In fast mode we skip some deeper diagnostics (e.g. exhaustive archive checks).
-		// Only report bad availability when failure is still clearly definitive.
-		return isDefinitiveUnavailableStartupErr(streamErr) || isDataCorruptErr(streamErr)
-	}
-	if shouldReportBadRelease(streamErr) {
-		return true
-	}
-	// Keep corruption reportable when full diagnostics are enabled.
-	if isDataCorruptErr(streamErr) {
-		return true
-	}
-	return false
+	// Fast mode skips some deeper diagnostics (e.g. exhaustive archive checks).
+	// Only report bad availability when failure is still clearly definitive.
+	return isDefinitiveUnavailableStartupErr(streamErr) || isDataCorruptErr(streamErr)
 }
 
 func shouldReportBadReleaseAllProviders(streamErr error) bool {
@@ -2472,7 +2433,6 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		// Debug play should be permissive and mirror nzbdav-style direct playback
 		// behavior for odd/obfuscated NZBs where strict content typing is absent.
 		AllowLargestDirectFallback: true,
-		FailoverFastMode:           s.failoverFastModeEnabled(),
 	}
 	startupTimeout := s.playbackStartupTimeout()
 	if startupTimeout < 2*time.Minute {
@@ -2585,7 +2545,6 @@ func (s *Server) speculativelyPreProbeSession(sess *session.Session) {
 		}
 		hints := unpack.StreamSelectionHints{
 			AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
-			FailoverFastMode:           s.failoverFastModeEnabled(),
 		}
 
 		streamReader, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)

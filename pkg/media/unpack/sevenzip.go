@@ -166,22 +166,7 @@ func filesToParts(ctx context.Context, files []UnpackableFile) ([]Part, error) {
 		return parts, nil
 	}
 
-	if IsArchiveFastFailoverModeEnabled(ctx) {
-		return filesToPartsFast(ctx, files)
-	}
-	return filesToPartsFull(ctx, files)
-}
-
-func filesToPartsFull(ctx context.Context, files []UnpackableFile) ([]Part, error) {
-	parts := make([]Part, len(files))
-	for i, f := range files {
-		size, err := resolved7zVolumeSize(ctx, f)
-		if err != nil {
-			return nil, err
-		}
-		parts[i] = Part{Reader: f, Offset: 0, Size: size}
-	}
-	return parts, nil
+	return filesToPartsFast(ctx, files)
 }
 
 func filesToPartsFast(ctx context.Context, files []UnpackableFile) ([]Part, error) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 )
 
-type archiveFastFailoverContextKey struct{}
 type archiveScanIOTraceContextKey struct{}
 type skipGapProbingContextKey struct{}
 
@@ -25,13 +24,6 @@ func IsSkipGapProbingEnabled(ctx context.Context) bool {
 	return enabled
 }
 
-func WithArchiveFastFailoverMode(ctx context.Context, enabled bool) context.Context {
-	if !enabled {
-		return ctx
-	}
-	return context.WithValue(ctx, archiveFastFailoverContextKey{}, true)
-}
-
 func WithArchiveScanIOTrace(ctx context.Context) context.Context {
 	return context.WithValue(ctx, archiveScanIOTraceContextKey{}, true)
 }
@@ -44,22 +36,14 @@ func IsArchiveScanIOTraceEnabled(ctx context.Context) bool {
 	return enabled
 }
 
-func IsArchiveFastFailoverModeEnabled(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	enabled, _ := ctx.Value(archiveFastFailoverContextKey{}).(bool)
-	return enabled
-}
-
 // playbackSegmentMapCtx returns a context for on-demand segment-map detection during
-// playback reads/seeks. It skips expensive gap probing and middle calibration that
-// are only needed for one-time archive sizing.
+// playback reads/seeks. It skips expensive gap probing that is only needed for
+// one-time archive sizing.
 func playbackSegmentMapCtx(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return WithArchiveFastFailoverMode(WithSkipGapProbing(ctx, true), true)
+	return WithSkipGapProbing(ctx, true)
 }
 
 var ErrArchiveFastProbe = errors.New("archive fast probe incomplete")
@@ -71,8 +55,12 @@ func markArchiveFastProbe(err error) error {
 	return fmt.Errorf("%w: %v", ErrArchiveFastProbe, err)
 }
 
-func maybeMarkArchiveFastProbe(ctx context.Context, err error) error {
-	if err == nil || !IsArchiveFastFailoverModeEnabled(ctx) {
+// maybeMarkArchiveFastProbe wraps non-nil errors with ErrArchiveFastProbe.
+// Fast failover mode is always enabled, so archive scan errors are always
+// marked as fast-probe incomplete so callers can avoid reporting them to
+// AvailNZB as definitive bad-release signals.
+func maybeMarkArchiveFastProbe(_ context.Context, err error) error {
+	if err == nil {
 		return err
 	}
 	return markArchiveFastProbe(err)

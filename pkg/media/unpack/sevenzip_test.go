@@ -88,7 +88,7 @@ func TestFilesToPartsSplitSevenZipProbesFirstMiddleAndLastOnly(t *testing.T) {
 		resolvedSize:         80,
 	}
 
-	ctx := WithArchiveFastFailoverMode(context.Background(), true)
+	ctx := context.Background()
 	parts, err := filesToParts(ctx, []UnpackableFile{first, middle, extraMiddle, last})
 	if err != nil {
 		t.Fatalf("filesToParts returned error: %v", err)
@@ -106,37 +106,6 @@ func TestFilesToPartsSplitSevenZipProbesFirstMiddleAndLastOnly(t *testing.T) {
 	}
 	if extraMiddle.ensureCalls != 0 {
 		t.Fatalf("expected trailing middle volume to reuse probed size, got %d ensure calls", extraMiddle.ensureCalls)
-	}
-}
-
-func TestFilesToPartsFullModeProbesEveryVolume(t *testing.T) {
-	files := make([]*sizedUnpackableFile, 4)
-	for i := range files {
-		files[i] = &sizedUnpackableFile{
-			memoryUnpackableFile: &memoryUnpackableFile{name: fmt.Sprintf("release.7z.%03d", i+1)},
-			size:                 int64(100 + i),
-			resolvedSize:         int64(90 + i),
-		}
-	}
-	unpackables := make([]UnpackableFile, len(files))
-	for i, f := range files {
-		unpackables[i] = f
-	}
-
-	parts, err := filesToParts(context.Background(), unpackables)
-	if err != nil {
-		t.Fatalf("filesToParts returned error: %v", err)
-	}
-	if len(parts) != 4 {
-		t.Fatalf("expected 4 parts, got %d", len(parts))
-	}
-	for i, f := range files {
-		if f.ensureCalls != 1 {
-			t.Fatalf("expected volume %d probed once in full mode, got %d", i+1, f.ensureCalls)
-		}
-		if parts[i].Size != int64(90+i) {
-			t.Fatalf("expected part %d size %d, got %d", i+1, 90+i, parts[i].Size)
-		}
 	}
 }
 

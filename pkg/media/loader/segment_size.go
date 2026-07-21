@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/media/unpack"
 )
 
 const (
@@ -53,14 +52,13 @@ func middleProbeIndex(segmentCount int) int {
 	return segmentCount / 2
 }
 
-func shouldProbeMiddleSegment(ctx context.Context, segments []*Segment) bool {
+func shouldProbeMiddleSegment(_ context.Context, segments []*Segment) bool {
 	if len(segments) <= 2 {
 		return false
 	}
-	if unpack.IsArchiveFastFailoverModeEnabled(ctx) {
-		return false
-	}
-	return hasUniformNZBSegmentBytes(segments)
+	// Fast failover mode is always enabled: skip middle-segment calibration
+	// to avoid the extra NNTP probe that delays playback startup.
+	return false
 }
 
 // segmentProbeIndices returns segment indices to BODY-probe in parallel.
@@ -378,8 +376,7 @@ func logSegmentProbePlan(ctx context.Context, name string, segments []*Segment, 
 		"probe_indices", indices,
 		"known_from_estimator", len(knownByNZBBytes),
 		"uniform_nzb_bytes", hasUniformNZBSegmentBytes(segments),
-		"middle_calibration", includeMiddle,
-		"failover_fast_mode", unpack.IsArchiveFastFailoverModeEnabled(ctx))
+		"middle_calibration", includeMiddle)
 }
 
 func firstIndexByBytesMap(segments []*Segment) map[int64]int {

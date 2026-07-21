@@ -508,7 +508,7 @@ func TestEnsureSegmentMapFastModeGapProbesSkippedMiddle(t *testing.T) {
 	}()
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
-	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	ctx := context.Background()
 	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
 
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
@@ -539,7 +539,7 @@ func segmentProbeCallsMatch(calls []int, want []int) bool {
 	return true
 }
 
-func TestEnsureSegmentMapEstimatorStillUsesActualLastSegmentSize(t *testing.T) {
+func TestEnsureSegmentMapEstimatorPrimesWithoutNNTPProbes(t *testing.T) {
 	oldLogger := logger.Log
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	defer func() {
@@ -554,12 +554,15 @@ func TestEnsureSegmentMapEstimatorStillUsesActualLastSegmentSize(t *testing.T) {
 	if err := f.EnsureSegmentMap(); err != nil {
 		t.Fatalf("EnsureSegmentMap returned error: %v", err)
 	}
-	if got := f.Size(); got != 21 {
-		t.Fatalf("expected decoded size %d, got %d", 21, got)
+	// Fast mode is always enabled: when the estimator knows the decoded size for
+	// uniform NZB bytes, the segment map is primed without any NNTP probes.
+	// The last segment uses the estimator's value (8) rather than its actual
+	// decoded size (5) to avoid the extra probe that would delay startup.
+	if got := f.Size(); got != 24 {
+		t.Fatalf("expected primed decoded size %d, got %d", 24, got)
 	}
-	calls := fetcher.Calls()
-	if !segmentProbeCallsMatch(calls, []int{1, 2, 3}) {
-		t.Fatalf("expected gap first, middle, and last segment probes with estimator, got %v", calls)
+	if calls := fetcher.Calls(); len(calls) != 0 {
+		t.Fatalf("expected no NNTP probes when estimator primes uniform segment map, got %v", calls)
 	}
 }
 
@@ -571,7 +574,7 @@ func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
 	}()
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
-	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	ctx := context.Background()
 	ctx = unpack.WithSkipGapProbing(ctx, true)
 	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 6), nil, nil, fetcher)
 
@@ -597,7 +600,7 @@ func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
 	estimator := NewSegmentSizeEstimator()
 	estimator.Set(768000, 768000)
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{768000, 768000, 768000}}
-	ctx := unpack.WithArchiveFastFailoverMode(context.Background(), true)
+	ctx := context.Background()
 	f := NewFile(ctx, testNZBFileWithSegments(768000, 768000, 768000), nil, estimator, fetcher)
 
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {

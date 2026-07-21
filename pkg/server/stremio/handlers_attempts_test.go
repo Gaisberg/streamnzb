@@ -186,13 +186,6 @@ func TestShouldReportBadReleaseAllProvidersRegularUnavailable(t *testing.T) {
 	}
 }
 
-func TestShouldReportBadReleaseFirstSegmentMissing(t *testing.T) {
-	err := fmt.Errorf("segment unavailable: %w", ErrFirstSegmentUnavailable)
-	if !shouldReportBadRelease(err) {
-		t.Fatal("expected first-segment-430 startup failure to be reportable")
-	}
-}
-
 func TestShouldReportBadReleaseAllProvidersFirstSegmentMissing(t *testing.T) {
 	err := fmt.Errorf("segment unavailable: %w", ErrFirstSegmentUnavailable)
 	if !shouldReportBadReleaseAllProviders(err) {

@@ -21,7 +21,6 @@ const ADVANCED_TAB_FIELDS = [
   'keep_log_files',
   'nzb_history_retention_days',
   'playback_startup_timeout_seconds',
-  'failover_fast_mode',
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
   'speculative_pre_probing_count',
@@ -284,11 +283,6 @@ export function useSettingsState({
       trimmedFullData.session_post_playback_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(postPlaybackTtl) ? 240 : postPlaybackTtl))
       const preProbeCount = Number(trimmedFullData.speculative_pre_probing_count)
       trimmedFullData.speculative_pre_probing_count = Math.min(5, Math.max(0, Number.isNaN(preProbeCount) ? 1 : preProbeCount))
-      if (trimmedFullData.failover_fast_mode == null) {
-        trimmedFullData.failover_fast_mode = true
-      } else {
-        trimmedFullData.failover_fast_mode = trimmedFullData.failover_fast_mode === true
-      }
 
       const payload = overrides
         ? Object.keys(overrides).reduce((acc, key) => {

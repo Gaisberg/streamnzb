@@ -35,7 +35,6 @@ type FailedBlueprint struct {
 
 type StreamSelectionHints struct {
 	AllowLargestDirectFallback bool
-	FailoverFastMode           bool
 }
 
 const maxDirectProbeCandidates = 3
@@ -103,8 +102,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		"target", target,
 		"files", len(files),
 		"cached_type", fmt.Sprintf("%T", cachedBP))
-	rarScanCtx := WithArchiveFastFailoverMode(ctx, hints.FailoverFastMode)
-	rarScanCtx = WithSkipGapProbing(rarScanCtx, true)
+	rarScanCtx := WithSkipGapProbing(ctx, true)
 	if cachedBP != nil {
 		switch bp := cachedBP.(type) {
 		case *ArchiveBlueprint:
@@ -185,11 +183,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 	}
 	if len(archiveFiles) > 0 {
 		firstVolName := ExtractFilename(archiveFiles[0].Name())
-		mode := "full"
-		if IsArchiveFastFailoverModeEnabled(rarScanCtx) {
-			mode = "fast"
-		}
-		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles), "mode", mode)
+		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles), "mode", "fast")
 		newBp, err := CreateSevenZipBlueprint(rarScanCtx, archiveFiles, firstVolName, password, target)
 		if err != nil {
 			err = maybeMarkArchiveFastProbe(rarScanCtx, err)

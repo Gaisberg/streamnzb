@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'failover_fast_mode', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count'],
+  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count'],
   availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -46,7 +46,6 @@ function pickInitialValues(values = {}) {
     session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     speculative_pre_probing_count: Number.isFinite(parsedSpeculativePreProbingCount) ? parsedSpeculativePreProbingCount : 1,
-    failover_fast_mode: values.failover_fast_mode == null ? true : values.failover_fast_mode === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
     tmdb_api_key: values.tmdb_api_key ?? '',
@@ -313,28 +312,6 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <FormControl><Input type="number" min={1} max={60} className={fieldClassName('playback_startup_timeout_seconds', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 5 : Math.min(60, Math.max(1, Number.isNaN(next) ? 5 : next))) }} /></FormControl>
                       </div>
                       <FormDescription className="mt-3">How long StreamNZB waits for the initial playback probe/open before failing over to the next release. Higher values reduce false startup timeouts but delay failover.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="failover_fast_mode" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <div className="sm:flex-1">
-                          <FormLabel className={labelClass}>Failover fast mode</FormLabel>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value === true}
-                            onCheckedChange={field.onChange}
-                            className={showUnsavedHighlights && formState.dirtyFields?.failover_fast_mode ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
-                          />
-                        </FormControl>
-                      </div>
-                      <FormDescription className="mt-3">
-                        When enabled, failover prioritizes faster startup and may skip deeper checks.
-                        When disabled, failover spends longer exhausting all options before moving on.
-                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )} />

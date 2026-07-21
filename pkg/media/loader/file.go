@@ -247,7 +247,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	}
 	f.mu.Unlock()
 
-	if unpack.IsArchiveFastFailoverModeEnabled(ctx) && f.PrimeUniformSegmentMapFromEstimator() {
+	if f.PrimeUniformSegmentMapFromEstimator() {
 		return nil
 	}
 

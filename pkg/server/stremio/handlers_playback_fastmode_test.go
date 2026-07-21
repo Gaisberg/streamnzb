@@ -10,21 +10,9 @@ import (
 	"streamnzb/pkg/media/unpack"
 )
 
-func TestPlaybackStartupTimeoutDoublesWhenFastModeDisabled(t *testing.T) {
+func TestPlaybackStartupTimeoutUsesConfiguredValue(t *testing.T) {
 	s := &Server{config: &config.Config{
 		PlaybackStartupTimeoutSeconds: 7,
-		FailoverFastMode:              false,
-	}}
-
-	if got := s.playbackStartupTimeout(); got != 14*time.Second {
-		t.Fatalf("playbackStartupTimeout() = %v, want %v", got, 14*time.Second)
-	}
-}
-
-func TestPlaybackStartupTimeoutUsesConfiguredWhenFastModeEnabled(t *testing.T) {
-	s := &Server{config: &config.Config{
-		PlaybackStartupTimeoutSeconds: 7,
-		FailoverFastMode:              true,
 	}}
 
 	if got := s.playbackStartupTimeout(); got != 7*time.Second {
@@ -32,27 +20,22 @@ func TestPlaybackStartupTimeoutUsesConfiguredWhenFastModeEnabled(t *testing.T) {
 	}
 }
 
-func TestShouldReportBadReleaseToAvailNZBRespectsFastMode(t *testing.T) {
-	slow := &Server{config: &config.Config{FailoverFastMode: false}}
-	if !slow.shouldReportBadReleaseToAvailNZB(errors.New("EOF")) {
-		t.Fatalf("expected EOF to be reportable when fast mode is disabled")
+func TestShouldReportBadReleaseToAvailNZBFastModeAlwaysOn(t *testing.T) {
+	s := &Server{config: &config.Config{}}
+	if s.shouldReportBadReleaseToAvailNZB(errors.New("EOF")) {
+		t.Fatalf("expected EOF to be skipped in fast mode")
 	}
-
-	fast := &Server{config: &config.Config{FailoverFastMode: true}}
-	if fast.shouldReportBadReleaseToAvailNZB(errors.New("EOF")) {
-		t.Fatalf("expected EOF to be skipped when fast mode is enabled")
-	}
-	if !fast.shouldReportBadReleaseToAvailNZB(ErrFirstSegmentUnavailable) {
+	if !s.shouldReportBadReleaseToAvailNZB(ErrFirstSegmentUnavailable) {
 		t.Fatalf("expected definitive unavailable error to stay reportable in fast mode")
 	}
-	if !fast.shouldReportBadReleaseToAvailNZB(errors.New("[rapidyenc] data corruption detected")) {
+	if !s.shouldReportBadReleaseToAvailNZB(errors.New("[rapidyenc] data corruption detected")) {
 		t.Fatalf("expected data corruption to stay reportable in fast mode")
 	}
 }
 
 func TestShouldReportBadReleaseToAvailNZBSkipsArchiveFastProbe(t *testing.T) {
-	fast := &Server{config: &config.Config{FailoverFastMode: true}}
-	if fast.shouldReportBadReleaseToAvailNZB(unpack.ErrArchiveFastProbe) {
+	s := &Server{config: &config.Config{}}
+	if s.shouldReportBadReleaseToAvailNZB(unpack.ErrArchiveFastProbe) {
 		t.Fatalf("expected archive fast probe errors to be skipped")
 	}
 }

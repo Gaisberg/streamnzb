@@ -125,14 +125,6 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 // failing slowly across hundreds of volumes; we try a few and fail fast.
 const maxFirstVolumesToScan = 5
 
-func withRARFastFailoverMode(ctx context.Context, enabled bool) context.Context {
-	return WithArchiveFastFailoverMode(ctx, enabled)
-}
-
-func isRARFastFailoverModeEnabled(ctx context.Context) bool {
-	return IsArchiveFastFailoverModeEnabled(ctx)
-}
-
 type firstVolumeCandidate struct {
 	file  UnpackableFile
 	score int
@@ -236,16 +228,6 @@ func parseSubjectPartCounter(subject string) (int, bool) {
 	return part, true
 }
 
-func shouldRetryExhaustiveRARScan(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrTooManyZeroFills) {
-		return false
-	}
-	return !errors.Is(err, ErrPAR2RepairRequired)
-}
-
 func ScanArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, err
@@ -309,31 +291,11 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 		return bp, nil
 	}
 
-	// Obfuscated sets can have random volume names where alphabetical top-N may
-	// miss the true first volume. Keep fail-fast behavior, but retry exhaustively
-	// once before giving up.
-	if isRARFastFailoverModeEnabled(ctx) {
-		logger.Warn("RAR fast failover mode enabled: skipping exhaustive first-volume scan",
-			"target", target,
-			"fast_count", len(firstVols),
-			"full_count", len(allFirstVols),
-			"err", err)
-		return nil, err
-	}
-	if len(firstVols) < len(allFirstVols) && shouldRetryExhaustiveRARScan(err) {
-		logger.Warn("RAR fast first-volume scan failed, retrying exhaustive first-volume scan",
-			"target", target,
-			"fast_count", len(firstVols),
-			"full_count", len(allFirstVols),
-			"err", err)
-		if bpFull, errFull := runScan(allFirstVols, "full"); errFull == nil {
-			return bpFull, nil
-		} else {
-			return nil, errFull
-		}
-	}
+	// Fast failover mode is always enabled: obfuscated sets can have random volume
+	// names where alphabetical top-N may miss the true first volume, but we keep
+	// fail-fast behavior and skip the exhaustive retry to avoid slow startup.
 	if len(firstVols) < len(allFirstVols) {
-		logger.Warn("Skipping exhaustive RAR first-volume scan after conclusive fast-scan failure",
+		logger.Warn("RAR fast first-volume scan failed, skipping exhaustive scan",
 			"target", target,
 			"fast_count", len(firstVols),
 			"full_count", len(allFirstVols),

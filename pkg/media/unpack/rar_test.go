@@ -331,24 +331,6 @@ func TestScanDiagnosticsDoesNotClassifyWithoutDecodeCorruptionEvidence(t *testin
 	}
 }
 
-func TestShouldRetryExhaustiveRARScan(t *testing.T) {
-	if shouldRetryExhaustiveRARScan(nil) {
-		t.Fatal("expected nil error to skip exhaustive retry")
-	}
-
-	if shouldRetryExhaustiveRARScan(fmt.Errorf("archive data appears corrupted or incomplete: %w", ErrPAR2RepairRequired)) {
-		t.Fatal("expected PAR2-classified corruption to skip exhaustive retry")
-	}
-
-	if shouldRetryExhaustiveRARScan(fmt.Errorf("first volume unavailable: %w", ErrTooManyZeroFills)) {
-		t.Fatal("expected first-volume unavailable to skip exhaustive retry")
-	}
-
-	if !shouldRetryExhaustiveRARScan(errors.New("empty archive")) {
-		t.Fatal("expected ambiguous fast-scan failure to allow exhaustive retry")
-	}
-}
-
 func TestSelectFirstVolumesForFastScanPrefersLikelyFirstVolumes(t *testing.T) {
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "zzz-obf.rar"},

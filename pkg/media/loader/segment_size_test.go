@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"streamnzb/pkg/media/nzb"
-	"streamnzb/pkg/media/unpack"
 )
 
 func TestScaleDecodedSizeUsesPerSegmentNZBBytes(t *testing.T) {
@@ -97,17 +96,13 @@ func TestApplyUniformMiddleCalibration(t *testing.T) {
 	}
 }
 
-func TestShouldProbeMiddleSegmentRespectsFastMode(t *testing.T) {
+func TestShouldProbeMiddleSegmentAlwaysSkipsInFastMode(t *testing.T) {
 	segments := []*Segment{
 		{Segment: nzbSegment(10)},
 		{Segment: nzbSegment(10)},
 		{Segment: nzbSegment(10)},
 	}
-	if !shouldProbeMiddleSegment(context.Background(), segments) {
-		t.Fatal("expected middle probe when fast mode disabled")
-	}
-	fast := unpack.WithArchiveFastFailoverMode(context.Background(), true)
-	if shouldProbeMiddleSegment(fast, segments) {
+	if shouldProbeMiddleSegment(context.Background(), segments) {
 		t.Fatal("expected no middle probe in fast failover mode")
 	}
 }

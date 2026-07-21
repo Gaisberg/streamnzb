@@ -262,14 +262,6 @@ func (c *Config) EffectiveSpeculativePreProbingCount() int {
 	return DefaultSpeculativePreProbingCount
 }
 
-
-func (c *Config) EffectiveFailoverFastMode() bool {
-	if c == nil {
-		return true
-	}
-	return c.FailoverFastMode
-}
-
 func normalizeSessionTTLMinutes(ttl int) int {
 	if ttl < MinSessionTTLMinutes || ttl > MaxSessionTTLMinutes {
 		return DefaultSessionTTLMinutes
@@ -481,9 +473,6 @@ type Config struct {
 	SessionTTLMinutes int `json:"session_ttl_minutes,omitempty"`
 	// SessionPostPlaybackTTLMinutes controls how long a session stays in memory after playback ends (paused/stopped). Default 240 (4 hours).
 	SessionPostPlaybackTTLMinutes int `json:"session_post_playback_ttl_minutes,omitempty"`
-	// FailoverFastMode favors quick failover over exhaustive diagnosis. When enabled,
-	// playback skips expensive archive checks that can delay startup.
-	FailoverFastMode bool `json:"failover_fast_mode"`
 
 	// SpeculativePreProbingCount controls how many top releases to pre-probe in background. Default 1.
 	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
@@ -651,7 +640,6 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		out.TVCategories = &tc
 	}
 
-
 	disableID := false
 	if ic != nil && ic.DisableIdSearch != nil {
 		disableID = *ic.DisableIdSearch
@@ -704,7 +692,6 @@ func Load() (*Config, error) {
 		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
 		SessionTTLMinutes:             DefaultSessionTTLMinutes,
 		SessionPostPlaybackTTLMinutes: DefaultSessionPostPlaybackTTLMinutes,
-		FailoverFastMode:              true,
 		SpeculativePreProbingCount:    DefaultSpeculativePreProbingCount,
 		LoadedPath:                    configPath,
 	}
