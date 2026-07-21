@@ -36,7 +36,7 @@ func (s *Server) CreateDirectPlaySessionFromURL(ctx context.Context, nzbURL stri
 	return s.CreateDirectPlaySessionFromNZBData(ctx, trimmedURL, data, stream)
 }
 
-func (s *Server) CreateDirectPlaySessionFromNZBData(_ context.Context, sourceName string, nzbData []byte, stream *auth.Stream) (string, error) {
+func (s *Server) CreateDirectPlaySessionFromNZBData(ctx context.Context, sourceName string, nzbData []byte, stream *auth.Stream) (string, error) {
 	if s == nil || s.sessionManager == nil {
 		return "", fmt.Errorf("session manager unavailable")
 	}
@@ -47,7 +47,7 @@ func (s *Server) CreateDirectPlaySessionFromNZBData(_ context.Context, sourceNam
 		return "", fmt.Errorf("NZB payload too large")
 	}
 
-	parsedNZB, err := nzb.Parse(bytes.NewReader(nzbData))
+	parsedNZB, err := nzb.ParseWithContext(ctx, bytes.NewReader(nzbData))
 	if err != nil {
 		return "", fmt.Errorf("failed to parse NZB: %w", err)
 	}

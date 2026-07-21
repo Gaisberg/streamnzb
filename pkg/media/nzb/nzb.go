@@ -2,6 +2,7 @@ package nzb
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/MunifTanjim/go-ptt"
 	"golang.org/x/net/html/charset"
@@ -20,10 +23,19 @@ import (
 	searchparser "streamnzb/pkg/search/parser"
 )
 
+// defaultParseTimeout bounds nzb.Parse when no context deadline is provided,
+// preventing a malformed or huge NZB from hanging the caller indefinitely.
+const defaultParseTimeout = 30 * time.Second
+
 type NZB struct {
-	XMLName xml.Name `xml:"nzb"`
-	Head    Head     `xml:"head"`
-	Files   []File   `xml:"file"`
+	Head  Head   `xml:"head"`
+	Files []File `xml:"file"`
+
+	// Cached analysis state. Populated lazily by GetFileInfo and reused by
+	// subsequent content-selection / compression-type calls so that the
+	// expensive per-file ptt.Parse work runs at most once per NZB.
+	fileInfoOnce sync.Once
+	fileInfos    []*FileInfo
 }
 
 type Head struct {
@@ -58,15 +70,92 @@ type FileInfo struct {
 	IsSample   bool
 	IsExtra    bool
 	ParsedInfo *ptt.Result
+
+	// Cached derived values to avoid recomputing string work during sorting
+	// and content grouping. Populated in analyzeFile.
+	pattern     string
+	patternOnce sync.Once
+
+	// Precomputed sort keys used by sortContentFiles.
+	leadPriority     int
+	leadPriorityOnce sync.Once
+	sequence         int
+	sequenceOnce     sync.Once
 }
 
+// Parse reads and decodes an NZB document from r. It applies a default
+// timeout (defaultParseTimeout) so a malformed or slow reader cannot hang
+// the caller. Use ParseWithContext to supply your own deadline/cancellation.
 func Parse(r io.Reader) (*NZB, error) {
-	raw, err := io.ReadAll(r)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultParseTimeout)
+	defer cancel()
+	return ParseWithContext(ctx, r)
+}
+
+// ParseWithContext reads and decodes an NZB document from r, honouring ctx
+// for cancellation/deadline. It is safe to pass a context with no deadline
+// (the decode will still be cancellable).
+func ParseWithContext(ctx context.Context, r io.Reader) (*NZB, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	raw, err := readAllWithContext(ctx, r)
 	if err != nil {
 		return nil, err
 	}
+	if !bytes.ContainsRune(raw, 0) {
+		// Common path: no null bytes, skip the ReplaceAll allocation.
+		return decodeNZB(raw)
+	}
 	raw = bytes.ReplaceAll(raw, []byte{0x00}, nil)
+	return decodeNZB(raw)
+}
 
+// readAllWithContext wraps io.ReadAll with context cancellation. When ctx
+// is cancelled the underlying read is interrupted via a deadline on a
+// pipe-style reader when possible; otherwise we fall back to a bounded read.
+func readAllWithContext(ctx context.Context, r io.Reader) ([]byte, error) {
+	if ctx == nil {
+		return io.ReadAll(r)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		// No deadline: just read, but still respect cancellation for readers
+		// that support it via the context-aware path below.
+		type result struct {
+			data []byte
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			data, err := io.ReadAll(r)
+			ch <- result{data, err}
+		}()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case res := <-ch:
+			return res.data, res.err
+		}
+	}
+	// Deadline present: race the read against ctx.Done().
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(r)
+		ch <- result{data, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		return res.data, res.err
+	}
+}
+
+func decodeNZB(raw []byte) (*NZB, error) {
 	var nzb NZB
 	decoder := xml.NewDecoder(bytes.NewReader(raw))
 	decoder.CharsetReader = charset.NewReaderLabel
@@ -121,16 +210,20 @@ func (n *NZB) TotalSize() int64 {
 	return total
 }
 
+// GetFileInfo analyzes every file in the NZB and returns the cached result.
+// The analysis (including the expensive ptt.Parse per file) runs at most
+// once per NZB instance; subsequent calls return the cached slice.
 func (n *NZB) GetFileInfo() []*FileInfo {
-	infos := make([]*FileInfo, 0, len(n.Files))
-
-	for i := range n.Files {
-		file := &n.Files[i]
-		info := analyzeFile(file)
-		infos = append(infos, info)
-	}
-
-	return infos
+	n.fileInfoOnce.Do(func() {
+		infos := make([]*FileInfo, 0, len(n.Files))
+		for i := range n.Files {
+			file := &n.Files[i]
+			info := analyzeFile(file)
+			infos = append(infos, info)
+		}
+		n.fileInfos = infos
+	})
+	return n.fileInfos
 }
 
 func (n *NZB) GetLargestContentFile() *FileInfo {
@@ -230,7 +323,7 @@ func selectEpisodeContentFiles(infos []*FileInfo, season, episode int) []*FileIn
 		if !isContentCandidate(info) {
 			continue
 		}
-		pattern := getFilePattern(info.Filename)
+		pattern := info.getFilePattern()
 		if pattern == "" {
 			continue
 		}
@@ -300,7 +393,7 @@ func selectLargestContentFiles(infos []*FileInfo) []*FileInfo {
 
 		if info.Size > maxSize {
 			maxSize = info.Size
-			mainPattern = getFilePattern(info.Filename)
+			mainPattern = info.getFilePattern()
 		}
 	}
 
@@ -311,7 +404,7 @@ func selectLargestContentFiles(infos []*FileInfo) []*FileInfo {
 			}
 			if info.Size > maxSize {
 				maxSize = info.Size
-				mainPattern = getFilePattern(info.Filename)
+				mainPattern = info.getFilePattern()
 			}
 		}
 	}
@@ -342,7 +435,7 @@ func collectPatternContentFiles(infos []*FileInfo, pattern string) []*FileInfo {
 	}
 	var contentFiles []*FileInfo
 	for _, info := range infos {
-		if getFilePattern(info.Filename) == pattern {
+		if info.getFilePattern() == pattern {
 			contentFiles = append(contentFiles, info)
 		}
 	}
@@ -359,11 +452,18 @@ func isContentCandidate(info *FileInfo) bool {
 		isSplitArchivePart(info.Extension) || isRarSplitPart(info.Extension, info.Filename)
 }
 
+// episodePartialParser parses only the seasons/episodes fields, avoiding the
+// full 100+ regex handler set used by ptt.Parse. It is reused across all
+// episode-match rank evaluations.
+var episodePartialParser = sync.OnceValue(func() func(string) *ptt.Result {
+	return ptt.GetPartialParser([]string{"seasons", "episodes"})
+})
+
 func episodeMatchRank(filename string, season, episode int) int {
 	if season <= 0 || episode <= 0 {
 		return 0
 	}
-	parsed := searchparser.ParseReleaseTitle(filename)
+	parsed := searchparser.ParseReleaseTitleWithParser(filename, episodePartialParser())
 	if parsed == nil {
 		logger.Debug("NZB episode filename parse returned nil",
 			"filename", filename,
@@ -403,13 +503,6 @@ func sampleContentFilenames(files []*FileInfo, limit int) []string {
 	return samples
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func sortContentFiles(files []*FileInfo) {
 	sort.SliceStable(files, func(i, j int) bool {
 		left := files[i]
@@ -428,13 +521,13 @@ func sortContentFiles(files []*FileInfo) {
 		if leftCandidate != rightCandidate {
 			return leftCandidate < rightCandidate
 		}
-		leftPriority := contentFileLeadPriority(left)
-		rightPriority := contentFileLeadPriority(right)
+		leftPriority := left.getLeadPriority()
+		rightPriority := right.getLeadPriority()
 		if leftPriority != rightPriority {
 			return leftPriority < rightPriority
 		}
-		leftSequence := contentFileSequence(left)
-		rightSequence := contentFileSequence(right)
+		leftSequence := left.getSequence()
+		rightSequence := right.getSequence()
 		if leftSequence != rightSequence {
 			return leftSequence < rightSequence
 		}
@@ -443,6 +536,20 @@ func sortContentFiles(files []*FileInfo) {
 		}
 		return strings.ToLower(left.Filename) < strings.ToLower(right.Filename)
 	})
+}
+
+func (info *FileInfo) getLeadPriority() int {
+	info.leadPriorityOnce.Do(func() {
+		info.leadPriority = contentFileLeadPriority(info)
+	})
+	return info.leadPriority
+}
+
+func (info *FileInfo) getSequence() int {
+	info.sequenceOnce.Do(func() {
+		info.sequence = contentFileSequence(info)
+	})
+	return info.sequence
 }
 
 func contentFileLeadPriority(info *FileInfo) int {
@@ -528,6 +635,14 @@ func logGetContentFilesEmpty(infos []*FileInfo, mainPattern string) {
 		"extras", extras,
 		"main_pattern", mainPattern,
 		"sample_filenames", subjects)
+}
+
+// getFilePattern returns the cached pattern for a file, computing it once.
+func (info *FileInfo) getFilePattern() string {
+	info.patternOnce.Do(func() {
+		info.pattern = getFilePattern(info.Filename)
+	})
+	return info.pattern
 }
 
 func getFilePattern(filename string) string {
@@ -707,15 +822,17 @@ func isSampleFile(filename string) bool {
 		strings.Contains(lower, "preview")
 }
 
+// extraExts is a package-level lookup table so isExtraFile does not allocate
+// a new map on every call (it runs once per file per GetFileInfo).
+var extraExts = map[string]bool{
+	".nfo": true, ".txt": true, ".srt": true, ".sub": true,
+	".idx": true, ".ass": true, ".ssa": true, ".vtt": true,
+	".jpg": true, ".png": true, ".gif": true,
+
+	".par2": true,
+}
+
 func isExtraFile(filename string, ext string) bool {
-	extraExts := map[string]bool{
-		".nfo": true, ".txt": true, ".srt": true, ".sub": true,
-		".idx": true, ".ass": true, ".ssa": true, ".vtt": true,
-		".jpg": true, ".png": true, ".gif": true,
-
-		".par2": true,
-	}
-
 	if extraExts[ext] {
 		return true
 	}

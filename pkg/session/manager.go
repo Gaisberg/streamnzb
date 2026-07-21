@@ -1002,7 +1002,7 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 					logger.Debug("NZB download returned empty body", "indexer", indexerName, "title", itemTitle)
 					err = fmt.Errorf("NZB download returned empty body (indexer: %s)", indexerName)
 				} else {
-					parsedNZB, err = nzb.Parse(bytes.NewReader(data))
+					parsedNZB, err = nzb.ParseWithContext(downloadCtx, bytes.NewReader(data))
 					if err != nil {
 						snippet := string(data)
 						if len(snippet) > 200 {

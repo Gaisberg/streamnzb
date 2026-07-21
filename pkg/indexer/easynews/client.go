@@ -779,13 +779,6 @@ func parseDuration(raw interface{}) *int64 {
 	return nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func encodePayload(payload map[string]interface{}) string {
 	jsonData, _ := json.Marshal(payload)
 	encoded := base64.URLEncoding.EncodeToString(jsonData)

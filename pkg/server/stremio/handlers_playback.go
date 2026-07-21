@@ -2423,7 +2423,7 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		}
 	}
 
-	nzbParsed, err := nzb.Parse(bytes.NewReader(nzbData))
+	nzbParsed, err := nzb.ParseWithContext(r.Context(), bytes.NewReader(nzbData))
 	if err != nil {
 		logger.Error("Failed to parse NZB", "err", err)
 		http.Error(w, "Failed to parse NZB", http.StatusInternalServerError)

@@ -59,8 +59,20 @@ type ParsedRelease struct {
 	Volumes      []int
 }
 
+// ParseReleaseTitle parses a release title using the full ptt parser.
 func ParseReleaseTitle(title string) *ParsedRelease {
-	info := ptt.Parse(title)
+	return ParseReleaseTitleWithParser(title, ptt.Parse)
+}
+
+// ParseReleaseTitleWithParser parses a release title using the supplied ptt
+// parser function. This allows callers to pass a partial parser (e.g. one
+// that only extracts seasons/episodes) to avoid the cost of the full
+// 100+ regex handler set when only a subset of fields are needed.
+func ParseReleaseTitleWithParser(title string, parse func(string) *ptt.Result) *ParsedRelease {
+	if parse == nil {
+		parse = ptt.Parse
+	}
+	info := parse(title)
 
 	codec := pttoptions.NormalizeCodec(info.Codec)
 	if codec == "" && info.Codec != "" {
