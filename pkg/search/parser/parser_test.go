@@ -97,6 +97,16 @@ func TestParseReleaseTitleExpandsLanguageAliases(t *testing.T) {
 			wantAny: []string{"et", "lv", "lt"},
 		},
 		{
+			name:    "multi expands to fr",
+			title:   "Some.Movie.2024.1080p.BluRay.MULTi.x264-RG",
+			wantAny: []string{"fr"},
+		},
+		{
+			name:    "truefrench expands to fr",
+			title:   "Some.Movie.2024.1080p.BluRay.TRUEFRENCH.x264-RG",
+			wantAny: []string{"fr"},
+		},
+		{
 			name:  "no alias leaves languages from ptt only",
 			title: "Some.Movie.2024.1080p.BluRay.FRENCH.x264-RG",
 			want:  []string{"fr"},

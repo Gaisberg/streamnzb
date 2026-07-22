@@ -45,6 +45,7 @@ var LanguageOptions = []string{
 var languageFullNameToCode = map[string]string{
 	"multi subs": "multi subs", "multi audio": "multi audio", "dual audio": "dual audio",
 	"english": "en", "japanese": "ja", "korean": "ko", "chinese": "zh", "french": "fr", "spanish": "es",
+	"truefrench": "fr", "vfq": "fr", "vff": "fr",
 	"portuguese": "pt", "italian": "it", "german": "de", "russian": "ru", "ukrainian": "uk", "dutch": "nl",
 	"danish": "da", "finnish": "fi", "swedish": "sv", "norwegian": "no", "greek": "el", "lithuanian": "lt",
 	"latvian": "lv", "estonian": "et", "polish": "pl", "czech": "cs", "slovak": "sk", "hungarian": "hu",
@@ -64,11 +65,13 @@ var LanguageAliases = map[string][]string{
 	"benelux":      {"nl", "be"},
 	"iberian":      {"es", "pt"},
 	"slavic":       {"ru", "uk", "pl", "cs", "sk", "bg", "sr", "hr", "sl"},
+	"multi":        {"fr"},
+	"truefrench":   {"fr"},
 }
 
 // LanguageAliasWords returns the alias keys in a stable order for regex building.
 func LanguageAliasWords() []string {
-	return []string{"nordic", "scandinavian", "baltic", "benelux", "iberian", "slavic"}
+	return []string{"nordic", "scandinavian", "baltic", "benelux", "iberian", "slavic", "multi", "truefrench"}
 }
 
 func NormalizeLanguageToCode(value string) string {
