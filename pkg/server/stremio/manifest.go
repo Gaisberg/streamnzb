@@ -52,9 +52,9 @@ func NewManifest(version string) *Manifest {
 		Name:        "StreamNZB",
 		Description: "Stream content directly from Usenet",
 		Resources:   []string{"stream"},
-		Types:       []string{"movie", "series"},
+		Types:       []string{"movie", "series", "anime"},
 		Catalogs:    []Catalog{},
-		IDPrefixes:  []string{"tt", "tmdb"},
+		IDPrefixes:  []string{"tt", "tmdb", "kitsu"},
 		Logo:        "https://cdn.discordapp.com/icons/1470288400157380710/6f397b4a2e9561dc7ad43526588cfd67.png",
 	}
 }

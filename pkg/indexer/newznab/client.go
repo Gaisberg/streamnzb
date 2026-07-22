@@ -467,6 +467,14 @@ func supportsTVIDParam(caps *indexer.Caps, param string) bool {
 }
 
 func selectMovieIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (string, string) {
+	if kitsuID := strings.TrimSpace(req.KitsuID); kitsuID != "" {
+		if supportsMovieIDParam(caps, "kitsu") {
+			return "kitsu", kitsuID
+		}
+		if supportsMovieIDParam(caps, "kitsu_id") {
+			return "kitsu_id", kitsuID
+		}
+	}
 	if imdbID := normalizeIMDbID(req.IMDbID); imdbID != "" && supportsMovieIDParam(caps, "imdbid") {
 		return "imdbid", imdbID
 	}
@@ -477,6 +485,14 @@ func selectMovieIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (st
 }
 
 func selectTVIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (string, string) {
+	if kitsuID := strings.TrimSpace(req.KitsuID); kitsuID != "" {
+		if supportsTVIDParam(caps, "kitsu") {
+			return "kitsu", kitsuID
+		}
+		if supportsTVIDParam(caps, "kitsu_id") {
+			return "kitsu_id", kitsuID
+		}
+	}
 	if tvdbID := strings.TrimSpace(req.TVDBID); tvdbID != "" && supportsTVIDParam(caps, "tvdbid") {
 		return "tvdbid", tvdbID
 	}

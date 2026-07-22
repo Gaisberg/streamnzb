@@ -42,6 +42,7 @@ type Server struct {
 	availNZBIndexerHosts      map[string]string
 	tmdbClient                *tmdb.Client
 	tvdbClient                *tvdb.Client
+	kitsuClient               *KitsuClient
 	streamManager             *auth.StreamManager
 	playlistCache             sync.Map
 	rawSearchCache            sync.Map
@@ -122,6 +123,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
+		kitsuClient:          NewKitsuClient(nil),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),

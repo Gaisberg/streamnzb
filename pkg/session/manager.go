@@ -770,8 +770,8 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	usenetPool := m.usenetPool
 	estimator := m.estimator
 	m.mu.RUnlock()
-	if segmentFetcher == nil {
-		segmentFetcher = usenetPool
+	if segmentFetcher == nil && usenetPool != nil {
+		segmentFetcher = usenetPool.Subset(nil)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1029,8 +1029,8 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 					usenetPool := manager.usenetPool
 					estimator := manager.estimator
 					manager.mu.RUnlock()
-					if segmentFetcher == nil {
-						segmentFetcher = usenetPool
+					if segmentFetcher == nil && usenetPool != nil {
+						segmentFetcher = usenetPool.Subset(nil)
 					}
 					loaderFiles = buildLoaderFiles(sessionFileCtx, sessionID, contentFiles, pools, segmentFetcher, estimator)
 				}

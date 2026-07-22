@@ -688,14 +688,17 @@ func streamSearchQueryCacheKey(stream *auth.Stream, contentType string) string {
 }
 
 func hasResolvedIdentifiers(req indexer.SearchRequest) bool {
-	return strings.TrimSpace(req.IMDbID) != "" || strings.TrimSpace(req.TMDBID) != "" || strings.TrimSpace(req.TVDBID) != ""
+	return strings.TrimSpace(req.IMDbID) != "" || strings.TrimSpace(req.TMDBID) != "" || strings.TrimSpace(req.TVDBID) != "" || strings.TrimSpace(req.KitsuID) != ""
 }
 
 func hasUsableIDSearchIdentifier(req indexer.SearchRequest, contentType string) bool {
+	if strings.TrimSpace(req.KitsuID) != "" {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(contentType)) {
 	case "movie":
 		return strings.TrimSpace(req.IMDbID) != "" || strings.TrimSpace(req.TMDBID) != ""
-	case "series":
+	case "series", "anime":
 		return strings.TrimSpace(req.TVDBID) != "" || strings.TrimSpace(req.TMDBID) != "" || strings.TrimSpace(req.IMDbID) != ""
 	default:
 		return hasResolvedIdentifiers(req)

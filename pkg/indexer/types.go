@@ -36,6 +36,7 @@ type SearchRequest struct {
 	IMDbID                  string
 	TMDBID                  string
 	TVDBID                  string
+	KitsuID                 string
 	Cat                     string
 	Limit                   int
 	Season                  string

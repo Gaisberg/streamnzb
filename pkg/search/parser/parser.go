@@ -296,7 +296,19 @@ func (p *ParsedRelease) IsShowPack() bool {
 }
 
 func (p *ParsedRelease) EpisodeMatchRank(season, episode int) int {
-	if p == nil || season <= 0 || episode <= 0 {
+	if p == nil || episode <= 0 {
+		return 0
+	}
+	if season <= 0 {
+		if p.HasEpisode(episode) {
+			if len(p.Episodes) <= 1 {
+				return 4
+			}
+			return 3
+		}
+		if p.IsShowPack() {
+			return 1
+		}
 		return 0
 	}
 	if p.IsEpisodeRelease(season, episode) {

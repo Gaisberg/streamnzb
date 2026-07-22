@@ -33,6 +33,7 @@ type SearchParams struct {
 }
 
 type resolvedSearchMetadata struct {
+	KitsuDetails           *KitsuAnimeDetails
 	MovieDetails           *tmdb.MovieDetails
 	MovieTranslations      *tmdb.MovieTranslationsResponse
 	MovieAlternativeTitles *tmdb.MovieAlternativeTitlesResponse
@@ -44,6 +45,15 @@ type resolvedSearchMetadata struct {
 func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) string {
 	if metadata == nil {
 		return ""
+	}
+	if metadata.KitsuDetails != nil {
+		if title := strings.TrimSpace(metadata.KitsuDetails.CanonicalTitle); title != "" {
+			return title
+		}
+		if title := strings.TrimSpace(metadata.KitsuDetails.EnglishTitle); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.KitsuDetails.RomajiTitle)
 	}
 	if contentType == "movie" {
 		if metadata.MovieDetails != nil {
@@ -167,7 +177,10 @@ func hasUsableResolvedMetadata(params *SearchParams, contentType string) bool {
 	if params == nil {
 		return false
 	}
-	return strings.TrimSpace(metadataDisplayTitle(params.Metadata, contentType)) != ""
+	if strings.TrimSpace(metadataDisplayTitle(params.Metadata, contentType)) != "" {
+		return true
+	}
+	return len(params.PreparedQueries) > 0 || len(params.SeriesTitleQueries) > 0 || len(params.MovieTitleQueries) > 0
 }
 
 func useOriginalTitleLanguage(language string) bool {
@@ -363,7 +376,20 @@ func metadataOriginalLanguage(metadata *resolvedSearchMetadata, contentType stri
 }
 
 func buildMovieSearchQueryFromMetadata(metadata *resolvedSearchMetadata, language string, includeYear bool) string {
-	if metadata == nil || metadata.MovieDetails == nil {
+	if metadata == nil {
+		return ""
+	}
+	if metadata.KitsuDetails != nil {
+		title := strings.TrimSpace(metadata.KitsuDetails.CanonicalTitle)
+		if title == "" {
+			title = strings.TrimSpace(metadata.KitsuDetails.EnglishTitle)
+		}
+		if includeYear && metadata.KitsuDetails.Year != "" {
+			title = strings.TrimSpace(title + " " + metadata.KitsuDetails.Year)
+		}
+		return title
+	}
+	if metadata.MovieDetails == nil {
 		return ""
 	}
 	title := strings.TrimSpace(metadata.MovieDetails.Title)
@@ -385,7 +411,13 @@ func buildMovieSearchQueryFromMetadata(metadata *resolvedSearchMetadata, languag
 }
 
 func movieYearFromMetadata(metadata *resolvedSearchMetadata) string {
-	if metadata == nil || metadata.MovieDetails == nil || len(metadata.MovieDetails.ReleaseDate) < 4 {
+	if metadata == nil {
+		return ""
+	}
+	if metadata.KitsuDetails != nil && metadata.KitsuDetails.Year != "" {
+		return metadata.KitsuDetails.Year
+	}
+	if metadata.MovieDetails == nil || len(metadata.MovieDetails.ReleaseDate) < 4 {
 		return ""
 	}
 	return metadata.MovieDetails.ReleaseDate[:4]
@@ -469,7 +501,16 @@ func buildSeriesPrimaryQueryFromMetadata(metadata *resolvedSearchMetadata, langu
 }
 
 func buildSeriesSearchTitleFromMetadata(metadata *resolvedSearchMetadata, language string) string {
-	if metadata == nil || metadata.TVDetails == nil {
+	if metadata == nil {
+		return ""
+	}
+	if metadata.KitsuDetails != nil {
+		if title := strings.TrimSpace(metadata.KitsuDetails.CanonicalTitle); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.KitsuDetails.EnglishTitle)
+	}
+	if metadata.TVDetails == nil {
 		return ""
 	}
 	title := strings.TrimSpace(metadata.TVDetails.Name)
@@ -488,7 +529,13 @@ func buildSeriesSearchTitleFromMetadata(metadata *resolvedSearchMetadata, langua
 }
 
 func seriesYearFromMetadata(metadata *resolvedSearchMetadata) string {
-	if metadata == nil || metadata.TVDetails == nil || len(metadata.TVDetails.FirstAirDate) < 4 {
+	if metadata == nil {
+		return ""
+	}
+	if metadata.KitsuDetails != nil && metadata.KitsuDetails.Year != "" {
+		return metadata.KitsuDetails.Year
+	}
+	if metadata.TVDetails == nil || len(metadata.TVDetails.FirstAirDate) < 4 {
 		return ""
 	}
 	return metadata.TVDetails.FirstAirDate[:4]
@@ -648,6 +695,68 @@ func searchRequestNormalisationLogEntries(metadata *resolvedSearchMetadata, cont
 func validationQueryProfilesFromMetadata(metadata *resolvedSearchMetadata, contentType string, languages []string, includeYear bool) []indexer.ValidationQueryProfile {
 	grouped := make(map[string]*indexer.ValidationQueryProfile, len(languages))
 	order := make([]string, 0, len(languages))
+
+	if metadata != nil && metadata.KitsuDetails != nil {
+		rawTitles := []string{
+			metadata.KitsuDetails.CanonicalTitle,
+			metadata.KitsuDetails.EnglishTitle,
+			metadata.KitsuDetails.RomajiTitle,
+		}
+		rawTitles = append(rawTitles, metadata.KitsuDetails.Synonyms...)
+
+		var kitsuQueries []string
+		seenKitsu := make(map[string]bool)
+		for _, raw := range rawTitles {
+			t := strings.TrimSpace(release.NormalizeTitleForSearchQuery(raw))
+			if t == "" {
+				continue
+			}
+			if !seenKitsu[strings.ToLower(t)] {
+				seenKitsu[strings.ToLower(t)] = true
+				if includeYear && metadata.KitsuDetails.Year != "" {
+					kitsuQueries = append(kitsuQueries, appendYearQuery(t, metadata.KitsuDetails.Year))
+				}
+				kitsuQueries = append(kitsuQueries, t)
+			}
+			norm := strings.Map(func(r rune) rune {
+				switch r {
+				case 'é', 'è', 'ê', 'ë':
+					return 'e'
+				case 'á', 'à', 'â', 'ä':
+					return 'a'
+				case 'ó', 'ò', 'ô', 'ö':
+					return 'o'
+				case 'ú', 'ù', 'û', 'ü':
+					return 'u'
+				case 'í', 'ì', 'î', 'ï':
+					return 'i'
+				default:
+					return r
+				}
+			}, raw)
+			asciiNorm := strings.TrimSpace(release.NormalizeTitleForSearchQuery(norm))
+			if asciiNorm != "" && !seenKitsu[strings.ToLower(asciiNorm)] {
+				seenKitsu[strings.ToLower(asciiNorm)] = true
+				if includeYear && metadata.KitsuDetails.Year != "" {
+					kitsuQueries = append(kitsuQueries, appendYearQuery(asciiNorm, metadata.KitsuDetails.Year))
+				}
+				kitsuQueries = append(kitsuQueries, asciiNorm)
+			}
+		}
+
+		for _, q := range kitsuQueries {
+			key := strings.ToLower(q)
+			if _, ok := grouped[key]; !ok {
+				profile := &indexer.ValidationQueryProfile{
+					Languages: []string{"en-US"},
+					Query:     q,
+				}
+				grouped[key] = profile
+				order = append(order, key)
+			}
+		}
+	}
+
 	for _, language := range languages {
 		var query string
 		if contentType == "movie" {
@@ -887,7 +996,11 @@ func (s *Server) loadAvailContext(params *SearchParams, stream *auth.Stream) *Av
 	if strings.TrimSpace(params.Req.TMDBID) == "" && contentIDs.ImdbID == "" && contentIDs.TvdbID == "" {
 		return newAvailContext(nil, 0)
 	}
-	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, contentIDs.Season, contentIDs.Episode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
+	availSeason := contentIDs.Season
+	if availSeason <= 0 {
+		availSeason = 1
+	}
+	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, availSeason, contentIDs.Episode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
 	inputResults := 0
 	if availResult != nil {
 		inputResults = len(availResult.Releases)
@@ -1255,8 +1368,21 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 	req.SeriesSearchScope = scope
 
+	var kitsuID string
+	var kitsuEpisode string
+
 	searchID := id
-	if contentType == "series" && strings.Contains(id, ":") {
+	if strings.HasPrefix(id, "kitsu:") {
+		parts := strings.Split(id, ":")
+		if len(parts) >= 3 {
+			kitsuID = parts[1]
+			kitsuEpisode = parts[2]
+			req.Episode = kitsuEpisode
+		} else if len(parts) >= 2 {
+			kitsuID = parts[1]
+		}
+		req.KitsuID = kitsuID
+	} else if (contentType == "series" || contentType == "anime") && strings.Contains(id, ":") {
 		parts := strings.Split(id, ":")
 		if parts[0] == "tmdb" && len(parts) >= 4 {
 			searchID = parts[1]
@@ -1277,7 +1403,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 	imdbForText := req.IMDbID
 	tmdbForText := req.TMDBID
-	if contentType == "series" && strings.Contains(id, ":") {
+	if (contentType == "series" || contentType == "anime") && strings.Contains(id, ":") {
 		parts := strings.Split(id, ":")
 		if parts[0] == "tmdb" && len(parts) >= 2 {
 			tmdbForText = parts[1]
@@ -1287,6 +1413,60 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		req.Cat = "2000"
 	} else {
 		req.Cat = "5000"
+	}
+
+	if kitsuID != "" && s.kitsuClient != nil {
+		if details, err := s.kitsuClient.GetAnimeDetails(context.Background(), kitsuID); err == nil && details != nil {
+			params.Metadata.KitsuDetails = details
+			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "success", "title", details.CanonicalTitle)
+
+			primaryTitle := details.EnglishTitle
+			if primaryTitle == "" {
+				primaryTitle = details.CanonicalTitle
+			}
+			if primaryTitle == "" {
+				primaryTitle = details.RomajiTitle
+			}
+			asciiTitle := strings.Map(func(r rune) rune {
+				switch r {
+				case 'é', 'è', 'ê', 'ë':
+					return 'e'
+				case 'á', 'à', 'â', 'ä':
+					return 'a'
+				case 'ó', 'ò', 'ô', 'ö':
+					return 'o'
+				case 'ú', 'ù', 'û', 'ü':
+					return 'u'
+				case 'í', 'ì', 'î', 'ï':
+					return 'i'
+				default:
+					return r
+				}
+			}, primaryTitle)
+
+			searchTitle := asciiTitle
+			if searchTitle == "" {
+				searchTitle = primaryTitle
+			}
+
+			if kitsuEpisode != "" {
+				epNum, _ := strconv.Atoi(kitsuEpisode)
+				var epQueries []string
+				if epNum > 0 {
+					epQueries = append(epQueries, fmt.Sprintf("%s S01E%02d", searchTitle, epNum))
+					if epNum >= 100 {
+						epQueries = append(epQueries, fmt.Sprintf("%s %d", searchTitle, epNum))
+					}
+				} else {
+					epQueries = append(epQueries, fmt.Sprintf("%s %s", searchTitle, kitsuEpisode))
+				}
+				params.SeriesTitleQueries[searchTitle] = epQueries
+			} else {
+				params.MovieTitleQueries[searchTitle] = []string{searchTitle}
+			}
+		} else if err != nil {
+			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "failed", "err", err)
+		}
 	}
 
 	if req.TMDBID == "" && req.IMDbID != "" {
@@ -1534,6 +1714,16 @@ func (s *Server) buildSearchParamsFromBase(base *SearchParams, searchQuery *conf
 		} else {
 			queries = buildSeriesQueriesFromMetadata(params.Metadata, searchTitleLanguage, includeYear, "", "", config.SeriesSearchScopeNone)
 		}
+
+		if len(queries) == 0 {
+			for _, qList := range params.SeriesTitleQueries {
+				queries = append(queries, qList...)
+			}
+			for _, qList := range params.MovieTitleQueries {
+				queries = append(queries, qList...)
+			}
+		}
+
 		if len(queries) > 0 {
 			params.PreparedQueries = append([]string(nil), queries...)
 			req.Query = queries[0]
@@ -1564,4 +1754,13 @@ func appendSeasonEpisodeQuery(query, season, episode string) string {
 		return suffix
 	}
 	return strings.TrimSpace(query) + " " + suffix
+}
+
+func sliceContainsIC(slice []string, s string) bool {
+	for _, item := range slice {
+		if strings.EqualFold(item, s) {
+			return true
+		}
+	}
+	return false
 }
