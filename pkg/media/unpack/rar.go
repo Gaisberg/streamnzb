@@ -240,6 +240,10 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 	}
 
 	allFirstVols := filterFirstVolumes(rarFiles)
+	if len(allFirstVols) == 0 {
+		logger.Warn("No candidate first volume found in RAR set", "rar_files", len(rarFiles))
+		return nil, fmt.Errorf("first RAR volume (.rar / .part01.rar) missing from release (%d continuation volume(s) present): %w", len(rarFiles), ErrPAR2RepairRequired)
+	}
 	firstVols := make([]UnpackableFile, len(allFirstVols))
 	copy(firstVols, allFirstVols)
 	tryingCount := len(firstVols)
@@ -248,6 +252,9 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 		logger.Debug("Limiting RAR first-volume scan to fail fast", "trying", len(firstVols), "skipped", tryingCount-len(firstVols))
 	}
 	runScan := func(scanFirstVols []UnpackableFile, mode string) (*ArchiveBlueprint, error) {
+		if len(scanFirstVols) == 0 {
+			return nil, fmt.Errorf("no RAR volumes available to scan out of %d RAR file(s)", len(rarFiles))
+		}
 		logger.Debug("Scanning RAR first volumes", "target", target, "count", len(scanFirstVols), "total", len(rarFiles), "mode", mode)
 		start := time.Now()
 		parts, diagnostics, err := scanVolumesParallel(ctx, scanFirstVols, password)
@@ -264,9 +271,12 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 
 		logger.Info("RAR scan complete", "files", len(rarFiles), "duration", time.Since(start), "mode", mode)
 		if diagnostics.failedScans > 0 {
-			logger.Debug("RAR scan diagnostics",
+			logger.Warn("RAR volume header scan encountered failures",
 				"mode", mode,
 				"failed_scans", diagnostics.failedScans,
+				"total_scanned", len(scanFirstVols),
+				"last_vol", diagnostics.lastVolName,
+				"last_err", diagnostics.lastErr,
 				"invalid_blocks", diagnostics.invalidBlocks,
 				"unexpected_eof", diagnostics.unexpectedEOF,
 				"decode_corruption", diagnostics.decodeCorruption)
@@ -274,6 +284,9 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 		if len(parts) == 0 {
 			if err := diagnostics.classifyArchiveError(); err != nil {
 				return nil, err
+			}
+			if diagnostics.failedScans > 0 {
+				return nil, fmt.Errorf("RAR header scan failed on %d volume(s) (last error on %s: %w)", diagnostics.failedScans, diagnostics.lastVolName, diagnostics.lastErr)
 			}
 		}
 
@@ -364,6 +377,8 @@ type scanDiagnostics struct {
 	invalidBlocks    int
 	unexpectedEOF    int
 	decodeCorruption int
+	lastErr          error
+	lastVolName      string
 }
 
 func (d scanDiagnostics) classifyArchiveError() error {
@@ -463,6 +478,8 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 				logRARScanDebug(f, err)
 				mu.Lock()
 				diag.failedScans++
+				diag.lastErr = err
+				diag.lastVolName = cleanName
 				msg := strings.ToLower(err.Error())
 				scanHasEvidence := false
 				if strings.Contains(msg, "invalid file block") {
@@ -1150,7 +1167,7 @@ func tryNestedArchive(ctx context.Context, parts []filePart, password string, ta
 		return nil, err
 	}
 	if len(parts) == 0 {
-		return nil, errors.New("empty archive")
+		return nil, errors.New("archive contained no file headers")
 	}
 
 	type archiveSet struct {

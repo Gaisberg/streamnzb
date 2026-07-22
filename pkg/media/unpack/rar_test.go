@@ -464,3 +464,49 @@ func TestBuildBlueprintCiphertextBlockAlignmentForEncryptedRAR(t *testing.T) {
 		t.Fatalf("expected blueprint TotalSize (unpacked) to remain 1000, got %d", bp.TotalSize)
 	}
 }
+
+func TestScanArchiveReturnsVolumeScanErrorInsteadOfEmptyArchive(t *testing.T) {
+	discardTestLogger(t)
+
+	// Memory file containing garbage data that will cause rardecode.ListArchiveInfo to fail
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "invalid_release.part01.rar", data: []byte("not a real rar archive header")},
+	}
+
+	_, err := ScanArchive(context.Background(), files, "", EpisodeTarget{})
+	if err == nil {
+		t.Fatal("expected ScanArchive to fail on invalid RAR data")
+	}
+
+	if strings.Contains(err.Error(), "empty archive") {
+		t.Fatalf("expected detailed volume scan failure error, got misleading 'empty archive': %v", err)
+	}
+	if !strings.Contains(err.Error(), "RAR header scan failed") {
+		t.Fatalf("expected error to contain 'RAR header scan failed', got: %v", err)
+	}
+}
+
+func TestScanArchiveWithMiddleVolumesOnlyReportsMissingFirstVolume(t *testing.T) {
+	discardTestLogger(t)
+
+	// Set containing only middle volumes (e.g. part02.rar, part03.rar) with missing part01.rar
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "release.part02.rar", data: []byte("middle volume content")},
+		&memoryUnpackableFile{name: "release.part03.rar", data: []byte("middle volume content 2")},
+	}
+
+	_, err := ScanArchive(context.Background(), files, "", EpisodeTarget{})
+	if err == nil {
+		t.Fatal("expected ScanArchive to fail on missing first volume set")
+	}
+
+	if strings.Contains(err.Error(), "empty archive") {
+		t.Fatalf("expected missing first volume error, got misleading 'empty archive': %v", err)
+	}
+	if !strings.Contains(err.Error(), "missing from release") {
+		t.Fatalf("expected error to contain 'missing from release', got: %v", err)
+	}
+	if !errors.Is(err, ErrPAR2RepairRequired) {
+		t.Fatalf("expected ErrPAR2RepairRequired, got %v", err)
+	}
+}
