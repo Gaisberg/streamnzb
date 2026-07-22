@@ -226,20 +226,7 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 			return
 		}
 
-		plan := validationPlanFromPatch(payload, currentCfg, &newCfg)
-		fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
-		if len(fieldErrors) > 0 {
-			errorPayload, _ := json.Marshal(map[string]interface{}{
-				"status":  "error",
-				"message": "Validation failed",
-				"errors":  fieldErrors,
-			})
-			trySendWS(client, WSMessage{Type: "save_status", Payload: errorPayload})
-			return
-		}
-
 		config.CopyEnvOverridesFrom(currentCfg, &newCfg)
-
 		newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
 		newCfg.AdminToken = currentCfg.AdminToken
 		newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
@@ -257,6 +244,18 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 		applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
 		newCfg.ApplyProviderDefaults()
 		applyStreamAutoSelections(&newCfg)
+
+		plan := validationPlanFromPatch(payload, currentCfg, &newCfg)
+		fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
+		if len(fieldErrors) > 0 {
+			errorPayload, _ := json.Marshal(map[string]interface{}{
+				"status":  "error",
+				"message": "Validation failed",
+				"errors":  fieldErrors,
+			})
+			trySendWS(client, WSMessage{Type: "save_status", Payload: errorPayload})
+			return
+		}
 
 		if currentLoadedPath == "" {
 			currentLoadedPath = filepath.Join(paths.GetDataDir(), "config.json")

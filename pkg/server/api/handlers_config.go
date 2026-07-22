@@ -104,22 +104,33 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	newCfg.AvailNZBMode = config.NormalizeAvailNZBMode(newCfg.AvailNZBMode)
 
-	plan := validationPlanFromPatch(body, currentCfg, &newCfg)
-	fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
-	if len(fieldErrors) > 0 {
-		s.writeSaveStatus(w, "error", "Validation failed", fieldErrors)
-		return
-	}
-
 	config.CopyEnvOverridesFrom(currentCfg, &newCfg)
 	newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
 	newCfg.AdminToken = currentCfg.AdminToken
 	newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
 	newCfg.Streams = cloneStreamEntries(currentCfg.Streams)
+	providerRenames := renamedNamesByIndex(currentCfg.Providers, newCfg.Providers, func(provider config.Provider) string {
+		return provider.Name
+	})
+	indexerRenames := renamedNamesByIndex(currentCfg.Indexers, newCfg.Indexers, func(indexer config.IndexerConfig) string {
+		return indexer.Name
+	})
+	filterProfileRenames := renamedNamesByIndex(currentCfg.FilterProfiles, newCfg.FilterProfiles, func(fp config.FilterProfileConfig) string {
+		return fp.Name
+	})
+	applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
+	applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
 	newCfg.ApplyProviderDefaults()
 	applyStreamAutoSelections(&newCfg)
 	if newCfg.AdminUsername == "" {
 		newCfg.AdminUsername = currentCfg.GetAdminUsername()
+	}
+
+	plan := validationPlanFromPatch(body, currentCfg, &newCfg)
+	fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
+	if len(fieldErrors) > 0 {
+		s.writeSaveStatus(w, "error", "Validation failed", fieldErrors)
+		return
 	}
 	if currentLoadedPath == "" {
 		currentLoadedPath = filepath.Join(paths.GetDataDir(), "config.json")
