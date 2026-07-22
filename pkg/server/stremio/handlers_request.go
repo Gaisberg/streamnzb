@@ -27,7 +27,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		path := r.URL.Path
 		var authenticatedStream *auth.Stream
 
-		if path == "/error/failure.mp4" && webHandler != nil {
+		if (path == "/error/failure.mp4" || path == "/error/failure_muted.mp4") && webHandler != nil {
 			webHandler.ServeHTTP(w, r)
 			return
 		}

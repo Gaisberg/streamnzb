@@ -50,6 +50,17 @@ type Stream struct {
 	MovieSearchQueries  []string                              `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
+	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
+}
+
+func (s *Stream) IsErrorVideoMuted(cfg *config.Config) bool {
+	if s != nil && s.MuteErrorVideo != nil {
+		return *s.MuteErrorVideo
+	}
+	if cfg != nil {
+		return cfg.IsErrorVideoMuted()
+	}
+	return false
 }
 
 type StreamManager struct {
@@ -211,6 +222,7 @@ func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 			MovieSearchQueries:  append([]string(nil), e.MovieSearchQueries...),
 			SeriesSearchQueries: append([]string(nil), e.SeriesSearchQueries...),
 			FilterProfileName:   e.FilterProfileName,
+			MuteErrorVideo:      e.MuteErrorVideo,
 		}
 	}
 	if _, exists := dm.streams["admin"]; exists {
@@ -247,6 +259,7 @@ func (dm *StreamManager) saveLocked() error {
 				MovieSearchQueries:  append([]string(nil), d.MovieSearchQueries...),
 				SeriesSearchQueries: append([]string(nil), d.SeriesSearchQueries...),
 				FilterProfileName:   d.FilterProfileName,
+				MuteErrorVideo:      d.MuteErrorVideo,
 			}
 		}
 		return dm.cfg.Save()
@@ -376,6 +389,7 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 			MovieSearchQueries:  append([]string(nil), stream.MovieSearchQueries...),
 			SeriesSearchQueries: append([]string(nil), stream.SeriesSearchQueries...),
 			FilterProfileName:   stream.FilterProfileName,
+			MuteErrorVideo:      stream.MuteErrorVideo,
 		})
 	}
 
@@ -617,6 +631,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.MovieSearchQueries = append([]string(nil), streamConfig.MovieSearchQueries...)
 	stream.SeriesSearchQueries = append([]string(nil), streamConfig.SeriesSearchQueries...)
 	stream.FilterProfileName = strings.TrimSpace(streamConfig.FilterProfileName)
+	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)

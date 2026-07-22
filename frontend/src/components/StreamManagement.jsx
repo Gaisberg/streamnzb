@@ -54,6 +54,7 @@ function normalizeStreamDraft(draft) {
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
+    mute_error_video: draft?.mute_error_video === true,
   }
 }
 
@@ -74,6 +75,7 @@ function buildStreamDraft(stream) {
     movie_search_queries: stream?.movie_search_queries || [],
     series_search_queries: stream?.series_search_queries || [],
     filter_profile_name: stream?.filter_profile_name || '',
+    mute_error_video: stream?.mute_error_video,
   })
 }
 
@@ -102,6 +104,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     movie_search_queries: draft.movie_search_queries || [],
     series_search_queries: draft.series_search_queries || [],
     filter_profile_name: draft.filter_profile_name || '',
+    mute_error_video: draft.mute_error_video,
   }
 }
 
@@ -585,6 +588,19 @@ function StreamDialog({
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
                   If enabled, StreamNZB automatically tries the next release in order when the current NZB fails during playback.
+                </p>
+              </div>
+
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Mute Error Video</div>
+                  <Switch
+                    checked={draft.mute_error_video === true}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, mute_error_video: checked === true }))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Mutes the "Failed to start video" error video audio played when all releases fail.
                 </p>
               </div>
 

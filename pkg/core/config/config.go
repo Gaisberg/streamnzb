@@ -319,6 +319,13 @@ func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
 	return false
 }
 
+func (c *Config) IsErrorVideoMuted() bool {
+	if c != nil && c.MuteErrorVideo != nil {
+		return *c.MuteErrorVideo
+	}
+	return false
+}
+
 func NormalizeAvailNZBMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "full", "status_only", "on":
@@ -495,6 +502,9 @@ type Config struct {
 	// by AvailNZB are filtered out of playlist candidates.
 	AvailNZBFilterReportedBad *bool `json:"availnzb_filter_reported_bad,omitempty"`
 
+	// MuteErrorVideo controls whether the "Failed to start video" playback error stream is muted.
+	MuteErrorVideo *bool `json:"mute_error_video,omitempty"`
+
 	LoadedPath string `json:"-"`
 
 	ResetLegacyStreamState bool `json:"-"`
@@ -518,6 +528,7 @@ type StreamEntry struct {
 	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
+	MuteErrorVideo      *bool                          `json:"mute_error_video,omitempty"`
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {

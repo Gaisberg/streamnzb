@@ -1,3 +1,4 @@
+// Package web provides static embedded web assets.
 package web
 
 import (

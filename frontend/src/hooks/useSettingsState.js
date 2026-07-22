@@ -24,6 +24,7 @@ const ADVANCED_TAB_FIELDS = [
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
   'speculative_pre_probing_count',
+  'mute_error_video',
   'memory_limit_mb',
   'availnzb_mode',
   'availnzb_filter_reported_bad',

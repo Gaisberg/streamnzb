@@ -412,9 +412,13 @@ func (s *Server) GetStreams(ctx context.Context, contentType, id string, stream 
 	return streams, nil
 }
 
-func forceDisconnect(w http.ResponseWriter, r *http.Request, baseURL string) {
-	errorVideoURL := strings.TrimSuffix(baseURL, "/") + "/error/failure.mp4"
-	logger.Info("Redirecting to error video", "url", errorVideoURL)
+func forceDisconnect(w http.ResponseWriter, r *http.Request, baseURL string, muted bool) {
+	filename := "failure.mp4"
+	if muted {
+		filename = "failure_muted.mp4"
+	}
+	errorVideoURL := strings.TrimSuffix(baseURL, "/") + "/error/" + filename
+	logger.Info("Redirecting to error video", "url", errorVideoURL, "muted", muted)
 
 	w.Header().Set("Connection", "close")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1118,7 +1122,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				w.WriteHeader(http.StatusFound)
 				return
 			}
-			forceDisconnect(w, r, s.baseURL)
+			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
 			return
 		}
 		recoveredSess, recoveredID, recoverErr := s.recoverPlaySessionAfterEviction(r.Context(), sessionID, streamConfig)
@@ -1138,7 +1142,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			w.WriteHeader(http.StatusFound)
 			return
 		}
-		forceDisconnect(w, r, s.baseURL)
+		forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
 		return
 	}
 
@@ -1155,7 +1159,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				sess, sessionID = nextSess, nextID
 				continue
 			}
-			forceDisconnect(w, r, s.baseURL)
+			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
 			return
 		}
 		if nextSlotID, deriveErr := s.deriveNextSlotID(r.Context(), sess.ID, streamConfig); deriveErr == nil {
@@ -1229,7 +1233,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				}
 			}
 			logger.Info("No more fallback slots", "last", sessionID, "err", prepareErr)
-			forceDisconnect(w, r, s.baseURL)
+			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
 			return
 		}
 

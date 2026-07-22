@@ -225,7 +225,7 @@ func TestForceDisconnectRedirectsToErrorVideo(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:11470/play/test", nil)
-	forceDisconnect(recorder, req, "http://localhost:11470/")
+	forceDisconnect(recorder, req, "http://localhost:11470/", false)
 	response := recorder.Result()
 
 	if response.StatusCode != http.StatusTemporaryRedirect {
@@ -239,6 +239,13 @@ func TestForceDisconnectRedirectsToErrorVideo(t *testing.T) {
 	}
 	if got := response.Header.Get("Cache-Control"); got != "no-cache, no-store, must-revalidate" {
 		t.Fatalf("Cache-Control = %q, want %q", got, "no-cache, no-store, must-revalidate")
+	}
+
+	recorderMuted := httptest.NewRecorder()
+	forceDisconnect(recorderMuted, req, "http://localhost:11470/", true)
+	responseMuted := recorderMuted.Result()
+	if got := responseMuted.Header.Get("Location"); got != "http://localhost:11470/error/failure_muted.mp4" {
+		t.Fatalf("Muted Location = %q, want %q", got, "http://localhost:11470/error/failure_muted.mp4")
 	}
 }
 

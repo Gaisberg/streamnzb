@@ -204,17 +204,27 @@ func (s *Server) sendLogHistory(client *Client) {
 }
 
 func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payload json.RawMessage) {
-	var newCfg config.Config
-	if err := json.Unmarshal(payload, &newCfg); err != nil {
-		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Invalid config data"}`)})
-		return
-	}
-
 	if client.stream != nil && client.stream.Username == s.config.GetAdminUsername() {
 		s.mu.RLock()
 		currentCfg := s.config
 		currentLoadedPath := s.config.LoadedPath
 		s.mu.RUnlock()
+
+		currentJSON, err := json.Marshal(currentCfg)
+		if err != nil {
+			trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Failed to prepare config update"}`)})
+			return
+		}
+
+		var newCfg config.Config
+		if err := json.Unmarshal(currentJSON, &newCfg); err != nil {
+			trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Failed to prepare config update"}`)})
+			return
+		}
+		if err := json.Unmarshal(payload, &newCfg); err != nil {
+			trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Invalid config data"}`)})
+			return
+		}
 
 		plan := validationPlanFromPatch(payload, currentCfg, &newCfg)
 		fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
@@ -398,6 +408,8 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 		IndexerSelections   []string                              `json:"indexer_selections"`
 		MovieSearchQueries  []string                              `json:"movie_search_queries"`
 		SeriesSearchQueries []string                              `json:"series_search_queries"`
+		FilterProfileName   string                                `json:"filter_profile_name"`
+		MuteErrorVideo      *bool                                 `json:"mute_error_video"`
 	}
 	if err := json.Unmarshal(payload, &streamConfigs); err != nil {
 		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Invalid stream config data"}`)})
@@ -433,6 +445,8 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 			IndexerSelections:   indexerSelections,
 			MovieSearchQueries:  streamConfig.MovieSearchQueries,
 			SeriesSearchQueries: streamConfig.SeriesSearchQueries,
+			FilterProfileName:   streamConfig.FilterProfileName,
+			MuteErrorVideo:      streamConfig.MuteErrorVideo,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 		}
@@ -481,6 +495,8 @@ func (s *Server) handleGetStreamsWS(client *Client) {
 			"indexer_selections":    stream.IndexerSelections,
 			"movie_search_queries":  stream.MovieSearchQueries,
 			"series_search_queries": stream.SeriesSearchQueries,
+			"filter_profile_name":   stream.FilterProfileName,
+			"mute_error_video":      stream.MuteErrorVideo,
 		})
 	}
 

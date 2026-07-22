@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count'],
+  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count', 'mute_error_video'],
   availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -46,6 +46,7 @@ function pickInitialValues(values = {}) {
     session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     speculative_pre_probing_count: Number.isFinite(parsedSpeculativePreProbingCount) ? parsedSpeculativePreProbingCount : 1,
+    mute_error_video: values.mute_error_video === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
     tmdb_api_key: values.tmdb_api_key ?? '',
@@ -196,6 +197,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
     showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
   )
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+  const inlineFieldRowClass = "flex items-center justify-between gap-4"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
   const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
   const labelClass = "min-w-0 text-sm font-medium"
@@ -392,6 +394,27 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                       </div>
                       <FormDescription className="mt-3">
                         How many top search results to pre-probe (download NZB & verify) when loading a stream list. Set 0 to disable. Pre-probing reduces cold-start latency but consumes indexer API downloads.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="mute_error_video" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Mute error video</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={(checked) => field.onChange(checked === true)}
+                            className={showUnsavedHighlights && formState.dirtyFields?.mute_error_video ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        Mutes the audio of the "Failed to start video" playback stream played when all releases fail.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
