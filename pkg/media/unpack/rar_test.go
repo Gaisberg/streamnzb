@@ -270,7 +270,7 @@ func TestTryNestedArchiveFailsWhenRequestedEpisodeMissing(t *testing.T) {
 	_, err := tryNestedArchive(context.Background(), []filePart{
 		{name: "Show.S01E04.rar", packedSize: 100},
 		{name: "Show.S01E04.r00", packedSize: 100},
-	}, "", EpisodeTarget{Season: 1, Episode: 1})
+	}, nil, "", EpisodeTarget{Season: 1, Episode: 1})
 	if !errors.Is(err, ErrEpisodeTargetNotFound) {
 		t.Fatalf("expected ErrEpisodeTargetNotFound, got %v", err)
 	}
@@ -508,5 +508,23 @@ func TestScanArchiveWithMiddleVolumesOnlyReportsMissingFirstVolume(t *testing.T)
 	}
 	if !errors.Is(err, ErrPAR2RepairRequired) {
 		t.Fatalf("expected ErrPAR2RepairRequired, got %v", err)
+	}
+}
+
+func TestTryNestedArchiveScansRemainingOuterVolumesWhenFirstVolumeMissing(t *testing.T) {
+	discardTestLogger(t)
+
+	initialParts := []filePart{
+		{name: "inner.r16", volName: "outer.part01.rar", packedSize: 100},
+	}
+
+	allOuter := []UnpackableFile{
+		&memoryUnpackableFile{name: "outer.part01.rar", data: []byte("outer part 1")},
+		&memoryUnpackableFile{name: "outer.part02.rar", data: []byte("outer part 2")},
+	}
+
+	_, err := tryNestedArchive(context.Background(), initialParts, allOuter, "", EpisodeTarget{})
+	if err == nil {
+		t.Fatal("expected error on dummy data")
 	}
 }

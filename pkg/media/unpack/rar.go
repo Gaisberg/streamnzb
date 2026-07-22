@@ -241,8 +241,16 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 
 	allFirstVols := filterFirstVolumes(rarFiles)
 	if len(allFirstVols) == 0 {
-		logger.Warn("No candidate first volume found in RAR set", "rar_files", len(rarFiles))
-		return nil, fmt.Errorf("first RAR volume (.rar / .part01.rar) missing from release (%d continuation volume(s) present): %w", len(rarFiles), ErrPAR2RepairRequired)
+		logger.Warn("No candidate first volume found in RAR set, attempting targeted Volume 1 PAR2 repair", "rar_files", len(rarFiles))
+		repairedVol, repairErr := RepairFirstVolumeWithPAR2(ctx, files)
+		if repairErr == nil && repairedVol != nil {
+			logger.Info("Successfully repaired missing Volume 1 via PAR2", "name", repairedVol.Name(), "size", repairedVol.Size())
+			allFirstVols = []UnpackableFile{repairedVol}
+			rarFiles = append([]UnpackableFile{repairedVol}, rarFiles...)
+		} else {
+			logger.Warn("Targeted Volume 1 PAR2 repair unavailable", "err", repairErr)
+			return nil, fmt.Errorf("first RAR volume (.rar / .part01.rar) missing from release (%d continuation volume(s) present): %w", len(rarFiles), ErrPAR2RepairRequired)
+		}
 	}
 	firstVols := make([]UnpackableFile, len(allFirstVols))
 	copy(firstVols, allFirstVols)
@@ -564,7 +572,7 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 	bestName, err := selectMainFile(parts, target)
 	if err != nil {
 		logger.Debug("RAR blueprint direct media selection failed for requested episode, trying nested archive", "target", target, "err", err)
-		if bp, nestedErr := tryNestedArchive(ctx, parts, password, target); nestedErr == nil {
+		if bp, nestedErr := tryNestedArchive(ctx, parts, allRarFiles, password, target); nestedErr == nil {
 			return bp, nil
 		}
 		return nil, err
@@ -583,7 +591,7 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 		if archiveTotal > mediaTotal*2 {
 			logger.Info("Archive content outweighs direct media, trying nested archive first",
 				"media", mediaTotal, "archive", archiveTotal, "sample", bestName)
-			if bp, err := tryNestedArchive(ctx, parts, password, target); err == nil {
+			if bp, err := tryNestedArchive(ctx, parts, allRarFiles, password, target); err == nil {
 				return bp, nil
 			}
 		}
@@ -591,7 +599,7 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 
 	if bestName == "" {
 		logger.Debug("RAR blueprint found no direct media match, trying nested archive", "target", target, "parts", len(parts))
-		return tryNestedArchive(ctx, parts, password, target)
+		return tryNestedArchive(ctx, parts, allRarFiles, password, target)
 	}
 
 	logger.Info("Selected main media", "target", target, "name", bestName)
@@ -1162,7 +1170,7 @@ func normalizeContinuationProbe(parts []rardecode.FilePartInfo) continuationProb
 	return probe
 }
 
-func tryNestedArchive(ctx context.Context, parts []filePart, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {
+func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []UnpackableFile, password string, target EpisodeTarget) (*ArchiveBlueprint, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -1259,6 +1267,30 @@ func tryNestedArchive(ctx context.Context, parts []filePart, password string, ta
 			totalSize = vOffset
 		}
 		nestedFiles = append(nestedFiles, NewVirtualFile(name, totalSize, vfParts))
+	}
+
+	if len(filterFirstVolumes(nestedFiles)) == 0 && len(allRarFiles) > 1 {
+		logger.Info("Nested archive set missing first volume from initial outer scan; scanning remaining outer volumes to locate inner first volume",
+			"set", bestSet, "scanned_parts", len(parts), "total_outer_vols", len(allRarFiles))
+
+		scannedVols := make(map[string]bool)
+		for _, p := range parts {
+			scannedVols[p.volName] = true
+		}
+		var remainingOuter []UnpackableFile
+		for _, f := range allRarFiles {
+			if f != nil && !scannedVols[f.Name()] {
+				remainingOuter = append(remainingOuter, f)
+			}
+		}
+
+		if len(remainingOuter) > 0 {
+			extraParts, _, extraErr := scanVolumesParallel(ctx, remainingOuter, password)
+			if extraErr == nil && len(extraParts) > 0 {
+				allParts := append(parts, extraParts...)
+				return tryNestedArchive(ctx, allParts, nil, password, target)
+			}
+		}
 	}
 
 	for _, nf := range nestedFiles {
