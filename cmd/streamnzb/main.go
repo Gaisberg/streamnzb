@@ -201,6 +201,7 @@ func main() {
 		BaseURL:              comp.Config.AddonBaseURL,
 		Port:                 comp.Config.AddonPort,
 		Indexer:              comp.Indexer,
+		QueryCache:           comp.QueryCache,
 		Validator:            comp.Validator,
 		SessionManager:       sessionManager,
 		TriageService:        comp.Triage,

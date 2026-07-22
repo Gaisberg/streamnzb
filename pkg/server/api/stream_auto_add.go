@@ -80,6 +80,26 @@ func applyStreamNameRenames(streams map[string]*config.StreamEntry, providerRena
 	}
 }
 
+// applyFilterProfileRenames updates each stream's FilterProfileName when a filter
+// profile is renamed, so streams keep pointing at the same profile under its new name.
+func applyFilterProfileRenames(streams map[string]*config.StreamEntry, filterProfileRenames map[string]string) {
+	if len(filterProfileRenames) == 0 {
+		return
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		current := strings.TrimSpace(stream.FilterProfileName)
+		if current == "" {
+			continue
+		}
+		if renamed, ok := filterProfileRenames[strings.ToLower(current)]; ok {
+			stream.FilterProfileName = renamed
+		}
+	}
+}
+
 func renamedNamesByIndex[TCfg any](current, next []TCfg, nameOf func(TCfg) string) map[string]string {
 	limit := len(current)
 	if len(next) < limit {

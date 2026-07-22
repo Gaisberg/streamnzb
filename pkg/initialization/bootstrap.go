@@ -22,6 +22,7 @@ import (
 type InitializedComponents struct {
 	Config               *config.Config
 	Indexer              indexer.Indexer
+	QueryCache           *indexer.QueryCache
 	ProviderPools        map[string]*nntp.ClientPool
 	ProviderOrder        []string
 	StreamingPools       []*nntp.ClientPool
@@ -92,6 +93,8 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		logger.Error("Failed to initialize usage manager", "err", err)
 	}
 
+	queryCache := indexer.NewQueryCache()
+
 	for _, idxCfg := range cfg.Indexers {
 		if idxCfg.URL == "" && !strings.EqualFold(idxCfg.Type, "easynews") {
 			continue
@@ -130,7 +133,8 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			if err != nil {
 				logger.Error("Failed to initialize Easynews from indexer list", "name", idxCfg.Name, "err", err)
 			} else {
-				indexers = append(indexers, easynewsClient)
+				cachedClient := indexer.NewCachedIndexer(easynewsClient, queryCache, 10*time.Minute)
+				indexers = append(indexers, cachedClient)
 				logger.Info("Initialized Easynews indexer", "name", idxCfg.Name)
 			}
 			if h := "members.easynews.com"; h != "" {
@@ -140,7 +144,8 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			effectiveCfg := idxCfg
 			effectiveCfg.ProxyURL = effectiveProxyURL
 			client := newznab.NewClient(effectiveCfg, usageMgr)
-			indexers = append(indexers, client)
+			cachedClient := indexer.NewCachedIndexer(client, queryCache, 10*time.Minute)
+			indexers = append(indexers, cachedClient)
 			logger.Info("Initialized Newznab indexer", "name", idxCfg.Name, "url", idxCfg.URL)
 			if h := hostFromIndexerURL(idxCfg.URL); h != "" {
 				if !isAggregator {
@@ -293,6 +298,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	return &InitializedComponents{
 		Config:               cfg,
 		Indexer:              aggregator,
+		QueryCache:           queryCache,
 		ProviderPools:        providerPools,
 		ProviderOrder:        providerOrder,
 		StreamingPools:       streamingPools,

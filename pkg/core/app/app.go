@@ -35,6 +35,7 @@ type BuildOpts struct {
 type Components struct {
 	Config               *config.Config
 	Indexer              indexer.Indexer
+	QueryCache           *indexer.QueryCache
 	ProviderPools        map[string]*nntp.ClientPool
 	ProviderOrder        []string
 	StreamingPools       []*nntp.ClientPool
@@ -143,6 +144,7 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 	return &Components{
 		Config:               base.Config,
 		Indexer:              base.Indexer,
+		QueryCache:           base.QueryCache,
 		ProviderPools:        base.ProviderPools,
 		ProviderOrder:        base.ProviderOrder,
 		StreamingPools:       base.StreamingPools,

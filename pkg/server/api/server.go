@@ -280,6 +280,7 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 			Config:               comp.Config,
 			BaseURL:              comp.Config.AddonBaseURL,
 			Indexer:              comp.Indexer,
+			QueryCache:           comp.QueryCache,
 			Validator:            comp.Validator,
 			TriageService:        comp.Triage,
 			AvailClient:          comp.AvailClient,

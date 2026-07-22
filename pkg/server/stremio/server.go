@@ -33,6 +33,7 @@ type Server struct {
 	baseURL                   string
 	config                    *config.Config
 	indexer                   indexer.Indexer
+	queryCache                *indexer.QueryCache
 	validator                 *validation.Checker
 	sessionManager            *session.Manager
 	triageService             *triage.Service
@@ -73,6 +74,7 @@ type ServerOptions struct {
 	BaseURL              string
 	Port                 int
 	Indexer              indexer.Indexer
+	QueryCache           *indexer.QueryCache
 	Validator            *validation.Checker
 	SessionManager       *session.Manager
 	TriageService        *triage.Service
@@ -111,6 +113,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		baseURL:              opts.BaseURL,
 		config:               opts.Config,
 		indexer:              opts.Indexer,
+		queryCache:           opts.QueryCache,
 		validator:            opts.Validator,
 		sessionManager:       opts.SessionManager,
 		triageService:        opts.TriageService,
@@ -163,7 +166,27 @@ func (s *Server) ClearSearchCaches() {
 		s.nextReleaseIndex.Delete(key)
 		return true
 	})
+	if s.queryCache != nil {
+		s.queryCache.Clear()
+	}
 	logger.Info("Search caches cleared")
+}
+
+// ClearPlaylistCaches clears only the playlist (filtered/sorted) cache while
+// keeping the raw indexer search results cache intact. Use this when only
+// filtering/sorting configuration changes (e.g. filter profiles, stream
+// filter_sorting_mode) so subsequent requests reuse the cached indexer results
+// and only re-run the cheap filter/sort step.
+func (s *Server) ClearPlaylistCaches() {
+	s.playlistCache.Range(func(key, _ interface{}) bool {
+		s.playlistCache.Delete(key)
+		return true
+	})
+	s.nextReleaseIndex.Range(func(key, _ interface{}) bool {
+		s.nextReleaseIndex.Delete(key)
+		return true
+	})
+	logger.Info("Playlist caches cleared (raw search cache preserved)")
 }
 
 // SetOnAttemptRecorded sets a callback invoked after each NZB attempt is recorded (e.g. to broadcast to WS clients).
@@ -254,6 +277,7 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.config = opts.Config
 	s.baseURL = opts.BaseURL
 	s.indexer = opts.Indexer
+	s.queryCache = opts.QueryCache
 	s.validator = opts.Validator
 	s.triageService = opts.TriageService
 	reloadMode := ""

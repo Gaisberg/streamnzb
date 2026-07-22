@@ -240,7 +240,11 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 		indexerRenames := renamedNamesByIndex(currentCfg.Indexers, newCfg.Indexers, func(indexer config.IndexerConfig) string {
 			return indexer.Name
 		})
+		filterProfileRenames := renamedNamesByIndex(currentCfg.FilterProfiles, newCfg.FilterProfiles, func(fp config.FilterProfileConfig) string {
+			return fp.Name
+		})
 		applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
+		applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
 		newCfg.ApplyProviderDefaults()
 		applyStreamAutoSelections(&newCfg)
 
@@ -258,14 +262,30 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 			return
 		}
 
+		// When only filter profiles change, the raw indexer search results are still
+		// valid — only the playlist (filtered/sorted) cache needs to be cleared so the
+		// new filter/sort rules are applied on the next request. This avoids re-querying
+		// indexers for what is effectively a cheap local re-filter/re-sort.
+		onlyFilterProfilesChanged := plan.validateFilterProfiles &&
+			!plan.validateProviders && !plan.validateIndexers &&
+			!plan.validateMovieSearchQueries && !plan.validateSeriesSearchQueries &&
+			!plan.validateIndexerProxyURL
 		if s.strmServer != nil {
-			s.strmServer.ClearSearchCaches()
+			if onlyFilterProfilesChanged {
+				s.strmServer.ClearPlaylistCaches()
+			} else {
+				s.strmServer.ClearSearchCaches()
+			}
 		}
 		s.reloadConfigAsync(&newCfg)
 
 		s.sendConfig(client)
 		s.sendIndexerCaps(client)
-		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"success","message":"Configuration saved and reloaded. Search cache cleared."}`)})
+		cacheMessage := "Configuration saved and reloaded. Search cache cleared."
+		if onlyFilterProfilesChanged {
+			cacheMessage = "Configuration saved and reloaded. Playlist cache cleared."
+		}
+		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(fmt.Sprintf(`{"status":"success","message":%q}`, cacheMessage))})
 		return
 	}
 

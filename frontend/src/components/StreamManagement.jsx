@@ -53,7 +53,7 @@ function normalizeStreamDraft(draft) {
     indexer_overrides: draft?.indexer_overrides || {},
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
-    filter_profile_name: draft?.filter_profile_name || '',
+    filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
   }
 }
 
@@ -110,7 +110,7 @@ function generalCompactValues(stream) {
 }
 
 function generalDetailValues(stream) {
-  const parts = [
+  return [
     `AvailNZB ${stream?.use_availnzb !== false ? 'On' : 'Off'}`,
     `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
@@ -119,18 +119,26 @@ function generalDetailValues(stream) {
     `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
     `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
   ]
-  if (stream?.filter_profile_name) {
-    parts.push(`Filter Profile: ${stream.filter_profile_name}`)
-  }
-  return parts
 }
 
 function filterSortingSummaryValues(stream) {
-  return [stream?.filter_sorting_mode === 'aiostreams' ? 'AIOStreams' : 'None']
+  if (stream?.filter_sorting_mode === 'aiostreams') {
+    return ['AIOStreams']
+  }
+  if (stream?.filter_profile_name) {
+    return [stream.filter_profile_name]
+  }
+  return ['None']
 }
 
-function filterSortingLabel(value) {
-  return value === 'aiostreams' ? 'AIOStreams' : 'None'
+function filterSortingLabel(draft) {
+  if (draft?.filter_sorting_mode === 'aiostreams') {
+    return 'AIOStreams'
+  }
+  if (draft?.filter_profile_name) {
+    return draft.filter_profile_name
+  }
+  return 'None'
 }
 
 function searchRequestsLabel(combineResults) {
@@ -145,11 +153,12 @@ function resultsModeLabel(value) {
   return value === 'display_all' ? 'Display all' : 'Combined stream'
 }
 
-function applyFilterSortingMode(current, nextMode) {
+function applyFilterSortingMode(current, nextMode, profileName = '') {
   const normalizedMode = nextMode === 'aiostreams' ? 'aiostreams' : 'none'
   const nextDraft = {
     ...current,
     filter_sorting_mode: normalizedMode,
+    filter_profile_name: normalizedMode === 'aiostreams' ? '' : profileName,
   }
   if (normalizedMode === 'aiostreams') {
     nextDraft.results_mode = 'display_all'
@@ -525,44 +534,22 @@ function StreamDialog({
                   <div className="text-sm font-medium">Filter/Sorting</div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="outline" className="h-9 w-40 justify-between">
-                        <span>{filterSortingLabel(draft.filter_sorting_mode)}</span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem onClick={() => setDraft((current) => applyFilterSortingMode(current, 'none'))}>
-                        None
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setDraft((current) => applyFilterSortingMode(current, 'aiostreams'))}>
-                        AIOStreams
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Apply a predefined stream profile. AIOStreams keeps the filter behavior, but only forces Results to Display all.
-                </p>
-              </div>
-
-              <div className="rounded-md border border-border/60 p-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">Filter Profile</div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
                       <Button type="button" variant="outline" className="h-9 w-48 justify-between">
-                        <span>{draft.filter_profile_name || 'None'}</span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        <span className="truncate">{filterSortingLabel(draft)}</span>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-48 max-h-60 overflow-y-auto">
-                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, filter_profile_name: '' }))}>
+                      <DropdownMenuItem onClick={() => setDraft((current) => applyFilterSortingMode(current, 'none', ''))}>
                         None
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => applyFilterSortingMode(current, 'aiostreams', ''))}>
+                        AIOStreams
                       </DropdownMenuItem>
                       {(filterProfiles || []).map((fp) => (
                         <DropdownMenuItem
                           key={fp.name}
-                          onClick={() => setDraft((current) => ({ ...current, filter_profile_name: fp.name }))}
+                          onClick={() => setDraft((current) => applyFilterSortingMode(current, 'none', fp.name))}
                         >
                           {fp.name}
                         </DropdownMenuItem>
@@ -571,7 +558,7 @@ function StreamDialog({
                   </DropdownMenu>
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Apply a local Filter Profile to this stream to restrict resolutions, block qualities (like CAM), or exclude keywords.
+                  Apply a predefined stream mode (like AIOStreams) or select a Filter Profile to restrict resolutions, block qualities (like CAM), or exclude keywords.
                 </p>
               </div>
 
