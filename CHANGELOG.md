@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.9.0](https://github.com/Gaisberg/streamnzb/compare/v4.8.0...v4.9.0) (2026-07-22)
+
+
+### Features
+
+* **filters:** add language filters/sorting with alias expansion and fix 4K resolution matching ([db7ca7d](https://github.com/Gaisberg/streamnzb/commit/db7ca7de35b1505e96af1b76b103acec0e99e6ab))
+* **indexer:** add shared indexer query cache and unify filter settings UI ([1af0617](https://github.com/Gaisberg/streamnzb/commit/1af06174d2cc6df598ab395ee476f8234c06a1b0))
+* **playback:** add option to mute ´Failed to start video´ playback error stream ([de4e899](https://github.com/Gaisberg/streamnzb/commit/de4e899287c9f0baec63d3ba9f4dcbc8872396bc))
+* **playback:** implement speculative pre-probing to reduce cold-start latency ([6aa26bf](https://github.com/Gaisberg/streamnzb/commit/6aa26bf3ad0fee5c49d6ad9200ed15e83b9475b3))
+* standalone filtering vol1 ([262b072](https://github.com/Gaisberg/streamnzb/commit/262b072263901025c8a3f2a2e6de73b4abe290bf))
+* **stremio:** add Kitsu anime support, streamline search queries, and isolate provider demotions ([d716e24](https://github.com/Gaisberg/streamnzb/commit/d716e24fb1fea9928eb9d2cf4a22ae38c8389220))
+* **unpack:** add targeted Volume 1 PAR2 repair and nested RAR outer volume fallback ([d6d9bb5](https://github.com/Gaisberg/streamnzb/commit/d6d9bb5460e43d6fe3211b65d6cb3ce25b129dda))
+
+
+### Bug Fixes
+
+* **api:** persist and return filter_profile_name for stream configs ([70e3075](https://github.com/Gaisberg/streamnzb/commit/70e30753f3402aa68ec8c4aac79674203cc4c146))
+* **session:** prevent premature idle eviction of played sessions ([ef23cc5](https://github.com/Gaisberg/streamnzb/commit/ef23cc597b1744ce087f003142d17a2c0d158bba))
+* **unpack:** improve RAR volume scan error diagnostics and missing first-volume detection ([2e7187d](https://github.com/Gaisberg/streamnzb/commit/2e7187dd234565ed78caa3aad6f9242288aeb59e))
+* validate metadata tokens on save to avoid bad configuration ([2a937f5](https://github.com/Gaisberg/streamnzb/commit/2a937f53be535d9e31d60e10285ea31af403054e))
+
+
+### Performance Improvements
+
+* **nzb:** optimize NZB parsing with context support, caching, and partial parser ([cdbd373](https://github.com/Gaisberg/streamnzb/commit/cdbd373e7f1d714b634a9e7572512299bf0c37d3))
+
 ## [4.8.0](https://github.com/Gaisberg/streamnzb/compare/v4.7.0...v4.8.0) (2026-06-23)
 
 
