@@ -7,6 +7,7 @@ import (
 
 	"github.com/dreulavelle/jhin/rank"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/search/ranking"
 )
@@ -33,6 +34,13 @@ type explainResponse struct {
 func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Filter profiles are configuration, and evaluating one compiles patterns
+	// the caller supplies, so this is admin-only like the rest of the config
+	// endpoints.
+	if stream, _ := auth.StreamFromContext(r); stream == nil || stream.Username != s.config.GetAdminUsername() {
+		http.Error(w, "Only admin can evaluate filter profiles", http.StatusForbidden)
 		return
 	}
 

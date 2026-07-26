@@ -1096,6 +1096,11 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			if fpName := strings.ToLower(strings.TrimSpace(stream.FilterProfileName)); fpName != "" && !filterProfileNames[fpName] {
 				errors[fmt.Sprintf("streams.%s.filter_profile_name", username)] = "Assigned filter profile does not exist"
 			}
+			for kind, name := range stream.FilterProfileByType {
+				if fpName := strings.ToLower(strings.TrimSpace(name)); fpName != "" && !filterProfileNames[fpName] {
+					errors[fmt.Sprintf("streams.%s.filter_profile_by_type.%s", username, kind)] = "Assigned filter profile does not exist"
+				}
+			}
 		}
 	}
 

@@ -134,3 +134,40 @@ func TestRenamedNamesByIndexDetectsNameChanges(t *testing.T) {
 		t.Fatalf("unexpected rename for unchanged provider: %#v", providerRenames)
 	}
 }
+
+// Renaming a profile has to follow every reference to it, or a stream keeps
+// pointing at a name that no longer exists and silently stops filtering.
+func TestApplyFilterProfileRenamesFollowsEveryReference(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			FilterProfileName: "Old Name",
+			FilterProfileByType: map[string]string{
+				"movie":      "Old Name",
+				"anime_show": "Anime",
+			},
+		},
+		"living-room": {
+			FilterProfileName:   "Untouched",
+			FilterProfileByType: map[string]string{"series": "old name"},
+		},
+	}
+
+	applyFilterProfileRenames(streams, map[string]string{"old name": "New Name"})
+
+	if got := streams["default"].FilterProfileName; got != "New Name" {
+		t.Errorf("default profile = %q, want %q", got, "New Name")
+	}
+	if got := streams["default"].FilterProfileByType["movie"]; got != "New Name" {
+		t.Errorf("movie binding = %q, want %q", got, "New Name")
+	}
+	if got := streams["default"].FilterProfileByType["anime_show"]; got != "Anime" {
+		t.Errorf("unrelated binding changed to %q", got)
+	}
+	// Matching is case-insensitive, as it is for the stream-wide profile.
+	if got := streams["living-room"].FilterProfileByType["series"]; got != "New Name" {
+		t.Errorf("series binding = %q, want %q", got, "New Name")
+	}
+	if got := streams["living-room"].FilterProfileName; got != "Untouched" {
+		t.Errorf("unrelated profile changed to %q", got)
+	}
+}
