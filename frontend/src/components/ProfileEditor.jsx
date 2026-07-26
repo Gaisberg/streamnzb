@@ -136,7 +136,9 @@ function WeightedPatterns({ values = [], onChange }) {
         <Label className="text-sm">Weighted preferences</Label>
         <Hint>
           Each pattern adds its own score when it matches the release name, and they stack. Use a negative
-          score to push something down without rejecting it.
+          score to push something down without rejecting it. Releases carrying extra audio tracks — dual
+          audio, multi audio — also count as Dubbed under Scoring, so check that score too if you are
+          trying to favour them.
         </Hint>
       </div>
 
