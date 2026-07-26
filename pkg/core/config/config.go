@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dreulavelle/jhin/rank"
+
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/paths"
@@ -99,8 +101,21 @@ type SearchQueryConfig struct {
 	DisableStringSearch           *bool    `json:"disable_string_search,omitempty"`
 }
 
+// FilterProfileConfig is one named filtering/ranking profile. Ranking holds
+// jhin's profile verbatim and is what actually decides fetch/reject and score;
+// the fields below it are the pre-jhin schema, kept so existing configs keep
+// working and read-only after migration (see Synthesize).
 type FilterProfileConfig struct {
-	Name               string   `json:"name"`
+	Name string `json:"name"`
+
+	// Ranking is jhin's rank.Profile. Nil on configs written before the jhin
+	// migration, in which case it is synthesized from the legacy fields on load.
+	Ranking *rank.Profile `json:"ranking,omitempty"`
+
+	// AppliesTo restricts this profile to certain content: "movie", "series",
+	// "anime". Empty means it is selectable for anything.
+	AppliesTo []string `json:"applies_to,omitempty"`
+
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
 	AllowedQualities   []string `json:"allowed_qualities,omitempty"`
@@ -528,7 +543,11 @@ type StreamEntry struct {
 	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
-	MuteErrorVideo      *bool                          `json:"mute_error_video,omitempty"`
+	// FilterProfileByType selects a profile per content kind — "movie",
+	// "series" or "anime" — falling back to FilterProfileName when a kind has
+	// no entry. Anime is matched first when the request resolved via Kitsu.
+	FilterProfileByType map[string]string `json:"filter_profile_by_type,omitempty"`
+	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
@@ -742,15 +761,17 @@ func Load() (*Config, error) {
 		needSave = true
 	}
 	if len(cfg.FilterProfiles) == 0 {
-		cfg.FilterProfiles = []FilterProfileConfig{
-			{
-				Name:               "Default Profile",
-				AllowedResolutions: []string{"2160p", "1080p", "720p"},
-				BlockedQualities:   []string{"CAM"},
-				SortOrder:          []string{"resolution", "quality", "size", "age"},
-			},
-		}
+		cfg.FilterProfiles = []FilterProfileConfig{DefaultFilterProfile()}
 		needSave = true
+	}
+	// Carry pre-jhin profiles onto rank.Profile once and write it back, so the
+	// stored profile is what the UI edits and what ranking compiles.
+	for i := range cfg.FilterProfiles {
+		if cfg.FilterProfiles[i].Ranking == nil {
+			ranking := Synthesize(cfg.FilterProfiles[i])
+			cfg.FilterProfiles[i].Ranking = &ranking
+			needSave = true
+		}
 	}
 	if cfg.KeepLogFiles < 1 {
 		cfg.KeepLogFiles = 9
