@@ -74,9 +74,8 @@ func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filena
 	line2 := []string{}
 	visualTags := make([]string, 0)
 	visualTags = append(visualTags, meta.HDR...)
-	if meta.ThreeD != "" {
-
-		visualTags = append(visualTags, meta.ThreeD)
+	if meta.ThreeD {
+		visualTags = append(visualTags, "3D")
 	}
 	if len(visualTags) > 0 {
 		tags := strings.Join(visualTags, "|")
@@ -100,13 +99,13 @@ func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filena
 	if meta.Repack {
 		flags = append(flags, "🔄 REPACK")
 	}
-	if meta.Extended {
-		flags = append(flags, "⏱️ EXTENDED")
+	if meta.Edition != "" {
+		flags = append(flags, fmt.Sprintf("⏱️ %s", strings.ToUpper(meta.Edition)))
 	}
 	if meta.Unrated {
 		flags = append(flags, "🔞 UNRATED")
 	}
-	if meta.ThreeD != "" {
+	if meta.ThreeD {
 		flags = append(flags, "🕶️ 3D")
 	}
 	if len(flags) > 0 {

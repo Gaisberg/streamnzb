@@ -3,6 +3,8 @@ package stremio
 import (
 	"testing"
 
+	"github.com/dreulavelle/jhin"
+
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
@@ -30,93 +32,93 @@ func TestMatchFilterProfile(t *testing.T) {
 	}{
 		{
 			title: "Obsession 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: true,
 		},
 		{
 			title: "Obsession 2026 1080p CAM HDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "CAM",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: false, // Blocked quality
 		},
 		{
 			title: "Obsession 2026 2160p BluRay HDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "2160p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: false, // Not allowed resolution
 		},
 		{
 			title: "Obsession 2026 1080p BluRay SDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"SDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: false, // HDR required
 		},
 		{
 			title: "Obsession 2026 1080p BluRay HDR Subbed",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: false, // Excluded keyword "subbed"
 		},
 		{
 			title: "Something Else 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"en"},
-			},
+			}},
 			expected: false, // Required keyword "Obsession" missing
 		},
 		{
 			title: "Obsession 2026 1080p BluRay HDR RU",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"ru"},
-			},
+			}},
 			expected: false, // Blocked language "ru"
 		},
 		{
 			title: "Obsession 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				Languages:  []string{"de"}, // not in allowed languages
-			},
+			}},
 			expected: false, // Allowed languages en/fi, release is de
 		},
 		{
 			title: "Obsession 2026 1080p BluRay HDR NORDIC",
-			metadata: &parser.ParsedRelease{
+			metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
 				HDR:        []string{"HDR"},
 				// Alias expansion: "nordic" -> da, fi, no, sv; fi is allowed.
 				Languages: []string{"da", "fi", "no", "sv"},
-			},
+			}},
 			expected: true, // fi is in allowed languages
 		},
 	}
@@ -137,24 +139,24 @@ func TestCustomSortCandidates(t *testing.T) {
 	candidates := []triage.Candidate{
 		{
 			Release: &release.Release{Title: "Release A", Size: 5000000000}, // 5 GB
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "WEB-DL",
-			},
+			}},
 		},
 		{
 			Release: &release.Release{Title: "Release B", Size: 8000000000}, // 8 GB
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "2160p",
 				Quality:    "WEB-DL",
-			},
+			}},
 		},
 		{
 			Release: &release.Release{Title: "Release C", Size: 12000000000}, // 12 GB
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Resolution: "1080p",
 				Quality:    "BluRay",
-			},
+			}},
 		},
 	}
 
@@ -181,35 +183,35 @@ func TestCustomSortCandidatesByLanguage(t *testing.T) {
 	candidates := []triage.Candidate{
 		{
 			Release: &release.Release{Title: "Release A"},
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Languages: []string{"en"},
-			},
+			}},
 		},
 		{
 			Release: &release.Release{Title: "Release B"},
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				// Alias-expanded nordic release includes fi.
 				Languages: []string{"da", "fi", "no", "sv"},
-			},
+			}},
 		},
 		{
 			Release: &release.Release{Title: "Release C"},
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Languages: []string{"de"},
-			},
+			}},
 		},
 		{
 			// Release D has no title-parsed languages but the indexer reported fi.
 			Release: &release.Release{Title: "Release D", Languages: []string{"fi"}},
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Languages: nil,
-			},
+			}},
 		},
 		{
 			Release: &release.Release{Title: "Release E"},
-			Metadata: &parser.ParsedRelease{
+			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
 				Languages: nil,
-			},
+			}},
 		},
 	}
 
@@ -231,4 +233,3 @@ func TestCustomSortCandidatesByLanguage(t *testing.T) {
 		t.Errorf("Expected Release E (no languages) last, got %q", candidates[4].Release.Title)
 	}
 }
-

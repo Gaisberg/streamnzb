@@ -154,8 +154,26 @@ func NormalizeCodec(codec string) string {
 	return codec
 }
 
-func NormalizeResolutionToGroup(res string) string {
+// ResolutionHeight reduces a WxH-style resolution to its height component.
+// The parser reports the full dimensions ("720x480p") for titles that spell
+// both out, and matching those against the group thresholds below would key off
+// the width — grouping a 480p release as 720p. Plain values pass through.
+func ResolutionHeight(res string) string {
 	r := strings.ToLower(strings.TrimSpace(res))
+	i := strings.LastIndex(r, "x")
+	if i <= 0 || i+1 >= len(r) {
+		return r
+	}
+	for _, c := range r[:i] {
+		if c < '0' || c > '9' {
+			return r
+		}
+	}
+	return r[i+1:]
+}
+
+func NormalizeResolutionToGroup(res string) string {
+	r := ResolutionHeight(res)
 	switch {
 	case strings.Contains(r, "2160") || strings.Contains(r, "4k"):
 		return "4k"
