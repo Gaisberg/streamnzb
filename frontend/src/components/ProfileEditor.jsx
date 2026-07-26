@@ -17,7 +17,7 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import { CircleHelp, GripVertical, RotateCcw, Search, Sparkles, X } from "lucide-react"
 import {
-  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS,
+  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, PATTERN_PRESETS,
   RESOLUTIONS, SORT_KEYS, effectivePolicy, formatScore,
 } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
@@ -112,6 +112,94 @@ function PatternInput({ label, hint, values = [], onChange, placeholder, suggest
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// WeightedPatterns edits patterns that carry their own score. Unlike Prefer,
+// each one is weighted individually and they stack, so several preferences can
+// be ranked against each other.
+function WeightedPatterns({ values = [], onChange }) {
+  const [pattern, setPattern] = useState("")
+  const [score, setScore] = useState(1000)
+
+  const add = (entry) => {
+    const next = entry || { pattern: pattern.trim(), rank: Number(score) || 0 }
+    if (!next.pattern || values.some((v) => v.pattern === next.pattern)) return
+    onChange([...values, next])
+    setPattern("")
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm">Weighted preferences</Label>
+        <Hint>
+          Each pattern adds its own score when it matches the release name, and they stack. Use a negative
+          score to push something down without rejecting it.
+        </Hint>
+      </div>
+
+      <div className="flex gap-2">
+        <Input
+          value={pattern}
+          onChange={(e) => setPattern(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add() } }}
+          placeholder="Dual.?Audio"
+          className="h-9 flex-1 font-mono text-xs"
+        />
+        <Input
+          type="number"
+          value={score}
+          onChange={(e) => setScore(e.target.value)}
+          className="h-9 w-28 font-mono text-xs"
+          aria-label="Score"
+        />
+        <Button type="button" variant="secondary" size="sm" className="h-9 px-4" onClick={() => add()}>
+          Add
+        </Button>
+      </div>
+
+      {values.length > 0 && (
+        <div className="space-y-1.5">
+          {values.map((entry, index) => (
+            <div key={entry.pattern} className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
+              <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{entry.pattern}</code>
+              <Input
+                type="number"
+                value={entry.rank}
+                onChange={(e) => {
+                  const next = [...values]
+                  next[index] = { ...entry, rank: Number(e.target.value) || 0 }
+                  onChange(next)
+                }}
+                className="h-8 w-24 font-mono text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => onChange(values.filter((_, i) => i !== index))}
+                className="text-muted-foreground/70 transition-colors hover:text-foreground"
+                aria-label={`Remove ${entry.pattern}`}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-1 pt-0.5">
+        {PATTERN_PRESETS.filter((preset) => !values.some((v) => v.pattern === preset.pattern)).map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            onClick={() => add({ pattern: preset.pattern, rank: preset.rank })}
+            className="rounded-md border border-dashed border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+          >
+            {preset.label} {formatScore(preset.rank)}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -444,6 +532,10 @@ export function ProfileEditor({ profile, onChange }) {
           onChange={(v) => setRanking({ ...ranking, preferred: v })}
           placeholder="IMAX"
           mono
+        />
+        <WeightedPatterns
+          values={ranking.pattern_ranks || []}
+          onChange={(v) => setRanking({ ...ranking, pattern_ranks: v })}
         />
         <p className="text-xs text-muted-foreground">
           These are regular expressions matched against the full release name. Wrap a pattern in slashes to make it

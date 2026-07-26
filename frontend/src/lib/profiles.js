@@ -192,6 +192,17 @@ export const SORT_KEYS = [
 ]
 
 // Content kinds partition every request, so exactly one profile ever applies.
+// Common weighted patterns, so the usual preferences do not need a regex.
+// These match on the release name, which is the only place they appear.
+export const PATTERN_PRESETS = [
+  { label: "Dual audio", pattern: "\\bDual[. _-]?Audio\\b", rank: 5000 },
+  { label: "Multi audio", pattern: "\\bMulti[. _-]?Audio\\b", rank: 3000 },
+  { label: "English dub", pattern: "\\b(ENG[. _-]?DUB|English[. _-]?Dub)\\b", rank: 4000 },
+  { label: "IMAX", pattern: "\\bIMAX\\b", rank: 2000 },
+  { label: "Open matte", pattern: "\\bOpen[. _-]?Matte\\b", rank: 1000 },
+  { label: "Hardcoded subs", pattern: "\\bHC\\b|\\bHardsub", rank: -3000 },
+]
+
 export const CONTENT_KINDS = [
   { key: "movie", label: "Movies" },
   { key: "series", label: "Shows" },
