@@ -7,8 +7,8 @@ github.com/bodgit/windows v1.0.1/go.mod h1:a6JLwrB4KrTR5hBpp8FI9/9W9jJfeQ2h4XDXU
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/dreulavelle/jhin v0.3.2 h1:L73pgyJ30BX9upzv6fV6wNdWugN0txo/FDn8ahdPwuU=
-github.com/dreulavelle/jhin v0.3.2/go.mod h1:I5LcW2RzJy+Q78tXqahY0Kscz6TVpQAXvCXYtNAf2nU=
+github.com/dreulavelle/jhin v0.4.0 h1:f5hapwUhhvPu5XmFDDwVVLGYaqiHraNth2zDZ9aW1h8=
+github.com/dreulavelle/jhin v0.4.0/go.mod h1:I5LcW2RzJy+Q78tXqahY0Kscz6TVpQAXvCXYtNAf2nU=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=
