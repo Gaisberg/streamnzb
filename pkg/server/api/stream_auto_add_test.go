@@ -171,3 +171,60 @@ func TestApplyFilterProfileRenamesFollowsEveryReference(t *testing.T) {
 		t.Errorf("unrelated profile changed to %q", got)
 	}
 }
+
+// Deleting a profile must not be blocked by the streams still pointing at it.
+func TestDropDeletedFilterProfilesClearsDanglingReferences(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			FilterProfileName: "Deleted",
+			FilterProfileByType: map[string]string{
+				"movie":      "Deleted",
+				"anime_show": "Anime",
+			},
+		},
+		"living-room": {
+			FilterProfileName:   "Kept",
+			FilterProfileByType: map[string]string{"series": "Deleted"},
+		},
+	}
+	remaining := []config.FilterProfileConfig{{Name: "Kept"}, {Name: "Anime"}}
+
+	dropDeletedFilterProfiles(streams, remaining)
+
+	if got := streams["default"].FilterProfileName; got != "" {
+		t.Errorf("stream-wide reference to a deleted profile = %q, want cleared", got)
+	}
+	if _, ok := streams["default"].FilterProfileByType["movie"]; ok {
+		t.Error("binding to a deleted profile should be removed")
+	}
+	if got := streams["default"].FilterProfileByType["anime_show"]; got != "Anime" {
+		t.Errorf("surviving binding = %q, want %q", got, "Anime")
+	}
+	if got := streams["living-room"].FilterProfileName; got != "Kept" {
+		t.Errorf("surviving profile = %q, want %q", got, "Kept")
+	}
+	// A stream left with no bindings should not keep an empty map around.
+	if streams["living-room"].FilterProfileByType != nil {
+		t.Errorf("expected bindings to be nil, got %#v", streams["living-room"].FilterProfileByType)
+	}
+}
+
+// A renamed profile must not be mistaken for a deleted one.
+func TestRenameThenDropKeepsRenamedProfiles(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			FilterProfileName:   "Old Name",
+			FilterProfileByType: map[string]string{"movie": "Old Name"},
+		},
+	}
+
+	applyFilterProfileRenames(streams, map[string]string{"old name": "New Name"})
+	dropDeletedFilterProfiles(streams, []config.FilterProfileConfig{{Name: "New Name"}})
+
+	if got := streams["default"].FilterProfileName; got != "New Name" {
+		t.Errorf("renamed profile = %q, want %q", got, "New Name")
+	}
+	if got := streams["default"].FilterProfileByType["movie"]; got != "New Name" {
+		t.Errorf("renamed binding = %q, want %q", got, "New Name")
+	}
+}

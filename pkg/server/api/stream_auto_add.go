@@ -264,3 +264,33 @@ func enabledIndexerNames(indexers []config.IndexerConfig) []string {
 	}
 	return enabled
 }
+
+// dropDeletedFilterProfiles clears references to profiles that no longer
+// exist, so deleting one is not blocked by the streams still pointing at it.
+// Renames are resolved first, so a renamed profile is never seen as deleted.
+// A stream left with no profile falls back to returning everything, which is
+// how a stream with none configured has always behaved.
+func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles []config.FilterProfileConfig) {
+	known := make(map[string]bool, len(profiles))
+	for _, fp := range profiles {
+		if name := strings.ToLower(strings.TrimSpace(fp.Name)); name != "" {
+			known[name] = true
+		}
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(stream.FilterProfileName)); name != "" && !known[name] {
+			stream.FilterProfileName = ""
+		}
+		for kind, name := range stream.FilterProfileByType {
+			if key := strings.ToLower(strings.TrimSpace(name)); key == "" || !known[key] {
+				delete(stream.FilterProfileByType, kind)
+			}
+		}
+		if len(stream.FilterProfileByType) == 0 {
+			stream.FilterProfileByType = nil
+		}
+	}
+}

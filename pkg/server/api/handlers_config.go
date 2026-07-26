@@ -120,6 +120,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	})
 	applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
 	applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
+	dropDeletedFilterProfiles(newCfg.Streams, newCfg.FilterProfiles)
 	newCfg.ApplyProviderDefaults()
 	applyStreamAutoSelections(&newCfg)
 	if newCfg.AdminUsername == "" {
