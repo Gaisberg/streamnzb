@@ -8,6 +8,7 @@ import { SiteHeader } from "@/components/SiteHeader"
 import { DashboardPage } from "@/components/DashboardPage"
 import { StatisticsPage } from "@/components/StatisticsPage"
 import { LogsPage } from "@/components/LogsPage"
+import { FiltersPage } from "@/components/FiltersPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import { DirectPlayPage } from "@/components/DirectPlayPage"
@@ -291,6 +292,16 @@ function App() {
           )}
           {activePage === 'logs' && (
             <LogsPage logs={logs} />
+          )}
+          {activePage === 'filters' && (
+            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+              <FiltersPage
+                config={config}
+                onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
+                isSaving={isSaving}
+                saveStatus={saveStatus}
+              />
+            </div>
           )}
           {activePage === 'profile' && (
             <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">

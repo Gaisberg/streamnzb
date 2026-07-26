@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { CONTENT_KINDS, eligibleProfiles } from "@/lib/profiles"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -54,6 +55,7 @@ function normalizeStreamDraft(draft) {
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
+    filter_profile_by_type: normalizedFilterSortingMode === 'aiostreams' ? {} : (draft?.filter_profile_by_type || {}),
     mute_error_video: draft?.mute_error_video === true,
   }
 }
@@ -75,6 +77,7 @@ function buildStreamDraft(stream) {
     movie_search_queries: stream?.movie_search_queries || [],
     series_search_queries: stream?.series_search_queries || [],
     filter_profile_name: stream?.filter_profile_name || '',
+    filter_profile_by_type: stream?.filter_profile_by_type || {},
     mute_error_video: stream?.mute_error_video,
   })
 }
@@ -104,6 +107,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     movie_search_queries: draft.movie_search_queries || [],
     series_search_queries: draft.series_search_queries || [],
     filter_profile_name: draft.filter_profile_name || '',
+    filter_profile_by_type: draft.filter_profile_by_type || {},
     mute_error_video: draft.mute_error_video,
   }
 }
@@ -162,6 +166,7 @@ function applyFilterSortingMode(current, nextMode, profileName = '') {
     ...current,
     filter_sorting_mode: normalizedMode,
     filter_profile_name: normalizedMode === 'aiostreams' ? '' : profileName,
+    filter_profile_by_type: normalizedMode === 'aiostreams' ? {} : (current?.filter_profile_by_type || {}),
   }
   if (normalizedMode === 'aiostreams') {
     nextDraft.results_mode = 'display_all'
@@ -561,8 +566,57 @@ function StreamDialog({
                   </DropdownMenu>
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Apply a predefined stream mode (like AIOStreams) or select a Filter Profile to restrict resolutions, block qualities (like CAM), or exclude keywords.
+                  Apply a predefined stream mode (like AIOStreams) or select a filter profile to decide which releases this stream offers.
                 </p>
+
+                {(filterProfiles || []).length > 0 && (
+                  <div className="mt-4 space-y-2 border-t border-border/60 pt-3">
+                    <div className="text-sm font-medium">By content type</div>
+                    <p className="text-sm text-muted-foreground">
+                      {draft.filter_sorting_mode === 'aiostreams'
+                        ? 'AIOStreams mode returns every release and lets AIOStreams filter them, so profiles are not applied. Switch Filter/Sorting off AIOStreams to use them.'
+                        : 'Override the profile above for a specific kind of content. Anything left on Default uses the profile selected above.'}
+                    </p>
+                    <div className={`grid gap-2 pt-1 sm:grid-cols-2 ${draft.filter_sorting_mode === 'aiostreams' ? 'opacity-50' : ''}`}>
+                      {CONTENT_KINDS.map((kind) => {
+                        const options = eligibleProfiles(filterProfiles || [], kind.key)
+                        const current = draft.filter_profile_by_type?.[kind.key] || ''
+                        const setKind = (name) => setDraft((prev) => {
+                          const next = { ...(prev.filter_profile_by_type || {}) }
+                          if (name) next[kind.key] = name
+                          else delete next[kind.key]
+                          return { ...prev, filter_profile_by_type: next }
+                        })
+                        return (
+                          <div key={kind.key} className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-muted-foreground">{kind.label}</span>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={draft.filter_sorting_mode === 'aiostreams'}
+                                  className="h-8 w-44 justify-between"
+                                >
+                                  <span className="truncate text-xs">{current || 'Default'}</span>
+                                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-44 max-h-60 overflow-y-auto">
+                                <DropdownMenuItem onClick={() => setKind('')}>Default</DropdownMenuItem>
+                                {options.map((fp) => (
+                                  <DropdownMenuItem key={fp.name} onClick={() => setKind(fp.name)}>
+                                    {fp.name}
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="rounded-md border border-border/60 p-3">
@@ -954,6 +1008,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         movie_search_queries: draft.movie_search_queries || [],
         series_search_queries: draft.series_search_queries || [],
         filter_profile_name: draft.filter_profile_name || '',
+        filter_profile_by_type: draft.filter_profile_by_type || {},
       },
     }
     await apiFetch('/api/streams/configs', {
@@ -1032,6 +1087,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       movie_search_queries: stream.movie_search_queries || [],
       series_search_queries: stream.series_search_queries || [],
       filter_profile_name: stream.filter_profile_name || '',
+      filter_profile_by_type: stream.filter_profile_by_type || {},
     })
     setAddDialogDraft(draft)
     setShowAddDialog(true)

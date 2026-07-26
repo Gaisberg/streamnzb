@@ -7,6 +7,7 @@ const pageTitles = {
   "nzb-history": "NZB History",
   "direct-play": "Direct Play",
   logs: "Logs",
+  filters: "Filters",
   profile: "Profile",
   settings: "Settings",
 }
