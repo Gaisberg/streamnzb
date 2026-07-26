@@ -226,6 +226,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		MovieSearchQueries  []string                              `json:"movie_search_queries"`
 		SeriesSearchQueries []string                              `json:"series_search_queries"`
 		FilterProfileName   string                                `json:"filter_profile_name"`
+		FilterProfileByType map[string]string                     `json:"filter_profile_by_type"`
 		MuteErrorVideo      *bool                                 `json:"mute_error_video"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&streamConfigs); err != nil {
@@ -265,6 +266,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			MovieSearchQueries:  dc.MovieSearchQueries,
 			SeriesSearchQueries: dc.SeriesSearchQueries,
 			FilterProfileName:   dc.FilterProfileName,
+			FilterProfileByType: dc.FilterProfileByType,
 			MuteErrorVideo:      dc.MuteErrorVideo,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))

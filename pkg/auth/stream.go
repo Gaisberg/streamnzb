@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"streamnzb/pkg/core/config"
@@ -50,6 +51,7 @@ type Stream struct {
 	MovieSearchQueries  []string                              `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
+	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
 }
 
@@ -222,6 +224,7 @@ func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 			MovieSearchQueries:  append([]string(nil), e.MovieSearchQueries...),
 			SeriesSearchQueries: append([]string(nil), e.SeriesSearchQueries...),
 			FilterProfileName:   e.FilterProfileName,
+			FilterProfileByType: maps.Clone(e.FilterProfileByType),
 			MuteErrorVideo:      e.MuteErrorVideo,
 		}
 	}
@@ -259,6 +262,7 @@ func (dm *StreamManager) saveLocked() error {
 				MovieSearchQueries:  append([]string(nil), d.MovieSearchQueries...),
 				SeriesSearchQueries: append([]string(nil), d.SeriesSearchQueries...),
 				FilterProfileName:   d.FilterProfileName,
+				FilterProfileByType: maps.Clone(d.FilterProfileByType),
 				MuteErrorVideo:      d.MuteErrorVideo,
 			}
 		}
@@ -389,6 +393,7 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 			MovieSearchQueries:  append([]string(nil), stream.MovieSearchQueries...),
 			SeriesSearchQueries: append([]string(nil), stream.SeriesSearchQueries...),
 			FilterProfileName:   stream.FilterProfileName,
+			FilterProfileByType: maps.Clone(stream.FilterProfileByType),
 			MuteErrorVideo:      stream.MuteErrorVideo,
 		})
 	}
