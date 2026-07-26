@@ -370,12 +370,9 @@ func releasesToCandidates(releases []*release.Release) []triage.Candidate {
 		if rel == nil {
 			continue
 		}
-		parsed := parser.ParseReleaseTitle(rel.Title)
-		out = append(out, triage.Candidate{
-			Release:  rel,
-			Metadata: parsed,
-			Score:    0,
-		})
+		// Metadata is filled in by applyRanking, which gets the parse from
+		// the ranker rather than parsing every title a second time here.
+		out = append(out, triage.Candidate{Release: rel})
 	}
 	return out
 }
@@ -795,7 +792,10 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	profile := s.profileForRequest(source, stream)
 	if profile == nil {
 		if filteringActive {
+			// Scoring parses each title and populates the candidate.
 			sortCandidates(s.triageService, candidates)
+		} else {
+			ensureCandidateMetadata(candidates)
 		}
 		logStreamSorting(stream, filterMode, len(candidates), len(candidates))
 		return candidates
@@ -807,8 +807,11 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {
 		cand := r.Candidate
-		// jhin's score replaces the old size/age/grabs heuristic as the
-		// candidate's score, so everything downstream ranks the same way.
+		// Reuse the ranker's parse instead of parsing the title again.
+		cand.Metadata = parser.FromResult(r.Torrent.Raw, r.Torrent.Data)
+		cand.Group = cand.Metadata.ResolutionGroup()
+		// The computed score replaces the old size/age/grabs heuristic, so
+		// everything downstream ranks the same way.
 		cand.Score = r.Torrent.Rank
 		out = append(out, cand)
 	}
@@ -816,6 +819,18 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	logStreamFiltering(stream, filterMode, inputResults, len(out))
 	logStreamSorting(stream, filterMode, inputResults, len(out))
 	return out
+}
+
+// ensureCandidateMetadata parses any candidate that nothing else has, so
+// stream descriptions always have metadata to render.
+func ensureCandidateMetadata(candidates []triage.Candidate) {
+	for i := range candidates {
+		if candidates[i].Metadata != nil || candidates[i].Release == nil {
+			continue
+		}
+		candidates[i].Metadata = parser.ParseReleaseTitle(candidates[i].Release.Title)
+		candidates[i].Group = candidates[i].Metadata.ResolutionGroup()
+	}
 }
 
 // profileForRequest resolves the filter profile for this request, preferring a

@@ -60,7 +60,13 @@ func ParseReleaseTitleWithParser(title string, parse func(string) *jhin.Result) 
 	if parse == nil {
 		parse = jhin.Parse
 	}
-	info := parse(title)
+	return FromResult(title, parse(title))
+}
+
+// FromResult derives a ParsedRelease from a parse the caller already has.
+// Ranking parses every release it evaluates, so building candidates from its
+// result avoids parsing each title a second time.
+func FromResult(title string, info *jhin.Result) *ParsedRelease {
 	if info == nil {
 		info = &jhin.Result{}
 	}
