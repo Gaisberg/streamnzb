@@ -120,7 +120,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		validator:            opts.Validator,
 		sessionManager:       opts.SessionManager,
 		triageService:        opts.TriageService,
-		rankingService:       ranking.NewService(),
+		rankingService:       newRankingService(opts.Config),
 		availClient:          resolvedAvailClient,
 		availReporter:        availReporter,
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
@@ -317,6 +317,12 @@ func (s *Server) Reload(opts *ServerOptions) {
 //
 // A profile that fails to compile is logged and skipped, degrading to "no
 // filtering" for streams bound to it rather than breaking startup.
+func newRankingService(cfg *config.Config) *ranking.Service {
+	svc := ranking.NewService()
+	reloadRankingService(svc, cfg)
+	return svc
+}
+
 func reloadRankingService(svc *ranking.Service, cfg *config.Config) {
 	if svc == nil {
 		return

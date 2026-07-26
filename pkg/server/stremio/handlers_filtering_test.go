@@ -198,3 +198,25 @@ func TestExplainReportsRejection(t *testing.T) {
 		t.Error("expected the score breakdown to be populated")
 	}
 }
+
+// A server has to come up with its profiles already compiled. Loading them
+// only on reload leaves every lookup failing until the next config save, which
+// silently means no filtering at all.
+func TestNewRankingServiceLoadsProfilesUpFront(t *testing.T) {
+	cfg := &config.Config{
+		FilterProfiles: []config.FilterProfileConfig{
+			{Name: "Movies Only", AllowedResolutions: []string{"1080p"}},
+		},
+	}
+
+	svc := newRankingService(cfg)
+	profile, ok := svc.Get("Movies Only")
+	if !ok {
+		t.Fatal("expected the profile to be compiled at construction")
+	}
+
+	results := profile.Evaluate(candidatesFor("Movie 2020 2160p BluRay REMUX-GRP"), rank.RankOptions{})
+	if results[0].Torrent.Fetch {
+		t.Errorf("2160p should be rejected by a 1080p-only profile: %v", results[0].Torrent.Rejections)
+	}
+}
