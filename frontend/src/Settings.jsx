@@ -4,7 +4,6 @@ import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loade
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
-import { FilterSettings } from "@/components/FilterSettings"
 import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
@@ -21,7 +20,6 @@ const TABS = [
   { id: 'network', label: 'Network', icon: Network },
   { id: 'indexers', label: 'Indexers', icon: Server },
   { id: 'providers', label: 'Providers', icon: Globe },
-  { id: 'filters', label: 'Filters', icon: Filter },
   { id: 'search_query', label: 'Search', icon: Search },
   { id: 'advanced', label: 'Advanced', icon: SlidersHorizontal },
 ]
@@ -437,16 +435,6 @@ function Settings({
               onClearStatus={clearTransientStatus}
               onPersist={(nextProviders) => submitSettings({ providers: nextProviders }, 'providers')}
               onStatus={(status) => showFooterStatus(status)}
-            />
-          </div>
-        )}
-
-        {activeTab === 'filters' && (
-          <div className="space-y-4">
-            <FilterSettings
-              value={watch('filter_profiles') || []}
-              onChange={(nextFilters) => submitSettings({ filter_profiles: nextFilters }, 'filters')}
-              fieldErrors={saveStatus.errors || {}}
             />
           </div>
         )}
