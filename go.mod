@@ -23,7 +23,7 @@ require golang.org/x/net v0.54.0
 require github.com/gorilla/websocket v1.5.3
 
 require (
-	github.com/dreulavelle/jhin v0.3.2
+	github.com/dreulavelle/jhin v0.4.0
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.50.1

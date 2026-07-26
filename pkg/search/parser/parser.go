@@ -8,6 +8,7 @@ import (
 	"streamnzb/pkg/core/config/pttoptions"
 
 	"github.com/dreulavelle/jhin"
+	jhinparser "github.com/dreulavelle/jhin/parser"
 )
 
 var dashedSeasonEpisodePattern = regexp.MustCompile(`(?i)\bS(?:eason)?\s*0*([0-9]{1,2})\s*-\s*0*([0-9]{1,3})(?:$|[\s._()[\]])`)
@@ -276,7 +277,7 @@ func (p *ParsedRelease) ResolutionGroup() string {
 	if p == nil {
 		return "sd"
 	}
-	res := pttoptions.ResolutionHeight(p.Resolution)
+	res := jhinparser.ResolutionHeight(p.Resolution)
 	if strings.Contains(res, "2160") || strings.Contains(res, "4k") {
 		return "4k"
 	}
