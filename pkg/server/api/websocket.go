@@ -184,6 +184,22 @@ func (s *Server) sendConfig(client *Client) {
 	trySendWS(client, WSMessage{Type: "config", Payload: payload})
 }
 
+// broadcastConfig pushes the current config to every connected client, so a
+// change made outside the websocket save path — saving a stream over REST, for
+// one — does not leave open pages showing stale config until they reload.
+func (s *Server) broadcastConfig() {
+	s.clientsMu.Lock()
+	clients := make([]*Client, 0, len(s.clients))
+	for client := range s.clients {
+		clients = append(clients, client)
+	}
+	s.clientsMu.Unlock()
+
+	for _, client := range clients {
+		s.sendConfig(client)
+	}
+}
+
 func (s *Server) sendIndexerCaps(client *Client) {
 	s.mu.RLock()
 	caps := s.indexerCaps
@@ -686,7 +702,12 @@ func (s *Server) handleUpdatePasswordWS(client *Client, payload json.RawMessage)
 	trySendWS(client, WSMessage{Type: "user_action_response", Payload: respPayload})
 }
 
+// broadcastStreamsList tells clients the streams changed. Streams live in the
+// config, so the config goes out with them — the list is only a projection of
+// it, and every caller here has just mutated one.
 func (s *Server) broadcastStreamsList() {
+	defer s.broadcastConfig()
+
 	streams := s.streamManager.GetAllStreams()
 
 	streamList := make([]map[string]interface{}, 0, len(streams))

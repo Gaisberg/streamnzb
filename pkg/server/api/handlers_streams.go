@@ -274,8 +274,12 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		}
 		updated = true
 	}
-	if updated && s.strmServer != nil {
-		s.strmServer.ClearSearchCaches()
+	if updated {
+		if s.strmServer != nil {
+			s.strmServer.ClearSearchCaches()
+		}
+		// Stream settings live in the config, so open pages need the new copy.
+		s.broadcastConfig()
 	}
 	if len(errors) > 0 {
 		w.WriteHeader(http.StatusBadRequest)
