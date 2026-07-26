@@ -49,3 +49,74 @@ func TestSetConfigReloadsInMemoryStreamsFromConfig(t *testing.T) {
 		t.Fatalf("expected indexer selections to reload from config, got %#v", stream.IndexerSelections)
 	}
 }
+
+// UpdateStreamConfig assigns each field onto the stored stream by hand, so a
+// field added to Stream but missed here is dropped without any error.
+func TestUpdateStreamConfigPersistsProfileBindings(t *testing.T) {
+	cfg := &config.Config{
+		Streams: map[string]*config.StreamEntry{
+			"default": {Username: "default", Token: "token-default"},
+		},
+	}
+	dm := &StreamManager{cfg: cfg, saveFn: func() error { return nil }}
+	if err := dm.load(); err != nil {
+		t.Fatalf("load returned error: %v", err)
+	}
+
+	err := dm.UpdateStreamConfig("default", &Stream{
+		FilterProfileName: "Default Profile",
+		FilterProfileByType: map[string]string{
+			"movie": "My Movie Profile",
+			// Cleared in the UI, and a kind bound to nothing is not a binding.
+			"series": "",
+			"":       "Orphan",
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateStreamConfig returned error: %v", err)
+	}
+
+	stream, err := dm.GetStream("default", "admin")
+	if err != nil {
+		t.Fatalf("GetStream returned error: %v", err)
+	}
+	if got := stream.FilterProfileByType["movie"]; got != "My Movie Profile" {
+		t.Errorf("movie binding = %q, want %q", got, "My Movie Profile")
+	}
+	if _, ok := stream.FilterProfileByType["series"]; ok {
+		t.Error("a binding cleared to empty should be dropped")
+	}
+	if _, ok := stream.FilterProfileByType[""]; ok {
+		t.Error("a binding with no kind should be dropped")
+	}
+
+	// The binding has to survive into the config, which is what the addon reads.
+	if got := cfg.Streams["default"].FilterProfileByType["movie"]; got != "My Movie Profile" {
+		t.Errorf("config movie binding = %q, want %q", got, "My Movie Profile")
+	}
+}
+
+func TestUpdateStreamConfigClearsProfileBindings(t *testing.T) {
+	cfg := &config.Config{
+		Streams: map[string]*config.StreamEntry{
+			"default": {
+				Username:            "default",
+				Token:               "token-default",
+				FilterProfileByType: map[string]string{"movie": "My Movie Profile"},
+			},
+		},
+	}
+	dm := &StreamManager{cfg: cfg, saveFn: func() error { return nil }}
+	if err := dm.load(); err != nil {
+		t.Fatalf("load returned error: %v", err)
+	}
+
+	if err := dm.UpdateStreamConfig("default", &Stream{FilterProfileName: "Default Profile"}); err != nil {
+		t.Fatalf("UpdateStreamConfig returned error: %v", err)
+	}
+
+	stream, _ := dm.GetStream("default", "admin")
+	if len(stream.FilterProfileByType) != 0 {
+		t.Errorf("expected bindings to be cleared, got %#v", stream.FilterProfileByType)
+	}
+}

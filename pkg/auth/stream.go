@@ -636,10 +636,34 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.MovieSearchQueries = append([]string(nil), streamConfig.MovieSearchQueries...)
 	stream.SeriesSearchQueries = append([]string(nil), streamConfig.SeriesSearchQueries...)
 	stream.FilterProfileName = strings.TrimSpace(streamConfig.FilterProfileName)
+	stream.FilterProfileByType = normalizeProfileBindings(streamConfig.FilterProfileByType)
 	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)
 	}
 	return nil
+}
+
+// normalizeProfileBindings trims a stream's per-content-kind profile bindings
+// and drops the empty ones, so a kind cleared in the UI is removed rather than
+// stored as a binding to nothing. Returns nil when nothing is bound, keeping
+// it out of the saved config entirely.
+func normalizeProfileBindings(bindings map[string]string) map[string]string {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(bindings))
+	for kind, name := range bindings {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		name = strings.TrimSpace(name)
+		if kind == "" || name == "" {
+			continue
+		}
+		out[kind] = name
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
