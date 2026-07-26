@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Copy, Plus, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react"
 import { ProfileEditor } from "@/components/ProfileEditor"
 import { ExplainBench } from "@/components/ExplainBench"
-import { CONTENT_KINDS, defaultProfile } from "@/lib/profiles"
+import { CONTENT_KINDS, defaultProfile, withoutLegacyFields } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
 
 // summarize gives each profile card a one-line read of what it does.
@@ -92,7 +92,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
 
   const duplicateProfile = (index) => {
     const source = profiles[index]
-    const copy = structuredClone(source)
+    const copy = withoutLegacyFields(structuredClone(source))
     copy.name = uniqueName(profiles, `${source.name} copy`)
     if (copy.ranking) copy.ranking.name = copy.name
     commit([...profiles, copy], profiles.length)

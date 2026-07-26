@@ -231,6 +231,24 @@ export function defaultRankProfile(name = "New Profile") {
   }
 }
 
+// Fields from the pre-migration schema. They are read once, to build a
+// ranking profile for a config that predates it, and ignored from then on —
+// so a profile created now should not carry them, and copying one forward
+// would only preserve values that can no longer be edited.
+const LEGACY_FIELDS = [
+  "allowed_resolutions", "blocked_resolutions", "allowed_qualities", "blocked_qualities",
+  "allowed_codecs", "blocked_codecs", "require_hdr", "allowed_hdrs", "blocked_hdrs",
+  "required_keywords", "excluded_keywords", "allowed_languages", "blocked_languages",
+  "preferred_languages",
+]
+
+// withoutLegacyFields strips the pre-migration fields from a profile.
+export function withoutLegacyFields(profile) {
+  const out = { ...profile }
+  LEGACY_FIELDS.forEach((field) => { delete out[field] })
+  return out
+}
+
 export function defaultProfile(name = "New Profile") {
   return {
     name,
