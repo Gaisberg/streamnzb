@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/tmdb"
 )
 
 type namedIndexer interface {
@@ -803,6 +804,13 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 
 	inputResults := len(candidates)
 	results := profile.Apply(candidates, rank.RankOptions{})
+	logger.Debug("Filter profile applied",
+		"stream", stream.Username,
+		"kind", kindForRequest(source),
+		"profile", profile.Name,
+		"input_results", inputResults,
+		"final_results", len(results),
+	)
 
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {
@@ -833,22 +841,68 @@ func ensureCandidateMetadata(candidates []triage.Candidate) {
 	}
 }
 
+// kindForRequest classifies a request. A Kitsu request is anime by definition
+// and carries its own film/episodic subtype; anything else falls back to what
+// the metadata says, since most anime is browsed through ordinary catalogues.
+func kindForRequest(source *playlistSource) string {
+	contentType, kitsuShowType := "", ""
+	isAnime := false
+	if source != nil && source.Params != nil {
+		contentType = source.Params.ContentType
+		if meta := source.Params.Metadata; meta != nil {
+			if meta.KitsuDetails != nil {
+				isAnime = true
+				kitsuShowType = meta.KitsuDetails.ShowType
+			} else {
+				isAnime = metadataLooksLikeAnime(meta, contentType)
+			}
+		}
+	}
+	return ranking.Kind(contentType, kitsuShowType, isAnime)
+}
+
+// metadataLooksLikeAnime treats anime as animation that is not originally in
+// English: an explicit anime genre, or an animation genre on something made in
+// another language. Without metadata it reports false, so a request is only
+// ever promoted to anime on evidence.
+func metadataLooksLikeAnime(meta *resolvedSearchMetadata, contentType string) bool {
+	if meta == nil {
+		return false
+	}
+	var genres []tmdb.Genre
+	var originalLanguage string
+	if strings.EqualFold(strings.TrimSpace(contentType), "movie") {
+		if meta.MovieDetails == nil {
+			return false
+		}
+		genres, originalLanguage = meta.MovieDetails.Genres, meta.MovieDetails.OriginalLanguage
+	} else {
+		if meta.TVDetails == nil {
+			return false
+		}
+		genres, originalLanguage = meta.TVDetails.Genres, meta.TVDetails.OriginalLanguage
+	}
+
+	animation := false
+	for _, genre := range genres {
+		switch strings.ToLower(strings.TrimSpace(genre.Name)) {
+		case "anime":
+			return true
+		case "animation":
+			animation = true
+		}
+	}
+	// TMDB reports ISO 639-1, so English is "en".
+	return animation && !strings.EqualFold(strings.TrimSpace(originalLanguage), "en")
+}
+
 // profileForRequest resolves the filter profile for this request, preferring a
 // per-content-kind binding over the stream default.
 func (s *Server) profileForRequest(source *playlistSource, stream *auth.Stream) *ranking.Profile {
 	if s == nil || s.rankingService == nil || stream == nil {
 		return nil
 	}
-	contentType, kitsuShowType := "", ""
-	isAnime := false
-	if source != nil && source.Params != nil {
-		contentType = source.Params.ContentType
-		if meta := source.Params.Metadata; meta != nil && meta.KitsuDetails != nil {
-			isAnime = true
-			kitsuShowType = meta.KitsuDetails.ShowType
-		}
-	}
-	kind := ranking.Kind(contentType, kitsuShowType, isAnime)
+	kind := kindForRequest(source)
 	name := ranking.SelectName(stream.FilterProfileByType, stream.FilterProfileName, kind)
 	if name == "" {
 		return nil

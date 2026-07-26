@@ -9,6 +9,7 @@ import (
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
+	"streamnzb/pkg/services/metadata/tmdb"
 )
 
 // candidatesFor builds candidates the way the playlist pipeline does, so these
@@ -218,5 +219,64 @@ func TestNewRankingServiceLoadsProfilesUpFront(t *testing.T) {
 	results := profile.Evaluate(candidatesFor("Movie 2020 2160p BluRay REMUX-GRP"), rank.RankOptions{})
 	if results[0].Torrent.Fetch {
 		t.Errorf("2160p should be rejected by a 1080p-only profile: %v", results[0].Torrent.Rejections)
+	}
+}
+
+// Most anime is browsed through ordinary catalogues, so classification cannot
+// rely on a Kitsu request. Anime is animation that is not originally English.
+func TestMetadataLooksLikeAnime(t *testing.T) {
+	tvWith := func(lang string, genres ...string) *resolvedSearchMetadata {
+		g := make([]tmdb.Genre, 0, len(genres))
+		for _, name := range genres {
+			g = append(g, tmdb.Genre{Name: name})
+		}
+		return &resolvedSearchMetadata{TVDetails: &tmdb.TVDetails{OriginalLanguage: lang, Genres: g}}
+	}
+	movieWith := func(lang string, genres ...string) *resolvedSearchMetadata {
+		g := make([]tmdb.Genre, 0, len(genres))
+		for _, name := range genres {
+			g = append(g, tmdb.Genre{Name: name})
+		}
+		return &resolvedSearchMetadata{MovieDetails: &tmdb.MovieDetails{OriginalLanguage: lang, Genres: g}}
+	}
+
+	tests := []struct {
+		name        string
+		meta        *resolvedSearchMetadata
+		contentType string
+		want        bool
+	}{
+		{"japanese animation", tvWith("ja", "Animation", "Action"), "series", true},
+		{"chinese animation", tvWith("zh", "Animation"), "series", true},
+		{"korean animation", tvWith("ko", "Animation"), "series", true},
+		{"an explicit anime genre", tvWith("en", "Anime"), "series", true},
+		{"american cartoon", tvWith("en", "Animation", "Comedy"), "series", false},
+		{"japanese live action", tvWith("ja", "Drama"), "series", false},
+		{"anime film", movieWith("ja", "Animation"), "movie", true},
+		{"english film", movieWith("en", "Animation"), "movie", false},
+		{"no metadata at all", nil, "series", false},
+		{"metadata for the other kind", tvWith("ja", "Animation"), "movie", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := metadataLooksLikeAnime(tt.meta, tt.contentType); got != tt.want {
+				t.Errorf("metadataLooksLikeAnime() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A Kitsu request stays anime regardless of what the other metadata says.
+func TestKindForRequestPrefersKitsu(t *testing.T) {
+	source := &playlistSource{Params: &SearchParams{
+		ContentType: "series",
+		Metadata: &resolvedSearchMetadata{
+			KitsuDetails: &KitsuAnimeDetails{ShowType: "movie"},
+			TVDetails:    &tmdb.TVDetails{OriginalLanguage: "en", Genres: []tmdb.Genre{{Name: "Drama"}}},
+		},
+	}}
+	if got := kindForRequest(source); got != ranking.KindAnimeMovie {
+		t.Errorf("kindForRequest() = %q, want %q", got, ranking.KindAnimeMovie)
 	}
 }
