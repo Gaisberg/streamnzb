@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MunifTanjim/go-ptt"
+	"github.com/dreulavelle/jhin"
 	"golang.org/x/net/html/charset"
 
 	"streamnzb/pkg/core/logger"
@@ -33,7 +33,7 @@ type NZB struct {
 
 	// Cached analysis state. Populated lazily by GetFileInfo and reused by
 	// subsequent content-selection / compression-type calls so that the
-	// expensive per-file ptt.Parse work runs at most once per NZB.
+	// expensive per-file jhin.Parse work runs at most once per NZB.
 	fileInfoOnce sync.Once
 	fileInfos    []*FileInfo
 }
@@ -69,7 +69,7 @@ type FileInfo struct {
 	IsVideo    bool
 	IsSample   bool
 	IsExtra    bool
-	ParsedInfo *ptt.Result
+	ParsedInfo *jhin.Result
 
 	// Cached derived values to avoid recomputing string work during sorting
 	// and content grouping. Populated in analyzeFile.
@@ -211,7 +211,7 @@ func (n *NZB) TotalSize() int64 {
 }
 
 // GetFileInfo analyzes every file in the NZB and returns the cached result.
-// The analysis (including the expensive ptt.Parse per file) runs at most
+// The analysis (including the expensive jhin.Parse per file) runs at most
 // once per NZB instance; subsequent calls return the cached slice.
 func (n *NZB) GetFileInfo() []*FileInfo {
 	n.fileInfoOnce.Do(func() {
@@ -453,10 +453,10 @@ func isContentCandidate(info *FileInfo) bool {
 }
 
 // episodePartialParser parses only the seasons/episodes fields, avoiding the
-// full 100+ regex handler set used by ptt.Parse. It is reused across all
-// episode-match rank evaluations.
-var episodePartialParser = sync.OnceValue(func() func(string) *ptt.Result {
-	return ptt.GetPartialParser([]string{"seasons", "episodes"})
+// full handler set used by jhin.Parse. It is reused across all episode-match
+// rank evaluations.
+var episodePartialParser = sync.OnceValue(func() func(string) *jhin.Result {
+	return jhin.GetPartialParser([]string{"seasons", "episodes"})
 })
 
 func episodeMatchRank(filename string, season, episode int) int {
@@ -777,7 +777,7 @@ func analyzeFile(file *File) *FileInfo {
 
 	ext := strings.ToLower(filepath.Ext(filename))
 
-	parsed := ptt.Parse(filename)
+	parsed := jhin.Parse(filename)
 
 	info := &FileInfo{
 		File:       file,

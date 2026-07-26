@@ -3,6 +3,8 @@ package parser
 import (
 	"strings"
 	"testing"
+
+	"github.com/dreulavelle/jhin"
 )
 
 func TestParseReleaseTitleRetainsEpisodeCollections(t *testing.T) {
@@ -32,9 +34,9 @@ func TestParsedReleaseEpisodeMatchRank(t *testing.T) {
 	}{
 		{name: "exact episode", parsed: &ParsedRelease{Season: 1, Episode: 5, Seasons: []int{1}, Episodes: []int{5}}, want: 4},
 		{name: "multi episode", parsed: &ParsedRelease{Season: 1, Episode: 5, Seasons: []int{1}, Episodes: []int{5, 6}}, want: 3},
-		{name: "season pack", parsed: &ParsedRelease{Season: 1, Seasons: []int{1}, Complete: true}, want: 2},
-		{name: "show pack", parsed: &ParsedRelease{Complete: true}, want: 1},
-		{name: "wrong season", parsed: &ParsedRelease{Season: 2, Seasons: []int{2}, Complete: true}, want: 0},
+		{name: "season pack", parsed: &ParsedRelease{Season: 1, Seasons: []int{1}, Result: &jhin.Result{Complete: true}}, want: 2},
+		{name: "show pack", parsed: &ParsedRelease{Result: &jhin.Result{Complete: true}}, want: 1},
+		{name: "wrong season", parsed: &ParsedRelease{Season: 2, Seasons: []int{2}, Result: &jhin.Result{Complete: true}}, want: 0},
 	}
 
 	for _, tt := range tests {
@@ -163,4 +165,30 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestResolutionGroupHandlesFullDimensions(t *testing.T) {
+	tests := []struct {
+		resolution string
+		want       string
+	}{
+		{"2160p", "4k"},
+		{"1080p", "1080p"},
+		{"720p", "720p"},
+		{"480p", "sd"},
+		// The parser reports both dimensions when a title spells them out;
+		// grouping must key off the height, not the width.
+		{"720x480p", "sd"},
+		{"1916x1080p", "1080p"},
+		{"3840x2160p", "4k"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.resolution, func(t *testing.T) {
+			p := &ParsedRelease{Result: &jhin.Result{Resolution: tt.resolution}}
+			if got := p.ResolutionGroup(); got != tt.want {
+				t.Fatalf("ResolutionGroup(%q) = %q, want %q", tt.resolution, got, tt.want)
+			}
+		})
+	}
 }

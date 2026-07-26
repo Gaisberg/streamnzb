@@ -7,7 +7,7 @@ import (
 
 	"streamnzb/pkg/core/config/pttoptions"
 
-	"github.com/MunifTanjim/go-ptt"
+	"github.com/dreulavelle/jhin"
 )
 
 var dashedSeasonEpisodePattern = regexp.MustCompile(`(?i)\bS(?:eason)?\s*0*([0-9]{1,2})\s*-\s*0*([0-9]{1,3})(?:$|[\s._()[\]])`)
@@ -25,67 +25,44 @@ var languageAliasPattern = func() *regexp.Regexp {
 	return regexp.MustCompile(pattern)
 }()
 
+// ParsedRelease exposes jhin's full parse output through the embedded
+// jhin.Result, so every attribute jhin extracts is available to filtering,
+// ranking and stream descriptions without this type having to mirror it.
+//
+// The fields declared here deliberately shadow their jhin counterparts because
+// StreamNZB needs them in a different shape: Year as an int, Codec normalized
+// to StreamNZB's vocabulary, and Seasons/Episodes deduplicated. Season and
+// Episode are conveniences for the common single-value case. Read through
+// ParsedRelease.Result when the raw jhin value is what you want.
 type ParsedRelease struct {
-	Title      string
-	Year       int
-	Resolution string
-	Quality    string
-	Codec      string
-	Audio      []string
-	Channels   []string
-	HDR        []string
-	Container  string
-	Group      string
-	Season     int
-	Episode    int
-	Seasons    []int
-	Episodes   []int
+	*jhin.Result
 
-	Languages []string
-	Network   string
-	Repack    bool
-	Proper    bool
-	Extended  bool
-	Unrated   bool
-	ThreeD    string
-	Size      string
-	BitDepth  string
-	Dubbed    bool
-	Hardcoded bool
+	Year     int
+	Codec    string
+	Seasons  []int
+	Episodes []int
 
-	Edition      string
-	Date         string
-	Commentary   bool
-	Complete     bool
-	Convert      bool
-	Documentary  bool
-	Remastered   bool
-	Retail       bool
-	Subbed       bool
-	Uncensored   bool
-	Upscaled     bool
-	Region       string
-	ReleaseTypes []string
-	EpisodeCode  string
-	Site         string
-	Extension    string
-	Volumes      []int
+	Season  int
+	Episode int
 }
 
-// ParseReleaseTitle parses a release title using the full ptt parser.
+// ParseReleaseTitle parses a release title using the full jhin parser.
 func ParseReleaseTitle(title string) *ParsedRelease {
-	return ParseReleaseTitleWithParser(title, ptt.Parse)
+	return ParseReleaseTitleWithParser(title, jhin.Parse)
 }
 
-// ParseReleaseTitleWithParser parses a release title using the supplied ptt
+// ParseReleaseTitleWithParser parses a release title using the supplied jhin
 // parser function. This allows callers to pass a partial parser (e.g. one
 // that only extracts seasons/episodes) to avoid the cost of the full
-// 100+ regex handler set when only a subset of fields are needed.
-func ParseReleaseTitleWithParser(title string, parse func(string) *ptt.Result) *ParsedRelease {
+// handler set when only a subset of fields are needed.
+func ParseReleaseTitleWithParser(title string, parse func(string) *jhin.Result) *ParsedRelease {
 	if parse == nil {
-		parse = ptt.Parse
+		parse = jhin.Parse
 	}
 	info := parse(title)
+	if info == nil {
+		info = &jhin.Result{}
+	}
 
 	codec := pttoptions.NormalizeCodec(info.Codec)
 	if codec == "" && info.Codec != "" {
@@ -93,45 +70,10 @@ func ParseReleaseTitleWithParser(title string, parse func(string) *ptt.Result) *
 	}
 
 	parsed := &ParsedRelease{
-		Title:        info.Title,
-		Resolution:   info.Resolution,
-		Quality:      info.Quality,
-		Codec:        codec,
-		Audio:        info.Audio,
-		Channels:     info.Channels,
-		HDR:          info.HDR,
-		Container:    info.Container,
-		Group:        info.Group,
-		Languages:    info.Languages,
-		Network:      info.Network,
-		Repack:       info.Repack,
-		Proper:       info.Proper,
-		Extended:     info.Extended,
-		Unrated:      info.Unrated,
-		ThreeD:       info.ThreeD,
-		Size:         info.Size,
-		BitDepth:     info.BitDepth,
-		Dubbed:       info.Dubbed,
-		Hardcoded:    info.Hardcoded,
-		Edition:      info.Edition,
-		Date:         info.Date,
-		Commentary:   info.Commentary,
-		Complete:     info.Complete,
-		Convert:      info.Convert,
-		Documentary:  info.Documentary,
-		Remastered:   info.Remastered,
-		Retail:       info.Retail,
-		Subbed:       info.Subbed,
-		Uncensored:   info.Uncensored,
-		Upscaled:     info.Upscaled,
-		Region:       info.Region,
-		ReleaseTypes: info.ReleaseTypes,
-		EpisodeCode:  info.EpisodeCode,
-		Site:         info.Site,
-		Extension:    info.Extension,
-		Seasons:      uniqueInts(info.Seasons),
-		Episodes:     uniqueInts(info.Episodes),
-		Volumes:      info.Volumes,
+		Result:   info,
+		Codec:    codec,
+		Seasons:  uniqueInts(info.Seasons),
+		Episodes: uniqueInts(info.Episodes),
 	}
 
 	if info.Year != "" {
@@ -153,7 +95,7 @@ func ParseReleaseTitleWithParser(title string, parse func(string) *ptt.Result) *
 
 // expandLanguageAliases scans the raw release title for group/region alias words
 // (e.g. "NORDIC") and merges the corresponding language codes into parsed.Languages.
-// ptt already extracts explicit language codes, so we only add codes that are missing.
+// jhin already extracts explicit language codes, so we only add codes that are missing.
 func expandLanguageAliases(rawTitle string, parsed *ParsedRelease) {
 	if parsed == nil {
 		return
@@ -334,7 +276,7 @@ func (p *ParsedRelease) ResolutionGroup() string {
 	if p == nil {
 		return "sd"
 	}
-	res := strings.ToLower(p.Resolution)
+	res := pttoptions.ResolutionHeight(p.Resolution)
 	if strings.Contains(res, "2160") || strings.Contains(res, "4k") {
 		return "4k"
 	}

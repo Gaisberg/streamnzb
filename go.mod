@@ -3,7 +3,6 @@ module streamnzb
 go 1.25.6
 
 require (
-	github.com/MunifTanjim/go-ptt v0.14.1
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
@@ -24,6 +23,7 @@ require golang.org/x/net v0.54.0
 require github.com/gorilla/websocket v1.5.3
 
 require (
+	github.com/dreulavelle/jhin v0.3.2
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
 	golang.org/x/sync v0.20.0
 	modernc.org/sqlite v1.50.1
