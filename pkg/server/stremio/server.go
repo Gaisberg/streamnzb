@@ -12,6 +12,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -37,6 +38,7 @@ type Server struct {
 	validator                 *validation.Checker
 	sessionManager            *session.Manager
 	triageService             *triage.Service
+	rankingService            *ranking.Service
 	availClient               *availnzb.Client
 	availReporter             *availnzb.Reporter
 	availNZBIndexerHosts      map[string]string
@@ -118,6 +120,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		validator:            opts.Validator,
 		sessionManager:       opts.SessionManager,
 		triageService:        opts.TriageService,
+		rankingService:       newRankingService(opts.Config),
 		availClient:          resolvedAvailClient,
 		availReporter:        availReporter,
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
@@ -282,6 +285,7 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.queryCache = opts.QueryCache
 	s.validator = opts.Validator
 	s.triageService = opts.TriageService
+	s.rankingService = newRankingService(opts.Config)
 	reloadMode := ""
 	if opts.Config != nil {
 		reloadMode = config.NormalizeAvailNZBMode(opts.Config.AvailNZBMode)
@@ -305,4 +309,15 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.tmdbClient = opts.TMDBClient
 	s.tvdbClient = opts.TVDBClient
 	s.streamManager = opts.StreamManager
+}
+
+// newRankingService compiles the config's filter profiles into jhin rankers.
+// Compilation failures are logged and that profile is skipped, so a bad
+// profile degrades to "no filtering" instead of breaking startup.
+func newRankingService(cfg *config.Config) *ranking.Service {
+	svc := ranking.NewService()
+	for _, err := range svc.Reload(cfg) {
+		logger.Warn("Filter profile failed to compile", "err", err)
+	}
+	return svc
 }

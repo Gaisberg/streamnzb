@@ -3,233 +3,198 @@ package stremio
 import (
 	"testing"
 
-	"github.com/dreulavelle/jhin"
+	"github.com/dreulavelle/jhin/rank"
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
-	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 )
 
-func TestMatchFilterProfile(t *testing.T) {
-	ptrBool := func(v bool) *bool { return &v }
+// candidatesFor builds candidates the way the playlist pipeline does, so these
+// tests exercise the same parse jhin sees at runtime.
+func candidatesFor(titles ...string) []triage.Candidate {
+	rels := make([]*release.Release, 0, len(titles))
+	for _, t := range titles {
+		rels = append(rels, &release.Release{Title: t})
+	}
+	return releasesToCandidates(rels)
+}
 
-	profile := &config.FilterProfileConfig{
-		Name:               "TestProfile",
+func profileFor(t *testing.T, fp config.FilterProfileConfig) *ranking.Profile {
+	t.Helper()
+	svc := ranking.NewService()
+	if errs := svc.Reload(&config.Config{FilterProfiles: []config.FilterProfileConfig{fp}}); len(errs) > 0 {
+		t.Fatalf("profile failed to compile: %v", errs)
+	}
+	p, ok := svc.Get(fp.Name)
+	if !ok {
+		t.Fatalf("profile %q not found after reload", fp.Name)
+	}
+	return p
+}
+
+func keptTitles(results []ranking.Result) []string {
+	out := make([]string, 0, len(results))
+	for _, r := range results {
+		out = append(out, r.Candidate.Release.Title)
+	}
+	return out
+}
+
+// A profile migrated from the pre-jhin schema must still gate the same way.
+func TestSynthesizedProfileFiltering(t *testing.T) {
+	yes := true
+	profile := profileFor(t, config.FilterProfileConfig{
+		Name:               "Legacy",
 		AllowedResolutions: []string{"1080p", "720p"},
 		BlockedQualities:   []string{"CAM", "TeleSync"},
-		RequireHDR:         ptrBool(true),
-		ExcludedKeywords:   []string{"subbed", "dubbed"},
-		RequiredKeywords:   []string{"Obsession"},
-		AllowedLanguages:   []string{"en", "fi"},
+		RequireHDR:         &yes,
+		ExcludedKeywords:   []string{"subbed"},
 		BlockedLanguages:   []string{"ru"},
+	})
+
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"Obsession 2026 1080p BluRay HDR", true},
+		{"Obsession 2026 1080p CAM HDR", false},    // blocked quality
+		{"Obsession 2026 2160p BluRay HDR", false}, // resolution not allowed
+		{"Obsession 2026 1080p BluRay", false},     // HDR required
+		{"Obsession 2026 1080p BluRay HDR SUBBED", false},
+		{"Obsession 2026 1080p BluRay HDR RUSSIAN", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			results := profile.Evaluate(candidatesFor(tt.title), rank.RankOptions{})
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			if got := results[0].Torrent.Fetch; got != tt.want {
+				t.Errorf("Fetch = %v, want %v (rejections: %v)",
+					got, tt.want, results[0].Torrent.Rejections)
+			}
+		})
+	}
+}
+
+// Sorting runs off jhin's score.
+func TestProfileSortOrder(t *testing.T) {
+	profile := profileFor(t, config.FilterProfileConfig{
+		Name:      "Sorting",
+		SortOrder: []string{"resolution", "rank"},
+	})
+
+	cands := candidatesFor(
+		"Movie 2020 1080p WEB-DL H.264-GRP",
+		"Movie 2020 2160p BluRay REMUX DV TrueHD 7.1-GRP",
+		"Movie 2020 1080p BluRay REMUX-GRP",
+	)
+
+	got := keptTitles(profile.Apply(cands, rank.RankOptions{}))
+	if len(got) == 0 {
+		t.Fatal("expected results")
+	}
+	if got[0] != "Movie 2020 2160p BluRay REMUX DV TrueHD 7.1-GRP" {
+		t.Errorf("expected the 2160p remux first, got %q (order: %v)", got[0], got)
+	}
+}
+
+// Size is a Usenet signal jhin cannot see, so it is compared here.
+func TestSortBySize(t *testing.T) {
+	profile := profileFor(t, config.FilterProfileConfig{
+		Name:      "BySize",
+		SortOrder: []string{"size"},
+	})
+
+	cands := candidatesFor("Movie 2020 1080p WEB-DL-A", "Movie 2020 1080p WEB-DL-B")
+	cands[0].Release.Size = 1 << 30
+	cands[1].Release.Size = 8 << 30
+
+	got := keptTitles(profile.Apply(cands, rank.RankOptions{}))
+	if len(got) != 2 || got[0] != "Movie 2020 1080p WEB-DL-B" {
+		t.Errorf("expected the larger release first, got %v", got)
+	}
+}
+
+// Every request lands in exactly one kind, so selection is never ambiguous.
+func TestKindClassifiesRequests(t *testing.T) {
+	tests := []struct {
+		name          string
+		contentType   string
+		kitsuShowType string
+		isAnime       bool
+		want          string
+	}{
+		{"movie", "movie", "", false, ranking.KindMovie},
+		{"series", "series", "", false, ranking.KindSeries},
+		{"anime film", "series", "movie", true, ranking.KindAnimeMovie},
+		{"anime TV", "series", "TV", true, ranking.KindAnimeShow},
+		{"anime OVA", "series", "OVA", true, ranking.KindAnimeShow},
+		{"anime special", "series", "special", true, ranking.KindAnimeShow},
+		// Kitsu occasionally omits the type; fall back to the request's own.
+		{"anime, type unknown, movie request", "movie", "", true, ranking.KindAnimeMovie},
+		{"anime, type unknown, series request", "series", "", true, ranking.KindAnimeShow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ranking.Kind(tt.contentType, tt.kitsuShowType, tt.isAnime); got != tt.want {
+				t.Errorf("Kind() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectNameUsesKindBinding(t *testing.T) {
+	byKind := map[string]string{
+		ranking.KindMovie:      "Movies",
+		ranking.KindAnimeMovie: "Anime Films",
 	}
 
 	tests := []struct {
-		title    string
-		metadata *parser.ParsedRelease
-		expected bool
+		name     string
+		byKind   map[string]string
+		fallback string
+		kind     string
+		want     string
 	}{
-		{
-			title: "Obsession 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: true,
-		},
-		{
-			title: "Obsession 2026 1080p CAM HDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "CAM",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: false, // Blocked quality
-		},
-		{
-			title: "Obsession 2026 2160p BluRay HDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "2160p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: false, // Not allowed resolution
-		},
-		{
-			title: "Obsession 2026 1080p BluRay SDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"SDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: false, // HDR required
-		},
-		{
-			title: "Obsession 2026 1080p BluRay HDR Subbed",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: false, // Excluded keyword "subbed"
-		},
-		{
-			title: "Something Else 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"en"},
-			}},
-			expected: false, // Required keyword "Obsession" missing
-		},
-		{
-			title: "Obsession 2026 1080p BluRay HDR RU",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"ru"},
-			}},
-			expected: false, // Blocked language "ru"
-		},
-		{
-			title: "Obsession 2026 1080p BluRay HDR",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				Languages:  []string{"de"}, // not in allowed languages
-			}},
-			expected: false, // Allowed languages en/fi, release is de
-		},
-		{
-			title: "Obsession 2026 1080p BluRay HDR NORDIC",
-			metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-				HDR:        []string{"HDR"},
-				// Alias expansion: "nordic" -> da, fi, no, sv; fi is allowed.
-				Languages: []string{"da", "fi", "no", "sv"},
-			}},
-			expected: true, // fi is in allowed languages
-		},
+		{"bound kind wins", byKind, "Default", ranking.KindMovie, "Movies"},
+		{"anime film has its own", byKind, "Default", ranking.KindAnimeMovie, "Anime Films"},
+		{"unbound kind falls back", byKind, "Default", ranking.KindAnimeShow, "Default"},
+		{"no bindings at all", nil, "Default", ranking.KindSeries, "Default"},
+		{"no fallback either", nil, "", ranking.KindSeries, ""},
 	}
 
-	for _, tc := range tests {
-		cand := triage.Candidate{
-			Release:  &release.Release{Title: tc.title},
-			Metadata: tc.metadata,
-		}
-		got := matchFilterProfile(cand, profile)
-		if got != tc.expected {
-			t.Errorf("matchFilterProfile(%q) = %v, want %v", tc.title, got, tc.expected)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ranking.SelectName(tt.byKind, tt.fallback, tt.kind); got != tt.want {
+				t.Errorf("SelectName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestCustomSortCandidates(t *testing.T) {
-	candidates := []triage.Candidate{
-		{
-			Release: &release.Release{Title: "Release A", Size: 5000000000}, // 5 GB
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "WEB-DL",
-			}},
-		},
-		{
-			Release: &release.Release{Title: "Release B", Size: 8000000000}, // 8 GB
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "2160p",
-				Quality:    "WEB-DL",
-			}},
-		},
-		{
-			Release: &release.Release{Title: "Release C", Size: 12000000000}, // 12 GB
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Resolution: "1080p",
-				Quality:    "BluRay",
-			}},
-		},
-	}
+// Explain has to account for a rejection, not just a score.
+func TestExplainReportsRejection(t *testing.T) {
+	profile := profileFor(t, config.FilterProfileConfig{
+		Name:             "Explained",
+		BlockedQualities: []string{"CAM"},
+	})
 
-	// 1. Sort by Resolution first
-	customSortCandidates(candidates, []string{"resolution"}, nil)
-	if candidates[0].Release.Title != "Release B" { // B is 2160p, others are 1080p
-		t.Errorf("Expected first to be Release B, got %q", candidates[0].Release.Title)
+	ex := profile.Explain("Movie 2020 1080p CAM x264-TRASH", rank.RankOptions{})
+	if ex == nil {
+		t.Fatal("expected an explanation")
 	}
-
-	// 2. Sort by Quality first
-	customSortCandidates(candidates, []string{"quality"}, nil)
-	if candidates[0].Release.Title != "Release C" { // C is BluRay, others WEB-DL
-		t.Errorf("Expected first to be Release C, got %q", candidates[0].Release.Title)
+	if ex.Fetch {
+		t.Errorf("Fetch = true, want false")
 	}
-
-	// 3. Sort by Size first
-	customSortCandidates(candidates, []string{"size"}, nil)
-	if candidates[0].Release.Title != "Release C" { // C is 12GB, B is 8GB, A is 5GB
-		t.Errorf("Expected first to be Release C, got %q", candidates[0].Release.Title)
+	if len(ex.Rejections) == 0 {
+		t.Error("expected at least one rejection reason")
 	}
-}
-
-func TestCustomSortCandidatesByLanguage(t *testing.T) {
-	candidates := []triage.Candidate{
-		{
-			Release: &release.Release{Title: "Release A"},
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Languages: []string{"en"},
-			}},
-		},
-		{
-			Release: &release.Release{Title: "Release B"},
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				// Alias-expanded nordic release includes fi.
-				Languages: []string{"da", "fi", "no", "sv"},
-			}},
-		},
-		{
-			Release: &release.Release{Title: "Release C"},
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Languages: []string{"de"},
-			}},
-		},
-		{
-			// Release D has no title-parsed languages but the indexer reported fi.
-			Release: &release.Release{Title: "Release D", Languages: []string{"fi"}},
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Languages: nil,
-			}},
-		},
-		{
-			Release: &release.Release{Title: "Release E"},
-			Metadata: &parser.ParsedRelease{Result: &jhin.Result{
-				Languages: nil,
-			}},
-		},
-	}
-
-	// Preferred languages: fi and en. Releases A (en), B (fi), D (fi via release.Languages)
-	// should rank above C (de, no preferred match) and E (no languages at all).
-	customSortCandidates(candidates, []string{"language"}, []string{"fi", "en"})
-
-	top3 := map[string]bool{candidates[0].Release.Title: true, candidates[1].Release.Title: true, candidates[2].Release.Title: true}
-	if !top3["Release A"] {
-		t.Errorf("Expected Release A in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
-	}
-	if !top3["Release B"] {
-		t.Errorf("Expected Release B in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
-	}
-	if !top3["Release D"] {
-		t.Errorf("Expected Release D (fi via release.Languages) in top 3, got %q, %q, %q", candidates[0].Release.Title, candidates[1].Release.Title, candidates[2].Release.Title)
-	}
-	if candidates[4].Release.Title != "Release E" {
-		t.Errorf("Expected Release E (no languages) last, got %q", candidates[4].Release.Title)
+	if len(ex.Contributions) == 0 {
+		t.Error("expected the score breakdown to be populated")
 	}
 }

@@ -408,6 +408,7 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 		MovieSearchQueries  []string                              `json:"movie_search_queries"`
 		SeriesSearchQueries []string                              `json:"series_search_queries"`
 		FilterProfileName   string                                `json:"filter_profile_name"`
+		FilterProfileByType map[string]string                     `json:"filter_profile_by_type"`
 		MuteErrorVideo      *bool                                 `json:"mute_error_video"`
 	}
 	if err := json.Unmarshal(payload, &streamConfigs); err != nil {
@@ -445,6 +446,7 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 			MovieSearchQueries:  streamConfig.MovieSearchQueries,
 			SeriesSearchQueries: streamConfig.SeriesSearchQueries,
 			FilterProfileName:   streamConfig.FilterProfileName,
+			FilterProfileByType: streamConfig.FilterProfileByType,
 			MuteErrorVideo:      streamConfig.MuteErrorVideo,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
