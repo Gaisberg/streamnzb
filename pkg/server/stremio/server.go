@@ -120,7 +120,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		validator:            opts.Validator,
 		sessionManager:       opts.SessionManager,
 		triageService:        opts.TriageService,
-		rankingService:       newRankingService(opts.Config),
+		rankingService:       ranking.NewService(),
 		availClient:          resolvedAvailClient,
 		availReporter:        availReporter,
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
@@ -285,7 +285,7 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.queryCache = opts.QueryCache
 	s.validator = opts.Validator
 	s.triageService = opts.TriageService
-	s.rankingService = newRankingService(opts.Config)
+	reloadRankingService(s.rankingService, opts.Config)
 	reloadMode := ""
 	if opts.Config != nil {
 		reloadMode = config.NormalizeAvailNZBMode(opts.Config.AvailNZBMode)
@@ -311,13 +311,17 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.streamManager = opts.StreamManager
 }
 
-// newRankingService compiles the config's filter profiles into jhin rankers.
-// Compilation failures are logged and that profile is skipped, so a bad
-// profile degrades to "no filtering" instead of breaking startup.
-func newRankingService(cfg *config.Config) *ranking.Service {
-	svc := ranking.NewService()
+// reloadRankingService compiles the config's filter profiles. The service is
+// reloaded in place rather than replaced, so playlist builds running
+// concurrently keep reading a service that guards itself.
+//
+// A profile that fails to compile is logged and skipped, degrading to "no
+// filtering" for streams bound to it rather than breaking startup.
+func reloadRankingService(svc *ranking.Service, cfg *config.Config) {
+	if svc == nil {
+		return
+	}
 	for _, err := range svc.Reload(cfg) {
 		logger.Warn("Filter profile failed to compile", "err", err)
 	}
-	return svc
 }

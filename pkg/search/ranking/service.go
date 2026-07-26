@@ -23,9 +23,6 @@ const (
 	KindAnimeShow  = "anime_show"
 )
 
-// Kinds lists every content kind, in the order the UI presents them.
-var Kinds = []string{KindMovie, KindSeries, KindAnimeMovie, KindAnimeShow}
-
 // Kind classifies a request. Anime is recognised when the request resolved via
 // Kitsu, which also reports whether the entry is a film; everything else falls
 // back to the Stremio content type.
@@ -77,7 +74,6 @@ var defaultSortOrder = []string{SortResolution, SortRank, SortSize, SortAge}
 type Service struct {
 	mu       sync.RWMutex
 	profiles map[string]*Profile
-	names    []string
 }
 
 // Profile is a compiled filter profile: the jhin ranker plus the sort chain
@@ -87,7 +83,6 @@ type Profile struct {
 	Ranker    *rank.Ranker
 	Spec      rank.Profile
 	SortOrder []string
-	AppliesTo []string
 }
 
 func NewService() *Service {
@@ -101,7 +96,6 @@ func (s *Service) Reload(cfg *config.Config) []error {
 		return nil
 	}
 	compiled := make(map[string]*Profile, len(cfg.FilterProfiles))
-	names := make([]string, 0, len(cfg.FilterProfiles))
 	var errs []error
 
 	for _, fp := range cfg.FilterProfiles {
@@ -126,13 +120,11 @@ func (s *Service) Reload(cfg *config.Config) []error {
 			Ranker:    ranker,
 			Spec:      spec,
 			SortOrder: resolveSortOrder(fp.SortOrder),
-			AppliesTo: fp.AppliesTo,
 		}
-		names = append(names, fp.Name)
 	}
 
 	s.mu.Lock()
-	s.profiles, s.names = compiled, names
+	s.profiles = compiled
 	s.mu.Unlock()
 	return errs
 }
@@ -155,13 +147,6 @@ func (s *Service) Get(name string) (*Profile, bool) {
 	defer s.mu.RUnlock()
 	p, ok := s.profiles[key]
 	return p, ok
-}
-
-// Names lists the compiled profile names in config order.
-func (s *Service) Names() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]string(nil), s.names...)
 }
 
 // SelectName resolves which profile a request should use: the binding for its

@@ -90,12 +90,21 @@ func applyFilterProfileRenames(streams map[string]*config.StreamEntry, filterPro
 		if stream == nil {
 			continue
 		}
-		current := strings.TrimSpace(stream.FilterProfileName)
-		if current == "" {
-			continue
+		if current := strings.TrimSpace(stream.FilterProfileName); current != "" {
+			if renamed, ok := filterProfileRenames[strings.ToLower(current)]; ok {
+				stream.FilterProfileName = renamed
+			}
 		}
-		if renamed, ok := filterProfileRenames[strings.ToLower(current)]; ok {
-			stream.FilterProfileName = renamed
+		// Per-content-kind bindings name profiles too, and would otherwise be
+		// left pointing at a name that no longer exists.
+		for kind, current := range stream.FilterProfileByType {
+			current = strings.TrimSpace(current)
+			if current == "" {
+				continue
+			}
+			if renamed, ok := filterProfileRenames[strings.ToLower(current)]; ok {
+				stream.FilterProfileByType[kind] = renamed
+			}
 		}
 	}
 }
