@@ -68,20 +68,21 @@ func TestHandleStreamConfigsFilterProfileNameRoundTrip(t *testing.T) {
 	// 1. PUT a stream config that includes filter_profile_name.
 	payload := map[string]map[string]interface{}{
 		"stream1": {
-			"filter_sorting_mode":   "none",
-			"indexer_mode":          "combine",
-			"use_availnzb":          true,
-			"combine_results":       true,
-			"enable_failover":       true,
-			"results_mode":          "combined_stream",
-			"auto_add_providers":    false,
-			"auto_add_indexers":     false,
-			"provider_selections":   []string{"ProviderA"},
-			"indexer_selections":    []string{"IndexerA"},
-			"indexer_overrides":     map[string]config.IndexerSearchConfig{},
-			"movie_search_queries":  []string{"MovieQueryA"},
-			"series_search_queries": []string{"SeriesQueryA"},
-			"filter_profile_name":   "4K HDR Profile",
+			"filter_sorting_mode":    "none",
+			"indexer_mode":           "combine",
+			"use_availnzb":           true,
+			"combine_results":        true,
+			"enable_failover":        true,
+			"results_mode":           "combined_stream",
+			"auto_add_providers":     false,
+			"auto_add_indexers":      false,
+			"provider_selections":    []string{"ProviderA"},
+			"indexer_selections":     []string{"IndexerA"},
+			"indexer_overrides":      map[string]config.IndexerSearchConfig{},
+			"movie_search_queries":   []string{"MovieQueryA"},
+			"series_search_queries":  []string{"SeriesQueryA"},
+			"filter_profile_name":    "4K HDR Profile",
+			"filter_profile_by_type": map[string]string{"movie": "Movies Only"},
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -101,6 +102,9 @@ func TestHandleStreamConfigsFilterProfileNameRoundTrip(t *testing.T) {
 	stream, err := srv.streamManager.GetStream("stream1", "admin")
 	if err != nil {
 		t.Fatalf("GetStream failed: %v", err)
+	}
+	if stream.FilterProfileByType["movie"] != "Movies Only" {
+		t.Fatalf("expected persisted movie binding, got %v", stream.FilterProfileByType)
 	}
 	if stream.FilterProfileName != "4K HDR Profile" {
 		t.Fatalf("expected persisted FilterProfileName %q, got %q", "4K HDR Profile", stream.FilterProfileName)
@@ -124,6 +128,9 @@ func TestHandleStreamConfigsFilterProfileNameRoundTrip(t *testing.T) {
 	if got := list[0]["filter_profile_name"]; got != "4K HDR Profile" {
 		t.Fatalf("expected filter_profile_name in list response, got %v", got)
 	}
+	if got := list[0]["filter_profile_by_type"]; got == nil {
+		t.Fatalf("expected filter_profile_by_type in list response, got %v", got)
+	}
 
 	// 3. GET /api/streams/{username} should also include filter_profile_name.
 	singleReq := adminStreamRequest(http.MethodGet, "/api/streams/stream1", nil)
@@ -139,5 +146,9 @@ func TestHandleStreamConfigsFilterProfileNameRoundTrip(t *testing.T) {
 	}
 	if got := single["filter_profile_name"]; got != "4K HDR Profile" {
 		t.Fatalf("expected filter_profile_name in single stream response, got %v", got)
+	}
+	byType, _ := single["filter_profile_by_type"].(map[string]interface{})
+	if byType["movie"] != "Movies Only" {
+		t.Fatalf("expected the movie binding in single stream response, got %v", single["filter_profile_by_type"])
 	}
 }
