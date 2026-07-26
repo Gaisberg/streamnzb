@@ -258,6 +258,7 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 		})
 		applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
 		applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
+		dropDeletedFilterProfiles(newCfg.Streams, newCfg.FilterProfiles)
 		newCfg.ApplyProviderDefaults()
 		applyStreamAutoSelections(&newCfg)
 

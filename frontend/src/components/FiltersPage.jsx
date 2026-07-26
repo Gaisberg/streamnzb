@@ -49,6 +49,17 @@ function profileUsage(streams = {}) {
   return usage
 }
 
+// deleteDescription spells out the knock-on effect, since deleting a profile
+// also clears it from any stream using it.
+function deleteDescription(profile, usage) {
+  const name = profile?.name || ""
+  const used = usage[name.trim().toLowerCase()]
+  if (!used?.length) {
+    return `Delete \u201c${name}\u201d? It is not in use, so nothing else changes.`
+  }
+  return `Delete \u201c${name}\u201d? It will be cleared from ${used.join(", ")}, which will fall back to returning everything unfiltered.`
+}
+
 function uniqueName(profiles, base) {
   const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
   if (!taken.has(base.trim().toLowerCase())) return base
@@ -271,9 +282,9 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
                       <Trash2 className="mr-2 h-3.5 w-3.5" /> Delete
                     </Button>
                   </div>
-                  {saveStatus?.message && (
+                  {saveStatus?.msg && (
                     <p className={cn("text-xs", saveStatus.type === "error" ? "text-destructive" : "text-muted-foreground")}>
-                      {saveStatus.message}
+                      {saveStatus.msg}
                     </p>
                   )}
                 </CardContent>
@@ -293,7 +304,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
         title="Delete filter profile"
         description={
           confirmDelete !== null
-            ? `Delete \u201c${profiles[confirmDelete]?.name}\u201d? Any stream using it will stop filtering.`
+            ? deleteDescription(profiles[confirmDelete], usage)
             : ""
         }
         confirmLabel="Delete"
