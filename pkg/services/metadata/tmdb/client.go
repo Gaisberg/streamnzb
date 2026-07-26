@@ -261,12 +261,19 @@ func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsRespo
 	return &result, nil
 }
 
+// Genre is a TMDB genre. Only the name is used.
+type Genre struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 type MovieDetails struct {
-	ID               int    `json:"id"`
-	Title            string `json:"title"`
-	ReleaseDate      string `json:"release_date"`
-	OriginalTitle    string `json:"original_title"`
-	OriginalLanguage string `json:"original_language"`
+	ID               int     `json:"id"`
+	Title            string  `json:"title"`
+	ReleaseDate      string  `json:"release_date"`
+	OriginalTitle    string  `json:"original_title"`
+	OriginalLanguage string  `json:"original_language"`
+	Genres           []Genre `json:"genres"`
 }
 
 type TVDetails struct {
@@ -277,6 +284,7 @@ type TVDetails struct {
 	FirstAirDate     string         `json:"first_air_date"`
 	NumberOfSeasons  int            `json:"number_of_seasons"`
 	Seasons          []TVSeasonInfo `json:"seasons"`
+	Genres           []Genre        `json:"genres"`
 }
 
 type TVSeasonInfo struct {

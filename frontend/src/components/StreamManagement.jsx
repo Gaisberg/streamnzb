@@ -575,7 +575,7 @@ function StreamDialog({
                     <p className="text-sm text-muted-foreground">
                       {draft.filter_sorting_mode === 'aiostreams'
                         ? 'AIOStreams mode returns every release and lets AIOStreams filter them, so profiles are not applied. Switch Filter/Sorting off AIOStreams to use them.'
-                        : 'Override the profile above for a specific kind of content. Anything left on Default uses the profile selected above.'}
+                        : 'Override the profile above for a specific kind of content. Anything left on Default uses the profile selected above. Anime means animation that is not originally in English, which needs TMDB configured to detect outside of Kitsu catalogues.'}
                     </p>
                     <div className={`grid gap-2 pt-1 sm:grid-cols-2 ${draft.filter_sorting_mode === 'aiostreams' ? 'opacity-50' : ''}`}>
                       {CONTENT_KINDS.map((kind) => {
