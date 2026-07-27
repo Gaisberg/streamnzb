@@ -19,7 +19,7 @@ function summarize(profile) {
     .filter(([key, on]) => on && key !== "unknown")
     .map(([key]) => (key === "2160p" ? "4K" : key))
   if (enabled.length) bits.push(enabled.join(" / "))
-  if (ranking.options?.remove_trash !== false) bits.push("no low-quality rips")
+  if (ranking.options?.remove_trash !== false) bits.push("no garbage")
   const blocked = Object.values(ranking.attributes || {}).filter((p) => p && p.fetch === false).length
   if (blocked) bits.push(`${blocked} blocked`)
   if (ranking.languages?.required?.length) bits.push(ranking.languages.required.join(", "))

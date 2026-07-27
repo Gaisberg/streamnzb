@@ -457,8 +457,8 @@ export function ProfileEditor({ profile, onChange }) {
         <div className="space-y-2">
           <Label className="text-sm">Content</Label>
           <FieldRow
-            label="Skip low-quality rips"
-            hint="Rejects camcorder, telesync, telecine and screener releases, plus anything flagged as a bad rip."
+            label="Remove garbage titles"
+            hint="Rejects camcorder, telesync, telecine and screener rips, and the junk that carries no source of its own: leaked copies, pre-retail rips and deleted-scene reels."
           >
             <Switch checked={options.remove_trash !== false} onCheckedChange={(v) => setOptions({ remove_trash: v })} />
           </FieldRow>

@@ -102,10 +102,11 @@ func Synthesize(fp FilterProfileConfig) rank.Profile {
 	p := rank.Default()
 	p.Name = fp.Name
 
-	// The legacy schema had no notion of trash removal or a minimum score, and
-	// enabling jhin's defaults here would reject releases the user used to get.
+	// The legacy schema had no notion of trash removal, and enabling jhin's
+	// veto here would reject releases the user used to get. Adult content is
+	// the exception: it is blocked everywhere, migrated profiles included.
 	p.Options.RemoveTrash = false
-	p.Options.RemoveAdult = false
+	p.Options.RemoveAdult = true
 
 	applyResolutions(&p, fp)
 	applyAttributes(&p, fp)
