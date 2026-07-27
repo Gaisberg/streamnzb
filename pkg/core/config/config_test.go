@@ -518,8 +518,8 @@ func TestConfigBootstrapsDefaultFilterProfile(t *testing.T) {
 	if p.Ranking == nil {
 		t.Fatal("expected the bootstrapped profile to carry a ranking profile")
 	}
-	if len(p.SortOrder) != 4 || p.SortOrder[0] != "resolution" {
-		t.Errorf("expected default SortOrder, got %v", p.SortOrder)
+	if want := []string{"resolution", "rank", "size", "age"}; !reflect.DeepEqual(p.SortOrder, want) {
+		t.Errorf("SortOrder = %v, want %v", p.SortOrder, want)
 	}
 }
 
@@ -541,10 +541,17 @@ func TestDefaultFilterProfileBlocksOnlyTrashAndAdult(t *testing.T) {
 		t.Errorf("MinRank = %d, want the score floor disabled (%d)", profile.Options.MinRank, noScoreFloor)
 	}
 
-	for _, res := range []rank.Resolution{rank.Res2160p, rank.Res1440p, rank.Res1080p, rank.Res720p, rank.ResUnknown} {
-		if !profile.Resolutions[res] {
-			t.Errorf("resolution %s should be allowed", res)
-		}
+	// Exhaustive in both directions: the SD tiers are off because jhin's
+	// defaults disable them, so a change to those defaults has to fail here
+	// rather than quietly widen what the addon streams.
+	wantResolutions := map[rank.Resolution]bool{
+		rank.Res2160p: true, rank.Res1440p: true, rank.Res1080p: true,
+		rank.Res720p: true, rank.ResUnknown: true,
+		rank.Res576p: false, rank.Res480p: false,
+		rank.Res360p: false, rank.Res240p: false,
+	}
+	if !reflect.DeepEqual(profile.Resolutions, wantResolutions) {
+		t.Errorf("Resolutions = %v, want %v", profile.Resolutions, wantResolutions)
 	}
 
 	blocked := map[rank.Attr]bool{}
