@@ -793,11 +793,11 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	profile := s.profileForRequest(source, stream)
 	if profile == nil {
 		if filteringActive {
-			// Scoring parses each title and populates the candidate.
 			sortCandidates(s.triageService, candidates)
-		} else {
-			ensureCandidateMetadata(candidates)
 		}
+		// Unconditional: scoring happens to populate metadata today, but
+		// stream descriptions need it whatever that path does.
+		ensureCandidateMetadata(candidates)
 		logStreamSorting(stream, filterMode, len(candidates), len(candidates))
 		return candidates
 	}

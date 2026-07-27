@@ -40,6 +40,41 @@ function Hint({ children }) {
   )
 }
 
+// NumberField keeps what the user typed while it is not yet a number, so
+// clearing the box does not commit 0 and quietly change the rule. The value is
+// committed only once it parses, clamped when a range is given.
+function NumberField({ value, onCommit, min, max, step, className, ...props }) {
+  const [text, setText] = useState(String(value ?? ""))
+  const [editing, setEditing] = useState(false)
+
+  const shown = editing ? text : String(value ?? "")
+
+  const change = (raw) => {
+    setText(raw)
+    const parsed = Number(raw)
+    if (raw.trim() === "" || !Number.isFinite(parsed)) return
+    let next = parsed
+    if (typeof min === "number") next = Math.max(min, next)
+    if (typeof max === "number") next = Math.min(max, next)
+    onCommit(next)
+  }
+
+  return (
+    <Input
+      type="number"
+      value={shown}
+      min={min}
+      max={max}
+      step={step}
+      onFocus={() => { setText(String(value ?? "")); setEditing(true) }}
+      onBlur={() => setEditing(false)}
+      onChange={(e) => change(e.target.value)}
+      className={className}
+      {...props}
+    />
+  )
+}
+
 function FieldRow({ label, hint, children }) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-card/40 px-3.5 py-2.5">
@@ -167,12 +202,11 @@ function WeightedPatterns({ values = [], onChange }) {
           {values.map((entry, index) => (
             <div key={entry.pattern} className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2">
               <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{entry.pattern}</code>
-              <Input
-                type="number"
+              <NumberField
                 value={entry.rank}
-                onChange={(e) => {
+                onCommit={(rank) => {
                   const next = [...values]
-                  next[index] = { ...entry, rank: Number(e.target.value) || 0 }
+                  next[index] = { ...entry, rank }
                   onChange(next)
                 }}
                 className="h-8 w-24 font-mono text-xs"
@@ -439,10 +473,9 @@ export function ProfileEditor({ profile, onChange }) {
             label="Minimum score"
             hint="Releases scoring below this are rejected outright, however else they qualify."
           >
-            <Input
-              type="number"
+            <NumberField
               value={options.min_rank ?? -10000}
-              onChange={(e) => setOptions({ min_rank: Number(e.target.value) || 0 })}
+              onCommit={(min_rank) => setOptions({ min_rank })}
               className="h-8 w-32 font-mono text-xs"
             />
           </FieldRow>
@@ -450,10 +483,9 @@ export function ProfileEditor({ profile, onChange }) {
             label="Preference bonus"
             hint="Added once when a preferred pattern or language matches."
           >
-            <Input
-              type="number"
+            <NumberField
               value={options.preferred_bonus ?? 10000}
-              onChange={(e) => setOptions({ preferred_bonus: Number(e.target.value) || 0 })}
+              onCommit={(preferred_bonus) => setOptions({ preferred_bonus })}
               className="h-8 w-32 font-mono text-xs"
             />
           </FieldRow>
@@ -461,13 +493,12 @@ export function ProfileEditor({ profile, onChange }) {
             label="Title match strictness"
             hint="How closely a release title must match what was requested, from 0 to 1. Higher is stricter."
           >
-            <Input
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
+            <NumberField
               value={options.title_threshold ?? 0.85}
-              onChange={(e) => setOptions({ title_threshold: Number(e.target.value) })}
+              onCommit={(title_threshold) => setOptions({ title_threshold })}
+              min={0}
+              max={1}
+              step={0.05}
               className="h-8 w-32 font-mono text-xs"
             />
           </FieldRow>

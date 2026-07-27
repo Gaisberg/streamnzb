@@ -241,9 +241,22 @@ func (p *Profile) SortResults(results []Result) {
 	}
 	precedence := p.resolutionPrecedence()
 
-	sort.SliceStable(results, func(i, j int) bool {
+	// Age is parsed once per release here. Reading it inside the comparator
+	// would reparse the date on every comparison, and the comparator runs
+	// O(n log n) times.
+	type keyed struct {
+		result Result
+		age    int64
+	}
+	items := make([]keyed, len(results))
+	for i, r := range results {
+		items[i] = keyed{result: r, age: releaseAge(r.Candidate.Release)}
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
 		for _, key := range order {
-			vi, vj := sortValue(precedence, results[i], key), sortValue(precedence, results[j], key)
+			vi := sortValue(precedence, items[i].result, items[i].age, key)
+			vj := sortValue(precedence, items[j].result, items[j].age, key)
 			if vi == vj {
 				continue
 			}
@@ -251,6 +264,10 @@ func (p *Profile) SortResults(results []Result) {
 		}
 		return false
 	})
+
+	for i, item := range items {
+		results[i] = item.result
+	}
 }
 
 // resolutionPrecedence honors the profile's ResolutionOrder when it sets one,
@@ -267,8 +284,9 @@ func (p *Profile) resolutionPrecedence() map[rank.Resolution]int {
 	return out
 }
 
-// sortValue returns a higher-is-better number for one criterion.
-func sortValue(precedence map[rank.Resolution]int, r Result, key string) float64 {
+// sortValue returns a higher-is-better number for one criterion. age is the
+// release's age in seconds, precomputed by the caller.
+func sortValue(precedence map[rank.Resolution]int, r Result, age int64, key string) float64 {
 	switch key {
 	case SortResolution:
 		return float64(precedence[r.Torrent.Resolution()])
@@ -283,7 +301,7 @@ func sortValue(precedence map[rank.Resolution]int, r Result, key string) float64
 		return float64(r.Candidate.Release.Size)
 	case SortAge:
 		// Newer is better, so negate the age.
-		return -float64(releaseAge(r.Candidate.Release))
+		return -float64(age)
 	case SortGrabs:
 		if r.Candidate.Release == nil {
 			return 0
