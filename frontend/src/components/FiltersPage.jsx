@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -75,21 +75,45 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const [selected, setSelected] = useState(0)
   const [draft, setDraft] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [pendingSelect, setPendingSelect] = useState(null)
   const [nameError, setNameError] = useState("")
-
-  // Adopt the saved profile whenever the selection or the config changes, so
-  // the editor never shows a stale draft after a save elsewhere.
-  useEffect(() => {
-    const current = profiles[selected]
-    setDraft(current ? structuredClone(current) : null)
-    setNameError("")
-  }, [profiles, selected])
 
   const dirty = useMemo(() => {
     const current = profiles[selected]
     if (!current || !draft) return false
     return JSON.stringify(current) !== JSON.stringify(draft)
   }, [profiles, selected, draft])
+
+  // adoptedRef holds the saved profile the draft was taken from, so the effect
+  // below can tell a real change from an unrelated config broadcast.
+  const adoptedRef = useRef(null)
+  const dirtyRef = useRef(false)
+  // Declared before the adoption effect so the ref is current when it runs.
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+
+  // Adopt the saved profile when the selection changes, or when the profile
+  // itself changed underneath us. An in-progress edit is kept when neither
+  // happened: any config change re-creates this array, and a save on another
+  // page would otherwise silently discard the edit.
+  useEffect(() => {
+    const current = profiles[selected]
+    const serialized = current ? JSON.stringify(current) : null
+    if (dirtyRef.current && serialized === adoptedRef.current) return
+    adoptedRef.current = serialized
+    setDraft(current ? structuredClone(current) : null)
+    setNameError("")
+  }, [profiles, selected])
+
+  // Switching profiles replaces the draft, so an unsaved edit is confirmed
+  // first rather than vanishing on a stray click.
+  const selectProfile = (index) => {
+    if (index === selected) return
+    if (dirty) {
+      setPendingSelect(index)
+      return
+    }
+    setSelected(index)
+  }
 
   const commit = (next, nextIndex) => {
     onSave(next)
@@ -177,7 +201,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
               <button
                 key={`${profile.name}-${index}`}
                 type="button"
-                onClick={() => setSelected(index)}
+                onClick={() => selectProfile(index)}
                 className={cn(
                   "w-full rounded-md border px-3 py-2.5 text-left transition-colors",
                   index === selected
@@ -297,6 +321,19 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingSelect !== null}
+        onOpenChange={(open) => { if (!open) setPendingSelect(null) }}
+        title="Discard unsaved changes"
+        description={`\u201c${draft?.name || ""}\u201d has changes that have not been saved. Switching profiles will discard them.`}
+        confirmLabel="Discard"
+        onConfirm={() => {
+          setDraft(structuredClone(profiles[selected]))
+          setSelected(pendingSelect)
+          setPendingSelect(null)
+        }}
+      />
 
       <ConfirmDialog
         open={confirmDelete !== null}

@@ -39,7 +39,10 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 	// Filter profiles are configuration, and evaluating one compiles patterns
 	// the caller supplies, so this is admin-only like the rest of the config
 	// endpoints.
-	if stream, _ := auth.StreamFromContext(r); stream == nil || stream.Username != s.config.GetAdminUsername() {
+	s.mu.RLock()
+	adminUsername := s.config.GetAdminUsername()
+	s.mu.RUnlock()
+	if stream, _ := auth.StreamFromContext(r); stream == nil || stream.Username != adminUsername {
 		http.Error(w, "Only admin can evaluate filter profiles", http.StatusForbidden)
 		return
 	}
@@ -91,20 +94,24 @@ func writeExplainError(w http.ResponseWriter, status int, msg string) {
 func (s *Server) explainProfile(req explainRequest) (*ranking.Profile, error) {
 	fp := req.Profile
 	if fp == nil {
-		s.mu.RLock()
-		cfg := s.config
-		s.mu.RUnlock()
-
 		name := strings.TrimSpace(req.ProfileName)
-		if cfg == nil || name == "" {
+		if name == "" {
 			return nil, errNoProfile
 		}
-		for i := range cfg.FilterProfiles {
-			if strings.EqualFold(cfg.FilterProfiles[i].Name, name) {
-				fp = &cfg.FilterProfiles[i]
-				break
+		// Copy the profile while holding the lock: a config save replaces the
+		// whole slice, so a pointer into it would outlive what it points at.
+		s.mu.RLock()
+		if s.config != nil {
+			for i := range s.config.FilterProfiles {
+				if strings.EqualFold(s.config.FilterProfiles[i].Name, name) {
+					found := s.config.FilterProfiles[i]
+					fp = &found
+					break
+				}
 			}
 		}
+		s.mu.RUnlock()
+
 		if fp == nil {
 			return nil, errUnknownProfile
 		}

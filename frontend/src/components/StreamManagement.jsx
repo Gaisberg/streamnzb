@@ -37,6 +37,15 @@ function uniquePreserveOrder(values) {
   return next
 }
 
+// sortedByKey rebuilds a map in key order. The dirty check compares serialized
+// drafts and Go marshals maps sorted, so insertion order would otherwise read
+// as an unsaved change.
+function sortedByKey(value) {
+  const out = {}
+  Object.keys(value || {}).sort().forEach((key) => { out[key] = value[key] })
+  return out
+}
+
 function normalizeStreamDraft(draft) {
   const normalizedFilterSortingMode = draft?.filter_sorting_mode === 'aiostreams' ? 'aiostreams' : 'none'
   return {
@@ -55,7 +64,7 @@ function normalizeStreamDraft(draft) {
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
-    filter_profile_by_type: normalizedFilterSortingMode === 'aiostreams' ? {} : (draft?.filter_profile_by_type || {}),
+    filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
     mute_error_video: draft?.mute_error_video === true,
   }
 }
@@ -166,7 +175,7 @@ function applyFilterSortingMode(current, nextMode, profileName = '') {
     ...current,
     filter_sorting_mode: normalizedMode,
     filter_profile_name: normalizedMode === 'aiostreams' ? '' : profileName,
-    filter_profile_by_type: normalizedMode === 'aiostreams' ? {} : (current?.filter_profile_by_type || {}),
+    filter_profile_by_type: current?.filter_profile_by_type || {},
   }
   if (normalizedMode === 'aiostreams') {
     nextDraft.results_mode = 'display_all'

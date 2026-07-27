@@ -74,9 +74,6 @@ func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filena
 	line2 := []string{}
 	visualTags := make([]string, 0)
 	visualTags = append(visualTags, meta.HDR...)
-	if meta.ThreeD {
-		visualTags = append(visualTags, "3D")
-	}
 	if len(visualTags) > 0 {
 		tags := strings.Join(visualTags, "|")
 		line2 = append(line2, fmt.Sprintf("📺 %s", tags))
