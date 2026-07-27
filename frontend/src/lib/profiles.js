@@ -45,7 +45,7 @@ export const ATTRIBUTE_GROUPS = [
   {
     id: "trash",
     label: "Trash sources",
-    description: "Covered by \u201cSkip low-quality rips\u201d, or tuned one by one here.",
+    description: "Rejected outright while “Remove garbage titles” is on. Turn that off to decide these one by one.",
     attrs: [
       { key: "cam", label: "CAM" },
       { key: "telesync", label: "TeleSync" },
@@ -216,6 +216,25 @@ export function eligibleProfiles(profiles = [], kind) {
   return profiles.filter((p) => !p.applies_to?.length || p.applies_to.includes(kind))
 }
 
+// The traits a new profile rejects, matching defaultBlockedAttrs in
+// pkg/core/config/filterprofile.go: the CAM-class rips, the fake audio dubbed
+// over them, and satellite rips. Everything else jhin demotes is opened up and
+// left to sort last. Keep the two lists in step.
+const BLOCKED_ATTRS = ["cam", "telesync", "telecine", "screener", "r5", "pdtv", "clean_audio", "satrip"]
+
+// NO_SCORE_FLOOR is low enough that no stack of demotions reaches it, so score
+// orders results rather than rejecting them.
+const NO_SCORE_FLOOR = -1000000
+
+function defaultAttributePolicies() {
+  const policies = {}
+  Object.entries(DEFAULT_POLICIES).forEach(([attr, policy]) => {
+    if (BLOCKED_ATTRS.includes(attr)) policies[attr] = { fetch: false, rank: policy.rank }
+    else if (!policy.fetch) policies[attr] = { fetch: true, rank: policy.rank }
+  })
+  return policies
+}
+
 export function defaultRankProfile(name = "New Profile") {
   return {
     name,
@@ -235,10 +254,10 @@ export function defaultRankProfile(name = "New Profile") {
       remove_adult: true,
       remove_unknown_languages: false,
       allow_english: true,
-      min_rank: -10000,
+      min_rank: NO_SCORE_FLOOR,
       preferred_bonus: 10000,
     },
-    attributes: {},
+    attributes: defaultAttributePolicies(),
   }
 }
 

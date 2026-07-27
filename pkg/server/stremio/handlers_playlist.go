@@ -790,7 +790,9 @@ func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *p
 // Streams with no profile bound keep the pre-jhin ordering, so filtering stays
 // opt-in rather than silently changing what an unconfigured stream returns.
 func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSource, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
-	profile := s.profileForRequest(source, stream)
+	kind := kindForRequest(source)
+	profile := s.profileForKind(kind, stream)
+	inputResults := len(candidates)
 	if profile == nil {
 		if filteringActive {
 			sortCandidates(s.triageService, candidates)
@@ -798,19 +800,13 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 		// Unconditional: scoring happens to populate metadata today, but
 		// stream descriptions need it whatever that path does.
 		ensureCandidateMetadata(candidates)
+		logRankingSelection(source, stream, kind, nil, inputResults, inputResults)
 		logStreamSorting(stream, filterMode, len(candidates), len(candidates))
 		return candidates
 	}
 
-	inputResults := len(candidates)
 	results := profile.Apply(candidates, rank.RankOptions{})
-	logger.Debug("Filter profile applied",
-		"stream", stream.Username,
-		"kind", kindForRequest(source),
-		"profile", profile.Name,
-		"input_results", inputResults,
-		"final_results", len(results),
-	)
+	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
 
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {
@@ -896,13 +892,45 @@ func metadataLooksLikeAnime(meta *resolvedSearchMetadata, contentType string) bo
 	return animation && !strings.EqualFold(strings.TrimSpace(originalLanguage), "en")
 }
 
-// profileForRequest resolves the filter profile for this request, preferring a
-// per-content-kind binding over the stream default.
-func (s *Server) profileForRequest(source *playlistSource, stream *auth.Stream) *ranking.Profile {
+// logRankingSelection records how a request was classified, which profile that
+// resolved to, and what the profile did to the result count. A nil profile
+// means nothing was bound and the results passed through untouched.
+func logRankingSelection(source *playlistSource, stream *auth.Stream, kind string, profile *ranking.Profile, inputResults, finalResults int) {
+	title, contentType, id, kitsu := "", "", "", false
+	if source != nil && source.Params != nil {
+		title = source.Params.ContentTitle
+		contentType = source.Params.ContentType
+		id = source.Params.ID
+		kitsu = source.Params.Metadata != nil && source.Params.Metadata.KitsuDetails != nil
+	}
+	name := "none"
+	if profile != nil {
+		name = profile.Name
+	}
+	streamName := ""
+	if stream != nil {
+		streamName = stream.Username
+	}
+	logger.Debug("Filter profile selected",
+		"stream", streamName,
+		"title", title,
+		"id", id,
+		"content_type", contentType,
+		"kind", kind,
+		"anime", kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
+		"kitsu", kitsu,
+		"profile", name,
+		"input_results", inputResults,
+		"final_results", finalResults,
+	)
+}
+
+// profileForKind resolves the filter profile for a request of this content
+// kind, preferring a per-content-kind binding over the stream default.
+func (s *Server) profileForKind(kind string, stream *auth.Stream) *ranking.Profile {
 	if s == nil || s.rankingService == nil || stream == nil {
 		return nil
 	}
-	kind := kindForRequest(source)
 	name := ranking.SelectName(stream.FilterProfileByType, stream.FilterProfileName, kind)
 	if name == "" {
 		return nil

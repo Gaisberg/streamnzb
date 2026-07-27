@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dreulavelle/jhin/rank"
+
 	coreenv "streamnzb/pkg/core/env"
 )
 
@@ -510,16 +512,56 @@ func TestConfigBootstrapsDefaultFilterProfile(t *testing.T) {
 
 	p := res.FilterProfiles[0]
 	t.Logf("bootstrapped profile: %+v", p)
-	if p.Name != "Default Profile" {
-		t.Errorf("expected default profile name 'Default Profile', got %q", p.Name)
+	if p.Name != DefaultFilterProfileName {
+		t.Errorf("expected default profile name %q, got %q", DefaultFilterProfileName, p.Name)
 	}
-	if len(p.AllowedResolutions) != 3 {
-		t.Errorf("expected 3 allowed resolutions, got %v", p.AllowedResolutions)
-	}
-	if len(p.BlockedQualities) != 1 || p.BlockedQualities[0] != "CAM" {
-		t.Errorf("expected BlockedQualities = [CAM], got %v", p.BlockedQualities)
+	if p.Ranking == nil {
+		t.Fatal("expected the bootstrapped profile to carry a ranking profile")
 	}
 	if len(p.SortOrder) != 4 || p.SortOrder[0] != "resolution" {
 		t.Errorf("expected default SortOrder, got %v", p.SortOrder)
+	}
+}
+
+// The shipped profile is what every install starts from and branches off, so
+// it should reject only the CAM-class rips and adult releases and let the rest
+// through, demoted rather than dropped.
+func TestDefaultFilterProfileBlocksOnlyTrashAndAdult(t *testing.T) {
+	profile := *DefaultFilterProfile().Ranking
+
+	if !profile.Options.RemoveAdult {
+		t.Error("adult content should be blocked by default")
+	}
+	// Leaked copies and deleted-scene reels carry no source of their own, so
+	// the per-attribute policies below cannot reach them.
+	if !profile.Options.RemoveTrash {
+		t.Error("garbage titles should be removed by default")
+	}
+	if profile.Options.MinRank != noScoreFloor {
+		t.Errorf("MinRank = %d, want the score floor disabled (%d)", profile.Options.MinRank, noScoreFloor)
+	}
+
+	for _, res := range []rank.Resolution{rank.Res2160p, rank.Res1440p, rank.Res1080p, rank.Res720p, rank.ResUnknown} {
+		if !profile.Resolutions[res] {
+			t.Errorf("resolution %s should be allowed", res)
+		}
+	}
+
+	blocked := map[rank.Attr]bool{}
+	for _, attr := range defaultBlockedAttrs {
+		blocked[attr] = true
+	}
+	for attr, policy := range profile.Attributes {
+		if blocked[attr] && policy.Fetch {
+			t.Errorf("attribute %s should be blocked", attr)
+		}
+		if !blocked[attr] && !policy.Fetch {
+			t.Errorf("attribute %s should be allowed", attr)
+		}
+	}
+	for _, attr := range defaultBlockedAttrs {
+		if _, ok := profile.Attributes[attr]; !ok {
+			t.Errorf("attribute %s should be written out, not left to the baseline", attr)
+		}
 	}
 }
