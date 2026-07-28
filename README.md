@@ -23,7 +23,7 @@ Streaming is done on-the-fly from archive segments. That only works when the inn
 - **Compressed 7z** — Same idea: only uncompressed (copy/store) 7z content is streamable.
 
 
-## Run it
+## Quickstart
 
 **Docker (recommended):**
 
@@ -42,31 +42,20 @@ services:
 
 Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/releases) page (Windows, Linux, macOS). See `.env.example` for config via environment variables.
 
-## Upgrade note
-
-When updating from older device-based versions:
-
-- Global configuration is kept.
-- Providers and indexers are kept.
-- Legacy device entries are intentionally reset and are **not** migrated to the new stream model.
-- After updating, recreate your streams in the UI.
-
-For Docker, keep your existing `/app/data` volume mounted so `config.json` and the rest of the persistent state survive the container update.
-
-**First use:**
+### Setup Guide
 
 1. Open `http://localhost:7000`. Default login is `admin` / `admin`; you'll be asked to change the password.
-2. Go to **Settings → Network** and set your addon **Base URL** and **Port**.
+2. Go to **Network** (under Settings) and set your addon **Base URL** and **Port**.
    - If using Tailscale, use the IP address of the machine running StreamNZB. Example: `http://100.64.0.1:7000`
    - If using a domain name, make sure it is reachable from your client. Example: `http://streamnzb.example.com:7000` or `https://streamnzb.example.com`
-3. Go to **Settings → Providers** and add at least one Usenet provider (host, port, username, password, connections).
-4. Go to **Settings → Indexers** and add at least one Newznab-compatible indexer (URL + API key).
-5. Go to **Settings → Search** and configure your movie and/or TV search queries.
-6. Go to **Settings → Filters** to configure custom release filter profiles and ranking rules.
-7. Go to **Streams** and create a stream.
-   - Choose which providers, indexers, search queries, and filter profiles belong to that stream.
-   - Configure the stream's **General** options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
-8. Click **Install** to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
+3. Go to **Providers** and add at least one Usenet provider (host, port, username, password, connections).
+4. Go to **Indexers** and add at least one Newznab-compatible indexer (URL + API key).
+5. Go to **Filters** to configure release filtering profiles and ranking rules.
+6. Go to **Search** and configure your movie and/or TV search queries.
+7. Go to **Streams** and click **Add Stream** to create a stream manifest.
+   - Select which providers, indexers, search queries, and filter profiles belong to this stream.
+   - Configure stream options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
+8. Click **Install** on your stream to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
 
 ### Force password reset on next startup
 
@@ -80,25 +69,27 @@ After the password has been changed, remove or disable this env var.
 When it remains enabled, StreamNZB will keep forcing the password-reset prompt on startup.
 
 
-## Stream model
+## Stream Model
 
 StreamNZB separates global configuration from per-stream behavior:
 
-- **Settings → Providers** stores all Usenet providers globally.
-- **Settings → Indexers** stores all supported indexers globally.
-- **Settings → Search** stores reusable movie and TV search templates globally.
-- **Settings → Filters** stores customizable release filtering and ranking profiles globally.
-- **Streams** chooses which providers, indexers, search queries, and filter profiles are active for a specific manifest token.
+- **Network** — Base URL, port, HTTP proxy, and network settings.
+- **Indexers** — Global registry of Newznab and EasyNews search sources.
+- **Providers** — Global registry of Usenet provider server connections.
+- **Filters** — Release filtering rules and `jhin` ranking profiles.
+- **Search** — Reusable movie and TV search query templates.
+- **Streams** — Configured Stremio addon manifests (`<token>/manifest.json`).
 
-Each stream also controls how its search pipeline behaves:
+Each stream configuration defines:
 
-- **Indexers** — `Combine` or `Failover`
-- **Search queries** — `Combine` or `First hit`
-- **Results** — how the final stream list is returned
-- **Failover** — whether playback should walk fallback slots internally
-- **AvailNZB** — whether AvailNZB is allowed for that stream, in addition to the global setting
+- **Resource Selections** — Which providers, indexers, search queries, and filter profiles are active for the manifest.
+- **Indexer Mode** — `Combine` (parallel query) or `Failover` (sequential).
+- **Search Query Mode** — `Combine` or `First hit`.
+- **Results Mode & Limit** — Resolution ordering and maximum release count returned to Stremio.
+- **Filter Profiles** — General and per-kind (Movie, Series, Anime) release filter bindings powered by `jhin`.
+- **Failover & AvailNZB** — Automatic stream fallback walking and community availability checking.
 
-This makes it possible to run multiple different manifests from one StreamNZB instance, each with different search behavior and provider/indexer selection.
+This architecture allows running multiple distinct Stremio manifests from a single StreamNZB instance, each tailored with different search rules, filters, or provider selections.
 
 
 ## Optional: Using with AIOStreams
@@ -120,7 +111,7 @@ StreamNZB works directly out-of-the-box with Stremio using its own built-in rele
 
 AvailNZB is controlled at two levels:
 
-- **Global** in **Settings → Advanced**
+- **Global** in **Advanced** (under Settings)
 - **Per stream** in **Streams → Add/Change → General**
 
 AvailNZB is only used when both the global setting and the stream setting allow it.
