@@ -54,9 +54,8 @@ func DefaultFilterProfile() FilterProfileConfig {
 	profile.Attributes = defaultAttributePolicies()
 
 	return FilterProfileConfig{
-		Name:      DefaultFilterProfileName,
-		Ranking:   &profile,
-		SortOrder: []string{"resolution", "rank", "size", "age"},
+		Name:    DefaultFilterProfileName,
+		Ranking: &profile,
 	}
 }
 

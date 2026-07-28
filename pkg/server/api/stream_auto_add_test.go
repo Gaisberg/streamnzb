@@ -228,3 +228,45 @@ func TestRenameThenDropKeepsRenamedProfiles(t *testing.T) {
 		t.Errorf("renamed binding = %q, want %q", got, "New Name")
 	}
 }
+
+func TestDropDeletedProvidersClearsDanglingReferences(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			ProviderSelections: []string{"Newshosting", "DeletedProvider", "Eweka"},
+		},
+	}
+	remaining := []config.Provider{{Name: "Newshosting"}, {Name: "Eweka"}}
+
+	dropDeletedProviders(streams, remaining)
+
+	got := streams["default"].ProviderSelections
+	if len(got) != 2 || got[0] != "Newshosting" || got[1] != "Eweka" {
+		t.Errorf("expected [Newshosting, Eweka], got %#v", got)
+	}
+}
+
+func TestDropDeletedIndexersClearsDanglingReferences(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			IndexerSelections: []string{"altHUB", "DeletedIndexer"},
+			IndexerOverrides: map[string]config.IndexerSearchConfig{
+				"altHUB":         {SearchResultLimit: 10},
+				"DeletedIndexer": {SearchResultLimit: 10},
+			},
+		},
+	}
+	remaining := []config.IndexerConfig{{Name: "altHUB"}}
+
+	dropDeletedIndexers(streams, remaining)
+
+	gotSelections := streams["default"].IndexerSelections
+	if len(gotSelections) != 1 || gotSelections[0] != "altHUB" {
+		t.Errorf("expected [altHUB], got %#v", gotSelections)
+	}
+	if _, ok := streams["default"].IndexerOverrides["DeletedIndexer"]; ok {
+		t.Error("override for deleted indexer should be removed")
+	}
+	if _, ok := streams["default"].IndexerOverrides["altHUB"]; !ok {
+		t.Error("override for surviving indexer should remain")
+	}
+}

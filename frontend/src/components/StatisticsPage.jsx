@@ -315,7 +315,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
               }}
               variant="outline"
               size="sm"
-              className="justify-start"
+              className="justify-start flex-wrap gap-1"
             >
               <ToggleGroupItem value="7d">7D</ToggleGroupItem>
               <ToggleGroupItem value="30d">30D</ToggleGroupItem>
@@ -382,25 +382,40 @@ export const StatisticsPage = memo(function StatisticsPage() {
             </div>
             <CardDescription>Average response time, speed estimate, searches, and downloads by indexer.</CardDescription>
             <div className="pt-2">
-              <ToggleGroup
-                type="single"
-                value={indexerMetric}
-                onValueChange={(value) => {
-                  if (!value) return
-                  setIndexerMetric(value)
-                }}
-                variant="outline"
-                size="sm"
-                className="justify-start"
-              >
-                <ToggleGroupItem value="response">Response</ToggleGroupItem>
-                <ToggleGroupItem value="speed">Speed</ToggleGroupItem>
-                <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
-                <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
-                <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
-                <ToggleGroupItem value="availAvailable">Available</ToggleGroupItem>
-                <ToggleGroupItem value="availDiscarded">Unavailable</ToggleGroupItem>
-              </ToggleGroup>
+              <div className="sm:hidden">
+                <select
+                  value={indexerMetric}
+                  onChange={(e) => e.target.value && setIndexerMetric(e.target.value)}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm font-medium shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {Object.entries(indexerMetricOptions).map(([key, opt]) => (
+                    <option key={key} value={key}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="hidden sm:block overflow-x-auto max-w-full pb-1">
+                <ToggleGroup
+                  type="single"
+                  value={indexerMetric}
+                  onValueChange={(value) => {
+                    if (!value) return
+                    setIndexerMetric(value)
+                  }}
+                  variant="outline"
+                  size="sm"
+                  className="justify-start flex-wrap gap-1"
+                >
+                  <ToggleGroupItem value="response">Response</ToggleGroupItem>
+                  <ToggleGroupItem value="speed">Speed</ToggleGroupItem>
+                  <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
+                  <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
+                  <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
+                  <ToggleGroupItem value="availAvailable">Available</ToggleGroupItem>
+                  <ToggleGroupItem value="availDiscarded">Unavailable</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">

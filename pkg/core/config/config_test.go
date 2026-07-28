@@ -518,9 +518,6 @@ func TestConfigBootstrapsDefaultFilterProfile(t *testing.T) {
 	if p.Ranking == nil {
 		t.Fatal("expected the bootstrapped profile to carry a ranking profile")
 	}
-	if want := []string{"resolution", "rank", "size", "age"}; !reflect.DeepEqual(p.SortOrder, want) {
-		t.Errorf("SortOrder = %v, want %v", p.SortOrder, want)
-	}
 }
 
 // The shipped profile is what every install starts from and branches off, so

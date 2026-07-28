@@ -54,12 +54,22 @@ function Settings({
   onRefreshAvailNZBStatus,
   indexerCaps,
   stats,
+  activeTab: activeTabProp,
+  hideTabs = false,
 }) {
-  const [activeTab, setActiveTab] = useState(() => {
+  const [internalActiveTab, setInternalActiveTab] = useState(() => {
     if (typeof window === 'undefined') return 'network'
     const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'network'
     return TABS.some((tab) => tab.id === savedTab) ? savedTab : 'network'
   })
+
+  const activeTab = activeTabProp || internalActiveTab
+  const setActiveTab = (tab) => {
+    setInternalActiveTab(tab)
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab)
+    }
+  }
   const [loading, setLoading] = useState(!initialConfig)
   const [configSnapshot, setConfigSnapshot] = useState({})
   const [liveStreamsByName, setLiveStreamsByName] = useState(initialConfig?.streams || {})
@@ -280,33 +290,35 @@ function Settings({
   return (
       <div className="pb-10">
         {/* Tab bar */}
-        <div className="flex items-center gap-1 border-b border-border mb-6 -mt-1 overflow-x-auto">
-          {TABS.map((tab) => {
-            const Icon = tab.icon
-            const hasError = tabsWithErrors.has(tab.id)
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => handleTabChange(tab.id)}
-                className={cn(
-                  'relative flex items-center gap-1.5 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors',
-                  'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md',
-                  activeTab === tab.id
-                    ? 'text-foreground after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-primary'
-                    : 'text-muted-foreground',
-                  hasError && 'text-destructive'
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {tab.label}
-                {hasError && (
-                  <span className="flex h-2 w-2 rounded-full bg-destructive" />
-                )}
-              </button>
-            )
-          })}
-        </div>
+        {!hideTabs && (
+          <div className="flex items-center gap-1 border-b border-border mb-6 -mt-1 overflow-x-auto">
+            {TABS.map((tab) => {
+              const Icon = tab.icon
+              const hasError = tabsWithErrors.has(tab.id)
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  className={cn(
+                    'relative flex items-center gap-1.5 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors',
+                    'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md',
+                    activeTab === tab.id
+                      ? 'text-foreground after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-primary'
+                      : 'text-muted-foreground',
+                    hasError && 'text-destructive'
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                  {tab.label}
+                  {hasError && (
+                    <span className="flex h-2 w-2 rounded-full bg-destructive" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {activeTab === 'network' && (
         <NetworkSettingsSection

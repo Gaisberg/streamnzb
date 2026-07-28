@@ -294,3 +294,61 @@ func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles 
 		}
 	}
 }
+
+// dropDeletedProviders clears references to providers that no longer exist
+// from stream ProviderSelections.
+func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []config.Provider) {
+	known := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		if name := strings.ToLower(strings.TrimSpace(p.Name)); name != "" {
+			known[name] = true
+		}
+	}
+	for _, stream := range streams {
+		if stream == nil || len(stream.ProviderSelections) == 0 {
+			continue
+		}
+		next := make([]string, 0, len(stream.ProviderSelections))
+		for _, item := range stream.ProviderSelections {
+			if key := strings.ToLower(strings.TrimSpace(item)); key != "" && known[key] {
+				next = append(next, item)
+			}
+		}
+		stream.ProviderSelections = next
+	}
+}
+
+// dropDeletedIndexers clears references to indexers that no longer exist
+// from stream IndexerSelections and IndexerOverrides.
+func dropDeletedIndexers(streams map[string]*config.StreamEntry, indexers []config.IndexerConfig) {
+	known := make(map[string]bool, len(indexers))
+	for _, idx := range indexers {
+		if name := strings.ToLower(strings.TrimSpace(idx.Name)); name != "" {
+			known[name] = true
+		}
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if len(stream.IndexerSelections) > 0 {
+			next := make([]string, 0, len(stream.IndexerSelections))
+			for _, item := range stream.IndexerSelections {
+				if key := strings.ToLower(strings.TrimSpace(item)); key != "" && known[key] {
+					next = append(next, item)
+				}
+			}
+			stream.IndexerSelections = next
+		}
+		if len(stream.IndexerOverrides) > 0 {
+			for name := range stream.IndexerOverrides {
+				if key := strings.ToLower(strings.TrimSpace(name)); key == "" || !known[key] {
+					delete(stream.IndexerOverrides, name)
+				}
+			}
+			if len(stream.IndexerOverrides) == 0 {
+				stream.IndexerOverrides = nil
+			}
+		}
+	}
+}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { apiFetch, getApiUrl, notifyUnauthorized } from '@/api'
 
-const MAX_HISTORY = 60
+const MAX_HISTORY = 20
 const MAX_LOGS = 200
 
 export function useAdminRuntime({
