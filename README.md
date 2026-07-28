@@ -3,14 +3,14 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg)](https://buymeacoffee.com/gaisberg)
 [![Discord](https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&logoColor=white)](https://snzb.stream/discord)
 
-StreamNZB is a stream-based Usenet addon for Stremio clients and [AIOStreams](https://github.com/Viren070/AIOStreams). It searches your configured indexers, checks availability via [AvailNZB](https://check.snzb.stream), and streams releases on-the-fly from your Usenet providers. One binary provides the addon UI, stream management, NNTP proxy, and playback pipeline behind a single IP. No extra containers, just your Usenet provider(s) and indexer(s).
+StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integration with [AIOStreams](https://github.com/Viren070/AIOStreams)). It searches your configured indexers, filters and ranks releases using the [jhin](https://github.com/dreulavelle/jhin) parsing and ranking engine, checks availability via [AvailNZB](https://check.snzb.stream), and streams releases on-the-fly from your Usenet providers. One binary provides the addon UI, stream management, NNTP proxy, and playback pipeline behind a single IP. No extra containers, just your Usenet provider(s) and indexer(s).
 
 
 ## What it does
 
-- **Stream-based addon** — Define global providers, indexers, and search requests once, then create one or more streams that decide which of those resources are used for a given manifest token.
-- **Works with Stremio and AIOStreams** — Use StreamNZB directly as a Stremio-compatible addon, or plug it into [AIOStreams](https://github.com/Viren070/AIOStreams) and let AIOStreams do the final presentation and triage.
-- **NNTP proxy** — Standard NNTP (default port 119) for SABnzbd or NZBGet. Same provider pool as the addon.
+- **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
+- **Stream-based addon** — Define global providers, indexers, search queries, and filter profiles once, then create one or more streams that decide which resources belong to each stream manifest.
+- **NNTP proxy** — Standard NNTP (default port 119) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database. Bad releases are skipped; success/failure is reported on play so the shared DB stays current.
 - **Single binary** — Docker image or native Windows/Linux/macOS. No other containers required.
 
@@ -57,16 +57,16 @@ For Docker, keep your existing `/app/data` volume mounted so `config.json` and t
 
 1. Open `http://localhost:7000`. Default login is `admin` / `admin`; you'll be asked to change the password.
 2. Go to **Settings → Network** and set your addon **Base URL** and **Port**.
-  - If using Tailscale, use the IP address of the machine running StreamNZB. Example: `http://100.64.0.1:7000`
-  - If using a domain name, make sure it is reachable from the client or AIOStreams host. Example: `http://streamnzb.example.com:7000` or `https://streamnzb.example.com`
+   - If using Tailscale, use the IP address of the machine running StreamNZB. Example: `http://100.64.0.1:7000`
+   - If using a domain name, make sure it is reachable from your client. Example: `http://streamnzb.example.com:7000` or `https://streamnzb.example.com`
 3. Go to **Settings → Providers** and add at least one Usenet provider (host, port, username, password, connections).
 4. Go to **Settings → Indexers** and add at least one Newznab-compatible indexer (URL + API key).
-5. Go to **Settings → Search Requests** and create at least one movie and/or TV request.
-6. Go to **Streams** and create a stream.
-  - Choose which providers, indexers, and search requests belong to that stream.
-  - Configure the stream's **General** options such as indexer mode, search request mode, results mode, failover, and AvailNZB behavior.
-7. Save the stream and copy its manifest URL from the install action or stream list.
-8. Add that manifest URL to your Stremio client or [AIOStreams](https://github.com/Viren070/AIOStreams).
+5. Go to **Settings → Search** and configure your movie and/or TV search queries.
+6. Go to **Settings → Filters** to configure custom release filter profiles and ranking rules.
+7. Go to **Streams** and create a stream.
+   - Choose which providers, indexers, search queries, and filter profiles belong to that stream.
+   - Configure the stream's **General** options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
+8. Click **Install** to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
 
 ### Force password reset on next startup
 
@@ -82,17 +82,18 @@ When it remains enabled, StreamNZB will keep forcing the password-reset prompt o
 
 ## Stream model
 
-StreamNZB now separates global configuration from per-stream behavior:
+StreamNZB separates global configuration from per-stream behavior:
 
 - **Settings → Providers** stores all Usenet providers globally.
 - **Settings → Indexers** stores all supported indexers globally.
-- **Settings → Search Requests** stores reusable movie and TV search templates globally.
-- **Streams** chooses which providers, indexers, and search requests are active for a specific manifest token.
+- **Settings → Search** stores reusable movie and TV search templates globally.
+- **Settings → Filters** stores customizable release filtering and ranking profiles globally.
+- **Streams** chooses which providers, indexers, search queries, and filter profiles are active for a specific manifest token.
 
 Each stream also controls how its search pipeline behaves:
 
 - **Indexers** — `Combine` or `Failover`
-- **Search requests** — `Combine` or `First hit`
+- **Search queries** — `Combine` or `First hit`
 - **Results** — how the final stream list is returned
 - **Failover** — whether playback should walk fallback slots internally
 - **AvailNZB** — whether AvailNZB is allowed for that stream, in addition to the global setting
@@ -100,9 +101,9 @@ Each stream also controls how its search pipeline behaves:
 This makes it possible to run multiple different manifests from one StreamNZB instance, each with different search behavior and provider/indexer selection.
 
 
-## Using with AIOStreams
+## Optional: Using with AIOStreams
 
-[AIOStreams](https://github.com/Viren070/AIOStreams) is THE way to use StreamNZB. It consolidates multiple Stremio addons into a single super-addon with advanced filtering, sorting, and formatting — all configured in one place.
+StreamNZB works directly out-of-the-box with Stremio using its own built-in release parsing and filter profiles. If you use [AIOStreams](https://github.com/Viren070/AIOStreams), you can also add StreamNZB as an addon preset to consolidate streams alongside other addons.
 
 **Setup:**
 
@@ -110,9 +111,7 @@ This makes it possible to run multiple different manifests from one StreamNZB in
 2. Copy that stream's manifest URL (for example `https://your-host:7000/<token>/manifest.json`).
 3. In AIOStreams, add the StreamNZB preset and paste the manifest URL.
 4. **No Usenet service required in AIOStreams** — StreamNZB handles all Usenet provider connections, NZB fetching, and streaming internally. Skip the AIOStreams Usenet service configuration entirely.
-5. Configure your filtering, sorting, and stream formatting rules in the AIOStreams UI. AIOStreams will aggregate StreamNZB results alongside any other addons you use and apply your rules uniformly.
-
-If you want an AIO-oriented stream, create a dedicated stream for it and configure that stream accordingly. Stream behavior is no longer driven by User-Agent detection.
+5. Optionally configure additional filtering, sorting, or formatting rules in the AIOStreams UI if desired.
 
 
 ## AvailNZB
@@ -129,7 +128,7 @@ AvailNZB is only used when both the global setting and the stream setting allow 
 
 ## Troubleshooting
 
-If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). Include downloaded logs when relevant, and include the copied bad match report from **NZB History** when the issue is about a wrong or poor release match. Sensitive data should be automatically redacted but please double-check before posting.
+If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). Include downloaded logs when relevant, and include the copied bad match report from **History** when the issue is about a wrong or poor release match. Sensitive data should be automatically redacted but please double-check before posting.
 
 
 ## Support
@@ -141,5 +140,6 @@ If StreamNZB is useful to you, you can support development here:
 
 ## Credits
 
+- [dreulavelle](https://github.com/dreulavelle) for [jhin](https://github.com/dreulavelle/jhin) (the release parsing & ranking engine) and contributions.
 - [javi11](https://github.com/javi11) for Go-based RAR and 7z streaming ([altmount](https://github.com/javi11/altmount)).
 - [Augment](https://www.augmentcode.com/) for helping with the project.
