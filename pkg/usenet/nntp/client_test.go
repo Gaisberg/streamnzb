@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/textproto"
 	"testing"
+	"time"
 )
 
 func TestReadGreeting(t *testing.T) {
@@ -55,5 +56,23 @@ func TestReadGreeting(t *testing.T) {
 				t.Fatalf("readGreeting() unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestGetSpeed_ResetsOnLongDurationGap(t *testing.T) {
+	pool := NewClientPool("news.example.com", 563, true, "user", "pass", 10)
+	t.Cleanup(func() {
+		pool.Shutdown()
+	})
+
+	// Track 50 MB of reads
+	pool.TrackRead(50 * 1024 * 1024)
+
+	// Simulate long duration gap (last check was 10 minutes ago)
+	pool.lastCheck = time.Now().Add(-10 * time.Minute)
+
+	speed := pool.GetSpeed()
+	if speed != 0 {
+		t.Fatalf("GetSpeed() after long gap = %v Mbps, want 0", speed)
 	}
 }

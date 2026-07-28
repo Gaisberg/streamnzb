@@ -100,7 +100,9 @@ func (p *ClientPool) GetSpeed() float64 {
 	}
 
 	if duration > maxSpeedDuration {
-		duration = maxSpeedDuration
+		p.lastTotalBytes = p.totalBytesRead
+		p.lastSpeed = 0
+		return 0
 	}
 
 	delta := p.totalBytesRead - p.lastTotalBytes
