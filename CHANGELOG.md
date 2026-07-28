@@ -1,5 +1,38 @@
 # Changelog
 
+## [4.10.0](https://github.com/Gaisberg/streamnzb/compare/v4.9.0...v4.10.0) (2026-07-28)
+
+
+### Features
+
+* **api:** explain how a profile scores a release ([3eb27cc](https://github.com/Gaisberg/streamnzb/commit/3eb27cc74584c7192586cdcfad96821f97215d61))
+* **config:** store a ranking profile on filter profiles ([1e78763](https://github.com/Gaisberg/streamnzb/commit/1e787636f4d0fb1ba74a10e00cc23fbac652a2a1))
+* **filters:** ship a permissive default profile ([1e0ab16](https://github.com/Gaisberg/streamnzb/commit/1e0ab168adff08902ad05f2831d7f154c8890eae))
+* **parser:** replace go-ptt with jhin ([84c48d2](https://github.com/Gaisberg/streamnzb/commit/84c48d25aa779fe076d0b63ce24a4c9937c1fca2))
+* **ranking:** decide eligibility, score and order in one engine ([900402f](https://github.com/Gaisberg/streamnzb/commit/900402ffaf95bd5bf4f1775bb854b7d2fe1113b5))
+* **search/ui:** simplify ranking sorting, restructure sidebar, and improve settings deletion ([a16af18](https://github.com/Gaisberg/streamnzb/commit/a16af18feb20fea98f2fb46851ea759c65459365))
+* **stremio:** recognise anime from metadata, not just Kitsu ([6a7093b](https://github.com/Gaisberg/streamnzb/commit/6a7093b8f6a6dddaed3f9880a04e5c7676f1fe30))
+* **ui:** give filters their own section ([ba80c19](https://github.com/Gaisberg/streamnzb/commit/ba80c19a31258d4a1d9e77b15a7dc15a8993c124))
+* **ui:** let preferences carry their own weight ([11dbe4c](https://github.com/Gaisberg/streamnzb/commit/11dbe4c8ed2a5587f0bb0fa060d93e5512e6b636))
+
+
+### Bug Fixes
+
+* address review findings on filter profiles ([ce1478b](https://github.com/Gaisberg/streamnzb/commit/ce1478be7be4fb59915e6a6cca57fde3ba60bf25))
+* **api:** push the config when streams change ([52e1960](https://github.com/Gaisberg/streamnzb/commit/52e19607ddb5f06573cd47d17480c88e189e0074))
+* **api:** return the per-content-type bindings with a stream ([a5665ac](https://github.com/Gaisberg/streamnzb/commit/a5665ac576a9b48deed051481e52960a1205d379))
+* **config:** clear deleted filter profiles from the streams using them ([4474d6f](https://github.com/Gaisberg/streamnzb/commit/4474d6fc6ab60cf9da2b4e0386478354316fad93))
+* **streams:** follow profile references on rename and validate them ([e82f3d0](https://github.com/Gaisberg/streamnzb/commit/e82f3d05b7c6b30a7c1920f46e1b249de83aa2bc))
+* **streams:** persist the per-content-type profile bindings ([23d4a02](https://github.com/Gaisberg/streamnzb/commit/23d4a02b20227ce4862bf8bc25e8b677300e78d5))
+* **stremio:** compile filter profiles when the server starts ([07fcb07](https://github.com/Gaisberg/streamnzb/commit/07fcb07ac619c8b4bed96c51b24887e049fa5238))
+* **ui:** stop carrying pre-migration fields onto new profiles ([8623860](https://github.com/Gaisberg/streamnzb/commit/8623860235731fe8c760923118b6c22f903e3b63))
+* **usenet/nntp:** reset speed baseline on polling gap to prevent initial frontend speed spike ([15657bd](https://github.com/Gaisberg/streamnzb/commit/15657bd205b1f12103a7d55effeb3e7906e07b96))
+
+
+### Performance Improvements
+
+* **ranking:** parse each release once per playlist ([c7d1013](https://github.com/Gaisberg/streamnzb/commit/c7d10133ba907c9f4aba1dd1cd8f3389193a03b7))
+
 ## [4.9.0](https://github.com/Gaisberg/streamnzb/compare/v4.8.0...v4.9.0) (2026-07-22)
 
 
