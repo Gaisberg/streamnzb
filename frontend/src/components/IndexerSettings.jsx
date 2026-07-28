@@ -625,7 +625,7 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
     onStatus?.({ type: 'success', message: `Indexer "${draft.name || draft.url}" saved successfully.${CACHE_CLEARED_SUFFIX}` })
   }
 
-  const handleDelete = async (index) => {
+  const onRequestDelete = async (index) => {
     const indexer = indexers[index]
     if (!indexer) return
     let assignedStreams = []
@@ -635,14 +635,12 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
     } catch {
       assignedStreams = assignedStreamsForIndexer(streamsByName, indexer.name)
     }
-    if (assignedStreams.length > 0) {
-      setDeleteBlockedName(indexer.name || indexer.url || '')
-      onStatus?.({
-        type: 'error',
-        message: `Indexer "${indexer.name || indexer.url}" cannot be deleted while assigned to stream(s): ${assignedStreams.join(', ')}`
-      })
-      return
-    }
+    setDeleteTarget({ index, name: indexer.name || indexer.url || '', assignedStreams })
+  }
+
+  const handleDelete = async (index) => {
+    const indexer = indexers[index]
+    if (!indexer) return
     setDeleteBlockedName('')
     const nextIndexers = indexers.filter((_, currentIndex) => currentIndex !== index).map((item) => normalizeIndexerDraft(item))
     try {
@@ -737,7 +735,7 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button type="button" variant="destructive" size="icon" className="h-9 w-9" aria-label={`Delete indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => setDeleteTarget({ index, name: normalized.name || normalized.url })}>
+                                <Button type="button" variant="destructive" size="icon" className="h-9 w-9" aria-label={`Delete indexer ${normalized.name || normalized.url || index + 1}`} onClick={() => void onRequestDelete(index)}>
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
                               </TooltipTrigger>
@@ -806,7 +804,13 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
             if (!nextOpen) setDeleteTarget(null)
           }}
           title="Delete indexer?"
-          description={deleteTarget ? `Are you sure you want to delete indexer "${deleteTarget.name}"?` : ''}
+          description={
+            deleteTarget
+              ? deleteTarget.assignedStreams?.length > 0
+                ? `Indexer "${deleteTarget.name}" is currently used by stream(s): ${deleteTarget.assignedStreams.join(', ')}. Are you sure you want to delete it? It will also be removed from the configured streams.`
+                : `Are you sure you want to delete indexer "${deleteTarget.name}"?`
+              : ''
+          }
           confirmLabel="Delete"
           onConfirm={() => {
             const target = deleteTarget

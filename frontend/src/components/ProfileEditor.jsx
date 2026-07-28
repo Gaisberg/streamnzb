@@ -8,17 +8,10 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import {
-  DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors,
-} from "@dnd-kit/core"
-import {
-  SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
-} from "@dnd-kit/sortable"
-import { CSS } from "@dnd-kit/utilities"
-import { CircleHelp, GripVertical, RotateCcw, Search, Sparkles, X } from "lucide-react"
+import { CircleHelp, RotateCcw, Search, Sparkles, X } from "lucide-react"
 import {
   ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, PATTERN_PRESETS,
-  RESOLUTIONS, SORT_KEYS, effectivePolicy, formatScore,
+  RESOLUTIONS, effectivePolicy, formatScore,
 } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
 
@@ -344,36 +337,6 @@ function AttributeGroup({ group, ranking, onChange, query, modifiedOnly }) {
   )
 }
 
-function SortableRow({ id, index, meta }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn(
-        "flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5",
-        isDragging && "z-10 border-primary/40 shadow-lg"
-      )}
-    >
-      <button
-        type="button"
-        className="cursor-grab touch-none text-muted-foreground/60 transition-colors hover:text-foreground active:cursor-grabbing"
-        {...attributes}
-        {...listeners}
-        aria-label={`Reorder ${meta?.label || id}`}
-      >
-        <GripVertical className="h-4 w-4" />
-      </button>
-      <span className="w-5 text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm">{meta?.label || id}</div>
-        {meta?.hint && <div className="text-[11px] text-muted-foreground">{meta.hint}</div>}
-      </div>
-    </div>
-  )
-}
-
 export function ProfileEditor({ profile, onChange }) {
   const ranking = profile.ranking || {}
   const options = ranking.options || {}
@@ -383,24 +346,6 @@ export function ProfileEditor({ profile, onChange }) {
   const setRanking = (next) => onChange({ ...profile, ranking: next })
   const setOptions = (patch) => setRanking({ ...ranking, options: { ...options, ...patch } })
   const setLanguages = (patch) => setRanking({ ...ranking, languages: { ...(ranking.languages || {}), ...patch } })
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  )
-
-  const sortOrder = useMemo(() => {
-    const stored = profile.sort_order?.length ? profile.sort_order : SORT_KEYS.map((s) => s.key)
-    const known = stored.filter((k) => SORT_KEYS.some((s) => s.key === k))
-    return [...known, ...SORT_KEYS.map((s) => s.key).filter((k) => !known.includes(k))]
-  }, [profile.sort_order])
-
-  const onDragEnd = ({ active, over }) => {
-    if (!over || active.id === over.id) return
-    const from = sortOrder.indexOf(active.id)
-    const to = sortOrder.indexOf(over.id)
-    onChange({ ...profile, sort_order: arrayMove(sortOrder, from, to) })
-  }
 
   const enabledResolutions = RESOLUTIONS
     .filter((r) => ranking.resolutions?.[r.key] !== false)
@@ -421,7 +366,6 @@ export function ProfileEditor({ profile, onChange }) {
         </TabsTrigger>
         <TabsTrigger value="rules">Rules</TabsTrigger>
         <TabsTrigger value="languages">Languages</TabsTrigger>
-        <TabsTrigger value="sorting">Sorting</TabsTrigger>
       </TabsList>
 
       <TabsContent value="quality" className="space-y-5">
@@ -618,26 +562,6 @@ export function ProfileEditor({ profile, onChange }) {
             />
           </FieldRow>
         </div>
-      </TabsContent>
-
-      <TabsContent value="sorting" className="space-y-3">
-        <p className="text-xs text-muted-foreground">
-          Drag to reorder. Results are sorted by the first entry, and each one below it breaks ties in the one above.
-        </p>
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-          <SortableContext items={sortOrder} strategy={verticalListSortingStrategy}>
-            <div className="space-y-1.5">
-              {sortOrder.map((key, index) => (
-                <SortableRow
-                  key={key}
-                  id={key}
-                  index={index}
-                  meta={SORT_KEYS.find((s) => s.key === key)}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
       </TabsContent>
     </Tabs>
   )

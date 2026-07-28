@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Settings from '@/Settings'
 import Login from '@/components/Login'
 import ChangePassword from '@/components/ChangePassword'
@@ -60,11 +60,33 @@ function App() {
     setMustChangePassword,
   })
 
-  const chartData = history.map((h, i) => ({
-    time: h.time,
-    speed: h.speed,
-    conns: connHistory[i]?.conns ?? 0,
-  }))
+  const chartData = useMemo(() => {
+    const totalPoints = 20
+    const points = []
+    const count = history.length
+    const missing = Math.max(0, totalPoints - count)
+
+    for (let i = 0; i < missing; i++) {
+      const secAgo = totalPoints - i - 1
+      points.push({
+        time: `-${secAgo}s`,
+        speed: 0,
+        conns: 0,
+      })
+    }
+
+    for (let i = 0; i < count; i++) {
+      const secAgo = count - i - 1
+      const label = secAgo === 0 ? 'now' : `-${secAgo}s`
+      points.push({
+        time: history[i]?.time || (secAgo === 0 ? 'now' : `-${secAgo}s`),
+        speed: history[i]?.speed ?? 0,
+        conns: connHistory[i]?.conns ?? 0,
+      })
+    }
+
+    return points
+  }, [history, connHistory])
 
   useEffect(() => {
     const token = localStorage.getItem('auth_token')
@@ -169,7 +191,15 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  const isSettingsPage = activePage === 'settings'
+  const settingsTabMap = {
+    'settings': 'network',
+    'settings-network': 'network',
+    'settings-indexers': 'indexers',
+    'settings-providers': 'providers',
+    'settings-search': 'search_query',
+    'settings-advanced': 'advanced',
+  }
+  const isSettingsPage = activePage in settingsTabMap
   const availNZBEnabled = isAvailNZBEnabled(config?.availnzb_mode)
 
   const fetchAvailNZBStatus = useCallback(async (force = false) => {
@@ -326,6 +356,8 @@ function App() {
                 adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
                 indexerCaps={indexerCaps}
                 stats={stats}
+                activeTab={settingsTabMap[activePage] || 'network'}
+                hideTabs={true}
               />
             </div>
           )}

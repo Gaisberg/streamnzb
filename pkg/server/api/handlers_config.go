@@ -120,6 +120,8 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	})
 	applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
 	applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
+	dropDeletedProviders(newCfg.Streams, newCfg.Providers)
+	dropDeletedIndexers(newCfg.Streams, newCfg.Indexers)
 	dropDeletedFilterProfiles(newCfg.Streams, newCfg.FilterProfiles)
 	newCfg.ApplyProviderDefaults()
 	applyStreamAutoSelections(&newCfg)

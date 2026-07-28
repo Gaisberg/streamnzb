@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Settings, LogOut,
+  LayoutDashboard, Settings, LogOut, Network, Server, Globe, Search,
   Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal
 } from "lucide-react"
 import {
@@ -27,12 +27,18 @@ import { cn } from "@/lib/utils"
 const navMain = [
   { id: "dashboard", title: "Dashboard", icon: LayoutDashboard },
   { id: "statistics", title: "Statistics", icon: ChartColumn },
-  { id: "nzb-history", title: "NZB History", icon: History },
-  { id: "direct-play", title: "Direct Play", icon: PlayCircle },
+  { id: "nzb-history", title: "History", icon: History },
   { id: "logs", title: "Logs", icon: FileText },
+]
+
+const navSettings = [
+  { id: "settings-network", title: "Network", icon: Network },
+  { id: "settings-indexers", title: "Indexers", icon: Server },
+  { id: "settings-providers", title: "Providers", icon: Globe },
   { id: "filters", title: "Filters", icon: SlidersHorizontal },
-  { id: "settings", title: "Settings", icon: Settings },
+  { id: "settings-search", title: "Search", icon: Search },
   { id: "install", title: "Streams", icon: Zap },
+  { id: "settings-advanced", title: "Advanced", icon: Settings },
 ]
 
 const DiscordIcon = (props) => (
@@ -93,24 +99,36 @@ export function AppSidebar({
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  tooltip="Discord"
-                  onClick={() => window.open('https://snzb.stream/discord', '_blank')}
-                >
-                  <DiscordIcon className="size-4" />
-                  <span>Discord</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Theme selector - pushed to bottom */}
+        {/* Settings group */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Settings</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {navSettings.map((item) => (
+                <SidebarMenuItem key={item.id}>
+                  <SidebarMenuButton
+                    isActive={activePage === item.id}
+                    tooltip={item.title}
+                    onClick={() => onNavigate(item.id)}
+                  >
+                    <item.icon />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        {/* Theme selector and Discord - pushed to bottom */}
         <SidebarGroup className="mt-auto">
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
+              <SidebarMenuItem className="pb-1">
                 <ToggleGroup
                   type="single"
                   value={theme}
@@ -127,6 +145,15 @@ export function AppSidebar({
                     <Monitor className="size-4" />
                   </ToggleGroupItem>
                 </ToggleGroup>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip="Discord"
+                  onClick={() => window.open('https://snzb.stream/discord', '_blank')}
+                >
+                  <DiscordIcon className="size-4" />
+                  <span>Discord</span>
+                </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>

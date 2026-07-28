@@ -103,23 +103,6 @@ func TestProfileSortOrder(t *testing.T) {
 	}
 }
 
-// Size is a Usenet signal jhin cannot see, so it is compared here.
-func TestSortBySize(t *testing.T) {
-	profile := profileFor(t, config.FilterProfileConfig{
-		Name:      "BySize",
-		SortOrder: []string{"size"},
-	})
-
-	cands := candidatesFor("Movie 2020 1080p WEB-DL-A", "Movie 2020 1080p WEB-DL-B")
-	cands[0].Release.Size = 1 << 30
-	cands[1].Release.Size = 8 << 30
-
-	got := keptTitles(profile.Apply(cands, rank.RankOptions{}))
-	if len(got) != 2 || got[0] != "Movie 2020 1080p WEB-DL-B" {
-		t.Errorf("expected the larger release first, got %v", got)
-	}
-}
-
 // Every request lands in exactly one kind, so selection is never ambiguous.
 func TestKindClassifiesRequests(t *testing.T) {
 	tests := []struct {

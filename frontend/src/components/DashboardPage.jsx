@@ -211,7 +211,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
         <Card className="overflow-hidden">
         <CardHeader>
           <CardTitle>Network activity</CardTitle>
-          <CardDescription>Speed (Mbps) and active connections over time</CardDescription>
+          <CardDescription>Speed (Mbps) and active connections over the last 20 seconds</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <ChartContainer config={chartConfig} className="h-[200px] w-full">
@@ -306,7 +306,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
               <Globe className="h-5 w-5 text-primary" />
               <CardTitle className="text-lg font-semibold tracking-tight">Usenet Providers</CardTitle>
             </div>
-            <CardDescription>All configured providers and their current load.</CardDescription>
+            <CardDescription>All configured providers and their daily usage & load.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
@@ -349,7 +349,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
                         <div className="bg-primary h-full transition-all duration-500 rounded-full" style={{ width: `${loadPct}%` }} />
                       </div>
                       <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                        <span>Downloaded: {(p.downloaded_mb ?? 0).toFixed(1)} MB</span>
+                        <span>Downloaded today: {(p.downloaded_mb ?? 0).toFixed(1)} MB</span>
                         <TooltipProvider delayDuration={100}>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -378,7 +378,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
               <MonitorPlay className="h-5 w-5 text-primary" />
               <CardTitle className="text-lg font-semibold tracking-tight">Indexers</CardTitle>
             </div>
-            <CardDescription>All configured indexers and their current usage.</CardDescription>
+            <CardDescription>All configured indexers and their daily usage.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">

@@ -549,7 +549,7 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
     onStatus?.({ type: 'success', message: `Provider "${draft.name || draft.host}" saved successfully.${CACHE_CLEARED_SUFFIX}` })
   }
 
-  const handleDelete = async (index) => {
+  const onRequestDelete = async (index) => {
     const provider = providers[index]
     if (!provider) return
     let assignedStreams = []
@@ -559,14 +559,12 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
     } catch {
       assignedStreams = assignedStreamsForProvider(streamsByName, provider.name)
     }
-    if (assignedStreams.length > 0) {
-      setDeleteBlockedName(provider.name || provider.host || '')
-      onStatus?.({
-        type: 'error',
-        message: `Provider "${provider.name || provider.host}" cannot be deleted while assigned to stream(s): ${assignedStreams.join(', ')}`
-      })
-      return
-    }
+    setDeleteTarget({ index, name: provider.name || provider.host || '', assignedStreams })
+  }
+
+  const handleDelete = async (index) => {
+    const provider = providers[index]
+    if (!provider) return
     setDeleteBlockedName('')
     const nextProviders = providers.filter((_, currentIndex) => currentIndex !== index)
     try {
@@ -665,7 +663,7 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
                               </Tooltip>
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" onClick={() => setDeleteTarget({ index, name: normalized.name || normalized.host })}>
+                                  <Button type="button" variant="destructive" size="icon" className="h-9 w-9" onClick={() => void onRequestDelete(index)}>
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
                                 </TooltipTrigger>
@@ -734,7 +732,13 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
             if (!nextOpen) setDeleteTarget(null)
           }}
           title="Delete provider?"
-          description={deleteTarget ? `Are you sure you want to delete provider "${deleteTarget.name}"?` : ''}
+          description={
+            deleteTarget
+              ? deleteTarget.assignedStreams?.length > 0
+                ? `Provider "${deleteTarget.name}" is currently used by stream(s): ${deleteTarget.assignedStreams.join(', ')}. Are you sure you want to delete it? It will also be removed from the configured streams.`
+                : `Are you sure you want to delete provider "${deleteTarget.name}"?`
+              : ''
+          }
           confirmLabel="Delete"
           onConfirm={() => {
             const target = deleteTarget
