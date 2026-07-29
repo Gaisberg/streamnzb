@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.11.0](https://github.com/Gaisberg/streamnzb/compare/v4.10.0...v4.11.0) (2026-07-29)
+
+
+### Features
+
+* **frontend:** retain active page on browser refresh using URL hash navigation ([84d33f7](https://github.com/Gaisberg/streamnzb/commit/84d33f74f105068befb45386606de042e7c0a848))
+* **ui/filters:** add language combobox search, preferred language scoring slider, and clean linting ([eafcca9](https://github.com/Gaisberg/streamnzb/commit/eafcca9b415aacdf8a9f3e3e4d2e51835c2e43e3))
+
 ## [4.10.0](https://github.com/Gaisberg/streamnzb/compare/v4.9.0...v4.10.0) (2026-07-28)
 
 
