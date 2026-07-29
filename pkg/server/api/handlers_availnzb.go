@@ -12,6 +12,7 @@ import (
 type availNZBStatusResponse struct {
 	Status      *availnzb.MeResponse `json:"status,omitempty"`
 	StatusError string               `json:"status_error,omitempty"`
+	APIKey      string               `json:"api_key,omitempty"`
 }
 
 func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,7 @@ func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(availNZBStatusResponse{
 			StatusError: fmt.Sprintf("Failed to fetch AvailNZB key status: %v", err),
+			APIKey:      availNZBAPIKey,
 		})
 		return
 	}
@@ -56,5 +58,6 @@ func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(availNZBStatusResponse{
 		Status: status,
+		APIKey: availNZBAPIKey,
 	})
 }

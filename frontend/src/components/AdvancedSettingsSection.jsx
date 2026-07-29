@@ -1,6 +1,6 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
-import { Loader2, AlertTriangle, Save, Paintbrush } from "lucide-react"
+import { Loader2, AlertTriangle, Save, Paintbrush, Copy, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -9,6 +9,7 @@ import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDes
 import { PasswordInput } from "@/components/ui/password-input"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { apiFetch } from '@/api'
 import { normalizeAvailNZBMode } from "@/lib/availnzb"
 import { cn } from "@/lib/utils"
 
@@ -90,12 +91,43 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [pendingTabChange, setPendingTabChange] = useState('')
   const [showUnsavedHighlights, setShowUnsavedHighlights] = useState(false)
+  const [availKeyInfo, setAvailKeyInfo] = useState({ key: '', url: '', status: null, loading: true })
+  const [copiedKey, setCopiedKey] = useState(false)
   const dirtyRef = useRef(false)
 
   const form = useForm({ defaultValues: defaults })
   const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
   const watchedValues = useWatch({ control })
   const availNZBModeEnabled = normalizeAvailNZBMode(watchedValues?.availnzb_mode) === 'on'
+
+  const fetchAvailKeyInfo = useCallback(() => {
+    apiFetch('/api/availnzb/status')
+      .then((res) => {
+        if (res) {
+          setAvailKeyInfo({
+            key: res.api_key || '',
+            url: res.url || '',
+            status: res.status || null,
+            statusError: res.status_error || null,
+            loading: false,
+          })
+        }
+      })
+      .catch(() => {
+        setAvailKeyInfo((prev) => ({ ...prev, loading: false }))
+      })
+  }, [])
+
+  useEffect(() => {
+    fetchAvailKeyInfo()
+  }, [fetchAvailKeyInfo])
+
+  const handleCopyKey = () => {
+    if (!availKeyInfo.key) return
+    navigator.clipboard.writeText(availKeyInfo.key)
+    setCopiedKey(true)
+    setTimeout(() => setCopiedKey(false), 2000)
+  }
 
   useEffect(() => {
     if (saveStatus?.type === 'error' && saveStatus.errors) {
@@ -478,6 +510,42 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                       <FormMessage />
                     </FormItem>
                   )} />
+                  <div className="relative rounded-none border-0 p-3">
+                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className={labelClass}>AvailNZB API Key</label>
+                        {availKeyInfo.status?.trust_level && (
+                          <span className="text-xs text-muted-foreground">
+                            Trust level: <strong className="capitalize text-foreground">{availKeyInfo.status.trust_level}</strong>
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1">
+                          <PasswordInput
+                            readOnly
+                            value={availKeyInfo.key || (availKeyInfo.loading ? 'Loading key...' : 'Auto-generated on startup')}
+                            className="h-9 w-full font-mono text-xs"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!availKeyInfo.key}
+                          onClick={handleCopyKey}
+                          className="h-9 shrink-0 gap-1.5 px-3"
+                        >
+                          {copiedKey ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                          {copiedKey ? 'Copied' : 'Copy'}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Your unique AvailNZB client API key. Used to contribute to and query the community availability database.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
