@@ -27,7 +27,30 @@ function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false)
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'system')
   const hasLoggedOutRef = useRef(false)
-  const [activePage, setActivePage] = useState('dashboard')
+  const getInitialPageFromHash = () => {
+    const hash = window.location.hash.replace(/^#\/?/, '')
+    return hash || 'dashboard'
+  }
+
+  const [activePage, setActivePage] = useState(getInitialPageFromHash)
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace(/^#\/?/, '')
+      setActivePage(hash || 'dashboard')
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange)
+    }
+  }, [])
+
+  const handleNavigate = useCallback((page) => {
+    setActivePage(page)
+    if (window.location.hash.replace(/^#\/?/, '') !== page) {
+      window.location.hash = page
+    }
+  }, [])
   const [availNZBStatus, setAvailNZBStatus] = useState(null)
   const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
   const [availNZBStatusError, setAvailNZBStatusError] = useState('')
@@ -279,7 +302,7 @@ function App() {
     <SidebarProvider>
       <AppSidebar
         activePage={activePage}
-        onNavigate={setActivePage}
+        onNavigate={handleNavigate}
         version={version}
         currentUser={currentUser}
         forcePasswordResetEnabled={Boolean(config?.env_overrides?.includes('admin_must_change_password'))}
