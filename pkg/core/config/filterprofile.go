@@ -50,6 +50,8 @@ func DefaultFilterProfile() FilterProfileConfig {
 	// Score orders results, it does not reject them: a release demoted by
 	// several traits should sort last, not fall through the floor.
 	profile.Options.MinRank = noScoreFloor
+	profile.Options.PreferredBonus = 10000
+	profile.Languages.Preferred = []string{"en"}
 
 	profile.Attributes = defaultAttributePolicies()
 
@@ -78,5 +80,6 @@ func defaultAttributePolicies() map[rank.Attr]rank.Policy {
 			policies[attr] = rank.Policy{Fetch: true, Rank: policy.Rank}
 		}
 	}
+	policies[rank.AttrRemux] = rank.Policy{Fetch: true, Rank: 5000}
 	return policies
 }

@@ -721,25 +721,34 @@ func buildUnavailableDetailsURLs(availCtx *AvailContext) map[string]bool {
 }
 
 func filterCandidates(merged []triage.Candidate, isAIOStreams, filteringActive bool, unavailableDetailsURLs map[string]bool) []triage.Candidate {
-	if len(unavailableDetailsURLs) == 0 && !filteringActive {
+	if len(merged) == 0 {
 		return merged
 	}
-	var seenTitle map[string]bool
-	if isAIOStreams {
-		seenTitle = make(map[string]bool)
-	}
-	// Build a new slice instead of compacting in-place, so callers that keep a
-	// reference to the original candidate list (for metrics accounting) are not
-	// accidentally mutated by filtering.
+	seenTitle := make(map[string]bool)
+	seenDetailsURL := make(map[string]bool)
+	seenGUID := make(map[string]bool)
+
 	filtered := make([]triage.Candidate, 0, len(merged))
 	for _, c := range merged {
 		if c.Release == nil {
 			continue
 		}
-		if c.Release.DetailsURL != "" && unavailableDetailsURLs[c.Release.DetailsURL] {
-			continue
+		if c.Release.DetailsURL != "" {
+			if unavailableDetailsURLs != nil && unavailableDetailsURLs[c.Release.DetailsURL] {
+				continue
+			}
+			if seenDetailsURL[c.Release.DetailsURL] {
+				continue
+			}
+			seenDetailsURL[c.Release.DetailsURL] = true
 		}
-		if seenTitle != nil && c.Release.Title != "" {
+		if c.Release.GUID != "" {
+			if seenGUID[c.Release.GUID] {
+				continue
+			}
+			seenGUID[c.Release.GUID] = true
+		}
+		if c.Release.Title != "" {
 			titleKey := release.NormalizeTitleForDedup(c.Release.Title)
 			if titleKey != "" {
 				if seenTitle[titleKey] {

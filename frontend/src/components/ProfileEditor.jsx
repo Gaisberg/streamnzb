@@ -10,7 +10,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { CircleHelp, RotateCcw, Search, Sparkles, X } from "lucide-react"
 import {
-  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, PATTERN_PRESETS,
+  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, LANGUAGE_OPTIONS, PATTERN_PRESETS,
   RESOLUTIONS, effectivePolicy, formatScore,
 } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
@@ -138,6 +138,108 @@ function PatternInput({ label, hint, values = [], onChange, placeholder, suggest
               {s}
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LanguageSearchInput({ label, hint, values = [], onChange, placeholder }) {
+  const [query, setQuery] = useState("")
+  const [open, setOpen] = useState(false)
+
+  const filteredOptions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return LANGUAGE_OPTIONS.filter(
+      (opt) =>
+        !values.includes(opt.code) &&
+        (opt.name.toLowerCase().includes(q) || opt.code.toLowerCase().includes(q))
+    )
+  }, [query, values])
+
+  const add = (code) => {
+    const target = (code || query).trim().toLowerCase()
+    if (!target || values.includes(target)) {
+      setQuery("")
+      setOpen(false)
+      return
+    }
+    onChange([...values, target])
+    setQuery("")
+    setOpen(false)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm font-medium">{label}</Label>
+        {hint && <Hint>{hint}</Hint>}
+      </div>
+
+      <div className="relative">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setOpen(true)
+              }}
+              onFocus={() => setOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  add()
+                }
+              }}
+              placeholder={placeholder || "Search language by name or code… (e.g. English, Finnish, ja)"}
+              className="h-9 pl-8"
+            />
+          </div>
+          <Button type="button" variant="secondary" size="sm" className="h-9 px-4" onClick={() => add()}>
+            Add
+          </Button>
+        </div>
+
+        {open && filteredOptions.length > 0 && query.trim() !== "" && (
+          <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md">
+            {filteredOptions.slice(0, 15).map((opt) => (
+              <button
+                key={opt.code}
+                type="button"
+                className="flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+                onClick={() => add(opt.code)}
+              >
+                <span>{opt.name}</span>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  {opt.code}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {values.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {values.map((code) => {
+            const match = LANGUAGE_OPTIONS.find((o) => o.code === code)
+            const labelText = match ? `${match.name} (${code})` : code
+            return (
+              <Badge key={code} variant="secondary" className="gap-1 pr-1 font-normal">
+                {labelText}
+                <button
+                  type="button"
+                  onClick={() => onChange(values.filter((v) => v !== code))}
+                  className="rounded-sm opacity-60 transition-opacity hover:opacity-100"
+                  aria-label={`Remove ${code}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )
+          })}
         </div>
       )}
     </div>
@@ -521,30 +623,51 @@ export function ProfileEditor({ profile, onChange }) {
       </TabsContent>
 
       <TabsContent value="languages" className="space-y-5">
-        <PatternInput
+        <LanguageSearchInput
           label="Required"
           hint="A release must include at least one of these languages. Groups are accepted too: anime, common, non_anime, all."
           values={ranking.languages?.required || []}
           onChange={(v) => setLanguages({ required: v })}
-          placeholder="en"
-          suggestions={LANGUAGE_CODES}
+          placeholder="Search language or group to require…"
         />
-        <PatternInput
+        <LanguageSearchInput
           label="Excluded"
           hint="Releases including any of these are rejected."
           values={ranking.languages?.exclude || []}
           onChange={(v) => setLanguages({ exclude: v })}
-          placeholder="ru"
-          suggestions={[...LANGUAGE_GROUPS, ...LANGUAGE_CODES]}
+          placeholder="Search language or group to exclude…"
         />
-        <PatternInput
+        <LanguageSearchInput
           label="Preferred"
           hint="Adds the preference bonus when matched."
           values={ranking.languages?.preferred || []}
           onChange={(v) => setLanguages({ preferred: v })}
-          placeholder="en"
-          suggestions={LANGUAGE_CODES}
+          placeholder="Search language or group to prefer…"
         />
+
+        <div className="rounded-lg border border-border/60 bg-card/40 px-3.5 py-3 space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Label className="text-sm font-normal">Preferred language score bonus</Label>
+              <Hint>Score bonus added to releases matching any language in your preferred list.</Hint>
+            </div>
+            <span className={cn(
+              "w-20 text-right font-mono text-xs tabular-nums font-semibold",
+              (options.preferred_bonus ?? 10000) > 0 ? "text-emerald-500" : (options.preferred_bonus ?? 10000) < 0 ? "text-destructive" : "text-muted-foreground"
+            )}>
+              {formatScore(options.preferred_bonus ?? 10000)}
+            </span>
+          </div>
+          <Slider
+            value={[Math.max(SCORE_MIN, Math.min(SCORE_MAX, options.preferred_bonus ?? 10000))]}
+            min={SCORE_MIN}
+            max={SCORE_MAX}
+            step={100}
+            onValueChange={([v]) => setOptions({ preferred_bonus: v })}
+            className="w-full"
+          />
+        </div>
+
         <div className="space-y-2">
           <FieldRow
             label="Always allow English"

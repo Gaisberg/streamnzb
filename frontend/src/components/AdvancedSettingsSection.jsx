@@ -197,7 +197,6 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
     showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
   )
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
-  const inlineFieldRowClass = "flex items-center justify-between gap-4"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
   const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
   const labelClass = "min-w-0 text-sm font-medium"

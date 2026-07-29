@@ -172,12 +172,6 @@ function normalizeName(value) {
   return (value || '').trim().toLowerCase()
 }
 
-function truncateCompactValue(value, maxLength = 28) {
-  const text = String(value || '').trim()
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, maxLength - 3)}...`
-}
-
 function defaultIDTitleLanguages() {
   return [...DEFAULT_ID_TITLE_LANGUAGES]
 }

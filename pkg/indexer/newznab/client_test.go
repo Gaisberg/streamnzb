@@ -830,7 +830,6 @@ func TestSearchTVIDModeOmitsQueryWhenUsingTVSearchParams(t *testing.T) {
 	}
 }
 
-
 func TestSearchTextModeOrdersQueryParams(t *testing.T) {
 	var gotRawQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -79,7 +79,7 @@ function App() {
       const secAgo = count - i - 1
       const label = secAgo === 0 ? 'now' : `-${secAgo}s`
       points.push({
-        time: history[i]?.time || (secAgo === 0 ? 'now' : `-${secAgo}s`),
+        time: history[i]?.time || label,
         speed: history[i]?.speed ?? 0,
         conns: connHistory[i]?.conns ?? 0,
       })

@@ -139,8 +139,6 @@ func SelectName(byKind map[string]string, fallback, kind string) string {
 	return strings.TrimSpace(fallback)
 }
 
-
-
 // Result is one release after jhin has judged it.
 type Result struct {
 	Candidate triage.Candidate

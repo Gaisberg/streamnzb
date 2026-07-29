@@ -483,7 +483,7 @@ func gf16InvertMatrix(matrix [][]uint16) ([][]uint16, error) {
 		pivotRow := -1
 		for r := i; r < n; r++ {
 			if aug[r][i] != 0 {
-				pivotRow = r;
+				pivotRow = r
 				break
 			}
 		}
@@ -532,11 +532,15 @@ type par2NopReadSeekCloser struct {
 
 func (n *par2NopReadSeekCloser) Close() error { return nil }
 
-func (f *byteBufferUnpackableFile) Name() string                                                 { return f.name }
-func (f *byteBufferUnpackableFile) Size() int64                                                { return int64(len(f.data)) }
-func (f *byteBufferUnpackableFile) EnsureSegmentMap() error                                    { return nil }
-func (f *byteBufferUnpackableFile) OpenStream() (io.ReadSeekCloser, error)                     { return &par2NopReadSeekCloser{bytes.NewReader(f.data)}, nil }
-func (f *byteBufferUnpackableFile) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) { return &par2NopReadSeekCloser{bytes.NewReader(f.data)}, nil }
+func (f *byteBufferUnpackableFile) Name() string            { return f.name }
+func (f *byteBufferUnpackableFile) Size() int64             { return int64(len(f.data)) }
+func (f *byteBufferUnpackableFile) EnsureSegmentMap() error { return nil }
+func (f *byteBufferUnpackableFile) OpenStream() (io.ReadSeekCloser, error) {
+	return &par2NopReadSeekCloser{bytes.NewReader(f.data)}, nil
+}
+func (f *byteBufferUnpackableFile) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
+	return &par2NopReadSeekCloser{bytes.NewReader(f.data)}, nil
+}
 func (f *byteBufferUnpackableFile) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
 	if offset < 0 || offset >= int64(len(f.data)) {
 		return io.NopCloser(bytes.NewReader(nil)), nil
