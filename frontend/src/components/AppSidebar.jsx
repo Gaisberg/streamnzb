@@ -124,11 +124,11 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Theme selector and Discord - pushed to bottom */}
+        {/* Theme selector - pushed to bottom */}
         <SidebarGroup className="mt-auto">
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem className="pb-1">
+              <SidebarMenuItem>
                 <ToggleGroup
                   type="single"
                   value={theme}
@@ -146,15 +146,6 @@ export function AppSidebar({
                   </ToggleGroupItem>
                 </ToggleGroup>
               </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  tooltip="Discord"
-                  onClick={() => window.open('https://snzb.stream/discord', '_blank')}
-                >
-                  <DiscordIcon className="size-4" />
-                  <span>Discord</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -162,6 +153,15 @@ export function AppSidebar({
 
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip="Discord"
+              onClick={() => window.open('https://snzb.stream/discord', '_blank')}
+            >
+              <DiscordIcon className="size-4" />
+              <span>Discord</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Buy me a coffee"
