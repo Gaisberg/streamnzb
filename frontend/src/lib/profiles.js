@@ -239,7 +239,6 @@ export const SORT_KEYS = [
   { key: "grabs", label: "Grabs", hint: "Most grabbed first" },
 ]
 
-// Content kinds partition every request, so exactly one profile ever applies.
 // Common weighted patterns, so the usual preferences do not need a regex.
 // These match on the release name, which is the only place they appear.
 export const PATTERN_PRESETS = [
@@ -251,18 +250,14 @@ export const PATTERN_PRESETS = [
   { label: "Hardcoded subs", pattern: "\\bHC\\b|\\bHardsub", rank: -3000 },
 ]
 
+// Content kinds partition every request, so exactly one profile ever applies.
+// A profile itself is global; a stream picks which one each kind uses.
 export const CONTENT_KINDS = [
   { key: "movie", label: "Movies" },
   { key: "series", label: "Shows" },
   { key: "anime_movie", label: "Anime films" },
   { key: "anime_show", label: "Anime shows" },
 ]
-
-// eligibleProfiles returns the profiles offered for a kind. An untagged
-// profile is offered everywhere.
-export function eligibleProfiles(profiles = [], kind) {
-  return profiles.filter((p) => !p.applies_to?.length || p.applies_to.includes(kind))
-}
 
 // The traits a new profile rejects, matching defaultBlockedAttrs in
 // pkg/core/config/filterprofile.go: the CAM-class rips, the fake audio dubbed
@@ -331,7 +326,6 @@ export function defaultProfile(name = "New Profile") {
   return {
     name,
     ranking: defaultRankProfile(name),
-    applies_to: [],
     sort_order: ["resolution", "rank", "size", "age"],
   }
 }

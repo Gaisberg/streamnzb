@@ -98,6 +98,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeSaveStatus(w, "error", "Failed to prepare config update", nil)
 		return
 	}
+	clearPatchedFilterProfiles(body, &newCfg)
 	if err := json.Unmarshal(body, &newCfg); err != nil {
 		s.writeSaveStatus(w, "error", "Invalid config data", nil)
 		return

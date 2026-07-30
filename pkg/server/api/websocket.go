@@ -237,6 +237,7 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 			trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Failed to prepare config update"}`)})
 			return
 		}
+		clearPatchedFilterProfiles(payload, &newCfg)
 		if err := json.Unmarshal(payload, &newCfg); err != nil {
 			trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Invalid config data"}`)})
 			return
@@ -776,6 +777,28 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateTVDBAPIKey:             true,
 		validateSpeculativePreProbing:  true,
 		validateFilterProfiles:         true,
+	}
+}
+
+// clearPatchedFilterProfiles empties the filter profiles a save is about to
+// replace, so the patch lands on a clean slate.
+//
+// A save is applied by seeding the config from the current one and unmarshalling
+// the patch over it. encoding/json merges rather than replaces: decoding into a
+// non-nil map keeps the entries the patch does not mention. A profile's
+// attribute overrides are such a map, so resetting a trait back to its default —
+// which drops its key — left the old override in place and the reset never
+// stuck. Nil-ing the slice first makes the patch authoritative.
+func clearPatchedFilterProfiles(body []byte, cfg *config.Config) {
+	if len(body) == 0 || cfg == nil {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return
+	}
+	if _, ok := raw["filter_profiles"]; ok {
+		cfg.FilterProfiles = nil
 	}
 }
 

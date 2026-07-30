@@ -112,10 +112,6 @@ type FilterProfileConfig struct {
 	// migration, in which case it is synthesized from the legacy fields on load.
 	Ranking *rank.Profile `json:"ranking,omitempty"`
 
-	// AppliesTo restricts this profile to certain content: "movie", "series",
-	// "anime". Empty means it is selectable for anything.
-	AppliesTo []string `json:"applies_to,omitempty"`
-
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
 	AllowedQualities   []string `json:"allowed_qualities,omitempty"`
