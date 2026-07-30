@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { CONTENT_KINDS, eligibleProfiles } from "@/lib/profiles"
+import { CONTENT_KINDS } from "@/lib/profiles"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -578,17 +578,16 @@ function StreamDialog({
                   Apply a predefined stream mode (like AIOStreams) or select a filter profile to decide which releases this stream offers.
                 </p>
 
-                {(filterProfiles || []).length > 0 && (
+                {/* AIOStreams returns every release for AIOStreams itself to filter, so
+                    per-content-type profiles have nothing to act on and are hidden. */}
+                {!aiostreamsMode && (filterProfiles || []).length > 0 && (
                   <div className="mt-4 space-y-2 border-t border-border/60 pt-3">
                     <div className="text-sm font-medium">By content type</div>
                     <p className="text-sm text-muted-foreground">
-                      {draft.filter_sorting_mode === 'aiostreams'
-                        ? 'AIOStreams mode returns every release and lets AIOStreams filter them, so profiles are not applied. Switch Filter/Sorting off AIOStreams to use them.'
-                        : 'Override the profile above for a specific kind of content. Anything left on Default uses the profile selected above. Anime means animation that is not originally in English, which needs TMDB configured to detect outside of Kitsu catalogues.'}
+                      Override the profile above for a specific kind of content. Anything left on Default uses the profile selected above. Anime means animation that is not originally in English, which needs TMDB configured to detect outside of Kitsu catalogues.
                     </p>
-                    <div className={`grid gap-2 pt-1 sm:grid-cols-2 ${draft.filter_sorting_mode === 'aiostreams' ? 'opacity-50' : ''}`}>
+                    <div className="grid gap-2 pt-1 sm:grid-cols-2">
                       {CONTENT_KINDS.map((kind) => {
-                        const options = eligibleProfiles(filterProfiles || [], kind.key)
                         const current = draft.filter_profile_by_type?.[kind.key] || ''
                         const setKind = (name) => setDraft((prev) => {
                           const next = { ...(prev.filter_profile_by_type || {}) }
@@ -601,19 +600,14 @@ function StreamDialog({
                             <span className="text-sm text-muted-foreground">{kind.label}</span>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  disabled={draft.filter_sorting_mode === 'aiostreams'}
-                                  className="h-8 w-44 justify-between"
-                                >
+                                <Button type="button" variant="outline" className="h-8 w-44 justify-between">
                                   <span className="truncate text-xs">{current || 'Default'}</span>
                                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-44 max-h-60 overflow-y-auto">
                                 <DropdownMenuItem onClick={() => setKind('')}>Default</DropdownMenuItem>
-                                {options.map((fp) => (
+                                {(filterProfiles || []).map((fp) => (
                                   <DropdownMenuItem key={fp.name} onClick={() => setKind(fp.name)}>
                                     {fp.name}
                                   </DropdownMenuItem>

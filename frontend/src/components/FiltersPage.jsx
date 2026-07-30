@@ -150,14 +150,6 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
     commit(next)
   }
 
-  const toggleKind = (kind) => {
-    const current = draft.applies_to || []
-    setDraft({
-      ...draft,
-      applies_to: current.includes(kind) ? current.filter((k) => k !== kind) : [...current, kind],
-    })
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -223,15 +215,6 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
                       </span>
                     : <span className="text-muted-foreground/70">Not in use</span>}
                 </div>
-                {profile.applies_to?.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
-                    {profile.applies_to.map((kind) => (
-                      <Badge key={kind} variant="secondary" className="text-[10px]">
-                        {CONTENT_KINDS.find((k) => k.key === kind)?.label || kind}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
               </button>
             ))}
           </div>
@@ -241,7 +224,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
               <Card className="border border-border bg-card">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base font-semibold">Profile</CardTitle>
-                  <CardDescription>Give it a name and choose what it applies to.</CardDescription>
+                  <CardDescription>Give it a name, then assign it to a stream from the Streams page.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-1.5">
@@ -252,33 +235,6 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
                       onChange={(e) => { setDraft({ ...draft, name: e.target.value }); setNameError("") }}
                     />
                     {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label>Applies to</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Leave these off to use this profile for anything.
-                    </p>
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {CONTENT_KINDS.map((kind) => {
-                        const on = (draft.applies_to || []).includes(kind.key)
-                        return (
-                          <button
-                            key={kind.key}
-                            type="button"
-                            onClick={() => toggleKind(kind.key)}
-                            className={cn(
-                              "rounded-md border px-3 py-1.5 text-xs transition-colors",
-                              on
-                                ? "border-primary/40 bg-primary/10 text-foreground"
-                                : "border-border text-muted-foreground hover:text-foreground"
-                            )}
-                          >
-                            {kind.label}
-                          </button>
-                        )
-                      })}
-                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 pt-1">

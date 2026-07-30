@@ -407,3 +407,62 @@ func TestValidateConfigTMDBAndTVDBAPIKeys(t *testing.T) {
 		t.Fatalf("expected empty keys to pass, got errors: %#v", errs)
 	}
 }
+
+// Resetting a trait back to its default drops its key from the profile's
+// attribute map. The save path unmarshals the patch over the current config, and
+// encoding/json keeps map entries the patch does not mention, so without
+// clearPatchedFilterProfiles the removed override would survive the round trip.
+func TestClearPatchedFilterProfilesDropsResetAttribute(t *testing.T) {
+	current := &config.Config{FilterProfiles: []config.FilterProfileConfig{config.DefaultFilterProfile()}}
+	currentJSON, err := json.Marshal(current)
+	if err != nil {
+		t.Fatalf("marshal current: %v", err)
+	}
+
+	// The UI sends the profile back with "cam" reset to its default.
+	profile := config.DefaultFilterProfile()
+	attrs := map[string]any{}
+	rawAttrs, err := json.Marshal(profile.Ranking.Attributes)
+	if err != nil {
+		t.Fatalf("marshal attributes: %v", err)
+	}
+	if err := json.Unmarshal(rawAttrs, &attrs); err != nil {
+		t.Fatalf("unmarshal attributes: %v", err)
+	}
+	delete(attrs, "cam")
+
+	body, err := json.Marshal(map[string]any{
+		"filter_profiles": []map[string]any{{
+			"name":    profile.Name,
+			"ranking": map[string]any{"name": profile.Name, "attributes": attrs},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	var newCfg config.Config
+	if err := json.Unmarshal(currentJSON, &newCfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	clearPatchedFilterProfiles(body, &newCfg)
+	if err := json.Unmarshal(body, &newCfg); err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+
+	if len(newCfg.FilterProfiles) != 1 {
+		t.Fatalf("expected 1 filter profile, got %d", len(newCfg.FilterProfiles))
+	}
+	if _, still := newCfg.FilterProfiles[0].Ranking.Attributes["cam"]; still {
+		t.Fatal("reset attribute survived the patch")
+	}
+}
+
+// A save that does not mention filter profiles must leave them untouched.
+func TestClearPatchedFilterProfilesLeavesUnrelatedPatchAlone(t *testing.T) {
+	cfg := &config.Config{FilterProfiles: []config.FilterProfileConfig{config.DefaultFilterProfile()}}
+	clearPatchedFilterProfiles([]byte(`{"keep_log_files":9}`), cfg)
+	if len(cfg.FilterProfiles) != 1 {
+		t.Fatalf("expected filter profiles preserved, got %d", len(cfg.FilterProfiles))
+	}
+}
