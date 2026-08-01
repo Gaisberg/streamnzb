@@ -15,6 +15,7 @@ import (
 	"streamnzb/pkg/search"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/tmdb"
+	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
 )
 
@@ -40,6 +41,7 @@ type resolvedSearchMetadata struct {
 	TVDetails              *tmdb.TVDetails
 	TVTranslations         *tmdb.TVTranslationsResponse
 	TVAlternativeTitles    *tmdb.TVAlternativeTitlesResponse
+	TVDBDetails            *tvdb.SeriesDetails
 }
 
 func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) string {
@@ -70,6 +72,12 @@ func metadataDisplayTitle(metadata *resolvedSearchMetadata, contentType string) 
 		}
 		return strings.TrimSpace(metadata.TVDetails.OriginalName)
 	}
+	if metadata.TVDBDetails != nil {
+		if title := strings.TrimSpace(metadata.TVDBDetails.Name); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.TVDBDetails.OriginalName)
+	}
 	return ""
 }
 
@@ -91,6 +99,12 @@ func metadataOriginalTitle(metadata *resolvedSearchMetadata, contentType string)
 			return title
 		}
 		return strings.TrimSpace(metadata.TVDetails.Name)
+	}
+	if metadata.TVDBDetails != nil {
+		if title := strings.TrimSpace(metadata.TVDBDetails.OriginalName); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.TVDBDetails.Name)
 	}
 	return ""
 }
@@ -153,6 +167,9 @@ func metadataDisplayYear(metadata *resolvedSearchMetadata, contentType string) s
 	}
 	if metadata.TVDetails != nil && len(metadata.TVDetails.FirstAirDate) >= 4 {
 		return metadata.TVDetails.FirstAirDate[:4]
+	}
+	if metadata.TVDBDetails != nil && len(metadata.TVDBDetails.FirstAired) >= 4 {
+		return metadata.TVDBDetails.FirstAired[:4]
 	}
 	return ""
 }
@@ -510,22 +527,27 @@ func buildSeriesSearchTitleFromMetadata(metadata *resolvedSearchMetadata, langua
 		}
 		return strings.TrimSpace(metadata.KitsuDetails.EnglishTitle)
 	}
-	if metadata.TVDetails == nil {
-		return ""
+	if metadata.TVDetails != nil {
+		title := strings.TrimSpace(metadata.TVDetails.Name)
+		if useOriginalTitleLanguage(language) {
+			title = preferredSeriesOriginalTitle(metadata)
+		} else if localized := localizedTVTitleForLanguage(metadata.TVTranslations, language); localized != "" {
+			title = localized
+		}
+		if title == "" {
+			title = strings.TrimSpace(metadata.TVDetails.Name)
+		}
+		if title != "" {
+			return title
+		}
 	}
-	title := strings.TrimSpace(metadata.TVDetails.Name)
-	if useOriginalTitleLanguage(language) {
-		title = preferredSeriesOriginalTitle(metadata)
-	} else if localized := localizedTVTitleForLanguage(metadata.TVTranslations, language); localized != "" {
-		title = localized
+	if metadata.TVDBDetails != nil {
+		if title := strings.TrimSpace(metadata.TVDBDetails.Name); title != "" {
+			return title
+		}
+		return strings.TrimSpace(metadata.TVDBDetails.OriginalName)
 	}
-	if title == "" {
-		title = strings.TrimSpace(metadata.TVDetails.Name)
-	}
-	if title == "" {
-		return ""
-	}
-	return title
+	return ""
 }
 
 func seriesYearFromMetadata(metadata *resolvedSearchMetadata) string {
@@ -535,10 +557,13 @@ func seriesYearFromMetadata(metadata *resolvedSearchMetadata) string {
 	if metadata.KitsuDetails != nil && metadata.KitsuDetails.Year != "" {
 		return metadata.KitsuDetails.Year
 	}
-	if metadata.TVDetails == nil || len(metadata.TVDetails.FirstAirDate) < 4 {
-		return ""
+	if metadata.TVDetails != nil && len(metadata.TVDetails.FirstAirDate) >= 4 {
+		return metadata.TVDetails.FirstAirDate[:4]
 	}
-	return metadata.TVDetails.FirstAirDate[:4]
+	if metadata.TVDBDetails != nil && len(metadata.TVDBDetails.FirstAired) >= 4 {
+		return metadata.TVDBDetails.FirstAired[:4]
+	}
+	return ""
 }
 
 func buildSeriesValidationQueryFromMetadata(metadata *resolvedSearchMetadata, language string, includeYear bool) string {
@@ -832,7 +857,7 @@ func buildMovieQueriesFromMetadata(metadata *resolvedSearchMetadata, language st
 }
 
 func buildSeriesQueriesFromMetadata(metadata *resolvedSearchMetadata, language string, includeYear bool, season, episode, scope string) []string {
-	if metadata == nil || metadata.TVDetails == nil {
+	if metadata == nil || (metadata.TVDetails == nil && metadata.TVDBDetails == nil && metadata.KitsuDetails == nil) {
 		return nil
 	}
 	primary := strings.TrimSpace(release.NormalizeTitleForSearchQuery(buildSeriesSearchTitleFromMetadata(metadata, language)))
@@ -1382,28 +1407,43 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			kitsuID = parts[1]
 		}
 		req.KitsuID = kitsuID
-	} else if (contentType == "series" || contentType == "anime") && strings.Contains(id, ":") {
+	} else if strings.HasPrefix(id, "tvdb:") {
 		parts := strings.Split(id, ":")
-		if parts[0] == "tmdb" && len(parts) >= 4 {
+		if len(parts) >= 4 {
+			req.TVDBID = parts[1]
 			searchID = parts[1]
 			req.Season, req.Episode = parts[2], parts[3]
-		} else if len(parts) >= 3 {
+		} else if len(parts) >= 2 {
+			req.TVDBID = parts[1]
+			searchID = parts[1]
+		}
+	} else if strings.HasPrefix(id, "tmdb:") {
+		parts := strings.Split(id, ":")
+		if len(parts) >= 4 {
+			req.TMDBID = parts[1]
+			searchID = parts[1]
+			req.Season, req.Episode = parts[2], parts[3]
+		} else if len(parts) >= 2 {
+			req.TMDBID = parts[1]
+			searchID = parts[1]
+		}
+	} else if strings.Contains(id, ":") {
+		parts := strings.Split(id, ":")
+		if len(parts) >= 3 {
 			searchID = parts[0]
 			req.Season, req.Episode = parts[1], parts[2]
 		} else if len(parts) > 0 {
 			searchID = parts[0]
 		}
-	} else if strings.HasPrefix(id, "tmdb:") {
-		searchID = strings.TrimPrefix(id, "tmdb:")
 	}
 	if strings.HasPrefix(searchID, "tt") {
 		req.IMDbID = searchID
-	} else if looksLikeTMDBID(searchID) {
+	} else if looksLikeTMDBID(searchID) && req.TVDBID == "" {
 		req.TMDBID = searchID
 	}
 	imdbForText := req.IMDbID
 	tmdbForText := req.TMDBID
-	if (contentType == "series" || contentType == "anime") && strings.Contains(id, ":") {
+	if strings.Contains(id, ":") {
 		parts := strings.Split(id, ":")
 		if parts[0] == "tmdb" && len(parts) >= 2 {
 			tmdbForText = parts[1]
@@ -1481,8 +1521,11 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 				if contentType == "movie" && len(findResp.MovieResults) > 0 {
 					resolved = strconv.Itoa(findResp.MovieResults[0].ID)
 				}
-				if contentType == "series" && len(findResp.TVResults) > 0 {
+				if (contentType == "series" || contentType == "anime" || contentType == "tv" || contentType == "documentary" || contentType == "other") && len(findResp.TVResults) > 0 {
 					resolved = strconv.Itoa(findResp.TVResults[0].ID)
+				}
+				if resolved == "" && len(findResp.MovieResults) > 0 {
+					resolved = strconv.Itoa(findResp.MovieResults[0].ID)
 				}
 				if resolved != "" {
 					req.TMDBID = resolved
@@ -1494,7 +1537,32 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		}
 	}
 
-	if contentType == "series" {
+	if req.TMDBID == "" && req.TVDBID != "" {
+		if s.tmdbClient == nil {
+			logMetadataResolutionState(contentType, id, "tmdb_find_tvdb", "tvdb_id", req.TVDBID, "status", "skipped", "reason", "tmdb_client_unconfigured")
+		} else {
+			findResp, findErr := s.tmdbClient.Find(req.TVDBID, "tvdb_id")
+			if findErr != nil {
+				logMetadataResolutionState(contentType, id, "tmdb_find_tvdb", "tvdb_id", req.TVDBID, "status", "failed", "err", findErr)
+			} else {
+				resolved := ""
+				if len(findResp.TVResults) > 0 {
+					resolved = strconv.Itoa(findResp.TVResults[0].ID)
+				} else if len(findResp.MovieResults) > 0 {
+					resolved = strconv.Itoa(findResp.MovieResults[0].ID)
+				}
+				if resolved != "" {
+					req.TMDBID = resolved
+					tmdbForText = req.TMDBID
+				} else {
+					logMetadataResolutionState(contentType, id, "tmdb_find_tvdb", "tvdb_id", req.TVDBID, "status", "empty")
+				}
+			}
+		}
+	}
+
+	isSeriesLike := contentType == "series" || contentType == "anime" || contentType == "tv" || (req.Season != "" && req.Episode != "")
+	if isSeriesLike {
 		if req.TMDBID != "" {
 			if s.tmdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "skipped", "reason", "tmdb_client_unconfigured")
@@ -1553,6 +1621,14 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 				}
 			} else if req.TVDBID == "" && s.tmdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tmdb_resolve_tvdb", "imdb_id", req.IMDbID, "status", "skipped", "reason", "tmdb_client_unconfigured")
+			}
+		}
+		if req.TMDBID == "" && req.TVDBID != "" && s.tvdbClient != nil {
+			if tvdbDetails, err := s.tvdbClient.GetSeriesDetails(req.TVDBID); err == nil && tvdbDetails != nil {
+				params.Metadata.TVDBDetails = tvdbDetails
+				logMetadataResolutionState(contentType, id, "tvdb_series_details", "tvdb_id", req.TVDBID, "status", "success", "title", tvdbDetails.Name)
+			} else if err != nil {
+				logMetadataResolutionState(contentType, id, "tvdb_series_details", "tvdb_id", req.TVDBID, "status", "failed", "err", err)
 			}
 		}
 	}

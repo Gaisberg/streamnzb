@@ -230,3 +230,39 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 	}
 	return "", fmt.Errorf("no TVDB ID found for remote ID: %s", remoteID)
 }
+
+type SeriesDetails struct {
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	OriginalName string `json:"originalName"`
+	FirstAired   string `json:"firstAired"`
+}
+
+type seriesDetailsResponse struct {
+	Status string        `json:"status"`
+	Data   SeriesDetails `json:"data"`
+}
+
+func (c *Client) GetSeriesDetails(seriesID string) (*SeriesDetails, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	resp, err := c.doRequest("GET", "/series/"+seriesID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TVDB /series/%s returned status: %d", seriesID, resp.StatusCode)
+	}
+
+	var out seriesDetailsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode TVDB response: %w", err)
+	}
+	if out.Status != successVal {
+		return nil, fmt.Errorf("TVDB get series failed: status=%s", out.Status)
+	}
+	return &out.Data, nil
+}

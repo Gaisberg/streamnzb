@@ -10,15 +10,17 @@ import (
 func TestManifestAnnouncesAnimeAndKitsu(t *testing.T) {
 	m := NewManifest("1.0.0")
 
-	hasAnime := false
-	for _, typ := range m.Types {
-		if typ == "anime" {
-			hasAnime = true
-			break
+	for _, expectedType := range []string{"anime", "other", "documentary"} {
+		found := false
+		for _, typ := range m.Types {
+			if typ == expectedType {
+				found = true
+				break
+			}
 		}
-	}
-	if !hasAnime {
-		t.Fatalf("expected Manifest.Types to include 'anime', got %v", m.Types)
+		if !found {
+			t.Fatalf("expected Manifest.Types to include '%s', got %v", expectedType, m.Types)
+		}
 	}
 
 	hasKitsu := false

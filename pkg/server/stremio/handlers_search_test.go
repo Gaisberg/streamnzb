@@ -995,6 +995,20 @@ func TestHasUsableIDSearchIdentifier(t *testing.T) {
 	}
 }
 
+func TestBuildSearchParamsBaseParsesTVDBPrefixedSeriesID(t *testing.T) {
+	srv := &Server{}
+	params, err := srv.buildSearchParamsBase("series", "tvdb:462053:1:1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.Req.TVDBID != "462053" {
+		t.Fatalf("expected TVDBID '462053', got '%s'", params.Req.TVDBID)
+	}
+	if params.Req.Season != "1" || params.Req.Episode != "1" {
+		t.Fatalf("expected Season '1' and Episode '1', got Season '%s' Episode '%s'", params.Req.Season, params.Req.Episode)
+	}
+}
+
 func TestHasPreparedTextQueries(t *testing.T) {
 	if hasPreparedTextQueries(indexer.SearchRequest{}) {
 		t.Fatal("expected empty request to report no prepared text queries")
