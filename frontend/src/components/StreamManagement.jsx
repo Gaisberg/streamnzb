@@ -52,7 +52,6 @@ function normalizeStreamDraft(draft) {
     filter_sorting_mode: normalizedFilterSortingMode,
     indexer_mode: draft?.indexer_mode === 'failover' ? 'failover' : 'combine',
     username: (draft?.username || '').trim(),
-    use_availnzb: draft?.use_availnzb !== false,
     combine_results: draft?.combine_results !== false,
     enable_failover: draft?.enable_failover !== false,
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
@@ -65,7 +64,6 @@ function normalizeStreamDraft(draft) {
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
     filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
-    mute_error_video: draft?.mute_error_video === true,
   }
 }
 
@@ -74,7 +72,6 @@ function buildStreamDraft(stream) {
     filter_sorting_mode: stream?.filter_sorting_mode,
     indexer_mode: stream?.indexer_mode,
     username: stream?.username || '',
-    use_availnzb: stream?.use_availnzb,
     combine_results: stream?.combine_results,
     enable_failover: stream?.enable_failover,
     results_mode: stream?.results_mode,
@@ -87,7 +84,6 @@ function buildStreamDraft(stream) {
     series_search_queries: stream?.series_search_queries || [],
     filter_profile_name: stream?.filter_profile_name || '',
     filter_profile_by_type: stream?.filter_profile_by_type || {},
-    mute_error_video: stream?.mute_error_video,
   })
 }
 
@@ -104,7 +100,6 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     token: token || '',
     filter_sorting_mode: draft.filter_sorting_mode,
     indexer_mode: draft.indexer_mode,
-    use_availnzb: draft.use_availnzb,
     combine_results: draft.combine_results,
     enable_failover: draft.enable_failover,
     results_mode: draft.results_mode,
@@ -117,7 +112,6 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     series_search_queries: draft.series_search_queries || [],
     filter_profile_name: draft.filter_profile_name || '',
     filter_profile_by_type: draft.filter_profile_by_type || {},
-    mute_error_video: draft.mute_error_video,
   }
 }
 
@@ -127,7 +121,6 @@ function generalCompactValues(stream) {
 
 function generalDetailValues(stream) {
   return [
-    `AvailNZB ${stream?.use_availnzb !== false ? 'On' : 'Off'}`,
     `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
     `Search ${stream?.combine_results !== false ? 'Combine' : 'First hit'}`,
@@ -624,19 +617,6 @@ function StreamDialog({
 
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">AvailNZB</div>
-                  <Switch
-                    checked={draft.use_availnzb}
-                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, use_availnzb: checked === true }))}
-                  />
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Use AvailNZB for this stream when AvailNZB is enabled in Network settings.
-                </p>
-              </div>
-
-              <div className="rounded-md border border-border/60 p-3">
-                <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-medium">Failover</div>
                   <Switch
                     checked={draft.enable_failover}
@@ -645,19 +625,6 @@ function StreamDialog({
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
                   If enabled, StreamNZB automatically tries the next release in order when the current NZB fails during playback.
-                </p>
-              </div>
-
-              <div className="rounded-md border border-border/60 p-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">Mute Error Video</div>
-                  <Switch
-                    checked={draft.mute_error_video === true}
-                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, mute_error_video: checked === true }))}
-                  />
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Mutes the "Failed to start video" error video audio played when all releases fail.
                 </p>
               </div>
 
@@ -999,7 +966,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       [username]: {
         filter_sorting_mode: draft.filter_sorting_mode,
         indexer_mode: draft.indexer_mode,
-        use_availnzb: draft.use_availnzb,
         combine_results: draft.combine_results,
         enable_failover: draft.enable_failover,
         results_mode: draft.results_mode,
@@ -1078,7 +1044,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       filter_sorting_mode: stream.filter_sorting_mode,
       indexer_mode: stream.indexer_mode,
       username: nextName,
-      use_availnzb: stream.use_availnzb,
       combine_results: stream.combine_results,
       enable_failover: stream.enable_failover,
       results_mode: stream.results_mode,

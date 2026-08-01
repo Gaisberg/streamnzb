@@ -13,6 +13,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar"
 import {
   DropdownMenu,
@@ -58,6 +59,13 @@ export function AppSidebar({
   onThemeChange,
   ...props
 }) {
+  const { setOpenMobile } = useSidebar()
+
+  const handleNavigate = (page) => {
+    onNavigate(page)
+    setOpenMobile(false)
+  }
+
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -65,7 +73,7 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton
               size="lg"
-              onClick={() => onNavigate("dashboard")}
+              onClick={() => handleNavigate("dashboard")}
               className="h-auto py-3"
             >
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
@@ -92,7 +100,7 @@ export function AppSidebar({
                   <SidebarMenuButton
                     isActive={activePage === item.id}
                     tooltip={item.title}
-                    onClick={() => onNavigate(item.id)}
+                    onClick={() => handleNavigate(item.id)}
                   >
                     <item.icon />
                     <span>{item.title}</span>
@@ -113,7 +121,7 @@ export function AppSidebar({
                   <SidebarMenuButton
                     isActive={activePage === item.id}
                     tooltip={item.title}
-                    onClick={() => onNavigate(item.id)}
+                    onClick={() => handleNavigate(item.id)}
                   >
                     <item.icon />
                     <span>{item.title}</span>
@@ -214,7 +222,7 @@ export function AppSidebar({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="end" className="w-48">
-                <DropdownMenuItem onClick={() => onNavigate("profile")}>
+                <DropdownMenuItem onClick={() => handleNavigate("profile")}>
                   <User className="mr-2 h-4 w-4" />
                   Profile
                 </DropdownMenuItem>
