@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.11.1](https://github.com/Gaisberg/streamnzb/compare/v4.11.0...v4.11.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **filters:** make profiles global and persist attribute resets ([561679a](https://github.com/Gaisberg/streamnzb/commit/561679a780796f6d8fb0de5f643093784aae2669))
+* **stremio:** resolve TVDB IDs, add direct TVDB metadata fallback, and update manifest types ([c41a41c](https://github.com/Gaisberg/streamnzb/commit/c41a41cd639528bda06c8cd7655a4189c5e957f8))
+
 ## [4.11.0](https://github.com/Gaisberg/streamnzb/compare/v4.10.0...v4.11.0) (2026-07-29)
 
 
