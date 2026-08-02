@@ -55,6 +55,14 @@ func TestNormalizeContinuationProbeFallsBackToFirstPartPackedSize(t *testing.T) 
 	}
 }
 
+func TestEstimateUnprobedVolumeSizeScalesDecodedRatio(t *testing.T) {
+	file := &memoryUnpackableFile{name: "part002.rar", data: make([]byte, 108_000_000)}
+	scaled := estimateUnprobedVolumeSize(file, 108_000_000, 104_857_600)
+	if scaled != 104_857_600 {
+		t.Fatalf("expected estimated volume size 104857600, got %d", scaled)
+	}
+}
+
 func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvidesPackedSize(t *testing.T) {
 	discardTestLogger(t)
 
@@ -238,6 +246,37 @@ func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutPro
 	}
 	if got := parts[1].packedSize; got != 300 {
 		t.Fatalf("expected fallback packed size 300, got %d", got)
+	}
+}
+
+func TestAggregateRemainingVolumesFromStartSkipsMiddleVolumeProbingInFallback(t *testing.T) {
+	discardTestLogger(t)
+
+	firstFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part001.rar", data: make([]byte, 500)}}
+	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: make([]byte, 500)}}
+	thirdFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part003.rar", data: make([]byte, 350)}}
+
+	parts, err := aggregateRemainingVolumesFromStart(
+		context.Background(),
+		[]filePart{{name: "movie.mkv", unpackedSize: 1000, dataOffset: 100, packedSize: 200, volFile: firstFile, volName: firstFile.Name(), isMedia: true}},
+		[]UnpackableFile{firstFile, secondFile, thirdFile},
+		0,
+		"movie.mkv",
+		1000,
+		continuationProbe{dataOffset: 50},
+	)
+	if err != nil {
+		t.Fatalf("aggregateRemainingVolumesFromStart returned error: %v", err)
+	}
+
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts))
+	}
+	if secondFile.ensureCalls != 0 {
+		t.Fatalf("expected middle volume segment map probing to be skipped, got %d calls", secondFile.ensureCalls)
+	}
+	if thirdFile.ensureCalls != 1 {
+		t.Fatalf("expected last volume segment map probing to run once, got %d calls", thirdFile.ensureCalls)
 	}
 }
 

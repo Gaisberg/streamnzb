@@ -908,14 +908,17 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 	contPackedSize := probe.packedSize
 	contDataOffset := probe.dataOffset
 
+	firstVolFile := allRarFiles[startIdx]
+	firstNZBSize := firstVolFile.Size()
+	firstDecodedSize := firstVolFile.Size()
+
 	// When the fast continuation probe is unavailable we must learn each remaining
-	// volume's decoded size. Probing volumes one-by-one is the dominant startup
-	// cost (each probe is a round of segment downloads), so prime them concurrently
-	// up front; the sequential loop below then hits already-cached segment maps.
+	// volume's decoded size. Prime them in the background so playback startup is not blocked.
 	if contPackedSize <= 0 {
-		if err := primeContinuationSegmentMaps(ctx, allRarFiles[startIdx+1:]); err != nil {
-			return nil, err
-		}
+		bgCtx := playbackSegmentMapCtx(context.Background())
+		go func() {
+			_ = primeContinuationSegmentMaps(bgCtx, allRarFiles[startIdx+1:])
+		}()
 	} else if len(allRarFiles) > 1 {
 		// Prime the last volume's segment map in the background so player seeks to the end (Matroska cues) do not stall.
 		lastVol := allRarFiles[len(allRarFiles)-1]
@@ -950,10 +953,16 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 		f := allRarFiles[i]
 		fileSize := int64(0)
 		if contPackedSize <= 0 {
-			if err := ensureSegmentMap(ctx, f); err != nil {
-				return nil, err
+			isLastVol := i == len(allRarFiles)-1
+			if isLastVol {
+				if err := ensureSegmentMap(ctx, f); err != nil {
+					fileSize = estimateUnprobedVolumeSize(f, firstNZBSize, firstDecodedSize)
+				} else {
+					fileSize = f.Size()
+				}
+			} else {
+				fileSize = estimateUnprobedVolumeSize(f, firstNZBSize, firstDecodedSize)
 			}
-			fileSize = f.Size()
 			if fileSize <= 0 {
 				continue
 			}
@@ -1009,6 +1018,20 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 	}
 	logger.Trace("Manual volume aggregation", "added", added, "total", len(result))
 	return result, nil
+}
+
+func estimateUnprobedVolumeSize(f UnpackableFile, firstNZBSize, firstDecodedSize int64) int64 {
+	if ensurer, ok := f.(interface{ SegmentMapDetected() bool }); ok && ensurer.SegmentMapDetected() {
+		return f.Size()
+	}
+	nzbSize := f.Size()
+	if nzbSize <= 0 {
+		return 0
+	}
+	if firstNZBSize <= 0 || firstDecodedSize <= 0 {
+		return nzbSize
+	}
+	return (nzbSize * firstDecodedSize) / firstNZBSize
 }
 
 // maxContinuationProbeConcurrency bounds how many continuation volumes we probe
@@ -1120,15 +1143,24 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 	// single-part entries for the same name. Both layouts mean the same thing:
 	// the second part overall is the per-continuation-volume data block we want.
 	lowerTarget := strings.ToLower(targetName)
+	targetBase := strings.ToLower(ExtractFilename(targetName))
 	var targetParts []rardecode.FilePartInfo
 	for _, info := range infos {
 		if err := contextErr(ctx); err != nil {
 			return continuationProbe{}, err
 		}
-		if strings.ToLower(info.Name) != lowerTarget {
+		infoName := strings.ReplaceAll(info.Name, "\\", "/")
+		infoLower := strings.ToLower(infoName)
+		infoBase := strings.ToLower(ExtractFilename(infoName))
+
+		if infoLower != lowerTarget && infoBase != targetBase {
 			continue
 		}
 		targetParts = append(targetParts, info.Parts...)
+	}
+
+	if len(targetParts) == 0 && len(infos) == 1 && !strings.HasSuffix(infos[0].Name, "/") {
+		targetParts = infos[0].Parts
 	}
 
 	logger.Debug("Continuation probe result",
