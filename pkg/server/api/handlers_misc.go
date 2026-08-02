@@ -14,6 +14,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 )
@@ -21,6 +22,13 @@ import (
 type persistedStatsResponse struct {
 	Providers []persistence.ProviderMetric `json:"providers"`
 	Indexers  []persistence.IndexerMetric  `json:"indexers"`
+}
+
+type performanceStatsResponse struct {
+	StreamSummary metrics.StreamAPIStatsSummary    `json:"stream_summary"`
+	TTFFSummary   metrics.PlaybackTTFFStatsSummary `json:"ttff_summary"`
+	RecentStreams []metrics.StreamAPISample        `json:"recent_streams"`
+	RecentTTFF    []metrics.PlaybackTTFFSample     `json:"recent_ttff"`
 }
 
 func parseDateParam(raw string) (*time.Time, error) {
@@ -297,6 +305,22 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 	resp.Providers = providers
 	resp.Indexers = indexers
 
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handlePerformanceStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	collector := metrics.Default()
+	resp := performanceStatsResponse{
+		StreamSummary: collector.GetStreamAPISummary(),
+		TTFFSummary:   collector.GetPlaybackTTFFSummary(),
+		RecentStreams: collector.GetStreamAPISamples(),
+		RecentTTFF:    collector.GetPlaybackTTFFSamples(),
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

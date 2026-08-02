@@ -11,6 +11,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 )
@@ -134,6 +135,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *auth.Stream) {
+	startTime := time.Now()
 
 	path := strings.TrimPrefix(r.URL.Path, "/stream/")
 	path = strings.TrimSuffix(path, ".json")
@@ -168,6 +170,21 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	if streams == nil {
 		streams = []Stream{}
 	}
+
+	candidateCount := 0
+	if list != nil {
+		candidateCount = len(list.Candidates)
+	}
+
+	metrics.Default().RecordStreamAPI(metrics.StreamAPISample{
+		Timestamp:      startTime,
+		ContentType:    contentType,
+		ID:             id,
+		TotalDuration:  time.Since(startTime),
+		CandidateCount: candidateCount,
+		ResultCount:    len(streams),
+	})
+
 	logger.Debug("Stream finished",
 		"stream", func() string {
 			if stream != nil {
@@ -183,13 +200,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 			return "first_hit"
 		}(),
 		"results_mode", streamResultsMode(stream),
-		"candidate_results", func() int {
-			if list != nil {
-				return len(list.Candidates)
-			}
-			return 0
-		}(),
+		"candidate_results", candidateCount,
 		"final_results", len(streams),
+		"duration_ms", time.Since(startTime).Milliseconds(),
 	)
 
 	response := StreamResponse{

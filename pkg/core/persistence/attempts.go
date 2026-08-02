@@ -26,6 +26,7 @@ type NZBAttempt struct {
 	AvailReason   string    `json:"avail_reason,omitempty"`
 	SlotPath      string    `json:"slot_path,omitempty"`
 	Preload       bool      `json:"preload"` // true = attempt started, result not yet known
+	TTFFMS        int64     `json:"ttff_ms,omitempty"`
 }
 
 // RecordAttemptParams holds the fields needed to record an NZB attempt.
@@ -46,6 +47,7 @@ type RecordAttemptParams struct {
 	AvailStatus   string
 	AvailReason   string
 	SlotPath      string
+	TTFFMS        int64
 }
 
 // RecordPreloadAttempt inserts a preload row for a slot (attempt started, result not yet known).
@@ -96,9 +98,10 @@ func (m *StateManager) UpdatePendingAttempt(p RecordAttemptParams) {
 				content_title = COALESCE(NULLIF(?, ''), content_title),
 				failure_reason = COALESCE(NULLIF(?, ''), failure_reason),
 				avail_status = COALESCE(NULLIF(?, ''), avail_status),
-				avail_reason = COALESCE(NULLIF(?, ''), avail_reason)
+				avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
+				ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
 			WHERE slot_path = ? AND preload = 1`,
-			p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.FailureReason, p.AvailStatus, p.AvailReason, p.SlotPath)
+			p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.FailureReason, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 		return err
 	})
 }
@@ -125,9 +128,10 @@ func (m *StateManager) ResolvePendingAttempt(p RecordAttemptParams) {
 				provider_name = COALESCE(NULLIF(?, ''), provider_name),
 				content_title = COALESCE(NULLIF(?, ''), content_title),
 				avail_status = COALESCE(NULLIF(?, ''), avail_status),
-				avail_reason = COALESCE(NULLIF(?, ''), avail_reason)
+				avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
+				ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
 			WHERE slot_path = ? AND preload = 1`,
-			success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.SlotPath)
+			success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 		return err
 	})
 }
@@ -156,9 +160,10 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 					provider_name = COALESCE(NULLIF(?, ''), provider_name),
 					content_title = COALESCE(NULLIF(?, ''), content_title),
 					avail_status = COALESCE(NULLIF(?, ''), avail_status),
-					avail_reason = COALESCE(NULLIF(?, ''), avail_reason)
+					avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
+					ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
 				WHERE slot_path = ? AND preload = 1`,
-				success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.SlotPath)
+				success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 			if err == nil {
 				affected, _ := res.RowsAffected()
 				if affected > 0 {
@@ -167,8 +172,8 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 			}
 		}
 
-		_, err := db.Exec(`INSERT INTO nzb_attempts (tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, preload)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		_, err := db.Exec(`INSERT INTO nzb_attempts (tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, preload, ttff_ms)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 			time.Now().UnixMilli(),
 			p.StreamName,
 			p.ProviderName,
@@ -186,6 +191,7 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 			p.AvailStatus,
 			p.AvailReason,
 			p.SlotPath,
+			p.TTFFMS,
 		)
 		return err
 	})
@@ -221,7 +227,7 @@ func (m *StateManager) ListAttempts(opts ListAttemptsOptions) ([]NZBAttempt, err
 		offset = 0
 	}
 
-	query := `SELECT id, tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, COALESCE(preload, 0)
+	query := `SELECT id, tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, COALESCE(preload, 0), COALESCE(ttff_ms, 0)
 		FROM nzb_attempts WHERE 1=1`
 	args := []interface{}{}
 	if opts.ContentType != "" {
@@ -251,16 +257,18 @@ func (m *StateManager) ListAttempts(opts ListAttemptsOptions) ([]NZBAttempt, err
 		var triedAtMs int64
 		var success int
 		var preload int
+		var ttffMs int64
 		var releaseURL, servedFile, matchType, failureReason, availStatus, availReason, slotPath, indexerName, streamName, providerName sql.NullString
 		var contentTitle sql.NullString
 		var releaseSize sql.NullInt64
-		err := rows.Scan(&a.ID, &triedAtMs, &streamName, &providerName, &a.ContentType, &a.ContentID, &contentTitle, &indexerName, &a.ReleaseTitle, &releaseURL, &releaseSize, &servedFile, &matchType, &success, &failureReason, &availStatus, &availReason, &slotPath, &preload)
+		err := rows.Scan(&a.ID, &triedAtMs, &streamName, &providerName, &a.ContentType, &a.ContentID, &contentTitle, &indexerName, &a.ReleaseTitle, &releaseURL, &releaseSize, &servedFile, &matchType, &success, &failureReason, &availStatus, &availReason, &slotPath, &preload, &ttffMs)
 		if err != nil {
 			return nil, err
 		}
 		a.TriedAt = time.UnixMilli(triedAtMs)
 		a.Success = success != 0
 		a.Preload = preload != 0
+		a.TTFFMS = ttffMs
 		if releaseURL.Valid {
 			a.ReleaseURL = releaseURL.String
 		}

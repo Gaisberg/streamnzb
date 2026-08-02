@@ -9,7 +9,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { Database, Gauge } from "lucide-react"
+import { Database, Gauge, Zap, Clock, Activity, PlayCircle } from "lucide-react"
 import { apiFetch } from "@/api"
 
 const providerChartConfig = {
@@ -122,6 +122,7 @@ const indexerMetricOptions = {
 
 export const StatisticsPage = memo(function StatisticsPage() {
   const [historyStats, setHistoryStats] = useState({ providers: [], indexers: [] })
+  const [perfStats, setPerfStats] = useState(null)
   const [preset, setPreset] = useState('30d')
   const [customRange, setCustomRange] = useState(defaultDateRange())
   const [activeRange, setActiveRange] = useState(defaultDateRange())
@@ -142,12 +143,18 @@ export const StatisticsPage = memo(function StatisticsPage() {
       const query = new URLSearchParams()
       if (from) query.set('from', from)
       if (to) query.set('to', to)
-      const data = await apiFetch(`/api/stats/history?${query.toString()}`)
+      const [data, perfData] = await Promise.all([
+        apiFetch(`/api/stats/history?${query.toString()}`),
+        apiFetch('/api/stats/performance').catch(() => null),
+      ])
       const normalized = normalizeHistoryStats(data)
       const signature = buildHistorySignature(normalized)
       if (signature !== lastSignatureRef.current) {
         lastSignatureRef.current = signature
         setHistoryStats(normalized)
+      }
+      if (perfData) {
+        setPerfStats(perfData)
       }
     } catch (error) {
       if (!background) {
@@ -299,6 +306,75 @@ export const StatisticsPage = memo(function StatisticsPage() {
 
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6">
+      {/* Real-time Performance Metrics */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Zap className="h-5 w-5 text-amber-500" />
+              <CardTitle>API Response Time (/stream)</CardTitle>
+            </div>
+            <CardDescription>Stremio stream query latency percentiles.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {perfStats?.stream_summary?.total?.sample_count > 0 ? (
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p50</div>
+                  <div className="text-lg font-bold text-primary">{perfStats.stream_summary.total.p50_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p95</div>
+                  <div className="text-lg font-bold text-amber-500">{perfStats.stream_summary.total.p95_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p99</div>
+                  <div className="text-lg font-bold text-rose-500">{perfStats.stream_summary.total.p99_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Min: {perfStats.stream_summary.total.min_ms.toFixed(0)} ms</div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Avg: {perfStats.stream_summary.total.avg_ms.toFixed(0)} ms</div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Max: {perfStats.stream_summary.total.max_ms.toFixed(0)} ms</div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted-foreground">No /stream requests recorded yet.</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <PlayCircle className="h-5 w-5 text-emerald-500" />
+              <CardTitle>Playback Start Time (TTFF)</CardTitle>
+            </div>
+            <CardDescription>Time to First Frame from play request to video stream output.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {perfStats?.ttff_summary?.total?.sample_count > 0 ? (
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p50</div>
+                  <div className="text-lg font-bold text-emerald-500">{perfStats.ttff_summary.total.p50_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p95</div>
+                  <div className="text-lg font-bold text-amber-500">{perfStats.ttff_summary.total.p95_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/40 rounded-md">
+                  <div className="text-xs text-muted-foreground font-medium">p99</div>
+                  <div className="text-lg font-bold text-rose-500">{perfStats.ttff_summary.total.p99_ms.toFixed(0)} ms</div>
+                </div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Min: {perfStats.ttff_summary.total.min_ms.toFixed(0)} ms</div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Avg: {perfStats.ttff_summary.total.avg_ms.toFixed(0)} ms</div>
+                <div className="p-2 bg-muted/20 rounded-md text-xs">Max: {perfStats.ttff_summary.total.max_ms.toFixed(0)} ms</div>
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-muted-foreground">No playback sessions recorded yet.</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle>Date Range</CardTitle>

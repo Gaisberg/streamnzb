@@ -682,7 +682,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                               {attempt.release_title || '—'}
                                             </div>
                                             <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                                              {[attempt.indexer_name || '—', attempt.provider_name || '—', formatSize(attempt.release_size), formatMatchType(attempt.match_type)].filter(Boolean).join(' • ')}
+                                              {[attempt.indexer_name || '—', attempt.provider_name || '—', formatSize(attempt.release_size), formatMatchType(attempt.match_type), attempt.ttff_ms > 0 ? `⚡ ${attempt.ttff_ms} ms` : ''].filter(Boolean).join(' • ')}
                                             </div>
                                           </div>
                                         </div>
@@ -736,6 +736,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                           <DetailRow label="Content ID" value={selectedAttempt.content_id || '—'} bordered />
                           <DetailRow label="Match" value={formatMatchType(selectedAttempt.match_type) || '—'} bordered />
                           <DetailRow label="Size" value={formatSize(selectedAttempt.release_size)} bordered />
+                          <DetailRow label="Time to First Frame (TTFF)" value={selectedAttempt.ttff_ms > 0 ? `${selectedAttempt.ttff_ms} ms` : '—'} bordered />
                         </div>
                       </DetailSection>
                       <DetailSection title="Source">

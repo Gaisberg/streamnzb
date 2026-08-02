@@ -23,6 +23,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/loader"
@@ -64,6 +65,7 @@ type bufferedResponseWriter struct {
 	writeCalls   int64
 	flushCalls   int64
 	flushError   string
+	onFirstWrite func()
 }
 
 func newBufferedResponseWriter(w http.ResponseWriter, size int) *bufferedResponseWriter {
@@ -77,6 +79,9 @@ func (b *bufferedResponseWriter) Write(p []byte) (n int, err error) {
 	if !b.wroteHeader {
 		b.statusCode = http.StatusOK
 		b.wroteHeader = true
+		if b.onFirstWrite != nil {
+			b.onFirstWrite()
+		}
 	}
 	b.writeCalls++
 	n, err = b.bw.Write(p)
@@ -88,6 +93,9 @@ func (b *bufferedResponseWriter) WriteHeader(statusCode int) {
 	if !b.wroteHeader {
 		b.statusCode = statusCode
 		b.wroteHeader = true
+		if b.onFirstWrite != nil {
+			b.onFirstWrite()
+		}
 	}
 	b.ResponseWriter.WriteHeader(statusCode)
 }
@@ -1101,15 +1109,17 @@ type playbackSourceOpenResult struct {
 // handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,
 // optionally redirect if slot previously failed, then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
 func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
+	playStart := time.Now()
 	sessionID := strings.TrimPrefix(r.URL.Path, "/play/")
 	requestedSessionID := sessionID
 	logger.Debug("Play request", "session", sessionID)
 
 	var (
-		sess   *session.Session
-		stream io.ReadSeekCloser
-		name   string
-		size   int64
+		sess         *session.Session
+		stream       io.ReadSeekCloser
+		name         string
+		size         int64
+		providerName string
 	)
 
 	var err error
@@ -1354,6 +1364,29 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 	}
 
 	bufW := newMediaResponseWriter(w, name)
+	var ttffOnce sync.Once
+	bufW.onFirstWrite = func() {
+		ttffOnce.Do(func() {
+			pName := providerName
+			if pName == "" && sess != nil && sess.Release != nil {
+				pName = sess.Release.Indexer
+			}
+			ttffDuration := time.Since(playStart)
+			metrics.Default().RecordPlaybackTTFF(metrics.PlaybackTTFFSample{
+				Timestamp:    time.Now(),
+				SessionID:    sessionID,
+				ProviderName: pName,
+				TTFF:         ttffDuration,
+				IsCacheHit:   streamMode != "",
+			})
+			if s.attemptRecorder != nil && sess != nil {
+				p := s.recordAttemptParamsForOutcome(sess, true)
+				p.TTFFMS = ttffDuration.Milliseconds()
+				s.attemptRecorder.UpdatePendingAttempt(p)
+			}
+			logger.Debug("TTFF recorded", "session", sessionID, "ttff_ms", ttffDuration.Milliseconds(), "provider", pName)
+		})
+	}
 	serveStartedAt := time.Now()
 	monitoredStream.onProgress = func() {
 		s.commitGoodAttemptIfQualified(sess, sessionID, requestedSessionID, serveStartedAt)

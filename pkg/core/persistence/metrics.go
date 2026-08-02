@@ -344,3 +344,117 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		return nil
 	})
 }
+
+type PerformanceMetricRecord struct {
+	CollectedAt time.Time `json:"collected_at"`
+	MetricType  string    `json:"metric_type"`
+	SampleCount int       `json:"sample_count"`
+	MinMS       float64   `json:"min_ms"`
+	MaxMS       float64   `json:"max_ms"`
+	AvgMS       float64   `json:"avg_ms"`
+	P50MS       float64   `json:"p50_ms"`
+	P95MS       float64   `json:"p95_ms"`
+	P99MS       float64   `json:"p99_ms"`
+}
+
+func (m *StateManager) RecordPerformanceMetrics(records []PerformanceMetricRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	return m.withWriteLock(func(db *sql.DB) error {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		stmt, err := tx.Prepare(`
+			INSERT INTO performance_metrics (
+				collected_at, metric_type, sample_count, min_ms, max_ms, avg_ms, p50_ms, p95_ms, p99_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, rec := range records {
+			collectedAt := rec.CollectedAt
+			if collectedAt.IsZero() {
+				collectedAt = time.Now()
+			}
+			if _, err := stmt.Exec(
+				collectedAt.Unix(),
+				rec.MetricType,
+				rec.SampleCount,
+				rec.MinMS,
+				rec.MaxMS,
+				rec.AvgMS,
+				rec.P50MS,
+				rec.P95MS,
+				rec.P99MS,
+			); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	})
+}
+
+func (m *StateManager) GetPerformanceMetricsSummary(from, to *time.Time) ([]PerformanceMetricRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	query, args := buildTimeRangeSQL(`
+		SELECT
+			collected_at,
+			metric_type,
+			sample_count,
+			min_ms,
+			max_ms,
+			avg_ms,
+			p50_ms,
+			p95_ms,
+			p99_ms
+		FROM performance_metrics
+	`, from, to)
+
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []PerformanceMetricRecord
+	for rows.Next() {
+		var (
+			collectedAt int64
+			rec         PerformanceMetricRecord
+		)
+		if err := rows.Scan(
+			&collectedAt,
+			&rec.MetricType,
+			&rec.SampleCount,
+			&rec.MinMS,
+			&rec.MaxMS,
+			&rec.AvgMS,
+			&rec.P50MS,
+			&rec.P95MS,
+			&rec.P99MS,
+		); err != nil {
+			return nil, err
+		}
+		rec.CollectedAt = time.Unix(collectedAt, 0)
+		results = append(results, rec)
+	}
+	return results, nil
+}

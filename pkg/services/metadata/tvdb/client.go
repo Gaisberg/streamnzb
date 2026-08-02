@@ -35,11 +35,17 @@ func NewClient(apiKey, dataDir string) *Client {
 	if envURL := os.Getenv("STREAMNZB_TVDB_BASE_URL"); envURL != "" {
 		baseURL = envURL
 	}
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &Client{
 		apiKey:  apiKey,
 		dataDir: dataDir,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: transport,
 		},
 		BaseURL: baseURL,
 	}

@@ -42,7 +42,8 @@ const (
 		avail_status TEXT,
 		avail_reason TEXT,
 		slot_path TEXT,
-		preload INTEGER NOT NULL DEFAULT 0
+		preload INTEGER NOT NULL DEFAULT 0,
+		ttff_ms INTEGER NOT NULL DEFAULT 0
 	);`
 
 	nzbAttemptsIndexTried    = `CREATE INDEX IF NOT EXISTS idx_nzb_attempts_tried_at ON nzb_attempts(tried_at DESC);`
@@ -84,6 +85,21 @@ const (
 	);`
 	indexerMetricsIndexTime = `CREATE INDEX IF NOT EXISTS idx_indexer_metrics_collected_at ON indexer_metrics(collected_at DESC);`
 	indexerMetricsIndexName = `CREATE INDEX IF NOT EXISTS idx_indexer_metrics_name_time ON indexer_metrics(indexer_name, collected_at DESC);`
+
+	performanceMetricsSchema = `CREATE TABLE IF NOT EXISTS performance_metrics (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		collected_at INTEGER NOT NULL,
+		metric_type TEXT NOT NULL,
+		sample_count INTEGER NOT NULL DEFAULT 0,
+		min_ms REAL NOT NULL DEFAULT 0.0,
+		max_ms REAL NOT NULL DEFAULT 0.0,
+		avg_ms REAL NOT NULL DEFAULT 0.0,
+		p50_ms REAL NOT NULL DEFAULT 0.0,
+		p95_ms REAL NOT NULL DEFAULT 0.0,
+		p99_ms REAL NOT NULL DEFAULT 0.0
+	);`
+	performanceMetricsIndexTime = `CREATE INDEX IF NOT EXISTS idx_performance_metrics_collected_at ON performance_metrics(collected_at DESC);`
+	performanceMetricsIndexType = `CREATE INDEX IF NOT EXISTS idx_performance_metrics_type_time ON performance_metrics(metric_type, collected_at DESC);`
 )
 
 func openDB(dataDir string) (*sql.DB, error) {
@@ -116,6 +132,9 @@ func initSchema(db *sql.DB) error {
 		indexerMetricsSchema,
 		indexerMetricsIndexTime,
 		indexerMetricsIndexName,
+		performanceMetricsSchema,
+		performanceMetricsIndexTime,
+		performanceMetricsIndexType,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("schema: %w", err)
@@ -124,6 +143,7 @@ func initSchema(db *sql.DB) error {
 	if err := migrateProviderMetricsArticleAvailableCount(db); err != nil {
 		return err
 	}
+	_, _ = db.Exec("ALTER TABLE nzb_attempts ADD COLUMN ttff_ms INTEGER NOT NULL DEFAULT 0;")
 	if err := migrateProviderMetricsArticleMissingCount(db); err != nil {
 		return err
 	}

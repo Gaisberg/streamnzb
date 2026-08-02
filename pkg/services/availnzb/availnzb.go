@@ -282,11 +282,17 @@ type ReportMeta struct {
 
 func NewClient(baseURL, apiKey string) *Client {
 	baseURL = strings.TrimSuffix(baseURL, "/")
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &Client{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		HTTP: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: transport,
 		},
 	}
 }

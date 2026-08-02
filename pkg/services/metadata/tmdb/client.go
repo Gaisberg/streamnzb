@@ -24,10 +24,16 @@ func NewClient(apiKey string) *Client {
 	if envURL := os.Getenv("STREAMNZB_TMDB_BASE_URL"); envURL != "" {
 		baseURL = envURL
 	}
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &Client{
 		apiKey: apiKey,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: transport,
 		},
 		BaseURL: baseURL,
 	}

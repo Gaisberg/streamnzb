@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"streamnzb/pkg/auth"
@@ -1329,8 +1330,12 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		}, nil
 	}
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
-	availCtx := s.loadAvailContext(params, stream)
+	availChan := make(chan *AvailContext, 1)
+	go func() {
+		availChan <- s.loadAvailContext(params, stream)
+	}()
 	indexerReleases, executedRequests, err := s.runConfiguredSearchRequests(contentType, id, streamLabel, stream, selectedQueries, params)
+	availCtx := <-availChan
 	if err != nil {
 		return nil, err
 	}
@@ -1567,32 +1572,60 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			if s.tmdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "skipped", "reason", "tmdb_client_unconfigured")
 			} else if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
-				if details, err := s.tmdbClient.GetTVDetails(tmdbIDNum); err == nil {
-					params.Metadata.TVDetails = details
-				} else {
-					logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
-				}
-				if translations, err := s.tmdbClient.GetTVTranslations(tmdbIDNum); err == nil {
-					params.Metadata.TVTranslations = translations
-				} else {
-					logMetadataResolutionState(contentType, id, "tmdb_series_translations", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
-				}
-				if alternatives, err := s.tmdbClient.GetTVAlternativeTitles(tmdbIDNum); err == nil {
-					params.Metadata.TVAlternativeTitles = alternatives
-				}
-				if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
-					if extIDs.TVDBID != 0 {
-						req.TVDBID = strconv.Itoa(extIDs.TVDBID)
+				var wg sync.WaitGroup
+				var tvDetails *tmdb.TVDetails
+				var tvTranslations *tmdb.TVTranslationsResponse
+				var tvAlternatives *tmdb.TVAlternativeTitlesResponse
+				var tvExtIDs *tmdb.ExternalIDsResponse
+
+				wg.Add(4)
+				go func() {
+					defer wg.Done()
+					if details, err := s.tmdbClient.GetTVDetails(tmdbIDNum); err == nil {
+						tvDetails = details
+					} else {
+						logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
 					}
-					if extIDs.IMDbID != "" && req.IMDbID == "" {
-						req.IMDbID = extIDs.IMDbID
-						imdbForText = extIDs.IMDbID
+				}()
+				go func() {
+					defer wg.Done()
+					if translations, err := s.tmdbClient.GetTVTranslations(tmdbIDNum); err == nil {
+						tvTranslations = translations
+					} else {
+						logMetadataResolutionState(contentType, id, "tmdb_series_translations", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					if alternatives, err := s.tmdbClient.GetTVAlternativeTitles(tmdbIDNum); err == nil {
+						tvAlternatives = alternatives
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
+						tvExtIDs = extIDs
+					} else {
+						logMetadataResolutionState(contentType, id, "tmdb_series_external_ids", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
+					}
+				}()
+				wg.Wait()
+
+				params.Metadata.TVDetails = tvDetails
+				params.Metadata.TVTranslations = tvTranslations
+				params.Metadata.TVAlternativeTitles = tvAlternatives
+
+				if tvExtIDs != nil {
+					if tvExtIDs.TVDBID != 0 {
+						req.TVDBID = strconv.Itoa(tvExtIDs.TVDBID)
+					}
+					if tvExtIDs.IMDbID != "" && req.IMDbID == "" {
+						req.IMDbID = tvExtIDs.IMDbID
+						imdbForText = tvExtIDs.IMDbID
 					}
 					if req.TVDBID == "" {
 						logMetadataResolutionState(contentType, id, "tmdb_series_external_ids", "tmdb_id", req.TMDBID, "status", "empty")
 					}
-				} else {
-					logMetadataResolutionState(contentType, id, "tmdb_series_external_ids", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
 				}
 			} else {
 				logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
@@ -1637,17 +1670,45 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, Season: seasonNum, Episode: episodeNum}
 	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
-			if details, err := s.tmdbClient.GetMovieDetails(tmdbIDNum); err == nil {
-				params.Metadata.MovieDetails = details
-			}
-			if translations, err := s.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
-				params.Metadata.MovieTranslations = translations
-			}
-			if alternatives, err := s.tmdbClient.GetMovieAlternativeTitles(tmdbIDNum); err == nil {
-				params.Metadata.MovieAlternativeTitles = alternatives
-			}
-			if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil && extIDs.IMDbID != "" && contentIDs.ImdbID == "" {
-				contentIDs.ImdbID = extIDs.IMDbID
+			var wg sync.WaitGroup
+			var movieDetails *tmdb.MovieDetails
+			var movieTranslations *tmdb.MovieTranslationsResponse
+			var movieAlternatives *tmdb.MovieAlternativeTitlesResponse
+			var movieExtIDs *tmdb.ExternalIDsResponse
+
+			wg.Add(4)
+			go func() {
+				defer wg.Done()
+				if details, err := s.tmdbClient.GetMovieDetails(tmdbIDNum); err == nil {
+					movieDetails = details
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				if translations, err := s.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
+					movieTranslations = translations
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				if alternatives, err := s.tmdbClient.GetMovieAlternativeTitles(tmdbIDNum); err == nil {
+					movieAlternatives = alternatives
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil {
+					movieExtIDs = extIDs
+				}
+			}()
+			wg.Wait()
+
+			params.Metadata.MovieDetails = movieDetails
+			params.Metadata.MovieTranslations = movieTranslations
+			params.Metadata.MovieAlternativeTitles = movieAlternatives
+
+			if movieExtIDs != nil && movieExtIDs.IMDbID != "" && contentIDs.ImdbID == "" {
+				contentIDs.ImdbID = movieExtIDs.IMDbID
 				req.IMDbID = contentIDs.ImdbID
 				imdbForText = contentIDs.ImdbID
 			}
