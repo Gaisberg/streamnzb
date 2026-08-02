@@ -90,7 +90,7 @@ jobs:
 
       - name: Build binaries
         run: |
-          mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64
+          mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64 dist/darwin_amd64 dist/darwin_arm64
           LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
           # Build for Linux AMD64 (for Docker and Release)
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/linux_amd64/streamnzb ./cmd/streamnzb
@@ -98,6 +98,10 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/linux_arm64/streamnzb ./cmd/streamnzb
           # Build for Windows AMD64 (Release only)
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/windows_amd64/streamnzb.exe ./cmd/streamnzb
+          # Build for macOS AMD64 (Release only)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/darwin_amd64/streamnzb ./cmd/streamnzb
+          # Build for macOS ARM64 (Release only)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/darwin_arm64/streamnzb ./cmd/streamnzb
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -132,6 +136,8 @@ jobs:
           cp dist/linux_amd64/streamnzb release_assets/streamnzb-linux-amd64
           cp dist/linux_arm64/streamnzb release_assets/streamnzb-linux-arm64
           cp dist/windows_amd64/streamnzb.exe release_assets/streamnzb-windows-amd64.exe
+          cp dist/darwin_amd64/streamnzb release_assets/streamnzb-darwin-amd64
+          cp dist/darwin_arm64/streamnzb release_assets/streamnzb-darwin-arm64
 
       - name: Upload Release Assets
         if: github.event_name == 'release'
