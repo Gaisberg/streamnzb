@@ -135,3 +135,62 @@ func TestRecordMetricsSnapshotPersistsIndexerUniqueHitsCount(t *testing.T) {
 		t.Fatalf("UniqueHitsCount = %d, want 4", got.UniqueHitsCount)
 	}
 }
+
+func TestRecordPerformanceSamples(t *testing.T) {
+	mgr := newTestStateManager(t)
+	now := time.Now()
+
+	err := mgr.RecordStreamAPISample(StreamAPISampleRecord{
+		Timestamp:          now,
+		ContentType:        "movie",
+		ID:                 "tt1234567",
+		TotalDurationMS:    150,
+		MetadataDurationMS: 20,
+		SearchDurationMS:   100,
+		RankingDurationMS:  10,
+		AvailNZBDurationMS: 20,
+		CandidateCount:     15,
+		ResultCount:        5,
+	})
+	if err != nil {
+		t.Fatalf("RecordStreamAPISample failed: %v", err)
+	}
+
+	err = mgr.RecordPlaybackTTFFSample(PlaybackTTFFSampleRecord{
+		Timestamp:             now,
+		SessionID:             "sess-1",
+		ProviderName:          "provider-x",
+		TTFFMS:                450,
+		SessionResolutionMS:   50,
+		NZBFetchDurationMS:    100,
+		NNTPConnectDurationMS: 100,
+		ProbeDurationMS:       150,
+		FirstByteDurationMS:   50,
+		IsCacheHit:            true,
+	})
+	if err != nil {
+		t.Fatalf("RecordPlaybackTTFFSample failed: %v", err)
+	}
+
+	streamSamples, err := mgr.GetRecentStreamAPISamples(10)
+	if err != nil {
+		t.Fatalf("GetRecentStreamAPISamples failed: %v", err)
+	}
+	if len(streamSamples) != 1 {
+		t.Fatalf("streamSamples len = %d, want 1", len(streamSamples))
+	}
+	if streamSamples[0].ID != "tt1234567" || streamSamples[0].TotalDurationMS != 150 {
+		t.Fatalf("unexpected streamSample: %+v", streamSamples[0])
+	}
+
+	ttffSamples, err := mgr.GetRecentPlaybackTTFFSamples(10)
+	if err != nil {
+		t.Fatalf("GetRecentPlaybackTTFFSamples failed: %v", err)
+	}
+	if len(ttffSamples) != 1 {
+		t.Fatalf("ttffSamples len = %d, want 1", len(ttffSamples))
+	}
+	if ttffSamples[0].SessionID != "sess-1" || ttffSamples[0].TTFFMS != 450 || !ttffSamples[0].IsCacheHit {
+		t.Fatalf("unexpected ttffSample: %+v", ttffSamples[0])
+	}
+}

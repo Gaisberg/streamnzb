@@ -7,6 +7,7 @@ import (
 	"sort"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
@@ -86,6 +87,79 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		} else if deleted > 0 {
 			logger.Info("Pruned NZB attempt history", "retention_days", cfg.NZBHistoryRetentionDays, "deleted", deleted)
 		}
+	}
+
+	if stateMgr != nil {
+		streamRecords, err := stateMgr.GetRecentStreamAPISamples(1000)
+		if err != nil {
+			logger.Warn("Failed to load recent stream API samples", "err", err)
+		}
+		ttffRecords, err := stateMgr.GetRecentPlaybackTTFFSamples(1000)
+		if err != nil {
+			logger.Warn("Failed to load recent TTFF samples", "err", err)
+		}
+
+		streamSamples := make([]metrics.StreamAPISample, 0, len(streamRecords))
+		for _, r := range streamRecords {
+			streamSamples = append(streamSamples, metrics.StreamAPISample{
+				Timestamp:        r.Timestamp,
+				ContentType:      r.ContentType,
+				ID:               r.ID,
+				TotalDuration:    time.Duration(r.TotalDurationMS) * time.Millisecond,
+				MetadataDuration: time.Duration(r.MetadataDurationMS) * time.Millisecond,
+				SearchDuration:   time.Duration(r.SearchDurationMS) * time.Millisecond,
+				RankingDuration:  time.Duration(r.RankingDurationMS) * time.Millisecond,
+				AvailNZBDuration: time.Duration(r.AvailNZBDurationMS) * time.Millisecond,
+				CandidateCount:   r.CandidateCount,
+				ResultCount:      r.ResultCount,
+			})
+		}
+		ttffSamples := make([]metrics.PlaybackTTFFSample, 0, len(ttffRecords))
+		for _, r := range ttffRecords {
+			ttffSamples = append(ttffSamples, metrics.PlaybackTTFFSample{
+				Timestamp:           r.Timestamp,
+				SessionID:           r.SessionID,
+				ProviderName:        r.ProviderName,
+				TTFF:                time.Duration(r.TTFFMS) * time.Millisecond,
+				SessionResolution:   time.Duration(r.SessionResolutionMS) * time.Millisecond,
+				NZBFetchDuration:    time.Duration(r.NZBFetchDurationMS) * time.Millisecond,
+				NNTPConnectDuration: time.Duration(r.NNTPConnectDurationMS) * time.Millisecond,
+				ProbeDuration:       time.Duration(r.ProbeDurationMS) * time.Millisecond,
+				FirstByteDuration:   time.Duration(r.FirstByteDurationMS) * time.Millisecond,
+				IsCacheHit:          r.IsCacheHit,
+			})
+		}
+		metrics.Default().Hydrate(streamSamples, ttffSamples)
+
+		stateRef := stateMgr
+		metrics.Default().SetOnStreamAPISample(func(s metrics.StreamAPISample) {
+			_ = stateRef.RecordStreamAPISample(persistence.StreamAPISampleRecord{
+				Timestamp:          s.Timestamp,
+				ContentType:        s.ContentType,
+				ID:                 s.ID,
+				TotalDurationMS:    s.TotalDuration.Milliseconds(),
+				MetadataDurationMS: s.MetadataDuration.Milliseconds(),
+				SearchDurationMS:   s.SearchDuration.Milliseconds(),
+				RankingDurationMS:  s.RankingDuration.Milliseconds(),
+				AvailNZBDurationMS: s.AvailNZBDuration.Milliseconds(),
+				CandidateCount:     s.CandidateCount,
+				ResultCount:        s.ResultCount,
+			})
+		})
+		metrics.Default().SetOnPlaybackTTFFSample(func(s metrics.PlaybackTTFFSample) {
+			_ = stateRef.RecordPlaybackTTFFSample(persistence.PlaybackTTFFSampleRecord{
+				Timestamp:             s.Timestamp,
+				SessionID:             s.SessionID,
+				ProviderName:          s.ProviderName,
+				TTFFMS:                s.TTFF.Milliseconds(),
+				SessionResolutionMS:   s.SessionResolution.Milliseconds(),
+				NZBFetchDurationMS:    s.NZBFetchDuration.Milliseconds(),
+				NNTPConnectDurationMS: s.NNTPConnectDuration.Milliseconds(),
+				ProbeDurationMS:       s.ProbeDuration.Milliseconds(),
+				FirstByteDurationMS:   s.FirstByteDuration.Milliseconds(),
+				IsCacheHit:            s.IsCacheHit,
+			})
+		})
 	}
 
 	usageMgr, err := indexer.GetUsageManager(stateMgr)

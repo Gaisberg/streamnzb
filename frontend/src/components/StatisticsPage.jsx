@@ -9,8 +9,18 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { Database, Gauge, Zap, Clock, Activity, PlayCircle } from "lucide-react"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Database, Gauge, Zap, Clock, Activity, PlayCircle, Calendar, CalendarDays, ChevronDown, Check } from "lucide-react"
 import { apiFetch } from "@/api"
+import { cn } from "@/lib/utils"
+
+const PRESETS = [
+  { id: '7d', label: 'Last 7 Days', description: 'Past 7 days of snapshots' },
+  { id: '30d', label: 'Last 30 Days', description: 'Past 30 days of snapshots' },
+  { id: '90d', label: 'Last 90 Days', description: 'Past quarter of snapshots' },
+  { id: 'mtd', label: 'Month to Date', description: 'From 1st of this month' },
+  { id: 'all', label: 'All Time', description: 'Complete recorded history' },
+]
 
 const providerChartConfig = {
   response: {
@@ -64,13 +74,6 @@ function buildHistorySignature(normalized) {
   return `${summarizeEntries(providers, 'provider_name', 'ProviderName')}|${summarizeEntries(indexers, 'indexer_name', 'IndexerName')}`
 }
 
-function parseDateValue(raw) {
-  if (!raw) return null
-  const d = new Date(`${raw}T00:00:00`)
-  if (Number.isNaN(d.getTime())) return null
-  return d
-}
-
 function formatDownloadedMb(mb) {
   const n = toNumber(mb)
   if (n >= 1024) return `${(n / 1024).toFixed(2)} GB`
@@ -84,6 +87,15 @@ function formatDateInput(date) {
   return `${y}-${m}-${d}`
 }
 
+function formatDisplayDate(dateStr) {
+  if (!dateStr) return ''
+  const parts = dateStr.split('-').map(Number)
+  if (parts.length < 3) return dateStr
+  const [y, m, d] = parts
+  const date = new Date(y, m - 1, d)
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
 function defaultDateRange() {
   const end = new Date()
   const start = new Date(end)
@@ -95,19 +107,17 @@ function defaultDateRange() {
 }
 
 function rangeFromPreset(preset) {
-  if (preset === 'all') return { from: '', to: '' }
-  const days = {
-    '7d': 7,
-    '30d': 30,
-    '90d': 90,
-  }[preset] || 30
   const end = new Date()
+  const todayStr = formatDateInput(end)
+  if (preset === 'all') return { from: '', to: '' }
+  if (preset === 'mtd') {
+    const start = new Date(end.getFullYear(), end.getMonth(), 1)
+    return { from: formatDateInput(start), to: todayStr }
+  }
+  const days = { '7d': 7, '30d': 30, '90d': 90 }[preset] || 30
   const start = new Date(end)
   start.setDate(end.getDate() - days)
-  return {
-    from: formatDateInput(start),
-    to: formatDateInput(end),
-  }
+  return { from: formatDateInput(start), to: todayStr }
 }
 
 const indexerMetricOptions = {
@@ -126,6 +136,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
   const [preset, setPreset] = useState('30d')
   const [customRange, setCustomRange] = useState(defaultDateRange())
   const [activeRange, setActiveRange] = useState(defaultDateRange())
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const [indexerMetric, setIndexerMetric] = useState('response')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -213,16 +224,12 @@ export const StatisticsPage = memo(function StatisticsPage() {
   }, [activeRange.from, activeRange.to, loadStats])
 
   const customRangeValidation = useMemo(() => {
-    if (preset !== 'custom') return ''
-    const fromDate = parseDateValue(customRange.from)
-    const toDate = parseDateValue(customRange.to)
-    if (!fromDate || !toDate) return 'Select both dates.'
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    if (toDate < fromDate) return 'To date must be on or after From date.'
-    if (fromDate > today || toDate > today) return 'Future dates are not allowed.'
+    if (!customRange.from || !customRange.to) return 'Select both From and To dates.'
+    const todayStr = formatDateInput(new Date())
+    if (customRange.from > customRange.to) return 'From date must be on or before To date.'
+    if (customRange.from > todayStr || customRange.to > todayStr) return 'Future dates are not allowed.'
     return ''
-  }, [customRange.from, customRange.to, preset])
+  }, [customRange.from, customRange.to])
 
   const indexerRows = useMemo(() => {
     const metricKey = indexerMetricOptions[indexerMetric]?.key || 'avgResponseMs'
@@ -296,10 +303,30 @@ export const StatisticsPage = memo(function StatisticsPage() {
   }), [indexerMetric])
 
   const rangeLabel = useMemo(() => {
-    const from = activeRange?.from || 'Beginning'
-    const to = activeRange?.to || 'Now'
-    return `${from} - ${to}`
-  }, [activeRange])
+    if (preset === 'all') return 'All Time'
+    if (!activeRange.from && !activeRange.to) return 'All Time'
+    const fromStr = formatDisplayDate(activeRange.from) || 'Beginning'
+    const toStr = formatDisplayDate(activeRange.to) || 'Today'
+    return `${fromStr} – ${toStr}`
+  }, [activeRange, preset])
+
+  const handleSelectPreset = (pId) => {
+    setPreset(pId)
+    if (pId !== 'custom') {
+      const nextRange = rangeFromPreset(pId)
+      setActiveRange(nextRange)
+      void loadStats(nextRange.from, nextRange.to)
+      setPopoverOpen(false)
+    }
+  }
+
+  const handleApplyCustomRange = () => {
+    if (customRangeValidation) return
+    setPreset('custom')
+    setActiveRange(customRange)
+    void loadStats(customRange.from, customRange.to)
+    setPopoverOpen(false)
+  }
 
   const indexerChartHeight = Math.max(220, indexerChartData.length * 42)
   const providerChartHeight = Math.max(220, providerChartData.length * 42)
@@ -376,70 +403,147 @@ export const StatisticsPage = memo(function StatisticsPage() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Date Range</CardTitle>
-          <CardDescription>Use quick presets or choose a custom range for persisted snapshots.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-3">
+          <div>
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-primary" />
+              Date Range Filter
+            </CardTitle>
+            <CardDescription>Filter statistics snapshots by quick presets or custom date range.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
             <ToggleGroup
               type="single"
               value={preset}
-              onValueChange={(value) => {
-                if (!value) return
-                setPreset(value)
+              onValueChange={(val) => {
+                if (val) handleSelectPreset(val)
               }}
               variant="outline"
               size="sm"
-              className="justify-start flex-wrap gap-1"
+              className="hidden md:flex flex-wrap gap-1"
             >
-              <ToggleGroupItem value="7d">7D</ToggleGroupItem>
-              <ToggleGroupItem value="30d">30D</ToggleGroupItem>
-              <ToggleGroupItem value="90d">90D</ToggleGroupItem>
-              <ToggleGroupItem value="all">All</ToggleGroupItem>
-              <ToggleGroupItem value="custom">Custom</ToggleGroupItem>
+              <ToggleGroupItem value="7d" className="h-8 px-2.5 text-xs">7D</ToggleGroupItem>
+              <ToggleGroupItem value="30d" className="h-8 px-2.5 text-xs">30D</ToggleGroupItem>
+              <ToggleGroupItem value="90d" className="h-8 px-2.5 text-xs">90D</ToggleGroupItem>
+              <ToggleGroupItem value="mtd" className="h-8 px-2.5 text-xs">MTD</ToggleGroupItem>
+              <ToggleGroupItem value="all" className="h-8 px-2.5 text-xs">All</ToggleGroupItem>
             </ToggleGroup>
-            <div className="text-xs text-muted-foreground">{loading ? 'Loading...' : `Showing: ${rangeLabel}`}</div>
-          </div>
 
-          {preset === 'custom' && (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="w-full sm:w-auto">
-                <div className="mb-1 text-xs text-muted-foreground">From</div>
-                <Input
-                  type="date"
-                  value={customRange.from}
-                  onChange={(event) => setCustomRange((prev) => ({ ...prev, from: event.target.value }))}
-                  className="h-9 sm:w-44"
-                />
-              </div>
-              <div className="w-full sm:w-auto">
-                <div className="mb-1 text-xs text-muted-foreground">To</div>
-                <Input
-                  type="date"
-                  value={customRange.to}
-                  onChange={(event) => setCustomRange((prev) => ({ ...prev, to: event.target.value }))}
-                  className="h-9 sm:w-44"
-                />
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-9 sm:min-w-28"
-                disabled={loading || Boolean(customRangeValidation)}
-                onClick={() => {
-                  if (customRangeValidation) return
-                  setActiveRange(customRange)
-                  void loadStats(customRange.from, customRange.to)
-                }}
-              >
-                Apply Custom
-              </Button>
-            </div>
-          )}
-          {preset === 'custom' && customRangeValidation && (
-            <div className="text-xs text-destructive">{customRangeValidation}</div>
-          )}
+            <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-2 px-3 font-normal border-primary/20 hover:border-primary/40 focus:ring-1 focus:ring-primary transition-all"
+                >
+                  <CalendarDays className="h-4 w-4 text-primary shrink-0" />
+                  <span className="font-medium text-xs sm:text-sm">
+                    {preset === '7d' && 'Last 7 Days'}
+                    {preset === '30d' && 'Last 30 Days'}
+                    {preset === '90d' && 'Last 90 Days'}
+                    {preset === 'mtd' && 'Month to Date'}
+                    {preset === 'all' && 'All Time'}
+                    {preset === 'custom' && 'Custom Range'}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 opacity-50 shrink-0 ml-1" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80 p-3" align="end">
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Quick Presets</div>
+                  <div className="grid grid-cols-1 gap-1">
+                    {PRESETS.map((p) => {
+                      const isSelected = preset === p.id
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleSelectPreset(p.id)}
+                          className={cn(
+                            "flex items-center justify-between w-full px-2.5 py-1.5 rounded-md text-xs transition-colors text-left",
+                            isSelected
+                              ? "bg-primary/10 text-primary font-medium"
+                              : "hover:bg-muted text-foreground"
+                          )}
+                        >
+                          <div>
+                            <div className="font-medium">{p.label}</div>
+                            <div className="text-[10px] text-muted-foreground">{p.description}</div>
+                          </div>
+                          {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0 ml-2" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div className="border-t pt-3 space-y-2">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Custom Range</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[11px] font-medium text-muted-foreground mb-1 block">From</label>
+                        <Input
+                          type="date"
+                          max={formatDateInput(new Date())}
+                          value={customRange.from}
+                          onChange={(e) => {
+                            setCustomRange((prev) => ({ ...prev, from: e.target.value }))
+                            setPreset('custom')
+                          }}
+                          className="h-8 text-xs px-2"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-medium text-muted-foreground">To</label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomRange((prev) => ({ ...prev, to: formatDateInput(new Date()) }))
+                              setPreset('custom')
+                            }}
+                            className="text-[10px] text-primary hover:underline font-medium"
+                          >
+                            Today
+                          </button>
+                        </div>
+                        <Input
+                          type="date"
+                          max={formatDateInput(new Date())}
+                          value={customRange.to}
+                          onChange={(e) => {
+                            setCustomRange((prev) => ({ ...prev, to: e.target.value }))
+                            setPreset('custom')
+                          }}
+                          className="h-8 text-xs px-2"
+                        />
+                      </div>
+                    </div>
+
+                    {preset === 'custom' && customRangeValidation && (
+                      <div className="text-[11px] text-destructive px-1">{customRangeValidation}</div>
+                    )}
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="w-full h-8 text-xs mt-1"
+                      disabled={loading || Boolean(customRangeValidation)}
+                      onClick={handleApplyCustomRange}
+                    >
+                      Apply Custom Range
+                    </Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-2 pb-3 flex items-center justify-between text-xs text-muted-foreground border-t bg-muted/20 px-6 py-2.5 rounded-b-lg">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-foreground">Showing:</span>
+            <span className="font-semibold text-primary">{rangeLabel}</span>
+          </div>
+          <div>{loading ? 'Refreshing stats...' : 'Live Data'}</div>
         </CardContent>
       </Card>
 

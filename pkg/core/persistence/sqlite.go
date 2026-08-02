@@ -100,6 +100,36 @@ const (
 	);`
 	performanceMetricsIndexTime = `CREATE INDEX IF NOT EXISTS idx_performance_metrics_collected_at ON performance_metrics(collected_at DESC);`
 	performanceMetricsIndexType = `CREATE INDEX IF NOT EXISTS idx_performance_metrics_type_time ON performance_metrics(metric_type, collected_at DESC);`
+
+	streamApiSamplesSchema = `CREATE TABLE IF NOT EXISTS stream_api_samples (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp INTEGER NOT NULL,
+		content_type TEXT,
+		content_id TEXT,
+		total_duration_ms INTEGER NOT NULL DEFAULT 0,
+		metadata_duration_ms INTEGER NOT NULL DEFAULT 0,
+		search_duration_ms INTEGER NOT NULL DEFAULT 0,
+		ranking_duration_ms INTEGER NOT NULL DEFAULT 0,
+		avail_nzb_duration_ms INTEGER NOT NULL DEFAULT 0,
+		candidate_count INTEGER NOT NULL DEFAULT 0,
+		result_count INTEGER NOT NULL DEFAULT 0
+	);`
+	streamApiSamplesIndexTime = `CREATE INDEX IF NOT EXISTS idx_stream_api_samples_timestamp ON stream_api_samples(timestamp DESC);`
+
+	playbackTtffSamplesSchema = `CREATE TABLE IF NOT EXISTS playback_ttff_samples (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp INTEGER NOT NULL,
+		session_id TEXT,
+		provider_name TEXT,
+		ttff_ms INTEGER NOT NULL DEFAULT 0,
+		session_resolution_ms INTEGER NOT NULL DEFAULT 0,
+		nzb_fetch_duration_ms INTEGER NOT NULL DEFAULT 0,
+		nntp_connect_duration_ms INTEGER NOT NULL DEFAULT 0,
+		probe_duration_ms INTEGER NOT NULL DEFAULT 0,
+		first_byte_duration_ms INTEGER NOT NULL DEFAULT 0,
+		is_cache_hit INTEGER NOT NULL DEFAULT 0
+	);`
+	playbackTtffSamplesIndexTime = `CREATE INDEX IF NOT EXISTS idx_playback_ttff_samples_timestamp ON playback_ttff_samples(timestamp DESC);`
 )
 
 func openDB(dataDir string) (*sql.DB, error) {
@@ -135,6 +165,10 @@ func initSchema(db *sql.DB) error {
 		performanceMetricsSchema,
 		performanceMetricsIndexTime,
 		performanceMetricsIndexType,
+		streamApiSamplesSchema,
+		streamApiSamplesIndexTime,
+		playbackTtffSamplesSchema,
+		playbackTtffSamplesIndexTime,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("schema: %w", err)

@@ -68,10 +68,12 @@ const defaultMaxSamples = 1000
 
 // Collector manages in-memory performance metrics for API latency and TTFF.
 type Collector struct {
-	mu            sync.RWMutex
-	streamSamples []StreamAPISample
-	ttffSamples   []PlaybackTTFFSample
-	maxSamples    int
+	mu             sync.RWMutex
+	streamSamples  []StreamAPISample
+	ttffSamples    []PlaybackTTFFSample
+	maxSamples     int
+	onStreamSample func(StreamAPISample)
+	onTTFFSample   func(PlaybackTTFFSample)
 }
 
 var globalCollector = NewCollector(defaultMaxSamples)
@@ -93,24 +95,62 @@ func NewCollector(maxSamples int) *Collector {
 	}
 }
 
+// SetOnStreamAPISample sets a callback invoked when a new stream API sample is recorded.
+func (c *Collector) SetOnStreamAPISample(fn func(StreamAPISample)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onStreamSample = fn
+}
+
+// SetOnPlaybackTTFFSample sets a callback invoked when a new playback TTFF sample is recorded.
+func (c *Collector) SetOnPlaybackTTFFSample(fn func(PlaybackTTFFSample)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onTTFFSample = fn
+}
+
+// Hydrate populates initial in-memory samples (e.g. loaded from database on startup).
+func (c *Collector) Hydrate(streamSamples []StreamAPISample, ttffSamples []PlaybackTTFFSample) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(streamSamples) > c.maxSamples {
+		streamSamples = streamSamples[len(streamSamples)-c.maxSamples:]
+	}
+	if len(ttffSamples) > c.maxSamples {
+		ttffSamples = ttffSamples[len(ttffSamples)-c.maxSamples:]
+	}
+	c.streamSamples = append([]StreamAPISample(nil), streamSamples...)
+	c.ttffSamples = append([]PlaybackTTFFSample(nil), ttffSamples...)
+}
+
 // RecordStreamAPI adds a new stream API timing sample.
 func (c *Collector) RecordStreamAPI(sample StreamAPISample) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(c.streamSamples) >= c.maxSamples {
 		c.streamSamples = c.streamSamples[1:]
 	}
 	c.streamSamples = append(c.streamSamples, sample)
+	cb := c.onStreamSample
+	c.mu.Unlock()
+
+	if cb != nil {
+		go cb(sample)
+	}
 }
 
 // RecordPlaybackTTFF adds a new playback TTFF sample.
 func (c *Collector) RecordPlaybackTTFF(sample PlaybackTTFFSample) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(c.ttffSamples) >= c.maxSamples {
 		c.ttffSamples = c.ttffSamples[1:]
 	}
 	c.ttffSamples = append(c.ttffSamples, sample)
+	cb := c.onTTFFSample
+	c.mu.Unlock()
+
+	if cb != nil {
+		go cb(sample)
+	}
 }
 
 // GetStreamAPISamples returns a copy of recent stream API samples.

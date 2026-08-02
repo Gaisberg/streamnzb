@@ -458,3 +458,147 @@ func (m *StateManager) GetPerformanceMetricsSummary(from, to *time.Time) ([]Perf
 	}
 	return results, nil
 }
+
+type StreamAPISampleRecord struct {
+	Timestamp          time.Time `json:"timestamp"`
+	ContentType        string    `json:"content_type"`
+	ID                 string    `json:"id"`
+	TotalDurationMS    int64     `json:"total_duration_ms"`
+	MetadataDurationMS int64     `json:"metadata_duration_ms"`
+	SearchDurationMS   int64     `json:"search_duration_ms"`
+	RankingDurationMS  int64     `json:"ranking_duration_ms"`
+	AvailNZBDurationMS int64     `json:"avail_nzb_duration_ms"`
+	CandidateCount     int       `json:"candidate_count"`
+	ResultCount        int       `json:"result_count"`
+}
+
+type PlaybackTTFFSampleRecord struct {
+	Timestamp             time.Time `json:"timestamp"`
+	SessionID             string    `json:"session_id"`
+	ProviderName          string    `json:"provider_name"`
+	TTFFMS                int64     `json:"ttff_ms"`
+	SessionResolutionMS   int64     `json:"session_resolution_ms"`
+	NZBFetchDurationMS    int64     `json:"nzb_fetch_duration_ms"`
+	NNTPConnectDurationMS int64     `json:"nntp_connect_duration_ms"`
+	ProbeDurationMS       int64     `json:"probe_duration_ms"`
+	FirstByteDurationMS   int64     `json:"first_byte_duration_ms"`
+	IsCacheHit            bool      `json:"is_cache_hit"`
+}
+
+func (m *StateManager) RecordStreamAPISample(rec StreamAPISampleRecord) error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	return m.withWriteLock(func(db *sql.DB) error {
+		ts := rec.Timestamp
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		_, err := db.Exec(`
+			INSERT INTO stream_api_samples (
+				timestamp, content_type, content_id, total_duration_ms,
+				metadata_duration_ms, search_duration_ms, ranking_duration_ms, avail_nzb_duration_ms,
+				candidate_count, result_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, ts.Unix(), rec.ContentType, rec.ID, rec.TotalDurationMS, rec.MetadataDurationMS, rec.SearchDurationMS, rec.RankingDurationMS, rec.AvailNZBDurationMS, rec.CandidateCount, rec.ResultCount)
+		return err
+	})
+}
+
+func (m *StateManager) RecordPlaybackTTFFSample(rec PlaybackTTFFSampleRecord) error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	return m.withWriteLock(func(db *sql.DB) error {
+		ts := rec.Timestamp
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		isCacheHitInt := 0
+		if rec.IsCacheHit {
+			isCacheHitInt = 1
+		}
+		_, err := db.Exec(`
+			INSERT INTO playback_ttff_samples (
+				timestamp, session_id, provider_name, ttff_ms,
+				session_resolution_ms, nzb_fetch_duration_ms, nntp_connect_duration_ms,
+				probe_duration_ms, first_byte_duration_ms, is_cache_hit
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, ts.Unix(), rec.SessionID, rec.ProviderName, rec.TTFFMS, rec.SessionResolutionMS, rec.NZBFetchDurationMS, rec.NNTPConnectDurationMS, rec.ProbeDurationMS, rec.FirstByteDurationMS, isCacheHitInt)
+		return err
+	})
+}
+
+func (m *StateManager) GetRecentStreamAPISamples(limit int) ([]StreamAPISampleRecord, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := m.db.Query(`
+		SELECT timestamp, content_type, content_id, total_duration_ms, metadata_duration_ms, search_duration_ms, ranking_duration_ms, avail_nzb_duration_ms, candidate_count, result_count
+		FROM stream_api_samples
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []StreamAPISampleRecord
+	for rows.Next() {
+		var ts int64
+		var rec StreamAPISampleRecord
+		if err := rows.Scan(&ts, &rec.ContentType, &rec.ID, &rec.TotalDurationMS, &rec.MetadataDurationMS, &rec.SearchDurationMS, &rec.RankingDurationMS, &rec.AvailNZBDurationMS, &rec.CandidateCount, &rec.ResultCount); err != nil {
+			return nil, err
+		}
+		rec.Timestamp = time.Unix(ts, 0)
+		results = append(results, rec)
+	}
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+	return results, nil
+}
+
+func (m *StateManager) GetRecentPlaybackTTFFSamples(limit int) ([]PlaybackTTFFSampleRecord, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := m.db.Query(`
+		SELECT timestamp, session_id, provider_name, ttff_ms, session_resolution_ms, nzb_fetch_duration_ms, nntp_connect_duration_ms, probe_duration_ms, first_byte_duration_ms, is_cache_hit
+		FROM playback_ttff_samples
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []PlaybackTTFFSampleRecord
+	for rows.Next() {
+		var ts int64
+		var isCacheHitInt int
+		var rec PlaybackTTFFSampleRecord
+		if err := rows.Scan(&ts, &rec.SessionID, &rec.ProviderName, &rec.TTFFMS, &rec.SessionResolutionMS, &rec.NZBFetchDurationMS, &rec.NNTPConnectDurationMS, &rec.ProbeDurationMS, &rec.FirstByteDurationMS, &isCacheHitInt); err != nil {
+			return nil, err
+		}
+		rec.Timestamp = time.Unix(ts, 0)
+		rec.IsCacheHit = isCacheHitInt != 0
+		results = append(results, rec)
+	}
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+	return results, nil
+}
