@@ -1560,28 +1560,35 @@ func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Sessio
 	}
 
 	needProbe := !haveSnapshot || !snapshot.HasStartupInfo
+	var stream io.ReadSeekCloser
 	if needProbe {
 		startupTimeout := s.playbackStartupTimeout()
 		probeCtx, cancel := context.WithTimeout(ctx, startupTimeout)
-		spec, startupInfo, err := s.probePlaybackSource(probeCtx, sess)
+		probedStream, spec, startupInfo, err := s.probePlaybackSource(probeCtx, sess)
 		err = classifyPlaybackStartupErr("probe", startupTimeout, probeCtx, err)
 		cancel()
 		if err != nil {
 			return preparedPlaybackStream{}, err
 		}
+		if _, seekErr := probedStream.Seek(0, io.SeekStart); seekErr != nil {
+			probedStream.Close()
+			return preparedPlaybackStream{}, fmt.Errorf("rewind probed stream: %w", seekErr)
+		}
+		stream = probedStream
 		preparedStream.Spec = spec
 		preparedStream.StartupInfo = startupInfo
 		preparedStream.HasStartupInfo = true
-	}
+	} else {
+		if preparedStream.Spec.Key == "" {
+			return preparedPlaybackStream{}, fmt.Errorf("playback stream spec missing for session %s", sess.ID)
+		}
 
-	if preparedStream.Spec.Key == "" {
-		return preparedPlaybackStream{}, fmt.Errorf("playback stream spec missing for session %s", sess.ID)
-	}
-
-	stream, err := s.openExpectedPlaybackSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, s.playbackStartupTimeout())
-	if err != nil {
-		sess.ResetPlaybackStream()
-		return preparedPlaybackStream{}, err
+		var err error
+		stream, err = s.openExpectedPlaybackSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, s.playbackStartupTimeout())
+		if err != nil {
+			sess.ResetPlaybackStream()
+			return preparedPlaybackStream{}, err
+		}
 	}
 
 	preparedStream.Stream = stream
@@ -1651,16 +1658,16 @@ func (s *Server) openExpectedPlaybackSource(ctx context.Context, sess *session.S
 
 // probePlaybackSource validates the selected media and gathers startup metadata using
 // a disposable probe reader so that small scans never disturb the session body stream.
-func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session) (session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
+func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session) (io.ReadSeekCloser, session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
 	probeStream, probeName, probeSize, err := s.openPlaybackSource(ctx, sess)
 	if err != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, err
+		return nil, session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, err
 	}
-	defer probeStream.Close()
 
 	startInfo, inspectErr := seek.InspectStreamStart(probeStream, probeSize, probeName, unpack.ProbeSize)
 	if inspectErr != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
+		probeStream.Close()
+		return nil, session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
 	}
 	if !startInfo.HeaderValid {
 		if peek, err := readProbePrefix(probeStream, 16); err == nil && len(peek) > 0 {
@@ -1672,10 +1679,11 @@ func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session)
 				"encrypted_blueprint", blueprintAnyEncrypted(sess),
 				"password_len", nzbPasswordLen(sess))
 		}
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe: invalid container header for %s", probeName)
+		probeStream.Close()
+		return nil, session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe: invalid container header for %s", probeName)
 	}
 
-	return newPlaybackStreamSpec(sess.ID, probeName, probeSize), startInfo, nil
+	return probeStream, newPlaybackStreamSpec(sess.ID, probeName, probeSize), startInfo, nil
 }
 
 // newPlaybackStreamSpec creates the stable session/file key used to cache validated

@@ -86,6 +86,11 @@ type File struct {
 	zeroFillCount int
 
 	segmentDetectMu sync.Mutex
+
+	firstStatMu      sync.Mutex
+	firstStatChecked bool
+	firstStatExists  bool
+	firstStatErr     error
 }
 
 type inflightSegmentDownload struct {
@@ -160,15 +165,34 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 	if len(f.segments) == 0 {
 		return false, nil
 	}
+	f.firstStatMu.Lock()
+	if f.firstStatChecked {
+		exists, err := f.firstStatExists, f.firstStatErr
+		f.firstStatMu.Unlock()
+		return exists, err
+	}
+	f.firstStatMu.Unlock()
+
 	statter, ok := f.fetcher.(SegmentStatter)
 	if !ok {
+		f.firstStatMu.Lock()
+		f.firstStatChecked = true
+		f.firstStatExists = true
+		f.firstStatErr = nil
+		f.firstStatMu.Unlock()
 		return true, nil
 	}
 	msgID := strings.TrimSpace(f.segments[0].ID)
 	if msgID == "" {
 		return false, nil
 	}
-	return statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
+	exists, err := statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
+	f.firstStatMu.Lock()
+	f.firstStatChecked = true
+	f.firstStatExists = exists
+	f.firstStatErr = err
+	f.firstStatMu.Unlock()
+	return exists, err
 }
 
 func (f *File) SegmentMapDetected() bool {
