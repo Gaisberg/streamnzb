@@ -127,9 +127,6 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 		if mx.DownloadedMB > prev.DownloadedMB {
 			prev.DownloadedMB = mx.DownloadedMB
 		}
-		if mx.UsagePercent > prev.UsagePercent {
-			prev.UsagePercent = mx.UsagePercent
-		}
 		if mx.ArticleAvailable > prev.ArticleAvailable {
 			prev.ArticleAvailable = mx.ArticleAvailable
 		}
@@ -141,8 +138,17 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	var totalDownloadedMB float64
+	for _, v := range agg {
+		totalDownloadedMB += v.DownloadedMB
+	}
 	out := make([]ProviderMetric, 0, len(agg))
 	for _, v := range agg {
+		if totalDownloadedMB > 0 {
+			v.UsagePercent = (v.DownloadedMB / totalDownloadedMB) * 100
+		} else {
+			v.UsagePercent = 0
+		}
 		out = append(out, v)
 	}
 	return out, nil
@@ -226,7 +232,7 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		if mx.UniqueHitsCount > prev.UniqueHitsCount {
 			prev.UniqueHitsCount = mx.UniqueHitsCount
 		}
-		if isNewer {
+		if mx.AvgResponseMS > 0 && (prev.AvgResponseMS <= 0 || isNewer) {
 			prev.AvgResponseMS = mx.AvgResponseMS
 		}
 		if mx.AvailAvailableCount > prev.AvailAvailableCount {
@@ -601,4 +607,56 @@ func (m *StateManager) GetRecentPlaybackTTFFSamples(limit int) ([]PlaybackTTFFSa
 		results[i], results[j] = results[j], results[i]
 	}
 	return results, nil
+}
+
+func (m *StateManager) DeleteProviderMetrics(name string, from, to *time.Time) error {
+	name = strings.TrimSpace(name)
+	return m.withWriteLock(func(db *sql.DB) error {
+		clauses := make([]string, 0, 3)
+		args := make([]interface{}, 0, 3)
+		if name != "" {
+			clauses = append(clauses, "provider_name = ?")
+			args = append(args, name)
+		}
+		if from != nil {
+			clauses = append(clauses, "collected_at >= ?")
+			args = append(args, from.Unix())
+		}
+		if to != nil {
+			clauses = append(clauses, "collected_at < ?")
+			args = append(args, to.Unix())
+		}
+		query := "DELETE FROM provider_metrics"
+		if len(clauses) > 0 {
+			query += " WHERE " + strings.Join(clauses, " AND ")
+		}
+		_, err := db.Exec(query, args...)
+		return err
+	})
+}
+
+func (m *StateManager) DeleteIndexerMetrics(name string, from, to *time.Time) error {
+	name = strings.TrimSpace(name)
+	return m.withWriteLock(func(db *sql.DB) error {
+		clauses := make([]string, 0, 3)
+		args := make([]interface{}, 0, 3)
+		if name != "" {
+			clauses = append(clauses, "indexer_name = ?")
+			args = append(args, name)
+		}
+		if from != nil {
+			clauses = append(clauses, "collected_at >= ?")
+			args = append(args, from.Unix())
+		}
+		if to != nil {
+			clauses = append(clauses, "collected_at < ?")
+			args = append(args, to.Unix())
+		}
+		query := "DELETE FROM indexer_metrics"
+		if len(clauses) > 0 {
+			query += " WHERE " + strings.Join(clauses, " AND ")
+		}
+		_, err := db.Exec(query, args...)
+		return err
+	})
 }

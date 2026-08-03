@@ -254,59 +254,114 @@ func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	s.mu.RLock()
 	mgr := s.attemptLister
 	s.mu.RUnlock()
-	resp := persistedStatsResponse{
-		Providers: []persistence.ProviderMetric{},
-		Indexers:  []persistence.IndexerMetric{},
-	}
-	if mgr == nil {
+
+	switch r.Method {
+	case http.MethodGet:
+		resp := persistedStatsResponse{
+			Providers: []persistence.ProviderMetric{},
+			Indexers:  []persistence.IndexerMetric{},
+		}
+		if mgr == nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		from, err := parseDateParam(r.URL.Query().Get("from"))
+		if err != nil {
+			http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		to, err := parseDateParam(r.URL.Query().Get("to"))
+		if err != nil {
+			http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		if to != nil {
+			endExclusive := to.Add(24 * time.Hour)
+			to = &endExclusive
+		}
+		if from != nil && to != nil && !from.Before(*to) {
+			http.Error(w, "Invalid date range", http.StatusBadRequest)
+			return
+		}
+
+		providers, err := mgr.GetProviderMetricsSummary(from, to)
+		if err != nil {
+			logger.Error("GetProviderMetricsSummary failed", "err", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		indexers, err := mgr.GetIndexerMetricsSummary(from, to)
+		if err != nil {
+			logger.Error("GetIndexerMetricsSummary failed", "err", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		resp.Providers = providers
+		resp.Indexers = indexers
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
 
-	from, err := parseDateParam(r.URL.Query().Get("from"))
-	if err != nil {
-		http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
-		return
-	}
-	to, err := parseDateParam(r.URL.Query().Get("to"))
-	if err != nil {
-		http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
-		return
-	}
-	if to != nil {
-		endExclusive := to.Add(24 * time.Hour)
-		to = &endExclusive
-	}
-	if from != nil && to != nil && !from.Before(*to) {
-		http.Error(w, "Invalid date range", http.StatusBadRequest)
-		return
-	}
+	case http.MethodDelete:
+		if mgr == nil {
+			http.Error(w, "State manager unavailable", http.StatusInternalServerError)
+			return
+		}
 
-	providers, err := mgr.GetProviderMetricsSummary(from, to)
-	if err != nil {
-		logger.Error("GetProviderMetricsSummary failed", "err", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	indexers, err := mgr.GetIndexerMetricsSummary(from, to)
-	if err != nil {
-		logger.Error("GetIndexerMetricsSummary failed", "err", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	resp.Providers = providers
-	resp.Indexers = indexers
+		targetType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+		from, err := parseDateParam(r.URL.Query().Get("from"))
+		if err != nil {
+			http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		to, err := parseDateParam(r.URL.Query().Get("to"))
+		if err != nil {
+			http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		if to != nil {
+			endExclusive := to.Add(24 * time.Hour)
+			to = &endExclusive
+		}
+		if from != nil && to != nil && !from.Before(*to) {
+			http.Error(w, "Invalid date range", http.StatusBadRequest)
+			return
+		}
+
+		switch targetType {
+		case "provider":
+			if err := mgr.DeleteProviderMetrics(name, from, to); err != nil {
+				logger.Error("DeleteProviderMetrics failed", "name", name, "err", err)
+				http.Error(w, "Failed to delete provider metrics", http.StatusInternalServerError)
+				return
+			}
+		case "indexer":
+			if err := mgr.DeleteIndexerMetrics(name, from, to); err != nil {
+				logger.Error("DeleteIndexerMetrics failed", "name", name, "err", err)
+				http.Error(w, "Failed to delete indexer metrics", http.StatusInternalServerError)
+				return
+			}
+		default:
+			http.Error(w, "Invalid type parameter (expected 'provider' or 'indexer')", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Deleted %s statistics for %q in given range", targetType, name),
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handlePerformanceStats(w http.ResponseWriter, r *http.Request) {

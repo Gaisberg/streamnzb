@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/chart"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Database, Gauge, Zap, Clock, Activity, PlayCircle, Calendar, CalendarDays, ChevronDown, Check } from "lucide-react"
+import { Database, Gauge, Zap, Clock, Activity, PlayCircle, Calendar, CalendarDays, ChevronDown, Check, Trash2 } from "lucide-react"
+import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { apiFetch } from "@/api"
 import { cn } from "@/lib/utils"
 
@@ -140,6 +141,8 @@ export const StatisticsPage = memo(function StatisticsPage() {
   const [indexerMetric, setIndexerMetric] = useState('response')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
   const inFlightRef = useRef(false)
   const lastSignatureRef = useRef(buildHistorySignature({ providers: [], indexers: [] }))
 
@@ -180,6 +183,25 @@ export const StatisticsPage = memo(function StatisticsPage() {
       inFlightRef.current = false
     }
   }, [])
+
+  const handleDeleteStats = useCallback(async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const query = new URLSearchParams()
+      query.set('type', deleteTarget.type)
+      query.set('name', deleteTarget.name)
+      if (activeRange.from) query.set('from', activeRange.from)
+      if (activeRange.to) query.set('to', activeRange.to)
+      await apiFetch(`/api/stats/history?${query.toString()}`, { method: 'DELETE' })
+      setDeleteTarget(null)
+      await loadStats(activeRange.from, activeRange.to)
+    } catch (err) {
+      console.error('Failed to delete statistics:', err)
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleteTarget, activeRange, loadStats])
 
   useEffect(() => {
     if (preset === 'custom') return
@@ -266,7 +288,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
   }, [historyStats, indexerMetric])
 
   const providerRows = useMemo(() => {
-    return (historyStats?.providers || [])
+    const rawRows = (historyStats?.providers || [])
       .map((provider) => {
         const name = String(pick(provider, 'provider_name', 'ProviderName', '') || '').trim()
         if (!name) return null
@@ -274,14 +296,19 @@ export const StatisticsPage = memo(function StatisticsPage() {
           name,
           host: String(pick(provider, 'host', 'Host', '')),
           downloadedMb: toNumber(pick(provider, 'downloaded_mb', 'DownloadedMB')),
-          activeConns: toNumber(pick(provider, 'active_conns', 'ActiveConns')),
-          maxConns: toNumber(pick(provider, 'max_conns', 'MaxConns')),
-          usagePercent: toNumber(pick(provider, 'usage_percent', 'UsagePercent')),
           articleAvailableCount: toNumber(pick(provider, 'article_available_count', 'ArticleAvailableCount')),
           articleMissingCount: toNumber(pick(provider, 'article_missing_count', 'ArticleMissingCount')),
         }
       })
       .filter(Boolean)
+
+    const totalDownloaded = rawRows.reduce((sum, r) => sum + r.downloadedMb, 0)
+
+    return rawRows
+      .map((row) => ({
+        ...row,
+        usagePercent: totalDownloaded > 0 ? (row.downloadedMb / totalDownloaded) * 100 : 0,
+      }))
       .sort((a, b) => b.downloadedMb - a.downloadedMb)
   }, [historyStats])
 
@@ -621,6 +648,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                     <th className="px-3 py-2 text-right font-medium">Unique hits</th>
                     <th className="px-3 py-2 text-right font-medium">Available</th>
                     <th className="px-3 py-2 text-right font-medium">Unavailable</th>
+                    <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -634,11 +662,23 @@ export const StatisticsPage = memo(function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{row.uniqueHitsCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.availAvailableCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.availDiscardedCount}</td>
+                      <td className="px-3 py-2 text-right">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          title={`Delete statistics for ${row.name} in selected range`}
+                          onClick={() => setDeleteTarget({ type: 'indexer', name: row.name })}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                   {indexerRows.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
+                      <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
                     </tr>
                   )}
                 </tbody>
@@ -672,10 +712,10 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Provider</th>
                     <th className="px-3 py-2 text-right font-medium">Downloaded</th>
-                    <th className="px-3 py-2 text-right font-medium">Connections</th>
                     <th className="px-3 py-2 text-right font-medium">Usage</th>
                     <th className="px-3 py-2 text-right font-medium">Article available</th>
                     <th className="px-3 py-2 text-right font-medium">Article missing</th>
+                    <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -686,10 +726,21 @@ export const StatisticsPage = memo(function StatisticsPage() {
                         {row.host && <div className="text-xs text-muted-foreground truncate">{row.host}</div>}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatDownloadedMb(row.downloadedMb)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.activeConns}/{row.maxConns || 0}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.usagePercent.toFixed(1)}%</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.articleAvailableCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.articleMissingCount}</td>
+                      <td className="px-3 py-2 text-right">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          title={`Delete statistics for ${row.name} in selected range`}
+                          onClick={() => setDeleteTarget({ type: 'provider', name: row.name })}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                   {providerRows.length === 0 && (
@@ -704,6 +755,16 @@ export const StatisticsPage = memo(function StatisticsPage() {
         </Card>
       </div>
 
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteTarget(null)
+        }}
+        title={`Delete ${deleteTarget?.type === 'provider' ? 'Provider' : 'Indexer'} Statistics?`}
+        description={deleteTarget ? `Are you sure you want to delete statistics for ${deleteTarget.type} "${deleteTarget.name}" in the selected range (${rangeLabel})? This action cannot be undone.` : ''}
+        confirmLabel="Delete"
+        onConfirm={handleDeleteStats}
+      />
     </div>
   )
 })
