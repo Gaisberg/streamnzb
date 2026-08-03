@@ -100,7 +100,35 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 		query string
 		args  []interface{}
 	)
-	if to != nil {
+	var fetchFrom *time.Time
+	if from != nil {
+		var baselineTs int64
+		err := m.db.QueryRow(`SELECT MAX(collected_at) FROM provider_metrics WHERE collected_at < ?`, from.Unix()).Scan(&baselineTs)
+		if err == nil && baselineTs > 0 {
+			t := time.Unix(baselineTs, 0)
+			fetchFrom = &t
+		} else {
+			fetchFrom = from
+		}
+	}
+
+	if fetchFrom != nil && to != nil {
+		query = `
+			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+			FROM provider_metrics
+			WHERE collected_at >= ? AND collected_at < ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, fetchFrom.Unix(), to.Unix())
+	} else if fetchFrom != nil {
+		query = `
+			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+			FROM provider_metrics
+			WHERE collected_at >= ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, fetchFrom.Unix())
+	} else if to != nil {
 		query = `
 			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
 			FROM provider_metrics
@@ -257,7 +285,35 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		query string
 		args  []interface{}
 	)
-	if to != nil {
+	var fetchFrom *time.Time
+	if from != nil {
+		var baselineTs int64
+		err := m.db.QueryRow(`SELECT MAX(collected_at) FROM indexer_metrics WHERE collected_at < ?`, from.Unix()).Scan(&baselineTs)
+		if err == nil && baselineTs > 0 {
+			t := time.Unix(baselineTs, 0)
+			fetchFrom = &t
+		} else {
+			fetchFrom = from
+		}
+	}
+
+	if fetchFrom != nil && to != nil {
+		query = `
+			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+			FROM indexer_metrics
+			WHERE collected_at >= ? AND collected_at < ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, fetchFrom.Unix(), to.Unix())
+	} else if fetchFrom != nil {
+		query = `
+			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+			FROM indexer_metrics
+			WHERE collected_at >= ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, fetchFrom.Unix())
+	} else if to != nil {
 		query = `
 			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
 			FROM indexer_metrics
@@ -427,10 +483,20 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 }
 
 func (m *StateManager) GetLatestProviderMetrics() ([]ProviderMetric, error) {
+	since := time.Now().Add(-24 * time.Hour)
+	metrics, err := m.GetProviderMetricsSummary(&since, nil)
+	if err == nil && len(metrics) > 0 {
+		return metrics, nil
+	}
 	return m.GetProviderMetricsSummary(nil, nil)
 }
 
 func (m *StateManager) GetLatestIndexerMetrics() ([]IndexerMetric, error) {
+	since := time.Now().Add(-24 * time.Hour)
+	metrics, err := m.GetIndexerMetricsSummary(&since, nil)
+	if err == nil && len(metrics) > 0 {
+		return metrics, nil
+	}
 	return m.GetIndexerMetricsSummary(nil, nil)
 }
 
