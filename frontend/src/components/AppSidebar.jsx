@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils"
 
 const navMain = [
   { id: "dashboard", title: "Dashboard", icon: LayoutDashboard },
+  { id: "direct-play", title: "Direct Play", icon: PlayCircle },
   { id: "statistics", title: "Statistics", icon: ChartColumn },
   { id: "nzb-history", title: "History", icon: History },
   { id: "logs", title: "Logs", icon: FileText },
