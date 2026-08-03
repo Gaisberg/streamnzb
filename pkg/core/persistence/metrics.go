@@ -52,92 +52,187 @@ func buildTimeRangeSQL(base string, from, to *time.Time) (string, []interface{})
 	return base + " WHERE " + strings.Join(clauses, " AND "), args
 }
 
+func computeCounterDeltaFloat(baseline float64, hasBaseline bool, values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total float64
+	current := baseline
+	if !hasBaseline {
+		current = 0
+	}
+	for _, val := range values {
+		if val >= current {
+			total += (val - current)
+		} else {
+			total += val
+		}
+		current = val
+	}
+	return total
+}
+
+func computeCounterDeltaInt(baseline int64, hasBaseline bool, values []int64) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total int64
+	current := baseline
+	if !hasBaseline {
+		current = 0
+	}
+	for _, val := range values {
+		if val >= current {
+			total += (val - current)
+		} else {
+			total += val
+		}
+		current = val
+	}
+	return total
+}
+
 func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]ProviderMetric, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	query, args := buildTimeRangeSQL(`
-		SELECT
-			collected_at,
-			provider_name,
-			host,
-			active_conns,
-			idle_conns,
-			max_conns,
-			current_speed_mbps,
-			downloaded_mb,
-			usage_percent,
-			article_available_count,
-			article_missing_count
-		FROM provider_metrics
-	`, from, to)
+	var (
+		query string
+		args  []interface{}
+	)
+	if to != nil {
+		query = `
+			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+			FROM provider_metrics
+			WHERE collected_at < ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, to.Unix())
+	} else {
+		query = `
+			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+			FROM provider_metrics
+			ORDER BY collected_at ASC
+		`
+	}
+
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	agg := make(map[string]ProviderMetric)
+	type providerSnapshot struct {
+		CollectedAt      time.Time
+		Host             string
+		ActiveConns      int
+		IdleConns        int
+		MaxConns         int
+		CurrentSpeedMbps float64
+		DownloadedMB     float64
+		ArticleAvailable int64
+		ArticleMissing   int64
+	}
+
+	grouped := make(map[string][]providerSnapshot)
 	for rows.Next() {
 		var (
-			collectedAt int64
-			mx          ProviderMetric
+			collectedAt  int64
+			providerName string
+			s            providerSnapshot
 		)
 		if err := rows.Scan(
 			&collectedAt,
-			&mx.ProviderName,
-			&mx.Host,
-			&mx.ActiveConns,
-			&mx.IdleConns,
-			&mx.MaxConns,
-			&mx.CurrentSpeedMbps,
-			&mx.DownloadedMB,
-			&mx.UsagePercent,
-			&mx.ArticleAvailable,
-			&mx.ArticleMissing,
+			&providerName,
+			&s.Host,
+			&s.ActiveConns,
+			&s.IdleConns,
+			&s.MaxConns,
+			&s.CurrentSpeedMbps,
+			&s.DownloadedMB,
+			new(float64),
+			&s.ArticleAvailable,
+			&s.ArticleMissing,
 		); err != nil {
 			return nil, err
 		}
-		mx.CollectedAt = time.Unix(collectedAt, 0)
-		key := strings.TrimSpace(mx.ProviderName)
-		if key == "" {
-			continue
+		s.CollectedAt = time.Unix(collectedAt, 0)
+		key := strings.TrimSpace(providerName)
+		if key != "" {
+			grouped[key] = append(grouped[key], s)
 		}
-		prev, ok := agg[key]
-		if !ok {
-			agg[key] = mx
-			continue
-		}
-		if mx.CollectedAt.After(prev.CollectedAt) {
-			prev.CollectedAt = mx.CollectedAt
-			prev.Host = mx.Host
-		}
-		if mx.ActiveConns > prev.ActiveConns {
-			prev.ActiveConns = mx.ActiveConns
-		}
-		if mx.IdleConns > prev.IdleConns {
-			prev.IdleConns = mx.IdleConns
-		}
-		if mx.MaxConns > prev.MaxConns {
-			prev.MaxConns = mx.MaxConns
-		}
-		if mx.CurrentSpeedMbps > prev.CurrentSpeedMbps {
-			prev.CurrentSpeedMbps = mx.CurrentSpeedMbps
-		}
-		if mx.DownloadedMB > prev.DownloadedMB {
-			prev.DownloadedMB = mx.DownloadedMB
-		}
-		if mx.ArticleAvailable > prev.ArticleAvailable {
-			prev.ArticleAvailable = mx.ArticleAvailable
-		}
-		if mx.ArticleMissing > prev.ArticleMissing {
-			prev.ArticleMissing = mx.ArticleMissing
-		}
-		agg[key] = prev
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	agg := make(map[string]ProviderMetric)
+	for name, snaps := range grouped {
+		var (
+			baseline    *providerSnapshot
+			inRange     []providerSnapshot
+			hasBaseline bool
+		)
+		for _, s := range snaps {
+			if from != nil && s.CollectedAt.Before(*from) {
+				b := s
+				baseline = &b
+				hasBaseline = true
+			} else {
+				inRange = append(inRange, s)
+			}
+		}
+
+		if len(inRange) == 0 {
+			continue
+		}
+
+		latest := inRange[len(inRange)-1]
+		bDl := 0.0
+		bAvail := int64(0)
+		bMiss := int64(0)
+		if hasBaseline && baseline != nil {
+			bDl = baseline.DownloadedMB
+			bAvail = baseline.ArticleAvailable
+			bMiss = baseline.ArticleMissing
+		}
+
+		dlMBs := make([]float64, len(inRange))
+		availCounts := make([]int64, len(inRange))
+		missCounts := make([]int64, len(inRange))
+		maxConns := 0
+		maxSpeed := 0.0
+		latestHost := latest.Host
+
+		for i, s := range inRange {
+			dlMBs[i] = s.DownloadedMB
+			availCounts[i] = s.ArticleAvailable
+			missCounts[i] = s.ArticleMissing
+			if s.MaxConns > maxConns {
+				maxConns = s.MaxConns
+			}
+			if s.CurrentSpeedMbps > maxSpeed {
+				maxSpeed = s.CurrentSpeedMbps
+			}
+			if s.Host != "" {
+				latestHost = s.Host
+			}
+		}
+
+		agg[name] = ProviderMetric{
+			CollectedAt:      latest.CollectedAt,
+			ProviderName:     name,
+			Host:             latestHost,
+			ActiveConns:      latest.ActiveConns,
+			IdleConns:        latest.IdleConns,
+			MaxConns:         maxConns,
+			CurrentSpeedMbps: maxSpeed,
+			DownloadedMB:     computeCounterDeltaFloat(bDl, hasBaseline, dlMBs),
+			ArticleAvailable: computeCounterDeltaInt(bAvail, hasBaseline, availCounts),
+			ArticleMissing:   computeCounterDeltaInt(bMiss, hasBaseline, missCounts),
+		}
+	}
+
 	var totalDownloadedMB float64
 	for _, v := range agg {
 		totalDownloadedMB += v.DownloadedMB
@@ -158,94 +253,172 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	query, args := buildTimeRangeSQL(`
-		SELECT
-			collected_at,
-			indexer_name,
-			api_hits_used,
-			api_hits_limit,
-			downloads_used,
-			downloads_limit,
-			searches_count,
-			unique_hits_count,
-			avg_response_ms,
-			avail_available_count,
-			avail_discarded_count
-		FROM indexer_metrics
-	`, from, to)
+	var (
+		query string
+		args  []interface{}
+	)
+	if to != nil {
+		query = `
+			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+			FROM indexer_metrics
+			WHERE collected_at < ?
+			ORDER BY collected_at ASC
+		`
+		args = append(args, to.Unix())
+	} else {
+		query = `
+			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+			FROM indexer_metrics
+			ORDER BY collected_at ASC
+		`
+	}
+
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	agg := make(map[string]IndexerMetric)
+	type indexerSnapshot struct {
+		CollectedAt         time.Time
+		APIHitsUsed         int
+		APIHitsLimit        int
+		DownloadsUsed       int
+		DownloadsLimit      int
+		SearchesCount       int
+		UniqueHitsCount     int64
+		AvgResponseMS       float64
+		AvailAvailableCount int64
+		AvailDiscardedCount int64
+	}
+
+	grouped := make(map[string][]indexerSnapshot)
 	for rows.Next() {
 		var (
 			collectedAt int64
-			mx          IndexerMetric
+			indexerName string
+			s           indexerSnapshot
 		)
 		if err := rows.Scan(
 			&collectedAt,
-			&mx.IndexerName,
-			&mx.APIHitsUsed,
-			&mx.APIHitsLimit,
-			&mx.DownloadsUsed,
-			&mx.DownloadsLimit,
-			&mx.SearchesCount,
-			&mx.UniqueHitsCount,
-			&mx.AvgResponseMS,
-			&mx.AvailAvailableCount,
-			&mx.AvailDiscardedCount,
+			&indexerName,
+			&s.APIHitsUsed,
+			&s.APIHitsLimit,
+			&s.DownloadsUsed,
+			&s.DownloadsLimit,
+			&s.SearchesCount,
+			&s.UniqueHitsCount,
+			&s.AvgResponseMS,
+			&s.AvailAvailableCount,
+			&s.AvailDiscardedCount,
 		); err != nil {
 			return nil, err
 		}
-		mx.CollectedAt = time.Unix(collectedAt, 0)
-		key := strings.TrimSpace(mx.IndexerName)
-		if key == "" {
-			continue
+		s.CollectedAt = time.Unix(collectedAt, 0)
+		key := strings.TrimSpace(indexerName)
+		if key != "" {
+			grouped[key] = append(grouped[key], s)
 		}
-		prev, ok := agg[key]
-		if !ok {
-			agg[key] = mx
-			continue
-		}
-		isNewer := mx.CollectedAt.After(prev.CollectedAt)
-		if isNewer {
-			prev.CollectedAt = mx.CollectedAt
-		}
-		if mx.APIHitsUsed > prev.APIHitsUsed {
-			prev.APIHitsUsed = mx.APIHitsUsed
-		}
-		if mx.APIHitsLimit > prev.APIHitsLimit {
-			prev.APIHitsLimit = mx.APIHitsLimit
-		}
-		if mx.DownloadsUsed > prev.DownloadsUsed {
-			prev.DownloadsUsed = mx.DownloadsUsed
-		}
-		if mx.DownloadsLimit > prev.DownloadsLimit {
-			prev.DownloadsLimit = mx.DownloadsLimit
-		}
-		if mx.SearchesCount > prev.SearchesCount {
-			prev.SearchesCount = mx.SearchesCount
-		}
-		if mx.UniqueHitsCount > prev.UniqueHitsCount {
-			prev.UniqueHitsCount = mx.UniqueHitsCount
-		}
-		if mx.AvgResponseMS > 0 && (prev.AvgResponseMS <= 0 || isNewer) {
-			prev.AvgResponseMS = mx.AvgResponseMS
-		}
-		if mx.AvailAvailableCount > prev.AvailAvailableCount {
-			prev.AvailAvailableCount = mx.AvailAvailableCount
-		}
-		if mx.AvailDiscardedCount > prev.AvailDiscardedCount {
-			prev.AvailDiscardedCount = mx.AvailDiscardedCount
-		}
-		agg[key] = prev
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	agg := make(map[string]IndexerMetric)
+	for name, snaps := range grouped {
+		var (
+			baseline    *indexerSnapshot
+			inRange     []indexerSnapshot
+			hasBaseline bool
+		)
+		for _, s := range snaps {
+			if from != nil && s.CollectedAt.Before(*from) {
+				b := s
+				baseline = &b
+				hasBaseline = true
+			} else {
+				inRange = append(inRange, s)
+			}
+		}
+
+		if len(inRange) == 0 {
+			continue
+		}
+
+		latest := inRange[len(inRange)-1]
+		bAPI := int64(0)
+		bDl := int64(0)
+		bSearch := int64(0)
+		bUnique := int64(0)
+		bAvail := int64(0)
+		bDiscard := int64(0)
+		if hasBaseline && baseline != nil {
+			bAPI = int64(baseline.APIHitsUsed)
+			bDl = int64(baseline.DownloadsUsed)
+			bSearch = int64(baseline.SearchesCount)
+			bUnique = baseline.UniqueHitsCount
+			bAvail = baseline.AvailAvailableCount
+			bDiscard = baseline.AvailDiscardedCount
+		}
+
+		apiHits := make([]int64, len(inRange))
+		dlHits := make([]int64, len(inRange))
+		searchHits := make([]int64, len(inRange))
+		uniqueHits := make([]int64, len(inRange))
+		availHits := make([]int64, len(inRange))
+		discardHits := make([]int64, len(inRange))
+
+		latestAvgResp := 0.0
+		var sumResp float64
+		var countResp int
+		apiLimit := latest.APIHitsLimit
+		dlLimit := latest.DownloadsLimit
+
+		for i, s := range inRange {
+			apiHits[i] = int64(s.APIHitsUsed)
+			dlHits[i] = int64(s.DownloadsUsed)
+			searchHits[i] = int64(s.SearchesCount)
+			uniqueHits[i] = s.UniqueHitsCount
+			availHits[i] = s.AvailAvailableCount
+			discardHits[i] = s.AvailDiscardedCount
+			if s.AvgResponseMS > 0 {
+				sumResp += s.AvgResponseMS
+				countResp++
+			}
+			if s.APIHitsLimit > apiLimit {
+				apiLimit = s.APIHitsLimit
+			}
+			if s.DownloadsLimit > dlLimit {
+				dlLimit = s.DownloadsLimit
+			}
+		}
+
+		if countResp > 0 {
+			latestAvgResp = sumResp / float64(countResp)
+		} else {
+			for i := len(snaps) - 1; i >= 0; i-- {
+				if snaps[i].AvgResponseMS > 0 {
+					latestAvgResp = snaps[i].AvgResponseMS
+					break
+				}
+			}
+		}
+
+		agg[name] = IndexerMetric{
+			CollectedAt:         latest.CollectedAt,
+			IndexerName:         name,
+			APIHitsUsed:         int(computeCounterDeltaInt(bAPI, hasBaseline, apiHits)),
+			APIHitsLimit:        apiLimit,
+			DownloadsUsed:       int(computeCounterDeltaInt(bDl, hasBaseline, dlHits)),
+			DownloadsLimit:      dlLimit,
+			SearchesCount:       int(computeCounterDeltaInt(bSearch, hasBaseline, searchHits)),
+			UniqueHitsCount:     computeCounterDeltaInt(bUnique, hasBaseline, uniqueHits),
+			AvgResponseMS:       latestAvgResp,
+			AvailAvailableCount: computeCounterDeltaInt(bAvail, hasBaseline, availHits),
+			AvailDiscardedCount: computeCounterDeltaInt(bDiscard, hasBaseline, discardHits),
+		}
+	}
+
 	out := make([]IndexerMetric, 0, len(agg))
 	for _, v := range agg {
 		out = append(out, v)

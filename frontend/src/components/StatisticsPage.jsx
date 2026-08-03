@@ -54,25 +54,8 @@ function normalizeHistoryStats(data) {
   return { providers, indexers }
 }
 
-function summarizeEntries(entries, nameSnakeKey, namePascalKey) {
-  let stamp = 0
-  for (let i = 0; i < entries.length; i += 1) {
-    const item = entries[i] || {}
-    const name = String(pick(item, nameSnakeKey, namePascalKey, ''))
-    const collectedAt = String(pick(item, 'collected_at', 'CollectedAt', ''))
-    const keyCount = Object.keys(item).length
-    const base = `${name}|${collectedAt}|${keyCount}`
-    for (let j = 0; j < base.length; j += 1) {
-      stamp = ((stamp * 31) + base.charCodeAt(j)) | 0
-    }
-  }
-  return `${entries.length}:${stamp}`
-}
-
 function buildHistorySignature(normalized) {
-  const providers = Array.isArray(normalized?.providers) ? normalized.providers : []
-  const indexers = Array.isArray(normalized?.indexers) ? normalized.indexers : []
-  return `${summarizeEntries(providers, 'provider_name', 'ProviderName')}|${summarizeEntries(indexers, 'indexer_name', 'IndexerName')}`
+  return JSON.stringify(normalized || {})
 }
 
 function formatDownloadedMb(mb) {
@@ -162,8 +145,8 @@ export const StatisticsPage = memo(function StatisticsPage() {
         apiFetch('/api/stats/performance').catch(() => null),
       ])
       const normalized = normalizeHistoryStats(data)
-      const signature = buildHistorySignature(normalized)
-      if (signature !== lastSignatureRef.current) {
+      const signature = `${from || ''}:${to || ''}:${buildHistorySignature(normalized)}`
+      if (!background || signature !== lastSignatureRef.current) {
         lastSignatureRef.current = signature
         setHistoryStats(normalized)
       }
