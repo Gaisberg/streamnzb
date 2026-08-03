@@ -250,6 +250,9 @@ func (p *ParsedRelease) EpisodeMatchRank(season, episode int) int {
 	}
 	if season <= 0 {
 		if p.HasEpisode(episode) {
+			if len(p.Seasons) > 0 && !p.HasSeason(1) {
+				return 0
+			}
 			if len(p.Episodes) <= 1 {
 				return 4
 			}

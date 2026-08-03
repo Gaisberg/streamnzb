@@ -23,6 +23,7 @@ const ADVANCED_TAB_FIELDS = [
   'playback_startup_timeout_seconds',
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
+  'speculative_preprobing_max_attempts',
   'speculative_pre_probing_count',
   'mute_error_video',
   'memory_limit_mb',
@@ -281,8 +282,10 @@ export function useSettingsState({
       trimmedFullData.session_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(sessionTtl) ? 30 : sessionTtl))
       const postPlaybackTtl = Number(trimmedFullData.session_post_playback_ttl_minutes)
       trimmedFullData.session_post_playback_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(postPlaybackTtl) ? 240 : postPlaybackTtl))
-      const preProbeCount = Number(trimmedFullData.speculative_pre_probing_count)
-      trimmedFullData.speculative_pre_probing_count = Math.min(5, Math.max(0, Number.isNaN(preProbeCount) ? 1 : preProbeCount))
+      const preProbeMaxAttempts = Number(trimmedFullData.speculative_preprobing_max_attempts ?? trimmedFullData.speculative_pre_probing_count)
+      const sanitizedAttempts = Math.min(5, Math.max(0, Number.isNaN(preProbeMaxAttempts) ? 3 : preProbeMaxAttempts))
+      trimmedFullData.speculative_preprobing_max_attempts = sanitizedAttempts
+      trimmedFullData.speculative_pre_probing_count = sanitizedAttempts
 
       const payload = overrides
         ? Object.keys(overrides).reduce((acc, key) => {

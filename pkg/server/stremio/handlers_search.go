@@ -523,10 +523,19 @@ func buildSeriesSearchTitleFromMetadata(metadata *resolvedSearchMetadata, langua
 		return ""
 	}
 	if metadata.KitsuDetails != nil {
+		if useOriginalTitleLanguage(language) {
+			if title := strings.TrimSpace(metadata.KitsuDetails.CanonicalTitle); title != "" {
+				return title
+			}
+			return strings.TrimSpace(metadata.KitsuDetails.RomajiTitle)
+		}
+		if title := strings.TrimSpace(metadata.KitsuDetails.EnglishTitle); title != "" {
+			return title
+		}
 		if title := strings.TrimSpace(metadata.KitsuDetails.CanonicalTitle); title != "" {
 			return title
 		}
-		return strings.TrimSpace(metadata.KitsuDetails.EnglishTitle)
+		return strings.TrimSpace(metadata.KitsuDetails.RomajiTitle)
 	}
 	if metadata.TVDetails != nil {
 		title := strings.TrimSpace(metadata.TVDetails.Name)
@@ -1466,6 +1475,16 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			params.Metadata.KitsuDetails = details
 			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "success", "title", details.CanonicalTitle)
 
+			if req.TVDBID == "" && details.TVDBID != "" {
+				req.TVDBID = details.TVDBID
+			}
+			if req.IMDbID == "" && details.IMDbID != "" {
+				req.IMDbID = details.IMDbID
+			}
+			if req.TMDBID == "" && details.TMDBID != "" {
+				req.TMDBID = details.TMDBID
+			}
+
 			primaryTitle := details.EnglishTitle
 			if primaryTitle == "" {
 				primaryTitle = details.CanonicalTitle
@@ -1500,6 +1519,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 				var epQueries []string
 				if epNum > 0 {
 					epQueries = append(epQueries, fmt.Sprintf("%s S01E%02d", searchTitle, epNum))
+					epQueries = append(epQueries, fmt.Sprintf("%s %02d", searchTitle, epNum))
 					if epNum >= 100 {
 						epQueries = append(epQueries, fmt.Sprintf("%s %d", searchTitle, epNum))
 					}
@@ -1840,7 +1860,7 @@ func (s *Server) buildSearchParamsFromBase(base *SearchParams, searchQuery *conf
 					params.MovieTitleQueries[cacheKey] = queries
 				}
 			}
-		} else if req.Season != "" && req.Episode != "" {
+		} else if req.Episode != "" || req.Season != "" {
 			if cached, ok := params.SeriesTitleQueries[cacheKey]; ok {
 				queries = cached
 			} else {
@@ -1879,8 +1899,11 @@ func (s *Server) buildSearchParams(contentType, id string, searchQuery *config.S
 }
 
 func appendSeasonEpisodeQuery(query, season, episode string) string {
-	if season == "" || episode == "" {
+	if episode == "" {
 		return strings.TrimSpace(query)
+	}
+	if season == "" {
+		season = "1"
 	}
 	seasonNum, seasonErr := strconv.Atoi(season)
 	episodeNum, episodeErr := strconv.Atoi(episode)

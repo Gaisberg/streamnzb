@@ -2535,117 +2535,142 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 	logger.Debug("Finished serving debug media")
 }
 
-func (s *Server) speculativelyPreProbeSession(sess *session.Session) {
+func (s *Server) preProbeSessionSync(ctx context.Context, sess *session.Session) (bool, error) {
 	if sess == nil {
-		return
+		return false, errors.New("nil session")
 	}
 
-	if sess.IsWarm() || sess.IsNZBDownloadInFlight() {
-		return
+	if sess.IsWarm() {
+		return true, nil
 	}
 
+	logger.Debug("Speculative pre-probing starting for session", "slot", sess.ID, "title", sess.Release.Title)
+
+	// 1. Fetch the NZB and construct loader files
+	if _, err := sess.GetOrDownloadNZBWithContext(ctx, s.sessionManager); err != nil {
+		return false, fmt.Errorf("download NZB: %w", err)
+	}
+
+	// 2. Resolve the obfuscated names and verify first segment availability
+	files := sess.Files
+	if len(files) > 0 {
+		exists, statErr := files[0].CheckFirstSegmentExists(ctx)
+		if statErr != nil {
+			return false, fmt.Errorf("stat check: %w", statErr)
+		}
+		if !exists {
+			return false, errors.New("first segment unavailable")
+		}
+	}
+
+	// 3. Trigger direct media stream hints parsing (name overrides)
+	unpackFiles := make([]unpack.UnpackableFile, len(files))
+	for idx := range files {
+		unpackFiles[idx] = files[idx]
+	}
+	password := ""
+	if sess.NZB != nil {
+		password = sess.NZB.Password()
+	}
+	target := unpack.EpisodeTarget{}
+	if sess.ContentIDs != nil {
+		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
+	}
+	hints := unpack.StreamSelectionHints{
+		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
+	}
+
+	streamReader, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
+	if err != nil {
+		return false, fmt.Errorf("media stream mapping: %w", err)
+	}
+
+	cacheReturnedPlaybackBlueprint(sess, bp)
+	sess.SetSelectedPlaybackFile(name)
+	if streamReader != nil {
+		streamReader.Close()
+	}
+
+	logger.Info("Speculative pre-probing successfully completed", "slot", sess.ID, "title", sess.Release.Title, "file", name, "size", size)
+	return true, nil
+}
+
+func (s *Server) speculativelyPreProbeSession(sess *session.Session) {
+	if sess == nil || sess.IsWarm() || sess.IsNZBDownloadInFlight() {
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-
-		logger.Debug("Speculative pre-probing starting for session", "slot", sess.ID, "title", sess.Release.Title)
-
-		// 1. Fetch the NZB and construct loader files
-		if _, err := sess.GetOrDownloadNZBWithContext(ctx, s.sessionManager); err != nil {
-			logger.Trace("Speculative pre-probe failed to download NZB", "slot", sess.ID, "err", err)
-			return
-		}
-
-		// 2. Resolve the obfuscated names and verify first segment availability
-		files := sess.Files
-		if len(files) > 0 {
-			exists, statErr := files[0].CheckFirstSegmentExists(ctx)
-			if statErr != nil {
-				logger.Trace("Speculative pre-probe stat check failed", "slot", sess.ID, "err", statErr)
-				return
-			}
-			if !exists {
-				logger.Trace("Speculative pre-probe first segment unavailable", "slot", sess.ID)
-				return
-			}
-		}
-
-		// 3. Trigger direct media stream hints parsing (name overrides)
-		unpackFiles := make([]unpack.UnpackableFile, len(files))
-		for idx := range files {
-			unpackFiles[idx] = files[idx]
-		}
-		password := ""
-		if sess.NZB != nil {
-			password = sess.NZB.Password()
-		}
-		target := unpack.EpisodeTarget{}
-		if sess.ContentIDs != nil {
-			target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
-		}
-		hints := unpack.StreamSelectionHints{
-			AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
-		}
-
-		streamReader, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
-		if err != nil {
-			logger.Trace("Speculative pre-probe media stream mapping failed", "slot", sess.ID, "err", err)
-			return
-		}
-
-		cacheReturnedPlaybackBlueprint(sess, bp)
-		sess.SetSelectedPlaybackFile(name)
-		if streamReader != nil {
-			streamReader.Close()
-		}
-
-		logger.Info("Speculative pre-probing successfully completed", "slot", sess.ID, "title", sess.Release.Title, "file", name, "size", size)
+		_, _ = s.preProbeSessionSync(ctx, sess)
 	}()
 }
 
 func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
-	// If the stream uses the AIOStreams profile, skip pre-probing here.
-	// We will pre-probe when AIOStreams sends the /failover-order POST request.
 	if streamUsesAIOStreamsProfile(stream) {
 		logger.Debug("Skipping speculative pre-probing in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
 		return
 	}
 
-	count := s.config.EffectiveSpeculativePreProbingCount()
-	if count <= 0 || list == nil || len(list.Candidates) == 0 {
+	maxAttempts := s.config.EffectiveSpeculativePreProbingMaxAttempts()
+	if maxAttempts <= 0 || list == nil || len(list.Candidates) == 0 {
 		return
 	}
 	n := len(list.Candidates)
-	if count > n {
-		count = n
+	if maxAttempts > n {
+		maxAttempts = n
 	}
 	useSlotPaths := len(list.SlotPaths) == n
-	for i := 0; i < count; i++ {
-		playPath := key.SlotPath(i)
-		if useSlotPaths {
-			playPath = list.SlotPaths[i]
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		for i := 0; i < maxAttempts; i++ {
+			playPath := key.SlotPath(i)
+			if useSlotPaths {
+				playPath = list.SlotPaths[i]
+			}
+			sess, err := s.sessionManager.GetSession(playPath)
+			if err != nil {
+				continue
+			}
+			ok, probeErr := s.preProbeSessionSync(ctx, sess)
+			if ok {
+				logger.Info("Speculative failover pre-probing found ready stream candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.Release.Title)
+				break
+			}
+			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 		}
-		sess, err := s.sessionManager.GetSession(playPath)
-		if err == nil {
-			s.speculativelyPreProbeSession(sess)
-		}
-	}
+	}()
 }
 
 func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
-	count := s.config.EffectiveSpeculativePreProbingCount()
-	if count <= 0 || len(order) == 0 {
+	maxAttempts := s.config.EffectiveSpeculativePreProbingMaxAttempts()
+	if maxAttempts <= 0 || len(order) == 0 {
 		return
 	}
 	n := len(order)
-	if count > n {
-		count = n
+	if maxAttempts > n {
+		maxAttempts = n
 	}
-	for i := 0; i < count; i++ {
-		slotPath := order[i]
-		sess, err := s.sessionManager.GetSession(slotPath)
-		if err == nil {
-			s.speculativelyPreProbeSession(sess)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+
+		for i := 0; i < maxAttempts; i++ {
+			slotPath := order[i]
+			sess, err := s.sessionManager.GetSession(slotPath)
+			if err != nil {
+				continue
+			}
+			ok, probeErr := s.preProbeSessionSync(ctx, sess)
+			if ok {
+				logger.Info("Speculative failover pre-probing found ready stream candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.Release.Title)
+				break
+			}
+			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 		}
-	}
+	}()
 }

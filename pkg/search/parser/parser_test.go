@@ -46,6 +46,11 @@ func TestParsedReleaseEpisodeMatchRank(t *testing.T) {
 			}
 		})
 	}
+
+	wrongSeasonS02E01 := &ParsedRelease{Season: 2, Episode: 1, Seasons: []int{2}, Episodes: []int{1}}
+	if got := wrongSeasonS02E01.EpisodeMatchRank(0, 1); got != 0 {
+		t.Fatalf("expected S02E01 to be rejected for season 0 request, got rank %d", got)
+	}
 }
 
 func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {

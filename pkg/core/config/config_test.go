@@ -475,24 +475,24 @@ func TestSaveFileDoesNotPersistAvailNZBAPIKey(t *testing.T) {
 }
 
 func TestConfigNormalizeSpeculativePreProbingCount(t *testing.T) {
-	cfg := &Config{SpeculativePreProbingCount: 6}
-	if got := cfg.EffectiveSpeculativePreProbingCount(); got != 5 {
+	cfg := &Config{SpeculativePreProbingMaxAttempts: 6}
+	if got := cfg.EffectiveSpeculativePreProbingMaxAttempts(); got != 5 {
 		t.Fatalf("expected count normalized to 5, got %d", got)
 	}
 
-	cfgNegative := &Config{SpeculativePreProbingCount: -1}
-	if got := cfgNegative.EffectiveSpeculativePreProbingCount(); got != 0 {
+	cfgNegative := &Config{SpeculativePreProbingMaxAttempts: -1}
+	if got := cfgNegative.EffectiveSpeculativePreProbingMaxAttempts(); got != 0 {
 		t.Fatalf("expected count normalized to 0, got %d", got)
 	}
 
 	cfgDefault := &Config{}
-	if got := cfgDefault.EffectiveSpeculativePreProbingCount(); got != 0 {
+	if got := cfgDefault.EffectiveSpeculativePreProbingMaxAttempts(); got != 0 {
 		t.Fatalf("expected count 0 for zero-value count field, got %d", got)
 	}
 
 	cfgNil := (*Config)(nil)
-	if got := cfgNil.EffectiveSpeculativePreProbingCount(); got != DefaultSpeculativePreProbingCount {
-		t.Fatalf("expected default count %d for nil config, got %d", DefaultSpeculativePreProbingCount, got)
+	if got := cfgNil.EffectiveSpeculativePreProbingMaxAttempts(); got != DefaultSpeculativePreProbingMaxAttempts {
+		t.Fatalf("expected default count %d for nil config, got %d", DefaultSpeculativePreProbingMaxAttempts, got)
 	}
 }
 

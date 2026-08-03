@@ -1010,8 +1010,11 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	if plan.validatePlaybackStartupTimeout && (cfg.PlaybackStartupTimeoutSeconds < 1 || cfg.PlaybackStartupTimeoutSeconds > config.MaxPlaybackStartupTimeoutSeconds) {
 		errors["playback_startup_timeout_seconds"] = "Must be between 1 and 60 seconds"
 	}
-	if plan.validateSpeculativePreProbing && (cfg.SpeculativePreProbingCount < 0 || cfg.SpeculativePreProbingCount > 5) {
-		errors["speculative_pre_probing_count"] = "Must be between 0 and 5"
+	if plan.validateSpeculativePreProbing {
+		count := cfg.EffectiveSpeculativePreProbingMaxAttempts()
+		if count < 0 || count > 5 {
+			errors["speculative_preprobing_max_attempts"] = "Must be between 0 and 5"
+		}
 	}
 	if plan.validateIndexerProxyURL {
 		if err := config.ValidateIndexerProxyURL(cfg.IndexerProxyURL); err != nil {

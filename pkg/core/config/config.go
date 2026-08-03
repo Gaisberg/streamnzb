@@ -22,29 +22,30 @@ import (
 )
 
 const (
-	defaultAdminPasswordHash               = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
-	DefaultInternalIndexerTimeoutSeconds   = 5
-	DefaultAggregatorIndexerTimeoutSeconds = 10
-	DefaultEasynewsIndexerTimeoutSeconds   = 15
-	DefaultPlaybackStartupTimeoutSeconds   = 5
-	MaxPlaybackStartupTimeoutSeconds       = 60
-	DefaultSessionTTLMinutes               = 30
-	MinSessionTTLMinutes                   = 1
-	MaxSessionTTLMinutes                   = 1440
-	DefaultSessionPostPlaybackTTLMinutes   = 240
-	MinSessionPostPlaybackTTLMinutes       = 1
-	MaxSessionPostPlaybackTTLMinutes       = 1440
-	DefaultSpeculativePreProbingCount      = 1
-	CurrentConfigVersion                   = 2
-	StreamModelConfigVersion               = 2
-	defaultMigratedStreamID                = "default"
-	SeriesSearchScopeSeasonEpisode         = "season_episode"
-	SeriesSearchScopeSeason                = "season"
-	SeriesSearchScopeNone                  = "none"
-	legacySeriesSearchScopeEpisodeParam    = "episode_param"
-	legacySeriesSearchScopeEpisodeQuery    = "episode_query"
-	legacySeriesSearchScopeSeasonParam     = "season_param"
-	legacySeriesSearchScopeSeasonQuery     = "season_query"
+	defaultAdminPasswordHash                = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+	DefaultInternalIndexerTimeoutSeconds    = 5
+	DefaultAggregatorIndexerTimeoutSeconds  = 10
+	DefaultEasynewsIndexerTimeoutSeconds    = 15
+	DefaultPlaybackStartupTimeoutSeconds    = 5
+	MaxPlaybackStartupTimeoutSeconds        = 60
+	DefaultSessionTTLMinutes                = 30
+	MinSessionTTLMinutes                    = 1
+	MaxSessionTTLMinutes                    = 1440
+	DefaultSessionPostPlaybackTTLMinutes    = 240
+	MinSessionPostPlaybackTTLMinutes        = 1
+	MaxSessionPostPlaybackTTLMinutes        = 1440
+	DefaultSpeculativePreProbingCount       = 3
+	DefaultSpeculativePreProbingMaxAttempts = 3
+	CurrentConfigVersion                    = 2
+	StreamModelConfigVersion                = 2
+	defaultMigratedStreamID                 = "default"
+	SeriesSearchScopeSeasonEpisode          = "season_episode"
+	SeriesSearchScopeSeason                 = "season"
+	SeriesSearchScopeNone                   = "none"
+	legacySeriesSearchScopeEpisodeParam     = "episode_param"
+	legacySeriesSearchScopeEpisodeQuery     = "episode_query"
+	legacySeriesSearchScopeSeasonParam      = "season_param"
+	legacySeriesSearchScopeSeasonQuery      = "season_query"
 )
 
 type Provider struct {
@@ -275,11 +276,18 @@ func (c *Config) EffectivePlaybackStartupTimeout() time.Duration {
 	return time.Duration(c.EffectivePlaybackStartupTimeoutSeconds()) * time.Second
 }
 
-func (c *Config) EffectiveSpeculativePreProbingCount() int {
+func (c *Config) EffectiveSpeculativePreProbingMaxAttempts() int {
 	if c != nil {
+		if c.SpeculativePreProbingMaxAttempts != 0 {
+			return normalizeSpeculativePreProbingCount(c.SpeculativePreProbingMaxAttempts)
+		}
 		return normalizeSpeculativePreProbingCount(c.SpeculativePreProbingCount)
 	}
-	return DefaultSpeculativePreProbingCount
+	return DefaultSpeculativePreProbingMaxAttempts
+}
+
+func (c *Config) EffectiveSpeculativePreProbingCount() int {
+	return c.EffectiveSpeculativePreProbingMaxAttempts()
 }
 
 func normalizeSessionTTLMinutes(ttl int) int {
@@ -501,8 +509,9 @@ type Config struct {
 	// SessionPostPlaybackTTLMinutes controls how long a session stays in memory after playback ends (paused/stopped). Default 240 (4 hours).
 	SessionPostPlaybackTTLMinutes int `json:"session_post_playback_ttl_minutes,omitempty"`
 
-	// SpeculativePreProbingCount controls how many top releases to pre-probe in background. Default 1.
-	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
+	// SpeculativePreProbingMaxAttempts controls maximum preprobe failover attempts to find a working release. Default 3.
+	SpeculativePreProbingMaxAttempts int `json:"speculative_preprobing_max_attempts,omitempty"`
+	SpeculativePreProbingCount       int `json:"speculative_pre_probing_count,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.
@@ -733,22 +742,23 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		AddonPort:                     7000,
-		AddonBaseURL:                  "http://localhost:7000",
-		LogLevel:                      "INFO",
-		VerboseNNTPLogging:            false,
-		AdminUsername:                 "admin",
-		ProxyPort:                     119,
-		ProxyHost:                     "0.0.0.0",
-		ProxyEnabled:                  true,
-		MemoryLimitMB:                 512,
-		KeepLogFiles:                  9,
-		NZBHistoryRetentionDays:       90,
-		PlaybackStartupTimeoutSeconds: DefaultPlaybackStartupTimeoutSeconds,
-		SessionTTLMinutes:             DefaultSessionTTLMinutes,
-		SessionPostPlaybackTTLMinutes: DefaultSessionPostPlaybackTTLMinutes,
-		SpeculativePreProbingCount:    DefaultSpeculativePreProbingCount,
-		LoadedPath:                    configPath,
+		AddonPort:                        7000,
+		AddonBaseURL:                     "http://localhost:7000",
+		LogLevel:                         "INFO",
+		VerboseNNTPLogging:               false,
+		AdminUsername:                    "admin",
+		ProxyPort:                        119,
+		ProxyHost:                        "0.0.0.0",
+		ProxyEnabled:                     true,
+		MemoryLimitMB:                    512,
+		KeepLogFiles:                     9,
+		NZBHistoryRetentionDays:          90,
+		PlaybackStartupTimeoutSeconds:    DefaultPlaybackStartupTimeoutSeconds,
+		SessionTTLMinutes:                DefaultSessionTTLMinutes,
+		SessionPostPlaybackTTLMinutes:    DefaultSessionPostPlaybackTTLMinutes,
+		SpeculativePreProbingMaxAttempts: DefaultSpeculativePreProbingMaxAttempts,
+		SpeculativePreProbingCount:       DefaultSpeculativePreProbingCount,
+		LoadedPath:                       configPath,
 	}
 
 	if err := cfg.LoadFile(configPath); err != nil {
