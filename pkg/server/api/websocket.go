@@ -417,6 +417,7 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 		FilterSortingMode   string                                `json:"filter_sorting_mode"`
 		IndexerMode         string                                `json:"indexer_mode"`
 		UseAvailNZB         *bool                                 `json:"use_availnzb"`
+		FilterAvailNZB      *bool                                 `json:"filter_availnzb"`
 		CombineResults      *bool                                 `json:"combine_results"`
 		EnableFailover      *bool                                 `json:"enable_failover"`
 		ResultsMode         string                                `json:"results_mode"`
@@ -455,6 +456,7 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 			FilterSortingMode:   streamConfig.FilterSortingMode,
 			IndexerMode:         streamConfig.IndexerMode,
 			UseAvailNZB:         streamConfig.UseAvailNZB,
+			FilterAvailNZB:      streamConfig.FilterAvailNZB,
 			CombineResults:      streamConfig.CombineResults,
 			EnableFailover:      streamConfig.EnableFailover,
 			ResultsMode:         streamConfig.ResultsMode,
@@ -506,6 +508,7 @@ func (s *Server) handleGetStreamsWS(client *Client) {
 			"filter_sorting_mode":   stream.FilterSortingMode,
 			"indexer_mode":          stream.IndexerMode,
 			"use_availnzb":          stream.UseAvailNZB,
+			"filter_availnzb":       stream.FilterAvailNZB,
 			"combine_results":       stream.CombineResults,
 			"enable_failover":       stream.EnableFailover,
 			"results_mode":          stream.ResultsMode,
@@ -553,6 +556,7 @@ func (s *Server) handleGetStreamWS(client *Client, payload json.RawMessage) {
 		"filter_sorting_mode":   stream.FilterSortingMode,
 		"indexer_mode":          stream.IndexerMode,
 		"use_availnzb":          stream.UseAvailNZB,
+		"filter_availnzb":       stream.FilterAvailNZB,
 		"combine_results":       stream.CombineResults,
 		"enable_failover":       stream.EnableFailover,
 		"results_mode":          stream.ResultsMode,

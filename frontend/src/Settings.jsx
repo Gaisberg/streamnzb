@@ -119,7 +119,6 @@ function Settings({
         proxy_port: Number(initialConfig.proxy_port),
         proxy_enabled: initialConfig.proxy_enabled !== false,
         availnzb_mode: normalizeAvailNZBMode(initialConfig.availnzb_mode),
-        availnzb_filter_reported_bad: initialConfig.availnzb_filter_reported_bad === true,
         tmdb_api_key: initialConfig.tmdb_api_key ?? '',
         tvdb_api_key: initialConfig.tvdb_api_key ?? '',
         indexer_query_header: initialConfig.indexer_query_header ?? '',

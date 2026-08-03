@@ -61,6 +61,7 @@ func (s *Server) handleStreamsList(w http.ResponseWriter, r *http.Request) {
 			"filter_sorting_mode":    d.FilterSortingMode,
 			"indexer_mode":           d.IndexerMode,
 			"use_availnzb":           d.UseAvailNZB,
+			"filter_availnzb":        d.FilterAvailNZB,
 			"combine_results":        d.CombineResults,
 			"enable_failover":        d.EnableFailover,
 			"results_mode":           d.ResultsMode,
@@ -151,6 +152,7 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 			"filter_sorting_mode":    d.FilterSortingMode,
 			"indexer_mode":           d.IndexerMode,
 			"use_availnzb":           d.UseAvailNZB,
+			"filter_availnzb":        d.FilterAvailNZB,
 			"combine_results":        d.CombineResults,
 			"enable_failover":        d.EnableFailover,
 			"results_mode":           d.ResultsMode,
@@ -217,6 +219,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		FilterSortingMode   string                                `json:"filter_sorting_mode"`
 		IndexerMode         string                                `json:"indexer_mode"`
 		UseAvailNZB         *bool                                 `json:"use_availnzb"`
+		FilterAvailNZB      *bool                                 `json:"filter_availnzb"`
 		CombineResults      *bool                                 `json:"combine_results"`
 		EnableFailover      *bool                                 `json:"enable_failover"`
 		ResultsMode         string                                `json:"results_mode"`
@@ -257,6 +260,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			FilterSortingMode:   dc.FilterSortingMode,
 			IndexerMode:         dc.IndexerMode,
 			UseAvailNZB:         dc.UseAvailNZB,
+			FilterAvailNZB:      dc.FilterAvailNZB,
 			CombineResults:      dc.CombineResults,
 			EnableFailover:      dc.EnableFailover,
 			ResultsMode:         dc.ResultsMode,

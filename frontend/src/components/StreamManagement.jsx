@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { CONTENT_KINDS } from "@/lib/profiles"
+import { isAvailNZBEnabled } from "@/lib/availnzb"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -57,6 +58,7 @@ function normalizeStreamDraft(draft) {
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
     auto_add_providers: draft?.auto_add_providers === true,
     auto_add_indexers: draft?.auto_add_indexers === true,
+    filter_availnzb: draft?.filter_availnzb === true,
     providers: uniquePreserveOrder(draft?.providers),
     indexers: uniquePreserveOrder(draft?.indexers),
     indexer_overrides: draft?.indexer_overrides || {},
@@ -77,6 +79,7 @@ function buildStreamDraft(stream) {
     results_mode: stream?.results_mode,
     auto_add_providers: stream?.auto_add_providers,
     auto_add_indexers: stream?.auto_add_indexers,
+    filter_availnzb: stream?.filter_availnzb,
     providers: stream?.provider_selections || stream?.providers || [],
     indexers: stream?.indexer_selections || stream?.indexers || Object.keys(stream?.indexer_overrides || {}),
     indexer_overrides: stream?.indexer_overrides || {},
@@ -105,6 +108,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     results_mode: draft.results_mode,
     auto_add_providers: draft.auto_add_providers,
     auto_add_indexers: draft.auto_add_indexers,
+    filter_availnzb: draft.filter_availnzb,
     provider_selections: draft.providers || [],
     indexer_selections: draft.indexers || [],
     indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
@@ -398,10 +402,12 @@ function StreamDialog({
   movieQueryNames,
   seriesQueryNames,
   filterProfiles = [],
+  globalConfig,
   onSave,
   saving,
 }) {
   const isEditing = mode === 'edit'
+  const availNZBEnabled = isAvailNZBEnabled(globalConfig?.availnzb_mode)
   const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
   const [saveError, setSaveError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
@@ -625,6 +631,22 @@ function StreamDialog({
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
                   If enabled, StreamNZB automatically tries the next release in order when the current NZB fails during playback.
+                </p>
+              </div>
+
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Filter AvailNZB unavailable</div>
+                  <Switch
+                    checked={availNZBEnabled && draft.filter_availnzb === true}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, filter_availnzb: checked === true }))}
+                    disabled={!availNZBEnabled}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {availNZBEnabled
+                    ? 'If enabled, releases reported as bad by AvailNZB are removed from returned streams.'
+                    : 'Disabled because AvailNZB is globally disabled.'}
                 </p>
               </div>
 
@@ -1365,6 +1387,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
+            globalConfig={globalConfig}
             onSave={handleCreateStream}
             saving={dialogSaving}
           />
@@ -1383,6 +1406,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
+            globalConfig={globalConfig}
             onSave={handleSaveStream}
             saving={dialogSaving}
           />

@@ -40,6 +40,7 @@ type Stream struct {
 	FilterSortingMode   string                                `json:"filter_sorting_mode,omitempty"`
 	IndexerMode         string                                `json:"indexer_mode,omitempty"`
 	UseAvailNZB         *bool                                 `json:"use_availnzb,omitempty"`
+	FilterAvailNZB      *bool                                 `json:"filter_availnzb,omitempty"`
 	CombineResults      *bool                                 `json:"combine_results,omitempty"`
 	EnableFailover      *bool                                 `json:"enable_failover,omitempty"`
 	ResultsMode         string                                `json:"results_mode,omitempty"`
@@ -53,6 +54,16 @@ type Stream struct {
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
 	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
+}
+
+func (s *Stream) EffectiveFilterAvailNZB(cfg *config.Config) bool {
+	if cfg != nil && config.NormalizeAvailNZBMode(cfg.AvailNZBMode) == "off" {
+		return false
+	}
+	if s == nil || s.FilterAvailNZB == nil {
+		return false
+	}
+	return *s.FilterAvailNZB
 }
 
 func (s *Stream) IsErrorVideoMuted(cfg *config.Config) bool {
@@ -167,6 +178,7 @@ func (dm *StreamManager) load() error {
 				FilterSortingMode:   d.FilterSortingMode,
 				IndexerMode:         d.IndexerMode,
 				UseAvailNZB:         d.UseAvailNZB,
+				FilterAvailNZB:      d.FilterAvailNZB,
 				CombineResults:      d.CombineResults,
 				EnableFailover:      d.EnableFailover,
 				ResultsMode:         d.ResultsMode,
@@ -213,6 +225,7 @@ func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 			FilterSortingMode:   e.FilterSortingMode,
 			IndexerMode:         e.IndexerMode,
 			UseAvailNZB:         e.UseAvailNZB,
+			FilterAvailNZB:      e.FilterAvailNZB,
 			CombineResults:      e.CombineResults,
 			EnableFailover:      e.EnableFailover,
 			ResultsMode:         e.ResultsMode,
@@ -251,6 +264,7 @@ func (dm *StreamManager) saveLocked() error {
 				FilterSortingMode:   d.FilterSortingMode,
 				IndexerMode:         d.IndexerMode,
 				UseAvailNZB:         d.UseAvailNZB,
+				FilterAvailNZB:      d.FilterAvailNZB,
 				CombineResults:      d.CombineResults,
 				EnableFailover:      d.EnableFailover,
 				ResultsMode:         d.ResultsMode,
@@ -382,6 +396,7 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 			FilterSortingMode:   stream.FilterSortingMode,
 			IndexerMode:         stream.IndexerMode,
 			UseAvailNZB:         stream.UseAvailNZB,
+			FilterAvailNZB:      stream.FilterAvailNZB,
 			CombineResults:      stream.CombineResults,
 			EnableFailover:      stream.EnableFailover,
 			ResultsMode:         stream.ResultsMode,
@@ -621,6 +636,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.FilterSortingMode = strings.TrimSpace(streamConfig.FilterSortingMode)
 	stream.IndexerMode = strings.TrimSpace(streamConfig.IndexerMode)
 	stream.UseAvailNZB = streamConfig.UseAvailNZB
+	stream.FilterAvailNZB = streamConfig.FilterAvailNZB
 	stream.CombineResults = streamConfig.CombineResults
 	stream.EnableFailover = streamConfig.EnableFailover
 	stream.ResultsMode = strings.TrimSpace(streamConfig.ResultsMode)

@@ -17,7 +17,7 @@ const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
   playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_pre_probing_count', 'mute_error_video'],
-  availnzb: ['availnzb_mode', 'availnzb_filter_reported_bad'],
+  availnzb: ['availnzb_mode'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
 
@@ -49,7 +49,6 @@ function pickInitialValues(values = {}) {
     speculative_pre_probing_count: Number.isFinite(parsedSpeculativePreProbingCount) ? parsedSpeculativePreProbingCount : 1,
     mute_error_video: values.mute_error_video === true,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
-    availnzb_filter_reported_bad: values.availnzb_filter_reported_bad === true,
     tmdb_api_key: values.tmdb_api_key ?? '',
     tvdb_api_key: values.tvdb_api_key ?? '',
   }
@@ -98,7 +97,6 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
   const form = useForm({ defaultValues: defaults })
   const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
   const watchedValues = useWatch({ control })
-  const availNZBModeEnabled = normalizeAvailNZBMode(watchedValues?.availnzb_mode) === 'on'
 
   const fetchAvailKeyInfo = useCallback(() => {
     apiFetch('/api/availnzb/status')
@@ -483,30 +481,6 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         </FormControl>
                       </div>
                       <FormDescription className="mt-3">Controls whether StreamNZB uses AvailNZB. API key management is automatic.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="availnzb_filter_reported_bad" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <div className="sm:flex-1">
-                          <FormLabel className={labelClass}>Filter reported bad releases</FormLabel>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={availNZBModeEnabled && field.value === true}
-                            onCheckedChange={(checked) => field.onChange(checked === true)}
-                            disabled={!availNZBModeEnabled}
-                            className={showUnsavedHighlights && formState.dirtyFields?.availnzb_filter_reported_bad ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
-                          />
-                        </FormControl>
-                      </div>
-                      <FormDescription className="mt-3">
-                        {availNZBModeEnabled
-                          ? 'When enabled, releases reported as bad by AvailNZB are removed from returned streams.'
-                          : 'Enable AvailNZB mode to control reported-bad filtering.'}
-                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )} />

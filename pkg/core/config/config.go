@@ -320,14 +320,14 @@ func (c *Config) EffectiveSessionPostPlaybackTTLSeconds() int {
 	return DefaultSessionPostPlaybackTTLMinutes * 60
 }
 
-func (c *Config) EffectiveAvailNZBFilterReportedBad() bool {
-	if c != nil && NormalizeAvailNZBMode(c.AvailNZBMode) == "off" {
+func (e *StreamEntry) EffectiveFilterAvailNZB(cfg *Config) bool {
+	if cfg != nil && NormalizeAvailNZBMode(cfg.AvailNZBMode) == "off" {
 		return false
 	}
-	if c != nil && c.AvailNZBFilterReportedBad != nil {
-		return *c.AvailNZBFilterReportedBad
+	if e == nil || e.FilterAvailNZB == nil {
+		return false
 	}
-	return false
+	return *e.FilterAvailNZB
 }
 
 func (c *Config) IsErrorVideoMuted() bool {
@@ -509,10 +509,6 @@ type Config struct {
 	// "off" - disable AvailNZB entirely (no GET, no POST).
 	AvailNZBMode string `json:"availnzb_mode,omitempty"`
 
-	// AvailNZBFilterReportedBad controls whether releases reported as unavailable
-	// by AvailNZB are filtered out of playlist candidates.
-	AvailNZBFilterReportedBad *bool `json:"availnzb_filter_reported_bad,omitempty"`
-
 	// MuteErrorVideo controls whether the "Failed to start video" playback error stream is muted.
 	MuteErrorVideo *bool `json:"mute_error_video,omitempty"`
 
@@ -528,6 +524,7 @@ type StreamEntry struct {
 	FilterSortingMode   string                         `json:"filter_sorting_mode,omitempty"`
 	IndexerMode         string                         `json:"indexer_mode,omitempty"`
 	UseAvailNZB         *bool                          `json:"use_availnzb,omitempty"`
+	FilterAvailNZB      *bool                          `json:"filter_availnzb,omitempty"`
 	CombineResults      *bool                          `json:"combine_results,omitempty"`
 	EnableFailover      *bool                          `json:"enable_failover,omitempty"`
 	ResultsMode         string                         `json:"results_mode,omitempty"`
@@ -794,10 +791,6 @@ func Load() (*Config, error) {
 	}
 	if normalizedMode := NormalizeAvailNZBMode(cfg.AvailNZBMode); normalizedMode != cfg.AvailNZBMode {
 		cfg.AvailNZBMode = normalizedMode
-		needSave = true
-	}
-	if cfg.AvailNZBFilterReportedBad == nil {
-		cfg.AvailNZBFilterReportedBad = ptrBool(false)
 		needSave = true
 	}
 

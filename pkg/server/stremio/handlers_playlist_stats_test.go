@@ -3,6 +3,7 @@ package stremio
 import (
 	"testing"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/triage"
@@ -30,7 +31,10 @@ func TestFilterCandidatesDoesNotMutateInputSlice(t *testing.T) {
 }
 
 func TestRecordAvailIndexerStatsCountsUnavailableFromOriginalCandidates(t *testing.T) {
-	s := &Server{availIndexerStats: make(map[string]AvailIndexerStats)}
+	s := &Server{
+		config:            &config.Config{AvailNZBMode: "on"},
+		availIndexerStats: make(map[string]AvailIndexerStats),
+	}
 	unavailableURL := "https://example.invalid/unavailable"
 	input := []triage.Candidate{
 		{Release: &release.Release{Title: "Unavailable", DetailsURL: unavailableURL, Indexer: "altHUB"}},
@@ -41,7 +45,8 @@ func TestRecordAvailIndexerStatsCountsUnavailableFromOriginalCandidates(t *testi
 		CachedAvailable:        map[string]bool{},
 	}
 
-	s.recordAvailIndexerStats(input, final, source, true)
+	stream := &auth.Stream{FilterAvailNZB: configPtrBool(true)}
+	s.recordAvailIndexerStats(input, final, source, true, stream)
 	stats := s.GetAvailIndexerStats()
 	got := stats["altHUB"].Discarded
 	if got != 1 {
@@ -60,29 +65,27 @@ func TestApplyPlaylistFilteringCanDisableAvailNZBReportedBadFiltering(t *testing
 		UnavailableDetailsURLs: map[string]bool{unavailableURL: true},
 	}
 
-	enabledServer := &Server{
-		config: &config.Config{AvailNZBFilterReportedBad: configPtrBool(true)},
+	server := &Server{
+		config: &config.Config{AvailNZBMode: "on"},
 	}
-	enabled := enabledServer.applyPlaylistFiltering(candidates, source, false, false, "none", nil)
+	enabledStream := &auth.Stream{FilterAvailNZB: configPtrBool(true)}
+	enabled := server.applyPlaylistFiltering(candidates, source, false, false, "none", enabledStream)
 	if len(enabled) != 1 || enabled[0].Release == nil || enabled[0].Release.DetailsURL != availableURL {
 		t.Fatalf("expected unavailable release filtered when enabled, got %+v", enabled)
 	}
 
-	disabledServer := &Server{
-		config: &config.Config{AvailNZBFilterReportedBad: configPtrBool(false)},
-	}
-	disabled := disabledServer.applyPlaylistFiltering(candidates, source, false, false, "none", nil)
+	disabledStream := &auth.Stream{FilterAvailNZB: configPtrBool(false)}
+	disabled := server.applyPlaylistFiltering(candidates, source, false, false, "none", disabledStream)
 	if len(disabled) != 2 {
 		t.Fatalf("expected unavailable release kept when disabled, got %+v", disabled)
 	}
 
 	modeOffServer := &Server{
 		config: &config.Config{
-			AvailNZBMode:              "off",
-			AvailNZBFilterReportedBad: configPtrBool(true),
+			AvailNZBMode: "off",
 		},
 	}
-	modeOff := modeOffServer.applyPlaylistFiltering(candidates, source, false, false, "none", nil)
+	modeOff := modeOffServer.applyPlaylistFiltering(candidates, source, false, false, "none", enabledStream)
 	if len(modeOff) != 2 {
 		t.Fatalf("expected unavailable release kept when AvailNZB mode is off, got %+v", modeOff)
 	}
@@ -90,7 +93,7 @@ func TestApplyPlaylistFilteringCanDisableAvailNZBReportedBadFiltering(t *testing
 
 func TestRecordAvailIndexerStatsSkipsDiscardedWhenAvailFilteringDisabled(t *testing.T) {
 	s := &Server{
-		config:            &config.Config{AvailNZBFilterReportedBad: configPtrBool(false)},
+		config:            &config.Config{AvailNZBMode: "on"},
 		availIndexerStats: make(map[string]AvailIndexerStats),
 	}
 	unavailableURL := "https://example.invalid/unavailable"
@@ -101,12 +104,11 @@ func TestRecordAvailIndexerStatsSkipsDiscardedWhenAvailFilteringDisabled(t *test
 		UnavailableDetailsURLs: map[string]bool{unavailableURL: true},
 		CachedAvailable:        map[string]bool{},
 	}
+	disabledStream := &auth.Stream{FilterAvailNZB: configPtrBool(false)}
 
-	s.recordAvailIndexerStats(input, nil, source, true)
-	stats := s.GetAvailIndexerStats()
-	got := stats["altHUB"].Discarded
-	if got != 0 {
-		t.Fatalf("discarded count = %d, want 0 when filtering disabled", got)
+	s.recordAvailIndexerStats(input, nil, source, true, disabledStream)
+	if stats := s.GetAvailIndexerStats(); len(stats) != 0 {
+		t.Fatalf("expected empty stats when avail filtering is disabled, got %+v", stats)
 	}
 }
 

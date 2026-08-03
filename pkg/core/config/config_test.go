@@ -308,31 +308,31 @@ func TestApplyEnvOverridesForcesAdminPasswordResetPrompt(t *testing.T) {
 	}
 }
 
-func TestConfigEffectiveAvailNZBFilterReportedBadDefaultsDisabled(t *testing.T) {
-	cfg := &Config{}
-	if cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
+func TestStreamEntryEffectiveFilterAvailNZBDefaultsDisabled(t *testing.T) {
+	stream := &StreamEntry{}
+	cfg := &Config{AvailNZBMode: "on"}
+	if stream.EffectiveFilterAvailNZB(cfg) {
+		t.Fatalf("EffectiveFilterAvailNZB() = true, want false by default")
 	}
 }
 
-func TestConfigEffectiveAvailNZBFilterReportedBadHonorsExplicitValue(t *testing.T) {
-	cfg := &Config{AvailNZBFilterReportedBad: ptrBool(true)}
-	if !cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = false, want true")
+func TestStreamEntryEffectiveFilterAvailNZBHonorsExplicitValue(t *testing.T) {
+	cfg := &Config{AvailNZBMode: "on"}
+	stream := &StreamEntry{FilterAvailNZB: ptrBool(true)}
+	if !stream.EffectiveFilterAvailNZB(cfg) {
+		t.Fatalf("EffectiveFilterAvailNZB() = false, want true")
 	}
-	cfg = &Config{AvailNZBFilterReportedBad: ptrBool(false)}
-	if cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false")
+	stream = &StreamEntry{FilterAvailNZB: ptrBool(false)}
+	if stream.EffectiveFilterAvailNZB(cfg) {
+		t.Fatalf("EffectiveFilterAvailNZB() = true, want false")
 	}
 }
 
-func TestConfigEffectiveAvailNZBFilterReportedBadDisabledWhenAvailNZBModeOff(t *testing.T) {
-	cfg := &Config{
-		AvailNZBMode:              "off",
-		AvailNZBFilterReportedBad: ptrBool(true),
-	}
-	if cfg.EffectiveAvailNZBFilterReportedBad() {
-		t.Fatalf("EffectiveAvailNZBFilterReportedBad() = true, want false when mode is off")
+func TestStreamEntryEffectiveFilterAvailNZBDisabledWhenAvailNZBModeOff(t *testing.T) {
+	cfg := &Config{AvailNZBMode: "off"}
+	stream := &StreamEntry{FilterAvailNZB: ptrBool(true)}
+	if stream.EffectiveFilterAvailNZB(cfg) {
+		t.Fatalf("EffectiveFilterAvailNZB() = true, want false when mode is off")
 	}
 }
 

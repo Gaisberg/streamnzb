@@ -27,7 +27,6 @@ const ADVANCED_TAB_FIELDS = [
   'mute_error_video',
   'memory_limit_mb',
   'availnzb_mode',
-  'availnzb_filter_reported_bad',
   'tmdb_api_key',
   'tvdb_api_key',
 ]

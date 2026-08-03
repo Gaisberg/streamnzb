@@ -384,25 +384,25 @@ func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, s
 	inputCandidates := buildPlaylistCandidates(source)
 	candidates := s.applyPlaylistFiltering(inputCandidates, source, isAIOStreams, filteringActive, filterMode, stream)
 	candidates = s.applyRanking(candidates, source, filteringActive, filterMode, stream)
-	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive)
+	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive, stream)
 	return buildPlaylistResult(source, candidates), nil
 }
 
-func (s *Server) shouldFilterAvailNZBReportedBad() bool {
+func (s *Server) shouldFilterAvailNZBReportedBad(stream *auth.Stream) bool {
 	if s == nil || s.config == nil {
-		return true
+		return false
 	}
-	return s.config.EffectiveAvailNZBFilterReportedBad()
+	return stream.EffectiveFilterAvailNZB(s.config)
 }
 
-func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []triage.Candidate, source *playlistSource, filteringActive bool) {
+func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []triage.Candidate, source *playlistSource, filteringActive bool, stream *auth.Stream) {
 	if source == nil {
 		return
 	}
 	availableByIndexer := make(map[string]int)
 	discardedByIndexer := make(map[string]int)
 
-	if s.shouldFilterAvailNZBReportedBad() && len(source.UnavailableDetailsURLs) > 0 {
+	if s.shouldFilterAvailNZBReportedBad(stream) && len(source.UnavailableDetailsURLs) > 0 {
 		for _, c := range inputCandidates {
 			if c.Release == nil || c.Release.DetailsURL == "" {
 				continue
@@ -770,7 +770,7 @@ func buildPlaylistCandidates(source *playlistSource) []triage.Candidate {
 }
 
 func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *playlistSource, isAIOStreams, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
-	availReportedBadFilteringEnabled := s.shouldFilterAvailNZBReportedBad()
+	availReportedBadFilteringEnabled := s.shouldFilterAvailNZBReportedBad(stream)
 	unavailableDetailsURLs := map[string]bool{}
 	if availReportedBadFilteringEnabled {
 		// Remove releases explicitly known as unavailable by AvailNZB when enabled.
