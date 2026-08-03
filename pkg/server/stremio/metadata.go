@@ -9,11 +9,11 @@ import (
 	"streamnzb/pkg/search/triage"
 )
 
-func buildStreamMetadata(url, filename string, cand triage.Candidate, sizeGB float64, totalBytes int64, rel *release.Release) Stream {
+func buildStreamMetadata(url, filename string, cand triage.Candidate, sizeGB float64, totalBytes int64, rel *release.Release, includeScore bool) Stream {
 	meta := cand.Metadata
 
 	name := buildStreamName(meta, cand.Group)
-	description := buildDetailedDescription(meta, sizeGB, filename)
+	description := buildDetailedDescription(meta, sizeGB, filename, cand.Score, includeScore)
 	hints := &BehaviorHints{
 		NotWebReady: false,
 		BingeGroup:  fmt.Sprintf("streamnzb|%s", cand.Group),
@@ -49,7 +49,7 @@ func buildStreamName(meta *parser.ParsedRelease, group string) string {
 	return strings.Join(parts, " ")
 }
 
-func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filename string) string {
+func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filename string, score int, includeScore bool) string {
 	lines := []string{}
 
 	line1 := []string{}
@@ -117,6 +117,13 @@ func buildDetailedDescription(meta *parser.ParsedRelease, sizeGB float64, filena
 	}
 	if meta.Group != "" {
 		line4 = append(line4, fmt.Sprintf("👥 %s", meta.Group))
+	}
+	if includeScore {
+		scoreStr := fmt.Sprintf("%d", score)
+		if score > 0 {
+			scoreStr = fmt.Sprintf("+%d", score)
+		}
+		line4 = append(line4, fmt.Sprintf("🎯 Score: %s", scoreStr))
 	}
 	lines = append(lines, strings.Join(line4, " • "))
 

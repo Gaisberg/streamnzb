@@ -358,7 +358,7 @@ func streamBehaviorHints(streamName, streamID string, rel *release.Release, cach
 	return h
 }
 
-func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string) string {
+func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string, score int, includeScore bool) string {
 	firstLine := strings.TrimSpace(contentTitle)
 	secondLine := strings.TrimSpace(releaseTitle)
 	if firstLine == "" {
@@ -371,8 +371,19 @@ func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string) s
 	if secondLine != "" && secondLine != firstLine {
 		lines = append(lines, secondLine)
 	}
+	metaParts := make([]string, 0, 2)
 	if name := strings.TrimSpace(indexerName); name != "" {
-		lines = append(lines, "🔍 "+name)
+		metaParts = append(metaParts, "🔍 "+name)
+	}
+	if includeScore {
+		scoreStr := fmt.Sprintf("%d", score)
+		if score > 0 {
+			scoreStr = fmt.Sprintf("+%d", score)
+		}
+		metaParts = append(metaParts, "🎯 Score: "+scoreStr)
+	}
+	if len(metaParts) > 0 {
+		lines = append(lines, strings.Join(metaParts, " • "))
 	}
 	if len(lines) == 0 {
 		return "StreamNZB"
@@ -404,7 +415,8 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			if list.Params != nil {
 				contentTitle = list.Params.ContentTitle
 			}
-			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release))
+			includeScore := list != nil && !list.IsAIOStreams
+			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore)
 			playPath := key.SlotPath(i)
 			if useSlotPaths {
 				playPath = list.SlotPaths[i]
@@ -447,6 +459,13 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		}
 		description := branding
 		if line2 != "" {
+			if list != nil && !list.IsAIOStreams && len(list.Candidates) > 0 {
+				scoreStr := fmt.Sprintf("%d", list.Candidates[0].Score)
+				if list.Candidates[0].Score > 0 {
+					scoreStr = fmt.Sprintf("+%d", list.Candidates[0].Score)
+				}
+				line2 = fmt.Sprintf("%s (🎯 Score: %s)", line2, scoreStr)
+			}
 			description = branding + "\n" + line2
 		}
 		playPath := key.SlotPath(0)

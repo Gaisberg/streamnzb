@@ -1194,3 +1194,15 @@ func TestSingleIndexerFromReleases(t *testing.T) {
 func boolPtr(v bool) *bool {
 	return &v
 }
+
+func TestBuildStreamDescriptionIncludesJhinScore(t *testing.T) {
+	descStandalone := buildAIOStreamDescription("The Movie", "The.Movie.2024.1080p", "altHUB", 1450, true)
+	if !reflect.DeepEqual(descStandalone, "The Movie\nThe.Movie.2024.1080p\n🔍 altHUB • 🎯 Score: +1450") {
+		t.Errorf("standalone desc = %q, want score included", descStandalone)
+	}
+
+	descAIO := buildAIOStreamDescription("The Movie", "The.Movie.2024.1080p", "altHUB", 1450, false)
+	if !reflect.DeepEqual(descAIO, "The Movie\nThe.Movie.2024.1080p\n🔍 altHUB") {
+		t.Errorf("AIO desc = %q, want no score included", descAIO)
+	}
+}

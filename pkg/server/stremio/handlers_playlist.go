@@ -54,6 +54,9 @@ type playlistResult struct {
 	// SlotPaths, when set, gives the exact play path for each candidate (e.g. from failover order).
 	// Must match len(Candidates); buildStreamsFromPlaylist uses SlotPaths[i] instead of key.SlotPath(i).
 	SlotPaths []string
+
+	IsAIOStreams bool
+	FilterMode   string
 }
 
 type AvailContext struct {
@@ -385,7 +388,10 @@ func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, s
 	candidates := s.applyPlaylistFiltering(inputCandidates, source, isAIOStreams, filteringActive, filterMode, stream)
 	candidates = s.applyRanking(candidates, source, filteringActive, filterMode, stream)
 	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive, stream)
-	return buildPlaylistResult(source, candidates), nil
+	res := buildPlaylistResult(source, candidates)
+	res.IsAIOStreams = isAIOStreams
+	res.FilterMode = filterMode
+	return res, nil
 }
 
 func (s *Server) shouldFilterAvailNZBReportedBad(stream *auth.Stream) bool {
