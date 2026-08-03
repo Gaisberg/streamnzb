@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.12.0](https://github.com/Gaisberg/streamnzb/compare/v4.11.1...v4.12.0) (2026-08-03)
+
+
+### Features
+
+* **config:** support custom config path via --config / -c CLI flags and CONFIG_PATH env var ([3f732c1](https://github.com/Gaisberg/streamnzb/commit/3f732c14d0c7ea9447dc2dda9edb779ec3131afd))
+* **frontend:** overhaul stats page date range filter with radix popover ([07843df](https://github.com/Gaisberg/streamnzb/commit/07843df298fbaab467bb62c2633d03a98a666292))
+* **settings:** move AvailNZB reported-bad filtering from global setting to per-stream toggle ([b3866fc](https://github.com/Gaisberg/streamnzb/commit/b3866fcbe6bac93a4da19c212db149367b432174))
+* **stremio:** include jhin score in stream details description during standalone filtering ([eb916ce](https://github.com/Gaisberg/streamnzb/commit/eb916ce64b41f2ed1a8248b7a792561e73af776d))
+* **unpack:** extend multi-volume RAR archive handling ([34bc7aa](https://github.com/Gaisberg/streamnzb/commit/34bc7aa9b95cef1a635008aee1bd695a7731d738))
+
+
+### Bug Fixes
+
+* **frontend:** restore Direct Play link to sidebar navigation ([bcd78ff](https://github.com/Gaisberg/streamnzb/commit/bcd78ffe53ef0d85b62b89fdeb401ac36dc6d2e6))
+* **metrics:** average non-zero indexer response times in range summary query ([3eeb0bc](https://github.com/Gaisberg/streamnzb/commit/3eeb0bc6f0c7db059ab5bf35f70dc9fbd36ae1b8))
+* **stats:** preserve non-zero indexer response times and compute relative provider usage ([2ffc55b](https://github.com/Gaisberg/streamnzb/commit/2ffc55b39bef2572490de704effa50674f483772))
+* **stremio:** preserve season=0 for movie AvailNZB release queries ([97cdebd](https://github.com/Gaisberg/streamnzb/commit/97cdebd34f7c19265482be14f7a0c33d1e0f0b5c))
+
+
+### Performance Improvements
+
+* **persistence:** index-filter provider and indexer metrics queries by baseline timestamp to eliminate full table scans ([0811543](https://github.com/Gaisberg/streamnzb/commit/0811543f2e674297ddf17671276d737c988e773a))
+* **stremio:** parallelize metadata sub-requests and AvailNZB pre-check ([4330934](https://github.com/Gaisberg/streamnzb/commit/433093416195e20969ea4c43bad77e78e90d4e77))
+* **stremio:** reuse probed stream and cache segment stat check on play startup ([74ee853](https://github.com/Gaisberg/streamnzb/commit/74ee8535f0dc2b53af1232c86149f36f5636acf9))
+* **unpack:** eliminate multi-volume RAR startup delay and optimize continuation probing ([07ad4fa](https://github.com/Gaisberg/streamnzb/commit/07ad4fa537623abb890ac914d6ce0f32745d4be7))
+
 ## [4.11.1](https://github.com/Gaisberg/streamnzb/compare/v4.11.0...v4.11.1) (2026-08-02)
 
 
