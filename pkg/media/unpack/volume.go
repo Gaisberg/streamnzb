@@ -1,28 +1,47 @@
 package unpack
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-func GetRARVolumeNumber(filename string) int {
-	lower := strings.ToLower(ExtractFilename(filename))
+var (
+	rarPartRegex     = regexp.MustCompile(`(?i)\.part(\d+)\.rar$`)
+	rarRnnRegex      = regexp.MustCompile(`(?i)\.r(\d+)$`)
+	rarRollRegex     = regexp.MustCompile(`(?i)\.([s-z])(\d{2})$`)
+	rarFirstRegex    = regexp.MustCompile(`(?i)\.rar$`)
+	sevenZipPartReg  = regexp.MustCompile(`(?i)\.7z\.(\d+)$`)
+	sevenZipFirstReg = regexp.MustCompile(`(?i)\.7z$`)
+)
 
-	if idx := strings.Index(lower, ".part"); idx >= 0 && strings.HasSuffix(lower, ".rar") {
-		num := lower[idx+5 : len(lower)-4]
-		n, _ := strconv.Atoi(num)
+type ArchiveKind string
+
+const (
+	KindRAR ArchiveKind = "rar"
+	Kind7z  ArchiveKind = "7z"
+)
+
+func rollVolumeNumber(letter byte, nn int) int {
+	letterLower := strings.ToLower(string(letter))[0]
+	return 1 + int(letterLower-'r')*100 + nn
+}
+
+func GetRARVolumeNumber(filename string) int {
+	name := ExtractFilename(filename)
+	if m := rarPartRegex.FindStringSubmatch(name); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
 		return n
 	}
-
-	if len(lower) >= 4 && lower[len(lower)-4:len(lower)-2] == ".r" {
-		suffix := lower[len(lower)-2:]
-		if suffix[0] >= '0' && suffix[0] <= '9' && suffix[1] >= '0' && suffix[1] <= '9' {
-			n, _ := strconv.Atoi(suffix)
-			return n + 1
-		}
+	if m := rarRnnRegex.FindStringSubmatch(name); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n + 1
 	}
-
-	if strings.HasSuffix(lower, ".rar") {
+	if m := rarRollRegex.FindStringSubmatch(name); len(m) > 2 {
+		nn, _ := strconv.Atoi(m[2])
+		return rollVolumeNumber(m[1][0], nn)
+	}
+	if rarFirstRegex.MatchString(name) {
 		return 0
 	}
 	return -1
@@ -30,14 +49,41 @@ func GetRARVolumeNumber(filename string) int {
 
 func Get7zVolumeNumber(filename string) int {
 	name := ExtractFilename(filename)
-	lower := strings.ToLower(name)
-	if idx := strings.LastIndex(lower, ".7z."); idx >= 0 {
-		suffix := strings.TrimSpace(lower[idx+4:])
-		n, _ := strconv.Atoi(suffix)
+	if m := sevenZipPartReg.FindStringSubmatch(name); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
 		return n
 	}
-	if strings.HasSuffix(lower, ".7z") {
+	if sevenZipFirstReg.MatchString(name) {
 		return 0
 	}
 	return -1
+}
+
+type BaseNameResult struct {
+	Base string
+	Kind ArchiveKind
+}
+
+func ArchiveBaseName(filename string) *BaseNameResult {
+	name := ExtractFilename(filename)
+
+	if m := rarPartRegex.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: KindRAR}
+	}
+	if m := rarRnnRegex.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: KindRAR}
+	}
+	if m := rarRollRegex.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: KindRAR}
+	}
+	if m := rarFirstRegex.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: KindRAR}
+	}
+	if m := sevenZipPartReg.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: Kind7z}
+	}
+	if m := sevenZipFirstReg.FindStringIndex(name); m != nil {
+		return &BaseNameResult{Base: name[:m[0]], Kind: Kind7z}
+	}
+	return nil
 }

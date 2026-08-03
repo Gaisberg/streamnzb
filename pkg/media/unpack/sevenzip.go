@@ -112,6 +112,63 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	return bp, nil
 }
 
+func TrySevenZipNestedArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, interface{}, error) {
+	depth := NestDepthFromContext(ctx)
+	if depth >= MaxNestDepth {
+		return nil, "", 0, nil, fmt.Errorf("max archive nesting depth (%d) reached", MaxNestDepth)
+	}
+
+	if err := contextErr(ctx); err != nil {
+		return nil, "", 0, nil, err
+	}
+
+	archiveFiles := make([]UnpackableFile, len(files))
+	copy(archiveFiles, files)
+	sort.Slice(archiveFiles, func(i, j int) bool {
+		return Get7zVolumeNumber(archiveFiles[i].Name()) < Get7zVolumeNumber(archiveFiles[j].Name())
+	})
+	parts, err := filesToParts(ctx, archiveFiles)
+	if err != nil {
+		return nil, "", 0, nil, err
+	}
+	mr := NewConcatenatedReaderAt(parts)
+
+	var r *sevenzip.Reader
+	if password != "" {
+		r, err = sevenzip.NewReaderWithPassword(mr, mr.Size(), password)
+	} else {
+		r, err = sevenzip.NewReader(mr, mr.Size())
+	}
+	if err != nil {
+		return nil, "", 0, nil, fmt.Errorf("failed to open 7z for nested scanning: %w", err)
+	}
+
+	fileInfos, err := r.ListFilesWithOffsets()
+	if err != nil {
+		return nil, "", 0, nil, fmt.Errorf("failed to list 7z files: %w", err)
+	}
+
+	var nestedFiles []UnpackableFile
+	for _, fi := range fileInfos {
+		if fi.Compressed || !IsArchiveFile(fi.Name) {
+			continue
+		}
+		vParts, mapErr := mapOffsetToParts(parts, fi.Offset, int64(fi.Size))
+		if mapErr != nil {
+			continue
+		}
+		nestedFiles = append(nestedFiles, NewVirtualFile(filepath.Base(fi.Name), int64(fi.Size), vParts))
+	}
+
+	if len(nestedFiles) == 0 {
+		return nil, "", 0, nil, errors.New("no uncompressed nested archives found in 7z")
+	}
+
+	logger.Info("Recursively scanning 7z nested archive", "depth", depth+1, "nested_vols", len(nestedFiles))
+	nextCtx := WithNestDepth(ctx, depth+1)
+	return GetMediaStreamForEpisodeWithHints(nextCtx, nestedFiles, nil, password, target, StreamSelectionHints{AllowLargestDirectFallback: true})
+}
+
 func Open7zStreamFromBlueprint(ctx context.Context, bp *SevenZipBlueprint, password string) (ReadSeekCloser, string, int64, error) {
 	if bp == nil || len(bp.Files) == 0 {
 		return nil, "", 0, errors.New("invalid 7z blueprint or empty files")

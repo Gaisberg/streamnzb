@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var filenameTokenWithKnownExtRE = regexp.MustCompile(`(?i)([A-Za-z0-9._-]+\.(?:mkv|mp4|avi|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|rar|7z|par2|nzb|nfo|r[0-9]{2}|[0-9]{3}))`)
+var filenameTokenWithKnownExtRE = regexp.MustCompile(`(?i)([A-Za-z0-9._-]+\.(?:mkv|mp4|avi|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|rar|7z|par2|nzb|nfo|[r-z][0-9]{2}|[0-9]{3}))`)
 
 func ExtractFilename(subject string) string {
 
@@ -80,7 +80,7 @@ func IsVideoOrArchiveExtension(ext string) bool {
 		return true
 	}
 
-	if len(ext) == 4 && ext[0] == '.' && ext[1] == 'r' && ext[2] >= '0' && ext[2] <= '9' && ext[3] >= '0' && ext[3] <= '9' {
+	if len(ext) == 4 && ext[0] == '.' && ext[1] >= 'r' && ext[1] <= 'z' && ext[2] >= '0' && ext[2] <= '9' && ext[3] >= '0' && ext[3] <= '9' {
 		return true
 	}
 	return false

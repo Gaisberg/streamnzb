@@ -1174,6 +1174,10 @@ func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []Unpac
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
+	depth := NestDepthFromContext(ctx)
+	if depth >= MaxNestDepth {
+		return nil, fmt.Errorf("max archive nesting depth (%d) reached", MaxNestDepth)
+	}
 	if len(parts) == 0 {
 		return nil, errors.New("archive contained no file headers")
 	}
@@ -1296,8 +1300,9 @@ func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []Unpac
 	for _, nf := range nestedFiles {
 		logger.Debug("Nested VirtualFile", "name", nf.Name(), "size", nf.Size(), "extracted", ExtractFilename(nf.Name()))
 	}
-	logger.Info("Recursively scanning nested archive", "set", bestSet, "volumes", len(nestedFiles))
-	return ScanArchive(ctx, nestedFiles, password, target)
+	logger.Info("Recursively scanning nested archive", "set", bestSet, "volumes", len(nestedFiles), "depth", depth+1)
+	nextCtx := WithNestDepth(ctx, depth+1)
+	return ScanArchive(nextCtx, nestedFiles, password, target)
 }
 
 func filterRarFiles(files []UnpackableFile) []UnpackableFile {
@@ -1314,12 +1319,87 @@ func filterRarFiles(files []UnpackableFile) []UnpackableFile {
 			logger.Trace("filterRarFiles: skip 7z", "name", name)
 			continue
 		}
-		if strings.HasSuffix(lower, ExtRar) || strings.Contains(lower, ".part") || IsRarPart(lower) || IsSplitArchivePart(lower) {
+		if strings.HasSuffix(lower, ExtRar) || strings.Contains(lower, ".part") || IsRarPart(lower) || IsSplitArchivePart(lower) || GetRARVolumeNumber(name) >= 0 {
 			result = append(result, f)
 		} else {
 			logger.Trace("filterRarFiles: skip non-rar", "name", name)
 		}
 	}
+	return dedupeVolumeMembers(result)
+}
+
+func mergeObfuscatedArchiveParts(groups [][]UnpackableFile) [][]UnpackableFile {
+	var singles [][]UnpackableFile
+	var remainder [][]UnpackableFile
+
+	for _, g := range groups {
+		if len(g) == 1 && rarPartRegex.MatchString(ExtractFilename(g[0].Name())) {
+			singles = append(singles, g)
+		} else {
+			remainder = append(remainder, g)
+		}
+	}
+
+	if len(singles) < 2 {
+		return groups
+	}
+
+	sort.Slice(singles, func(i, j int) bool {
+		return GetRARVolumeNumber(singles[i][0].Name()) < GetRARVolumeNumber(singles[j][0].Name())
+	})
+
+	isContiguous := true
+	for i, s := range singles {
+		vol := GetRARVolumeNumber(s[0].Name())
+		if vol != i+1 {
+			isContiguous = false
+			break
+		}
+	}
+
+	if isContiguous {
+		merged := make([]UnpackableFile, len(singles))
+		for i, s := range singles {
+			merged[i] = s[0]
+		}
+		return append(remainder, merged)
+	}
+
+	return groups
+}
+
+func dedupeVolumeMembers(files []UnpackableFile) []UnpackableFile {
+	byVol := make(map[int]UnpackableFile)
+	var volNums []int
+	var unnumbered []UnpackableFile
+
+	for _, f := range files {
+		vol := GetRARVolumeNumber(f.Name())
+		if vol < 0 {
+			unnumbered = append(unnumbered, f)
+			continue
+		}
+		prev, exists := byVol[vol]
+		if !exists {
+			byVol[vol] = f
+			volNums = append(volNums, vol)
+		} else {
+			if f.Size() > prev.Size() {
+				byVol[vol] = f
+			}
+		}
+	}
+
+	if len(byVol) == 0 {
+		return files
+	}
+
+	sort.Ints(volNums)
+	result := make([]UnpackableFile, 0, len(volNums)+len(unnumbered))
+	for _, v := range volNums {
+		result = append(result, byVol[v])
+	}
+	result = append(result, unnumbered...)
 	return result
 }
 

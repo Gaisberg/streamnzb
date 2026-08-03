@@ -185,18 +185,23 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		firstVolName := ExtractFilename(archiveFiles[0].Name())
 		logger.Info("Detected 7z archive", "target", target, "name", firstVolName, "parts", len(archiveFiles), "mode", "fast")
 		newBp, err := CreateSevenZipBlueprint(rarScanCtx, archiveFiles, firstVolName, password, target)
-		if err != nil {
-			err = maybeMarkArchiveFastProbe(rarScanCtx, err)
-			if errors.Is(err, ErrEpisodeTargetNotFound) {
-				return nil, "", 0, &FailedBlueprint{Err: err, Target: target}, err
+		if err == nil {
+			s, n, sz, err := Open7zStreamFromBlueprint(rarScanCtx, newBp, password)
+			if err != nil {
+				err = maybeMarkArchiveFastProbe(rarScanCtx, err)
 			}
-			return nil, "", 0, nil, err
+			return s, n, sz, newBp, err
 		}
-		s, n, sz, err := Open7zStreamFromBlueprint(rarScanCtx, newBp, password)
-		if err != nil {
-			err = maybeMarkArchiveFastProbe(rarScanCtx, err)
+
+		// Fall back to 7z nested archive expansion (7z in 7z, RAR in 7z)
+		if s, n, sz, bp, nestedErr := TrySevenZipNestedArchive(rarScanCtx, archiveFiles, password, target); nestedErr == nil {
+			return s, n, sz, bp, nil
+		} else if errors.Is(nestedErr, ErrEpisodeTargetNotFound) {
+			return nil, "", 0, &FailedBlueprint{Err: nestedErr, Target: target}, nestedErr
 		}
-		return s, n, sz, newBp, err
+
+		err = maybeMarkArchiveFastProbe(rarScanCtx, err)
+		return nil, "", 0, nil, err
 	}
 
 	nameOverrides := recoverDirectFilenamesFromPAR2(ctx, files)

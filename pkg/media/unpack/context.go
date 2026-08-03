@@ -9,6 +9,22 @@ import (
 type archiveScanIOTraceContextKey struct{}
 type skipGapProbingContextKey struct{}
 
+const MaxNestDepth = 3
+
+type nestDepthContextKey struct{}
+
+func WithNestDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, nestDepthContextKey{}, depth)
+}
+
+func NestDepthFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	depth, _ := ctx.Value(nestDepthContextKey{}).(int)
+	return depth
+}
+
 func WithSkipGapProbing(ctx context.Context, enabled bool) context.Context {
 	if !enabled {
 		return ctx
