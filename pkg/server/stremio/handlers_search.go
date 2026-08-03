@@ -1023,10 +1023,11 @@ func (s *Server) loadAvailContext(params *SearchParams, stream *auth.Stream) *Av
 		return newAvailContext(nil, 0)
 	}
 	availSeason := contentIDs.Season
-	if availSeason <= 0 {
+	availEpisode := contentIDs.Episode
+	if availSeason <= 0 && availEpisode > 0 {
 		availSeason = 1
 	}
-	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, availSeason, contentIDs.Episode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
+	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, availSeason, availEpisode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
 	inputResults := 0
 	if availResult != nil {
 		inputResults = len(availResult.Releases)
