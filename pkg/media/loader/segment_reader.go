@@ -33,6 +33,9 @@ type SegmentReader struct {
 	readAheadCtx     context.Context
 	readAheadCancel  context.CancelFunc
 	lastReadAheadSeg int // last segment index we triggered read-ahead from (-1 = none)
+
+	currentSegIdx int    // cached segment index (-1 if invalid)
+	currentData   []byte // cached data slice for currentSegIdx
 }
 
 var liveSegmentReaders atomic.Int64
@@ -86,6 +89,7 @@ func newSegmentReader(parent context.Context, f *File, startOffset int64) *Segme
 		readAheadCtx:     raCtx,
 		readAheadCancel:  raCancel,
 		lastReadAheadSeg: -1,
+		currentSegIdx:    -1,
 	}
 
 	idx := f.FindSegmentIndex(startOffset)
@@ -169,15 +173,34 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 		r.mu.Lock()
 		r.segIdx++
 		r.segOff = 0
+		r.currentSegIdx = -1
+		r.currentData = nil
 		r.mu.Unlock()
 		return r.readInto(p)
 	}
 
-	logger.Trace("SegmentReader readInto: calling DownloadSegment", "file", r.file.Name(), "segIdx", segIdx, "segOff", segOff)
-	data, err := r.file.DownloadSegment(r.ctx, segIdx)
-	logger.Trace("SegmentReader readInto: DownloadSegment returned", "file", r.file.Name(), "segIdx", segIdx, "err", err, "dataLen", len(data))
-	if err != nil {
-		return 0, err
+	var data []byte
+	var err error
+
+	r.mu.Lock()
+	if r.currentSegIdx == segIdx && r.currentData != nil {
+		data = r.currentData
+	}
+	r.mu.Unlock()
+
+	if data == nil {
+		logger.Trace("SegmentReader readInto: calling DownloadSegment", "file", r.file.Name(), "segIdx", segIdx, "segOff", segOff)
+		data, err = r.file.DownloadSegment(r.ctx, segIdx)
+		logger.Trace("SegmentReader readInto: DownloadSegment returned", "file", r.file.Name(), "segIdx", segIdx, "err", err, "dataLen", len(data))
+		if err != nil {
+			return 0, err
+		}
+		r.mu.Lock()
+		if !r.closed && r.segIdx == segIdx {
+			r.currentSegIdx = segIdx
+			r.currentData = data
+		}
+		r.mu.Unlock()
 	}
 
 	remain := decodedLen - segOff
@@ -200,6 +223,8 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 		r.mu.Lock()
 		r.segIdx++
 		r.segOff = 0
+		r.currentSegIdx = -1
+		r.currentData = nil
 		r.mu.Unlock()
 		return r.readInto(p)
 	}
@@ -212,6 +237,8 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 	if r.segOff >= decodedLen {
 		r.segIdx++
 		r.segOff = 0
+		r.currentSegIdx = -1
+		r.currentData = nil
 	}
 	currentSeg := r.segIdx
 	r.mu.Unlock()
@@ -297,6 +324,8 @@ func (r *SegmentReader) Seek(offset int64, whence int) (int64, error) {
 	}
 
 	r.offset = target
+	r.currentSegIdx = -1
+	r.currentData = nil
 	if target >= r.file.Size() {
 		r.segIdx = len(r.file.segments)
 		r.segOff = 0
@@ -331,6 +360,8 @@ func (r *SegmentReader) Close() error {
 		return nil
 	}
 	r.closed = true
+	r.currentSegIdx = -1
+	r.currentData = nil
 	r.readAheadCancel()
 	r.mu.Unlock()
 
