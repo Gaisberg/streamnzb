@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -38,6 +39,10 @@ var (
 )
 
 func main() {
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "Path to configuration file or directory")
+	flag.StringVar(&configPath, "c", "", "Path to configuration file or directory (shorthand)")
+	flag.Parse()
 
 	if err := godotenv.Load(); err != nil {
 		fmt.Println("No .env file found, using environment variables")
@@ -49,7 +54,7 @@ func main() {
 
 	logger.Info("Starting StreamNZB", "version", Version)
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadWithPath(configPath)
 	if err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("configuration error: %w", err))
 	}

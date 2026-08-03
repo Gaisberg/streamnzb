@@ -569,3 +569,37 @@ func TestDefaultFilterProfileBlocksOnlyTrashAndAdult(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveConfigPathAndLoadWithPath(t *testing.T) {
+	tempDir := t.TempDir()
+	customFile := filepath.Join(tempDir, "custom.json")
+
+	// 1. Explicit file path
+	resolved := ResolveConfigPath(customFile)
+	if resolved != customFile {
+		t.Errorf("ResolveConfigPath(%q) = %q, want %q", customFile, resolved, customFile)
+	}
+
+	// 2. Explicit directory path
+	resolvedDir := ResolveConfigPath(tempDir)
+	wantDirFile := filepath.Join(tempDir, "config.json")
+	if resolvedDir != wantDirFile {
+		t.Errorf("ResolveConfigPath(%q) = %q, want %q", tempDir, resolvedDir, wantDirFile)
+	}
+
+	// 3. ENV var priority when explicit path is empty
+	t.Setenv("CONFIG_PATH", customFile)
+	resolvedEnv := ResolveConfigPath("")
+	if resolvedEnv != customFile {
+		t.Errorf("ResolveConfigPath with CONFIG_PATH = %q, want %q", resolvedEnv, customFile)
+	}
+
+	// 4. LoadWithPath creates and loads custom config
+	cfg, err := LoadWithPath(customFile)
+	if err != nil {
+		t.Fatalf("LoadWithPath(%q) error = %v", customFile, err)
+	}
+	if cfg.LoadedPath != customFile {
+		t.Errorf("cfg.LoadedPath = %q, want %q", cfg.LoadedPath, customFile)
+	}
+}

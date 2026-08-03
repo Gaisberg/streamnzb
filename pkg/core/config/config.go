@@ -700,10 +700,33 @@ func (c *Config) GetAdminUsername() string {
 	return "admin"
 }
 
-func Load() (*Config, error) {
+func ResolveConfigPath(explicitPath string) string {
+	target := strings.TrimSpace(explicitPath)
+	if target == "" {
+		target = strings.TrimSpace(os.Getenv(env.ConfigPath))
+	}
+	if target == "" {
+		dataDir := paths.GetDataDir()
+		return filepath.Join(dataDir, "config.json")
+	}
 
-	dataDir := paths.GetDataDir()
-	configPath := filepath.Join(dataDir, "config.json")
+	target = filepath.Clean(target)
+	if fi, err := os.Stat(target); err == nil && fi.IsDir() {
+		return filepath.Join(target, "config.json")
+	}
+	if strings.HasSuffix(explicitPath, "/") || strings.HasSuffix(explicitPath, "\\") {
+		return filepath.Join(target, "config.json")
+	}
+	return target
+}
+
+func Load() (*Config, error) {
+	return LoadWithPath("")
+}
+
+func LoadWithPath(explicitPath string) (*Config, error) {
+	configPath := ResolveConfigPath(explicitPath)
+	dataDir := filepath.Dir(configPath)
 
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		logger.Warn("Failed to create data directory", "dir", dataDir, "err", err)

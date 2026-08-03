@@ -4,9 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func GetDataDir() string {
+	if envPath := strings.TrimSpace(os.Getenv("CONFIG_PATH")); envPath != "" {
+		clean := filepath.Clean(envPath)
+		if fi, err := os.Stat(clean); err == nil && fi.IsDir() {
+			return clean
+		}
+		return filepath.Dir(clean)
+	}
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return "/app/data"
 	}

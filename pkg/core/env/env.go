@@ -31,6 +31,7 @@ const (
 	StreamNZBIndexerQueryHeaderEnv = "STREAMNZB_INDEXER_QUERY_HEADER"
 	StreamNZBIndexerGrabHeaderEnv  = "STREAMNZB_INDEXER_GRAB_HEADER"
 	StreamNZBProviderHeaderEnv     = "STREAMNZB_PROVIDER_HEADER"
+	ConfigPath                     = "CONFIG_PATH"
 )
 
 const (
