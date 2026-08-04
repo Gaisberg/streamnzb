@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.13.0](https://github.com/Gaisberg/streamnzb/compare/v4.12.0...v4.13.0) (2026-08-04)
+
+
+### Features
+
+* embedded ffprobe, deep release validation, and self-healing release library ([66a3792](https://github.com/Gaisberg/streamnzb/commit/66a37920ace2b10829d0cb84b3953aadf209929a))
+* **stremio:** implement sequential pre-probing failover and fix Kitsu anime episode searches ([d62a466](https://github.com/Gaisberg/streamnzb/commit/d62a466dbf8441de14f3156ad545042fedfe5adb))
+
 ## [4.12.0](https://github.com/Gaisberg/streamnzb/compare/v4.11.1...v4.12.0) (2026-08-03)
 
 
