@@ -163,6 +163,26 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 		add(middleProbeIndex(len(segments)))
 	}
 
+	// The physical last segment is remainder-sized: its decoded size must never
+	// stand in for the full-segment class (see buildSegmentDecodedSizesFromProbes,
+	// which excludes it from class matching). If clustering collapsed everything
+	// into the last segment's class — its encoded size can sit within tolerance
+	// of full segments — force a real probe of a full segment too. Without this,
+	// a 23,538-segment file had the last segment's 711,755 painted across every
+	// segment (~5KB/segment cumulative offset drift), desyncing the demuxer.
+	if lastIdx > 0 {
+		hasNonLast := false
+		for _, idx := range indices {
+			if idx != lastIdx {
+				hasNonLast = true
+				break
+			}
+		}
+		if !hasNonLast {
+			add(0)
+		}
+	}
+
 	sort.Ints(indices)
 	return indices
 }
@@ -206,6 +226,12 @@ func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[i
 		if idx < 0 || idx >= n || dec <= 0 {
 			continue
 		}
+		// Never let the physical LAST segment's decoded size represent a class:
+		// it is remainder-sized, yet its encoded size can sit within cluster
+		// tolerance of full segments. It still sizes itself via probedByIndex.
+		if idx == n-1 && n > 1 {
+			continue
+		}
 		decodedByBytes[segments[idx].Bytes] = dec
 	}
 
@@ -214,21 +240,37 @@ func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[i
 		firstDecoded = decodedByBytes[firstEncoded]
 	}
 	if firstDecoded <= 0 {
-		for _, dec := range probedByIndex {
-			if dec > 0 {
+		for idx, dec := range probedByIndex {
+			if dec > 0 && !(idx == n-1 && n > 1) {
 				firstDecoded = dec
 				break
 			}
 		}
 	}
+	if firstDecoded <= 0 {
+		// Only the last segment was probed (no other candidates): better than nothing.
+		firstDecoded = probedByIndex[n-1]
+	}
 
+	// Closest encoded-size match wins — map iteration order is random, and a
+	// segment can be "nearby" more than one probed class.
 	findNearbyProbedDecoded := func(nzbBytes int64) (int64, bool) {
+		var bestDec int64
+		bestDiff := int64(-1)
 		for probedNzb, dec := range decodedByBytes {
-			if nzbBytesNearby(nzbBytes, probedNzb) {
-				return dec, true
+			if !nzbBytesNearby(nzbBytes, probedNzb) {
+				continue
+			}
+			diff := nzbBytes - probedNzb
+			if diff < 0 {
+				diff = -diff
+			}
+			if bestDiff < 0 || diff < bestDiff {
+				bestDiff = diff
+				bestDec = dec
 			}
 		}
-		return 0, false
+		return bestDec, bestDiff >= 0
 	}
 
 	for i := 0; i < n; i++ {

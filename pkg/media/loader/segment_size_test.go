@@ -89,6 +89,62 @@ func TestSegmentProbePlanSeparatesFinalSegmentClass(t *testing.T) {
 	}
 }
 
+// TestLastSegmentNeverRepresentsFullClass reproduces the REMUX flicker bug:
+// a 23,538-segment file whose LAST segment (734,057 encoded / 711,755 decoded)
+// sits WITHIN cluster tolerance of the full segments (~739,600 / 716,800). The
+// plan collapsed to probing only the last segment and painted 711,755 across
+// every segment (-5,045 bytes each) — offsets drifted ~1MB per 140MB, the
+// Matroska demuxer desynced, and the client reopened the stream 3-4x/second.
+func TestLastSegmentNeverRepresentsFullClass(t *testing.T) {
+	const (
+		fullDecoded  = 716800
+		lastEncoded  = 734057
+		lastDecoded  = 711755
+		segmentCount = 500
+	)
+	segments := make([]*Segment, segmentCount)
+	for i := 0; i < segmentCount-1; i++ {
+		// Full segments: encoded ~739,600 ± small content-dependent variation —
+		// all within 3% of the last segment's encoded size.
+		segments[i] = &Segment{Segment: nzbSegment(int64(739600 + (i%9)*700 - 2800))}
+	}
+	segments[segmentCount-1] = &Segment{Segment: nzbSegment(lastEncoded)}
+
+	// The fast-mode plan must include a non-last probe even though clustering
+	// merges everything into one class.
+	indices := segmentProbeIndices(segments, nil, false, true)
+	hasNonLast := false
+	for _, idx := range indices {
+		if idx != segmentCount-1 {
+			hasNonLast = true
+			break
+		}
+	}
+	if !hasNonLast {
+		t.Fatalf("probe plan %v collapsed to the last segment only", indices)
+	}
+
+	// With both probes, every full segment must get the full-class size — the
+	// last segment's decoded size must never leak onto other segments.
+	probed := map[int]int64{}
+	for _, idx := range indices {
+		if idx == segmentCount-1 {
+			probed[idx] = lastDecoded
+		} else {
+			probed[idx] = fullDecoded
+		}
+	}
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, nil, true)
+	for i := 0; i < segmentCount-1; i++ {
+		if sizes[i] != fullDecoded {
+			t.Fatalf("segment %d size = %d, want %d (last segment's size leaked into the full class)", i, sizes[i], fullDecoded)
+		}
+	}
+	if sizes[segmentCount-1] != lastDecoded {
+		t.Fatalf("last segment size = %d, want %d", sizes[segmentCount-1], lastDecoded)
+	}
+}
+
 func TestNZBBytesNearby(t *testing.T) {
 	if !nzbBytesNearby(739315, 738628) {
 		t.Error("0.1%% apart must be the same class")

@@ -137,6 +137,23 @@ func (p *ClientPool) TotalMegabytes() float64 {
 	return float64(totalBytesRead) / (1024 * 1024)
 }
 
+// idleStaleThreshold: idle connections older than this are liveness-checked on
+// checkout instead of trusted — providers drop idle TCP silently, and a dead
+// pooled connection stalls its next command for the full 60s deadline.
+const idleStaleThreshold = 60 * time.Second
+
+// checkoutIdle validates a connection pulled from the idle channel. Dead ones
+// are closed and their slot freed; the caller retries acquisition.
+func (p *ClientPool) checkoutIdle(c *Client) *Client {
+	if c.HealthyForCheckout(idleStaleThreshold) {
+		return c
+	}
+	logger.Debug("NNTP pool discarding stale idle connection", "host", p.host)
+	c.Quit()
+	p.slots <- struct{}{}
+	return nil
+}
+
 func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 	logger.VerboseNNTP("nntp pool Get", "host", p.host)
 
@@ -146,6 +163,9 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 		return nil, ctx.Err()
 	case c := <-p.idleClients:
 		logger.VerboseNNTP("nntp pool Get from idle", "host", p.host)
+		if c = p.checkoutIdle(c); c == nil {
+			return p.Get(ctx)
+		}
 		return c, nil
 	default:
 	}
@@ -185,6 +205,9 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "idle_client")
 		}
 		logger.VerboseNNTP("nntp pool Get from idle (after block)", "host", p.host)
+		if c = p.checkoutIdle(c); c == nil {
+			return p.Get(ctx)
+		}
 		return c, nil
 	case <-p.slots:
 		wait := time.Since(waitStarted)
@@ -214,6 +237,9 @@ func (p *ClientPool) TryGet(ctx context.Context) (*Client, bool) {
 	case <-ctx.Done():
 		return nil, false
 	case c := <-p.idleClients:
+		if c = p.checkoutIdle(c); c == nil {
+			return p.TryGet(ctx)
+		}
 		return c, true
 	default:
 	}

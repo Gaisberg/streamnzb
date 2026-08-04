@@ -305,6 +305,30 @@ func (c *Client) setShortDeadline() {
 	}
 }
 
+// HealthyForCheckout reports whether a pooled connection is safe to hand out.
+// Connections idle longer than maxIdle are liveness-checked with a DATE command
+// under a short (2s) deadline: providers silently drop idle TCP sessions, and
+// handing out a dead connection makes the next command hang for its full 60s
+// deadline — times retries — before failing, turning one stale socket into a
+// multi-minute playback stall.
+func (c *Client) HealthyForCheckout(maxIdle time.Duration) bool {
+	if c == nil || c.conn == nil {
+		return false
+	}
+	if !c.LastUsed.IsZero() && time.Since(c.LastUsed) <= maxIdle {
+		return true
+	}
+	c.setShortDeadline()
+	id, err := c.conn.Cmd("DATE")
+	if err != nil {
+		return false
+	}
+	c.conn.StartResponse(id)
+	_, _, err = c.conn.ReadCodeLine(111)
+	c.conn.EndResponse(id)
+	return err == nil
+}
+
 func (c *Client) GetArticle(messageID string) (string, error) {
 	c.setDeadline()
 	id, err := c.conn.Cmd("ARTICLE %s", messageID)

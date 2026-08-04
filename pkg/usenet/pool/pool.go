@@ -1004,11 +1004,6 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority int, useBackup bool) (client *nntp.Client, release, discard func(), providerID string, err error) {
 	p.mu.RLock()
 	providers := p.providers
-	// Create a local snapshot of consecutive 430s to avoid holding the lock during blocking Get()
-	consecutive := make(map[string]int, len(p.consecutive430s))
-	for k, v := range p.consecutive430s {
-		consecutive[k] = v
-	}
 	p.mu.RUnlock()
 
 	excludeSet := make(map[string]bool)
@@ -1016,7 +1011,11 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		excludeSet[id] = true
 	}
 
-	// Pass 1: Try healthy providers first (consecutive 430 errors < 3)
+	// Pass 1: healthy providers — anyone not inside an active 430 cooloff
+	// window. The cooloff is time-boxed and self-healing: a raw consecutive-430
+	// count skip here was PERMANENT for a benched provider (it can only reset
+	// via successes, which require being selected), so one bad-release 430
+	// storm funneled all traffic onto a single provider until restart.
 	for i := range providers {
 		prov := &providers[i]
 		if excludeSet[prov.ID] {
@@ -1028,7 +1027,7 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		if prov.IsBackup != useBackup {
 			continue
 		}
-		if consecutive[prov.ID] >= 3 {
+		if p.providerInCooloff(prov.ID) {
 			continue
 		}
 
@@ -1060,7 +1059,7 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		return c, release, discard, pid, nil
 	}
 
-	// Pass 2: Fall back to demoted providers (consecutive 430 errors >= 3)
+	// Pass 2: last resort — providers inside a cooloff window.
 	for i := range providers {
 		prov := &providers[i]
 		if excludeSet[prov.ID] {
@@ -1072,7 +1071,7 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		if prov.IsBackup != useBackup {
 			continue
 		}
-		if consecutive[prov.ID] < 3 {
+		if !p.providerInCooloff(prov.ID) {
 			continue
 		}
 
