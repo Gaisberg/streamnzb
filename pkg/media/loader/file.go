@@ -158,9 +158,8 @@ func (f *File) Segments() []*Segment { return f.segments }
 
 func (f *File) SegmentCount() int { return len(f.segments) }
 
-// CheckFirstSegmentExists returns whether the first segment exists on the server (STAT only).
-// If the fetcher implements SegmentStatter, it runs STAT on the first segment; otherwise returns true.
-// Used before opening a stream to fail fast when the release is unavailable (430).
+// CheckFirstSegmentExists returns whether the required segments (start, middle, end) exist on the server via STAT.
+// Used before opening a stream to fail fast when release segments are missing (430).
 func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 	if len(f.segments) == 0 {
 		return false, nil
@@ -182,17 +181,67 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 		f.firstStatMu.Unlock()
 		return true, nil
 	}
-	msgID := strings.TrimSpace(f.segments[0].ID)
-	if msgID == "" {
-		return false, nil
+
+	sampleIndices := map[int]bool{
+		0:                         true,
+		1:                         true,
+		2:                         true,
+		3:                         true,
+		4:                         true,
+		len(f.segments) / 4:       true,
+		len(f.segments) / 2:       true,
+		(3 * len(f.segments)) / 4: true,
+		len(f.segments) - 1:       true,
 	}
-	exists, err := statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
+
+	for idx := range sampleIndices {
+		if idx < 0 || idx >= len(f.segments) {
+			continue
+		}
+		msgID := strings.TrimSpace(f.segments[idx].ID)
+		if msgID == "" {
+			f.firstStatMu.Lock()
+			f.firstStatChecked = true
+			f.firstStatExists = false
+			f.firstStatMu.Unlock()
+			return false, nil
+		}
+		exists, err := statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
+		if err != nil || !exists {
+			f.firstStatMu.Lock()
+			f.firstStatChecked = true
+			f.firstStatExists = false
+			f.firstStatErr = err
+			f.firstStatMu.Unlock()
+			return false, err
+		}
+	}
+
 	f.firstStatMu.Lock()
 	f.firstStatChecked = true
-	f.firstStatExists = exists
-	f.firstStatErr = err
+	f.firstStatExists = true
+	f.firstStatErr = nil
 	f.firstStatMu.Unlock()
-	return exists, err
+	return true, nil
+}
+
+// StatSegmentAt STATs the article of the segment at index via the fetcher's
+// statter. Returns (true, nil) when it exists on at least one provider,
+// (false, nil) when definitively missing everywhere (430 on all), and
+// (false, err) when inconclusive (no statter available, transient error).
+func (f *File) StatSegmentAt(ctx context.Context, index int) (bool, error) {
+	if index < 0 || index >= len(f.segments) {
+		return false, fmt.Errorf("segment index %d out of range (segments=%d)", index, len(f.segments))
+	}
+	statter, ok := f.fetcher.(SegmentStatter)
+	if !ok {
+		return false, errors.New("fetcher does not support STAT")
+	}
+	msgID := strings.TrimSpace(f.segments[index].ID)
+	if msgID == "" {
+		return false, nil // article without a message id cannot be fetched
+	}
+	return statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
 }
 
 func (f *File) SegmentMapDetected() bool {
@@ -445,7 +494,8 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 
 	select {
 	case <-ctx.Done():
-		logger.Debug("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
+		// Expected when a probe/playback stream is closed or seeks mid-download; not an error.
+		logger.Trace("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
 		return nil, ctx.Err()
 	case <-req.done:
 		logger.Trace("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
@@ -657,7 +707,11 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 		logger.Debug("File doDownloadSegmentViaPools: client body read start", "file", f.Name(), "index", index, "provider", clientPool.Host(), "article", seg.ID)
 		r, err := client.Body(seg.ID)
 		if err != nil {
-			logger.Debug("File doDownloadSegmentViaPools: client body command failed", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
+			if nntp.IsBenignDisconnect(err) || downloadCtx.Err() != nil {
+				logger.Trace("File doDownloadSegmentViaPools: client body command cancelled", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
+			} else {
+				logger.Debug("File doDownloadSegmentViaPools: client body command failed", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
+			}
 			clientPool.Put(client)
 			tried[poolIdx] = true
 			lastErr = err
@@ -676,7 +730,7 @@ func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte
 
 		select {
 		case <-downloadCtx.Done():
-			logger.Debug("File doDownloadSegmentViaPools: downloadCtx done during body read", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", downloadCtx.Err())
+			logger.Trace("File doDownloadSegmentViaPools: downloadCtx done during body read", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", downloadCtx.Err())
 			clientPool.Discard(client)
 			return nil, downloadCtx.Err()
 		case res := <-done:

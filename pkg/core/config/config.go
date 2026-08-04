@@ -328,6 +328,73 @@ func (c *Config) EffectiveSessionPostPlaybackTTLSeconds() int {
 	return DefaultSessionPostPlaybackTTLMinutes * 60
 }
 
+const (
+	DefaultLibrarySearchMode     = "library_first"
+	DefaultLibraryMaxItems       = 5000
+	DefaultLibraryMaxSizeMB      = 250
+	DefaultLibraryVerifyTTLHours = 168 // 7 days
+	DefaultBadReleaseTTLHours    = 336 // 14 days
+)
+
+func (c *Config) EffectiveLibrarySearchMode() string {
+	if c != nil && strings.TrimSpace(c.LibrarySearchMode) != "" {
+		mode := strings.ToLower(strings.TrimSpace(c.LibrarySearchMode))
+		switch mode {
+		case "library_first", "combine", "fallback_only", "disabled":
+			return mode
+		}
+	}
+	return DefaultLibrarySearchMode
+}
+
+func (c *Config) EffectiveLibraryMaxItems() int {
+	if c != nil && c.LibraryMaxItems > 0 {
+		return c.LibraryMaxItems
+	}
+	return DefaultLibraryMaxItems
+}
+
+func (c *Config) EffectiveLibraryMaxSizeMB() int {
+	if c != nil && c.LibraryMaxSizeMB > 0 {
+		return c.LibraryMaxSizeMB
+	}
+	return DefaultLibraryMaxSizeMB
+}
+
+func (c *Config) EffectiveLibraryAutoSave() bool {
+	if c != nil && c.LibraryAutoSave != nil {
+		return *c.LibraryAutoSave
+	}
+	return true
+}
+
+// EffectiveLibraryVerifyTTL is the age past which a cached release is re-STATed
+// by the background freshness sweep. Returns 0 when disabled (config < 0).
+func (c *Config) EffectiveLibraryVerifyTTL() time.Duration {
+	hours := DefaultLibraryVerifyTTLHours
+	if c != nil && c.LibraryVerifyTTLHours != 0 {
+		if c.LibraryVerifyTTLHours < 0 {
+			return 0 // disabled
+		}
+		hours = c.LibraryVerifyTTLHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// EffectiveBadReleaseTTL is how long a definitive bad-release verdict (article
+// hole / corruption) keeps that release filtered from search results before it
+// is eligible for retry. Returns 0 when disabled (config < 0).
+func (c *Config) EffectiveBadReleaseTTL() time.Duration {
+	hours := DefaultBadReleaseTTLHours
+	if c != nil && c.BadReleaseTTLHours != 0 {
+		if c.BadReleaseTTLHours < 0 {
+			return 0 // disabled
+		}
+		hours = c.BadReleaseTTLHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
 func (e *StreamEntry) EffectiveFilterAvailNZB(cfg *Config) bool {
 	if cfg != nil && NormalizeAvailNZBMode(cfg.AvailNZBMode) == "off" {
 		return false
@@ -502,6 +569,9 @@ type Config struct {
 	// NZBHistoryRetentionDays controls how many days NZB attempt history is kept. Default 90.
 	NZBHistoryRetentionDays int `json:"nzb_history_retention_days,omitempty"`
 
+	// FFprobePath specifies an optional custom path to the ffprobe binary.
+	FFprobePath string `json:"ffprobe_path,omitempty"`
+
 	// PlaybackStartupTimeoutSeconds bounds probe/open work before the first playable response is ready. Default 5.
 	PlaybackStartupTimeoutSeconds int `json:"playback_startup_timeout_seconds,omitempty"`
 	// SessionTTLMinutes controls how long a deferred/inactive stream session is kept in memory. Default 30.
@@ -509,9 +579,25 @@ type Config struct {
 	// SessionPostPlaybackTTLMinutes controls how long a session stays in memory after playback ends (paused/stopped). Default 240 (4 hours).
 	SessionPostPlaybackTTLMinutes int `json:"session_post_playback_ttl_minutes,omitempty"`
 
-	// SpeculativePreProbingMaxAttempts controls maximum preprobe failover attempts to find a working release. Default 3.
+	// SpeculativePreProbingMaxAttempts controls how many top candidate streams to speculatively probe sequentially until a working candidate is verified. Default 3 (max 5).
 	SpeculativePreProbingMaxAttempts int `json:"speculative_preprobing_max_attempts,omitempty"`
-	SpeculativePreProbingCount       int `json:"speculative_pre_probing_count,omitempty"`
+	// SpeculativePreProbingCount is kept for backward compatibility with legacy configs.
+	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
+
+	// LibrarySearchMode controls SQLite library search priority ("library_first", "combine", "fallback_only", "disabled"). Default "library_first".
+	LibrarySearchMode string `json:"library_search_mode,omitempty"`
+	// LibraryMaxItems controls maximum number of entries cached in SQLite library. Default 5000.
+	LibraryMaxItems int `json:"library_max_items,omitempty"`
+	// LibraryMaxSizeMB controls maximum storage size in MB for SQLite library. Default 250.
+	LibraryMaxSizeMB int `json:"library_max_size_mb,omitempty"`
+	// LibraryVerifyTTLHours: a background sweep re-STATs cached releases older than this many hours and prunes dead ones. Default 168 (7 days); negative disables.
+	LibraryVerifyTTLHours int `json:"library_verify_ttl_hours,omitempty"`
+	// BadReleaseTTLHours: releases with a definitive bad verdict (missing/corrupt articles) are filtered from results for this many hours. Default 336 (14 days); negative disables.
+	BadReleaseTTLHours int `json:"bad_release_ttl_hours,omitempty"`
+	// LibraryAutoSave automatically persists successful NZBs and blueprints to SQLite. Default true.
+	LibraryAutoSave *bool `json:"library_auto_save,omitempty"`
+	// LibraryScoreBonus adds a customizable score bonus for library releases during ranking. Default 500.
+	LibraryScoreBonus int `json:"library_score_bonus,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
 	// "on"  - fetch availability status and report playback results.
@@ -550,6 +636,18 @@ type StreamEntry struct {
 	// no entry. Anime is matched first when the request resolved via Kitsu.
 	FilterProfileByType map[string]string `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
+}
+
+// EffectiveLibraryScoreBonus is the ranking bonus added to cached library
+// releases. 0 (unset) uses the default; negative disables the bonus entirely.
+func (c *Config) EffectiveLibraryScoreBonus() int {
+	if c == nil || c.LibraryScoreBonus == 0 {
+		return 500
+	}
+	if c.LibraryScoreBonus < 0 {
+		return 0
+	}
+	return c.LibraryScoreBonus
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
@@ -1437,4 +1535,11 @@ func CopyEnvOverridesFrom(src, dst *Config) {
 			copy(dst.Indexers, src.Indexers)
 		}
 	}
+}
+
+func (c *Config) EffectiveFFprobePath() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.FFprobePath)
 }

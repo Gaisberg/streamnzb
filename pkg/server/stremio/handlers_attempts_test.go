@@ -208,27 +208,30 @@ func TestCommitGoodAttemptIfQualifiedBelowThreshold(t *testing.T) {
 
 func TestCommitGoodAttemptIfQualifiedCommitsAtThreshold(t *testing.T) {
 	server := &Server{}
-	sess := &session.Session{ID: "stream:test:movie:tmdb:2:0"}
-	sess.AddBytesRead(65 << 20)
 
-	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now()); !committed {
-		t.Fatal("expected threshold-reaching attempt to commit success immediately")
+	// Bytes alone (fast connection, no sustained playback) must NOT commit —
+	// this exact pattern produced a false good report 13s before a mid-file hole.
+	bytesOnly := &session.Session{ID: "stream:test:movie:tmdb:2:0"}
+	bytesOnly.AddBytesRead(65 << 20)
+	if committed := server.commitGoodAttemptIfQualified(bytesOnly, bytesOnly.ID, bytesOnly.ID, time.Now()); committed {
+		t.Fatal("bytes alone must not commit success")
 	}
-	if _, ok := server.recordedSuccessSessionIDs.Load(sess.ID); !ok {
+
+	// Duration alone (stalled stream) must NOT commit either.
+	durationOnly := &session.Session{ID: "stream:test:movie:tmdb:3:0"}
+	durationOnly.AddBytesRead(1 << 20)
+	if committed := server.commitGoodAttemptIfQualified(durationOnly, durationOnly.ID, durationOnly.ID, time.Now().Add(-21*time.Second)); committed {
+		t.Fatal("duration alone must not commit success")
+	}
+
+	// Sustained playback (bytes AND duration) commits.
+	sustained := &session.Session{ID: "stream:test:movie:tmdb:5:0"}
+	sustained.AddBytesRead(65 << 20)
+	if committed := server.commitGoodAttemptIfQualified(sustained, sustained.ID, sustained.ID, time.Now().Add(-21*time.Second)); !committed {
+		t.Fatal("expected sustained playback (bytes + duration) to commit success")
+	}
+	if _, ok := server.recordedSuccessSessionIDs.Load(sustained.ID); !ok {
 		t.Fatal("expected recorded success marker after threshold commit")
-	}
-}
-
-func TestCommitGoodAttemptIfQualifiedCommitsAtDurationThreshold(t *testing.T) {
-	server := &Server{}
-	sess := &session.Session{ID: "stream:test:movie:tmdb:3:0"}
-	sess.AddBytesRead(1 << 20)
-
-	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now().Add(-21*time.Second)); !committed {
-		t.Fatal("expected duration threshold to commit success")
-	}
-	if _, ok := server.recordedSuccessSessionIDs.Load(sess.ID); !ok {
-		t.Fatal("expected recorded success marker after duration threshold commit")
 	}
 }
 
@@ -242,8 +245,15 @@ func TestCommitGoodAttemptIfQualifiedUsesAvailThresholds(t *testing.T) {
 		Disabled:                true,
 	}
 
-	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now()); !committed {
-		t.Fatal("expected custom threshold to commit success")
+	// Bytes threshold met but duration not: must NOT commit (good requires both;
+	// an early commit poisons AvailNZB for releases with holes past the startup window).
+	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now()); committed {
+		t.Fatal("bytes alone must not commit success before the duration threshold")
+	}
+
+	// Both custom thresholds met: commits.
+	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now().Add(-time.Minute)); !committed {
+		t.Fatal("expected custom thresholds (bytes + duration) to commit success")
 	}
 }
 

@@ -17,6 +17,7 @@ const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files', 'nzb_history_retention_days'],
   memory: ['memory_limit_mb'],
   playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_preprobing_max_attempts', 'mute_error_video'],
+  library: ['library_search_mode', 'library_max_items', 'library_max_size_mb', 'library_auto_save'],
   availnzb: ['availnzb_mode'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
@@ -49,6 +50,10 @@ function pickInitialValues(values = {}) {
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     speculative_preprobing_max_attempts: Number.isFinite(parsedSpeculativePreProbingMaxAttempts) ? parsedSpeculativePreProbingMaxAttempts : 3,
     mute_error_video: values.mute_error_video === true,
+    library_search_mode: values.library_search_mode ?? 'library_first',
+    library_max_items: Number(values.library_max_items ?? 5000) || 5000,
+    library_max_size_mb: Number(values.library_max_size_mb ?? 250) || 250,
+    library_auto_save: values.library_auto_save !== false,
     availnzb_mode: normalizeAvailNZBMode(values.availnzb_mode),
     tmdb_api_key: values.tmdb_api_key ?? '',
     tvdb_api_key: values.tvdb_api_key ?? '',
@@ -452,6 +457,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                 </div>
               </CardContent>
             </Card>
+
           </div>
 
           <div className="space-y-6">
@@ -559,6 +565,77 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     </Button>
                   </div>
                   <div className="mt-3 text-sm text-muted-foreground">Clears the in-memory playlist and raw search caches immediately.</div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                    <CardTitle>Library & Pre-Indexer Engine</CardTitle>
+                    <CardDescription>Cache NZBs and probed archive blueprints locally to serve repeated requests in &lt; 5ms with 0 indexer API calls.</CardDescription>
+                  </div>
+                  <div className="shrink-0">{renderSaveButton('library')}</div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-md border border-border/60">
+                  <FormField control={control} name="library_search_mode" render={({ field }) => (
+                    <FormItem className="rounded-none border-0 p-3">
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Library Search Priority</FormLabel>
+                        </div>
+                        <FormControl>
+                          <select
+                            {...field}
+                            className="h-9 w-full sm:w-[220px] rounded-md border border-input bg-background px-3 py-1 text-sm font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          >
+                            <option value="library_first">Library First (Fastest)</option>
+                            <option value="combine">Combine Library + Indexers</option>
+                            <option value="fallback_only">Fallback to Library</option>
+                            <option value="disabled">Disabled</option>
+                          </select>
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">Controls whether StreamNZB searches the local library database before making Newznab HTTP API calls.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="library_auto_save" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Auto-Cache Playback Releases</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value !== false}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">Automatically store NZB files and probed RAR/7z blueprints in the library when playback completes.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="library_max_items" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Max Cached Items</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Input type="number" min={10} max={100000} {...field} onChange={e => field.onChange(Number(e.target.value))} className="h-9 w-full sm:w-[120px] font-mono text-xs" />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">Maximum releases to store before LRU eviction deletes oldest entries. Default 5000.</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
                 </div>
               </CardContent>
             </Card>

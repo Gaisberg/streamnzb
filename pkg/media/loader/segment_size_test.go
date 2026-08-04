@@ -32,6 +32,72 @@ func TestSegmentProbeIndicesDistinctNZBBytesAndLast(t *testing.T) {
 	}
 }
 
+// TestSegmentProbePlanSeparatesFinalSegmentClass reproduces the real-world
+// failure: a 157-segment final RAR volume whose full segments encode to
+// ~739,315 bytes (716,800 decoded) while the final segment encodes to 686,112
+// (668,107 decoded) — only 7.2% apart. The old 10% clustering merged both into
+// one class, probed ONLY the last segment, painted 668,107 across the whole
+// volume, and truncated the virtual file by 7.6MB right where the Matroska
+// cues live — tail reads returned 0 bytes and playback never started.
+func TestSegmentProbePlanSeparatesFinalSegmentClass(t *testing.T) {
+	const (
+		fullEncoded  = 739315
+		fullDecoded  = 716800
+		lastEncoded  = 686112
+		lastDecoded  = 668107
+		segmentCount = 157
+	)
+	segments := make([]*Segment, segmentCount)
+	for i := 0; i < segmentCount-1; i++ {
+		// Vary encoded size slightly (±700) to mimic the 137 unique sizes seen
+		// in the real NZB; all belong to the same decoded class.
+		segments[i] = &Segment{Segment: nzbSegment(int64(fullEncoded + (i%7)*100 - 300))}
+	}
+	segments[segmentCount-1] = &Segment{Segment: nzbSegment(lastEncoded)}
+
+	// Fast-mode plan (skipGapProbing=true) must probe a full-class segment, not
+	// just the physically-last one.
+	indices := segmentProbeIndices(segments, nil, false, true)
+	hasNonLast := false
+	for _, idx := range indices {
+		if idx != segmentCount-1 {
+			hasNonLast = true
+			break
+		}
+	}
+	if !hasNonLast {
+		t.Fatalf("probe plan %v must include a full-size-class segment, not only the last", indices)
+	}
+
+	// With both classes probed, the reconstructed map must hit the true total.
+	probed := map[int]int64{}
+	for _, idx := range indices {
+		if idx == segmentCount-1 {
+			probed[idx] = lastDecoded
+		} else {
+			probed[idx] = fullDecoded
+		}
+	}
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, nil, true)
+	var total int64
+	for _, sz := range sizes {
+		total += sz
+	}
+	want := int64((segmentCount-1)*fullDecoded + lastDecoded)
+	if total != want {
+		t.Fatalf("reconstructed volume size = %d, want %d (delta %d)", total, want, total-want)
+	}
+}
+
+func TestNZBBytesNearby(t *testing.T) {
+	if !nzbBytesNearby(739315, 738628) {
+		t.Error("0.1%% apart must be the same class")
+	}
+	if nzbBytesNearby(686112, 739315) {
+		t.Error("7.2%% apart must be separate classes (final-segment case)")
+	}
+}
+
 func TestSegmentUnprobedIndices(t *testing.T) {
 	got := segmentUnprobedIndices(5, []int{0, 2, 4})
 	want := []int{1, 3}

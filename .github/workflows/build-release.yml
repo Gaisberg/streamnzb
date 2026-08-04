@@ -88,20 +88,24 @@ jobs:
             fi
           fi
 
+      - name: Fetch embedded ffprobe binaries
+        run: go run ./tools/fetch-ffprobe
+
       - name: Build binaries
         run: |
           mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64 dist/darwin_amd64 dist/darwin_arm64
           LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
+          # -tags embedffprobe bundles the matching ffprobe binary (fetched above) into each build.
           # Build for Linux AMD64 (for Docker and Release)
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/linux_amd64/streamnzb ./cmd/streamnzb
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/linux_amd64/streamnzb ./cmd/streamnzb
           # Build for Linux ARM64 (for Docker and Release)
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/linux_arm64/streamnzb ./cmd/streamnzb
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/linux_arm64/streamnzb ./cmd/streamnzb
           # Build for Windows AMD64 (Release only)
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/windows_amd64/streamnzb.exe ./cmd/streamnzb
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/windows_amd64/streamnzb.exe ./cmd/streamnzb
           # Build for macOS AMD64 (Release only)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o dist/darwin_amd64/streamnzb ./cmd/streamnzb
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/darwin_amd64/streamnzb ./cmd/streamnzb
           # Build for macOS ARM64 (Release only)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o dist/darwin_arm64/streamnzb ./cmd/streamnzb
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/darwin_arm64/streamnzb ./cmd/streamnzb
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta

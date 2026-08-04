@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,16 @@ type namedIndexer interface {
 func indexerNameFromRelease(rel *release.Release) string {
 	if rel == nil {
 		return ""
+	}
+	if rel.IsLibraryResult() {
+		name := strings.TrimSpace(rel.Indexer)
+		if name == "" || name == "Library" || name == "StreamNZB Library" {
+			return "StreamNZB Library"
+		}
+		if strings.HasPrefix(name, "StreamNZB Library - ") {
+			return name
+		}
+		return "StreamNZB Library - " + name
 	}
 	if name := strings.TrimSpace(rel.Indexer); name != "" {
 		return name
@@ -694,7 +705,11 @@ func (s *Server) markCachedReleaseUnavailable(key StreamSlotKey, detailsURL, slo
 		if ent, _ := v.(*playlistCacheEntry); ent != nil && time.Now().Before(ent.until) && ent.result != nil {
 			nextResult := clonePlaylistResult(ent.result)
 			if markPlaylistResultUnavailable(nextResult, key, detailsURL, slotPath) {
-				s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: nextResult, until: ent.until})
+				if len(nextResult.Candidates) == 0 {
+					s.playlistCache.Delete(cacheKey)
+				} else {
+					s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: nextResult, until: ent.until})
+				}
 				updated = true
 			}
 		}
@@ -705,7 +720,11 @@ func (s *Server) markCachedReleaseUnavailable(key StreamSlotKey, detailsURL, slo
 		if ent, _ := v.(*rawSearchCacheEntry); ent != nil && time.Now().Before(ent.until) && ent.raw != nil {
 			nextRaw := cloneRawSearchResult(ent.raw)
 			if markRawSearchResultUnavailable(nextRaw, detailsURL) {
-				s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: nextRaw, until: ent.until})
+				if len(nextRaw.IndexerReleases) == 0 {
+					s.rawSearchCache.Delete(rawKey)
+				} else {
+					s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: nextRaw, until: ent.until})
+				}
 				updated = true
 			}
 		}
@@ -823,6 +842,11 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	results := profile.Apply(candidates, rank.RankOptions{})
 	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
 
+	libraryBonus := 500
+	if s.config != nil {
+		libraryBonus = s.config.EffectiveLibraryScoreBonus()
+	}
+
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {
 		cand := r.Candidate
@@ -832,8 +856,15 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 		// The computed score replaces the old size/age/grabs heuristic, so
 		// everything downstream ranks the same way.
 		cand.Score = r.Torrent.Rank
+		if cand.Release != nil && cand.Release.IsLibraryResult() {
+			cand.Score += libraryBonus
+		}
 		out = append(out, cand)
 	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Score > out[j].Score
+	})
 
 	logStreamFiltering(stream, filterMode, inputResults, len(out))
 	logStreamSorting(stream, filterMode, inputResults, len(out))

@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/fileutil"
 	"streamnzb/pkg/media/loader"
@@ -74,7 +76,8 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	Release *release.Release
+	Release  *release.Release
+	NZBBytes []byte
 
 	ContentIDs *AvailReportMeta
 
@@ -100,6 +103,57 @@ type Session struct {
 
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
+
+	mediaCaps *MediaCapabilities // codec/profile/HDR metadata captured during probing
+
+	libraryBlueprintJSON string // serialized archive blueprint from the library, rehydrated onto Blueprint once loader files exist
+}
+
+// MediaCapabilities holds client-relevant properties of the selected playback
+// file, captured by ffprobe during (pre-)probing. It lets the addon distinguish
+// "this release is broken" from "this client cannot decode this codec."
+type MediaCapabilities struct {
+	VideoCodec    string
+	AudioCodec    string
+	Width         int
+	Height        int
+	Profile       string
+	PixFmt        string
+	BitDepth      int
+	HDR           string // "", "HDR10", "HDR10+", "HLG"
+	DolbyVision   bool
+	ColorTransfer string
+	CodecTag      string
+}
+
+// Summary renders a short human-readable capability string suitable for a
+// Stremio stream description, e.g. "hevc Main 10 2160p 10-bit HDR10".
+func (c *MediaCapabilities) Summary() string {
+	if c == nil {
+		return ""
+	}
+	parts := make([]string, 0, 6)
+	if c.VideoCodec != "" {
+		parts = append(parts, c.VideoCodec)
+	}
+	if c.Profile != "" {
+		parts = append(parts, c.Profile)
+	}
+	if c.Height > 0 {
+		parts = append(parts, fmt.Sprintf("%dp", c.Height))
+	}
+	if c.BitDepth > 0 {
+		parts = append(parts, fmt.Sprintf("%d-bit", c.BitDepth))
+	}
+	if c.DolbyVision {
+		parts = append(parts, "Dolby Vision")
+	} else if c.HDR != "" {
+		parts = append(parts, c.HDR)
+	}
+	if c.AudioCodec != "" {
+		parts = append(parts, c.AudioCodec)
+	}
+	return strings.Join(parts, " ")
 }
 
 // Done returns a channel that is closed when the session is closed (e.g. user closed from dashboard).
@@ -426,6 +480,12 @@ func (s *Session) HasPreviouslyServed() bool {
 	return !s.PlaybackValidatedAt.IsZero()
 }
 
+func (s *Session) IsPlaybackValidated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.PlaybackValidatedAt.IsZero()
+}
+
 // MaxPlaybackDuration is the maximum time a session can stay in "active playback"
 // before being evicted even if EndPlayback was never called (e.g. stuck connection).
 const MaxPlaybackDuration = 6 * time.Hour
@@ -484,6 +544,26 @@ func (s *Session) SelectedPlaybackFile() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.selectedPlaybackFile
+}
+
+// SetMediaCapabilities records codec/profile/HDR metadata captured during probing.
+func (s *Session) SetMediaCapabilities(c *MediaCapabilities) {
+	if s == nil || c == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mediaCaps = c
+}
+
+// MediaCapabilities returns the captured media capabilities, or nil if unprobed.
+func (s *Session) MediaCapabilities() *MediaCapabilities {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mediaCaps
 }
 
 func (s *Session) ensurePlaybackStateLocked() *playbackStreamState {
@@ -739,6 +819,7 @@ type AvailReportMeta struct {
 	ImdbID  string
 	TmdbID  string
 	TvdbID  string
+	KitsuID string
 	Season  int
 	Episode int
 }
@@ -835,6 +916,48 @@ func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.F
 	return loaderFiles
 }
 
+// VerifyLibraryNZB parses nzbBytes, builds a loader file for the first selected
+// content file, and STATs its first segment — a cheap liveness check for a cached
+// release, without creating a session. Used by the library freshness sweep to
+// prune releases whose articles have expired. Returns (exists, err); a transient
+// error (nil-pool, timeout) should leave the item untouched for the next sweep.
+func (m *Manager) VerifyLibraryNZB(ctx context.Context, nzbBytes []byte, contentIDs *AvailReportMeta) (bool, error) {
+	if m == nil {
+		return false, fmt.Errorf("nil manager")
+	}
+	if len(nzbBytes) == 0 {
+		return false, fmt.Errorf("empty nzb")
+	}
+	parsed, err := nzb.ParseWithContext(ctx, bytes.NewReader(nzbBytes))
+	if err != nil {
+		return false, fmt.Errorf("parse nzb: %w", err)
+	}
+	contentFiles := selectSessionContentFiles(parsed, contentIDs)
+	if len(contentFiles) == 0 {
+		return false, fmt.Errorf("no content files in nzb")
+	}
+
+	m.mu.RLock()
+	pools := m.pools
+	usenetPool := m.usenetPool
+	estimator := m.estimator
+	m.mu.RUnlock()
+
+	var fetcher loader.SegmentFetcher
+	if usenetPool != nil {
+		fetcher = usenetPool.Subset(nil)
+	}
+	if fetcher == nil && len(pools) == 0 {
+		return false, fmt.Errorf("no usenet providers available")
+	}
+
+	files := buildLoaderFiles(ctx, "library-verify", contentFiles[:1], pools, fetcher, estimator)
+	if len(files) == 0 {
+		return false, fmt.Errorf("no loader files built")
+	}
+	return files[0].CheckFirstSegmentExists(ctx)
+}
+
 type DeferredSessionCreateOutcome string
 
 const (
@@ -913,6 +1036,29 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 		providerHosts:  append([]string(nil), providerHosts...),
 	}
 	session.segmentFetcher = attachProviderTracking(session, trackedFetcher)
+	if rel != nil && rel.SourceIndexer != nil {
+		if libItem, ok := rel.SourceIndexer.(*persistence.LibraryItem); ok && libItem != nil {
+			if len(libItem.NZBData) > 0 {
+				if decompressed, err := persistence.DecompressNZB(libItem.NZBData); err == nil && len(decompressed) > 0 {
+					session.NZBBytes = decompressed
+				} else {
+					session.NZBBytes = libItem.NZBData
+				}
+			}
+			// Restore capabilities captured during the original pre-probe so a library
+			// replay carries codec/HDR metadata without re-probing.
+			if libItem.MediaCapsJSON != "" {
+				var caps MediaCapabilities
+				if err := json.Unmarshal([]byte(libItem.MediaCapsJSON), &caps); err == nil {
+					session.mediaCaps = &caps
+				}
+			}
+			// Stash the serialized archive blueprint; it is rehydrated onto Blueprint
+			// once loader files exist (see GetOrDownloadNZBWithContext), letting a
+			// library replay skip the expensive ScanArchive.
+			session.libraryBlueprintJSON = libItem.BlueprintJSON
+		}
+	}
 	m.sessions[sessionID] = session
 	logger.Trace("session CreateDeferredSession done", "id", sessionID)
 	if replaced != nil {
@@ -992,8 +1138,21 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 			downloadCtx, cancel := context.WithTimeout(sessionFileCtx, 60*time.Second)
 			defer cancel()
 
-			logger.Trace("Lazy Downloading NZB (direct)...", "title", itemTitle, "indexer", indexerName)
-			data, err := idx.DownloadNZB(downloadCtx, nzbURL)
+			var data []byte
+			var err error
+			s.mu.Lock()
+			cachedBytes := s.NZBBytes
+			s.mu.Unlock()
+
+			if len(cachedBytes) > 0 {
+				data = cachedBytes
+				logger.Trace("Using cached NZB bytes from SQLite library", "title", itemTitle)
+			} else if idx == nil {
+				err = fmt.Errorf("no indexer available for NZB download")
+			} else {
+				logger.Trace("Lazy Downloading NZB (direct)...", "title", itemTitle, "indexer", indexerName)
+				data, err = idx.DownloadNZB(downloadCtx, nzbURL)
+			}
 
 			var parsedNZB *nzb.NZB
 			var loaderFiles []*loader.File
@@ -1051,9 +1210,23 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 			}
 			if finalErr == nil && s.NZB == nil {
 				s.NZB = parsedNZB
+				s.NZBBytes = data
 				s.Files = loaderFiles
 				s.File = loaderFiles[0]
 				logger.Debug("session GetOrDownloadNZB created loader files", "id", s.ID, "files", len(loaderFiles))
+				// Best-effort: rehydrate a persisted library blueprint against the fresh
+				// loader files so playback skips ScanArchive. Falls back silently to a
+				// full scan (Blueprint stays nil) if the volume set no longer matches.
+				if s.Blueprint == nil && s.libraryBlueprintJSON != "" {
+					unpackables := make([]unpack.UnpackableFile, len(loaderFiles))
+					for i := range loaderFiles {
+						unpackables[i] = loaderFiles[i]
+					}
+					if bp, ok := unpack.RehydrateArchiveBlueprint([]byte(s.libraryBlueprintJSON), unpackables); ok {
+						s.Blueprint = bp
+						logger.Debug("Reused persisted archive blueprint from library (skipped rescan)", "id", s.ID, "file", bp.MainFileName, "parts", len(bp.Parts))
+					}
+				}
 			}
 			s.nzbDownloadErr = finalErr
 			s.nzbDownloadInFlight = false

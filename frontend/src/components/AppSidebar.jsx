@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Settings, LogOut, Network, Server, Globe, Search,
-  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal
+  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal, Library
 } from "lucide-react"
 import {
   Sidebar,
@@ -30,6 +30,7 @@ const navMain = [
   { id: "direct-play", title: "Direct Play", icon: PlayCircle },
   { id: "statistics", title: "Statistics", icon: ChartColumn },
   { id: "nzb-history", title: "History", icon: History },
+  { id: "library", title: "Library", icon: Library },
   { id: "logs", title: "Logs", icon: FileText },
 ]
 

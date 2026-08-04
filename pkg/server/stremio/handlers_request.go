@@ -358,18 +358,23 @@ func streamBehaviorHints(streamName, streamID string, rel *release.Release, cach
 	return h
 }
 
-func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string, score int, includeScore bool) string {
+func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string, score int, includeScore bool, extraLines ...string) string {
 	firstLine := strings.TrimSpace(contentTitle)
 	secondLine := strings.TrimSpace(releaseTitle)
 	if firstLine == "" {
 		firstLine = secondLine
 	}
-	lines := make([]string, 0, 3)
+	lines := make([]string, 0, 5)
 	if firstLine != "" {
 		lines = append(lines, firstLine)
 	}
 	if secondLine != "" && secondLine != firstLine {
 		lines = append(lines, secondLine)
+	}
+	for _, extra := range extraLines {
+		if strings.TrimSpace(extra) != "" {
+			lines = append(lines, strings.TrimSpace(extra))
+		}
 	}
 	metaParts := make([]string, 0, 2)
 	if name := strings.TrimSpace(indexerName); name != "" {
@@ -416,7 +421,8 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 				contentTitle = list.Params.ContentTitle
 			}
 			includeScore := list != nil && !list.IsAIOStreams
-			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore)
+			capsLine := capsSummaryLine(cand.Release)
+			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
 			playPath := key.SlotPath(i)
 			if useSlotPaths {
 				playPath = list.SlotPaths[i]
@@ -467,6 +473,9 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 				line2 = fmt.Sprintf("%s (🎯 Score: %s)", line2, scoreStr)
 			}
 			description = branding + "\n" + line2
+		}
+		if capsLine := capsSummaryLine(firstRel); capsLine != "" {
+			description += "\n" + capsLine
 		}
 		playPath := key.SlotPath(0)
 		if useSlotPaths {

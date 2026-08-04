@@ -20,21 +20,36 @@ func (s staticProviderHostsSource) GetProviderHosts() []string {
 	return append([]string(nil), s.hosts...)
 }
 
-func TestQualifiesGoodByBytes(t *testing.T) {
-	sess := &session.Session{}
-	sess.AddBytesRead(64 << 20)
+func TestQualifiesGoodRequiresBytesAndDuration(t *testing.T) {
+	// Bytes alone must NOT qualify: a fast connection reaches 64MB in seconds,
+	// before a hole just past the startup window would surface.
+	fastStart := &session.Session{}
+	fastStart.AddBytesRead(64 << 20)
+	if QualifiesGood(fastStart, 2*time.Second, 64<<20, 20*time.Second) {
+		t.Fatal("bytes alone must not qualify as good")
+	}
 
-	if !QualifiesGood(sess, 2*time.Second, 64<<20, 20*time.Second) {
-		t.Fatal("expected playback to qualify by bytes")
+	// Duration alone must NOT qualify: 20s of a stalled stream is not playback.
+	stalled := &session.Session{}
+	stalled.AddBytesRead(8 << 20)
+	if QualifiesGood(stalled, 20*time.Second, 64<<20, 20*time.Second) {
+		t.Fatal("duration alone must not qualify as good")
+	}
+
+	// Both together qualify.
+	sustained := &session.Session{}
+	sustained.AddBytesRead(64 << 20)
+	if !QualifiesGood(sustained, 20*time.Second, 64<<20, 20*time.Second) {
+		t.Fatal("bytes + duration must qualify as good")
 	}
 }
 
-func TestQualifiesGoodByDuration(t *testing.T) {
+func TestQualifiesGoodDisabledThresholdPasses(t *testing.T) {
+	// A disabled (<= 0) threshold always passes its leg.
 	sess := &session.Session{}
-	sess.AddBytesRead(8 << 20)
-
-	if !QualifiesGood(sess, 20*time.Second, 64<<20, 20*time.Second) {
-		t.Fatal("expected playback to qualify by duration")
+	sess.AddBytesRead(64 << 20)
+	if !QualifiesGood(sess, 1*time.Second, 64<<20, 0) {
+		t.Fatal("disabled duration threshold should pass with sufficient bytes")
 	}
 }
 

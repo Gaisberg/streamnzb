@@ -53,13 +53,18 @@ func NewReporter(client *Client, providerSrc ProviderHostsSource) *Reporter {
 	}
 }
 
+// QualifiesGood requires BOTH thresholds (a disabled one, <= 0, always passes).
+// This must be AND, not OR: a fast connection reaches 64MB in seconds, and an
+// early good report poisons AvailNZB (and the local library) for releases whose
+// article holes sit just past the startup window. Requiring sustained playback
+// time as well makes "good" mean the client actually kept playing.
 func QualifiesGood(sess *session.Session, serveDuration time.Duration, minBytes int64, minDuration time.Duration) bool {
 	if sess == nil {
 		return false
 	}
 	bytesOk := minBytes <= 0 || sess.BytesRead() >= minBytes
 	durationOk := minDuration <= 0 || serveDuration >= minDuration
-	return bytesOk || durationOk
+	return bytesOk && durationOk
 }
 
 func (r *Reporter) ReportGood(sess *session.Session, serveDuration time.Duration) ReportOutcome {

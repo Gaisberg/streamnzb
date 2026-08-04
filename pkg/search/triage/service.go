@@ -83,6 +83,9 @@ func (s *Service) SortCandidates(candidates []Candidate) {
 
 func basicScore(rel *release.Release) int {
 	score := 0
+	if rel != nil && rel.IsLibraryResult() {
+		score += 500
+	}
 
 	// Size score: larger files score higher
 	sizeGB := float64(rel.Size) / (1024 * 1024 * 1024)

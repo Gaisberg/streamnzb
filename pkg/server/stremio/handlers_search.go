@@ -11,6 +11,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search"
@@ -1299,6 +1300,20 @@ func enrichSearchResultsWithAvail(streamLabel string, indexerReleases []*release
 	)
 }
 
+// libraryContentID resolves the content id used to key the SQLite library, in a
+// single fixed priority order. Both the write side (saveSessionToLibrary) and the
+// read side (buildRawSearchResult) MUST use this so their keys can never drift —
+// a past mismatch (write ended in TVDb, read ended in Kitsu) silently defeated the
+// cache for Kitsu-only and TVDb-only content.
+func libraryContentID(imdb, tmdb, tvdb, kitsu string) string {
+	for _, id := range []string{imdb, tmdb, tvdb, kitsu} {
+		if strings.TrimSpace(id) != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id string, stream *auth.Stream) (*rawSearchResult, error) {
 	selectedQueries := streamSearchQueryNames(stream, contentType)
 	if len(selectedQueries) == 0 {
@@ -1340,6 +1355,46 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		}, nil
 	}
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
+
+	libMode := s.config.EffectiveLibrarySearchMode()
+	var libraryReleases []*release.Release
+	if libMode != "disabled" && s.attemptRecorder != nil && s.attemptRecorder.LibraryStore() != nil {
+		season := 0
+		episode := 0
+		if params.ContentIDs != nil {
+			season = params.ContentIDs.Season
+			episode = params.ContentIDs.Episode
+		}
+		libItems, _ := s.attemptRecorder.LibraryStore().GetCandidatesByIDs(contentType, params.Req.IMDbID, params.Req.TMDBID, params.Req.TVDBID, params.Req.KitsuID, season, episode)
+		for _, item := range libItems {
+			rel := convertLibraryItemToRelease(item)
+			if rel != nil {
+				libraryReleases = append(libraryReleases, rel)
+			}
+		}
+		libraryReleases = s.filterBadReleases(streamLabel, libraryReleases)
+		if len(libraryReleases) > 0 {
+			logger.Info("SQLite library hit: retrieved cached releases",
+				"stream", streamLabel,
+				"type", contentType,
+				"id", id,
+				"mode", libMode,
+				"releases", len(libraryReleases),
+			)
+			if libMode == "library_first" {
+				return &rawSearchResult{
+					Params:          params,
+					IndexerReleases: libraryReleases,
+					Avail: &AvailContext{
+						ByDetailsURL:            make(map[string]*availnzb.ReleaseWithStatus),
+						AvailableByDetailsURL:   make(map[string]bool),
+						UnavailableByDetailsURL: make(map[string]bool),
+					},
+				}, nil
+			}
+		}
+	}
+
 	availChan := make(chan *AvailContext, 1)
 	go func() {
 		availChan <- s.loadAvailContext(params, stream)
@@ -1349,7 +1404,13 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	if err != nil {
 		return nil, err
 	}
+	if len(libraryReleases) > 0 && libMode == "combine" {
+		indexerReleases = append(libraryReleases, indexerReleases...)
+	} else if len(indexerReleases) == 0 && len(libraryReleases) > 0 && libMode == "fallback_only" {
+		indexerReleases = libraryReleases
+	}
 	indexerReleases = dedupeCombinedSearchResults(streamLabel, stream, indexerReleases, executedRequests)
+	indexerReleases = s.filterBadReleases(streamLabel, indexerReleases)
 	availCtx = alignAvailContextWithSearch(availCtx, indexerReleases)
 	enrichSearchResultsWithAvail(streamLabel, indexerReleases, availCtx)
 	logger.Debug("Playback candidate build finished",
@@ -1366,6 +1427,67 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		IndexerReleases: indexerReleases,
 		Avail:           availCtx,
 	}, nil
+}
+
+// filterBadReleases drops releases with an unexpired persistent bad verdict
+// (article hole / corruption recorded by purgeFailedRelease). One batched SQLite
+// lookup; keeps known-broken releases from being re-offered after a restart.
+func (s *Server) filterBadReleases(streamLabel string, releases []*release.Release) []*release.Release {
+	if s == nil || s.attemptRecorder == nil || len(releases) == 0 {
+		return releases
+	}
+	badStore := s.attemptRecorder.BadReleaseStore()
+	if badStore == nil {
+		return releases
+	}
+	urls := make([]string, 0, len(releases))
+	for _, r := range releases {
+		if r != nil && r.DetailsURL != "" {
+			urls = append(urls, r.DetailsURL)
+		}
+	}
+	bad := badStore.BadSet(urls)
+	if len(bad) == 0 {
+		return releases
+	}
+	kept := releases[:0]
+	dropped := 0
+	for _, r := range releases {
+		if r != nil && r.DetailsURL != "" {
+			if _, isBad := bad[r.DetailsURL]; isBad {
+				dropped++
+				logger.Debug("Filtered known-bad release from results", "stream", streamLabel, "title", r.Title, "url", r.DetailsURL)
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	if dropped > 0 {
+		logger.Info("Filtered known-bad releases from search results", "stream", streamLabel, "dropped", dropped, "remaining", len(kept))
+	}
+	return kept
+}
+
+func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release {
+	if item == nil {
+		return nil
+	}
+	indexerName := strings.TrimSpace(item.IndexerName)
+	if indexerName == "" || indexerName == "Library" || indexerName == "StreamNZB Library" {
+		indexerName = "StreamNZB Library"
+	} else if !strings.HasPrefix(indexerName, "StreamNZB Library - ") {
+		indexerName = "StreamNZB Library - " + indexerName
+	}
+
+	return &release.Release{
+		Title:         item.ReleaseTitle,
+		Link:          item.DetailsURL,
+		DetailsURL:    item.DetailsURL,
+		Indexer:       indexerName,
+		Size:          item.SizeBytes,
+		SourceIndexer: item,
+		IsLibrary:     true,
+	}
 }
 
 func buildSeriesQueries(showName string) []string {
@@ -1688,7 +1810,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 	seasonNum, _ := strconv.Atoi(req.Season)
 	episodeNum, _ := strconv.Atoi(req.Episode)
-	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, Season: seasonNum, Episode: episodeNum}
+	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
 	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var wg sync.WaitGroup

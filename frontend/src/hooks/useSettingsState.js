@@ -30,6 +30,11 @@ const ADVANCED_TAB_FIELDS = [
   'availnzb_mode',
   'tmdb_api_key',
   'tvdb_api_key',
+  'library_search_mode',
+  'library_max_items',
+  'library_max_size_mb',
+  'library_auto_save',
+  'ffprobe_path',
 ]
 
 export function fieldToTab(fieldName) {
@@ -286,6 +291,11 @@ export function useSettingsState({
       const sanitizedAttempts = Math.min(5, Math.max(0, Number.isNaN(preProbeMaxAttempts) ? 3 : preProbeMaxAttempts))
       trimmedFullData.speculative_preprobing_max_attempts = sanitizedAttempts
       trimmedFullData.speculative_pre_probing_count = sanitizedAttempts
+
+      const libraryMaxItems = Number(trimmedFullData.library_max_items)
+      trimmedFullData.library_max_items = Math.max(10, Number.isNaN(libraryMaxItems) ? 5000 : libraryMaxItems)
+      const libraryMaxSizeMB = Number(trimmedFullData.library_max_size_mb)
+      trimmedFullData.library_max_size_mb = Math.max(10, Number.isNaN(libraryMaxSizeMB) ? 250 : libraryMaxSizeMB)
 
       const payload = overrides
         ? Object.keys(overrides).reduce((acc, key) => {

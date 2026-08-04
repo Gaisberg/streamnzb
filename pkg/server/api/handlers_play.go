@@ -37,10 +37,29 @@ func (s *Server) handleDirectPlayNZB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceURL, sourceName, nzbData, err := parseDirectPlayRequest(w, r)
+	sourceURL, sourceName, libraryID, nzbData, err := parseDirectPlayRequest(w, r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// A library item plays from its stored NZB — no indexer round-trip.
+	if libraryID != "" {
+		if s.attemptLister == nil || s.attemptLister.LibraryStore() == nil {
+			http.Error(w, "Library unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		item, itemErr := s.attemptLister.LibraryStore().GetItem(libraryID)
+		if itemErr != nil || item == nil || len(item.NZBData) == 0 {
+			http.Error(w, "Library item not found or has no stored NZB", http.StatusNotFound)
+			return
+		}
+		sourceName = item.ReleaseTitle
+		if sourceName == "" {
+			sourceName = libraryID
+		}
+		nzbData = item.NZBData
+		s.attemptLister.LibraryStore().TouchItem(item.ID)
 	}
 
 	var sessionID string
@@ -63,39 +82,42 @@ func (s *Server) handleDirectPlayNZB(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func parseDirectPlayRequest(w http.ResponseWriter, r *http.Request) (sourceURL string, sourceName string, nzbData []byte, err error) {
+func parseDirectPlayRequest(w http.ResponseWriter, r *http.Request) (sourceURL string, sourceName string, libraryID string, nzbData []byte, err error) {
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		r.Body = http.MaxBytesReader(w, r.Body, maxPlayNZBUploadBytes+1024*64)
 		if parseErr := r.ParseMultipartForm(maxPlayNZBUploadBytes + 1024*64); parseErr != nil {
-			return "", "", nil, fmt.Errorf("invalid multipart form payload")
+			return "", "", "", nil, fmt.Errorf("invalid multipart form payload")
 		}
 		sourceURL = strings.TrimSpace(r.FormValue("url"))
+		libraryID = strings.TrimSpace(r.FormValue("library_id"))
 		file, header, fileErr := r.FormFile("file")
 		if fileErr == nil {
 			defer file.Close()
 			sourceName = strings.TrimSpace(header.Filename)
 			nzbData, err = readLimitedNZB(file, maxPlayNZBUploadBytes)
 			if err != nil {
-				return "", "", nil, err
+				return "", "", "", nil, err
 			}
 		} else if !errors.Is(fileErr, http.ErrMissingFile) {
-			return "", "", nil, fmt.Errorf("invalid file upload")
+			return "", "", "", nil, fmt.Errorf("invalid file upload")
 		}
 	} else {
 		var payload struct {
-			URL string `json:"url"`
+			URL       string `json:"url"`
+			LibraryID string `json:"library_id"`
 		}
 		if decodeErr := json.NewDecoder(r.Body).Decode(&payload); decodeErr != nil {
-			return "", "", nil, fmt.Errorf("invalid JSON payload")
+			return "", "", "", nil, fmt.Errorf("invalid JSON payload")
 		}
 		sourceURL = strings.TrimSpace(payload.URL)
+		libraryID = strings.TrimSpace(payload.LibraryID)
 	}
 
-	if len(nzbData) == 0 && sourceURL == "" {
-		return "", "", nil, fmt.Errorf("provide an NZB file or URL")
+	if len(nzbData) == 0 && sourceURL == "" && libraryID == "" {
+		return "", "", "", nil, fmt.Errorf("provide an NZB file, URL, or library item")
 	}
-	return sourceURL, sourceName, nzbData, nil
+	return sourceURL, sourceName, libraryID, nzbData, nil
 }
 
 func readLimitedNZB(reader io.Reader, limit int64) ([]byte, error) {

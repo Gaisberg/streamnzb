@@ -15,10 +15,12 @@ import (
 const saveDebounceInterval = 2 * time.Second
 
 type StateManager struct {
-	db        *sql.DB
-	mu        sync.RWMutex
-	saveTimer *time.Timer
-	saveMu    sync.Mutex
+	db              *sql.DB
+	libraryStore    *LibraryStore
+	badReleaseStore *BadReleaseStore
+	mu              sync.RWMutex
+	saveTimer       *time.Timer
+	saveMu          sync.Mutex
 }
 
 var globalManager *StateManager
@@ -46,9 +48,27 @@ func GetManager(dataDir string) (*StateManager, error) {
 	}
 	mergeMisplacedDatabases(db, dataDir)
 
-	m := &StateManager{db: db}
+	m := &StateManager{
+		db:              db,
+		libraryStore:    NewLibraryStore(db),
+		badReleaseStore: NewBadReleaseStore(db),
+	}
 	globalManager = m
 	return m, nil
+}
+
+func (m *StateManager) LibraryStore() *LibraryStore {
+	if m == nil {
+		return nil
+	}
+	return m.libraryStore
+}
+
+func (m *StateManager) BadReleaseStore() *BadReleaseStore {
+	if m == nil {
+		return nil
+	}
+	return m.badReleaseStore
 }
 
 func mergeMisplacedDatabases(target *sql.DB, dataDir string) {

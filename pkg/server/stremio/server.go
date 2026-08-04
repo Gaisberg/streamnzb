@@ -1,6 +1,7 @@
 package stremio
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/media/ffprobe"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
@@ -54,6 +56,8 @@ type Server struct {
 	loggedThresholdSkipIDs    sync.Map // session ID -> struct{}; keep threshold-below logs to a single line per session
 	pendingAttemptResolutions sync.Map // session ID -> int64 token; delayed finalization for short plays/probes
 	nextReleaseIndex          sync.Map // key: streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
+	preProbeCancels           sync.Map // key: StreamSlotKey.CacheKey() → *preProbeCancelEntry; cancels the in-flight speculative pre-probe sweep when real playback starts
+	pendingLibrarySavedIDs    sync.Map // session ID -> struct{}; the serve-path pending library save runs once per session, not once per HTTP range request
 	webHandler                http.Handler
 	apiHandler                http.Handler
 	attemptRecorder           *persistence.StateManager
@@ -136,6 +140,18 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 	if err := s.CheckPort(opts.Port); err != nil {
 		return nil, err
 	}
+
+	go func() {
+		customPath := ""
+		if opts.Config != nil {
+			customPath = opts.Config.EffectiveFFprobePath()
+		}
+		if _, err := ffprobe.EnsureFFprobe(context.Background(), customPath); err != nil {
+			logger.Debug("EnsureFFprobe background check", "err", err)
+		}
+	}()
+
+	s.startLibraryFreshnessSweeper()
 
 	return s, nil
 }

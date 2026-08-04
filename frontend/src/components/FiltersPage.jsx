@@ -68,8 +68,12 @@ function uniqueName(profiles, base) {
   return `${base} ${n}`
 }
 
-export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
+export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
+  const savedScoreBonus = Number(config?.library_score_bonus ?? 500) || 500
+  const [scoreBonus, setScoreBonus] = useState(savedScoreBonus)
+  useEffect(() => { setScoreBonus(savedScoreBonus) }, [savedScoreBonus])
+  const scoreBonusDirty = scoreBonus !== savedScoreBonus
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
   const anyInUse = Object.keys(usage).length > 0
   const [selected, setSelected] = useState(0)
@@ -176,6 +180,43 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
           </p>
         </div>
       )}
+
+      {/* Global scoring applied on top of every profile's ranking */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold">Global Scoring</CardTitle>
+          <CardDescription>Applied on top of the selected profile's ranking, for every stream.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-md border border-border/60 p-3">
+            <div className="min-w-0 space-y-0.5">
+              <Label htmlFor="library-score-bonus" className="text-sm font-medium">Library Hit Score Bonus</Label>
+              <p className="text-xs text-muted-foreground">
+                Extra ranking score added to cached library releases so proven-playable results outrank fresh indexer hits.
+                Default 500; set -1 to disable the bonus.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Input
+                id="library-score-bonus"
+                type="number"
+                min={-1}
+                max={100000}
+                value={scoreBonus}
+                onChange={(e) => setScoreBonus(Number(e.target.value))}
+                className="h-9 w-[120px] font-mono text-xs"
+              />
+              <Button
+                size="sm"
+                disabled={!scoreBonusDirty || isSaving}
+                onClick={() => onSaveGlobal?.({ library_score_bonus: scoreBonus })}
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {profiles.length === 0 ? (
         <Card className="border border-dashed border-border bg-card">

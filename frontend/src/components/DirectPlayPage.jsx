@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, memo } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react"
 import { Upload, Link2, PlayCircle, Loader2, X } from "lucide-react"
 import { Plyr } from "plyr-react"
 import "plyr-react/plyr.css"
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-export const DirectPlayPage = memo(function DirectPlayPage() {
+export const DirectPlayPage = memo(function DirectPlayPage({ libraryItem = null, onLibraryItemConsumed } = {}) {
   const fileInputRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [url, setUrl] = useState("")
@@ -47,18 +47,10 @@ export const DirectPlayPage = memo(function DirectPlayPage() {
     }
   }, [])
 
-  const onSubmit = useCallback(async (event) => {
-    event.preventDefault()
+  const startPlayback = useCallback(async (formData) => {
     setSubmitting(true)
     setError("")
     try {
-      const formData = new FormData()
-      if (url.trim()) {
-        formData.append("url", url.trim())
-      }
-      if (file) {
-        formData.append("file", file)
-      }
       const data = await apiFetch("/api/play/nzb", {
         method: "POST",
         body: formData,
@@ -81,7 +73,29 @@ export const DirectPlayPage = memo(function DirectPlayPage() {
     } finally {
       setSubmitting(false)
     }
-  }, [file, url])
+  }, [])
+
+  const onSubmit = useCallback(async (event) => {
+    event.preventDefault()
+    const formData = new FormData()
+    if (url.trim()) {
+      formData.append("url", url.trim())
+    }
+    if (file) {
+      formData.append("file", file)
+    }
+    await startPlayback(formData)
+  }, [file, url, startPlayback])
+
+  // Auto-play a library item handed over from the Library page. The item is
+  // consumed immediately so navigating away and back does not replay it.
+  useEffect(() => {
+    if (!libraryItem?.id) return
+    onLibraryItemConsumed?.()
+    const formData = new FormData()
+    formData.append("library_id", libraryItem.id)
+    startPlayback(formData)
+  }, [libraryItem, onLibraryItemConsumed, startPlayback])
 
   const closePlayer = useCallback(() => {
     setPlayerOpen(false)

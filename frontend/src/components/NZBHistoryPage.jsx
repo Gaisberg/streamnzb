@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
+import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal, Library } from 'lucide-react'
 import { apiFetch } from '@/api'
 import { cn } from '@/lib/utils'
+import { LibraryPage } from '@/components/LibraryPage'
 
 function formatSize(bytes) {
   if (bytes <= 0) return '—'
@@ -355,7 +356,6 @@ function formatTimeframeLabel(value) {
   if (value === 'all') return 'All time'
   return value
 }
-
 function formatResultFilterLabel(value) {
   if (value === 'ok') return 'OK'
   if (value === 'failed') return 'Failed'
@@ -364,7 +364,8 @@ function formatResultFilterLabel(value) {
   return 'All'
 }
 
-export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
+export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger, initialSubTab = 'attempts' }) {
+  const [subTab, setSubTab] = useState(initialSubTab)
   const [attempts, setAttempts] = useState([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -379,6 +380,8 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
   const [search, setSearch] = useState('')
   const [filtersDialogOpen, setFiltersDialogOpen] = useState(false)
   const attemptDetailScrollRef = useRef(null)
+
+
 
   const fetchAttempts = useCallback((showLoadingSpinner = true) => {
     if (showLoadingSpinner) setLoading(true)
@@ -482,8 +485,56 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
     }
   }, [])
 
+  if (subTab === 'library') {
+    return (
+      <div className="flex flex-col min-h-0 flex-1">
+        <div className="px-4 pt-4 md:px-6 md:pt-6">
+          <div className="flex items-center gap-1 border-b border-border pb-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSubTab('attempts')}
+              className="gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <History className="h-4 w-4" />
+              Attempts History
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="gap-2 font-semibold"
+            >
+              <Library className="h-4 w-4 text-primary" />
+              Library
+            </Button>
+          </div>
+        </div>
+        <LibraryPage />
+      </div>
+    )
+  }
+
   return (
     <div className={cn('flex min-w-0 flex-1 min-h-0 flex-col gap-4 overflow-x-hidden px-4 py-4 md:gap-6 md:py-6 lg:px-6')}>
+      <div className="flex items-center gap-1 border-b border-border/60 pb-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          className="gap-2 font-semibold"
+        >
+          <History className="h-4 w-4 text-primary" />
+          Attempts History
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setSubTab('library')}
+          className="gap-2 text-muted-foreground hover:text-foreground"
+        >
+          <Library className="h-4 w-4" />
+          Library
+        </Button>
+      </div>
       <Card className="flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
         <CardHeader>
           <div className="flex items-start justify-between gap-4">

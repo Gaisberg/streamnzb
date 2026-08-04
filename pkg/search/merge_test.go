@@ -270,3 +270,17 @@ func TestMergeAndDedupeSearchResultsDoesNotUseTitleMatching(t *testing.T) {
 		t.Fatalf("expected both distinct detail URLs to remain, got %d: %+v", len(got), got)
 	}
 }
+
+func TestMergeAndDedupeSearchResultsPrioritizesLibrary(t *testing.T) {
+	indexerRel := &release.Release{Title: "House.Of.The.Dragon.S01E01.1080p", DetailsURL: "https://idx/details/hotd1", Indexer: "NZBGeek"}
+	libraryRel := &release.Release{Title: "House.Of.The.Dragon.S01E01.1080p", DetailsURL: "https://idx/details/hotd1", Indexer: "StreamNZB Library - NZBGeek", SourceIndexer: "library_struct", IsLibrary: true}
+
+	releases := []*release.Release{indexerRel, libraryRel}
+	got := MergeAndDedupeSearchResults(releases)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 deduped release, got %d", len(got))
+	}
+	if !got[0].IsLibraryResult() {
+		t.Fatalf("expected library release to win during deduplication, got %#v", got[0])
+	}
+}

@@ -14,7 +14,7 @@ func TestParseDirectPlayRequestFromJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/play/nzb", body)
 	req.Header.Set("Content-Type", "application/json")
 
-	url, sourceName, payload, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
+	url, sourceName, libraryID, payload, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
 	if err != nil {
 		t.Fatalf("parseDirectPlayRequest returned error: %v", err)
 	}
@@ -24,8 +24,28 @@ func TestParseDirectPlayRequestFromJSON(t *testing.T) {
 	if sourceName != "" {
 		t.Fatalf("sourceName = %q, want empty", sourceName)
 	}
+	if libraryID != "" {
+		t.Fatalf("libraryID = %q, want empty", libraryID)
+	}
 	if len(payload) != 0 {
 		t.Fatalf("payload length = %d, want 0", len(payload))
+	}
+}
+
+func TestParseDirectPlayRequestFromJSONLibraryID(t *testing.T) {
+	body := bytes.NewBufferString(`{"library_id":"movie:tt42:Movie.2024"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/play/nzb", body)
+	req.Header.Set("Content-Type", "application/json")
+
+	url, _, libraryID, payload, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
+	if err != nil {
+		t.Fatalf("parseDirectPlayRequest returned error: %v", err)
+	}
+	if url != "" || len(payload) != 0 {
+		t.Fatalf("expected only library id, got url=%q payload=%d", url, len(payload))
+	}
+	if libraryID != "movie:tt42:Movie.2024" {
+		t.Fatalf("libraryID = %q", libraryID)
 	}
 }
 
@@ -49,7 +69,7 @@ func TestParseDirectPlayRequestFromMultipartFile(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/play/nzb", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	url, sourceName, payload, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
+	url, sourceName, _, payload, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
 	if err != nil {
 		t.Fatalf("parseDirectPlayRequest returned error: %v", err)
 	}
@@ -84,7 +104,7 @@ func TestReadLimitedNZBRejectsEmptyPayload(t *testing.T) {
 func TestParseDirectPlayRequestRejectsEmptyJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/play/nzb", bytes.NewBufferString("{}"))
 	req.Header.Set("Content-Type", "application/json")
-	_, _, _, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
+	_, _, _, _, err := parseDirectPlayRequest(httptest.NewRecorder(), req)
 	if err == nil {
 		t.Fatal("expected error for missing URL and file")
 	}

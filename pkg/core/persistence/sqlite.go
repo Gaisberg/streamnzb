@@ -150,6 +150,131 @@ func openDB(dataDir string) (*sql.DB, error) {
 	return db, nil
 }
 
+const (
+	libraryNZBsSchema = `CREATE TABLE IF NOT EXISTS library_nzbs (
+		id TEXT PRIMARY KEY,
+		content_type TEXT NOT NULL,
+		content_id TEXT NOT NULL,
+		season INTEGER NOT NULL DEFAULT 0,
+		episode INTEGER NOT NULL DEFAULT 0,
+		release_title TEXT NOT NULL,
+		details_url TEXT,
+		indexer_name TEXT,
+		size_bytes INTEGER NOT NULL DEFAULT 0,
+		nzb_data BLOB NOT NULL,
+		created_at INTEGER NOT NULL,
+		last_accessed_at INTEGER NOT NULL,
+		pinned INTEGER NOT NULL DEFAULT 0
+	);`
+	libraryNZBsIndexContent  = `CREATE INDEX IF NOT EXISTS idx_library_nzbs_content ON library_nzbs(content_type, content_id, season, episode);`
+	libraryNZBsIndexAccessed = `CREATE INDEX IF NOT EXISTS idx_library_nzbs_accessed ON library_nzbs(last_accessed_at DESC);`
+
+	libraryBlueprintsSchema = `CREATE TABLE IF NOT EXISTS library_blueprints (
+		nzb_id TEXT PRIMARY KEY,
+		blueprint_json TEXT NOT NULL,
+		media_file_name TEXT NOT NULL,
+		media_file_size INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);`
+
+	badReleasesSchema = `CREATE TABLE IF NOT EXISTS bad_releases (
+		details_url TEXT PRIMARY KEY,
+		release_title TEXT,
+		reason TEXT,
+		reported_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);`
+	badReleasesIndexExpires = `CREATE INDEX IF NOT EXISTS idx_bad_releases_expires ON bad_releases(expires_at);`
+)
+
+// migrateLibraryBlueprintsMediaCaps adds the media capabilities column for existing DBs (no-op if already present).
+func migrateLibraryBlueprintsMediaCaps(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE library_blueprints ADD COLUMN media_caps_json TEXT`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate library_blueprints.media_caps_json: %w", err)
+	}
+	return nil
+}
+
+// migrateLibraryMultiID adds per-scheme content-id columns so a cached release
+// can be found regardless of which id scheme (imdb/tmdb/tvdb/kitsu) a later
+// request carries. Rows written before this migration keep only content_id.
+func migrateLibraryMultiID(db *sql.DB) error {
+	for _, stmt := range []string{
+		`ALTER TABLE library_nzbs ADD COLUMN imdb_id TEXT`,
+		`ALTER TABLE library_nzbs ADD COLUMN tmdb_id TEXT`,
+		`ALTER TABLE library_nzbs ADD COLUMN tvdb_id TEXT`,
+		`ALTER TABLE library_nzbs ADD COLUMN kitsu_id TEXT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate library_nzbs multi-id: %w", err)
+		}
+	}
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_imdb ON library_nzbs(imdb_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tmdb ON library_nzbs(tmdb_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tvdb ON library_nzbs(tvdb_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_kitsu ON library_nzbs(kitsu_id)`,
+	} {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("index library_nzbs multi-id: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateLibraryStatus adds the release status lifecycle columns. Rows written
+// before this migration only ever existed after successful validation, so they
+// default to 'good'; new rows are written 'pending' as soon as the NZB and
+// blueprint are known, then marked 'good'/'bad' once a verdict exists.
+func migrateLibraryStatus(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN status TEXT NOT NULL DEFAULT 'good'`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate library_nzbs.status: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN status_reason TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate library_nzbs.status_reason: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_library_nzbs_status ON library_nzbs(status)`); err != nil {
+		return fmt.Errorf("index library_nzbs.status: %w", err)
+	}
+	return nil
+}
+
+// migrateLibraryLastVerified adds the freshness timestamp used by the background
+// re-verification sweep. Legacy rows get 0 (treated as never verified → stale).
+func migrateLibraryLastVerified(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN last_verified_at INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate library_nzbs.last_verified_at: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_library_nzbs_verified ON library_nzbs(last_verified_at)`); err != nil {
+		return fmt.Errorf("index library_nzbs.last_verified_at: %w", err)
+	}
+	return nil
+}
+
+// migrateLibraryCapColumns promotes key ffprobe capability fields to indexed
+// columns so the library can be filtered/sorted by codec/resolution/HDR in the
+// Library UI and ranking, without parsing media_caps_json. NOT used to gate or
+// reorder by client — codec compatibility is the client decoder's job.
+func migrateLibraryCapColumns(db *sql.DB) error {
+	for _, stmt := range []string{
+		`ALTER TABLE library_blueprints ADD COLUMN video_codec TEXT`,
+		`ALTER TABLE library_blueprints ADD COLUMN height INTEGER`,
+		`ALTER TABLE library_blueprints ADD COLUMN bit_depth INTEGER`,
+		`ALTER TABLE library_blueprints ADD COLUMN hdr TEXT`,
+		`ALTER TABLE library_blueprints ADD COLUMN dolby_vision INTEGER`,
+		`ALTER TABLE library_blueprints ADD COLUMN audio_codec TEXT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate library_blueprints cap columns: %w", err)
+		}
+	}
+	return nil
+}
+
 func initSchema(db *sql.DB) error {
 	for _, stmt := range []string{
 		kvSchema,
@@ -169,6 +294,12 @@ func initSchema(db *sql.DB) error {
 		streamApiSamplesIndexTime,
 		playbackTtffSamplesSchema,
 		playbackTtffSamplesIndexTime,
+		libraryNZBsSchema,
+		libraryNZBsIndexContent,
+		libraryNZBsIndexAccessed,
+		libraryBlueprintsSchema,
+		badReleasesSchema,
+		badReleasesIndexExpires,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("schema: %w", err)
@@ -206,6 +337,21 @@ func initSchema(db *sql.DB) error {
 		return err
 	}
 	if err := migrateNzbAttemptsAvailReason(db); err != nil {
+		return err
+	}
+	if err := migrateLibraryBlueprintsMediaCaps(db); err != nil {
+		return err
+	}
+	if err := migrateLibraryMultiID(db); err != nil {
+		return err
+	}
+	if err := migrateLibraryCapColumns(db); err != nil {
+		return err
+	}
+	if err := migrateLibraryLastVerified(db); err != nil {
+		return err
+	}
+	if err := migrateLibraryStatus(db); err != nil {
 		return err
 	}
 	for _, stmt := range []string{nzbAttemptsIndexStream, nzbAttemptsIndexProvider, nzbAttemptsIndexIndexer} {

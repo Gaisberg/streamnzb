@@ -14,6 +14,24 @@ const (
 	maxSegmentProbeConcurrency = 16
 )
 
+// nzbBytesNearby reports whether two encoded article sizes belong to the same
+// decoded-size class. yEnc encoded size tracks decoded size closely (escape
+// overhead varies only ~1-3% with content), so encoded sizes differing by more
+// than ~3% imply genuinely different decoded payloads that must be probed
+// separately. The previous 10% tolerance merged a release's smaller FINAL
+// segment (668,107 decoded / 686,112 encoded) into the full-segment class
+// (716,800 decoded / ~739,315 encoded, 7.2% apart): the last segment's decoded
+// size was painted across the whole volume, truncating the virtual file by
+// 7.6MB — exactly where the Matroska cues live — so players read 0 bytes at the
+// tail and never started playback.
+func nzbBytesNearby(a, b int64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff*33 < b
+}
+
 func sumNZBSegmentBytes(segments []*Segment) int64 {
 	var sum int64
 	for _, seg := range segments {
@@ -101,11 +119,7 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 		for _, sz := range uniqueSizes {
 			matched := false
 			for _, rep := range representatives {
-				diff := sz - rep
-				if diff < 0 {
-					diff = -diff
-				}
-				if diff*10 < rep {
+				if nzbBytesNearby(sz, rep) {
 					matched = true
 					break
 				}
@@ -122,11 +136,7 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 			}
 			knownNearby := false
 			for knownSz := range knownByNZBBytes {
-				diff := repSz - knownSz
-				if diff < 0 {
-					diff = -diff
-				}
-				if diff*10 < knownSz {
+				if nzbBytesNearby(repSz, knownSz) {
 					knownNearby = true
 					break
 				}
@@ -214,11 +224,7 @@ func buildSegmentDecodedSizesFromProbes(segments []*Segment, probedByIndex map[i
 
 	findNearbyProbedDecoded := func(nzbBytes int64) (int64, bool) {
 		for probedNzb, dec := range decodedByBytes {
-			diff := nzbBytes - probedNzb
-			if diff < 0 {
-				diff = -diff
-			}
-			if diff*10 < probedNzb {
+			if nzbBytesNearby(nzbBytes, probedNzb) {
 				return dec, true
 			}
 		}

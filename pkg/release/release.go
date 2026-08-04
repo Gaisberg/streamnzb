@@ -34,6 +34,7 @@ type Release struct {
 	Size          int64
 	Indexer       string
 	SourceIndexer interface{}
+	IsLibrary     bool
 
 	PubDate     string
 	GUID        string
@@ -43,6 +44,13 @@ type Release struct {
 
 	Available *bool
 	Duration  float64
+}
+
+func (r *Release) IsLibraryResult() bool {
+	if r == nil {
+		return false
+	}
+	return r.IsLibrary
 }
 
 func NormalizeTitleForDedup(s string) string {

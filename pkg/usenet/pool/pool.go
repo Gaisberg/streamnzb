@@ -75,9 +75,21 @@ type Pool struct {
 	articleStats         map[string]*providerArticleCounter
 	consecutive430s      map[string]int
 	consecutiveSuccesses map[string]int
+	cooloffUntil         map[string]time.Time
 	mu                   sync.RWMutex
 	activeFetches        atomic.Int64
 }
+
+const (
+	// providerCooloff430Threshold: consecutive 430s after which a provider enters
+	// a cooloff window — it is skipped in the parallel first-segment race instead
+	// of paying a wasted round-trip on every new volume of a release it does not
+	// carry. getConnection's demote-to-pass-2 behavior is unchanged.
+	providerCooloff430Threshold = 5
+	// providerCooloffDuration: how long the provider is skipped before one probe
+	// attempt is allowed again (which re-arms the cooloff if it 430s again).
+	providerCooloffDuration = 60 * time.Second
+)
 
 type providerArticleCounter struct {
 	host             string
@@ -400,13 +412,25 @@ func (p *Pool) record430Error(providerID string) {
 		p.consecutive430s = make(map[string]int)
 	}
 	p.consecutive430s[providerID]++
+	count := p.consecutive430s[providerID]
 
 	if p.consecutiveSuccesses == nil {
 		p.consecutiveSuccesses = make(map[string]int)
 	}
 	p.consecutiveSuccesses[providerID] = 0
 
-	logger.Debug("provider demotion increment consecutive 430", "provider", providerID, "count", p.consecutive430s[providerID])
+	if count >= providerCooloff430Threshold {
+		if p.cooloffUntil == nil {
+			p.cooloffUntil = make(map[string]time.Time)
+		}
+		until := time.Now().Add(providerCooloffDuration)
+		if until.After(p.cooloffUntil[providerID]) {
+			p.cooloffUntil[providerID] = until
+			logger.Debug("provider 430 cooloff armed", "provider", providerID, "consecutive_430s", count, "duration", providerCooloffDuration)
+		}
+	}
+
+	logger.Trace("provider demotion increment consecutive 430", "provider", providerID, "count", count)
 }
 
 func (p *Pool) recordSuccess(providerID string) {
@@ -426,7 +450,21 @@ func (p *Pool) recordSuccess(providerID string) {
 			logger.Debug("provider demotion reset consecutive 430 after 10 consecutive successes", "provider", providerID)
 			p.consecutive430s[providerID] = 0
 		}
+		if p.cooloffUntil != nil {
+			delete(p.cooloffUntil, providerID)
+		}
 	}
+}
+
+// providerInCooloff reports whether the provider is inside its 430 cooloff window.
+func (p *Pool) providerInCooloff(providerID string) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	until, ok := p.cooloffUntil[providerID]
+	return ok && time.Now().Before(until)
 }
 
 func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
@@ -507,15 +545,32 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		providerIDs[i] = providers[i].ID
 	}
 
+	// Skip providers in 430 cooloff: racing a provider that provably does not
+	// carry this release pays a wasted round-trip on every new volume. If every
+	// provider is cooling off, race them all anyway rather than failing.
+	eligible := make([]int, 0, len(providers))
+	for i := range providers {
+		if p.providerInCooloff(providers[i].ID) {
+			logger.Trace("fetch segment first: skipping provider in 430 cooloff", "provider", providers[i].ID)
+			continue
+		}
+		eligible = append(eligible, i)
+	}
+	if len(eligible) == 0 {
+		for i := range providers {
+			eligible = append(eligible, i)
+		}
+	}
+
 	type segResult struct {
 		data       SegmentData
 		err        error
 		host       string
 		providerID string
 	}
-	ch := make(chan segResult, len(providers))
+	ch := make(chan segResult, len(eligible))
 
-	for i := range providers {
+	for _, i := range eligible {
 		exclude := make([]string, 0, len(providers)-1)
 		for j := range providerIDs {
 			if j != i {
@@ -596,7 +651,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	var attempted []string
 	var articleNotFoundErr error
 	sawNonArticleNotFound := false
-	for range providers {
+	for range eligible {
 		res := <-ch
 		attempted = appendUniqueHosts(attempted, res.host)
 		if res.host != "" {
@@ -702,14 +757,27 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 
 			if len(groups) > 0 {
 				if err := conn.Group(groups[0]); err != nil {
-					logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
+					if nntp.IsBenignDisconnect(err) || fetchCtx.Err() != nil {
+						logger.Trace("fetch segment group cancelled", "provider", providerID, "err", err)
+					} else {
+						logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
+					}
 					return SegmentData{}, false, err
 				}
 			}
 
 			r, err := conn.Body(messageID)
 			if err != nil {
-				logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
+				switch {
+				case isArticleNotFound(err):
+					// 430 per-provider is expected during failover; the aggregated
+					// "missing on all providers" summary is logged once by the caller.
+					logger.Trace("fetch segment body 430", "provider", providerID, "message_id", messageID)
+				case nntp.IsBenignDisconnect(err) || fetchCtx.Err() != nil:
+					logger.Trace("fetch segment body cancelled", "provider", providerID, "err", err)
+				default:
+					logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
+				}
 				return SegmentData{}, isArticleNotFound(err), err
 			}
 
@@ -776,6 +844,8 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		if p.attemptedAllProviderIDs(attemptedIDs) {
 			p.markKnownMissing(messageID)
 		}
+		// One summary line per genuinely-missing segment, instead of one per provider attempt.
+		logger.Debug("fetch segment missing on all providers", "message_id", messageID, "providers", attempted)
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
 	if lastErr != nil {
@@ -856,7 +926,13 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 
 			if len(groups) > 0 {
 				if groupErr := conn.Group(groups[0]); groupErr != nil {
-					logger.Debug("stat segment group failed", "provider", providerID, "err", groupErr)
+					// A sibling STAT winning the race cancels statCtx and discards this
+					// connection mid-command; the resulting error is expected noise.
+					if nntp.IsBenignDisconnect(groupErr) || statCtx.Err() != nil {
+						logger.Trace("stat segment group cancelled", "provider", providerID, "err", groupErr)
+					} else {
+						logger.Debug("stat segment group failed", "provider", providerID, "err", groupErr)
+					}
 					doRelease = false
 					discard()
 					ch <- statResult{err: groupErr, host: host, providerID: providerID}
@@ -865,7 +941,11 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 			}
 			exists, statErr := conn.StatArticle(messageID)
 			if statErr != nil {
-				logger.Debug("stat segment failed", "provider", providerID, "err", statErr)
+				if nntp.IsBenignDisconnect(statErr) || statCtx.Err() != nil {
+					logger.Trace("stat segment cancelled", "provider", providerID, "err", statErr)
+				} else {
+					logger.Debug("stat segment failed", "provider", providerID, "err", statErr)
+				}
 				doRelease = false
 				discard()
 				ch <- statResult{err: statErr, host: host, providerID: providerID}

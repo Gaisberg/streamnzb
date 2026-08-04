@@ -11,3 +11,9 @@ state.json
 streamnzb.db*
 releasepipeline
 .agents
+.claude
+
+# Downloaded ffprobe binaries (populated by `go run ./tools/fetch-ffprobe` at build time)
+/ffprobe
+/ffprobe.exe
+pkg/media/ffprobe/bin/ffprobe-*

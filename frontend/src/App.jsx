@@ -10,6 +10,7 @@ import { StatisticsPage } from "@/components/StatisticsPage"
 import { LogsPage } from "@/components/LogsPage"
 import { FiltersPage } from "@/components/FiltersPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
+import { LibraryPage } from "@/components/LibraryPage"
 import { ProfilePage } from "@/components/ProfilePage"
 import { DirectPlayPage } from "@/components/DirectPlayPage"
 import StreamManagement from '@/components/StreamManagement'
@@ -52,6 +53,8 @@ function App() {
     }
   }, [])
   const [availNZBStatus, setAvailNZBStatus] = useState(null)
+  // Library item handed to Direct Play when the user hits Play in the Library.
+  const [directPlayLibraryItem, setDirectPlayLibraryItem] = useState(null)
   const [availNZBStatusLoading, setAvailNZBStatusLoading] = useState(false)
   const [availNZBStatusError, setAvailNZBStatusError] = useState('')
   const availNZBStatusLoadedRef = useRef(false)
@@ -330,8 +333,19 @@ function App() {
           {activePage === 'nzb-history' && (
             <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />
           )}
+          {activePage === 'library' && (
+            <LibraryPage
+              onPlay={(item) => {
+                setDirectPlayLibraryItem(item)
+                handleNavigate('direct-play')
+              }}
+            />
+          )}
           {activePage === 'direct-play' && (
-            <DirectPlayPage />
+            <DirectPlayPage
+              libraryItem={directPlayLibraryItem}
+              onLibraryItemConsumed={() => setDirectPlayLibraryItem(null)}
+            />
           )}
           {activePage === 'install' && (
             <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
@@ -351,6 +365,7 @@ function App() {
               <FiltersPage
                 config={config}
                 onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
+                onSaveGlobal={(partial) => sendCommand('save_config', partial)}
                 isSaving={isSaving}
                 saveStatus={saveStatus}
               />
