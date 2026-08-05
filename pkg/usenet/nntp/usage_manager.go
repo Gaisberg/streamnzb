@@ -1,10 +1,12 @@
 package nntp
 
 import (
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
-	"sync"
-	"time"
 )
 
 type ProviderUsageData struct {
@@ -13,12 +15,20 @@ type ProviderUsageData struct {
 	AllTimeBytes int64  `json:"all_time_bytes"`
 }
 
+// ProviderUsageManager tracks per-provider download volume in memory and
+// persists it in the background. AddBytes runs on every chunk of the download
+// hot path, so it never touches the database itself — it only marks the state
+// dirty; a flusher goroutine persists at most once per interval, and pool
+// shutdown flushes the final totals via FlushProvider.
 type ProviderUsageManager struct {
-	state         *persistence.StateManager
-	data          map[string]*ProviderUsageData
-	lastPersisted map[string]int64
-	mu            sync.RWMutex
+	state   *persistence.StateManager
+	data    map[string]*ProviderUsageData
+	mu      sync.RWMutex
+	flushMu sync.Mutex // single-flight: one persist at a time
+	dirty   atomic.Bool
 }
+
+const providerUsageFlushInterval = 5 * time.Second
 
 var providerManager *ProviderUsageManager
 var providerManagerMu sync.Mutex
@@ -32,15 +42,14 @@ func GetProviderUsageManager(sm *persistence.StateManager) (*ProviderUsageManage
 	}
 
 	m := &ProviderUsageManager{
-		state:         sm,
-		data:          make(map[string]*ProviderUsageData),
-		lastPersisted: make(map[string]int64),
+		state: sm,
+		data:  make(map[string]*ProviderUsageData),
 	}
 
 	if err := m.load(); err != nil {
 		return nil, err
 	}
-	m.initLastPersisted()
+	go m.flushLoop()
 
 	providerManager = m
 	return m, nil
@@ -71,33 +80,57 @@ func (m *ProviderUsageManager) load() error {
 	return nil
 }
 
-func (m *ProviderUsageManager) initLastPersisted() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for name, d := range m.data {
-		if d != nil {
-			m.lastPersisted[name] = d.TotalBytes
+// flushLoop persists dirty usage data once per interval for the life of the
+// process. Final totals are covered by FlushProvider on pool shutdown.
+func (m *ProviderUsageManager) flushLoop() {
+	ticker := time.NewTicker(providerUsageFlushInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := m.flushIfDirty(); err != nil {
+			logger.Error("Failed to save provider usage data", "err", err)
 		}
 	}
 }
 
+// flushIfDirty persists the current state when something changed since the
+// last successful persist. On failure the dirty flag is restored so the next
+// tick retries.
+func (m *ProviderUsageManager) flushIfDirty() error {
+	m.flushMu.Lock()
+	defer m.flushMu.Unlock()
+	if !m.dirty.Swap(false) {
+		return nil
+	}
+	if err := m.save(); err != nil {
+		m.dirty.Store(true)
+		return err
+	}
+	return nil
+}
+
 func (m *ProviderUsageManager) save() error {
-	return m.state.Set("provider_usage", m.data)
+	m.mu.RLock()
+	snapshot := make(map[string]*ProviderUsageData, len(m.data))
+	for name, d := range m.data {
+		if d == nil {
+			continue
+		}
+		copied := *d
+		snapshot[name] = &copied
+	}
+	m.mu.RUnlock()
+	return m.state.Set("provider_usage", snapshot)
 }
 
 func (m *ProviderUsageManager) GetUsage(name string) *ProviderUsageData {
 	today := time.Now().Format("2006-01-02")
 	m.mu.Lock()
-
 	data, reset := m.ensureUsageLocked(name, today)
 	m.mu.Unlock()
 
 	if reset {
-		if err := m.persistAndUpdateLast(); err != nil {
-			logger.Error("Failed to save reset provider usage data", "name", name, "err", err)
-		}
+		m.dirty.Store(true)
 	}
-
 	return data
 }
 
@@ -107,61 +140,28 @@ func (m *ProviderUsageManager) AddBytes(name string, delta int64) {
 	}
 	today := time.Now().Format("2006-01-02")
 	m.mu.Lock()
-	data, reset := m.ensureUsageLocked(name, today)
+	data, _ := m.ensureUsageLocked(name, today)
 	data.TotalBytes += delta
 	data.AllTimeBytes += delta
-	total := data.TotalBytes
-	last := m.lastPersisted[name]
 	m.mu.Unlock()
 
-	if reset {
-		if err := m.persistAndUpdateLast(); err != nil {
-			logger.Error("Failed to save reset provider usage data", "name", name, "err", err)
-		}
-		return
-	}
-
-	if total-last >= 1024*1024 {
-		if err := m.persistAndUpdateLast(); err != nil {
-			logger.Error("Failed to save provider usage data", "name", name, "err", err)
-		}
-	}
+	m.dirty.Store(true)
 }
 
-func (m *ProviderUsageManager) persistAndUpdateLast() error {
-	if err := m.save(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	for n, d := range m.data {
-		if d != nil {
-			m.lastPersisted[n] = d.TotalBytes
-		}
-	}
-	m.mu.Unlock()
-	return nil
-}
-
+// FlushProvider persists any pending usage immediately. Called on pool
+// shutdown so the final totals survive the process exiting between ticks.
 func (m *ProviderUsageManager) FlushProvider(name string) {
-	m.mu.Lock()
 	today := time.Now().Format("2006-01-02")
-	data, ok := m.data[name]
-	reset := false
-	if ok && data != nil {
-		reset = m.resetIfNeededLocked(data, today)
+	m.mu.Lock()
+	if data, ok := m.data[name]; ok && data != nil {
+		if m.resetIfNeededLocked(data, today) {
+			m.dirty.Store(true)
+		}
 	}
-	if data == nil {
-		m.mu.Unlock()
-		return
-	}
-	total := data.TotalBytes
-	last := m.lastPersisted[name]
 	m.mu.Unlock()
 
-	if reset || total > last {
-		if err := m.persistAndUpdateLast(); err != nil {
-			logger.Error("Failed to flush provider usage data", "name", name, "err", err)
-		}
+	if err := m.flushIfDirty(); err != nil {
+		logger.Error("Failed to flush provider usage data", "name", name, "err", err)
 	}
 }
 
@@ -178,14 +178,14 @@ func (m *ProviderUsageManager) SyncUsage(activeNames []string) {
 		if !activeMap[name] {
 			logger.Info("Removing orphaned usage data for provider", "name", name)
 			delete(m.data, name)
-			delete(m.lastPersisted, name)
 			changed = true
 		}
 	}
 	m.mu.Unlock()
 
 	if changed {
-		if err := m.save(); err != nil {
+		m.dirty.Store(true)
+		if err := m.flushIfDirty(); err != nil {
 			logger.Error("Failed to save provider usage data after sync", "err", err)
 		}
 	}

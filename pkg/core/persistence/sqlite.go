@@ -132,22 +132,47 @@ const (
 	playbackTtffSamplesIndexTime = `CREATE INDEX IF NOT EXISTS idx_playback_ttff_samples_timestamp ON playback_ttff_samples(timestamp DESC);`
 )
 
-func openDB(dataDir string) (*sql.DB, error) {
+// sqliteDSN appends the per-connection pragmas every handle on a StreamNZB
+// database must carry (the modernc driver executes each _pragma on every new
+// connection, busy_timeout first).
+func sqliteDSN(dbPath string) string {
+	return dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+}
+
+// openDB opens the shared read pool and a dedicated single-connection write
+// handle on the same database file. Routing every write through the
+// single-connection handle makes writers queue in-process instead of colliding
+// inside SQLite; busy_timeout covers the remaining cross-handle overlap (a
+// write committing while the read pool holds a checkpoint, startup migrations)
+// by waiting instead of failing SQLITE_BUSY. Both pragmas ride the DSN because
+// busy_timeout is per-connection — a plain db.Exec would only reach one pooled
+// connection.
+func openDB(dataDir string) (db, wdb *sql.DB, err error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	dbPath := filepath.Join(dataDir, dbFilename)
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := sqliteDSN(dbPath)
+	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)
+		return nil, nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)
 	}
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	// Enable WAL for better concurrent read/write.
-	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
-	return db, nil
+	wdb, err = sql.Open("sqlite", dsn)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("open sqlite writer %s: %w", dbPath, err)
+	}
+	wdb.SetMaxOpenConns(1)
+	if err := wdb.Ping(); err != nil {
+		db.Close()
+		wdb.Close()
+		return nil, nil, err
+	}
+	return db, wdb, nil
 }
 
 const (

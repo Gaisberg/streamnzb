@@ -15,7 +15,8 @@ import (
 const saveDebounceInterval = 2 * time.Second
 
 type StateManager struct {
-	db              *sql.DB
+	db              *sql.DB // shared read pool
+	wdb             *sql.DB // single-connection write handle; all writes go here
 	libraryStore    *LibraryStore
 	badReleaseStore *BadReleaseStore
 	mu              sync.RWMutex
@@ -34,24 +35,29 @@ func GetManager(dataDir string) (*StateManager, error) {
 		return globalManager, nil
 	}
 
-	db, err := openDB(dataDir)
+	db, wdb, err := openDB(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	if err := initSchema(db); err != nil {
+	closeBoth := func() {
 		db.Close()
+		wdb.Close()
+	}
+	if err := initSchema(wdb); err != nil {
+		closeBoth()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	if err := migrateFromStateJSON(db, dataDir); err != nil {
-		db.Close()
+	if err := migrateFromStateJSON(wdb, dataDir); err != nil {
+		closeBoth()
 		return nil, fmt.Errorf("migrate state: %w", err)
 	}
-	mergeMisplacedDatabases(db, dataDir)
+	mergeMisplacedDatabases(wdb, dataDir)
 
 	m := &StateManager{
 		db:              db,
-		libraryStore:    NewLibraryStore(db),
-		badReleaseStore: NewBadReleaseStore(db),
+		wdb:             wdb,
+		libraryStore:    NewLibraryStore(db, wdb),
+		badReleaseStore: NewBadReleaseStore(db, wdb),
 	}
 	globalManager = m
 	return m, nil
@@ -126,7 +132,9 @@ func misplacedDatabasePaths(dataDir string) []string {
 }
 
 func mergeDatabaseFile(target *sql.DB, sourcePath string) (int64, int64, error) {
-	source, err := sql.Open("sqlite", sourcePath)
+	// The stray database may belong to a still-running instance; busy_timeout
+	// keeps the merge from failing on a transient lock.
+	source, err := sql.Open("sqlite", sqliteDSN(sourcePath))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -359,7 +367,7 @@ func (m *StateManager) Get(key string, target interface{}) (bool, error) {
 func (m *StateManager) withWriteLock(fn func(*sql.DB) error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return fn(m.db)
+	return fn(m.wdb)
 }
 
 func (m *StateManager) Set(key string, value interface{}) error {
@@ -435,6 +443,12 @@ func (m *StateManager) Close() error {
 	if m.db != nil {
 		err = m.db.Close()
 		m.db = nil
+	}
+	if m.wdb != nil {
+		if werr := m.wdb.Close(); err == nil {
+			err = werr
+		}
+		m.wdb = nil
 	}
 
 	if globalManager == m {

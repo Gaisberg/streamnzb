@@ -15,12 +15,13 @@ import (
 // Entries carry a TTL so a release is eventually retried (articles can be
 // reposted, and a rare false positive must not blacklist a release forever).
 type BadReleaseStore struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db  *sql.DB // shared read pool
+	wdb *sql.DB // single-connection write handle
+	mu  sync.RWMutex
 }
 
-func NewBadReleaseStore(db *sql.DB) *BadReleaseStore {
-	return &BadReleaseStore{db: db}
+func NewBadReleaseStore(db, wdb *sql.DB) *BadReleaseStore {
+	return &BadReleaseStore{db: db, wdb: wdb}
 }
 
 // MarkBad records (or refreshes) a bad verdict for detailsURL with the given TTL.
@@ -32,7 +33,7 @@ func (bs *BadReleaseStore) MarkBad(detailsURL, releaseTitle, reason string, ttl 
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	now := time.Now()
-	_, _ = bs.db.Exec(`
+	_, _ = bs.wdb.Exec(`
 		INSERT INTO bad_releases (details_url, release_title, reason, reported_at, expires_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(details_url) DO UPDATE SET
@@ -94,7 +95,7 @@ func (bs *BadReleaseStore) Forget(detailsURL string) {
 	}
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	_, _ = bs.db.Exec(`DELETE FROM bad_releases WHERE details_url = ?`, detailsURL)
+	_, _ = bs.wdb.Exec(`DELETE FROM bad_releases WHERE details_url = ?`, detailsURL)
 }
 
 // PurgeExpired drops verdicts past their TTL; safe to call opportunistically.
@@ -104,5 +105,5 @@ func (bs *BadReleaseStore) PurgeExpired() {
 	}
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	_, _ = bs.db.Exec(`DELETE FROM bad_releases WHERE expires_at <= ?`, time.Now().Unix())
+	_, _ = bs.wdb.Exec(`DELETE FROM bad_releases WHERE expires_at <= ?`, time.Now().Unix())
 }

@@ -42,9 +42,8 @@ func testProviderUsageState(t *testing.T) *persistence.StateManager {
 func newTestProviderUsageManager(t *testing.T) *ProviderUsageManager {
 	t.Helper()
 	return &ProviderUsageManager{
-		state:         testProviderUsageState(t),
-		data:          make(map[string]*ProviderUsageData),
-		lastPersisted: make(map[string]int64),
+		state: testProviderUsageState(t),
+		data:  make(map[string]*ProviderUsageData),
 	}
 }
 
@@ -90,7 +89,6 @@ func TestAddBytesAfterRolloverStartsNewDailyCount(t *testing.T) {
 		TotalBytes:   8,
 		AllTimeBytes: 100,
 	}
-	um.lastPersisted[name] = 8
 
 	um.AddBytes(name, 3)
 	got := um.GetUsage(name)

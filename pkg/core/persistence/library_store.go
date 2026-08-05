@@ -73,12 +73,13 @@ type LibraryStats struct {
 }
 
 type LibraryStore struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db  *sql.DB // shared read pool
+	wdb *sql.DB // single-connection write handle
+	mu  sync.RWMutex
 }
 
-func NewLibraryStore(db *sql.DB) *LibraryStore {
-	return &LibraryStore{db: db}
+func NewLibraryStore(db, wdb *sql.DB) *LibraryStore {
+	return &LibraryStore{db: db, wdb: wdb}
 }
 
 func compressNZB(data []byte) ([]byte, error) {
@@ -147,7 +148,7 @@ func (ls *LibraryStore) StoreItem(item *LibraryItem) error {
 		return fmt.Errorf("compress nzb data: %w", err)
 	}
 
-	tx, err := ls.db.Begin()
+	tx, err := ls.wdb.Begin()
 	if err != nil {
 		return err
 	}
@@ -412,10 +413,10 @@ func (ls *LibraryStore) markStatusWhere(where, status, reason string, matchArg a
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	if status == LibraryStatusGood {
-		_, _ = ls.db.Exec(`UPDATE library_nzbs SET status = ?, status_reason = ?, last_verified_at = ? WHERE `+where, status, reason, time.Now().Unix(), matchArg)
+		_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET status = ?, status_reason = ?, last_verified_at = ? WHERE `+where, status, reason, time.Now().Unix(), matchArg)
 		return
 	}
-	_, _ = ls.db.Exec(`UPDATE library_nzbs SET status = ?, status_reason = ? WHERE `+where, status, reason, matchArg)
+	_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET status = ?, status_reason = ? WHERE `+where, status, reason, matchArg)
 }
 
 // MarkStatus sets the status verdict (good/bad/pending) with a reason on one item.
@@ -481,7 +482,7 @@ func (ls *LibraryStore) MarkVerified(id string, t time.Time) {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	_, _ = ls.db.Exec(`UPDATE library_nzbs SET last_verified_at = ? WHERE id = ?`, t.Unix(), id)
+	_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET last_verified_at = ? WHERE id = ?`, t.Unix(), id)
 }
 
 func (ls *LibraryStore) TouchItem(id string) {
@@ -490,7 +491,7 @@ func (ls *LibraryStore) TouchItem(id string) {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	_, _ = ls.db.Exec(`UPDATE library_nzbs SET last_accessed_at = ? WHERE id = ?`, time.Now().Unix(), id)
+	_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET last_accessed_at = ? WHERE id = ?`, time.Now().Unix(), id)
 }
 
 func (ls *LibraryStore) GetFilteredItems(search, contentType string, pinnedOnly bool, statusFilter string, offset, limit int) ([]*LibraryItem, int, error) {
@@ -623,7 +624,7 @@ func (ls *LibraryStore) SetPinned(id string, pinned bool) error {
 	if pinned {
 		pinnedInt = 1
 	}
-	_, err := ls.db.Exec(`UPDATE library_nzbs SET pinned = ? WHERE id = ?`, pinnedInt, id)
+	_, err := ls.wdb.Exec(`UPDATE library_nzbs SET pinned = ? WHERE id = ?`, pinnedInt, id)
 	return err
 }
 
@@ -633,8 +634,8 @@ func (ls *LibraryStore) DeleteItem(id string) error {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	_, _ = ls.db.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-	_, err := ls.db.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
+	_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
+	_, err := ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
 	return err
 }
 
@@ -658,8 +659,8 @@ func (ls *LibraryStore) DeleteByDetailsURL(detailsURL string) error {
 		rows.Close()
 	}
 	for _, id := range ids {
-		_, _ = ls.db.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-		_, _ = ls.db.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
 	}
 	return nil
 }
@@ -684,8 +685,8 @@ func (ls *LibraryStore) DeleteByTitle(title string) error {
 		rows.Close()
 	}
 	for _, id := range ids {
-		_, _ = ls.db.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-		_, _ = ls.db.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
 	}
 	return nil
 }
@@ -784,7 +785,7 @@ func (ls *LibraryStore) oldestNonPinnedIDsLocked(n int) []string {
 // blueprint rows). The caller must hold ls.mu.
 func (ls *LibraryStore) deleteItemsLocked(ids []string) {
 	for _, id := range ids {
-		_, _ = ls.db.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-		_, _ = ls.db.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
+		_, _ = ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
 	}
 }
