@@ -1,0 +1,444 @@
+package stremio
+
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"text/template"
+	"time"
+
+	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/triage"
+)
+
+// FormatContext is the data one result exposes to custom name/description
+// templates. Fields mirror what the built-in format has access to: the release
+// as returned by the indexer, jhin's parse of its title, the final score, and
+// the request context. Library-only extras (Caps) are empty for fresh indexer
+// hits because their real media properties are unknown until playback.
+type FormatContext struct {
+	Service      string   // "StreamNZB"
+	Stream       string   // stream config name, e.g. "Standalone"
+	Content      string   // requested title, e.g. "Ted Lasso"
+	ReleaseTitle string   // full release name
+	Index        int      // 1-based position in the result list
+	Count        int      // total results in the list
+	Score        int      // final ranking score (library bonus included)
+	Avail        bool     // AvailNZB-verified available
+	Library      bool     // served from the local release library
+	Size         int64    // bytes
+	Indexer      string   // indexer display name
+	Grabs        int      // indexer-reported grab count
+	Age          string   // humanized age from pub date, e.g. "2y", "37d"
+	Languages    []string // parsed language codes
+	Caps         string   // ffprobe-verified caps summary (library releases only)
+
+	ParsedTitle string // content title as parsed out of the release name
+	Resolution  string
+	Quality     string
+	Codec       string
+	BitDepth    string
+	Bitrate     string
+	Container   string
+	Extension   string
+	Group       string
+	Edition     string
+	Network     string
+	Site        string
+	Country     string
+	Region      string
+	Date        string
+	Year        int
+	Audio       []string
+	Channels    []string
+	HDR         []string
+	Proper      bool
+	Repack      bool
+	Remastered  bool
+	Upscaled    bool
+	ThreeD      bool
+	Scene       bool
+	Retail      bool
+	Hardcoded   bool
+	Dubbed      bool
+	Subbed      bool
+	Commentary  bool
+	Complete    bool
+	Documentary bool
+	Unrated     bool
+	Uncensored  bool
+	PPV         bool
+	Season      int
+	Episode     int
+	Seasons     []int
+	Episodes    []int
+	EpisodeCode string
+	Volumes     []int
+}
+
+var formatTemplateFuncs = template.FuncMap{
+	"size":    humanSize,
+	"score":   formatScoreSigned,
+	"join":    strings.Join,
+	"upper":   strings.ToUpper,
+	"lower":   strings.ToLower,
+	"trim":    strings.TrimSpace,
+	"replace": strings.ReplaceAll,
+	// default renders val, or def when val is empty. Pipeline-friendly:
+	// {{.Group | default "unknown"}}.
+	"default": func(def, val string) string {
+		if strings.TrimSpace(val) == "" {
+			return def
+		}
+		return val
+	},
+}
+
+func humanSize(size int64) string {
+	if size <= 0 {
+		return ""
+	}
+	if gb := float64(size) / 1e9; gb >= 1 {
+		return fmt.Sprintf("%.2f GB", gb)
+	}
+	return fmt.Sprintf("%.0f MB", float64(size)/1e6)
+}
+
+func formatScoreSigned(score int) string {
+	if score > 0 {
+		return fmt.Sprintf("+%d", score)
+	}
+	return fmt.Sprintf("%d", score)
+}
+
+// humanAge renders how long ago a newznab pubDate was, or "" when unparseable.
+func humanAge(pubDate string) string {
+	pubDate = strings.TrimSpace(pubDate)
+	if pubDate == "" {
+		return ""
+	}
+	var parsed time.Time
+	for _, layout := range []string{time.RFC1123Z, time.RFC1123, time.RFC3339, time.RFC822Z, time.RFC822} {
+		if t, err := time.Parse(layout, pubDate); err == nil {
+			parsed = t
+			break
+		}
+	}
+	if parsed.IsZero() {
+		return ""
+	}
+	age := time.Since(parsed)
+	switch {
+	case age < 0:
+		return ""
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age.Hours()))
+	case age < 365*24*time.Hour:
+		return fmt.Sprintf("%dd", int(age.Hours()/24))
+	default:
+		return fmt.Sprintf("%.1fy", age.Hours()/(365*24))
+	}
+}
+
+func newFormatContext(cand triage.Candidate, index, count int, streamID, contentTitle, caps string, avail bool) FormatContext {
+	ctx := FormatContext{
+		Service: "StreamNZB",
+		Stream:  streamID,
+		Content: contentTitle,
+		Index:   index,
+		Count:   count,
+		Score:   cand.Score,
+		Avail:   avail,
+		Caps:    caps,
+	}
+	rel := cand.Release
+	if rel != nil {
+		ctx.ReleaseTitle = rel.Title
+		ctx.Library = rel.IsLibraryResult()
+		ctx.Size = rel.Size
+		ctx.Indexer = indexerNameFromRelease(rel)
+		ctx.Grabs = rel.Grabs
+		ctx.Age = humanAge(rel.PubDate)
+		ctx.Languages = rel.Languages
+	}
+	meta := cand.Metadata
+	if meta == nil && rel != nil {
+		meta = parser.ParseReleaseTitle(rel.Title)
+	}
+	if meta != nil {
+		ctx.ParsedTitle = meta.Title
+		ctx.Resolution = meta.Resolution
+		ctx.Quality = meta.Quality
+		ctx.Codec = meta.Codec
+		ctx.BitDepth = meta.BitDepth
+		ctx.Bitrate = meta.Bitrate
+		ctx.Container = meta.Container
+		ctx.Extension = meta.Extension
+		ctx.Group = meta.Group
+		ctx.Edition = meta.Edition
+		ctx.Network = meta.Network
+		ctx.Site = meta.Site
+		ctx.Country = meta.Country
+		ctx.Region = meta.Region
+		ctx.Date = meta.Date
+		ctx.Year = meta.Year
+		ctx.Audio = meta.Audio
+		ctx.Channels = meta.Channels
+		ctx.HDR = meta.HDR
+		ctx.Proper = meta.Proper
+		ctx.Repack = meta.Repack
+		ctx.Remastered = meta.Remastered
+		ctx.Upscaled = meta.Upscaled
+		ctx.ThreeD = meta.ThreeD
+		ctx.Scene = meta.Scene
+		ctx.Retail = meta.Retail
+		ctx.Hardcoded = meta.Hardcoded
+		ctx.Dubbed = meta.Dubbed
+		ctx.Subbed = meta.Subbed
+		ctx.Commentary = meta.Commentary
+		ctx.Complete = meta.Complete
+		ctx.Documentary = meta.Documentary
+		ctx.Unrated = meta.Unrated
+		ctx.Uncensored = meta.Uncensored
+		ctx.PPV = meta.PPV
+		ctx.Season = meta.Season
+		ctx.Episode = meta.Episode
+		ctx.Seasons = meta.Seasons
+		ctx.Episodes = meta.Episodes
+		ctx.EpisodeCode = meta.EpisodeCode
+		ctx.Volumes = meta.Volumes
+		if len(meta.Languages) > 0 {
+			ctx.Languages = meta.Languages
+		}
+	}
+	return ctx
+}
+
+// resultFormat holds the compiled custom templates for one response. A nil
+// *resultFormat (or a nil template inside) means the built-in format applies.
+type resultFormat struct {
+	name        *template.Template
+	description *template.Template
+}
+
+type cachedFormatTemplate struct {
+	tpl *template.Template
+	err error
+}
+
+// formatTemplateCache holds compiled config templates keyed by their text. The
+// config only ever contributes a handful of distinct texts, so the map stays
+// tiny; preview compiles bypass it (arbitrary user input while typing).
+var formatTemplateCache sync.Map
+
+func compileFormatTemplate(text string) (*template.Template, error) {
+	if v, ok := formatTemplateCache.Load(text); ok {
+		cached := v.(*cachedFormatTemplate)
+		return cached.tpl, cached.err
+	}
+	tpl, err := template.New("format").Funcs(formatTemplateFuncs).Parse(text)
+	if err != nil {
+		tpl = nil
+	}
+	formatTemplateCache.Store(text, &cachedFormatTemplate{tpl: tpl, err: err})
+	return tpl, err
+}
+
+// resultFormatForStream resolves the custom templates configured on one stream
+// config, or nil when none are set (or none compile) so callers keep the
+// built-in format.
+func resultFormatForStream(stream *auth.Stream) *resultFormat {
+	if stream == nil {
+		return nil
+	}
+	nameText := strings.TrimSpace(stream.ResultNameTemplate)
+	descText := strings.TrimSpace(stream.ResultDescriptionTemplate)
+	if nameText == "" && descText == "" {
+		return nil
+	}
+	rf := &resultFormat{}
+	if nameText != "" {
+		if tpl, err := compileFormatTemplate(nameText); err == nil {
+			rf.name = tpl
+		} else {
+			logger.Debug("Result name template invalid, using built-in format", "err", err)
+		}
+	}
+	if descText != "" {
+		if tpl, err := compileFormatTemplate(descText); err == nil {
+			rf.description = tpl
+		} else {
+			logger.Debug("Result description template invalid, using built-in format", "err", err)
+		}
+	}
+	if rf.name == nil && rf.description == nil {
+		return nil
+	}
+	return rf
+}
+
+// maxFormattedResultRunes caps template output so a runaway template cannot
+// bloat stream responses.
+const maxFormattedResultRunes = 1000
+
+// renderResultTemplate executes tpl over ctx. Any failure — nil template,
+// execution error, empty output — falls back to the built-in string so a bad
+// template can never break stream responses.
+func renderResultTemplate(tpl *template.Template, ctx FormatContext, fallback string) string {
+	if tpl == nil {
+		return fallback
+	}
+	var b strings.Builder
+	if err := tpl.Execute(&b, ctx); err != nil {
+		logger.Debug("Result template execution failed, using built-in format", "err", err)
+		return fallback
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return fallback
+	}
+	if runes := []rune(out); len(runes) > maxFormattedResultRunes {
+		out = string(runes[:maxFormattedResultRunes])
+	}
+	return out
+}
+
+// ValidateResultTemplates reports whether the supplied template texts compile.
+// Empty texts are valid (they mean the built-in format). Used by the save
+// paths so a stream config can never persist templates that would silently
+// fall back at render time.
+func ValidateResultTemplates(nameText, descText string) error {
+	if text := strings.TrimSpace(nameText); text != "" {
+		if _, err := template.New("name").Funcs(formatTemplateFuncs).Parse(text); err != nil {
+			return fmt.Errorf("result name template: %w", err)
+		}
+	}
+	if text := strings.TrimSpace(descText); text != "" {
+		if _, err := template.New("description").Funcs(formatTemplateFuncs).Parse(text); err != nil {
+			return fmt.Errorf("result description template: %w", err)
+		}
+	}
+	return nil
+}
+
+// --- Preview ---
+
+type FormatPreviewSample struct {
+	Label       string `json:"label"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type FormatPreviewResult struct {
+	Samples          []FormatPreviewSample `json:"samples"`
+	NameError        string                `json:"name_error,omitempty"`
+	DescriptionError string                `json:"description_error,omitempty"`
+}
+
+type formatPreviewFixture struct {
+	label   string
+	content string
+	title   string
+	indexer string
+	size    int64
+	grabs   int
+	pubDate string
+	score   int
+	avail   bool
+	library bool
+	caps    string
+}
+
+func formatPreviewFixtures() []formatPreviewFixture {
+	return []formatPreviewFixture{
+		{
+			label:   "4K movie · fresh indexer hit",
+			content: "Dune: Part Two",
+			title:   "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR10.HEVC.DDP5.1.Atmos-FLUX",
+			indexer: "DrunkenSlug",
+			size:    24_800_000_000,
+			grabs:   154,
+			pubDate: time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:   4200,
+		},
+		{
+			label:   "1080p episode · AvailNZB verified",
+			content: "Ted Lasso",
+			title:   "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
+			indexer: "altHUB",
+			size:    1_832_627_684,
+			grabs:   37,
+			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:   2850,
+			avail:   true,
+		},
+		{
+			label:   "Library hit · ffprobe verified",
+			content: "Ted Lasso",
+			title:   "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
+			indexer: "StreamNZB Library - altHUB",
+			size:    1_775_983_877,
+			grabs:   37,
+			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:   3350,
+			avail:   true,
+			library: true,
+			caps:    "hevc Main 10 1080p 10-bit",
+		},
+	}
+}
+
+// RenderFormatPreview compiles the supplied templates and renders them over
+// canned sample results, exactly as the live stream path would. Empty template
+// text (or one that fails to compile) previews the built-in format instead, so
+// the preview always shows what a client would actually receive.
+func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
+	res := &FormatPreviewResult{}
+	var nameTpl, descTpl *template.Template
+	if text := strings.TrimSpace(nameText); text != "" {
+		tpl, err := template.New("name").Funcs(formatTemplateFuncs).Parse(text)
+		if err != nil {
+			res.NameError = err.Error()
+		} else {
+			nameTpl = tpl
+		}
+	}
+	if text := strings.TrimSpace(descText); text != "" {
+		tpl, err := template.New("description").Funcs(formatTemplateFuncs).Parse(text)
+		if err != nil {
+			res.DescriptionError = err.Error()
+		} else {
+			descTpl = tpl
+		}
+	}
+
+	fixtures := formatPreviewFixtures()
+	for i, fx := range fixtures {
+		rel := &release.Release{
+			Title:     fx.title,
+			Size:      fx.size,
+			Indexer:   fx.indexer,
+			IsLibrary: fx.library,
+			PubDate:   fx.pubDate,
+			Grabs:     fx.grabs,
+		}
+		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
+		ctx := newFormatContext(cand, i+1, len(fixtures), "Standalone", fx.content, fx.caps, fx.avail)
+
+		builtinName := "StreamNZB\nStandalone"
+		if fx.avail {
+			builtinName = "⚡ " + builtinName
+		}
+		builtinDesc := buildAIOStreamDescription(fx.content, fx.title, ctx.Indexer, fx.score, true, fx.caps)
+
+		res.Samples = append(res.Samples, FormatPreviewSample{
+			Label:       fx.label,
+			Name:        renderResultTemplate(nameTpl, ctx, builtinName),
+			Description: renderResultTemplate(descTpl, ctx, builtinDesc),
+		})
+	}
+	return res
+}
