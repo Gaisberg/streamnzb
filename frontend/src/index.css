@@ -86,6 +86,36 @@
     @apply bg-background text-foreground;
     font-family: 'Inter', sans-serif;
   }
+
+  /* Sleek scrollbars everywhere. WebKit browsers get a slim rounded thumb on
+     an invisible track; the transparent border + content-box clip pads the
+     thumb away from the edge. Firefox (no ::-webkit-scrollbar support) gets
+     the standard thin scrollbar tinted to match. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.25);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.45);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+    }
+  }
 }
 
 @layer utilities {

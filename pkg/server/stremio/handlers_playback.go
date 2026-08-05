@@ -301,7 +301,13 @@ func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stre
 		return nil, nil, err
 	}
 	showAll := streamResultsMode(stream) == "display_all"
-	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), baseURL, showAll), list, nil
+	// Custom formatting applies to plain Stremio responses only: AIOStreams
+	// re-parses descriptions on its side, so its format stays fixed.
+	var format *resultFormat
+	if list != nil && !list.IsAIOStreams {
+		format = resultFormatForStream(stream)
+	}
+	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), baseURL, showAll, format), list, nil
 }
 
 // streamDisplayName is the label clients render next to each result. The

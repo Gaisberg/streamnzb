@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { ResultFormatEditor } from "@/components/ResultFormatEditor"
 import { apiFetch } from "@/api"
 import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clipboard, Copy, Globe, GripVertical, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2 } from "lucide-react"
 
@@ -66,6 +67,8 @@ function normalizeStreamDraft(draft) {
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
     filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
+    result_name_template: draft?.result_name_template || '',
+    result_description_template: draft?.result_description_template || '',
   }
 }
 
@@ -87,6 +90,8 @@ function buildStreamDraft(stream) {
     series_search_queries: stream?.series_search_queries || [],
     filter_profile_name: stream?.filter_profile_name || '',
     filter_profile_by_type: stream?.filter_profile_by_type || {},
+    result_name_template: stream?.result_name_template || '',
+    result_description_template: stream?.result_description_template || '',
   })
 }
 
@@ -116,6 +121,8 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     series_search_queries: draft.series_search_queries || [],
     filter_profile_name: draft.filter_profile_name || '',
     filter_profile_by_type: draft.filter_profile_by_type || {},
+    result_name_template: draft.result_name_template || '',
+    result_description_template: draft.result_description_template || '',
   }
 }
 
@@ -362,6 +369,7 @@ const STREAM_DIALOG_TABS = [
   { id: 'indexers', label: 'Indexers' },
   { id: 'movie', label: 'Movie' },
   { id: 'tv', label: 'TV' },
+  { id: 'formatting', label: 'Formatting' },
 ]
 
 function defaultStreamName(index) {
@@ -411,6 +419,7 @@ function StreamDialog({
   const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
   const [saveError, setSaveError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
+  const [formatErrors, setFormatErrors] = useState(null)
   const [activeTab, setActiveTab] = useState('general')
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [wasOpen, setWasOpen] = useState(open)
@@ -422,6 +431,7 @@ function StreamDialog({
       setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
       setSaveError('')
       setFieldErrors({})
+      setFormatErrors(null)
       setActiveTab('general')
       setLastDialogIdentity(dialogIdentity)
     }
@@ -479,6 +489,9 @@ function StreamDialog({
     if (next.series_search_queries.length === 0) {
       nextFieldErrors.series_search_queries = 'Add at least one TV search request.'
     }
+    if (formatErrors && (formatErrors.name || formatErrors.description)) {
+      nextFieldErrors.formatting = 'Fix the result template syntax errors in the Formatting tab.'
+    }
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors)
       setSaveError(
@@ -487,6 +500,7 @@ function StreamDialog({
           nextFieldErrors.indexers ||
           nextFieldErrors.movie_search_queries ||
           nextFieldErrors.series_search_queries ||
+          nextFieldErrors.formatting ||
           'Please review the highlighted fields.'
       )
       return
@@ -821,6 +835,16 @@ function StreamDialog({
             />
           )}
 
+          {activeTab === 'formatting' && (
+            <ResultFormatEditor
+              nameTemplate={draft.result_name_template}
+              descriptionTemplate={draft.result_description_template}
+              onNameChange={(value) => setDraft((current) => ({ ...current, result_name_template: value }))}
+              onDescriptionChange={(value) => setDraft((current) => ({ ...current, result_description_template: value }))}
+              onErrorsChange={setFormatErrors}
+            />
+          )}
+
         </div>
 
         <DialogFooter className="flex items-center justify-between gap-3">
@@ -1000,6 +1024,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         series_search_queries: draft.series_search_queries || [],
         filter_profile_name: draft.filter_profile_name || '',
         filter_profile_by_type: draft.filter_profile_by_type || {},
+        result_name_template: draft.result_name_template || '',
+        result_description_template: draft.result_description_template || '',
       },
     }
     await apiFetch('/api/streams/configs', {

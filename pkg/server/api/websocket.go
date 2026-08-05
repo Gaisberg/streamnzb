@@ -414,23 +414,25 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 	}
 
 	var streamConfigs map[string]struct {
-		FilterSortingMode   string                                `json:"filter_sorting_mode"`
-		IndexerMode         string                                `json:"indexer_mode"`
-		UseAvailNZB         *bool                                 `json:"use_availnzb"`
-		FilterAvailNZB      *bool                                 `json:"filter_availnzb"`
-		CombineResults      *bool                                 `json:"combine_results"`
-		EnableFailover      *bool                                 `json:"enable_failover"`
-		ResultsMode         string                                `json:"results_mode"`
-		AutoAddProviders    *bool                                 `json:"auto_add_providers"`
-		AutoAddIndexers     *bool                                 `json:"auto_add_indexers"`
-		IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
-		ProviderSelections  []string                              `json:"provider_selections"`
-		IndexerSelections   []string                              `json:"indexer_selections"`
-		MovieSearchQueries  []string                              `json:"movie_search_queries"`
-		SeriesSearchQueries []string                              `json:"series_search_queries"`
-		FilterProfileName   string                                `json:"filter_profile_name"`
-		FilterProfileByType map[string]string                     `json:"filter_profile_by_type"`
-		MuteErrorVideo      *bool                                 `json:"mute_error_video"`
+		FilterSortingMode         string                                `json:"filter_sorting_mode"`
+		IndexerMode               string                                `json:"indexer_mode"`
+		UseAvailNZB               *bool                                 `json:"use_availnzb"`
+		FilterAvailNZB            *bool                                 `json:"filter_availnzb"`
+		CombineResults            *bool                                 `json:"combine_results"`
+		EnableFailover            *bool                                 `json:"enable_failover"`
+		ResultsMode               string                                `json:"results_mode"`
+		AutoAddProviders          *bool                                 `json:"auto_add_providers"`
+		AutoAddIndexers           *bool                                 `json:"auto_add_indexers"`
+		IndexerOverrides          map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+		ProviderSelections        []string                              `json:"provider_selections"`
+		IndexerSelections         []string                              `json:"indexer_selections"`
+		MovieSearchQueries        []string                              `json:"movie_search_queries"`
+		SeriesSearchQueries       []string                              `json:"series_search_queries"`
+		FilterProfileName         string                                `json:"filter_profile_name"`
+		FilterProfileByType       map[string]string                     `json:"filter_profile_by_type"`
+		MuteErrorVideo            *bool                                 `json:"mute_error_video"`
+		ResultNameTemplate        string                                `json:"result_name_template"`
+		ResultDescriptionTemplate string                                `json:"result_description_template"`
 	}
 	if err := json.Unmarshal(payload, &streamConfigs); err != nil {
 		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Invalid stream config data"}`)})
@@ -452,24 +454,30 @@ func (s *Server) handleSaveStreamConfigsWS(conn *websocket.Conn, client *Client,
 			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
 			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
 		}
+		if err := stremio.ValidateResultTemplates(streamConfig.ResultNameTemplate, streamConfig.ResultDescriptionTemplate); err != nil {
+			errors = append(errors, fmt.Sprintf("Invalid result format for %s: %v", username, err))
+			continue
+		}
 		if err := s.streamManager.UpdateStreamConfig(username, &auth.Stream{
-			FilterSortingMode:   streamConfig.FilterSortingMode,
-			IndexerMode:         streamConfig.IndexerMode,
-			UseAvailNZB:         streamConfig.UseAvailNZB,
-			FilterAvailNZB:      streamConfig.FilterAvailNZB,
-			CombineResults:      streamConfig.CombineResults,
-			EnableFailover:      streamConfig.EnableFailover,
-			ResultsMode:         streamConfig.ResultsMode,
-			AutoAddProviders:    streamConfig.AutoAddProviders,
-			AutoAddIndexers:     streamConfig.AutoAddIndexers,
-			IndexerOverrides:    indexerOverrides,
-			ProviderSelections:  providerSelections,
-			IndexerSelections:   indexerSelections,
-			MovieSearchQueries:  streamConfig.MovieSearchQueries,
-			SeriesSearchQueries: streamConfig.SeriesSearchQueries,
-			FilterProfileName:   streamConfig.FilterProfileName,
-			FilterProfileByType: streamConfig.FilterProfileByType,
-			MuteErrorVideo:      streamConfig.MuteErrorVideo,
+			FilterSortingMode:         streamConfig.FilterSortingMode,
+			IndexerMode:               streamConfig.IndexerMode,
+			UseAvailNZB:               streamConfig.UseAvailNZB,
+			FilterAvailNZB:            streamConfig.FilterAvailNZB,
+			CombineResults:            streamConfig.CombineResults,
+			EnableFailover:            streamConfig.EnableFailover,
+			ResultsMode:               streamConfig.ResultsMode,
+			AutoAddProviders:          streamConfig.AutoAddProviders,
+			AutoAddIndexers:           streamConfig.AutoAddIndexers,
+			IndexerOverrides:          indexerOverrides,
+			ProviderSelections:        providerSelections,
+			IndexerSelections:         indexerSelections,
+			MovieSearchQueries:        streamConfig.MovieSearchQueries,
+			SeriesSearchQueries:       streamConfig.SeriesSearchQueries,
+			FilterProfileName:         streamConfig.FilterProfileName,
+			FilterProfileByType:       streamConfig.FilterProfileByType,
+			MuteErrorVideo:            streamConfig.MuteErrorVideo,
+			ResultNameTemplate:        streamConfig.ResultNameTemplate,
+			ResultDescriptionTemplate: streamConfig.ResultDescriptionTemplate,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 		}

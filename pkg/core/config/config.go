@@ -642,6 +642,11 @@ type StreamEntry struct {
 	// no entry. Anime is matched first when the request resolved via Kitsu.
 	FilterProfileByType map[string]string `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
+	// ResultNameTemplate and ResultDescriptionTemplate customize how this
+	// stream's Stremio results render (Go text/template over the result's
+	// FormatContext). Empty uses the built-in format.
+	ResultNameTemplate        string `json:"result_name_template,omitempty"`
+	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
 }
 
 // DefaultLibraryScoreBonus is the ranking bonus added to cached library

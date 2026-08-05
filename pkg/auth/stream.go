@@ -54,6 +54,10 @@ type Stream struct {
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
 	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
+	// ResultNameTemplate and ResultDescriptionTemplate customize how this
+	// stream's Stremio results render. Empty uses the built-in format.
+	ResultNameTemplate        string `json:"result_name_template,omitempty"`
+	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
 }
 
 func (s *Stream) EffectiveFilterAvailNZB(cfg *config.Config) bool {
@@ -219,26 +223,28 @@ func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 			ov = make(map[string]config.IndexerSearchConfig)
 		}
 		dm.streams[k] = &Stream{
-			Username:            e.Username,
-			Token:               e.Token,
-			Order:               e.Order,
-			FilterSortingMode:   e.FilterSortingMode,
-			IndexerMode:         e.IndexerMode,
-			UseAvailNZB:         e.UseAvailNZB,
-			FilterAvailNZB:      e.FilterAvailNZB,
-			CombineResults:      e.CombineResults,
-			EnableFailover:      e.EnableFailover,
-			ResultsMode:         e.ResultsMode,
-			AutoAddProviders:    e.AutoAddProviders,
-			AutoAddIndexers:     e.AutoAddIndexers,
-			IndexerOverrides:    ov,
-			ProviderSelections:  append([]string(nil), e.ProviderSelections...),
-			IndexerSelections:   append([]string(nil), e.IndexerSelections...),
-			MovieSearchQueries:  append([]string(nil), e.MovieSearchQueries...),
-			SeriesSearchQueries: append([]string(nil), e.SeriesSearchQueries...),
-			FilterProfileName:   e.FilterProfileName,
-			FilterProfileByType: maps.Clone(e.FilterProfileByType),
-			MuteErrorVideo:      e.MuteErrorVideo,
+			Username:                  e.Username,
+			Token:                     e.Token,
+			Order:                     e.Order,
+			FilterSortingMode:         e.FilterSortingMode,
+			IndexerMode:               e.IndexerMode,
+			UseAvailNZB:               e.UseAvailNZB,
+			FilterAvailNZB:            e.FilterAvailNZB,
+			CombineResults:            e.CombineResults,
+			EnableFailover:            e.EnableFailover,
+			ResultsMode:               e.ResultsMode,
+			AutoAddProviders:          e.AutoAddProviders,
+			AutoAddIndexers:           e.AutoAddIndexers,
+			IndexerOverrides:          ov,
+			ProviderSelections:        append([]string(nil), e.ProviderSelections...),
+			IndexerSelections:         append([]string(nil), e.IndexerSelections...),
+			MovieSearchQueries:        append([]string(nil), e.MovieSearchQueries...),
+			SeriesSearchQueries:       append([]string(nil), e.SeriesSearchQueries...),
+			FilterProfileName:         e.FilterProfileName,
+			FilterProfileByType:       maps.Clone(e.FilterProfileByType),
+			MuteErrorVideo:            e.MuteErrorVideo,
+			ResultNameTemplate:        e.ResultNameTemplate,
+			ResultDescriptionTemplate: e.ResultDescriptionTemplate,
 		}
 	}
 	if _, exists := dm.streams["admin"]; exists {
@@ -258,26 +264,28 @@ func (dm *StreamManager) saveLocked() error {
 				ov = make(map[string]config.IndexerSearchConfig)
 			}
 			dm.cfg.Streams[k] = &config.StreamEntry{
-				Username:            d.Username,
-				Token:               d.Token,
-				Order:               d.Order,
-				FilterSortingMode:   d.FilterSortingMode,
-				IndexerMode:         d.IndexerMode,
-				UseAvailNZB:         d.UseAvailNZB,
-				FilterAvailNZB:      d.FilterAvailNZB,
-				CombineResults:      d.CombineResults,
-				EnableFailover:      d.EnableFailover,
-				ResultsMode:         d.ResultsMode,
-				AutoAddProviders:    d.AutoAddProviders,
-				AutoAddIndexers:     d.AutoAddIndexers,
-				IndexerOverrides:    ov,
-				ProviderSelections:  append([]string(nil), d.ProviderSelections...),
-				IndexerSelections:   append([]string(nil), d.IndexerSelections...),
-				MovieSearchQueries:  append([]string(nil), d.MovieSearchQueries...),
-				SeriesSearchQueries: append([]string(nil), d.SeriesSearchQueries...),
-				FilterProfileName:   d.FilterProfileName,
-				FilterProfileByType: maps.Clone(d.FilterProfileByType),
-				MuteErrorVideo:      d.MuteErrorVideo,
+				Username:                  d.Username,
+				Token:                     d.Token,
+				Order:                     d.Order,
+				FilterSortingMode:         d.FilterSortingMode,
+				IndexerMode:               d.IndexerMode,
+				UseAvailNZB:               d.UseAvailNZB,
+				FilterAvailNZB:            d.FilterAvailNZB,
+				CombineResults:            d.CombineResults,
+				EnableFailover:            d.EnableFailover,
+				ResultsMode:               d.ResultsMode,
+				AutoAddProviders:          d.AutoAddProviders,
+				AutoAddIndexers:           d.AutoAddIndexers,
+				IndexerOverrides:          ov,
+				ProviderSelections:        append([]string(nil), d.ProviderSelections...),
+				IndexerSelections:         append([]string(nil), d.IndexerSelections...),
+				MovieSearchQueries:        append([]string(nil), d.MovieSearchQueries...),
+				SeriesSearchQueries:       append([]string(nil), d.SeriesSearchQueries...),
+				FilterProfileName:         d.FilterProfileName,
+				FilterProfileByType:       maps.Clone(d.FilterProfileByType),
+				MuteErrorVideo:            d.MuteErrorVideo,
+				ResultNameTemplate:        d.ResultNameTemplate,
+				ResultDescriptionTemplate: d.ResultDescriptionTemplate,
 			}
 		}
 		return dm.cfg.Save()
@@ -390,26 +398,28 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 			continue
 		}
 		streams = append(streams, Stream{
-			Username:            stream.Username,
-			Token:               stream.Token,
-			Order:               stream.Order,
-			FilterSortingMode:   stream.FilterSortingMode,
-			IndexerMode:         stream.IndexerMode,
-			UseAvailNZB:         stream.UseAvailNZB,
-			FilterAvailNZB:      stream.FilterAvailNZB,
-			CombineResults:      stream.CombineResults,
-			EnableFailover:      stream.EnableFailover,
-			ResultsMode:         stream.ResultsMode,
-			AutoAddProviders:    stream.AutoAddProviders,
-			AutoAddIndexers:     stream.AutoAddIndexers,
-			IndexerOverrides:    stream.IndexerOverrides,
-			ProviderSelections:  append([]string(nil), stream.ProviderSelections...),
-			IndexerSelections:   append([]string(nil), stream.IndexerSelections...),
-			MovieSearchQueries:  append([]string(nil), stream.MovieSearchQueries...),
-			SeriesSearchQueries: append([]string(nil), stream.SeriesSearchQueries...),
-			FilterProfileName:   stream.FilterProfileName,
-			FilterProfileByType: maps.Clone(stream.FilterProfileByType),
-			MuteErrorVideo:      stream.MuteErrorVideo,
+			Username:                  stream.Username,
+			Token:                     stream.Token,
+			Order:                     stream.Order,
+			FilterSortingMode:         stream.FilterSortingMode,
+			IndexerMode:               stream.IndexerMode,
+			UseAvailNZB:               stream.UseAvailNZB,
+			FilterAvailNZB:            stream.FilterAvailNZB,
+			CombineResults:            stream.CombineResults,
+			EnableFailover:            stream.EnableFailover,
+			ResultsMode:               stream.ResultsMode,
+			AutoAddProviders:          stream.AutoAddProviders,
+			AutoAddIndexers:           stream.AutoAddIndexers,
+			IndexerOverrides:          stream.IndexerOverrides,
+			ProviderSelections:        append([]string(nil), stream.ProviderSelections...),
+			IndexerSelections:         append([]string(nil), stream.IndexerSelections...),
+			MovieSearchQueries:        append([]string(nil), stream.MovieSearchQueries...),
+			SeriesSearchQueries:       append([]string(nil), stream.SeriesSearchQueries...),
+			FilterProfileName:         stream.FilterProfileName,
+			FilterProfileByType:       maps.Clone(stream.FilterProfileByType),
+			MuteErrorVideo:            stream.MuteErrorVideo,
+			ResultNameTemplate:        stream.ResultNameTemplate,
+			ResultDescriptionTemplate: stream.ResultDescriptionTemplate,
 		})
 	}
 
@@ -654,6 +664,8 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.FilterProfileName = strings.TrimSpace(streamConfig.FilterProfileName)
 	stream.FilterProfileByType = normalizeProfileBindings(streamConfig.FilterProfileByType)
 	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
+	stream.ResultNameTemplate = strings.TrimSpace(streamConfig.ResultNameTemplate)
+	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)

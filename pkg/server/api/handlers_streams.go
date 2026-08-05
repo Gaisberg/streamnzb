@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/server/stremio"
 )
 
 const (
@@ -56,25 +57,27 @@ func (s *Server) handleStreamsList(w http.ResponseWriter, r *http.Request) {
 	list := make([]map[string]interface{}, 0, len(streams))
 	for _, d := range streams {
 		list = append(list, map[string]interface{}{
-			"username":               d.Username,
-			"token":                  d.Token,
-			"filter_sorting_mode":    d.FilterSortingMode,
-			"indexer_mode":           d.IndexerMode,
-			"use_availnzb":           d.UseAvailNZB,
-			"filter_availnzb":        d.FilterAvailNZB,
-			"combine_results":        d.CombineResults,
-			"enable_failover":        d.EnableFailover,
-			"results_mode":           d.ResultsMode,
-			"auto_add_providers":     d.AutoAddProviders,
-			"auto_add_indexers":      d.AutoAddIndexers,
-			"indexer_overrides":      d.IndexerOverrides,
-			"provider_selections":    d.ProviderSelections,
-			"indexer_selections":     d.IndexerSelections,
-			"movie_search_queries":   d.MovieSearchQueries,
-			"series_search_queries":  d.SeriesSearchQueries,
-			"filter_profile_name":    d.FilterProfileName,
-			"filter_profile_by_type": d.FilterProfileByType,
-			"mute_error_video":       d.MuteErrorVideo,
+			"username":                    d.Username,
+			"token":                       d.Token,
+			"filter_sorting_mode":         d.FilterSortingMode,
+			"indexer_mode":                d.IndexerMode,
+			"use_availnzb":                d.UseAvailNZB,
+			"filter_availnzb":             d.FilterAvailNZB,
+			"combine_results":             d.CombineResults,
+			"enable_failover":             d.EnableFailover,
+			"results_mode":                d.ResultsMode,
+			"auto_add_providers":          d.AutoAddProviders,
+			"auto_add_indexers":           d.AutoAddIndexers,
+			"indexer_overrides":           d.IndexerOverrides,
+			"provider_selections":         d.ProviderSelections,
+			"indexer_selections":          d.IndexerSelections,
+			"movie_search_queries":        d.MovieSearchQueries,
+			"series_search_queries":       d.SeriesSearchQueries,
+			"filter_profile_name":         d.FilterProfileName,
+			"filter_profile_by_type":      d.FilterProfileByType,
+			"mute_error_video":            d.MuteErrorVideo,
+			"result_name_template":        d.ResultNameTemplate,
+			"result_description_template": d.ResultDescriptionTemplate,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -147,25 +150,27 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"username":               d.Username,
-			"token":                  d.Token,
-			"filter_sorting_mode":    d.FilterSortingMode,
-			"indexer_mode":           d.IndexerMode,
-			"use_availnzb":           d.UseAvailNZB,
-			"filter_availnzb":        d.FilterAvailNZB,
-			"combine_results":        d.CombineResults,
-			"enable_failover":        d.EnableFailover,
-			"results_mode":           d.ResultsMode,
-			"auto_add_providers":     d.AutoAddProviders,
-			"auto_add_indexers":      d.AutoAddIndexers,
-			"indexer_overrides":      d.IndexerOverrides,
-			"provider_selections":    d.ProviderSelections,
-			"indexer_selections":     d.IndexerSelections,
-			"movie_search_queries":   d.MovieSearchQueries,
-			"series_search_queries":  d.SeriesSearchQueries,
-			"filter_profile_name":    d.FilterProfileName,
-			"filter_profile_by_type": d.FilterProfileByType,
-			"mute_error_video":       d.MuteErrorVideo,
+			"username":                    d.Username,
+			"token":                       d.Token,
+			"filter_sorting_mode":         d.FilterSortingMode,
+			"indexer_mode":                d.IndexerMode,
+			"use_availnzb":                d.UseAvailNZB,
+			"filter_availnzb":             d.FilterAvailNZB,
+			"combine_results":             d.CombineResults,
+			"enable_failover":             d.EnableFailover,
+			"results_mode":                d.ResultsMode,
+			"auto_add_providers":          d.AutoAddProviders,
+			"auto_add_indexers":           d.AutoAddIndexers,
+			"indexer_overrides":           d.IndexerOverrides,
+			"provider_selections":         d.ProviderSelections,
+			"indexer_selections":          d.IndexerSelections,
+			"movie_search_queries":        d.MovieSearchQueries,
+			"series_search_queries":       d.SeriesSearchQueries,
+			"filter_profile_name":         d.FilterProfileName,
+			"filter_profile_by_type":      d.FilterProfileByType,
+			"mute_error_video":            d.MuteErrorVideo,
+			"result_name_template":        d.ResultNameTemplate,
+			"result_description_template": d.ResultDescriptionTemplate,
 		})
 	case http.MethodDelete:
 		if suffix != "" {
@@ -216,23 +221,25 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var streamConfigs map[string]struct {
-		FilterSortingMode   string                                `json:"filter_sorting_mode"`
-		IndexerMode         string                                `json:"indexer_mode"`
-		UseAvailNZB         *bool                                 `json:"use_availnzb"`
-		FilterAvailNZB      *bool                                 `json:"filter_availnzb"`
-		CombineResults      *bool                                 `json:"combine_results"`
-		EnableFailover      *bool                                 `json:"enable_failover"`
-		ResultsMode         string                                `json:"results_mode"`
-		AutoAddProviders    *bool                                 `json:"auto_add_providers"`
-		AutoAddIndexers     *bool                                 `json:"auto_add_indexers"`
-		IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
-		ProviderSelections  []string                              `json:"provider_selections"`
-		IndexerSelections   []string                              `json:"indexer_selections"`
-		MovieSearchQueries  []string                              `json:"movie_search_queries"`
-		SeriesSearchQueries []string                              `json:"series_search_queries"`
-		FilterProfileName   string                                `json:"filter_profile_name"`
-		FilterProfileByType map[string]string                     `json:"filter_profile_by_type"`
-		MuteErrorVideo      *bool                                 `json:"mute_error_video"`
+		FilterSortingMode         string                                `json:"filter_sorting_mode"`
+		IndexerMode               string                                `json:"indexer_mode"`
+		UseAvailNZB               *bool                                 `json:"use_availnzb"`
+		FilterAvailNZB            *bool                                 `json:"filter_availnzb"`
+		CombineResults            *bool                                 `json:"combine_results"`
+		EnableFailover            *bool                                 `json:"enable_failover"`
+		ResultsMode               string                                `json:"results_mode"`
+		AutoAddProviders          *bool                                 `json:"auto_add_providers"`
+		AutoAddIndexers           *bool                                 `json:"auto_add_indexers"`
+		IndexerOverrides          map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+		ProviderSelections        []string                              `json:"provider_selections"`
+		IndexerSelections         []string                              `json:"indexer_selections"`
+		MovieSearchQueries        []string                              `json:"movie_search_queries"`
+		SeriesSearchQueries       []string                              `json:"series_search_queries"`
+		FilterProfileName         string                                `json:"filter_profile_name"`
+		FilterProfileByType       map[string]string                     `json:"filter_profile_by_type"`
+		MuteErrorVideo            *bool                                 `json:"mute_error_video"`
+		ResultNameTemplate        string                                `json:"result_name_template"`
+		ResultDescriptionTemplate string                                `json:"result_description_template"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&streamConfigs); err != nil {
 		s.writeSaveStatus(w, "error", "Invalid stream config data", nil)
@@ -256,24 +263,30 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
 			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
 		}
+		if err := stremio.ValidateResultTemplates(dc.ResultNameTemplate, dc.ResultDescriptionTemplate); err != nil {
+			errors = append(errors, fmt.Sprintf("Invalid result format for %s: %v", username, err))
+			continue
+		}
 		if err := s.streamManager.UpdateStreamConfig(username, &auth.Stream{
-			FilterSortingMode:   dc.FilterSortingMode,
-			IndexerMode:         dc.IndexerMode,
-			UseAvailNZB:         dc.UseAvailNZB,
-			FilterAvailNZB:      dc.FilterAvailNZB,
-			CombineResults:      dc.CombineResults,
-			EnableFailover:      dc.EnableFailover,
-			ResultsMode:         dc.ResultsMode,
-			AutoAddProviders:    dc.AutoAddProviders,
-			AutoAddIndexers:     dc.AutoAddIndexers,
-			IndexerOverrides:    indexerOverrides,
-			ProviderSelections:  providerSelections,
-			IndexerSelections:   indexerSelections,
-			MovieSearchQueries:  dc.MovieSearchQueries,
-			SeriesSearchQueries: dc.SeriesSearchQueries,
-			FilterProfileName:   dc.FilterProfileName,
-			FilterProfileByType: dc.FilterProfileByType,
-			MuteErrorVideo:      dc.MuteErrorVideo,
+			FilterSortingMode:         dc.FilterSortingMode,
+			IndexerMode:               dc.IndexerMode,
+			UseAvailNZB:               dc.UseAvailNZB,
+			FilterAvailNZB:            dc.FilterAvailNZB,
+			CombineResults:            dc.CombineResults,
+			EnableFailover:            dc.EnableFailover,
+			ResultsMode:               dc.ResultsMode,
+			AutoAddProviders:          dc.AutoAddProviders,
+			AutoAddIndexers:           dc.AutoAddIndexers,
+			IndexerOverrides:          indexerOverrides,
+			ProviderSelections:        providerSelections,
+			IndexerSelections:         indexerSelections,
+			MovieSearchQueries:        dc.MovieSearchQueries,
+			SeriesSearchQueries:       dc.SeriesSearchQueries,
+			FilterProfileName:         dc.FilterProfileName,
+			FilterProfileByType:       dc.FilterProfileByType,
+			MuteErrorVideo:            dc.MuteErrorVideo,
+			ResultNameTemplate:        dc.ResultNameTemplate,
+			ResultDescriptionTemplate: dc.ResultDescriptionTemplate,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 			continue

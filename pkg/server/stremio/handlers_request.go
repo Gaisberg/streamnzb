@@ -402,7 +402,7 @@ func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string, s
 	return strings.Join(lines, "\n")
 }
 
-func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamName, baseURL string, showAll bool) []Stream {
+func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamName, baseURL string, showAll bool, format *resultFormat) []Stream {
 	nameLeft := streamName
 	if nameLeft == "" {
 		nameLeft = key.StreamID
@@ -429,6 +429,11 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			includeScore := list != nil && !list.IsAIOStreams
 			capsLine := capsSummaryLine(cand.Release)
 			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
+			if format != nil {
+				ctx := newFormatContext(cand, i+1, len(list.Candidates), key.StreamID, contentTitle, capsLine, isAvail)
+				sName = renderResultTemplate(format.name, ctx, sName)
+				desc = renderResultTemplate(format.description, ctx, desc)
+			}
 			playPath := key.SlotPath(i)
 			if useSlotPaths {
 				playPath = list.SlotPaths[i]
