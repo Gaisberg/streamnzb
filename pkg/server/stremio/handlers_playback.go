@@ -300,9 +300,22 @@ func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stre
 		}
 		return nil, nil, err
 	}
-	streamName := "StreamNZB"
 	showAll := streamResultsMode(stream) == "display_all"
-	return buildStreamsFromPlaylist(list, key, streamName, baseURL, showAll), list, nil
+	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), baseURL, showAll), list, nil
+}
+
+// streamDisplayName is the label clients render next to each result. The
+// stream config's name rides on a second line under the service name, so
+// multiple installed configs are tellable apart in Stremio.
+func streamDisplayName(stream *auth.Stream) string {
+	name := ""
+	if stream != nil {
+		name = strings.TrimSpace(stream.Username)
+	}
+	if name == "" {
+		return "StreamNZB"
+	}
+	return "StreamNZB\n" + name
 }
 
 // bootstrapPlaylistForPlay rebuilds the play list and deferred sessions the same way as /stream.

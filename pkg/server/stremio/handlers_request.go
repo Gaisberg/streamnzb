@@ -125,7 +125,11 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	stream, _ := auth.StreamFromContext(r)
 	isAdmin := stream != nil && stream.Username == s.config.GetAdminUsername()
 
-	data, err := manifest.ToJSONForDevice(isAdmin)
+	streamName := ""
+	if stream != nil {
+		streamName = stream.Username
+	}
+	data, err := manifest.ToJSONForDevice(isAdmin, streamName)
 	if err != nil {
 		http.Error(w, "Failed to generate manifest", http.StatusInternalServerError)
 		return
@@ -340,7 +344,9 @@ func bingeGroupLabelFromMeta(meta *parser.ParsedRelease) string {
 func streamBehaviorHints(streamName, streamID string, rel *release.Release, cached *bool, bingeGroupLabel string) *BehaviorHints {
 	bingeGroup := "streamnzb-" + streamID
 	if bingeGroupLabel != "" {
-		bingeGroup = "streamnzb-" + bingeGroupLabel
+		// Display names may span two lines; a binge group is an opaque key and
+		// must stay single-line.
+		bingeGroup = "streamnzb-" + strings.ReplaceAll(bingeGroupLabel, "\n", " ")
 	}
 	h := &BehaviorHints{
 		NotWebReady: true,

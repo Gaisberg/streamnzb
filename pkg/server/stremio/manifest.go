@@ -59,9 +59,15 @@ func NewManifest(version string) *Manifest {
 	}
 }
 
-func (m *Manifest) ToJSONForDevice(isAdmin bool) ([]byte, error) {
+// ToJSONForDevice renders the manifest for one requesting device. streamName
+// is the stream config the token resolved to; it is appended to the service
+// name so multiple installed configs are tellable apart in client addon lists.
+func (m *Manifest) ToJSONForDevice(isAdmin bool, streamName string) ([]byte, error) {
 
 	out := *m
+	if name := strings.TrimSpace(streamName); name != "" {
+		out.Name = out.Name + " · " + name
+	}
 	out.BehaviorHints = &ManifestBehaviorHints{
 		Configurable:          isAdmin,
 		ConfigurationRequired: false,
