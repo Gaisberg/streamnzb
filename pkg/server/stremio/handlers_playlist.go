@@ -92,7 +92,21 @@ type playlistSource struct {
 	UnavailableDetailsURLs map[string]bool
 }
 
-const playlistCacheTTL = 10 * time.Minute
+// playlistCacheTTL returns how long playlist/raw-search cache entries stay valid.
+// The playlist backs deferred catalog sessions and playback failover resolution
+// (failed-slot redirects call buildPlaylist), so entries must live at least as
+// long as the sessions that reference them — otherwise a mid-playback reconnect
+// on a failed slot forces a full indexer re-search before the redirect can be
+// computed. Tied to the configured session TTLs (whichever is longer) and
+// refreshed on access, matching the inactivity-based session eviction semantics.
+func (s *Server) playlistCacheTTL() time.Duration {
+	inactive := time.Duration(s.config.EffectiveSessionTTLSeconds()) * time.Second
+	postPlayback := time.Duration(s.config.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second
+	if postPlayback > inactive {
+		return postPlayback
+	}
+	return inactive
+}
 
 type playlistCacheEntry struct {
 	result *playlistResult
@@ -203,6 +217,9 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 				candidateCount = len(ent.result.Candidates)
 			}
 			logger.Debug("Playback playlist cache hit", "key", cacheKey, "candidates", candidateCount)
+			// Sliding expiry: keep the entry alive while it is being used (reconnects, seeks, failover resolution).
+			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
+			s.playlistCache.CompareAndSwap(cacheKey, v, &playlistCacheEntry{result: ent.result, until: time.Now().Add(s.playlistCacheTTL())})
 			return ent.result, nil
 		}
 	}
@@ -211,7 +228,7 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 	if err != nil || list == nil {
 		return list, err
 	}
-	s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: list, until: time.Now().Add(playlistCacheTTL)})
+	s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: list, until: time.Now().Add(s.playlistCacheTTL())})
 	return list, nil
 }
 
@@ -232,6 +249,9 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 				releaseCount = len(ent.raw.IndexerReleases)
 			}
 			logger.Debug("Playback candidate cache hit", "key", rawKey, "releases", releaseCount)
+			// Sliding expiry: keep the entry alive while it is being used.
+			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
+			s.rawSearchCache.CompareAndSwap(rawKey, v, &rawSearchCacheEntry{raw: ent.raw, until: time.Now().Add(s.playlistCacheTTL())})
 			return cloneRawSearchResult(ent.raw), nil
 		}
 	}
@@ -240,7 +260,7 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: raw, until: time.Now().Add(playlistCacheTTL)})
+	s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: raw, until: time.Now().Add(s.playlistCacheTTL())})
 	return cloneRawSearchResult(raw), nil
 }
 
