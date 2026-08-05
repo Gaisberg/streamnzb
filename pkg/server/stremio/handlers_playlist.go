@@ -862,10 +862,7 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 	results := profile.Apply(candidates, rank.RankOptions{})
 	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
 
-	libraryBonus := 500
-	if s.config != nil {
-		libraryBonus = s.config.EffectiveLibraryScoreBonus()
-	}
+	libraryBonus := profile.LibraryScoreBonus
 
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {

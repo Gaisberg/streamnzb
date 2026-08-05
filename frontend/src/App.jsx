@@ -365,7 +365,6 @@ function App() {
               <FiltersPage
                 config={config}
                 onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
-                onSaveGlobal={(partial) => sendCommand('save_config', partial)}
                 isSaving={isSaving}
                 saveStatus={saveStatus}
               />

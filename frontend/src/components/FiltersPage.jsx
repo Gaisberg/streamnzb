@@ -2,13 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { Copy, Plus, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react"
+import { Copy, Import, Plus, Share2, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react"
 import { ProfileEditor } from "@/components/ProfileEditor"
 import { ExplainBench } from "@/components/ExplainBench"
-import { CONTENT_KINDS, defaultProfile, withoutLegacyFields } from "@/lib/profiles"
+import {
+  CONTENT_KINDS, decodeProfileShareCode, defaultProfile, encodeProfileShareCode, withoutLegacyFields,
+} from "@/lib/profiles"
 import { cn } from "@/lib/utils"
 
 // summarize gives each profile card a one-line read of what it does.
@@ -68,12 +71,8 @@ function uniqueName(profiles, base) {
   return `${base} ${n}`
 }
 
-export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus }) {
+export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
-  const savedScoreBonus = Number(config?.library_score_bonus ?? 500) || 500
-  const [scoreBonus, setScoreBonus] = useState(savedScoreBonus)
-  useEffect(() => { setScoreBonus(savedScoreBonus) }, [savedScoreBonus])
-  const scoreBonusDirty = scoreBonus !== savedScoreBonus
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
   const anyInUse = Object.keys(usage).length > 0
   const [selected, setSelected] = useState(0)
@@ -81,6 +80,11 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [pendingSelect, setPendingSelect] = useState(null)
   const [nameError, setNameError] = useState("")
+  const [exportCode, setExportCode] = useState(null)
+  const [exportCopied, setExportCopied] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importCode, setImportCode] = useState("")
+  const [importError, setImportError] = useState("")
 
   const dirty = useMemo(() => {
     const current = profiles[selected]
@@ -143,6 +147,37 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
     setConfirmDelete(null)
   }
 
+  const exportProfile = async () => {
+    if (!draft) return
+    try {
+      setExportCopied(false)
+      const code = await encodeProfileShareCode(draft)
+      setExportCode(code)
+      try {
+        await navigator.clipboard.writeText(code)
+        setExportCopied(true)
+      } catch {
+        // Clipboard needs a secure context; the dialog still shows the code to copy by hand.
+      }
+    } catch {
+      setExportCode("")
+    }
+  }
+
+  const importProfile = async () => {
+    try {
+      const profile = await decodeProfileShareCode(importCode)
+      profile.name = uniqueName(profiles, profile.name.trim() || "Imported Profile")
+      if (profile.ranking) profile.ranking.name = profile.name
+      commit([...profiles, profile], profiles.length)
+      setImportOpen(false)
+      setImportCode("")
+      setImportError("")
+    } catch (err) {
+      setImportError(err?.message || "Could not read the profile code.")
+    }
+  }
+
   const saveDraft = () => {
     const name = (draft.name || "").trim()
     if (!name) { setNameError("Name is required."); return }
@@ -166,9 +201,18 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
             Assign one to a stream from the Streams page.
           </p>
         </div>
-        <Button onClick={addProfile} size="sm">
-          <Plus className="mr-2 h-4 w-4" /> New profile
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { setImportCode(""); setImportError(""); setImportOpen(true) }}
+          >
+            <Import className="mr-2 h-4 w-4" /> Import
+          </Button>
+          <Button onClick={addProfile} size="sm">
+            <Plus className="mr-2 h-4 w-4" /> New profile
+          </Button>
+        </div>
       </div>
 
       {profiles.length > 0 && !anyInUse && (
@@ -180,43 +224,6 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
           </p>
         </div>
       )}
-
-      {/* Global scoring applied on top of every profile's ranking */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-semibold">Global Scoring</CardTitle>
-          <CardDescription>Applied on top of the selected profile's ranking, for every stream.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-md border border-border/60 p-3">
-            <div className="min-w-0 space-y-0.5">
-              <Label htmlFor="library-score-bonus" className="text-sm font-medium">Library Hit Score Bonus</Label>
-              <p className="text-xs text-muted-foreground">
-                Extra ranking score added to cached library releases so proven-playable results outrank fresh indexer hits.
-                Default 500; set -1 to disable the bonus.
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Input
-                id="library-score-bonus"
-                type="number"
-                min={-1}
-                max={100000}
-                value={scoreBonus}
-                onChange={(e) => setScoreBonus(Number(e.target.value))}
-                className="h-9 w-[120px] font-mono text-xs"
-              />
-              <Button
-                size="sm"
-                disabled={!scoreBonusDirty || isSaving}
-                onClick={() => onSaveGlobal?.({ library_score_bonus: scoreBonus })}
-              >
-                Save
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {profiles.length === 0 ? (
         <Card className="border border-dashed border-border bg-card">
@@ -291,6 +298,9 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
                       Discard
                     </Button>
                     <div className="flex-1" />
+                    <Button variant="ghost" size="sm" onClick={exportProfile}>
+                      <Share2 className="mr-2 h-3.5 w-3.5" /> Export
+                    </Button>
                     <Button variant="ghost" size="sm" onClick={() => duplicateProfile(selected)}>
                       <Copy className="mr-2 h-3.5 w-3.5" /> Duplicate
                     </Button>
@@ -344,6 +354,69 @@ export function FiltersPage({ config, onSave, onSaveGlobal, isSaving, saveStatus
         confirmLabel="Delete"
         onConfirm={() => deleteProfile(confirmDelete)}
       />
+
+      <Dialog open={exportCode !== null} onOpenChange={(open) => { if (!open) setExportCode(null) }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Export profile</DialogTitle>
+            <DialogDescription>
+              {exportCode === ""
+                ? "This browser cannot generate share codes."
+                : `Share this code to hand “${draft?.name || ""}” to another StreamNZB instance.`}
+            </DialogDescription>
+          </DialogHeader>
+          {exportCode !== "" && (
+            <textarea
+              readOnly
+              value={exportCode || ""}
+              onFocus={(e) => e.target.select()}
+              rows={5}
+              className="w-full resize-none rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          )}
+          <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between sm:space-x-0">
+            <span className="text-xs text-muted-foreground">{exportCopied ? "Copied to clipboard." : ""}</span>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!exportCode}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(exportCode)
+                  setExportCode(null)
+                } catch { /* clipboard unavailable: keep the dialog open for manual copy */ }
+              }}
+            >
+              <Copy className="mr-2 h-3.5 w-3.5" /> Copy code
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Import profile</DialogTitle>
+            <DialogDescription>Paste a profile share code. It is added as a new profile and never overwrites an existing one.</DialogDescription>
+          </DialogHeader>
+          <textarea
+            value={importCode}
+            onChange={(e) => { setImportCode(e.target.value); setImportError("") }}
+            rows={5}
+            placeholder="SNZBP1:..."
+            className="w-full resize-none rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          {importError && <p className="text-xs text-destructive">{importError}</p>}
+          <DialogFooter className="flex-row items-center justify-end gap-2 sm:space-x-0">
+            <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" size="sm" disabled={!importCode.trim() || isSaving} onClick={importProfile}>
+              <Import className="mr-2 h-3.5 w-3.5" /> Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

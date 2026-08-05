@@ -348,3 +348,47 @@ export function formatScore(value) {
   if (typeof value !== "number" || Number.isNaN(value)) return "0"
   return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString()
 }
+
+// Profile share codes: the profile JSON, gzip-compressed and base64url-encoded
+// behind a versioned prefix, so a whole profile travels as one pasteable string.
+const SHARE_CODE_PREFIX = "SNZBP1:"
+
+function toBase64Url(bytes) {
+  let binary = ""
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
+}
+
+function fromBase64Url(text) {
+  const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"))
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0))
+}
+
+export async function encodeProfileShareCode(profile) {
+  const json = JSON.stringify(withoutLegacyFields(profile))
+  const stream = new Blob([new TextEncoder().encode(json)]).stream().pipeThrough(new CompressionStream("gzip"))
+  const packed = new Uint8Array(await new Response(stream).arrayBuffer())
+  return SHARE_CODE_PREFIX + toBase64Url(packed)
+}
+
+export async function decodeProfileShareCode(code) {
+  const trimmed = (code || "").trim()
+  if (!trimmed.startsWith(SHARE_CODE_PREFIX)) {
+    throw new Error("Not a StreamNZB profile code.")
+  }
+  let profile
+  try {
+    const bytes = fromBase64Url(trimmed.slice(SHARE_CODE_PREFIX.length))
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
+    profile = JSON.parse(await new Response(stream).text())
+  } catch {
+    throw new Error("The code is damaged or incomplete.")
+  }
+  if (!profile || typeof profile !== "object" || typeof profile.name !== "string" || !profile.ranking) {
+    throw new Error("The code does not contain a filter profile.")
+  }
+  return withoutLegacyFields(profile)
+}

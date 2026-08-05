@@ -64,6 +64,10 @@ type Profile struct {
 	Ranker    *rank.Ranker
 	Spec      rank.Profile
 	SortOrder []string
+	// LibraryScoreBonus is added to cached library releases on top of the
+	// ranker's score. Resolved from the profile config (default 500, 0 when
+	// disabled there).
+	LibraryScoreBonus int
 }
 
 func NewService() *Service {
@@ -97,9 +101,10 @@ func (s *Service) Reload(cfg *config.Config) []error {
 		}
 		key := strings.ToLower(strings.TrimSpace(fp.Name))
 		compiled[key] = &Profile{
-			Name:   fp.Name,
-			Ranker: ranker,
-			Spec:   spec,
+			Name:              fp.Name,
+			Ranker:            ranker,
+			Spec:              spec,
+			LibraryScoreBonus: fp.EffectiveLibraryScoreBonus(),
 		}
 	}
 

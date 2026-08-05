@@ -113,6 +113,10 @@ type FilterProfileConfig struct {
 	// migration, in which case it is synthesized from the legacy fields on load.
 	Ranking *rank.Profile `json:"ranking,omitempty"`
 
+	// LibraryScoreBonus is the ranking bonus added to cached library releases
+	// for this profile. Nil uses the default (500); negative disables the bonus.
+	LibraryScoreBonus *int `json:"library_score_bonus,omitempty"`
+
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
 	AllowedQualities   []string `json:"allowed_qualities,omitempty"`
@@ -596,7 +600,9 @@ type Config struct {
 	BadReleaseTTLHours int `json:"bad_release_ttl_hours,omitempty"`
 	// LibraryAutoSave automatically persists successful NZBs and blueprints to SQLite. Default true.
 	LibraryAutoSave *bool `json:"library_auto_save,omitempty"`
-	// LibraryScoreBonus adds a customizable score bonus for library releases during ranking. Default 500.
+	// LibraryScoreBonus is the legacy global library ranking bonus.
+	// Deprecated: superseded by FilterProfileConfig.LibraryScoreBonus; kept only
+	// so old configs unmarshal and migrate their value into profiles on load.
 	LibraryScoreBonus int `json:"library_score_bonus,omitempty"`
 
 	// AvailNZBMode controls how the AvailNZB integration behaves.
@@ -638,16 +644,21 @@ type StreamEntry struct {
 	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
 }
 
+// DefaultLibraryScoreBonus is the ranking bonus added to cached library
+// releases when a profile does not set its own value.
+const DefaultLibraryScoreBonus = 500
+
 // EffectiveLibraryScoreBonus is the ranking bonus added to cached library
-// releases. 0 (unset) uses the default; negative disables the bonus entirely.
-func (c *Config) EffectiveLibraryScoreBonus() int {
-	if c == nil || c.LibraryScoreBonus == 0 {
-		return 500
+// releases for this profile. Nil (unset) uses the default; negative disables
+// the bonus entirely.
+func (fp *FilterProfileConfig) EffectiveLibraryScoreBonus() int {
+	if fp == nil || fp.LibraryScoreBonus == nil {
+		return DefaultLibraryScoreBonus
 	}
-	if c.LibraryScoreBonus < 0 {
+	if *fp.LibraryScoreBonus < 0 {
 		return 0
 	}
-	return c.LibraryScoreBonus
+	return *fp.LibraryScoreBonus
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
@@ -894,6 +905,13 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		if cfg.FilterProfiles[i].Ranking == nil {
 			ranking := Synthesize(cfg.FilterProfiles[i])
 			cfg.FilterProfiles[i].Ranking = &ranking
+			needSave = true
+		}
+		// Migrate the legacy global library bonus into profiles that have no
+		// value of their own, so an explicitly tuned bonus keeps applying.
+		if cfg.FilterProfiles[i].LibraryScoreBonus == nil && cfg.LibraryScoreBonus != 0 {
+			bonus := cfg.LibraryScoreBonus
+			cfg.FilterProfiles[i].LibraryScoreBonus = &bonus
 			needSave = true
 		}
 	}

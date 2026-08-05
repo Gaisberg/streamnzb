@@ -574,6 +574,27 @@ export function ProfileEditor({ profile, onChange }) {
         </p>
 
         <div className="space-y-6">
+          {(!normalizedQuery || "library hit score bonus".includes(normalizedQuery)) &&
+            (!modifiedOnly || profile.library_score_bonus != null) && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Library</h4>
+              <p className="text-xs text-muted-foreground">
+                Applied on top of every trait score below when the release comes from the local library.
+              </p>
+              <FieldRow
+                label="Library hit score bonus"
+                hint="Extra ranking score added to cached library releases so proven-playable results outrank fresh indexer hits. Default 500; set -1 to disable the bonus."
+              >
+                <NumberField
+                  value={profile.library_score_bonus ?? 500}
+                  onCommit={(library_score_bonus) => onChange({ ...profile, library_score_bonus })}
+                  min={-1}
+                  max={100000}
+                  className="h-8 w-32 font-mono text-xs"
+                />
+              </FieldRow>
+            </div>
+          )}
           {ATTRIBUTE_GROUPS.map((group) => (
             <AttributeGroup
               key={group.id}
