@@ -50,7 +50,7 @@ function pickInitialValues(values = {}) {
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     speculative_preprobing_max_attempts: Number.isFinite(parsedSpeculativePreProbingMaxAttempts) ? parsedSpeculativePreProbingMaxAttempts : 3,
     mute_error_video: values.mute_error_video === true,
-    library_search_mode: values.library_search_mode ?? 'library_first',
+    library_search_mode: values.library_search_mode ?? 'combine',
     library_max_items: Number(values.library_max_items ?? 5000) || 5000,
     library_max_size_mb: Number(values.library_max_size_mb ?? 250) || 250,
     library_auto_save: values.library_auto_save !== false,

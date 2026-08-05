@@ -329,7 +329,7 @@ func (c *Config) EffectiveSessionPostPlaybackTTLSeconds() int {
 }
 
 const (
-	DefaultLibrarySearchMode     = "library_first"
+	DefaultLibrarySearchMode     = "combine"
 	DefaultLibraryMaxItems       = 5000
 	DefaultLibraryMaxSizeMB      = 250
 	DefaultLibraryVerifyTTLHours = 168 // 7 days
@@ -584,7 +584,7 @@ type Config struct {
 	// SpeculativePreProbingCount is kept for backward compatibility with legacy configs.
 	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
 
-	// LibrarySearchMode controls SQLite library search priority ("library_first", "combine", "fallback_only", "disabled"). Default "library_first".
+	// LibrarySearchMode controls SQLite library search priority ("library_first", "combine", "fallback_only", "disabled"). Default "combine".
 	LibrarySearchMode string `json:"library_search_mode,omitempty"`
 	// LibraryMaxItems controls maximum number of entries cached in SQLite library. Default 5000.
 	LibraryMaxItems int `json:"library_max_items,omitempty"`
