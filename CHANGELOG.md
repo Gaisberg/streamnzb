@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.14.0](https://github.com/Gaisberg/streamnzb/compare/v4.13.0...v4.14.0) (2026-08-06)
+
+
+### Features
+
+* **filters:** per-profile library hit bonus and profile share codes ([11c564a](https://github.com/Gaisberg/streamnzb/commit/11c564aedcee2c890766190168eaac494c1f3a4d))
+* **library:** default library search priority to combine library + indexers ([85ec020](https://github.com/Gaisberg/streamnzb/commit/85ec0208b5b981da91c86f6965d31594d81e3cac))
+* **search:** absolute-episode series search scope for anime ([354a35c](https://github.com/Gaisberg/streamnzb/commit/354a35c036ca047feee15cad7d09c507fc1c2eb6))
+* **settings:** auto-save on change ([b57861f](https://github.com/Gaisberg/streamnzb/commit/b57861fc8c8eda3031d0689f745ca3a7f8b80f1a))
+* **stremio:** per-stream result format templates with live preview ([caa7fb5](https://github.com/Gaisberg/streamnzb/commit/caa7fb52b4c8b5dd1e642b377e0c793a70a3662b))
+* **stremio:** show stream config name in results and manifest ([e5775a9](https://github.com/Gaisberg/streamnzb/commit/e5775a9373ae0a17659a48077cdf0a8e0231359c))
+
+
+### Bug Fixes
+
+* **persistence:** eliminate SQLITE_BUSY bursts during playback ([11215ca](https://github.com/Gaisberg/streamnzb/commit/11215ca8d9be8528cbbc7cff27412ee5e7ffd954))
+* **streams:** seed indexer overrides for auto-added indexers so they are actually queried ([3681e75](https://github.com/Gaisberg/streamnzb/commit/3681e75a213b31d8e5a275c5f1f8159729b9f31d))
+* **stremio:** tie playlist/raw-search cache TTL to session TTL settings ([24a466a](https://github.com/Gaisberg/streamnzb/commit/24a466ab54cff03bfcfb92a94f21bea2a2597a91))
+
 ## [4.13.0](https://github.com/Gaisberg/streamnzb/compare/v4.12.0...v4.13.0) (2026-08-04)
 
 
