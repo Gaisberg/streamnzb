@@ -63,6 +63,44 @@ func TestApplyStreamAutoSelectionsSyncsEnabledAndKeepsOrderPreference(t *testing
 	}
 }
 
+// A non-empty overrides map is the selected-indexer set at search time, so an
+// auto-added indexer without an entry there is silently never queried.
+func TestApplyStreamAutoSelectionsSeedsOverridesForAutoAddedIndexers(t *testing.T) {
+	nextCfg := &config.Config{
+		Indexers: []config.IndexerConfig{
+			{Name: "Existing", Enabled: boolPtr(true)},
+			{Name: "NewlyAdded", Enabled: boolPtr(true)},
+		},
+		Streams: map[string]*config.StreamEntry{
+			"default": {
+				AutoAddIndexers:   boolPtr(true),
+				IndexerSelections: []string{"Existing"},
+				IndexerOverrides: map[string]config.IndexerSearchConfig{
+					"Existing": {SearchResultLimit: 10},
+				},
+			},
+			"unrestricted": {
+				AutoAddIndexers:   boolPtr(true),
+				IndexerSelections: []string{"Existing"},
+			},
+		},
+	}
+
+	applyStreamAutoSelections(nextCfg)
+
+	overrides := nextCfg.Streams["default"].IndexerOverrides
+	if _, ok := overrides["NewlyAdded"]; !ok {
+		t.Fatalf("expected auto-added indexer to get an override entry, got %#v", overrides)
+	}
+	if got := overrides["Existing"].SearchResultLimit; got != 10 {
+		t.Fatalf("expected existing override to be preserved, got limit %d", got)
+	}
+	// Empty/nil maps mean "no restriction" and must stay empty.
+	if got := nextCfg.Streams["unrestricted"].IndexerOverrides; len(got) != 0 {
+		t.Fatalf("expected empty overrides to stay empty, got %#v", got)
+	}
+}
+
 func TestApplyStreamAutoSelectionsSkipsWhenFlagMissing(t *testing.T) {
 	nextCfg := &config.Config{
 		Providers: []config.Provider{

@@ -28,6 +28,7 @@ const INDEXER_PRESETS = [
   { name: 'Prowlarr', url: 'http://localhost:9696', api_path: '{indexer_id}/api', type: 'aggregator', api_hits_day: 0, downloads_day: 0 },
   { name: 'abNZB', url: 'https://abnzb.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'altHUB', url: 'https://api.althub.co.za', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'aniNZB', url: 'https://aninzb.moe', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, optional_api_key: true },
   { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'DOGnzb', url: 'https://api.dognzb.cr', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'DrunkenSlug', url: 'https://drunkenslug.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
@@ -165,9 +166,11 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
   const hasProwlarrPlaceholder = typeof draft.api_path === 'string' && draft.api_path.includes(PROWLARR_INDEXER_ID_PLACEHOLDER)
   const duplicateName = existingNames.some((name) => normalizeName(name) === normalizeName(draft.name))
   const duplicateIndexer = existingIndexers.find((indexer) => normalizeIndexerIdentity(indexer) === normalizeIndexerIdentity(draft))
-  const selectedPresetName = INDEXER_PRESETS.find((preset) =>
+  const presetForDraft = INDEXER_PRESETS.find((preset) =>
     preset.url === draft.url && preset.api_path === draft.api_path && preset.type === draft.type
-  )?.name || ''
+  )
+  const selectedPresetName = presetForDraft?.name || ''
+  const apiKeyOptional = !isEasynews && presetForDraft?.optional_api_key === true
 
   const requestClose = () => {
     if (saving) return
@@ -196,7 +199,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
     if (!isEasynews && !draft.url?.trim()) {
       nextFieldErrors.url = 'URL is required'
     }
-    if (!isEasynews && !draft.api_key?.trim()) {
+    if (!isEasynews && !apiKeyOptional && !draft.api_key?.trim()) {
       nextFieldErrors.api_key = 'API key is required'
     }
     if (isEasynews && !draft.username?.trim()) {
@@ -375,10 +378,10 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                   <div className={rowClass}>
                     <div className={labelClass}>
-                      <Label className="text-sm font-medium">API Key</Label>
+                      <Label className="text-sm font-medium">API Key{apiKeyOptional && <span className="font-normal text-muted-foreground"> (optional)</span>}</Label>
                     </div>
                     <div className={controlWideClass}>
-                      <Input className={`h-9 ${fieldClass('api_key')}`} type="password" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} />
+                      <Input className={`h-9 ${fieldClass('api_key')}`} type="password" value={draft.api_key} onChange={(event) => update('api_key', event.target.value)} placeholder={apiKeyOptional ? 'Not required for this indexer' : ''} />
                     </div>
                   </div>
                 </div>

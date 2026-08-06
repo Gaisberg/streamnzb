@@ -55,8 +55,17 @@ func applyStreamAutoSelections(nextCfg *config.Config) {
 		}
 		if stream.AutoAddIndexers != nil && *stream.AutoAddIndexers {
 			stream.IndexerSelections = syncOrderedSelections(stream.IndexerSelections, enabledIndexers)
-			if stream.IndexerOverrides != nil {
+			// A non-empty overrides map acts as the selected-indexer set at
+			// search time, so every auto-added indexer needs an entry in it —
+			// otherwise it is silently excluded from all searches. Empty/nil
+			// maps mean "no restriction" and must stay empty.
+			if len(stream.IndexerOverrides) > 0 {
 				stream.IndexerOverrides = filterIndexerOverrides(stream.IndexerOverrides, stream.IndexerSelections)
+				for _, name := range stream.IndexerSelections {
+					if _, ok := stream.IndexerOverrides[name]; !ok {
+						stream.IndexerOverrides[name] = config.IndexerSearchConfig{}
+					}
+				}
 			}
 		}
 	}
