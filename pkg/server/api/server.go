@@ -16,15 +16,11 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
-	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/services/availnzb"
-	"streamnzb/pkg/services/metadata/tmdb"
-	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/nntp/proxy"
-	"streamnzb/pkg/usenet/validation"
 )
 
 type Server struct {
@@ -53,6 +49,12 @@ type Server struct {
 	metricsMu       sync.Mutex
 	lastMetricsAt   time.Time
 	metricsInFlight bool
+
+	// Config reloads are serialized through one worker; rapid saves coalesce
+	// so only the most recent pending config is applied.
+	reloadMu      sync.Mutex
+	pendingReload *config.Config
+	reloadActive  bool
 }
 
 type Client struct {
@@ -197,18 +199,19 @@ func (s *Server) ensureAvailNZBReadyForReload(newCfg *config.Config) {
 	}
 }
 
-func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
+func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScope) {
 	var oldProxy *proxy.Server
 	var oldPools map[string]*nntp.ClientPool
 	var newProxy *proxy.Server
+	// Providers feed the usenet pool the proxy serves from, so a pool swap
+	// forces a proxy restart even when the listener config itself is unchanged.
+	restartProxy := scope.Proxy || scope.Providers
 
 	s.mu.Lock()
-	if fullReload {
-		oldProxy = s.proxyServer
+	if scope.Providers {
 		oldPools = s.providerPools
 
 		s.providerPools = comp.ProviderPools
-		s.indexer = comp.Indexer
 		s.streamingPools = make([]*nntp.ClientPool, 0, len(comp.ProviderPools))
 		for _, p := range comp.ProviderPools {
 			s.streamingPools = append(s.streamingPools, p)
@@ -216,7 +219,13 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 		s.sessionMgr.UpdatePools(s.streamingPools)
 		s.sessionMgr.UpdateUsenetPool(comp.UsenetPool)
 	}
+	if restartProxy {
+		oldProxy = s.proxyServer
+	}
 
+	// comp carries the previous pointers for unchanged subsystems, so these
+	// assignments are no-ops unless the scope rebuilt them.
+	s.indexer = comp.Indexer
 	s.config = comp.Config
 	if s.sessionMgr != nil {
 		s.sessionMgr.SetTTL(time.Duration(comp.Config.EffectiveSessionTTLSeconds()) * time.Second)
@@ -236,17 +245,22 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 	}
 	s.mu.Unlock()
 
-	if fullReload {
-		if oldProxy != nil {
-			logger.Info("Stopping NNTP Proxy for reload...")
-			if err := oldProxy.Stop(); err != nil {
-				logger.Error("Failed to stop proxy", "err", err)
+	if restartProxy && oldProxy != nil {
+		logger.Info("Stopping NNTP Proxy for reload...")
+		if err := oldProxy.Stop(); err != nil {
+			logger.Error("Failed to stop proxy", "err", err)
+		}
+	}
+	if scope.Providers {
+		// Only tear down pools that were not carried over into the new set.
+		for name, pool := range oldPools {
+			if comp.ProviderPools[name] != pool {
+				pool.Shutdown()
 			}
 		}
-		for _, pool := range oldPools {
-			pool.Shutdown()
-		}
-
+		s.cleanupProviderUsageFromConfig(comp.Config)
+	}
+	if restartProxy {
 		if comp.Config.ProxyEnabled {
 			logger.Info("Restarting NNTP Proxy...", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
 			var err error
@@ -269,8 +283,9 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 			s.proxyServer = nil
 			s.mu.Unlock()
 		}
+	}
+	if scope.Indexers {
 		s.cleanupIndexerUsageFromConfig(comp.Config)
-		s.cleanupProviderUsageFromConfig(comp.Config)
 	}
 
 	logger.SetLevel(comp.Config.LogLevel)
@@ -290,33 +305,6 @@ func (s *Server) ReloadFromComponents(comp *app.Components, fullReload bool) {
 			StreamManager:        s.streamManager,
 		})
 	}
-}
-
-func (s *Server) Reload(cfg *config.Config, pools map[string]*nntp.ClientPool, indexers indexer.Indexer,
-	validator *validation.Checker, triage *triage.Service, avail *availnzb.Client, availNZBIndexerHosts map[string]string,
-	tmdbClient *tmdb.Client, tvdbClient *tvdb.Client) {
-	comp := &app.Components{
-		Config:               cfg,
-		Indexer:              indexers,
-		ProviderPools:        pools,
-		StreamingPools:       nil,
-		AvailNZBIndexerHosts: availNZBIndexerHosts,
-		Validator:            validator,
-		Triage:               triage,
-		AvailClient:          avail,
-		TMDBClient:           tmdbClient,
-		TVDBClient:           tvdbClient,
-	}
-	var streamingPools []*nntp.ClientPool
-	for _, p := range pools {
-		streamingPools = append(streamingPools, p)
-	}
-	comp.StreamingPools = streamingPools
-	comp.ProviderOrder = make([]string, 0, len(pools))
-	for name := range pools {
-		comp.ProviderOrder = append(comp.ProviderOrder, name)
-	}
-	s.ReloadFromComponents(comp, true)
 }
 
 func (s *Server) cleanupIndexerUsageFromConfig(cfg *config.Config) {

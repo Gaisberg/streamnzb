@@ -388,8 +388,6 @@ function App() {
                 sendCommand={sendCommand}
                 saveStatus={saveStatus}
                 clearSaveStatus={clearSaveStatus}
-                isSaving={isSaving}
-                onRefreshAvailNZBStatus={() => fetchAvailNZBStatus(true)}
                 adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
                 indexerCaps={indexerCaps}
                 stats={stats}

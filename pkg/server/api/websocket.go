@@ -291,29 +291,12 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 			return
 		}
 
-		// When only filter profiles change, the raw indexer search results are still
-		// valid — only the playlist (filtered/sorted) cache needs to be cleared so the
-		// new filter/sort rules are applied on the next request. This avoids re-querying
-		// indexers for what is effectively a cheap local re-filter/re-sort.
-		onlyFilterProfilesChanged := plan.validateFilterProfiles &&
-			!plan.validateProviders && !plan.validateIndexers &&
-			!plan.validateMovieSearchQueries && !plan.validateSeriesSearchQueries &&
-			!plan.validateIndexerProxyURL
-		if s.strmServer != nil {
-			if onlyFilterProfilesChanged {
-				s.strmServer.ClearPlaylistCaches()
-			} else {
-				s.strmServer.ClearSearchCaches()
-			}
-		}
+		cacheSuffix := s.clearCachesForScope(cacheClearScopeForPatch(payload))
 		s.reloadConfigAsync(&newCfg)
 
 		s.sendConfig(client)
 		s.sendIndexerCaps(client)
-		cacheMessage := "Configuration saved and reloaded. Search cache cleared."
-		if onlyFilterProfilesChanged {
-			cacheMessage = "Configuration saved and reloaded. Playlist cache cleared."
-		}
+		cacheMessage := "Configuration saved and reloaded." + cacheSuffix
 		trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(fmt.Sprintf(`{"status":"success","message":%q}`, cacheMessage))})
 		return
 	}
@@ -321,57 +304,85 @@ func (s *Server) handleSaveConfigWS(conn *websocket.Conn, client *Client, payloa
 	trySendWS(client, WSMessage{Type: "save_status", Payload: json.RawMessage(`{"status":"error","message":"Only admin can save global configuration"}`)})
 }
 
+// reloadConfigAsync schedules a reload of newCfg. Reloads are applied by a
+// single worker goroutine; if saves arrive faster than reloads complete, the
+// pending config is replaced so only the latest one is applied (latest-wins).
 func (s *Server) reloadConfigAsync(newCfg *config.Config) {
-	go func() {
-		s.ensureAvailNZBReadyForReload(newCfg)
+	s.reloadMu.Lock()
+	s.pendingReload = newCfg
+	if s.reloadActive {
+		s.reloadMu.Unlock()
+		return
+	}
+	s.reloadActive = true
+	s.reloadMu.Unlock()
 
-		if s.app != nil {
-			comp, fullReload, err := s.app.Reload(newCfg)
-			if err != nil {
-				logger.Error("Reload: App.Reload failed", "err", err)
+	go func() {
+		for {
+			s.reloadMu.Lock()
+			cfg := s.pendingReload
+			s.pendingReload = nil
+			if cfg == nil {
+				s.reloadActive = false
+				s.reloadMu.Unlock()
 				return
 			}
-			s.ReloadFromComponents(comp, fullReload)
-			logger.Info("Reload: configuration reloaded successfully", "full", fullReload)
-			return
+			s.reloadMu.Unlock()
+			s.reloadConfig(cfg)
 		}
-		base, err := initialization.BuildComponents(newCfg)
-		if err != nil {
-			logger.Error("Reload: BuildComponents failed", "err", err)
-			return
-		}
-		validator := validation.NewChecker(base.UsenetPool, 5, 6)
-		triageService := triage.NewService()
-		s.mu.RLock()
-		availNZBURL := s.availNZBURL
-		availNZBAPIKey := s.availNZBAPIKey
-		tmdbAPIKey := s.tmdbAPIKey
-		tvdbAPIKey := s.tvdbAPIKey
-		s.mu.RUnlock()
-		availClient := availnzb.NewClient(availNZBURL, availNZBAPIKey)
-		tmdbClient := tmdb.NewClient(tmdbAPIKey)
-		dataDir := filepath.Dir(base.Config.LoadedPath)
-		if dataDir == "" {
-			dataDir, _ = os.Getwd()
-		}
-		tvdbClient := tvdb.NewClient(tvdbAPIKey, dataDir)
-		comp := &app.Components{
-			Config:               base.Config,
-			Indexer:              base.Indexer,
-			ProviderPools:        base.ProviderPools,
-			ProviderOrder:        base.ProviderOrder,
-			StreamingPools:       base.StreamingPools,
-			AvailNZBIndexerHosts: base.AvailNZBIndexerHosts,
-			IndexerCaps:          base.IndexerCaps,
-			Validator:            validator,
-			Triage:               triageService,
-			AvailClient:          availClient,
-			TMDBClient:           tmdbClient,
-			TVDBClient:           tvdbClient,
-		}
-		s.ReloadFromComponents(comp, true)
-		logger.Info("Reload: configuration reloaded successfully")
 	}()
+}
+
+func (s *Server) reloadConfig(newCfg *config.Config) {
+	s.ensureAvailNZBReadyForReload(newCfg)
+
+	if s.app != nil {
+		comp, scope, err := s.app.Reload(newCfg)
+		if err != nil {
+			logger.Error("Reload: App.Reload failed", "err", err)
+			return
+		}
+		s.ReloadFromComponents(comp, scope)
+		logger.Info("Reload: configuration reloaded successfully",
+			"indexers", scope.Indexers, "providers", scope.Providers, "proxy", scope.Proxy)
+		return
+	}
+	base, err := initialization.BuildComponents(newCfg)
+	if err != nil {
+		logger.Error("Reload: BuildComponents failed", "err", err)
+		return
+	}
+	validator := validation.NewChecker(base.UsenetPool, 5, 6)
+	triageService := triage.NewService()
+	s.mu.RLock()
+	availNZBURL := s.availNZBURL
+	availNZBAPIKey := s.availNZBAPIKey
+	tmdbAPIKey := s.tmdbAPIKey
+	tvdbAPIKey := s.tvdbAPIKey
+	s.mu.RUnlock()
+	availClient := availnzb.NewClient(availNZBURL, availNZBAPIKey)
+	tmdbClient := tmdb.NewClient(tmdbAPIKey)
+	dataDir := filepath.Dir(base.Config.LoadedPath)
+	if dataDir == "" {
+		dataDir, _ = os.Getwd()
+	}
+	tvdbClient := tvdb.NewClient(tvdbAPIKey, dataDir)
+	comp := &app.Components{
+		Config:               base.Config,
+		Indexer:              base.Indexer,
+		ProviderPools:        base.ProviderPools,
+		ProviderOrder:        base.ProviderOrder,
+		StreamingPools:       base.StreamingPools,
+		AvailNZBIndexerHosts: base.AvailNZBIndexerHosts,
+		IndexerCaps:          base.IndexerCaps,
+		Validator:            validator,
+		Triage:               triageService,
+		AvailClient:          availClient,
+		TMDBClient:           tmdbClient,
+		TVDBClient:           tvdbClient,
+	}
+	s.ReloadFromComponents(comp, app.ReloadScopeFull())
+	logger.Info("Reload: configuration reloaded successfully")
 }
 
 func (s *Server) handleFetchCapsWS(client *Client) {
@@ -789,6 +800,91 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateTVDBAPIKey:             true,
 		validateSpeculativePreProbing:  true,
 		validateFilterProfiles:         true,
+	}
+}
+
+type cacheClearScope int
+
+const (
+	cacheClearNone cacheClearScope = iota
+	cacheClearPlaylist
+	cacheClearSearch
+)
+
+// patchKeysNoCacheImpact are config fields that affect neither raw indexer
+// results nor the filtered/sorted playlists built from them, so saving them
+// invalidates nothing.
+var patchKeysNoCacheImpact = map[string]bool{
+	"log_level":                           true,
+	"verbose_nntp_logging":                true,
+	"keep_log_files":                      true,
+	"nzb_history_retention_days":          true,
+	"playback_startup_timeout_seconds":    true,
+	"session_ttl_minutes":                 true,
+	"session_post_playback_ttl_minutes":   true,
+	"speculative_preprobing_max_attempts": true,
+	"speculative_pre_probing_count":       true,
+	"memory_limit_mb":                     true,
+	"mute_error_video":                    true,
+	"admin_username":                      true,
+	"proxy_enabled":                       true,
+	"proxy_host":                          true,
+	"proxy_port":                          true,
+	"proxy_auth_user":                     true,
+	"proxy_auth_pass":                     true,
+	"indexer_query_header":                true,
+	"indexer_grab_header":                 true,
+	"provider_header":                     true,
+	"library_auto_save":                   true,
+	"library_max_items":                   true,
+	"library_max_size_mb":                 true,
+	"ffprobe_path":                        true,
+}
+
+// patchKeysPlaylistOnly are config fields that change how cached raw results
+// are filtered, sorted, or annotated — the playlists must be rebuilt but the
+// raw indexer results stay valid.
+var patchKeysPlaylistOnly = map[string]bool{
+	"filter_profiles": true,
+	"availnzb_mode":   true,
+}
+
+// cacheClearScopeForPatch decides how much cached search state a config patch
+// invalidates. Unknown keys (and unparseable or full-config saves) clear the
+// search caches — the safe default for fields added later.
+func cacheClearScopeForPatch(body []byte) cacheClearScope {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || len(raw) == 0 {
+		return cacheClearSearch
+	}
+	scope := cacheClearNone
+	for key := range raw {
+		switch {
+		case patchKeysNoCacheImpact[key]:
+		case patchKeysPlaylistOnly[key]:
+			scope = max(scope, cacheClearPlaylist)
+		default:
+			return cacheClearSearch
+		}
+	}
+	return scope
+}
+
+// clearCachesForScope applies the computed scope and returns the suffix for
+// the save-status message ("" when nothing was cleared).
+func (s *Server) clearCachesForScope(scope cacheClearScope) string {
+	if s.strmServer == nil {
+		return ""
+	}
+	switch scope {
+	case cacheClearSearch:
+		s.strmServer.ClearSearchCaches()
+		return " Search cache cleared."
+	case cacheClearPlaylist:
+		s.strmServer.ClearPlaylistCaches()
+		return " Playlist cache cleared."
+	default:
+		return ""
 	}
 }
 

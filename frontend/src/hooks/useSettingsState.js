@@ -217,6 +217,7 @@ export function useSettingsState({
     memory: 'Memory & Cache',
     playback: 'Playback',
     availnzb: 'AvailNZB',
+    library: 'Library',
     metadata: 'Metadata APIs',
   }
   const successSuffix = saveStatus.type === 'success' && typeof saveStatus.msg === 'string' && saveStatus.msg.includes('Search cache cleared')
@@ -307,17 +308,17 @@ export function useSettingsState({
       setLastConfigSaveSource(sourceTab)
       await sendCommand('save_config', payload)
 
-      const nextInitialValues = overrides
-        ? {
-            ...configSnapshot,
-            ...Object.keys(overrides).reduce((acc, key) => {
-              acc[key] = trimmedFullData[key]
-              return acc
-            }, {}),
-          }
-        : trimmedFullData
-
-      setConfigSnapshot(nextInitialValues)
+      if (overrides) {
+        // Functional update: concurrent single-field auto-saves must merge
+        // into the latest snapshot, not a stale closure copy.
+        const applied = Object.keys(overrides).reduce((acc, key) => {
+          acc[key] = trimmedFullData[key]
+          return acc
+        }, {})
+        setConfigSnapshot((prev) => ({ ...prev, ...applied }))
+      } else {
+        setConfigSnapshot(trimmedFullData)
+      }
       return true
     } catch (error) {
       const summary = summarizeConfigErrors(error?.fieldErrors, sourceTab, {

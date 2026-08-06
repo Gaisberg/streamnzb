@@ -121,6 +121,8 @@ func (a *App) SetAvailNZBAPIKey(apiKey string) {
 	}
 }
 
+const validationSampleSize = 5
+
 func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error) {
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 	base, err := initialization.BuildComponents(cfg)
@@ -128,7 +130,6 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 		return nil, err
 	}
 
-	const validationSampleSize = 5
 	validator := validation.NewChecker(base.UsenetPool, validationSampleSize, 6)
 	triageSvc := triage.NewService()
 	availClient := availnzb.NewClient(opts.AvailNZBURL, opts.AvailNZBAPIKey)
@@ -160,39 +161,49 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 	}, nil
 }
 
-type ReloadScope int
+// ReloadScope describes which runtime subsystems a config change invalidates.
+// Each flag is independent so a reload rebuilds only what actually changed.
+type ReloadScope struct {
+	Indexers  bool
+	Providers bool
+	Proxy     bool
+}
 
-const (
-	ReloadConfigOnly ReloadScope = iota
-	ReloadIndexers
-	ReloadProviders
-	ReloadProxy
-	ReloadFull
-)
+func (s ReloadScope) Any() bool { return s.Indexers || s.Providers || s.Proxy }
+
+// ReloadScopeFull marks every subsystem changed — used when there is no prior
+// config to diff against.
+func ReloadScopeFull() ReloadScope {
+	return ReloadScope{Indexers: true, Providers: true, Proxy: true}
+}
 
 func ConfigChanged(old, new_ *config.Config) ReloadScope {
 	if old == nil || new_ == nil {
-		return ReloadFull
+		return ReloadScopeFull()
 	}
 
-	indexersChanged := !reflect.DeepEqual(old.Indexers, new_.Indexers)
-	providersChanged := !reflect.DeepEqual(old.Providers, new_.Providers)
-	proxyChanged := old.ProxyHost != new_.ProxyHost ||
-		old.ProxyPort != new_.ProxyPort ||
-		old.ProxyEnabled != new_.ProxyEnabled ||
-		old.ProxyAuthUser != new_.ProxyAuthUser ||
-		old.ProxyAuthPass != new_.ProxyAuthPass
-
-	if providersChanged || indexersChanged {
-		return ReloadFull
+	return ReloadScope{
+		Indexers:  !reflect.DeepEqual(old.Indexers, new_.Indexers),
+		Providers: !reflect.DeepEqual(old.Providers, new_.Providers),
+		Proxy: old.ProxyHost != new_.ProxyHost ||
+			old.ProxyPort != new_.ProxyPort ||
+			old.ProxyEnabled != new_.ProxyEnabled ||
+			old.ProxyAuthUser != new_.ProxyAuthUser ||
+			old.ProxyAuthPass != new_.ProxyAuthPass,
 	}
-	if proxyChanged {
-		return ReloadFull
-	}
-	return ReloadConfigOnly
 }
 
-func (a *App) Reload(newCfg *config.Config) (*Components, bool, error) {
+// refreshLightComponents applies the cheap per-reload swaps shared by every
+// non-full reload path: config pointer, triage state, and metadata clients.
+func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
+	comp.Config = newCfg
+	comp.Triage = triage.NewService()
+	comp.TMDBClient = tmdb.NewClient(a.effectiveTMDBKey())
+	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
+	comp.TVDBClient = tvdb.NewClient(a.effectiveTVDBKey(), dataDir)
+}
+
+func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -203,47 +214,46 @@ func (a *App) Reload(newCfg *config.Config) (*Components, bool, error) {
 	old := a.components
 	scope := ConfigChanged(old.Config, newCfg)
 
-	switch scope {
-	case ReloadConfigOnly:
-
-		logger.Info("Reload: config-only - no NNTP/indexer restart")
-		triageSvc := triage.NewService()
-		comp := *old
-		comp.Config = newCfg
-		comp.Triage = triageSvc
-		comp.TMDBClient = tmdb.NewClient(a.effectiveTMDBKey())
-		dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
-		comp.TVDBClient = tvdb.NewClient(a.effectiveTVDBKey(), dataDir)
-		a.components = &comp
-		return &comp, false, nil
-
-	case ReloadFull:
-		logger.Info("Reload: full rebuild (indexers or providers changed)")
+	if scope.Indexers && scope.Providers {
+		logger.Info("Reload: full rebuild (indexers and providers changed)")
 		comp, err := a.buildFull(newCfg, a.opts)
 		if err != nil {
-			return nil, true, err
+			return nil, scope, err
 		}
 		a.components = comp
-		return comp, true, nil
-
-	case ReloadProxy:
-		logger.Info("Reload: proxy config changed")
-		comp, err := a.buildFull(newCfg, a.opts)
-		if err != nil {
-			return nil, true, err
-		}
-		a.components = comp
-		return comp, true, nil
-
-	default:
-		logger.Info("Reload: indexers changed - full rebuild")
-		comp, err := a.buildFull(newCfg, a.opts)
-		if err != nil {
-			return nil, true, err
-		}
-		a.components = comp
-		return comp, true, nil
+		return comp, scope, nil
 	}
+
+	comp := *old
+	a.refreshLightComponents(&comp, newCfg)
+
+	if scope.Indexers {
+		logger.Info("Reload: rebuilding indexers - NNTP pools untouched")
+		stack := initialization.BuildIndexerStack(newCfg)
+		comp.Indexer = stack.Indexer
+		comp.QueryCache = stack.QueryCache
+		comp.IndexerCaps = stack.IndexerCaps
+		comp.AvailNZBIndexerHosts = stack.AvailNZBIndexerHosts
+	}
+	if scope.Providers {
+		logger.Info("Reload: rebuilding changed provider pools")
+		pools := initialization.BuildProviderPools(newCfg, old.Config, old.ProviderPools)
+		comp.ProviderPools = pools.Pools
+		comp.ProviderOrder = pools.Order
+		comp.StreamingPools = pools.StreamingPools
+		comp.UsenetPool = pools.UsenetPool
+		comp.SegmentCacheBudget = pools.SegmentCacheBudget
+		comp.Validator = validation.NewChecker(pools.UsenetPool, validationSampleSize, 6)
+	}
+	if scope.Proxy {
+		logger.Info("Reload: proxy config changed - restarting proxy listener only")
+	}
+	if !scope.Any() {
+		logger.Info("Reload: config-only - no NNTP/indexer restart")
+	}
+
+	a.components = &comp
+	return &comp, scope, nil
 }
 
 func (a *App) Components() *Components {

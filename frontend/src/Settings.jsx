@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Save, Filter } from "lucide-react"
+import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Filter } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
@@ -8,10 +8,8 @@ import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useSettingsState } from '@/hooks/useSettingsState'
 import { normalizeAvailNZBMode } from '@/lib/availnzb'
 import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from '@/lib/config'
@@ -50,8 +48,6 @@ function Settings({
   sendCommand,
   saveStatus,
   clearSaveStatus,
-  isSaving,
-  onRefreshAvailNZBStatus,
   indexerCaps,
   stats,
   activeTab: activeTabProp,
@@ -75,8 +71,6 @@ function Settings({
   const [liveStreamsByName, setLiveStreamsByName] = useState(initialConfig?.streams || {})
   const [globalIndexerProxyURL, setGlobalIndexerProxyURL] = useState('')
   const [savingGlobalIndexerProxy, setSavingGlobalIndexerProxy] = useState(false)
-  const networkSectionRef = useRef(null)
-  const advancedSectionRef = useRef(null)
 
   const form = useForm({
     defaultValues: {
@@ -230,18 +224,12 @@ function Settings({
 
   const handleTabChange = (nextTab) => {
     if (nextTab === activeTab) return
+    // Blur first so auto-save inputs on the Network/Advanced tabs commit any
+    // pending edit before the tab switches.
     if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur()
     }
     window.setTimeout(() => {
-      if (activeTab === 'network') {
-        networkSectionRef.current?.requestTabChange?.(nextTab)
-        return
-      }
-      if (activeTab === 'advanced') {
-        advancedSectionRef.current?.requestTabChange?.(nextTab)
-        return
-      }
       clearTransientStatus()
       setActiveTab(nextTab)
     }, 0)
@@ -271,19 +259,20 @@ function Settings({
     setError,
   })
 
-  const handleNetworkDirtyChange = useCallback(() => {}, [])
-
-  const handleAdvancedDirtyChange = useCallback(() => {}, [])
-
-  const handleNetworkProceedTabChange = useCallback((nextTab) => {
-    clearTransientStatus()
-    setActiveTab(nextTab)
-  }, [clearTransientStatus])
-
-  const handleAdvancedProceedTabChange = useCallback((nextTab) => {
-    clearTransientStatus()
-    setActiveTab(nextTab)
-  }, [clearTransientStatus])
+  const handleGlobalIndexerProxyBlur = async () => {
+    const saved = configSnapshot?.indexer_proxy_url || ''
+    if (globalIndexerProxyURL === saved || savingGlobalIndexerProxy) return
+    setSavingGlobalIndexerProxy(true)
+    try {
+      await submitSettings({ indexer_proxy_url: globalIndexerProxyURL }, 'indexers')
+      showFooterStatus({ type: 'success', message: 'Global indexer proxy saved. Search cache cleared.' })
+    } catch (error) {
+      showFooterStatus({ type: 'error', message: error?.message || 'Failed to save global indexer proxy.' })
+      setGlobalIndexerProxyURL(saved)
+    } finally {
+      setSavingGlobalIndexerProxy(false)
+    }
+  }
 
   if (loading) return null
   
@@ -322,12 +311,8 @@ function Settings({
 
         {activeTab === 'network' && (
         <NetworkSettingsSection
-          ref={networkSectionRef}
           initialValues={networkInitialValues}
           envOverrides={envOverrides}
-          isSaving={isSaving}
-          onDirtyChange={handleNetworkDirtyChange}
-          onProceedTabChange={handleNetworkProceedTabChange}
           onPersist={handleNetworkPersist}
           saveStatus={saveStatus}
           />
@@ -335,15 +320,10 @@ function Settings({
 
         {activeTab === 'advanced' && (
         <AdvancedSettingsSection
-          ref={advancedSectionRef}
           initialValues={advancedInitialValues}
           envOverrides={envOverrides}
-          isSaving={isSaving}
-          onDirtyChange={handleAdvancedDirtyChange}
-          onProceedTabChange={handleAdvancedProceedTabChange}
           onPersist={handleAdvancedPersist}
           onClearCache={handleClearCache}
-          onRefreshAvailNZBStatus={onRefreshAvailNZBStatus}
           saveStatus={saveStatus}
           />
         )}
@@ -363,38 +343,9 @@ function Settings({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
                     <CardTitle>Default Proxy</CardTitle>
-                    <CardDescription>Global HTTP(S) proxy used by indexers when a per-indexer proxy is not set.</CardDescription>
+                    <CardDescription>Global HTTP(S) proxy used by indexers when a per-indexer proxy is not set. Changes save automatically.</CardDescription>
                   </div>
-                  <TooltipProvider delayDuration={100}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="icon"
-                          className="h-9 w-9 shrink-0"
-                          onClick={async () => {
-                            setSavingGlobalIndexerProxy(true)
-                            try {
-                              const payload = { indexer_proxy_url: globalIndexerProxyURL }
-                              await submitSettings(payload, 'indexers')
-                              showFooterStatus({ type: 'success', message: `Global indexer proxy saved.${' Search cache cleared.'}` })
-                            } catch (error) {
-                              showFooterStatus({ type: 'error', message: error?.message || 'Failed to save global indexer proxy.' })
-                            } finally {
-                              setSavingGlobalIndexerProxy(false)
-                            }
-                          }}
-                          disabled={isSaving || savingGlobalIndexerProxy}
-                        >
-                          {(isSaving || savingGlobalIndexerProxy)
-                            ? <Loader2 className="h-4 w-4 animate-spin" />
-                            : <Save className="h-4 w-4" />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Save</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                  {savingGlobalIndexerProxy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -404,6 +355,7 @@ function Settings({
                     id="indexer-global-proxy"
                     value={globalIndexerProxyURL}
                     onChange={(event) => setGlobalIndexerProxyURL(event.target.value)}
+                    onBlur={handleGlobalIndexerProxyBlur}
                     placeholder="http://proxy:8888"
                     autoComplete="off"
                   />

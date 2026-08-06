@@ -62,9 +62,6 @@ func hostFromIndexerURL(rawURL string) string {
 
 func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 
-	var indexers []indexer.Indexer
-	availNzbHosts := make(map[string]string)
-
 	dataDir := paths.GetDataDir()
 	stateMgr, err := persistence.GetManager(dataDir)
 	if err != nil {
@@ -161,6 +158,46 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			})
 		})
 	}
+
+	stack := buildIndexerStack(cfg, stateMgr)
+	pools := buildProviderPools(cfg, stateMgr, nil, nil)
+
+	return &InitializedComponents{
+		Config:               cfg,
+		Indexer:              stack.Indexer,
+		QueryCache:           stack.QueryCache,
+		ProviderPools:        pools.Pools,
+		ProviderOrder:        pools.Order,
+		StreamingPools:       pools.StreamingPools,
+		UsenetPool:           pools.UsenetPool,
+		SegmentCacheBudget:   pools.SegmentCacheBudget,
+		AvailNZBIndexerHosts: stack.AvailNZBIndexerHosts,
+		IndexerCaps:          stack.IndexerCaps,
+	}, nil
+}
+
+// IndexerStack is the searchable indexer surface built from config: the
+// aggregator, its shared query cache, fetched caps, and AvailNZB host mapping.
+type IndexerStack struct {
+	Indexer              indexer.Indexer
+	QueryCache           *indexer.QueryCache
+	IndexerCaps          map[string]*indexer.Caps
+	AvailNZBIndexerHosts map[string]string
+}
+
+// BuildIndexerStack rebuilds only the indexer components, leaving NNTP pools
+// untouched. Used for reloads where just the indexer configuration changed.
+func BuildIndexerStack(cfg *config.Config) *IndexerStack {
+	stateMgr, err := persistence.GetManager(paths.GetDataDir())
+	if err != nil {
+		logger.Error("Failed to initialize state manager", "err", err)
+	}
+	return buildIndexerStack(cfg, stateMgr)
+}
+
+func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *IndexerStack {
+	var indexers []indexer.Indexer
+	availNzbHosts := make(map[string]string)
 
 	usageMgr, err := indexer.GetUsageManager(stateMgr)
 	if err != nil {
@@ -259,6 +296,50 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		logger.Info("Fetched indexer capabilities", "count", len(indexerCaps))
 	}
 
+	return &IndexerStack{
+		Indexer:              aggregator,
+		QueryCache:           queryCache,
+		IndexerCaps:          indexerCaps,
+		AvailNZBIndexerHosts: availNzbHosts,
+	}
+}
+
+// ProviderPoolSet is the NNTP side of the runtime built from config: one
+// client pool per enabled provider plus the priority-ordered usenet pool
+// wrapping them.
+type ProviderPoolSet struct {
+	Pools              map[string]*nntp.ClientPool
+	Order              []string
+	StreamingPools     []*nntp.ClientPool
+	UsenetPool         *pool.Pool
+	SegmentCacheBudget *pool.SegmentCacheBudget
+}
+
+// BuildProviderPools rebuilds provider pools, reusing pools from prevPools
+// whose connection settings are unchanged between prevCfg and cfg so their
+// established NNTP connections survive the reload. Pools left out of the
+// result are NOT shut down here — the caller owns teardown of dropped pools.
+func BuildProviderPools(cfg, prevCfg *config.Config, prevPools map[string]*nntp.ClientPool) *ProviderPoolSet {
+	stateMgr, err := persistence.GetManager(paths.GetDataDir())
+	if err != nil {
+		logger.Error("Failed to initialize state manager", "err", err)
+	}
+	return buildProviderPools(cfg, stateMgr, prevCfg, prevPools)
+}
+
+// providerConnEqual reports whether two provider entries dial the same
+// upstream identically. Priority and Enabled are excluded: they affect
+// ordering and membership, not the established connections.
+func providerConnEqual(a, b config.Provider) bool {
+	return a.Host == b.Host &&
+		a.Port == b.Port &&
+		a.UseSSL == b.UseSSL &&
+		a.Username == b.Username &&
+		a.Password == b.Password &&
+		a.Connections == b.Connections
+}
+
+func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, prevCfg *config.Config, prevPools map[string]*nntp.ClientPool) *ProviderPoolSet {
 	providerPools := make(map[string]*nntp.ClientPool)
 	var streamingPools []*nntp.ClientPool
 
@@ -268,6 +349,17 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 			logger.Error("Failed to initialize provider usage manager", "err", err)
 		} else {
 			providerUsageMgr = mgr
+		}
+	}
+
+	prevByName := make(map[string]config.Provider)
+	if prevCfg != nil {
+		for _, p := range prevCfg.Providers {
+			name := p.Name
+			if name == "" {
+				name = p.Host
+			}
+			prevByName[name] = p
 		}
 	}
 
@@ -293,6 +385,21 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 
 	providerOrder := make([]string, 0, len(providers))
 	for _, provider := range providers {
+		poolName := provider.Name
+		if poolName == "" {
+			poolName = provider.Host
+		}
+
+		if prev, ok := prevByName[poolName]; ok && providerConnEqual(prev, provider) {
+			if reused := prevPools[poolName]; reused != nil {
+				logger.Info("Reusing NNTP pool", "provider", poolName, "host", provider.Host)
+				providerPools[poolName] = reused
+				providerOrder = append(providerOrder, poolName)
+				streamingPools = append(streamingPools, reused)
+				continue
+			}
+		}
+
 		logger.Info("Initializing NNTP pool", "provider", provider.Name, "host", provider.Host, "conns", provider.Connections)
 
 		pool := nntp.NewClientPool(
@@ -307,11 +414,6 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		if err := pool.Validate(); err != nil {
 			logger.Error("Failed to initialize provider", "name", provider.Name, "host", provider.Host, "err", err)
 			continue
-		}
-
-		poolName := provider.Name
-		if poolName == "" {
-			poolName = provider.Host
 		}
 
 		if providerUsageMgr != nil {
@@ -369,16 +471,11 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 		}
 	}
 
-	return &InitializedComponents{
-		Config:               cfg,
-		Indexer:              aggregator,
-		QueryCache:           queryCache,
-		ProviderPools:        providerPools,
-		ProviderOrder:        providerOrder,
-		StreamingPools:       streamingPools,
-		UsenetPool:           usenetPool,
-		SegmentCacheBudget:   segmentCacheBudget,
-		AvailNZBIndexerHosts: availNzbHosts,
-		IndexerCaps:          indexerCaps,
-	}, nil
+	return &ProviderPoolSet{
+		Pools:              providerPools,
+		Order:              providerOrder,
+		StreamingPools:     streamingPools,
+		UsenetPool:         usenetPool,
+		SegmentCacheBudget: segmentCacheBudget,
+	}
 }

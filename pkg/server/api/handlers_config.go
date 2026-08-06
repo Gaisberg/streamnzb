@@ -147,14 +147,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeSaveStatus(w, "error", "Failed to save config: "+err.Error(), nil)
 		return
 	}
-	if s.strmServer != nil {
-		s.strmServer.ClearSearchCaches()
-	}
+	cacheSuffix := s.clearCachesForScope(cacheClearScopeForPatch(body))
 	s.reloadConfigAsync(&newCfg)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
-		"message": "Configuration saved and reloaded. Search cache cleared.",
+		"message": "Configuration saved and reloaded." + cacheSuffix,
 	})
 }
 

@@ -1,15 +1,16 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
-import { Loader2, AlertTriangle, Save, Paintbrush, Copy, Check } from "lucide-react"
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { Loader2, Paintbrush, Copy, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
 import { PasswordInput } from "@/components/ui/password-input"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { apiFetch } from '@/api'
+import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { normalizeAvailNZBMode } from "@/lib/availnzb"
 import { cn } from "@/lib/utils"
 
@@ -21,6 +22,10 @@ const CARD_FIELDS = {
   availnzb: ['availnzb_mode'],
   metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
+
+const FIELD_CARD = Object.fromEntries(
+  Object.entries(CARD_FIELDS).flatMap(([card, fields]) => fields.map((field) => [field, card]))
+)
 
 function pickInitialValues(values = {}) {
   const parsedRetentionDays = values.nzb_history_retention_days == null
@@ -60,49 +65,27 @@ function pickInitialValues(values = {}) {
   }
 }
 
-function EnvOverrideIndicator({ show, message = 'Overwritten by environment variable on restart.' }) {
-  if (!show) return null
-  return (
-    <TooltipProvider delayDuration={100}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button type="button" className="inline-flex items-center text-amber-600 hover:text-amber-700 align-middle" aria-label={message}>
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="start">{message}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-}
-
-export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSettingsSection({
+export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSection({
   initialValues,
   envOverrides,
-  isSaving,
   onPersist,
   onClearCache,
-  onRefreshAvailNZBStatus,
-  onDirtyChange,
-  onProceedTabChange,
   saveStatus,
-}, ref) {
+}) {
   const defaults = useMemo(() => pickInitialValues(initialValues), [initialValues])
-  const [lastSavedValues, setLastSavedValues] = useState(defaults)
-  const [savingCard, setSavingCard] = useState('')
   const [clearingCache, setClearingCache] = useState(false)
   const [showClearCacheConfirm, setShowClearCacheConfirm] = useState(false)
   const [showRestartConfirm, setShowRestartConfirm] = useState(false)
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
-  const [pendingTabChange, setPendingTabChange] = useState('')
-  const [showUnsavedHighlights, setShowUnsavedHighlights] = useState(false)
   const [availKeyInfo, setAvailKeyInfo] = useState({ key: '', url: '', status: null, loading: true })
   const [copiedKey, setCopiedKey] = useState(false)
-  const dirtyRef = useRef(false)
 
   const form = useForm({ defaultValues: defaults })
-  const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
-  const watchedValues = useWatch({ control })
+  const { control, reset, setError, clearErrors } = form
+  const { saveField, savingField, hasFieldChanged, revertField } = useFieldAutoSave({
+    form,
+    savedValues: defaults,
+    onPersist,
+  })
 
   const fetchAvailKeyInfo = useCallback(() => {
     apiFetch('/api/availnzb/status')
@@ -145,97 +128,21 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
     }
   }, [saveStatus, setError, clearErrors])
 
+  // Sync in fresh config values (post-save refetch, WS reconnect) without
+  // clobbering a field the user is currently editing.
   useEffect(() => {
-    const currentValues = pickInitialValues(watchedValues)
-    dirtyRef.current = JSON.stringify(currentValues) !== JSON.stringify(lastSavedValues)
-    onDirtyChange?.(dirtyRef.current)
-  }, [lastSavedValues, onDirtyChange, watchedValues])
+    reset(defaults, { keepDirtyValues: true })
+  }, [defaults, reset])
 
-  useEffect(() => {
-    reset(defaults)
-    setLastSavedValues(defaults)
-    dirtyRef.current = false
-    onDirtyChange?.(false)
-  }, [defaults, onDirtyChange, reset])
+  // Change-committing wrappers: switches and selects persist immediately,
+  // text/number inputs persist on blur when their value actually changed.
+  const commitField = (name) => { void saveField(name, FIELD_CARD[name]) }
+  const blurCommit = (field, name) => () => { field.onBlur(); commitField(name) }
 
-  useImperativeHandle(ref, () => ({
-    hasUnsavedChanges() {
-      return dirtyRef.current
-    },
-    discardChanges() {
-      reset(lastSavedValues)
-      dirtyRef.current = false
-      onDirtyChange?.(false)
-    },
-    requestTabChange(nextTab) {
-      if (!dirtyRef.current) {
-        onProceedTabChange(nextTab)
-        return true
-      }
-      setPendingTabChange(nextTab)
-      setShowDiscardConfirm(true)
-      return false
-    },
-  }), [lastSavedValues, onDirtyChange, onProceedTabChange, reset])
-
-  const saveCard = async (cardId) => {
-    setSavingCard(cardId)
-    try {
-      const values = getValues()
-      const payload = Object.fromEntries(CARD_FIELDS[cardId].map((key) => [key, values[key]]))
-      await onPersist(payload, cardId)
-      const nextValues = { ...lastSavedValues, ...payload }
-      setLastSavedValues(nextValues)
-      reset(nextValues)
-      dirtyRef.current = false
-      onDirtyChange?.(false)
-      setShowUnsavedHighlights(false)
-      if (cardId === 'availnzb') {
-        void onRefreshAvailNZBStatus?.()
-      }
-    } finally {
-      setSavingCard('')
-    }
+  const handleMemoryLimitBlur = (field) => () => {
+    field.onBlur()
+    if (hasFieldChanged('memory_limit_mb')) setShowRestartConfirm(true)
   }
-
-  const handleCardSave = (cardId) => handleSubmit(async () => {
-    if (cardId === 'memory' && formState.dirtyFields?.memory_limit_mb) {
-      setShowRestartConfirm(true)
-      return
-    }
-    await saveCard(cardId)
-  })()
-
-  const renderSaveButton = (cardId) => (
-    <TooltipProvider delayDuration={100}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon"
-            onClick={() => { void handleCardSave(cardId) }}
-            disabled={isSaving || formState.isSubmitting}
-            className="h-9 w-9"
-          >
-            {(isSaving || formState.isSubmitting) && savingCard === cardId
-              ? <Loader2 className="h-4 w-4 animate-spin" />
-              : <Save className="h-4 w-4" />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Save</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-
-  const fieldClassName = (fieldName, baseClassName = '') => cn(
-    baseClassName,
-    showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
-  )
-  const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
-  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
-  const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
-  const labelClass = "min-w-0 text-sm font-medium"
 
   const handleClearCacheClick = async () => {
     if (clearingCache) return
@@ -247,6 +154,17 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
     }
   }
 
+  const renderCardSpinner = (cardId) => (
+    savingField && CARD_FIELDS[cardId].includes(savingField)
+      ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      : null
+  )
+
+  const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
+  const labelClass = "min-w-0 text-sm font-medium"
+
   return (
     <Form {...form}>
       <form className="space-y-6">
@@ -257,9 +175,9 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
                     <CardTitle>Logs</CardTitle>
-                    <CardDescription>Log level and file retention.</CardDescription>
+                    <CardDescription>Log level and file retention. Changes save automatically.</CardDescription>
                   </div>
-                  <div className="flex items-center gap-2">{renderSaveButton('admin')}</div>
+                  <div className="flex items-center gap-2">{renderCardSpinner('admin')}</div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -270,7 +188,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <div className={stackedFieldRowClass}>
                           <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Log Level <EnvOverrideIndicator show={envOverrides.includes('log_level')} /></FormLabel>
                           <FormControl>
-                            <select className={fieldClassName('log_level', controlSelectClass)} {...field}>
+                            <select className={controlSelectClass} {...field} onChange={(e) => { field.onChange(e); commitField('log_level') }}>
                               <option value="DEBUG">DEBUG</option>
                               <option value="INFO">INFO</option>
                               <option value="WARN">WARN</option>
@@ -292,8 +210,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                           <FormControl>
                             <Switch
                               checked={field.value === true}
-                              onCheckedChange={field.onChange}
-                              className={showUnsavedHighlights && formState.dirtyFields?.verbose_nntp_logging ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                              onCheckedChange={(checked) => { field.onChange(checked); commitField('verbose_nntp_logging') }}
                             />
                           </FormControl>
                         </div>
@@ -306,7 +223,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                         <div className={stackedFieldRowClass}>
                           <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Keep log files <EnvOverrideIndicator show={envOverrides.includes('keep_log_files')} /></FormLabel>
-                          <FormControl><Input type="number" min={1} max={50} className={fieldClassName('keep_log_files', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 9 : Math.min(50, Math.max(1, Number(v) || 9))) }} /></FormControl>
+                          <FormControl><Input type="number" min={1} max={50} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 9 : Math.min(50, Math.max(1, Number(v) || 9))) }} onBlur={blurCommit(field, 'keep_log_files')} /></FormControl>
                         </div>
                         <FormDescription className="mt-3">Number of log files to keep. Oldest rotated logs are purged on restart.</FormDescription>
                         <FormMessage />
@@ -319,7 +236,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                       <FormItem className="rounded-none border-0 p-3">
                         <div className={stackedFieldRowClass}>
                           <FormLabel className={cn(labelClass, 'sm:flex-1')}>NZB history retention (days)</FormLabel>
-                          <FormControl><Input type="number" min={0} max={3650} className={fieldClassName('nzb_history_retention_days', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} /></FormControl>
+                          <FormControl><Input type="number" min={0} max={3650} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} onBlur={blurCommit(field, 'nzb_history_retention_days')} /></FormControl>
                         </div>
                         <FormDescription className="mt-3">Delete NZB history entries older than this many days on startup.</FormDescription>
                         <FormMessage />
@@ -337,7 +254,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <CardTitle>Playback</CardTitle>
                     <CardDescription>Startup behavior before the first playable response is sent.</CardDescription>
                   </div>
-                  <div className="shrink-0">{renderSaveButton('playback')}</div>
+                  <div className="shrink-0">{renderCardSpinner('playback')}</div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -346,7 +263,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <FormItem className="rounded-none border-0 p-3">
                       <div className={stackedFieldRowClass}>
                         <FormLabel className={cn(labelClass, 'sm:flex-1')}>Playback startup timeout (s)</FormLabel>
-                        <FormControl><Input type="number" min={1} max={60} className={fieldClassName('playback_startup_timeout_seconds', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 5 : Math.min(60, Math.max(1, Number.isNaN(next) ? 5 : next))) }} /></FormControl>
+                        <FormControl><Input type="number" min={1} max={60} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 5 : Math.min(60, Math.max(1, Number.isNaN(next) ? 5 : next))) }} onBlur={blurCommit(field, 'playback_startup_timeout_seconds')} /></FormControl>
                       </div>
                       <FormDescription className="mt-3">How long StreamNZB waits for the initial playback probe/open before failing over to the next release. Higher values reduce false startup timeouts but delay failover.</FormDescription>
                       <FormMessage />
@@ -362,7 +279,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                             type="number"
                             min={1}
                             max={1440}
-                            className={fieldClassName('session_ttl_minutes', `h-9 ${controlMediumClass}`)}
+                            className={`h-9 ${controlMediumClass}`}
                             {...field}
                             value={field.value ?? ''}
                             onChange={e => {
@@ -370,6 +287,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                               const next = Number(v);
                               field.onChange(v === '' ? 30 : Math.min(1440, Math.max(1, Number.isNaN(next) ? 30 : next)))
                             }}
+                            onBlur={blurCommit(field, 'session_ttl_minutes')}
                           />
                         </FormControl>
                       </div>
@@ -389,7 +307,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                             type="number"
                             min={1}
                             max={1440}
-                            className={fieldClassName('session_post_playback_ttl_minutes', `h-9 ${controlMediumClass}`)}
+                            className={`h-9 ${controlMediumClass}`}
                             {...field}
                             value={field.value ?? ''}
                             onChange={e => {
@@ -397,6 +315,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                               const next = Number(v);
                               field.onChange(v === '' ? 240 : Math.min(1440, Math.max(1, Number.isNaN(next) ? 240 : next)))
                             }}
+                            onBlur={blurCommit(field, 'session_post_playback_ttl_minutes')}
                           />
                         </FormControl>
                       </div>
@@ -416,7 +335,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                             type="number"
                             min={0}
                             max={5}
-                            className={fieldClassName('speculative_preprobing_max_attempts', `h-9 ${controlMediumClass}`)}
+                            className={`h-9 ${controlMediumClass}`}
                             {...field}
                             value={field.value ?? ''}
                             onChange={e => {
@@ -424,6 +343,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                               const next = Number(v);
                               field.onChange(v === '' ? 3 : Math.min(5, Math.max(0, Number.isNaN(next) ? 3 : next)))
                             }}
+                            onBlur={blurCommit(field, 'speculative_preprobing_max_attempts')}
                           />
                         </FormControl>
                       </div>
@@ -443,8 +363,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <FormControl>
                           <Switch
                             checked={field.value === true}
-                            onCheckedChange={(checked) => field.onChange(checked === true)}
-                            className={showUnsavedHighlights && formState.dirtyFields?.mute_error_video ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                            onCheckedChange={(checked) => { field.onChange(checked === true); commitField('mute_error_video') }}
                           />
                         </FormControl>
                       </div>
@@ -468,7 +387,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <CardTitle>AvailNZB</CardTitle>
                     <CardDescription>Configure how StreamNZB interacts with AvailNZB.</CardDescription>
                   </div>
-                  <div className="shrink-0">{renderSaveButton('availnzb')}</div>
+                  <div className="shrink-0">{renderCardSpinner('availnzb')}</div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -482,8 +401,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <FormControl>
                           <Switch
                             checked={normalizeAvailNZBMode(field.value) === 'on'}
-                            onCheckedChange={(checked) => field.onChange(checked ? 'on' : 'off')}
-                            className={showUnsavedHighlights && formState.dirtyFields?.availnzb_mode ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''}
+                            onCheckedChange={(checked) => { field.onChange(checked ? 'on' : 'off'); commitField('availnzb_mode') }}
                           />
                         </FormControl>
                       </div>
@@ -538,7 +456,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <CardTitle>Memory & Cache</CardTitle>
                     <CardDescription>Runtime memory limits and search cache maintenance.</CardDescription>
                   </div>
-                  <div className="shrink-0">{renderSaveButton('memory')}</div>
+                  <div className="shrink-0">{renderCardSpinner('memory')}</div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -547,7 +465,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <FormItem className="rounded-none border-0 p-3">
                       <div className={stackedFieldRowClass}>
                         <FormLabel className={cn(labelClass, 'sm:flex-1')}>Memory limit (MB)</FormLabel>
-                        <FormControl><Input type="number" min={0} className={fieldClassName('memory_limit_mb', `h-9 ${controlMediumClass}`)} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 0 : Number(v) || 0) }} /></FormControl>
+                        <FormControl><Input type="number" min={0} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; field.onChange(v === '' ? 0 : Number(v) || 0) }} onBlur={handleMemoryLimitBlur(field)} /></FormControl>
                       </div>
                       <FormDescription className="mt-3">Soft limit on total process memory (0 = no limit). Segment cache uses 80% of this. Restart required.</FormDescription>
                       <FormMessage />
@@ -576,7 +494,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                     <CardTitle>Library & Pre-Indexer Engine</CardTitle>
                     <CardDescription>Cache NZBs and probed archive blueprints locally to serve repeated requests in &lt; 5ms with 0 indexer API calls.</CardDescription>
                   </div>
-                  <div className="shrink-0">{renderSaveButton('library')}</div>
+                  <div className="shrink-0">{renderCardSpinner('library')}</div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -590,6 +508,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <FormControl>
                           <select
                             {...field}
+                            onChange={(e) => { field.onChange(e); commitField('library_search_mode') }}
                             className="h-9 w-full sm:w-[220px] rounded-md border border-input bg-background px-3 py-1 text-sm font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           >
                             <option value="library_first">Library First (Fastest)</option>
@@ -613,7 +532,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                         <FormControl>
                           <Switch
                             checked={field.value !== false}
-                            onCheckedChange={field.onChange}
+                            onCheckedChange={(checked) => { field.onChange(checked); commitField('library_auto_save') }}
                           />
                         </FormControl>
                       </div>
@@ -629,7 +548,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                           <FormLabel className={labelClass}>Max Cached Items</FormLabel>
                         </div>
                         <FormControl>
-                          <Input type="number" min={10} max={100000} {...field} onChange={e => field.onChange(Number(e.target.value))} className="h-9 w-full sm:w-[120px] font-mono text-xs" />
+                          <Input type="number" min={10} max={100000} {...field} onChange={e => field.onChange(Number(e.target.value))} onBlur={blurCommit(field, 'library_max_items')} className="h-9 w-full sm:w-[120px] font-mono text-xs" />
                         </FormControl>
                       </div>
                       <FormDescription className="mt-3">Maximum releases to store before LRU eviction deletes oldest entries. Default 5000.</FormDescription>
@@ -649,7 +568,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                 <CardTitle>Metadata APIs</CardTitle>
                 <CardDescription>Optional API keys and tokens for metadata enrichment during search and matching. Built-in defaults are available, but using your own credentials is recommended.</CardDescription>
               </div>
-              <div className="shrink-0">{renderSaveButton('metadata')}</div>
+              <div className="shrink-0">{renderCardSpinner('metadata')}</div>
             </div>
           </CardHeader>
           <CardContent>
@@ -658,7 +577,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                 <FormItem className="rounded-none border-0 p-3">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
                     <FormLabel className="min-w-0 text-sm font-medium xl:flex-1 flex items-center gap-1.5">TMDB Read Access Token <EnvOverrideIndicator show={envOverrides.includes('tmdb_api_key')} /></FormLabel>
-                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className={fieldClassName('tmdb_api_key', 'h-9 w-full font-mono text-xs')} {...field} value={field.value || ''} /></div></FormControl>
+                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className="h-9 w-full font-mono text-xs" {...field} value={field.value || ''} onBlur={blurCommit(field, 'tmdb_api_key')} /></div></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used for localized titles, year enrichment, and text-based movie/show name resolution. Without it, text-search metadata is limited and some requests fall back to ID-only behavior.</FormDescription>
                   <FormMessage />
@@ -669,7 +588,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
                     <FormLabel className="min-w-0 text-sm font-medium xl:flex-1 flex items-center gap-1.5">TVDB API Key <EnvOverrideIndicator show={envOverrides.includes('tvdb_api_key')} /></FormLabel>
-                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className={fieldClassName('tvdb_api_key', 'h-9 w-full font-mono text-xs')} {...field} value={field.value || ''} /></div></FormControl>
+                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className="h-9 w-full font-mono text-xs" {...field} value={field.value || ''} onBlur={blurCommit(field, 'tvdb_api_key')} /></div></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used primarily for series metadata ID resolution. When available, StreamNZB can resolve TVDB IDs directly before falling back to TMDB-based lookup.</FormDescription>
                   <FormMessage />
@@ -681,15 +600,17 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
 
         <ConfirmDialog
           open={showRestartConfirm}
-          onOpenChange={setShowRestartConfirm}
+          onOpenChange={(nextOpen) => {
+            setShowRestartConfirm(nextOpen)
+            if (!nextOpen) revertField('memory_limit_mb')
+          }}
           title="Restart required"
           description="Changing the memory limit requires a StreamNZB restart. Do you want to save this change now?"
           confirmLabel="Save"
           confirmVariant="destructive"
           onConfirm={() => {
             setShowRestartConfirm(false)
-            setShowUnsavedHighlights(false)
-            void saveCard('memory')
+            commitField('memory_limit_mb')
           }}
         />
         <ConfirmDialog
@@ -703,30 +624,7 @@ export const AdvancedSettingsSection = React.memo(forwardRef(function AdvancedSe
             void handleClearCacheClick()
           }}
         />
-        <ConfirmDialog
-          open={showDiscardConfirm}
-          onOpenChange={(nextOpen) => {
-            setShowDiscardConfirm(nextOpen)
-            if (!nextOpen) {
-              setPendingTabChange('')
-              if (dirtyRef.current) setShowUnsavedHighlights(true)
-            }
-          }}
-          title="Discard advanced changes?"
-          description="Your unsaved changes in the Advanced tab will be lost."
-          confirmLabel="Discard"
-          onConfirm={() => {
-            const nextTab = pendingTabChange
-            setShowDiscardConfirm(false)
-            setPendingTabChange('')
-            reset(lastSavedValues)
-            dirtyRef.current = false
-            onDirtyChange?.(false)
-            setShowUnsavedHighlights(false)
-            if (nextTab) onProceedTabChange(nextTab)
-          }}
-        />
       </form>
     </Form>
   )
-}))
+})

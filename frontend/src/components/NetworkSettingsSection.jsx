@@ -1,20 +1,31 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
-import { AlertTriangle, Loader2, Save } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import React, { useEffect, useMemo, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { Loader2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
 import { Switch } from "@/components/ui/switch"
 import { PasswordInput } from "@/components/ui/password-input"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
+import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { cn } from "@/lib/utils"
 
 const CARD_FIELDS = {
   addon: ['addon_base_url', 'addon_port'],
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   useragent: ['indexer_query_header', 'indexer_grab_header', 'provider_header'],
+}
+
+const FIELD_CARD = Object.fromEntries(
+  Object.entries(CARD_FIELDS).flatMap(([card, fields]) => fields.map((field) => [field, card]))
+)
+
+// Ports require a restart to take effect; their save is gated behind a
+// confirm dialog instead of committing silently on blur.
+const RESTART_CONFIRM_FIELDS = {
+  addon_port: 'Changing the addon port requires a StreamNZB restart. Do you want to save this change now?',
+  proxy_port: 'Changing the NNTP proxy port requires a StreamNZB restart. Do you want to save this change now?',
 }
 
 function pickInitialValues(values = {}) {
@@ -32,45 +43,23 @@ function pickInitialValues(values = {}) {
   }
 }
 
-function EnvOverrideIndicator({ show, message = 'Overwritten by environment variable on restart.' }) {
-  if (!show) return null
-  return (
-    <TooltipProvider delayDuration={100}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button type="button" className="inline-flex items-center text-amber-600 hover:text-amber-700 align-middle" aria-label={message}>
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="start">{message}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
-}
-
-export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSettingsSection({
+export const NetworkSettingsSection = React.memo(function NetworkSettingsSection({
   initialValues,
   envOverrides,
-  isSaving,
   onPersist,
-  onDirtyChange,
-  onProceedTabChange,
   saveStatus,
-}, ref) {
+}) {
   const defaults = useMemo(() => pickInitialValues(initialValues), [initialValues])
-  const [lastSavedValues, setLastSavedValues] = useState(defaults)
-  const [savingCard, setSavingCard] = useState('')
-  const [showRestartConfirm, setShowRestartConfirm] = useState(false)
-  const [restartTarget, setRestartTarget] = useState('')
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
-  const [pendingTabChange, setPendingTabChange] = useState('')
-  const [showUnsavedHighlights, setShowUnsavedHighlights] = useState(false)
-  const dirtyRef = useRef(false)
+  const [restartConfirmField, setRestartConfirmField] = useState('')
 
   const form = useForm({ defaultValues: defaults })
-  const { control, handleSubmit, reset, getValues, formState, setError, clearErrors } = form
-  const watchedValues = useWatch({ control })
+  const { control, reset, setError, clearErrors } = form
   const proxyEnabled = form.watch('proxy_enabled') !== false
+  const { saveField, savingField, hasFieldChanged, revertField } = useFieldAutoSave({
+    form,
+    savedValues: defaults,
+    onPersist,
+  })
 
   useEffect(() => {
     if (saveStatus?.type === 'error' && saveStatus.errors) {
@@ -84,96 +73,28 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
     }
   }, [saveStatus, setError, clearErrors])
 
+  // Sync in fresh config values (post-save refetch, WS reconnect) without
+  // clobbering a field the user is currently editing.
   useEffect(() => {
-    const currentValues = pickInitialValues(watchedValues)
-    dirtyRef.current = JSON.stringify(currentValues) !== JSON.stringify(lastSavedValues)
-    onDirtyChange?.(dirtyRef.current)
-  }, [lastSavedValues, onDirtyChange, watchedValues])
+    reset(defaults, { keepDirtyValues: true })
+  }, [defaults, reset])
 
-  useEffect(() => {
-    reset(defaults)
-    setLastSavedValues(defaults)
-    dirtyRef.current = false
-    onDirtyChange?.(false)
-  }, [defaults, onDirtyChange, reset])
-
-  useImperativeHandle(ref, () => ({
-    hasUnsavedChanges() {
-      return dirtyRef.current
-    },
-    discardChanges() {
-      reset(lastSavedValues)
-      dirtyRef.current = false
-      onDirtyChange?.(false)
-    },
-    requestTabChange(nextTab) {
-      if (!dirtyRef.current) {
-        onProceedTabChange(nextTab)
-        return true
-      }
-      setPendingTabChange(nextTab)
-      setShowDiscardConfirm(true)
-      return false
-    },
-  }), [lastSavedValues, onDirtyChange, onProceedTabChange, reset])
-
-  const saveCard = async (cardId) => {
-    setSavingCard(cardId)
-    try {
-      const values = getValues()
-      const payload = Object.fromEntries(CARD_FIELDS[cardId].map((key) => [key, values[key]]))
-      await onPersist(payload, cardId)
-      const nextValues = { ...lastSavedValues, ...payload }
-      setLastSavedValues(nextValues)
-      reset(nextValues)
-      dirtyRef.current = false
-      onDirtyChange?.(false)
-      setShowUnsavedHighlights(false)
-    } finally {
-      setSavingCard('')
+  const commitField = (name) => { void saveField(name, FIELD_CARD[name]) }
+  const blurCommit = (field, name) => () => {
+    field.onBlur()
+    if (RESTART_CONFIRM_FIELDS[name]) {
+      if (hasFieldChanged(name)) setRestartConfirmField(name)
+      return
     }
+    commitField(name)
   }
 
-  const handleCardSave = (cardId) => handleSubmit(async () => {
-    if (cardId === 'addon' && formState.dirtyFields?.addon_port) {
-      setRestartTarget('addon')
-      setShowRestartConfirm(true)
-      return
-    }
-    if (cardId === 'proxy' && formState.dirtyFields?.proxy_port) {
-      setRestartTarget('proxy')
-      setShowRestartConfirm(true)
-      return
-    }
-    await saveCard(cardId)
-  })()
-
-  const renderSaveButton = (cardId) => (
-    <TooltipProvider delayDuration={100}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon"
-            onClick={() => { void handleCardSave(cardId) }}
-            disabled={isSaving || formState.isSubmitting}
-            className="h-9 w-9"
-          >
-            {(isSaving || formState.isSubmitting) && savingCard === cardId
-              ? <Loader2 className="h-4 w-4 animate-spin" />
-              : <Save className="h-4 w-4" />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Save</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+  const renderCardSpinner = (cardId) => (
+    savingField && CARD_FIELDS[cardId].includes(savingField)
+      ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      : null
   )
 
-  const fieldClassName = (fieldName, baseClassName = '') => cn(
-    baseClassName,
-    showUnsavedHighlights && formState.dirtyFields?.[fieldName] && 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive'
-  )
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
   const controlWideClass = "w-full min-w-0 sm:max-w-xs"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
@@ -188,9 +109,9 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
                   <CardTitle>Addon</CardTitle>
-                  <CardDescription>Configure how the Stremio addon listens and is accessed.</CardDescription>
+                  <CardDescription>Configure how the Stremio addon listens and is accessed. Changes save automatically.</CardDescription>
                 </div>
-                <div className="shrink-0">{renderSaveButton('addon')}</div>
+                <div className="shrink-0">{renderCardSpinner('addon')}</div>
               </div>
             </CardHeader>
             <CardContent>
@@ -199,7 +120,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <FormItem className="rounded-none border-0 p-3">
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Base URL <EnvOverrideIndicator show={envOverrides.includes('addon_base_url')} /></FormLabel>
-                      <FormControl><Input placeholder="http://localhost:7000" className={fieldClassName('addon_base_url', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
+                      <FormControl><Input placeholder="http://localhost:7000" className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'addon_base_url')} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The public base URL clients use to reach your StreamNZB addon.</FormDescription>
                     <FormMessage />
@@ -210,7 +131,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Port <EnvOverrideIndicator show={envOverrides.includes('addon_port')} /></FormLabel>
-                      <FormControl><Input type="number" className={fieldClassName('addon_port', `h-9 ${controlMediumClass}`)} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
+                      <FormControl><Input type="number" className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'addon_port')} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The local port where the addon server listens.</FormDescription>
                     <FormMessage />
@@ -227,7 +148,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <CardTitle>NNTP Proxy Server</CardTitle>
                   <CardDescription>Allow other apps (SABnzbd, NZBGet) to use StreamNZB as a localized news server.</CardDescription>
                 </div>
-                <div className="shrink-0">{renderSaveButton('proxy')}</div>
+                <div className="shrink-0">{renderCardSpinner('proxy')}</div>
               </div>
               {(envOverrides.includes('proxy_port') || envOverrides.includes('proxy_host') || envOverrides.includes('proxy_enabled') || envOverrides.includes('proxy_auth_user') || envOverrides.includes('proxy_auth_pass')) && (
                 <div className="mt-1">
@@ -241,7 +162,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <FormItem className="rounded-md border border-border/60 p-3">
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={labelClass}>Enable NNTP Proxy</FormLabel>
-                      <FormControl><Switch checked={field.value !== false} onCheckedChange={field.onChange} className={showUnsavedHighlights && formState.dirtyFields?.proxy_enabled ? 'ring-2 ring-destructive ring-offset-2 ring-offset-background' : ''} /></FormControl>
+                      <FormControl><Switch checked={field.value !== false} onCheckedChange={(checked) => { field.onChange(checked); commitField('proxy_enabled') }} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Turn the local NNTP proxy server on or off.</FormDescription>
                   </FormItem>
@@ -252,7 +173,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <FormItem className="rounded-none border-0 p-3">
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'sm:flex-1')}>Bind Host</FormLabel>
-                      <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} className={fieldClassName('proxy_host', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
+                      <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'proxy_host')} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Which local address the proxy server should bind to.</FormDescription>
                     <FormMessage />
@@ -263,7 +184,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'sm:flex-1')}>Port</FormLabel>
-                      <FormControl><Input type="number" disabled={!proxyEnabled} className={fieldClassName('proxy_port', `h-9 ${controlMediumClass}`)} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} /></FormControl>
+                      <FormControl><Input type="number" disabled={!proxyEnabled} className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'proxy_port')} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">The port other apps use when connecting to the local NNTP proxy.</FormDescription>
                     <FormMessage />
@@ -274,7 +195,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Username</FormLabel>
-                      <FormControl><Input disabled={!proxyEnabled} className={fieldClassName('proxy_auth_user', `h-9 ${controlWideClass}`)} {...field} /></FormControl>
+                      <FormControl><Input disabled={!proxyEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'proxy_auth_user')} /></FormControl>
                     </div>
                     <FormDescription className="mt-3">Optional username clients must provide when using the proxy.</FormDescription>
                     <FormMessage />
@@ -287,7 +208,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                       <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Password</FormLabel>
                       <FormControl>
                         <div className={controlWideClass}>
-                          <PasswordInput disabled={!proxyEnabled} className={fieldClassName('proxy_auth_pass', 'h-9 w-full')} {...field} />
+                          <PasswordInput disabled={!proxyEnabled} className="h-9 w-full" {...field} onBlur={blurCommit(field, 'proxy_auth_pass')} />
                         </div>
                       </FormControl>
                     </div>
@@ -307,7 +228,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                 <CardTitle>User-Agent</CardTitle>
                 <CardDescription>Custom User-Agent headers for indexer queries, NZB grabs, and provider-facing requests.</CardDescription>
               </div>
-              <div className="shrink-0">{renderSaveButton('useragent')}</div>
+              <div className="shrink-0">{renderCardSpinner('useragent')}</div>
             </div>
           </CardHeader>
           <CardContent>
@@ -316,7 +237,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                 <FormItem className="rounded-none border-0 p-3">
                   <div className={stackedFieldRowClass}>
                     <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Indexer Query Header <EnvOverrideIndicator show={envOverrides.includes('indexer_query_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('indexer_query_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="Prowlarr/2.3.0.5236" /></FormControl>
+                    <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="Prowlarr/2.3.0.5236" onBlur={blurCommit(field, 'indexer_query_header')} /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used for indexer search and capability requests.</FormDescription>
                   <FormMessage />
@@ -327,7 +248,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                   <div className={stackedFieldRowClass}>
                     <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Indexer Grab Header <EnvOverrideIndicator show={envOverrides.includes('indexer_grab_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('indexer_grab_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="SABnzbd/4.5.5" /></FormControl>
+                    <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="SABnzbd/4.5.5" onBlur={blurCommit(field, 'indexer_grab_header')} /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used when grabbing NZBs from indexers.</FormDescription>
                   <FormMessage />
@@ -338,7 +259,7 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
                   <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                   <div className={stackedFieldRowClass}>
                     <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Provider Header <EnvOverrideIndicator show={envOverrides.includes('provider_header')} /></FormLabel>
-                    <FormControl><Input className={fieldClassName('provider_header', `h-9 ${controlWideClass}`)} {...field} value={field.value || ''} placeholder="VLC/1.2.3.4" /></FormControl>
+                    <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="VLC/1.2.3.4" onBlur={blurCommit(field, 'provider_header')} /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Custom provider-facing User-Agent header.</FormDescription>
                   <FormMessage />
@@ -349,49 +270,24 @@ export const NetworkSettingsSection = React.memo(forwardRef(function NetworkSett
         </Card>
 
         <ConfirmDialog
-          open={showRestartConfirm}
+          open={!!restartConfirmField}
           onOpenChange={(nextOpen) => {
-            setShowRestartConfirm(nextOpen)
-            if (!nextOpen) setRestartTarget('')
+            if (!nextOpen) {
+              if (restartConfirmField) revertField(restartConfirmField)
+              setRestartConfirmField('')
+            }
           }}
           title="Restart required"
-          description={restartTarget === 'proxy'
-            ? 'Changing the NNTP proxy port requires a StreamNZB restart. Do you want to save this change now?'
-            : 'Changing the addon port requires a StreamNZB restart. Do you want to save this change now?'}
+          description={RESTART_CONFIRM_FIELDS[restartConfirmField] || ''}
           confirmLabel="Save"
           confirmVariant="destructive"
           onConfirm={() => {
-            const target = restartTarget || 'addon'
-            setShowRestartConfirm(false)
-            setRestartTarget('')
-            setShowUnsavedHighlights(false)
-            void saveCard(target)
-          }}
-        />
-        <ConfirmDialog
-          open={showDiscardConfirm}
-          onOpenChange={(nextOpen) => {
-            setShowDiscardConfirm(nextOpen)
-            if (!nextOpen) {
-              setPendingTabChange('')
-              if (dirtyRef.current) setShowUnsavedHighlights(true)
-            }
-          }}
-          title="Discard network changes?"
-          description="Your unsaved changes in the Network tab will be lost."
-          confirmLabel="Discard"
-          onConfirm={() => {
-            const nextTab = pendingTabChange
-            setShowDiscardConfirm(false)
-            setPendingTabChange('')
-            reset(lastSavedValues)
-            dirtyRef.current = false
-            onDirtyChange?.(false)
-            setShowUnsavedHighlights(false)
-            if (nextTab) onProceedTabChange(nextTab)
+            const target = restartConfirmField
+            setRestartConfirmField('')
+            if (target) commitField(target)
           }}
         />
       </form>
     </Form>
   )
-}))
+})
