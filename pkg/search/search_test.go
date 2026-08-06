@@ -153,6 +153,38 @@ func TestValidateSearchResultsWithStatsCountsSeriesEpisodeMatches(t *testing.T) 
 	}
 }
 
+// Anime absolute numbering: with an absolute episode set, releases named with
+// the absolute number (dash style, S01Exxx style, or bare) must be accepted
+// even though their parsed season/episode do not match the TVDB-style request.
+func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "One.Piece.S02E02.1080p.WEB-DL.x264-GROUP"},     // standard match
+		{Title: "[Judas] One Piece - 63 (1080p) [ABCD1234]"},    // absolute, dash style
+		{Title: "One.Piece.S01E63.1080p.WEB-DL.AAC2.0-HatSubs"}, // absolute, S01Exxx style
+		{Title: "[Judas] One Piece - 62 (1080p) [ABCD1234]"},    // wrong absolute episode
+		{Title: "One.Piece.S02E05.1080p.WEB-DL.x264-GROUP"},     // wrong episode
+	}
+
+	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "series", []string{"One Piece"}, "2", "2", "63", true, false)
+
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 accepted results, got %d: %+v", len(filtered), stats)
+	}
+	if stats.DroppedEpisodeRequest != 2 {
+		t.Fatalf("expected 2 episode-request rejections, got %d", stats.DroppedEpisodeRequest)
+	}
+	if stats.AcceptedExactEpisode != 3 {
+		t.Fatalf("expected 3 exact episode matches, got %d", stats.AcceptedExactEpisode)
+	}
+
+	// Without the absolute number the same absolute-styled releases must
+	// still be dropped — the widening only applies when it is known.
+	filtered, _ = ValidateSearchResultsWithStatsForQueries(releases, "series", []string{"One Piece"}, "2", "2", "", true, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected only the standard release without absolute, got %d", len(filtered))
+	}
+}
+
 func TestValidateSearchResultsWithStatsCountsMovieTitleAndYearDrops(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "The.Patriot.2000.1080p.BluRay.x264-GROUP"},
@@ -218,7 +250,7 @@ func TestValidateSearchResultsWithStatsForQueriesMatchesAnyExpectedTitle(t *test
 		{Title: "Koenig.der.Loewen.1994.1080p.BluRay.x264-GROUP"},
 	}
 
-	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "movie", []string{"The Lion King 1994", "Koenig der Loewen 1994"}, "", "", true, true)
+	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "movie", []string{"The Lion King 1994", "Koenig der Loewen 1994"}, "", "", "", true, true)
 
 	if len(filtered) != 1 {
 		t.Fatalf("expected multilingual validation to accept a matching alternate title, got %d results", len(filtered))

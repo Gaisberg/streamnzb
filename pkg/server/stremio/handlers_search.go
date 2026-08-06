@@ -903,6 +903,100 @@ func buildSeriesQueriesFromMetadata(metadata *resolvedSearchMetadata, language s
 	return queries
 }
 
+// absoluteEpisodeFromMetadata converts a season/episode request into the anime
+// absolute episode number (e.g. One Piece S02E02 -> 63) by summing the episode
+// counts of all prior seasons from TMDB metadata. Season 1 maps directly.
+// Returns 0 when the number cannot be derived (missing metadata or gaps in the
+// season list).
+func absoluteEpisodeFromMetadata(metadata *resolvedSearchMetadata, seasonStr, episodeStr string) int {
+	season, _ := strconv.Atoi(seasonStr)
+	episode, _ := strconv.Atoi(episodeStr)
+	if season <= 0 || episode <= 0 {
+		return 0
+	}
+	if season == 1 {
+		return episode
+	}
+	if metadata == nil || metadata.TVDetails == nil {
+		return 0
+	}
+	counts := make(map[int]int, len(metadata.TVDetails.Seasons))
+	for _, seasonInfo := range metadata.TVDetails.Seasons {
+		counts[seasonInfo.SeasonNumber] = seasonInfo.EpisodeCount
+	}
+	total := 0
+	for prior := 1; prior < season; prior++ {
+		count, ok := counts[prior]
+		if !ok || count <= 0 {
+			return 0
+		}
+		total += count
+	}
+	return total + episode
+}
+
+// prepareAbsoluteScopeRequest turns an absolute-scope series request into
+// absolute-numbered queries ("One Piece 63" for S02E02) — the naming anime
+// indexers and fansub groups use — and marks the request so validation accepts
+// absolute-numbered releases. Returns false when the request should be skipped:
+// non-text query, non-anime content, Kitsu (already absolute), or an absolute
+// number that cannot be derived from metadata.
+func (s *Server) prepareAbsoluteScopeRequest(params *SearchParams, searchMode, streamLabel string, searchQuery *config.SearchQueryConfig) bool {
+	if params == nil || params.ContentType != "series" {
+		return false
+	}
+	req := &params.Req
+	skip := func(reason string) bool {
+		logger.Debug("Skipping absolute-scope search request",
+			"stream", streamLabel,
+			"request", req.RequestLabel,
+			"reason", reason,
+		)
+		return false
+	}
+	if searchMode == "id" {
+		return skip("absolute scope requires text search mode")
+	}
+	if req.KitsuID != "" {
+		return skip("kitsu episode is already absolute")
+	}
+	if !metadataLooksLikeAnime(params.Metadata, params.ContentType) {
+		return skip("content not detected as anime")
+	}
+	absolute := absoluteEpisodeFromMetadata(params.Metadata, req.Season, req.Episode)
+	if absolute <= 0 {
+		return skip("absolute episode not derivable from metadata")
+	}
+
+	language := ""
+	if searchQuery != nil {
+		language = config.NormalizeSearchTitleLanguage(searchQuery.SearchTitleLanguage)
+	}
+	var queries []string
+	for _, title := range buildSeriesQueriesFromMetadata(params.Metadata, language, false, "", "", config.SeriesSearchScopeNone) {
+		if strings.TrimSpace(title) == "" {
+			continue
+		}
+		queries = appendUniqueSearchQuery(queries, fmt.Sprintf("%s %02d", title, absolute))
+	}
+	if len(queries) == 0 {
+		return skip("no titles available for absolute query")
+	}
+
+	req.AbsoluteEpisode = strconv.Itoa(absolute)
+	params.PreparedQueries = queries
+	req.Query = queries[0]
+	logger.Debug("Absolute-scope search request prepared",
+		"stream", streamLabel,
+		"request", req.RequestLabel,
+		"season", req.Season,
+		"episode", req.Episode,
+		"absolute_episode", absolute,
+		"queries", len(queries),
+	)
+	return true
+}
+
 func logMetadataLookup(streamLabel, contentType, id string) {
 	logger.Debug("Get metadata",
 		"stream", streamLabel,
@@ -1065,6 +1159,11 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 		applyStreamIndexerSelection(&profileParams.Req, stream)
 		profileParams.Req.DisableResultFiltering = stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" || strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "none") || streamUsesAIOStreamsProfile(stream)
 		searchMode := strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
+		if contentType == "series" && config.NormalizeSeriesSearchScope(searchQuery.SeriesSearchScope) == config.SeriesSearchScopeAbsolute {
+			if !s.prepareAbsoluteScopeRequest(profileParams, searchMode, streamLabel, searchQuery) {
+				continue
+			}
+		}
 		validationQueries := append([]string(nil), profileParams.Req.ValidationQueries...)
 		if len(validationQueries) == 0 && strings.TrimSpace(profileParams.Req.ValidationQuery) != "" {
 			validationQueries = []string{profileParams.Req.ValidationQuery}

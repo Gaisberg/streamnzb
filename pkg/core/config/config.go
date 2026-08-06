@@ -42,10 +42,14 @@ const (
 	SeriesSearchScopeSeasonEpisode          = "season_episode"
 	SeriesSearchScopeSeason                 = "season"
 	SeriesSearchScopeNone                   = "none"
-	legacySeriesSearchScopeEpisodeParam     = "episode_param"
-	legacySeriesSearchScopeEpisodeQuery     = "episode_query"
-	legacySeriesSearchScopeSeasonParam      = "season_param"
-	legacySeriesSearchScopeSeasonQuery      = "season_query"
+	// SeriesSearchScopeAbsolute queries by the anime absolute episode number
+	// ("One Piece 63" for S02E02). Text-mode only; the request is skipped for
+	// non-anime content or when the absolute number cannot be derived.
+	SeriesSearchScopeAbsolute           = "absolute"
+	legacySeriesSearchScopeEpisodeParam = "episode_param"
+	legacySeriesSearchScopeEpisodeQuery = "episode_query"
+	legacySeriesSearchScopeSeasonParam  = "season_param"
+	legacySeriesSearchScopeSeasonQuery  = "season_query"
 )
 
 type Provider struct {
@@ -464,7 +468,8 @@ func NormalizeSeriesSearchScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case SeriesSearchScopeSeasonEpisode,
 		SeriesSearchScopeSeason,
-		SeriesSearchScopeNone:
+		SeriesSearchScopeNone,
+		SeriesSearchScopeAbsolute:
 		return strings.ToLower(strings.TrimSpace(scope))
 	case legacySeriesSearchScopeEpisodeParam,
 		legacySeriesSearchScopeEpisodeQuery:

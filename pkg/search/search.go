@@ -165,9 +165,9 @@ func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentT
 		}
 	}
 
-	releases, _ = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, true, req.EnableYearValidation)
+	releases, _ = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
 	for _, profile := range validationProfilesForRequest(req) {
-		_, profileStats := ValidateSearchResultsWithStats(rawReleases, contentType, profile.Query, req.Season, req.Episode, true, req.EnableYearValidation)
+		_, profileStats := ValidateSearchResultsWithStatsForQueries(rawReleases, contentType, []string{profile.Query}, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
 		validationAttrs := []any{
 			"stream", req.StreamLabel,
 			"request", req.RequestLabel,
@@ -191,6 +191,9 @@ func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentT
 			validationAttrs = append(validationAttrs, "title_languages", profile.Languages)
 		}
 		if contentType == "series" {
+			if req.AbsoluteEpisode != "" {
+				validationAttrs = append(validationAttrs, "expected_absolute_episode", req.AbsoluteEpisode)
+			}
 			validationAttrs = append(validationAttrs,
 				"scope", config.NormalizeSeriesSearchScope(req.SeriesSearchScope),
 				"expected_season", profileStats.ExpectedSeason,

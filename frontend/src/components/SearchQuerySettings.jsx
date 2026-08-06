@@ -45,6 +45,7 @@ const TITLE_LANGUAGE_OPTIONS = [
 const SERIES_SCOPE_OPTIONS = [
   { value: 'season_episode', label: 'Season/Episode' },
   { value: 'season', label: 'Season' },
+  { value: 'absolute', label: 'Absolute Episode (Anime)' },
   { value: 'none', label: 'None' },
 ]
 
@@ -66,6 +67,10 @@ const TV_SCOPE_HINT_ITEMS = [
   {
     label: 'Season',
     text: 'Broadens to the whole season, then validation trims back to releases that can contain the episode.',
+  },
+  {
+    label: 'Absolute Episode (Anime)',
+    text: 'Queries anime by absolute episode number ("One Piece 63" for S02E02) and accepts absolute-numbered releases. Text mode only; skipped for non-anime content.',
   },
   {
     label: 'None',
@@ -122,6 +127,7 @@ function normalizeSeriesSearchScope(scope) {
     case 'season_episode':
     case 'season':
     case 'none':
+    case 'absolute':
       return scope.trim().toLowerCase()
     case 'episode_param':
     case 'episode_query':
@@ -140,6 +146,8 @@ function normalizeSeriesScopeSelection(scope) {
       return 'season_episode'
     case 'season':
       return 'season'
+    case 'absolute':
+      return 'absolute'
     case 'none':
       return 'none'
     default:
@@ -160,6 +168,8 @@ function resolveSeriesSearchScope(selection) {
   switch ((selection || '').trim().toLowerCase()) {
     case 'season':
       return 'season'
+    case 'absolute':
+      return 'absolute'
     case 'none':
       return 'none'
     case 'season_episode':

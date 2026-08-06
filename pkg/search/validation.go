@@ -280,15 +280,20 @@ func ValidateSearchResults(releases []*release.Release, contentType, validationQ
 }
 
 func ValidateSearchResultsForQueries(releases []*release.Release, contentType string, validationQueries []string, season, episode string, enableTitleValidation, enableYearValidation bool) []*release.Release {
-	filtered, _ := ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, season, episode, enableTitleValidation, enableYearValidation)
+	filtered, _ := ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, season, episode, "", enableTitleValidation, enableYearValidation)
 	return filtered
 }
 
 func ValidateSearchResultsWithStats(releases []*release.Release, contentType, validationQuery, season, episode string, enableTitleValidation, enableYearValidation bool) ([]*release.Release, ValidationStats) {
-	return ValidateSearchResultsWithStatsForQueries(releases, contentType, []string{validationQuery}, season, episode, enableTitleValidation, enableYearValidation)
+	return ValidateSearchResultsWithStatsForQueries(releases, contentType, []string{validationQuery}, season, episode, "", enableTitleValidation, enableYearValidation)
 }
 
-func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, contentType string, validationQueries []string, season, episode string, enableTitleValidation, enableYearValidation bool) ([]*release.Release, ValidationStats) {
+// ValidateSearchResultsWithStatsForQueries filters releases against the
+// expected title/year/season/episode. absoluteEpisode ("" when unknown) is the
+// anime absolute number of the requested episode; when set, a release that
+// carries the absolute number (with no season or season 1) is accepted even
+// though its parsed season/episode do not match the request.
+func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, contentType string, validationQueries []string, season, episode, absoluteEpisode string, enableTitleValidation, enableYearValidation bool) ([]*release.Release, ValidationStats) {
 	stats := ValidationStats{}
 	if contentType != "movie" && contentType != "series" {
 		stats.RawResults = len(releases)
@@ -297,6 +302,7 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 	}
 	expectSeason, _ := strconv.Atoi(season)
 	expectEpisode, _ := strconv.Atoi(episode)
+	expectAbsolute, _ := strconv.Atoi(absoluteEpisode)
 	stats.ExpectedSeason = expectSeason
 	stats.ExpectedEpisode = expectEpisode
 
@@ -344,11 +350,18 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 				continue
 			}
 			if expectEpisode > 0 {
-				if !parsed.MatchesEpisodeRequest(expectSeason, expectEpisode) {
+				matches := parsed.MatchesEpisodeRequest(expectSeason, expectEpisode)
+				if !matches && expectAbsolute > 0 {
+					// Absolute-numbered anime releases carry no season (or
+					// season 1), which is exactly the season<=0 match path.
+					matches = parsed.MatchesEpisodeRequest(0, expectAbsolute)
+				}
+				if !matches {
 					stats.DroppedEpisodeRequest++
 					logger.Trace("ValidateSearchResults dropped: episode_request",
 						"expect_season", expectSeason,
 						"expect_episode", expectEpisode,
+						"expect_absolute", expectAbsolute,
 						"got_seasons", parsed.Seasons,
 						"got_episodes", parsed.Episodes,
 						"complete", parsed.Complete,
@@ -380,7 +393,13 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 		if contentType == "series" {
 			switch {
 			case expectEpisode > 0:
-				switch parsed.EpisodeMatchRank(expectSeason, expectEpisode) {
+				rank := parsed.EpisodeMatchRank(expectSeason, expectEpisode)
+				if expectAbsolute > 0 {
+					if absRank := parsed.EpisodeMatchRank(0, expectAbsolute); absRank > rank {
+						rank = absRank
+					}
+				}
+				switch rank {
 				case 4:
 					stats.AcceptedExactEpisode++
 				case 3:

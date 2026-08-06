@@ -65,6 +65,16 @@ func TestNormalizeSeriesSearchScopeDefaultsToSeasonEpisode(t *testing.T) {
 	}
 }
 
+func TestNormalizeSeriesSearchScopeAcceptsAbsolute(t *testing.T) {
+	if got := NormalizeSeriesSearchScope("Absolute"); got != SeriesSearchScopeAbsolute {
+		t.Fatalf("NormalizeSeriesSearchScope() = %q, want %q", got, SeriesSearchScopeAbsolute)
+	}
+	// Absolute queries never attach season/ep params to the request.
+	if SeriesSearchScopeUsesSeasonParams(SeriesSearchScopeAbsolute, "id") {
+		t.Fatalf("absolute scope must not use season params")
+	}
+}
+
 func TestSeriesSearchScopeRequiresValidation(t *testing.T) {
 	if !SeriesSearchScopeRequiresValidation(SeriesSearchScopeSeason) {
 		t.Fatalf("expected season scope to require validation")
