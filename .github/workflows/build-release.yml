@@ -19,6 +19,11 @@ permissions:
 
 jobs:
   build-release:
+    # Skip the release-please merge commit on push: the same code is rebuilt
+    # seconds later by the tag's `release: published` event.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(main): release')
     runs-on: ubuntu-latest
     steps:
       - name: Lowercase repo name
@@ -32,6 +37,22 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
+          cache: false
+
+      # setup-go's built-in cache is keyed only on go.sum, so the build cache
+      # freezes at the last dependency change and goes stale as commits land.
+      # Key on the commit SHA instead: every run saves an incremental cache and
+      # the next run restores the newest one via restore-keys.
+      - name: Cache Go build and module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ hashFiles('go.sum') }}-
+            go-
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -64,7 +85,7 @@ jobs:
       - name: Build frontend
         run: |
           cd frontend
-          npm install
+          npm ci
           npm run build
           cd ..
           mkdir -p pkg/server/web/static
@@ -88,7 +109,17 @@ jobs:
             fi
           fi
 
+      # The ffprobe version is pinned in installer.go, so the downloaded
+      # binaries only change when that file does.
+      - name: Cache embedded ffprobe binaries
+        id: ffprobe-cache
+        uses: actions/cache@v4
+        with:
+          path: pkg/media/ffprobe/bin
+          key: ffprobe-${{ hashFiles('pkg/media/ffprobe/installer.go') }}
+
       - name: Fetch embedded ffprobe binaries
+        if: steps.ffprobe-cache.outputs.cache-hit != 'true'
         run: go run ./tools/fetch-ffprobe
 
       - name: Build binaries
@@ -96,17 +127,22 @@ jobs:
           mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64 dist/darwin_amd64 dist/darwin_arm64
           LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
           # -tags embedffprobe bundles the matching ffprobe binary (fetched above) into each build.
-          # Build for Linux AMD64 (for Docker and Release)
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/linux_amd64/streamnzb ./cmd/streamnzb
-          # Build for Linux ARM64 (for Docker and Release)
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/linux_arm64/streamnzb ./cmd/streamnzb
-          # Build for Windows AMD64 (Release only)
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/windows_amd64/streamnzb.exe ./cmd/streamnzb
-          # Build for macOS AMD64 (Release only)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/darwin_amd64/streamnzb ./cmd/streamnzb
-          # Build for macOS ARM64 (Release only)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags embedffprobe -ldflags="$LDFLAGS" -o dist/darwin_arm64/streamnzb ./cmd/streamnzb
+          pids=()
+          build() {
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" go build -tags embedffprobe -ldflags="$LDFLAGS" -o "$3" ./cmd/streamnzb &
+            pids+=($!)
+          }
+          build linux amd64 dist/linux_amd64/streamnzb
+          build linux arm64 dist/linux_arm64/streamnzb
+          build windows amd64 dist/windows_amd64/streamnzb.exe
+          build darwin amd64 dist/darwin_amd64/streamnzb
+          build darwin arm64 dist/darwin_arm64/streamnzb
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          exit $fail
 
+      # Releases also refresh the `main` tag: the release-please merge commit
+      # no longer gets its own push build.
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v6
@@ -119,7 +155,7 @@ jobs:
             type=ref,event=branch
             type=raw,value=${{ github.event.inputs.tag_name || 'latest' }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
 
       - name: Build and push Docker image
         id: build
