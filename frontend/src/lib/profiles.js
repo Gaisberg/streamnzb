@@ -374,9 +374,24 @@ export async function encodeProfileShareCode(profile) {
   return SHARE_CODE_PREFIX + toBase64Url(packed)
 }
 
+// Share codes travel through chats and phone keyboards that quietly rewrite
+// them: zero-width/invisible characters get injected around pasted text, and
+// "smart punctuation" turns the hyphens of base64url into en/em dashes.
+// Undo all of that, then pick the code out of any surrounding prose.
+const invisibleCharsRE = /[\s\u00AD\u200B-\u200F\u2060\uFEFF]/g
+const dashVariantsRE = /[\u2010-\u2015\u2212]/g
+
+function sanitizeShareCodeInput(code) {
+  const cleaned = (code || "")
+    .replace(invisibleCharsRE, "")
+    .replace(dashVariantsRE, "-")
+  const match = cleaned.match(/SNZBP1:[A-Za-z0-9\-_+/=]+/i)
+  return match ? match[0] : cleaned
+}
+
 export async function decodeProfileShareCode(code) {
-  const trimmed = (code || "").trim()
-  if (!trimmed.startsWith(SHARE_CODE_PREFIX)) {
+  const trimmed = sanitizeShareCodeInput(code)
+  if (trimmed.slice(0, SHARE_CODE_PREFIX.length).toUpperCase() !== SHARE_CODE_PREFIX) {
     throw new Error("Not a StreamNZB profile code.")
   }
   let profile
