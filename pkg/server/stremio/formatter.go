@@ -20,21 +20,21 @@ import (
 // the request context. Library-only extras (Caps) are empty for fresh indexer
 // hits because their real media properties are unknown until playback.
 type FormatContext struct {
-	Service      string   // "StreamNZB"
-	Stream       string   // stream config name, e.g. "Standalone"
-	Content      string   // requested title, e.g. "Ted Lasso"
-	ReleaseTitle string   // full release name
-	Index        int      // 1-based position in the result list
-	Count        int      // total results in the list
-	Score        int      // final ranking score (library bonus included)
-	Avail        bool     // AvailNZB-verified available
-	Library      bool     // served from the local release library
-	Size         int64    // bytes
-	Indexer      string   // indexer display name
-	Grabs        int      // indexer-reported grab count
-	Age          string   // humanized age from pub date, e.g. "2y", "37d"
-	Languages    []string // parsed language codes
-	Caps         string   // ffprobe-verified caps summary (library releases only)
+	Service      string     // "StreamNZB"
+	Stream       string     // stream config name, e.g. "Standalone"
+	Content      string     // requested title, e.g. "Ted Lasso"
+	ReleaseTitle string     // full release name
+	Index        int        // 1-based position in the result list
+	Count        int        // total results in the list
+	Score        int        // final ranking score (library bonus included)
+	Avail        bool       // AvailNZB-verified available
+	Library      bool       // served from the local release library
+	Size         int64      // bytes
+	Indexer      string     // indexer display name
+	Grabs        int        // indexer-reported grab count
+	Age          string     // humanized age from pub date, e.g. "2y", "37d"
+	Languages    stringList // parsed language codes
+	Caps         string     // ffprobe-verified caps summary (library releases only)
 
 	ParsedTitle string // content title as parsed out of the release name
 	Resolution  string
@@ -52,9 +52,9 @@ type FormatContext struct {
 	Region      string
 	Date        string
 	Year        int
-	Audio       []string
-	Channels    []string
-	HDR         []string
+	Audio       stringList
+	Channels    stringList
+	HDR         stringList
 	Proper      bool
 	Repack      bool
 	Remastered  bool
@@ -73,27 +73,65 @@ type FormatContext struct {
 	PPV         bool
 	Season      int
 	Episode     int
-	Seasons     []int
-	Episodes    []int
+	Seasons     intList
+	Episodes    intList
 	EpisodeCode string
-	Volumes     []int
+	Volumes     intList
+}
+
+// stringList and intList render as comma-separated text instead of Go's
+// bracketed "[a b]" slice format, so {{.HDR}} or {{.Languages}} never leak
+// brackets into results. They stay plain slices for {{range}}, {{index}} and
+// {{join}}.
+type stringList []string
+
+func (l stringList) String() string { return strings.Join(l, ", ") }
+
+type intList []int
+
+func (l intList) String() string {
+	parts := make([]string, len(l))
+	for i, n := range l {
+		parts[i] = fmt.Sprintf("%d", n)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// templateText coerces any template value to the text it renders as, so the
+// string helpers also accept list fields and other non-string values:
+// {{.HDR | upper}}, {{replace .Languages "en" "english"}}.
+func templateText(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case []string:
+		return stringList(t).String()
+	case fmt.Stringer:
+		return t.String()
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 var formatTemplateFuncs = template.FuncMap{
-	"size":    humanSize,
-	"score":   formatScoreSigned,
-	"join":    strings.Join,
-	"upper":   strings.ToUpper,
-	"lower":   strings.ToLower,
-	"trim":    strings.TrimSpace,
-	"replace": strings.ReplaceAll,
+	"size":  humanSize,
+	"score": formatScoreSigned,
+	"join":  strings.Join,
+	"upper": func(v any) string { return strings.ToUpper(templateText(v)) },
+	"lower": func(v any) string { return strings.ToLower(templateText(v)) },
+	"trim":  func(v any) string { return strings.TrimSpace(templateText(v)) },
+	"replace": func(v any, old, new string) string {
+		return strings.ReplaceAll(templateText(v), old, new)
+	},
 	// default renders val, or def when val is empty. Pipeline-friendly:
 	// {{.Group | default "unknown"}}.
-	"default": func(def, val string) string {
-		if strings.TrimSpace(val) == "" {
-			return def
+	"default": func(def string, val any) string {
+		if s := templateText(val); strings.TrimSpace(s) != "" {
+			return s
 		}
-		return val
+		return def
 	},
 }
 

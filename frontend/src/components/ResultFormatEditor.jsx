@@ -21,7 +21,7 @@ const FORMAT_FIELDS = [
   { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages'] },
   { group: 'Episode', fields: ['.Season', '.Episode', '.Seasons', '.Episodes', '.EpisodeCode', '.Volumes'] },
   { group: 'Flags', fields: ['.Proper', '.Repack', '.Remastered', '.Upscaled', '.ThreeD', '.Scene', '.Retail', '.Hardcoded', '.Dubbed', '.Subbed', '.Commentary', '.Complete', '.Documentary', '.Unrated', '.Uncensored', '.PPV'] },
-  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'default "?" .Group'] },
+  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group'] },
 ]
 
 const templateBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -140,7 +140,9 @@ export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameCh
           ))}
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Conditionals: {'{{if .HDR}}…{{end}}'} — lists render with {'{{join .HDR "|"}}'}. Caps is the ffprobe-verified summary, present on library releases only.
+          Conditionals: {'{{if .HDR}}…{{end}}'}, {'{{if .Avail}}…{{else}}…{{end}}'}, {'{{if not .Avail}}…{{end}}'}.
+          Lists ({'{{.HDR}}'}, {'{{.Languages}}'}) render comma-separated; use {'{{join .HDR "|"}}'} for a custom separator.
+          Caps is the ffprobe-verified summary, present on library releases only.
         </p>
       </div>
 
