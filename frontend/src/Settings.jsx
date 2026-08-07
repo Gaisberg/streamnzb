@@ -167,6 +167,7 @@ function Settings({
           search_title_languages: normalizeSearchQueryLanguages(query),
           include_year: normalizeQueryYearSetting(query.search_mode, query.include_year, query.include_year_in_text_search),
           series_search_scope: normalizeSeriesScopeFromLegacy(query.series_search_scope, query.use_season_episode_params),
+          try_absolute_episode: query.try_absolute_episode !== false,
         })) || [],
         filter_profiles: initialConfig.filter_profiles?.map((profile) => ({
           name: profile.name || '',

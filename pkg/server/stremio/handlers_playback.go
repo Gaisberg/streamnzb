@@ -1878,7 +1878,7 @@ func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) 
 	}
 	target := unpack.EpisodeTarget{}
 	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
+		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
 	}
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
@@ -2703,7 +2703,7 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 	defer mergedCancel()
 	target := unpack.EpisodeTarget{}
 	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
+		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
 	}
 	hints := unpack.StreamSelectionHints{
 		// Debug play should be permissive and mirror nzbdav-style direct playback
@@ -2810,7 +2810,7 @@ func (s *Server) preProbeSessionSync(ctx context.Context, sess *session.Session)
 	}
 	target := unpack.EpisodeTarget{}
 	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode}
+		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
 	}
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),

@@ -22,11 +22,14 @@ import (
 )
 
 type SearchParams struct {
-	ContentType        string
-	ID                 string
-	ContentTitle       string
-	Req                indexer.SearchRequest
-	PreparedQueries    []string
+	ContentType     string
+	ID              string
+	ContentTitle    string
+	Req             indexer.SearchRequest
+	PreparedQueries []string
+	// AbsoluteQueries are supplementary absolute-numbered anime queries
+	// ("One Piece 63") executed as text searches after PreparedQueries.
+	AbsoluteQueries    []string
 	ContentIDs         *session.AvailReportMeta
 	ImdbForText        string
 	TmdbForText        string
@@ -935,27 +938,86 @@ func absoluteEpisodeFromMetadata(metadata *resolvedSearchMetadata, seasonStr, ep
 	return total + episode
 }
 
-// prepareAbsoluteScopeRequest turns an absolute-scope series request into
+// animeTVCategory is the Newznab TV/Anime subcategory. Anime-only indexers
+// (e.g. AnimeTosho) expose it as a flat category without expanding the 5000
+// parent, so anime requests widen their category filter with it.
+const animeTVCategory = "5070"
+
+// appendAnimeTVCategoryToEffective widens each effective indexer config's TV
+// categories with the anime subcategory (Newznab cat is a comma-separated
+// list). Empty category lists stay empty — no filter already matches anime.
+func appendAnimeTVCategoryToEffective(effective map[string]*config.IndexerSearchConfig) {
+	for _, eff := range effective {
+		if eff == nil || eff.TVCategories == nil || strings.TrimSpace(*eff.TVCategories) == "" {
+			continue
+		}
+		widened := appendSearchCategory(*eff.TVCategories, animeTVCategory)
+		eff.TVCategories = &widened
+	}
+}
+
+// appendSearchCategory appends cat to a comma-separated category list unless
+// it is already listed.
+func appendSearchCategory(categories, cat string) string {
+	trimmed := strings.TrimSpace(categories)
+	for _, part := range strings.Split(trimmed, ",") {
+		if strings.TrimSpace(part) == cat {
+			return trimmed
+		}
+	}
+	return trimmed + "," + cat
+}
+
+// absoluteEpisodeForContent returns the anime absolute episode number for a
+// series request, or 0 when it does not apply: movie content, non-anime
+// metadata, or a number that cannot be derived. Kitsu-addressed requests
+// already carry the absolute number as their episode.
+func absoluteEpisodeForContent(contentType, kitsuID string, metadata *resolvedSearchMetadata, season, episode string) int {
+	if contentType != "series" {
+		return 0
+	}
+	if kitsuID != "" {
+		absolute, _ := strconv.Atoi(episode)
+		return absolute
+	}
+	if !metadataLooksLikeAnime(metadata, contentType) {
+		return 0
+	}
+	return absoluteEpisodeFromMetadata(metadata, season, episode)
+}
+
+// requestLooksLikeAnime reports whether a series request targets anime:
+// Kitsu-addressed content is anime by definition, otherwise TMDB metadata
+// decides.
+func requestLooksLikeAnime(params *SearchParams) bool {
+	if params == nil {
+		return false
+	}
+	if params.Req.KitsuID != "" {
+		return true
+	}
+	return metadataLooksLikeAnime(params.Metadata, params.ContentType)
+}
+
+// prepareAbsoluteEpisodeSearch supplements an anime series request with
 // absolute-numbered queries ("One Piece 63" for S02E02) — the naming anime
 // indexers and fansub groups use — and marks the request so validation accepts
-// absolute-numbered releases. Returns false when the request should be skipped:
-// non-text query, non-anime content, Kitsu (already absolute), or an absolute
-// number that cannot be derived from metadata.
-func (s *Server) prepareAbsoluteScopeRequest(params *SearchParams, searchMode, streamLabel string, searchQuery *config.SearchQueryConfig) bool {
+// absolute-numbered releases. The queries land in params.AbsoluteQueries and
+// run as trailing text searches after the request's own queries. Returns false
+// when the supplement does not apply: non-anime content, Kitsu (already
+// absolute), or an absolute number that cannot be derived from metadata.
+func (s *Server) prepareAbsoluteEpisodeSearch(params *SearchParams, streamLabel string, searchQuery *config.SearchQueryConfig) bool {
 	if params == nil || params.ContentType != "series" {
 		return false
 	}
 	req := &params.Req
 	skip := func(reason string) bool {
-		logger.Debug("Skipping absolute-scope search request",
+		logger.Debug("Skipping absolute-episode search supplement",
 			"stream", streamLabel,
 			"request", req.RequestLabel,
 			"reason", reason,
 		)
 		return false
-	}
-	if searchMode == "id" {
-		return skip("absolute scope requires text search mode")
 	}
 	if req.KitsuID != "" {
 		return skip("kitsu episode is already absolute")
@@ -967,6 +1029,10 @@ func (s *Server) prepareAbsoluteScopeRequest(params *SearchParams, searchMode, s
 	if absolute <= 0 {
 		return skip("absolute episode not derivable from metadata")
 	}
+
+	// The absolute number lets validation accept absolute-numbered releases
+	// regardless of which query surfaced them.
+	req.AbsoluteEpisode = strconv.Itoa(absolute)
 
 	language := ""
 	if searchQuery != nil {
@@ -983,10 +1049,8 @@ func (s *Server) prepareAbsoluteScopeRequest(params *SearchParams, searchMode, s
 		return skip("no titles available for absolute query")
 	}
 
-	req.AbsoluteEpisode = strconv.Itoa(absolute)
-	params.PreparedQueries = queries
-	req.Query = queries[0]
-	logger.Debug("Absolute-scope search request prepared",
+	params.AbsoluteQueries = queries
+	logger.Debug("Absolute-episode search supplement prepared",
 		"stream", streamLabel,
 		"request", req.RequestLabel,
 		"season", req.Season,
@@ -1159,10 +1223,15 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 		applyStreamIndexerSelection(&profileParams.Req, stream)
 		profileParams.Req.DisableResultFiltering = stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" || strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "none") || streamUsesAIOStreamsProfile(stream)
 		searchMode := strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
-		if contentType == "series" && config.NormalizeSeriesSearchScope(searchQuery.SeriesSearchScope) == config.SeriesSearchScopeAbsolute {
-			if !s.prepareAbsoluteScopeRequest(profileParams, searchMode, streamLabel, searchQuery) {
-				continue
+		if contentType == "series" && searchQuery.TryAbsoluteEpisodeEnabled() {
+			if requestLooksLikeAnime(profileParams) {
+				// Widen every variant of this anime request to also match the
+				// anime subcategory on indexers that don't expand the 5000
+				// parent. Kitsu requests are anime even though they skip the
+				// absolute query supplement below (already absolute).
+				appendAnimeTVCategoryToEffective(profileParams.Req.EffectiveByIndexer)
 			}
+			s.prepareAbsoluteEpisodeSearch(profileParams, streamLabel, searchQuery)
 		}
 		validationQueries := append([]string(nil), profileParams.Req.ValidationQueries...)
 		if len(validationQueries) == 0 && strings.TrimSpace(profileParams.Req.ValidationQuery) != "" {
@@ -1249,16 +1318,41 @@ func (s *Server) runConfiguredSearchRequests(contentType, id, streamLabel string
 				logger.Debug("Search request normalisation", attrs...)
 			}
 		}
-		queryVariants := profileParams.PreparedQueries
-		if searchMode == "id" || len(queryVariants) == 0 {
-			queryVariants = []string{profileParams.Req.Query}
+		type searchVariant struct {
+			query    string
+			absolute bool
+		}
+		variants := make([]searchVariant, 0, len(profileParams.PreparedQueries)+len(profileParams.AbsoluteQueries)+1)
+		if searchMode == "id" || len(profileParams.PreparedQueries) == 0 {
+			variants = append(variants, searchVariant{query: profileParams.Req.Query})
+		} else {
+			for _, q := range profileParams.PreparedQueries {
+				variants = append(variants, searchVariant{query: q})
+			}
+		}
+		for _, q := range profileParams.AbsoluteQueries {
+			variants = append(variants, searchVariant{query: q, absolute: true})
+		}
+		// An id-mode query's per-indexer config disables text search, which
+		// would skip every indexer for the text-mode absolute variants; those
+		// variants run with the query's text-mode equivalent instead.
+		var absoluteEffective map[string]*config.IndexerSearchConfig
+		if searchMode == "id" && len(profileParams.AbsoluteQueries) > 0 {
+			textQuery := *searchQuery
+			textQuery.SearchMode = "text"
+			absoluteEffective = s.effectiveIndexerConfigs(textQuery.AsIndexerSearchConfig())
+			appendAnimeTVCategoryToEffective(absoluteEffective)
 		}
 		requestReleases := make([]*release.Release, 0)
-		for _, queryVariant := range queryVariants {
+		for _, variant := range variants {
 			reqVariant := profileParams.Req
 			reqVariant.Limit = effectiveLimit
-			if searchMode != "id" {
-				reqVariant.Query = queryVariant
+			if searchMode != "id" || variant.absolute {
+				reqVariant.Query = variant.query
+			}
+			if variant.absolute && searchMode == "id" {
+				reqVariant.SearchMode = "text"
+				reqVariant.EffectiveByIndexer = absoluteEffective
 			}
 			executedRequests++
 			releases, runErr := search.RunIndexerSearches(s.indexer, reqVariant, contentType)
@@ -1910,6 +2004,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	seasonNum, _ := strconv.Atoi(req.Season)
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
+	contentIDs.AbsoluteEpisode = absoluteEpisodeForContent(contentType, req.KitsuID, params.Metadata, req.Season, req.Episode)
 	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var wg sync.WaitGroup
@@ -1979,6 +2074,7 @@ func cloneSearchParams(base *SearchParams) *SearchParams {
 		next.ContentIDs = &contentIDs
 	}
 	next.PreparedQueries = append([]string(nil), base.PreparedQueries...)
+	next.AbsoluteQueries = append([]string(nil), base.AbsoluteQueries...)
 	next.MovieTitleQueries = make(map[string][]string, len(base.MovieTitleQueries))
 	for k, v := range base.MovieTitleQueries {
 		next.MovieTitleQueries[k] = append([]string(nil), v...)
@@ -1989,6 +2085,28 @@ func cloneSearchParams(base *SearchParams) *SearchParams {
 	}
 	next.Metadata = base.Metadata
 	return &next
+}
+
+// effectiveIndexerConfigs merges each enabled indexer's search settings with a
+// search query's overrides. Nil when no indexers are configured.
+func (s *Server) effectiveIndexerConfigs(queryIndexerConfig *config.IndexerSearchConfig) map[string]*config.IndexerSearchConfig {
+	if len(s.config.Indexers) == 0 {
+		return nil
+	}
+	out := make(map[string]*config.IndexerSearchConfig, len(s.config.Indexers))
+	for i := range s.config.Indexers {
+		ic := &s.config.Indexers[i]
+		if ic.Enabled != nil && !*ic.Enabled {
+			continue
+		}
+		eff := config.MergeIndexerSearch(ic, queryIndexerConfig, s.config)
+		if strings.EqualFold(ic.Type, "easynews") {
+			t := true
+			eff.DisableIdSearch = &t
+		}
+		out[ic.Name] = eff
+	}
+	return out
 }
 
 func (s *Server) buildSearchParamsFromBase(base *SearchParams, searchQuery *config.SearchQueryConfig) (*SearchParams, error) {
@@ -2050,25 +2168,7 @@ func (s *Server) buildSearchParamsFromBase(base *SearchParams, searchQuery *conf
 		}
 	}
 
-	if len(s.config.Indexers) > 0 {
-		req.EffectiveByIndexer = make(map[string]*config.IndexerSearchConfig)
-		indexerTypeByName := make(map[string]string, len(s.config.Indexers))
-		for i := range s.config.Indexers {
-			ic := &s.config.Indexers[i]
-			if ic.Enabled != nil && !*ic.Enabled {
-				continue
-			}
-			eff := config.MergeIndexerSearch(ic, queryIndexerConfig, s.config)
-			if strings.EqualFold(ic.Type, "easynews") {
-				t := true
-				eff.DisableIdSearch = &t
-			}
-			req.EffectiveByIndexer[ic.Name] = eff
-			indexerTypeByName[ic.Name] = ic.Type
-		}
-		if searchMode != "id" {
-		}
-	}
+	req.EffectiveByIndexer = s.effectiveIndexerConfigs(queryIndexerConfig)
 	if searchMode != "id" {
 		var queries []string
 		cacheKey := fmt.Sprintf("%s|%t|%s", searchTitleLanguage, includeYear, scope)

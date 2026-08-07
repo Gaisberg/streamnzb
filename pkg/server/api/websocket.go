@@ -1162,6 +1162,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					normalizedScope := config.NormalizeSeriesSearchScope(rawScope)
 					switch rawScope {
 					case normalizedScope,
+						"absolute",
 						"episode_param",
 						"episode_query",
 						"season_param",

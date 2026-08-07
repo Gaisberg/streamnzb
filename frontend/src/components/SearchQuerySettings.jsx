@@ -45,7 +45,6 @@ const TITLE_LANGUAGE_OPTIONS = [
 const SERIES_SCOPE_OPTIONS = [
   { value: 'season_episode', label: 'Season/Episode' },
   { value: 'season', label: 'Season' },
-  { value: 'absolute', label: 'Absolute Episode (Anime)' },
   { value: 'none', label: 'None' },
 ]
 
@@ -69,12 +68,26 @@ const TV_SCOPE_HINT_ITEMS = [
     text: 'Broadens to the whole season, then validation trims back to releases that can contain the episode.',
   },
   {
-    label: 'Absolute Episode (Anime)',
-    text: 'Queries anime by absolute episode number ("One Piece 63" for S02E02) and accepts absolute-numbered releases. Text mode only; skipped for non-anime content.',
-  },
-  {
     label: 'None',
     text: 'Searches only by series title or ID. Validation trims the broader results back to episode-capable releases.',
+  },
+]
+const ANIME_ABSOLUTE_HINT_ITEMS = [
+  {
+    label: 'On',
+    text: 'For anime, additionally queries the absolute episode number ("One Piece 63" for S02E02) and accepts absolute-numbered releases.',
+  },
+  {
+    label: 'Detection',
+    text: 'Applied when metadata looks like anime; Kitsu requests are anime by definition. Anime requests also widen indexer categories with 5070 (TV/Anime).',
+  },
+  {
+    label: 'Kitsu',
+    text: 'Kitsu episodes are already absolute, so no extra queries are added — but episode matching and category widening still apply.',
+  },
+  {
+    label: 'ID Search',
+    text: 'Runs as an extra text query after the ID search.',
   },
 ]
 const TITLE_LANGUAGE_HINT_ITEMS = [
@@ -127,7 +140,6 @@ function normalizeSeriesSearchScope(scope) {
     case 'season_episode':
     case 'season':
     case 'none':
-    case 'absolute':
       return scope.trim().toLowerCase()
     case 'episode_param':
     case 'episode_query':
@@ -146,8 +158,6 @@ function normalizeSeriesScopeSelection(scope) {
       return 'season_episode'
     case 'season':
       return 'season'
-    case 'absolute':
-      return 'absolute'
     case 'none':
       return 'none'
     default:
@@ -168,8 +178,6 @@ function resolveSeriesSearchScope(selection) {
   switch ((selection || '').trim().toLowerCase()) {
     case 'season':
       return 'season'
-    case 'absolute':
-      return 'absolute'
     case 'none':
       return 'none'
     case 'season_episode':
@@ -263,6 +271,7 @@ function emptyDraft(kind) {
     search_title_languages: defaultIDTitleLanguages(),
     include_year: false,
     series_search_scope: kind === 'series' ? 'season_episode' : undefined,
+    try_absolute_episode: kind === 'series' ? true : undefined,
   }
 }
 
@@ -282,6 +291,7 @@ function normalizeDraft(kind, draft) {
     series_search_scope: kind === 'series'
       ? normalizeSeriesScopeSelection(value.series_search_scope)
       : undefined,
+    try_absolute_episode: kind === 'series' ? value.try_absolute_episode !== false : undefined,
   }
 }
 
@@ -313,6 +323,7 @@ function comparableQuerySignature(kind, draft) {
     search_title_languages: draftTitleLanguages(value.search_mode, value.search_title_language, value.search_title_languages),
     include_year: value.include_year !== false,
     series_search_scope: kind === 'series' ? normalizeSeriesScopeSelection(value.series_search_scope) : undefined,
+    try_absolute_episode: kind === 'series' ? value.try_absolute_episode !== false : undefined,
   })
 }
 
@@ -357,6 +368,7 @@ function summarizeQuery(query, kind) {
     const scope = normalizeSeriesScopeSelection(query.series_search_scope)
     const scopeLabel = SERIES_SCOPE_OPTIONS.find((option) => option.value === scope)?.label || 'Season/Episode'
     validation.push(`Scope: ${scopeLabel}`)
+    validation.push(`Anime Absolute: ${query.try_absolute_episode === false ? 'Off' : 'On'}`)
   }
 
   return { primary, validation, extra }
@@ -724,6 +736,28 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
                     {SERIES_SCOPE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {kind === 'series' && (
+          <div className="relative p-3">
+            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+            <div className={rowClass}>
+              <div className={inlineRowClass}>
+                <div className={inlineLabelClass}>
+                  <LabelWithHelp label="Anime Absolute" items={ANIME_ABSOLUTE_HINT_ITEMS} />
+                </div>
+                <div className={controlMediumClass}>
+                  <select
+                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('try_absolute_episode')}`}
+                    value={draft.try_absolute_episode === false ? 'off' : 'on'}
+                    onChange={(event) => update('try_absolute_episode', event.target.value === 'on')}
+                  >
+                    <option value="on">Supplement</option>
+                    <option value="off">Off</option>
                   </select>
                 </div>
               </div>

@@ -115,7 +115,7 @@ func TestGetSessionContentFilesForEpisodeKeepsAllCandidatesWhenNoEpisodeMatchExi
 		{Subject: "Altered.Carbon.Release.B.part02.rar", Segments: []Segment{{ID: "<d>", Bytes: 410}}},
 	}}
 
-	files := n.GetSessionContentFilesForEpisode(2, 1)
+	files := n.GetSessionContentFilesForEpisode(2, 1, 0)
 	if len(files) != 4 {
 		t.Fatalf("expected all content candidates, got %d", len(files))
 	}
@@ -130,5 +130,24 @@ func TestGetSessionContentFilesForEpisodeKeepsAllCandidatesWhenNoEpisodeMatchExi
 	}
 	if !sawA || !sawB {
 		t.Fatalf("expected files from both fallback groups, sawA=%v sawB=%v", sawA, sawB)
+	}
+}
+
+func TestGetSessionContentFilesForEpisodeMatchesAbsoluteNumberedAnime(t *testing.T) {
+	logger.Init("ERROR")
+
+	// One Piece S10E01 == absolute 337; the release carries only the absolute
+	// number, alongside a decoy episode from the same show.
+	n := &NZB{Files: []File{
+		{Subject: "One Piece - 337 - Plunging into the Devils Sea [1080p][x264].mkv", Segments: []Segment{{ID: "<a>", Bytes: 900}}},
+		{Subject: "One Piece - 338 - Landing to Get to Fish-Man Island [1080p][x264].mkv", Segments: []Segment{{ID: "<b>", Bytes: 950}}},
+	}}
+
+	files := n.GetSessionContentFilesForEpisode(10, 1, 337)
+	if len(files) != 1 {
+		t.Fatalf("expected the absolute-numbered episode group, got %d files", len(files))
+	}
+	if !strings.Contains(files[0].Filename, "337") {
+		t.Fatalf("expected episode 337 file, got %q", files[0].Filename)
 	}
 }

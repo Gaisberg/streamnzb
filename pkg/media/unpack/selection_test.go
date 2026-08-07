@@ -20,6 +20,21 @@ func TestSelectEpisodeCandidatePrefersExactEpisode(t *testing.T) {
 	}
 }
 
+func TestSelectEpisodeCandidateMatchesAbsoluteNumberedAnime(t *testing.T) {
+	// S10E01 == absolute 337; the file carries only the absolute number.
+	target := EpisodeTarget{Season: 10, Episode: 1, Absolute: 337}
+	best, ok := selectEpisodeCandidate([]namedEpisodeCandidate{
+		{Name: "One Piece - 336 [1080p].mkv", Size: 900, Order: 0},
+		{Name: "One Piece - 337 [1080p].mkv", Size: 800, Order: 1},
+	}, target)
+	if !ok {
+		t.Fatal("expected absolute episode candidate match")
+	}
+	if best.Name != "One Piece - 337 [1080p].mkv" {
+		t.Fatalf("expected absolute-numbered episode match, got %q", best.Name)
+	}
+}
+
 func TestSelectMainFilePrefersRequestedEpisodeOverLargest(t *testing.T) {
 	target := EpisodeTarget{Season: 1, Episode: 5}
 	best, err := selectMainFile([]filePart{

@@ -822,6 +822,10 @@ type AvailReportMeta struct {
 	KitsuID string
 	Season  int
 	Episode int
+	// AbsoluteEpisode is the anime absolute episode number for the requested
+	// season/episode (0 when unknown or not applicable). Episode selection
+	// accepts absolute-numbered files alongside season/episode matches.
+	AbsoluteEpisode int
 }
 
 func (m *Manager) CreateSession(sessionID string, nzbData *nzb.NZB, rel *release.Release, contentIDs *AvailReportMeta) (*Session, error) {
@@ -893,12 +897,13 @@ func selectSessionContentFiles(nzbData *nzb.NZB, contentIDs *AvailReportMeta) []
 	if nzbData == nil {
 		return nil
 	}
-	season, episode := 0, 0
+	season, episode, absolute := 0, 0, 0
 	if contentIDs != nil {
 		season = contentIDs.Season
 		episode = contentIDs.Episode
+		absolute = contentIDs.AbsoluteEpisode
 	}
-	return nzbData.GetSessionContentFilesForEpisode(season, episode)
+	return nzbData.GetSessionContentFilesForEpisode(season, episode, absolute)
 }
 
 func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.FileInfo, pools []*nntp.ClientPool, usenetPool loader.SegmentFetcher, estimator *loader.SegmentSizeEstimator) []*loader.File {

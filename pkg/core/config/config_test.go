@@ -65,13 +65,22 @@ func TestNormalizeSeriesSearchScopeDefaultsToSeasonEpisode(t *testing.T) {
 	}
 }
 
-func TestNormalizeSeriesSearchScopeAcceptsAbsolute(t *testing.T) {
-	if got := NormalizeSeriesSearchScope("Absolute"); got != SeriesSearchScopeAbsolute {
-		t.Fatalf("NormalizeSeriesSearchScope() = %q, want %q", got, SeriesSearchScopeAbsolute)
+func TestNormalizeSeriesSearchScopeMigratesLegacyAbsolute(t *testing.T) {
+	if got := NormalizeSeriesSearchScope("Absolute"); got != SeriesSearchScopeSeasonEpisode {
+		t.Fatalf("NormalizeSeriesSearchScope() = %q, want %q", got, SeriesSearchScopeSeasonEpisode)
 	}
-	// Absolute queries never attach season/ep params to the request.
-	if SeriesSearchScopeUsesSeasonParams(SeriesSearchScopeAbsolute, "id") {
-		t.Fatalf("absolute scope must not use season params")
+}
+
+func TestTryAbsoluteEpisodeEnabledDefaultsToTrue(t *testing.T) {
+	var nilQuery *SearchQueryConfig
+	if !nilQuery.TryAbsoluteEpisodeEnabled() {
+		t.Fatal("nil query must default to enabled")
+	}
+	if !(&SearchQueryConfig{}).TryAbsoluteEpisodeEnabled() {
+		t.Fatal("unset flag must default to enabled")
+	}
+	if (&SearchQueryConfig{TryAbsoluteEpisode: ptrBool(false)}).TryAbsoluteEpisodeEnabled() {
+		t.Fatal("explicit false must disable the supplement")
 	}
 }
 
@@ -134,6 +143,7 @@ func TestBackfillLegacySearchQuerySettings(t *testing.T) {
 		SeriesSearchQueries: []SearchQueryConfig{
 			{Name: "DefaultTVText", SearchMode: "text", UseSeasonEpisodeParams: ptrBool(false)},
 			{Name: "DefaultTVID", SearchMode: "id", LegacyIncludeYearInTextSearch: ptrBool(false)},
+			{Name: "AnimeAbsolute", SearchMode: "text", SeriesSearchScope: "absolute"},
 		},
 	}
 
@@ -161,6 +171,14 @@ func TestBackfillLegacySearchQuerySettings(t *testing.T) {
 	}
 	if got := cfg.SeriesSearchQueries[1].SearchTitleLanguages; !reflect.DeepEqual(got, []string{"en-US", ""}) {
 		t.Fatalf("expected DefaultTVID title languages [en-US original] after backfill, got %#v", got)
+	}
+	// The retired absolute scope migrates to season_episode with the
+	// absolute-episode supplement explicitly enabled.
+	if cfg.SeriesSearchQueries[2].SeriesSearchScope != SeriesSearchScopeSeasonEpisode {
+		t.Fatalf("expected AnimeAbsolute scope %q after backfill, got %q", SeriesSearchScopeSeasonEpisode, cfg.SeriesSearchQueries[2].SeriesSearchScope)
+	}
+	if cfg.SeriesSearchQueries[2].TryAbsoluteEpisode == nil || !*cfg.SeriesSearchQueries[2].TryAbsoluteEpisode {
+		t.Fatalf("expected AnimeAbsolute to keep the absolute supplement enabled, got %#v", cfg.SeriesSearchQueries[2].TryAbsoluteEpisode)
 	}
 }
 

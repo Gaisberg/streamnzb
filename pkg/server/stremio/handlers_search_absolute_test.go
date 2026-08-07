@@ -61,7 +61,7 @@ func TestAbsoluteEpisodeFromMetadata(t *testing.T) {
 	}
 }
 
-func TestPrepareAbsoluteScopeRequestBuildsQueriesAndMarksRequest(t *testing.T) {
+func TestPrepareAbsoluteEpisodeSearchSupplementsRequest(t *testing.T) {
 	s := &Server{}
 	params := &SearchParams{
 		ContentType: "series",
@@ -78,52 +78,91 @@ func TestPrepareAbsoluteScopeRequestBuildsQueriesAndMarksRequest(t *testing.T) {
 		}),
 	}
 
-	if !s.prepareAbsoluteScopeRequest(params, "text", "default", &config.SearchQueryConfig{SearchMode: "text"}) {
-		t.Fatalf("expected absolute-scope request to be prepared")
+	if !s.prepareAbsoluteEpisodeSearch(params, "default", &config.SearchQueryConfig{SearchMode: "text"}) {
+		t.Fatalf("expected absolute-episode supplement to be prepared")
 	}
 	if params.Req.AbsoluteEpisode != "63" {
 		t.Fatalf("AbsoluteEpisode = %q, want 63", params.Req.AbsoluteEpisode)
 	}
 	found := false
-	for _, q := range params.PreparedQueries {
+	for _, q := range params.AbsoluteQueries {
 		if q == "One Piece 63" {
 			found = true
 		}
-		if q == "One Piece S02E02" {
-			t.Fatalf("absolute scope must replace season/episode queries, got %v", params.PreparedQueries)
-		}
 	}
 	if !found {
-		t.Fatalf("expected absolute query variant, got %v", params.PreparedQueries)
+		t.Fatalf("expected absolute query variant, got %v", params.AbsoluteQueries)
+	}
+	// The supplement must not disturb the request's own queries.
+	if len(params.PreparedQueries) != 1 || params.PreparedQueries[0] != "One Piece S02E02" {
+		t.Fatalf("prepared queries must stay untouched, got %v", params.PreparedQueries)
 	}
 }
 
-func TestPrepareAbsoluteScopeRequestSkipsUnsupportedRequests(t *testing.T) {
-	s := &Server{}
-	animeSeasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}, {SeasonNumber: 2, EpisodeCount: 16}}
-
+func TestAppendSearchCategory(t *testing.T) {
 	cases := []struct {
-		name       string
-		params     *SearchParams
-		searchMode string
+		categories string
+		want       string
+	}{
+		{"5000", "5000,5070"},
+		{"5000,5070", "5000,5070"},
+		{"5070", "5070"},
+		{"5000, 5070", "5000, 5070"},
+		{"5000,5060", "5000,5060,5070"},
+	}
+	for _, tc := range cases {
+		if got := appendSearchCategory(tc.categories, "5070"); got != tc.want {
+			t.Fatalf("appendSearchCategory(%q) = %q, want %q", tc.categories, got, tc.want)
+		}
+	}
+}
+
+func TestAppendAnimeTVCategoryToEffective(t *testing.T) {
+	tvCats := "5000"
+	emptyCats := ""
+	effective := map[string]*config.IndexerSearchConfig{
+		"AnimeTosho": {TVCategories: &tvCats},
+		"NoFilter":   {TVCategories: &emptyCats},
+		"NoOverride": {},
+	}
+
+	appendAnimeTVCategoryToEffective(effective)
+
+	if got := *effective["AnimeTosho"].TVCategories; got != "5000,5070" {
+		t.Fatalf("expected widened categories 5000,5070, got %q", got)
+	}
+	// An empty filter already matches everything and must stay empty.
+	if got := *effective["NoFilter"].TVCategories; got != "" {
+		t.Fatalf("expected empty categories to stay empty, got %q", got)
+	}
+	if effective["NoOverride"].TVCategories != nil {
+		t.Fatalf("expected nil categories to stay nil, got %q", *effective["NoOverride"].TVCategories)
+	}
+}
+
+func TestRequestLooksLikeAnime(t *testing.T) {
+	animeSeasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}}
+	cases := []struct {
+		name   string
+		params *SearchParams
+		want   bool
 	}{
 		{
-			name: "id search mode",
+			name: "kitsu is anime by definition",
+			params: &SearchParams{
+				ContentType: "series",
+				Req:         indexer.SearchRequest{KitsuID: "486", Episode: "63"},
+			},
+			want: true,
+		},
+		{
+			name: "anime metadata",
 			params: &SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{Season: "2", Episode: "2"},
 				Metadata:    animeTVMetadata(animeSeasons),
 			},
-			searchMode: "id",
-		},
-		{
-			name: "kitsu already absolute",
-			params: &SearchParams{
-				ContentType: "series",
-				Req:         indexer.SearchRequest{KitsuID: "486", Season: "2", Episode: "2"},
-				Metadata:    animeTVMetadata(animeSeasons),
-			},
-			searchMode: "text",
+			want: true,
 		},
 		{
 			name: "non-anime content",
@@ -138,16 +177,68 @@ func TestPrepareAbsoluteScopeRequestSkipsUnsupportedRequests(t *testing.T) {
 					},
 				},
 			},
-			searchMode: "text",
+			want: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if s.prepareAbsoluteScopeRequest(tc.params, tc.searchMode, "default", nil) {
-				t.Fatalf("expected request to be skipped")
+			if got := requestLooksLikeAnime(tc.params); got != tc.want {
+				t.Fatalf("requestLooksLikeAnime() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAbsoluteEpisodeForContentKitsuUsesEpisodeDirectly(t *testing.T) {
+	if got := absoluteEpisodeForContent("series", "486", nil, "", "63"); got != 63 {
+		t.Fatalf("absoluteEpisodeForContent(kitsu) = %d, want 63", got)
+	}
+	if got := absoluteEpisodeForContent("movie", "486", nil, "", "63"); got != 0 {
+		t.Fatalf("absoluteEpisodeForContent(movie) = %d, want 0", got)
+	}
+}
+
+func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
+	s := &Server{}
+	animeSeasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}, {SeasonNumber: 2, EpisodeCount: 16}}
+
+	cases := []struct {
+		name   string
+		params *SearchParams
+	}{
+		{
+			name: "kitsu already absolute",
+			params: &SearchParams{
+				ContentType: "series",
+				Req:         indexer.SearchRequest{KitsuID: "486", Season: "2", Episode: "2"},
+				Metadata:    animeTVMetadata(animeSeasons),
+			},
+		},
+		{
+			name: "non-anime content",
+			params: &SearchParams{
+				ContentType: "series",
+				Req:         indexer.SearchRequest{Season: "2", Episode: "2"},
+				Metadata: &resolvedSearchMetadata{
+					TVDetails: &tmdb.TVDetails{
+						Name:             "Breaking Bad",
+						OriginalLanguage: "en",
+						Seasons:          []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 7}},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if s.prepareAbsoluteEpisodeSearch(tc.params, "default", nil) {
+				t.Fatalf("expected supplement to be skipped")
 			}
 			if tc.params.Req.AbsoluteEpisode != "" {
 				t.Fatalf("skipped request must not carry an absolute episode, got %q", tc.params.Req.AbsoluteEpisode)
+			}
+			if len(tc.params.AbsoluteQueries) != 0 {
+				t.Fatalf("skipped request must not carry absolute queries, got %v", tc.params.AbsoluteQueries)
 			}
 		})
 	}

@@ -42,10 +42,11 @@ const (
 	SeriesSearchScopeSeasonEpisode          = "season_episode"
 	SeriesSearchScopeSeason                 = "season"
 	SeriesSearchScopeNone                   = "none"
-	// SeriesSearchScopeAbsolute queries by the anime absolute episode number
-	// ("One Piece 63" for S02E02). Text-mode only; the request is skipped for
-	// non-anime content or when the absolute number cannot be derived.
-	SeriesSearchScopeAbsolute           = "absolute"
+	// legacySeriesSearchScopeAbsolute was a dedicated scope that queried anime
+	// by absolute episode number. Absolute querying is now a per-query
+	// supplement (TryAbsoluteEpisode), so the scope migrates to season_episode
+	// with the supplement enabled.
+	legacySeriesSearchScopeAbsolute     = "absolute"
 	legacySeriesSearchScopeEpisodeParam = "episode_param"
 	legacySeriesSearchScopeEpisodeQuery = "episode_query"
 	legacySeriesSearchScopeSeasonParam  = "season_param"
@@ -88,12 +89,16 @@ type IndexerSearchConfig struct {
 }
 
 type SearchQueryConfig struct {
-	Name                          string   `json:"name"`
-	SearchMode                    string   `json:"search_mode,omitempty"`
-	SearchResultLimit             int      `json:"search_result_limit,omitempty"`
-	IncludeYear                   *bool    `json:"include_year,omitempty"`
-	UseSeasonEpisodeParams        *bool    `json:"use_season_episode_params,omitempty"`
-	SeriesSearchScope             string   `json:"series_search_scope,omitempty"`
+	Name                   string `json:"name"`
+	SearchMode             string `json:"search_mode,omitempty"`
+	SearchResultLimit      int    `json:"search_result_limit,omitempty"`
+	IncludeYear            *bool  `json:"include_year,omitempty"`
+	UseSeasonEpisodeParams *bool  `json:"use_season_episode_params,omitempty"`
+	SeriesSearchScope      string `json:"series_search_scope,omitempty"`
+	// TryAbsoluteEpisode supplements anime series searches with absolute-
+	// numbered text queries ("One Piece 63" for S02E02) and lets validation
+	// accept absolute-numbered releases. Nil defaults to enabled; series only.
+	TryAbsoluteEpisode            *bool    `json:"try_absolute_episode,omitempty"`
 	EnableSeriesSeasonSearch      *bool    `json:"enable_series_season_search,omitempty"`
 	EnableSeriesCompleteSearch    *bool    `json:"enable_series_complete_search,omitempty"`
 	EnableSeriesPackSearch        *bool    `json:"enable_series_pack_search,omitempty"`
@@ -468,10 +473,10 @@ func NormalizeSeriesSearchScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case SeriesSearchScopeSeasonEpisode,
 		SeriesSearchScopeSeason,
-		SeriesSearchScopeNone,
-		SeriesSearchScopeAbsolute:
+		SeriesSearchScopeNone:
 		return strings.ToLower(strings.TrimSpace(scope))
-	case legacySeriesSearchScopeEpisodeParam,
+	case legacySeriesSearchScopeAbsolute,
+		legacySeriesSearchScopeEpisodeParam,
 		legacySeriesSearchScopeEpisodeQuery:
 		return SeriesSearchScopeSeasonEpisode
 	case legacySeriesSearchScopeSeasonParam,
@@ -669,6 +674,15 @@ func (fp *FilterProfileConfig) EffectiveLibraryScoreBonus() int {
 		return 0
 	}
 	return *fp.LibraryScoreBonus
+}
+
+// TryAbsoluteEpisodeEnabled reports whether the query supplements anime series
+// searches with absolute-numbered queries. Defaults to enabled when unset.
+func (sq *SearchQueryConfig) TryAbsoluteEpisodeEnabled() bool {
+	if sq == nil || sq.TryAbsoluteEpisode == nil {
+		return true
+	}
+	return *sq.TryAbsoluteEpisode
 }
 
 func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
@@ -1097,14 +1111,26 @@ func backfillLegacySearchQuerySettingsForQuery(query *SearchQueryConfig, isSerie
 		changed = true
 	}
 	if isSeries {
+		// The retired "absolute" scope becomes season_episode with the
+		// absolute-episode supplement explicitly enabled.
+		if strings.EqualFold(strings.TrimSpace(query.SeriesSearchScope), legacySeriesSearchScopeAbsolute) && query.TryAbsoluteEpisode == nil {
+			query.TryAbsoluteEpisode = ptrBool(true)
+			changed = true
+		}
 		normalizedScope := normalizeSeriesSearchScopeFromLegacy(query.SeriesSearchScope, query.UseSeasonEpisodeParams)
 		if query.SeriesSearchScope != normalizedScope {
 			query.SeriesSearchScope = normalizedScope
 			changed = true
 		}
-	} else if query.SeriesSearchScope != "" {
-		query.SeriesSearchScope = ""
-		changed = true
+	} else {
+		if query.SeriesSearchScope != "" {
+			query.SeriesSearchScope = ""
+			changed = true
+		}
+		if query.TryAbsoluteEpisode != nil {
+			query.TryAbsoluteEpisode = nil
+			changed = true
+		}
 	}
 	if query.UseSeasonEpisodeParams != nil {
 		query.UseSeasonEpisodeParams = nil

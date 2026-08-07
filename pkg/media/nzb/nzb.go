@@ -279,18 +279,23 @@ func (n *NZB) GetContentFiles() []*FileInfo {
 
 func (n *NZB) GetContentFilesForEpisode(season, episode int) []*FileInfo {
 	infos := n.GetFileInfo()
-	if contentFiles := selectEpisodeContentFiles(infos, season, episode); len(contentFiles) > 0 {
+	if contentFiles := selectEpisodeContentFiles(infos, season, episode, 0); len(contentFiles) > 0 {
 		return contentFiles
 	}
 	return selectLargestContentFiles(infos)
 }
 
-func (n *NZB) GetSessionContentFilesForEpisode(season, episode int) []*FileInfo {
+// GetSessionContentFilesForEpisode selects the content files serving the
+// requested episode. absoluteEpisode (0 when unknown) is the anime absolute
+// number of the same episode; files carrying it match even though their
+// parsed season/episode differ from the request.
+func (n *NZB) GetSessionContentFilesForEpisode(season, episode, absoluteEpisode int) []*FileInfo {
 	infos := n.GetFileInfo()
-	if contentFiles := selectEpisodeContentFiles(infos, season, episode); len(contentFiles) > 0 {
+	if contentFiles := selectEpisodeContentFiles(infos, season, episode, absoluteEpisode); len(contentFiles) > 0 {
 		logger.Debug("Session episode content selection matched targeted NZB group",
 			"season", season,
 			"episode", episode,
+			"absolute_episode", absoluteEpisode,
 			"files", len(contentFiles),
 			"samples", sampleContentFilenames(contentFiles, 6))
 		return contentFiles
@@ -299,13 +304,14 @@ func (n *NZB) GetSessionContentFilesForEpisode(season, episode int) []*FileInfo 
 	logger.Debug("Session episode content selection fell back to all content candidates",
 		"season", season,
 		"episode", episode,
+		"absolute_episode", absoluteEpisode,
 		"files", len(contentFiles),
 		"samples", sampleContentFilenames(contentFiles, 8))
 	return contentFiles
 }
 
-func selectEpisodeContentFiles(infos []*FileInfo, season, episode int) []*FileInfo {
-	if season <= 0 || episode <= 0 {
+func selectEpisodeContentFiles(infos []*FileInfo, season, episode, absoluteEpisode int) []*FileInfo {
+	if (season <= 0 || episode <= 0) && absoluteEpisode <= 0 {
 		return nil
 	}
 
@@ -340,13 +346,14 @@ func selectEpisodeContentFiles(infos []*FileInfo, season, episode int) []*FileIn
 		choice := groupChoice{pattern: pattern, order: order[pattern]}
 		for _, info := range files {
 			choice.size += info.Size
-			if rank := episodeMatchRank(info.Filename, season, episode); rank > choice.rank {
+			if rank := episodeMatchRank(info.Filename, season, episode, absoluteEpisode); rank > choice.rank {
 				choice.rank = rank
 			}
 		}
 		logger.Debug("NZB episode content group evaluated",
 			"season", season,
 			"episode", episode,
+			"absolute_episode", absoluteEpisode,
 			"pattern", pattern,
 			"files", len(files),
 			"rank", choice.rank,
@@ -459,8 +466,8 @@ var episodePartialParser = sync.OnceValue(func() func(string) *jhin.Result {
 	return jhin.GetPartialParser([]string{"seasons", "episodes"})
 })
 
-func episodeMatchRank(filename string, season, episode int) int {
-	if season <= 0 || episode <= 0 {
+func episodeMatchRank(filename string, season, episode, absoluteEpisode int) int {
+	if (season <= 0 || episode <= 0) && absoluteEpisode <= 0 {
 		return 0
 	}
 	parsed := searchparser.ParseReleaseTitleWithParser(filename, episodePartialParser())
@@ -472,10 +479,18 @@ func episodeMatchRank(filename string, season, episode int) int {
 		return 0
 	}
 	rank := parsed.EpisodeMatchRank(season, episode)
+	if absoluteEpisode > 0 {
+		// Absolute-numbered anime files carry no season (or season 1), which
+		// is exactly the season<=0 match path.
+		if absRank := parsed.EpisodeMatchRank(0, absoluteEpisode); absRank > rank {
+			rank = absRank
+		}
+	}
 	logger.Debug("NZB episode filename rank evaluated",
 		"filename", filename,
 		"requested_season", season,
 		"requested_episode", episode,
+		"requested_absolute_episode", absoluteEpisode,
 		"rank", rank,
 		"parsed_season", parsed.Season,
 		"parsed_episode", parsed.Episode,
