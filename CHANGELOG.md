@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.1](https://github.com/Gaisberg/streamnzb/compare/v4.14.0...v4.14.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **stremio:** render template list fields without brackets, tolerant helpers ([c4ac3e6](https://github.com/Gaisberg/streamnzb/commit/c4ac3e6293426832963a4842fb9cf18b20e089f0))
+
 ## [4.14.0](https://github.com/Gaisberg/streamnzb/compare/v4.13.0...v4.14.0) (2026-08-06)
 
 
