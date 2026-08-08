@@ -40,9 +40,9 @@ func StreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint, password str
 		return nil, "", 0, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", bp.MainFileName)
 	}
 
-	// Password-protected RAR5 releases sometimes list the first volume without
-	// AnyEncrypted/file Encrypted flags (ListTolerant on part01 only). Route any
-	// passworded release through rardecode so playback sees decrypted bytes.
+	// Password-protected RAR5 releases sometimes list volumes without
+	// AnyEncrypted/file Encrypted flags set. Route any passworded release
+	// through rardecode so playback sees decrypted bytes.
 	if bp.AnyEncrypted || password != "" {
 		if password == "" {
 			return nil, "", 0, fmt.Errorf("password-protected RAR (file: %s) -- password required from NZB head", bp.MainFileName)
@@ -430,10 +430,13 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 
 			cleanName := ExtractFilename(f.Name())
 			fsys := NewNZBFSFromMapCtx(ctx, map[string]UnpackableFile{cleanName: f})
-			// ListTolerant: this maps only the single first volume; a split file that
+			// ListTolerant: this maps only a single volume; a split file that
 			// continues into sibling volumes must still be discoverable here. The full
 			// per-volume layout is stitched later by aggregateRemainingVolumes.
-			listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant}
+			// ListFromAnyVolume: every volume but the first opens on a continuation
+			// block, so without it each of those scans fails outright and the set
+			// looks like it holds only whatever the first volume happened to name.
+			listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant, rardecode.ListFromAnyVolume}
 			if password != "" {
 				listOpts = append(listOpts, rardecode.Password(password))
 			}

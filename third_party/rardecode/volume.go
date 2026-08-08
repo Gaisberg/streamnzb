@@ -41,6 +41,7 @@ type options struct {
 	openCheck            bool
 	parallelRead         bool
 	listTolerant         bool
+	listFromAnyVolume    bool
 	streamLazyVolumes    bool
 	maxConcurrentVolumes int
 }
@@ -77,6 +78,16 @@ func ParallelRead(enable bool) Option {
 // instead of failing when continuation volumes are missing. Intended for listing
 // a single first volume of a multi-volume set to discover file names/layout.
 func ListTolerant(o *options) { o.listTolerant = true }
+
+// ListFromAnyVolume makes listing accept a volume that begins part-way through
+// a file. Every volume of a multi-volume set except the first opens on a
+// continuation block (RAR5 "data not first", RAR3 "split before"), which
+// listing otherwise rejects as ErrInvalidFileBlock — so a mid-set volume can
+// only be enumerated on its own with this set. The leading entry reports just
+// the data held by the mounted volume; its Name and UnPackedSize are still the
+// whole file's, since a split file repeats both in every volume header.
+// Intended for discovering which files a single arbitrary volume carries.
+func ListFromAnyVolume(o *options) { o.listFromAnyVolume = true }
 
 // StreamLazyVolumes defers opening continuation volumes until their packed data is
 // read. Use when streaming a split file across many volumes so Next() does not

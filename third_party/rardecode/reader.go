@@ -301,7 +301,13 @@ func (f *packedFileReader) nextFile() (*fileBlockList, error) {
 	}
 
 	if !h.first {
-		return nil, ErrInvalidFileBlock
+		// Opening a mid-set volume on its own lands on a continuation block.
+		// Under listFromAnyVolume that is the expected entry point, so accept
+		// it — but only as the very first entry: a continuation block appearing
+		// after a file has already been listed still means a malformed archive.
+		if f.opt == nil || !f.opt.listFromAnyVolume || f.blocks != nil {
+			return nil, ErrInvalidFileBlock
+		}
 	}
 	blocks := newFileBlockList(h)
 	err = f.init(blocks)
