@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -572,5 +573,84 @@ func TestScanArchiveTopLevelMissingFirstVolumeStillReportsPAR2(t *testing.T) {
 	}
 	if errors.Is(err, ErrNestedSetIncomplete) {
 		t.Fatalf("top-level failure must not be classed as a nested-set problem: %v", err)
+	}
+}
+
+func TestIsFirstVolumeName(t *testing.T) {
+	firsts := []string{"release.rar", "release.part01.rar", "release.part1.rar", "movie.mkv"}
+	for _, name := range firsts {
+		if !isFirstVolumeName(name) {
+			t.Errorf("%q should be able to open a set", name)
+		}
+	}
+	continuations := []string{"release.part02.rar", "release.part13.rar", "release.r00", "release.r16"}
+	for _, name := range continuations {
+		if isFirstVolumeName(name) {
+			t.Errorf("%q is a continuation volume", name)
+		}
+	}
+}
+
+func TestSetHasFirstVolumeOnlyConsidersItsOwnSet(t *testing.T) {
+	parts := []filePart{
+		{name: "wanted.r16"},
+		{name: "wanted.r31"},
+		{name: "unrelated.rar"},
+	}
+	wanted := archiveSetName("wanted.r16")
+	if setHasFirstVolume(parts, wanted) {
+		t.Fatal("another set's first volume must not satisfy this set")
+	}
+
+	parts = append(parts, filePart{name: "wanted.rar"})
+	if !setHasFirstVolume(parts, wanted) {
+		t.Fatal("expected the set's own first volume to be recognised")
+	}
+}
+
+// countingUnpackableFile records how many times the scanner opened it, so a
+// test can prove the rescan stopped early instead of walking every volume.
+type countingUnpackableFile struct {
+	*memoryUnpackableFile
+	opened *atomic.Int64
+}
+
+func (f *countingUnpackableFile) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
+	f.opened.Add(1)
+	return f.memoryUnpackableFile.OpenStreamCtx(ctx)
+}
+
+// A 135-volume release used to scan every remaining outer volume looking for
+// one inner first volume, running past the client's timeout.
+func TestTryNestedArchiveCapsTheOuterRescan(t *testing.T) {
+	discardTestLogger(t)
+
+	var opened atomic.Int64
+	initialParts := []filePart{
+		{name: "inner.r16", volName: "outer.part001.rar", packedSize: 100},
+	}
+
+	allOuter := []UnpackableFile{
+		&memoryUnpackableFile{name: "outer.part001.rar", data: []byte("outer part 1")},
+	}
+	for i := 2; i <= 135; i++ {
+		allOuter = append(allOuter, &countingUnpackableFile{
+			memoryUnpackableFile: &memoryUnpackableFile{
+				name: fmt.Sprintf("outer.part%03d.rar", i),
+				data: []byte("not a parseable rar volume"),
+			},
+			opened: &opened,
+		})
+	}
+
+	_, err := tryNestedArchive(context.Background(), initialParts, allOuter, "", EpisodeTarget{})
+	if err == nil {
+		t.Fatal("expected the nested scan to fail on unparseable volumes")
+	}
+	if got := opened.Load(); got > maxNestedRescanVolumes {
+		t.Fatalf("rescan opened %d outer volumes, cap is %d", got, maxNestedRescanVolumes)
+	}
+	if opened.Load() == 0 {
+		t.Fatal("expected the rescan to try at least some outer volumes")
 	}
 }

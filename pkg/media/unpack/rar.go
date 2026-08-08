@@ -132,6 +132,17 @@ func streamEncryptedRAR(ctx context.Context, bp *ArchiveBlueprint, password stri
 // failing slowly across hundreds of volumes; we try a few and fail fast.
 const maxFirstVolumesToScan = 5
 
+const (
+	// nestedRescanBatch: outer volumes probed per round when hunting for a
+	// nested set's first volume. Large enough to keep the scan parallel, small
+	// enough that the hunt stops soon after it finds what it came for.
+	nestedRescanBatch = 8
+	// maxNestedRescanVolumes: ceiling on that hunt. The inner first volume sits
+	// in exactly one outer volume, so if this many have not produced it, the
+	// remaining ones are very unlikely to and the client is already waiting.
+	maxNestedRescanVolumes = 32
+)
+
 type firstVolumeCandidate struct {
 	file  UnpackableFile
 	score int
@@ -1270,7 +1281,40 @@ func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []Unpac
 		}
 
 		if len(remainingOuter) > 0 {
-			extraParts, extraDiag, extraErr := scanVolumesParallel(ctx, remainingOuter, password)
+			// Hunt for the inner first volume in batches instead of scanning
+			// every outer volume. Each volume costs a fetch and a parse, so on
+			// a 135-volume release the exhaustive version ran past the client's
+			// timeout; the volume we need is usually an early one, and once it
+			// turns up the rest cannot add anything.
+			budget := len(remainingOuter)
+			if budget > maxNestedRescanVolumes {
+				budget = maxNestedRescanVolumes
+				logger.Info("Capping the inner first-volume hunt",
+					"set", bestSet, "scanning", budget, "remaining_outer_vols", len(remainingOuter))
+			}
+
+			var (
+				extraParts []filePart
+				extraDiag  scanDiagnostics
+				extraErr   error
+				scanned    int
+			)
+			for scanned < budget {
+				end := min(scanned+nestedRescanBatch, budget)
+				batch, diag, batchErr := scanVolumesParallel(ctx, remainingOuter[scanned:end], password)
+				extraDiag = diag
+				scanned = end
+				if batchErr != nil {
+					extraErr = batchErr
+					break
+				}
+				extraParts = append(extraParts, batch...)
+				if setHasFirstVolume(extraParts, bestSet) {
+					logger.Info("Found the inner first volume; stopping the outer rescan",
+						"set", bestSet, "outer_vols_scanned", scanned, "of", len(remainingOuter))
+					break
+				}
+			}
 			if extraErr == nil && len(extraParts) > 0 {
 				allParts := append(parts, extraParts...)
 				return tryNestedArchive(ctx, allParts, nil, password, target)
@@ -1351,23 +1395,41 @@ func dedupeVolumeMembers(files []UnpackableFile) []UnpackableFile {
 	return result
 }
 
+// isFirstVolumeName reports whether name can open a set: a plain .rar, or
+// anything that is not recognisably a continuation volume.
+func isFirstVolumeName(name string) bool {
+	lower := strings.ToLower(ExtractFilename(name))
+	if strings.HasSuffix(lower, ExtRar) && !strings.Contains(lower, ".part") && !strings.Contains(lower, ".r0") {
+		return true
+	}
+	return !IsMiddleRarVolume(lower)
+}
+
 func filterFirstVolumes(files []UnpackableFile) []UnpackableFile {
 	var result []UnpackableFile
 	for _, f := range files {
-		name := strings.ToLower(ExtractFilename(f.Name()))
-		if strings.HasSuffix(name, ExtRar) && !strings.Contains(name, ".part") && !strings.Contains(name, ".r0") {
-			logger.Trace("filterFirstVolumes: accept .rar first vol", "name", name)
-			result = append(result, f)
+		if !isFirstVolumeName(f.Name()) {
+			logger.Trace("filterFirstVolumes: skip middle vol", "name", ExtractFilename(f.Name()))
 			continue
 		}
-		if IsMiddleRarVolume(name) {
-			logger.Trace("filterFirstVolumes: skip middle vol", "name", name)
-			continue
-		}
-		logger.Trace("filterFirstVolumes: accept fallthrough", "name", name)
+		logger.Trace("filterFirstVolumes: accept first vol", "name", ExtractFilename(f.Name()))
 		result = append(result, f)
 	}
 	return result
+}
+
+// setHasFirstVolume reports whether parts already name a first volume for the
+// given inner set — the one thing the remaining-volume rescan is hunting for.
+func setHasFirstVolume(parts []filePart, setName string) bool {
+	for _, p := range parts {
+		if !IsArchiveFile(p.name) || archiveSetName(p.name) != setName {
+			continue
+		}
+		if isFirstVolumeName(p.name) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMediaFile(info rardecode.ArchiveFileInfo) bool {
