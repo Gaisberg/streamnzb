@@ -17,6 +17,13 @@ import (
 
 var ErrPAR2RepairRequired = errors.New("likely PAR2 repair required")
 
+// ErrNestedSetIncomplete means an inner archive set was enumerated from an
+// outer scan that could not read every outer volume, so the inner volumes we
+// know about are a subset of what the release actually contains. This is a
+// scan limitation, not a damaged release: PAR2 cannot fix it, and the PAR2
+// files live in the outer release where a nested scan cannot see them.
+var ErrNestedSetIncomplete = errors.New("nested archive set incompletely enumerated")
+
 type ArchiveBlueprint struct {
 	MainFileName string
 	TotalSize    int64
@@ -241,6 +248,16 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 
 	allFirstVols := filterFirstVolumes(rarFiles)
 	if len(allFirstVols) == 0 {
+		// An inner set only contains what the outer scan managed to enumerate.
+		// Blaming the release for a missing first volume here would be wrong:
+		// the outer volumes that would have named it may simply have failed to
+		// list. There is also no PAR2 among these files to repair from.
+		if depth := NestDepthFromContext(ctx); depth > 0 {
+			logger.Warn("Nested archive set has no first volume; the outer scan did not enumerate it",
+				"inner_volumes", len(rarFiles), "depth", depth)
+			return nil, fmt.Errorf("no first volume among the %d inner volume(s) enumerated from the outer archive: %w",
+				len(rarFiles), ErrNestedSetIncomplete)
+		}
 		logger.Warn("No candidate first volume found in RAR set, attempting targeted Volume 1 PAR2 repair", "rar_files", len(rarFiles))
 		repairedVol, repairErr := RepairFirstVolumeWithPAR2(ctx, files)
 		if repairErr == nil && repairedVol != nil {
@@ -1253,11 +1270,18 @@ func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []Unpac
 		}
 
 		if len(remainingOuter) > 0 {
-			extraParts, _, extraErr := scanVolumesParallel(ctx, remainingOuter, password)
+			extraParts, extraDiag, extraErr := scanVolumesParallel(ctx, remainingOuter, password)
 			if extraErr == nil && len(extraParts) > 0 {
 				allParts := append(parts, extraParts...)
 				return tryNestedArchive(ctx, allParts, nil, password, target)
 			}
+			// Nothing recovered: the inner set stays as short as the first scan
+			// left it. Say so, otherwise the recursion below reports a missing
+			// first volume with no hint that most outer volumes were unreadable.
+			logger.Warn("Could not enumerate more inner volumes; the nested set stays incomplete",
+				"set", bestSet, "outer_vols_rescanned", len(remainingOuter),
+				"outer_scans_failed", extraDiag.failedScans, "inner_vols_known", len(nestedFiles),
+				"last_err", extraDiag.lastErr, "err", extraErr)
 		}
 	}
 

@@ -143,7 +143,14 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 			}
 			return s, name, size, bp, nil
 		}
-		logger.Warn("RAR analysis failed; release likely requires PAR2 repair", "target", target, "err", rarScanErr)
+		// Only say PAR2 when the error actually points there. Every other scan
+		// failure reported as "requires PAR2 repair" sends the reader chasing a
+		// repair that cannot help.
+		if errors.Is(rarScanErr, ErrPAR2RepairRequired) {
+			logger.Warn("RAR analysis failed; release likely requires PAR2 repair", "target", target, "err", rarScanErr)
+		} else {
+			logger.Warn("RAR analysis failed", "target", target, "err", rarScanErr)
+		}
 	}
 
 	archiveFiles, err := Identify7zParts(files)

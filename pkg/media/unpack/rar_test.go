@@ -528,3 +528,49 @@ func TestTryNestedArchiveScansRemainingOuterVolumesWhenFirstVolumeMissing(t *tes
 		t.Fatal("expected error on dummy data")
 	}
 }
+
+// A nested set is only as complete as the outer scan that produced it, so a
+// missing inner first volume must not be reported as a damaged release.
+func TestScanArchiveNestedSetMissingFirstVolumeIsNotBlamedOnPAR2(t *testing.T) {
+	discardTestLogger(t)
+
+	// The shape a partial outer scan leaves behind: some inner continuation
+	// volumes, no inner first volume, and no PAR2 anywhere in sight.
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "inner.r16", data: []byte("inner continuation volume")},
+		&memoryUnpackableFile{name: "inner.r31", data: []byte("another inner continuation")},
+	}
+
+	ctx := WithNestDepth(context.Background(), 1)
+	_, err := ScanArchive(ctx, files, "", EpisodeTarget{})
+	if err == nil {
+		t.Fatal("expected ScanArchive to fail without an inner first volume")
+	}
+	if !errors.Is(err, ErrNestedSetIncomplete) {
+		t.Fatalf("expected ErrNestedSetIncomplete, got %v", err)
+	}
+	if errors.Is(err, ErrPAR2RepairRequired) {
+		t.Fatalf("nested set failure must not claim PAR2 repair: %v", err)
+	}
+	if strings.Contains(err.Error(), "missing from release") {
+		t.Fatalf("nested set failure must not blame the release: %v", err)
+	}
+}
+
+// The top-level case keeps its PAR2 wording, so the two stay distinguishable.
+func TestScanArchiveTopLevelMissingFirstVolumeStillReportsPAR2(t *testing.T) {
+	discardTestLogger(t)
+
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "release.part02.rar", data: []byte("middle volume content")},
+		&memoryUnpackableFile{name: "release.part03.rar", data: []byte("middle volume content 2")},
+	}
+
+	_, err := ScanArchive(context.Background(), files, "", EpisodeTarget{})
+	if !errors.Is(err, ErrPAR2RepairRequired) {
+		t.Fatalf("expected ErrPAR2RepairRequired at depth 0, got %v", err)
+	}
+	if errors.Is(err, ErrNestedSetIncomplete) {
+		t.Fatalf("top-level failure must not be classed as a nested-set problem: %v", err)
+	}
+}
