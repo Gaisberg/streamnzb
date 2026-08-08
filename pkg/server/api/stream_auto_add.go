@@ -6,6 +6,17 @@ import (
 	"streamnzb/pkg/core/config"
 )
 
+// lowerNameSet indexes items by their lowercased, trimmed name.
+func lowerNameSet[T any](items []T, nameOf func(T) string) map[string]bool {
+	out := make(map[string]bool, len(items))
+	for _, it := range items {
+		if n := strings.ToLower(strings.TrimSpace(nameOf(it))); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
 func cloneStreamEntries(streams map[string]*config.StreamEntry) map[string]*config.StreamEntry {
 	if streams == nil {
 		return nil
@@ -244,34 +255,31 @@ func filterIndexerOverrides(
 	return filtered
 }
 
-func enabledProviderNames(providers []config.Provider) []string {
-	enabled := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		if provider.Enabled != nil && !*provider.Enabled {
+// enabledNames lists the trimmed names of items that are not explicitly
+// disabled (a nil Enabled pointer means enabled).
+func enabledNames[T any](items []T, enabledOf func(T) *bool, nameOf func(T) string) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if e := enabledOf(it); e != nil && !*e {
 			continue
 		}
-		name := strings.TrimSpace(provider.Name)
-		if name == "" {
-			continue
+		if name := strings.TrimSpace(nameOf(it)); name != "" {
+			out = append(out, name)
 		}
-		enabled = append(enabled, name)
 	}
-	return enabled
+	return out
+}
+
+func enabledProviderNames(providers []config.Provider) []string {
+	return enabledNames(providers,
+		func(p config.Provider) *bool { return p.Enabled },
+		func(p config.Provider) string { return p.Name })
 }
 
 func enabledIndexerNames(indexers []config.IndexerConfig) []string {
-	enabled := make([]string, 0, len(indexers))
-	for _, indexer := range indexers {
-		if indexer.Enabled != nil && !*indexer.Enabled {
-			continue
-		}
-		name := strings.TrimSpace(indexer.Name)
-		if name == "" {
-			continue
-		}
-		enabled = append(enabled, name)
-	}
-	return enabled
+	return enabledNames(indexers,
+		func(i config.IndexerConfig) *bool { return i.Enabled },
+		func(i config.IndexerConfig) string { return i.Name })
 }
 
 // dropDeletedFilterProfiles clears references to profiles that no longer
@@ -280,12 +288,7 @@ func enabledIndexerNames(indexers []config.IndexerConfig) []string {
 // A stream left with no profile falls back to returning everything, which is
 // how a stream with none configured has always behaved.
 func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles []config.FilterProfileConfig) {
-	known := make(map[string]bool, len(profiles))
-	for _, fp := range profiles {
-		if name := strings.ToLower(strings.TrimSpace(fp.Name)); name != "" {
-			known[name] = true
-		}
-	}
+	known := lowerNameSet(profiles, func(x config.FilterProfileConfig) string { return x.Name })
 	for _, stream := range streams {
 		if stream == nil {
 			continue
@@ -307,12 +310,7 @@ func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles 
 // dropDeletedProviders clears references to providers that no longer exist
 // from stream ProviderSelections.
 func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []config.Provider) {
-	known := make(map[string]bool, len(providers))
-	for _, p := range providers {
-		if name := strings.ToLower(strings.TrimSpace(p.Name)); name != "" {
-			known[name] = true
-		}
-	}
+	known := lowerNameSet(providers, func(x config.Provider) string { return x.Name })
 	for _, stream := range streams {
 		if stream == nil || len(stream.ProviderSelections) == 0 {
 			continue
@@ -330,12 +328,7 @@ func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []co
 // dropDeletedIndexers clears references to indexers that no longer exist
 // from stream IndexerSelections and IndexerOverrides.
 func dropDeletedIndexers(streams map[string]*config.StreamEntry, indexers []config.IndexerConfig) {
-	known := make(map[string]bool, len(indexers))
-	for _, idx := range indexers {
-		if name := strings.ToLower(strings.TrimSpace(idx.Name)); name != "" {
-			known[name] = true
-		}
-	}
+	known := lowerNameSet(indexers, func(x config.IndexerConfig) string { return x.Name })
 	for _, stream := range streams {
 		if stream == nil {
 			continue

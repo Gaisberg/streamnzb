@@ -326,45 +326,6 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 	return nil, err
 }
 
-func InspectRAR(files []UnpackableFile) (string, error) {
-	if len(files) == 0 {
-		return "", errors.New("no files provided")
-	}
-
-	firstVol := findFirstVolume(files)
-	if firstVol == nil {
-		return "", errors.New("no valid RAR volume found")
-	}
-
-	stream, err := firstVol.OpenStream()
-	if err != nil {
-		return "", fmt.Errorf("failed to open stream: %w", err)
-	}
-	defer stream.Close()
-
-	r, err := rardecode.NewReader(stream)
-	if err != nil {
-		return "", fmt.Errorf("failed to open rar: %w", err)
-	}
-
-	for i := 0; i < 50; i++ {
-		header, err := r.Next()
-		if header != nil && !header.IsDir && IsVideoFile(header.Name) {
-			return header.Name, nil
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			if strings.Contains(err.Error(), "multi-volume archive") {
-				break
-			}
-			return "", err
-		}
-	}
-	return "", errors.New("no video found in rar")
-}
-
 type filePart struct {
 	name         string
 	unpackedSize int64
@@ -1328,46 +1289,6 @@ func filterRarFiles(files []UnpackableFile) []UnpackableFile {
 	return dedupeVolumeMembers(result)
 }
 
-func mergeObfuscatedArchiveParts(groups [][]UnpackableFile) [][]UnpackableFile {
-	var singles [][]UnpackableFile
-	var remainder [][]UnpackableFile
-
-	for _, g := range groups {
-		if len(g) == 1 && rarPartRegex.MatchString(ExtractFilename(g[0].Name())) {
-			singles = append(singles, g)
-		} else {
-			remainder = append(remainder, g)
-		}
-	}
-
-	if len(singles) < 2 {
-		return groups
-	}
-
-	sort.Slice(singles, func(i, j int) bool {
-		return GetRARVolumeNumber(singles[i][0].Name()) < GetRARVolumeNumber(singles[j][0].Name())
-	})
-
-	isContiguous := true
-	for i, s := range singles {
-		vol := GetRARVolumeNumber(s[0].Name())
-		if vol != i+1 {
-			isContiguous = false
-			break
-		}
-	}
-
-	if isContiguous {
-		merged := make([]UnpackableFile, len(singles))
-		for i, s := range singles {
-			merged[i] = s[0]
-		}
-		return append(remainder, merged)
-	}
-
-	return groups
-}
-
 func dedupeVolumeMembers(files []UnpackableFile) []UnpackableFile {
 	byVol := make(map[int]UnpackableFile)
 	var volNums []int
@@ -1420,32 +1341,6 @@ func filterFirstVolumes(files []UnpackableFile) []UnpackableFile {
 		result = append(result, f)
 	}
 	return result
-}
-
-func findFirstVolume(files []UnpackableFile) UnpackableFile {
-
-	for _, f := range files {
-		lower := strings.ToLower(f.Name())
-		if strings.HasSuffix(lower, ".par2") || strings.HasSuffix(lower, ".nzb") || strings.HasSuffix(lower, ".nfo") {
-			continue
-		}
-		if (strings.HasSuffix(lower, ".rar") && !strings.Contains(lower, ".part")) ||
-			strings.Contains(lower, ".part01.") || strings.Contains(lower, ".part1.") ||
-			strings.HasSuffix(lower, ".r00") || strings.HasSuffix(lower, ".001") {
-			return f
-		}
-	}
-
-	for _, f := range files {
-		lower := strings.ToLower(f.Name())
-		if strings.HasSuffix(lower, ".par2") || strings.HasSuffix(lower, ".nzb") || strings.HasSuffix(lower, ".nfo") {
-			continue
-		}
-		if strings.HasSuffix(lower, ".rar") {
-			return f
-		}
-	}
-	return nil
 }
 
 func isMediaFile(info rardecode.ArchiveFileInfo) bool {

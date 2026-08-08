@@ -329,46 +329,28 @@ func (c *Client) HealthyForCheckout(maxIdle time.Duration) bool {
 	return err == nil
 }
 
-func (c *Client) GetArticle(messageID string) (string, error) {
-	c.setDeadline()
-	id, err := c.conn.Cmd("ARTICLE %s", messageID)
+// readMultiLine consumes a dot-terminated multi-line response via DotReader,
+// which also un-stuffs leading ".." octets. The manual ReadLine loop this
+// replaces returned dot-stuffed lines verbatim; the proxy then stuffed them
+// AGAIN on the way out, corrupting any body line starting with a dot.
+// The result carries no trailing newline, matching the previous contract.
+func (c *Client) readMultiLine() (string, error) {
+	data, err := io.ReadAll(c.conn.DotReader())
 	if err != nil {
 		return "", err
 	}
-
-	c.conn.StartResponse(id)
-	defer c.conn.EndResponse(id)
-
-	_, _, err = c.conn.ReadCodeLine(220)
-	if err != nil {
-		return "", err
-	}
-
-	var sb strings.Builder
-	for {
-		line, err := c.conn.ReadLine()
-		if err != nil {
-			return "", err
-		}
-		if line == "." {
-			break
-		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(line)
-	}
-
-	result := sb.String()
+	result := strings.TrimSuffix(string(data), "\n")
 	if c.pool != nil {
 		c.pool.TrackRead(len(result))
 	}
 	return result, nil
 }
 
-func (c *Client) GetBody(messageID string) (string, error) {
+// readCommand issues verb for messageID, expects the given success code and
+// returns the dot-terminated body as a string.
+func (c *Client) readCommand(verb string, code int, messageID string) (string, error) {
 	c.setDeadline()
-	id, err := c.conn.Cmd("BODY %s", messageID)
+	id, err := c.conn.Cmd(verb+" %s", formatMessageID(messageID))
 	if err != nil {
 		return "", err
 	}
@@ -376,31 +358,14 @@ func (c *Client) GetBody(messageID string) (string, error) {
 	c.conn.StartResponse(id)
 	defer c.conn.EndResponse(id)
 
-	_, _, err = c.conn.ReadCodeLine(222)
-	if err != nil {
+	if _, _, err = c.conn.ReadCodeLine(code); err != nil {
 		return "", err
 	}
+	return c.readMultiLine()
+}
 
-	var sb strings.Builder
-	for {
-		line, err := c.conn.ReadLine()
-		if err != nil {
-			return "", err
-		}
-		if line == "." {
-			break
-		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(line)
-	}
-
-	result := sb.String()
-	if c.pool != nil {
-		c.pool.TrackRead(len(result))
-	}
-	return result, nil
+func (c *Client) GetArticle(messageID string) (string, error) {
+	return c.readCommand("ARTICLE", 220, messageID)
 }
 
 // drainBackendBody discards any unread body remaining in the pipeline.
@@ -416,7 +381,7 @@ func (c *Client) drainBackendBody() {
 
 func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err error) {
 	c.setDeadline()
-	id, err := c.conn.Cmd("BODY %s", messageID)
+	id, err := c.conn.Cmd("BODY %s", formatMessageID(messageID))
 	if err != nil {
 		return 0, err
 	}
@@ -469,45 +434,12 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 }
 
 func (c *Client) GetHead(messageID string) (string, error) {
-	c.setDeadline()
-	id, err := c.conn.Cmd("HEAD %s", messageID)
-	if err != nil {
-		return "", err
-	}
-
-	c.conn.StartResponse(id)
-	defer c.conn.EndResponse(id)
-
-	_, _, err = c.conn.ReadCodeLine(221)
-	if err != nil {
-		return "", err
-	}
-
-	var sb strings.Builder
-	for {
-		line, err := c.conn.ReadLine()
-		if err != nil {
-			return "", err
-		}
-		if line == "." {
-			break
-		}
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(line)
-	}
-
-	result := sb.String()
-	if c.pool != nil {
-		c.pool.TrackRead(len(result))
-	}
-	return result, nil
+	return c.readCommand("HEAD", 221, messageID)
 }
 
 func (c *Client) CheckArticle(messageID string) (bool, error) {
 	c.setDeadline()
-	id, err := c.conn.Cmd("STAT %s", messageID)
+	id, err := c.conn.Cmd("STAT %s", formatMessageID(messageID))
 	if err != nil {
 		return false, err
 	}

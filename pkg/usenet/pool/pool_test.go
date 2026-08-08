@@ -2,6 +2,8 @@ package pool
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -155,4 +157,51 @@ func TestProviderArticleStatsCounters(t *testing.T) {
 	if stats[1].ProviderID != "provider-b" || stats[1].AvailableCount != 0 || stats[1].UnavailableCount != 2 {
 		t.Fatalf("provider-b stats = %+v", stats[1])
 	}
+}
+
+// Regression: Subset must share the parent's article-stats registry safely.
+// Before the registry was self-locking, parent and subset guarded the same map
+// with different mutexes, allowing concurrent map writes to crash the process.
+func TestSubsetSharesArticleStatsSafely(t *testing.T) {
+	p, err := NewPool(&Config{
+		Providers: []ProviderConfig{
+			{ID: "provider-a", Priority: 0},
+			{ID: "provider-b", Priority: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	sub := p.Subset([]string{"provider-a"})
+	if sub == nil {
+		t.Fatal("Subset returned nil")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				// Unknown provider IDs force map inserts on both pools.
+				p.recordArticleResult(fmt.Sprintf("dyn-%d-%d", i, j), true)
+			}
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				sub.recordArticleResult(fmt.Sprintf("dyn-sub-%d-%d", i, j), false)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Counts recorded via the subset must be visible on the parent: one registry.
+	sub.recordArticleResult("provider-a", true)
+	for _, st := range p.ProviderArticleStats() {
+		if st.ProviderID == "provider-a" && st.AvailableCount == 1 {
+			return
+		}
+	}
+	t.Fatal("subset-recorded stats not visible via parent pool")
 }

@@ -130,46 +130,6 @@ func formatLogMessage(r slog.Record, loc *time.Location) string {
 	return msg
 }
 
-type BroadcastHandler struct {
-	slog.Handler
-	ch chan<- string
-}
-
-func (h *BroadcastHandler) Handle(ctx context.Context, r slog.Record) error {
-	r = sanitizeRecord(r)
-
-	err := h.Handler.Handle(ctx, r)
-
-	if h.ch != nil {
-
-		locationMu.RLock()
-		loc := logLocation
-		locationMu.RUnlock()
-		if loc == nil {
-			loc = time.Local
-		}
-
-		msg := formatLogMessage(r, loc)
-
-		select {
-		case h.ch <- msg:
-		default:
-
-		}
-	}
-	return err
-}
-
-func (h *BroadcastHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &BroadcastHandler{Handler: h.Handler.WithAttrs(sanitizeAttrs(attrs)), ch: h.ch}
-}
-
-func (h *BroadcastHandler) WithGroup(name string) slog.Handler {
-	return &BroadcastHandler{Handler: h.Handler.WithGroup(name), ch: h.ch}
-}
-
-var _ = time.Now
-
 var broadcastCh chan<- string
 
 func SetBroadcast(ch chan<- string) {
@@ -177,20 +137,35 @@ func SetBroadcast(ch chan<- string) {
 
 }
 
-func Init(levelStr string) {
-	var level slog.Level
+// DebugEnabled reports whether debug-level records are currently emitted.
+// Use it to skip work done purely to feed debug logging.
+func DebugEnabled() bool {
+	return Log != nil && Log.Enabled(context.Background(), slog.LevelDebug)
+}
+
+// logLevel is the live level for the active handler. SetLevel stores into it,
+// so a config reload changes verbosity without rebuilding the handler chain
+// (which would also reopen the log file and drop the broadcast subscribers).
+var logLevel = new(slog.LevelVar)
+
+// parseLevel maps a configured level name onto its slog level.
+func parseLevel(levelStr string) slog.Level {
 	switch strings.ToUpper(levelStr) {
 	case "TRACE":
-		level = slog.LevelDebug - 1
+		return slog.LevelDebug - 1
 	case "DEBUG":
-		level = slog.LevelDebug
+		return slog.LevelDebug
 	case "WARN":
-		level = slog.LevelWarn
+		return slog.LevelWarn
 	case "ERROR":
-		level = slog.LevelError
+		return slog.LevelError
 	default:
-		level = slog.LevelInfo
+		return slog.LevelInfo
 	}
+}
+
+func Init(levelStr string) {
+	logLevel.Set(parseLevel(levelStr))
 
 	tzEnv := env.TZ()
 	var loc *time.Location
@@ -239,7 +214,7 @@ func Init(levelStr string) {
 
 	tzLoc := loc
 	opts := &slog.HandlerOptions{
-		Level: level,
+		Level: logLevel,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 
 			if a.Key == slog.TimeKey {
@@ -385,8 +360,10 @@ func PurgeOldLogs(keepCount int) {
 	}
 }
 
+// SetLevel changes verbosity in place. It deliberately does NOT re-Init: the
+// handler, log file and broadcast subscribers stay as they are.
 func SetLevel(levelStr string) {
-	Init(levelStr)
+	logLevel.Set(parseLevel(levelStr))
 }
 
 func SetVerboseNNTPLogging(enabled bool) {

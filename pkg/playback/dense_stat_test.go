@@ -1,4 +1,4 @@
-package stremio
+package playback
 
 import (
 	"context"
@@ -63,7 +63,7 @@ func TestDenseStatSweepDetectsHolePastSparseSamples(t *testing.T) {
 	}
 	vols[1].missing = map[int]bool{38: true} // ~121MB in
 
-	err := verifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...))
+	err := VerifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...))
 	if err == nil {
 		t.Fatal("expected dense sweep to reject the release")
 	}
@@ -78,7 +78,7 @@ func TestDenseStatSweepPassesCleanRelease(t *testing.T) {
 		{name: "p2", segments: 129},
 		{name: "p3", segments: 129},
 	}
-	if err := verifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...)); err != nil {
+	if err := VerifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...)); err != nil {
 		t.Fatalf("clean release must pass, got %v", err)
 	}
 	// Startup window fully covered: every segment of the first two volumes.
@@ -94,14 +94,14 @@ func TestDenseStatSweepPassesCleanRelease(t *testing.T) {
 func TestDenseStatSweepFailsOpen(t *testing.T) {
 	// Transient STAT errors must never reject a release.
 	flaky := []*statVol{{name: "p1", segments: 50, statErr: errors.New("timeout")}}
-	if err := verifySelectedFileArticlesDense(context.Background(), bpFromVols(flaky...)); err != nil {
+	if err := VerifySelectedFileArticlesDense(context.Background(), bpFromVols(flaky...)); err != nil {
 		t.Fatalf("transient errors must fail open, got %v", err)
 	}
 	// Non-archive blueprints are out of scope and must pass.
-	if err := verifySelectedFileArticlesDense(context.Background(), &unpack.DirectBlueprint{}); err != nil {
+	if err := VerifySelectedFileArticlesDense(context.Background(), &unpack.DirectBlueprint{}); err != nil {
 		t.Fatalf("non-archive blueprint must pass, got %v", err)
 	}
-	if err := verifySelectedFileArticlesDense(context.Background(), nil); err != nil {
+	if err := VerifySelectedFileArticlesDense(context.Background(), nil); err != nil {
 		t.Fatalf("nil blueprint must pass, got %v", err)
 	}
 }
@@ -113,7 +113,7 @@ func TestDenseStatSweepRespectsBudget(t *testing.T) {
 	for i := range vols {
 		vols[i] = &statVol{name: "v" + string(rune('0'+i%10)) + string(rune('a'+(i/10)%26)) + string(rune('a'+i/260)), segments: 129}
 	}
-	if err := verifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...)); err != nil {
+	if err := VerifySelectedFileArticlesDense(context.Background(), bpFromVols(vols...)); err != nil {
 		t.Fatalf("clean huge release must pass, got %v", err)
 	}
 	total := 0

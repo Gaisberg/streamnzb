@@ -7,8 +7,10 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
+	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 )
 
@@ -208,24 +210,24 @@ func TestNewRankingServiceLoadsProfilesUpFront(t *testing.T) {
 // Most anime is browsed through ordinary catalogues, so classification cannot
 // rely on a Kitsu request. Anime is animation that is not originally English.
 func TestMetadataLooksLikeAnime(t *testing.T) {
-	tvWith := func(lang string, genres ...string) *resolvedSearchMetadata {
+	tvWith := func(lang string, genres ...string) *query.ResolvedSearchMetadata {
 		g := make([]tmdb.Genre, 0, len(genres))
 		for _, name := range genres {
 			g = append(g, tmdb.Genre{Name: name})
 		}
-		return &resolvedSearchMetadata{TVDetails: &tmdb.TVDetails{OriginalLanguage: lang, Genres: g}}
+		return &query.ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{OriginalLanguage: lang, Genres: g}}
 	}
-	movieWith := func(lang string, genres ...string) *resolvedSearchMetadata {
+	movieWith := func(lang string, genres ...string) *query.ResolvedSearchMetadata {
 		g := make([]tmdb.Genre, 0, len(genres))
 		for _, name := range genres {
 			g = append(g, tmdb.Genre{Name: name})
 		}
-		return &resolvedSearchMetadata{MovieDetails: &tmdb.MovieDetails{OriginalLanguage: lang, Genres: g}}
+		return &query.ResolvedSearchMetadata{MovieDetails: &tmdb.MovieDetails{OriginalLanguage: lang, Genres: g}}
 	}
 
 	tests := []struct {
 		name        string
-		meta        *resolvedSearchMetadata
+		meta        *query.ResolvedSearchMetadata
 		contentType string
 		want        bool
 	}{
@@ -243,8 +245,8 @@ func TestMetadataLooksLikeAnime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := metadataLooksLikeAnime(tt.meta, tt.contentType); got != tt.want {
-				t.Errorf("metadataLooksLikeAnime() = %v, want %v", got, tt.want)
+			if got := query.MetadataLooksLikeAnime(tt.meta, tt.contentType); got != tt.want {
+				t.Errorf("query.MetadataLooksLikeAnime() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -252,10 +254,10 @@ func TestMetadataLooksLikeAnime(t *testing.T) {
 
 // A Kitsu request stays anime regardless of what the other metadata says.
 func TestKindForRequestPrefersKitsu(t *testing.T) {
-	source := &playlistSource{Params: &SearchParams{
+	source := &playlistSource{Params: &query.SearchParams{
 		ContentType: "series",
-		Metadata: &resolvedSearchMetadata{
-			KitsuDetails: &KitsuAnimeDetails{ShowType: "movie"},
+		Metadata: &query.ResolvedSearchMetadata{
+			KitsuDetails: &kitsu.AnimeDetails{ShowType: "movie"},
 			TVDetails:    &tmdb.TVDetails{OriginalLanguage: "en", Genres: []tmdb.Genre{{Name: "Drama"}}},
 		},
 	}}

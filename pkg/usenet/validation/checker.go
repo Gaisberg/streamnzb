@@ -208,46 +208,61 @@ func (c *Checker) validateProviderWithClient(ctx context.Context, nzbData *nzb.N
 	}
 	statChan := make(chan statResult, len(articles))
 	sem := make(chan struct{}, maxOr(c.maxConcurrent, 5))
+	var wg sync.WaitGroup
+	launched := 0
 	for _, articleID := range articles {
-		articleID := articleID
-		select {
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-			return result
-		default:
+		if ctx.Err() != nil {
+			break
 		}
+		articleID := articleID
+		wg.Add(1)
+		launched++
 		go func() {
+			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			exists, err := client.StatArticle(articleID)
 			statChan <- statResult{exists, err}
 		}()
 	}
+	// The client is returned to the pool when we return, so every in-flight
+	// STAT must have completed by then — a command still on the wire poisons
+	// the connection for its next checkout. statChan is buffered for all
+	// launched goroutines, so draining it below cannot block them, and the
+	// short per-command socket deadline bounds the wait.
+	defer wg.Wait()
+
 	missing := 0
-	for range articles {
-		select {
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-			return result
-		case res := <-statChan:
-			if res.err != nil {
-				if c.pool != nil && pool.IsArticleNotFoundError(res.err) {
-					c.pool.RecordProviderArticleResult(providerName, false)
-				}
-				result.Error = res.err
-				return result
+	var firstErr error
+	for i := 0; i < launched; i++ {
+		res := <-statChan
+		if res.err != nil {
+			if firstErr == nil {
+				firstErr = res.err
 			}
-			if !res.exists {
-				missing++
-				if c.pool != nil {
-					c.pool.RecordProviderArticleResult(providerName, false)
-				}
-			} else {
-				if c.pool != nil {
-					c.pool.RecordProviderArticleResult(providerName, true)
-				}
+			if c.pool != nil && pool.IsArticleNotFoundError(res.err) {
+				c.pool.RecordProviderArticleResult(providerName, false)
+			}
+			continue
+		}
+		if !res.exists {
+			missing++
+			if c.pool != nil {
+				c.pool.RecordProviderArticleResult(providerName, false)
+			}
+		} else {
+			if c.pool != nil {
+				c.pool.RecordProviderArticleResult(providerName, true)
 			}
 		}
+	}
+	if firstErr != nil {
+		result.Error = firstErr
+		return result
+	}
+	if launched < len(articles) {
+		result.Error = ctx.Err()
+		return result
 	}
 
 	result.MissingArticles = missing
@@ -378,10 +393,6 @@ func compressionTypeForValidation(nzbData *nzb.NZB, season, episode int) string 
 		return "direct"
 	}
 	return nzbData.CompressionTypeForEpisode(season, episode)
-}
-
-func (c *Checker) getSampleArticles(nzbData *nzb.NZB) []string {
-	return c.getSampleArticlesForEpisode(nzbData, 0, 0)
 }
 
 func (c *Checker) getSampleArticlesForEpisode(nzbData *nzb.NZB, season, episode int) []string {

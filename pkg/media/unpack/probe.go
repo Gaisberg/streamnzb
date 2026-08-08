@@ -83,12 +83,6 @@ func InspectContainerHeader(header []byte, fileName string) ContainerTrackInfo {
 	return ContainerTrackInfo{Detected: false}
 }
 
-// ValidateMediaStreamHasVideo inspects the stream with ffprobe if available, or container headers fallback,
-// to verify that a video track is present.
-func ValidateMediaStreamHasVideo(stream ReadSeekCloser, fileName string) error {
-	return ValidateMediaStreamHasVideoWithFFprobeCtx(context.Background(), stream, fileName, "")
-}
-
 // ValidateMediaStreamHasVideoWithFFprobe inspects the stream with ffprobe (if configured/available),
 // falling back to container track header inspection.
 func ValidateMediaStreamHasVideoWithFFprobe(stream ReadSeekCloser, fileName string, customFFprobePath string) error {

@@ -61,8 +61,6 @@ type Client struct {
 	conn   *websocket.Conn
 	send   chan WSMessage
 	stream *auth.Stream
-
-	user *auth.Stream
 }
 
 func NewServer(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
@@ -216,7 +214,6 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 		for _, p := range comp.ProviderPools {
 			s.streamingPools = append(s.streamingPools, p)
 		}
-		s.sessionMgr.UpdatePools(s.streamingPools)
 		s.sessionMgr.UpdateUsenetPool(comp.UsenetPool)
 	}
 	if restartProxy {
@@ -347,7 +344,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	mux.HandleFunc("/api/info", s.handleInfo)
 
-	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.config.GetAdminUsername() }, func() string { return s.config.AdminToken })
+	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.adminUsername() }, func() string { return s.config.AdminToken })
 	mux.Handle("/api/ws", authMiddleware(http.HandlerFunc(s.handleWebSocket)))
 	mux.Handle("/api/config", authMiddleware(http.HandlerFunc(s.handleConfig)))
 	mux.Handle("/api/cache/clear", authMiddleware(http.HandlerFunc(s.handleClearCache)))

@@ -16,10 +16,6 @@ type NZBFS struct {
 	files map[string]UnpackableFile
 }
 
-func NewNZBFSFromMap(files map[string]UnpackableFile) *NZBFS {
-	return NewNZBFSFromMapCtx(context.Background(), files)
-}
-
 func NewNZBFSFromMapCtx(ctx context.Context, files map[string]UnpackableFile) *NZBFS {
 	if ctx == nil {
 		ctx = context.Background()

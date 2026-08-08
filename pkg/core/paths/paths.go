@@ -5,9 +5,35 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
+var (
+	overrideMu sync.RWMutex
+	override   string
+)
+
+// SetDataDir pins the data directory for the whole process. main resolves the
+// directory exactly once (honoring the -config flag) and calls this before any
+// component asks for it; without the pin, flag-configured runs would put the
+// DB, logs and state wherever each caller's own resolution landed.
+func SetDataDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return
+	}
+	overrideMu.Lock()
+	override = filepath.Clean(dir)
+	overrideMu.Unlock()
+}
+
 func GetDataDir() string {
+	overrideMu.RLock()
+	pinned := override
+	overrideMu.RUnlock()
+	if pinned != "" {
+		return pinned
+	}
 	if envPath := strings.TrimSpace(os.Getenv("CONFIG_PATH")); envPath != "" {
 		clean := filepath.Clean(envPath)
 		if fi, err := os.Stat(clean); err == nil && fi.IsDir() {

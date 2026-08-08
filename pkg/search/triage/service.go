@@ -22,42 +22,6 @@ func NewService() *Service {
 	return &Service{}
 }
 
-func (s *Service) Filter(releases []*release.Release) []Candidate {
-	var candidates []Candidate
-
-	for _, rel := range releases {
-		if rel == nil {
-			continue
-		}
-		if release.IsFullDiscRelease(rel.Title) {
-			continue
-		}
-		parsed := parser.ParseReleaseTitle(rel.Title)
-		group := parsed.ResolutionGroup()
-		score := basicScore(rel)
-
-		querySource := rel.QuerySource
-		if querySource == "" {
-			querySource = "id"
-		}
-		candidates = append(candidates, Candidate{
-			Release:     rel,
-			Metadata:    parsed,
-			Group:       group,
-			Score:       score,
-			QuerySource: querySource,
-		})
-	}
-
-	candidates = deduplicateReleases(candidates)
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Score > candidates[j].Score
-	})
-
-	return candidates
-}
-
 func (s *Service) SortCandidates(candidates []Candidate) {
 	for i := range candidates {
 		rel := candidates[i].Release
@@ -129,36 +93,4 @@ func basicScore(rel *release.Release) int {
 	score += rel.Grabs
 
 	return score
-}
-
-func deduplicateReleases(candidates []Candidate) []Candidate {
-	seen := make(map[string]*Candidate)
-
-	for i := range candidates {
-		candidate := &candidates[i]
-
-		normalized := release.NormalizeTitleForDedup(candidate.Release.Title)
-		if normalized == "" {
-			continue
-		}
-
-		existing, exists := seen[normalized]
-		if !exists {
-			seen[normalized] = candidate
-			continue
-		}
-
-		if candidate.Score > existing.Score {
-			seen[normalized] = candidate
-		} else if candidate.Score == existing.Score && candidate.QuerySource == "id" && existing.QuerySource != "id" {
-			seen[normalized] = candidate
-		}
-	}
-
-	result := make([]Candidate, 0, len(seen))
-	for _, candidate := range seen {
-		result = append(result, *candidate)
-	}
-
-	return result
 }

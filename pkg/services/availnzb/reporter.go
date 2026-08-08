@@ -138,8 +138,8 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 	if meta.ReleaseName == "" {
 		return SkippedOutcome("Release name is missing for AvailNZB.")
 	}
-	if sess.NZB != nil {
-		meta.CompressionType = sess.NZB.CompressionType()
+	if sessNZB := sess.NZB(); sessNZB != nil {
+		meta.CompressionType = sessNZB.CompressionType()
 	}
 	hosts := sess.UsedProviderHosts()
 	if servedOnly {
@@ -174,27 +174,18 @@ func mergeProviderHosts(base, extra []string) []string {
 	}
 	seen := make(map[string]struct{}, len(base)+len(extra))
 	out := make([]string, 0, len(base)+len(extra))
-	for _, h := range base {
-		host := strings.TrimSpace(h)
-		if host == "" {
-			continue
+	for _, list := range [][]string{base, extra} {
+		for _, h := range list {
+			host := strings.TrimSpace(h)
+			if host == "" {
+				continue
+			}
+			if _, ok := seen[host]; ok {
+				continue
+			}
+			seen[host] = struct{}{}
+			out = append(out, host)
 		}
-		if _, ok := seen[host]; ok {
-			continue
-		}
-		seen[host] = struct{}{}
-		out = append(out, host)
-	}
-	for _, h := range extra {
-		host := strings.TrimSpace(h)
-		if host == "" {
-			continue
-		}
-		if _, ok := seen[host]; ok {
-			continue
-		}
-		seen[host] = struct{}{}
-		out = append(out, host)
 	}
 	return out
 }

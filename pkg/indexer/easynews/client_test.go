@@ -245,7 +245,7 @@ func TestNormalizeTitleForSearchQuery(t *testing.T) {
 }
 
 func TestPrepareEasynewsQuery(t *testing.T) {
-	got := prepareEasynewsQuery("Bube, Dame, König, grAS", "text", nil)
+	got := prepareEasynewsQuery("Bube, Dame, König, grAS")
 	want := "Bube Dame Koenig grAS"
 	if got != want {
 		t.Fatalf("prepareEasynewsQuery() = %q, want %q", got, want)

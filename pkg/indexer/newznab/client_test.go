@@ -100,7 +100,7 @@ func TestNewznabSearch(t *testing.T) {
 		IMDbID: "tt1234567",
 	}
 
-	resp, err := client.Search(req)
+	resp, err := client.Search(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestNewznabPagination(t *testing.T) {
 		Limit: 2,
 	}
 
-	resp, err := client.Search(req)
+	resp, err := client.Search(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestNewznabSearchLimitUsesCapsMaxWhenRequestLimitIsZero(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Limits: indexer.CapsLimits{Max: 500}}
 
-	_, err := client.Search(indexer.SearchRequest{Limit: 0})
+	_, err := client.Search(context.Background(), indexer.SearchRequest{Limit: 0})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestNewznabSearchLimitFallsBackTo2000WithoutCaps(t *testing.T) {
 		APIKey: "test-api-key",
 	}, nil)
 
-	_, err := client.Search(indexer.SearchRequest{Limit: 0})
+	_, err := client.Search(context.Background(), indexer.SearchRequest{Limit: 0})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -241,7 +241,7 @@ func TestNewznabSearchLimitKeepsExplicitValueEvenAboveCapsMax(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Limits: indexer.CapsLimits{Max: 500}}
 
-	_, err := client.Search(indexer.SearchRequest{Limit: 3000})
+	_, err := client.Search(context.Background(), indexer.SearchRequest{Limit: 3000})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -270,7 +270,7 @@ func TestNewznabPing(t *testing.T) {
 		APIKey:      "test-api-key",
 		QueryHeader: "Prowlarr/2.3.0.5236",
 	}, nil)
-	err := client.Ping()
+	err := client.Ping(context.Background())
 	if err != nil {
 		t.Errorf("Ping failed: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestSearchTVTextModeDoesNotUseTVSearchParams(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		Query:             "The Last of Us S01E02",
 		Season:            "1",
@@ -507,7 +507,7 @@ func TestSearchTVIDModeKeepsTVSearchParams(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		TVDBID:            "121361",
 		Season:            "1",
@@ -556,7 +556,7 @@ func TestSearchTVIDModeUsesIMDbIDWhenCapsSupportIt(t *testing.T) {
 		},
 	}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		IMDbID:            "tt1190634",
 		Season:            "1",
@@ -605,7 +605,7 @@ func TestSearchTVIDModeUsesTMDBIDWhenCapsSupportIt(t *testing.T) {
 		},
 	}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		TMDBID:            "250307",
 		Season:            "1",
@@ -648,7 +648,7 @@ func TestSearchTVIDModeSkipsWhenCapsDoNotSupportAvailableIDs(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Search(indexer.SearchRequest{
+	resp, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		IMDbID:            "tt1190634",
 		Season:            "1",
@@ -691,7 +691,7 @@ func TestSearchMovieIDModeUsesTMDBIDWhenCapsSupportIt(t *testing.T) {
 		},
 	}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:        "2000",
 		TMDBID:     "83533",
 		SearchMode: "id",
@@ -728,7 +728,7 @@ func TestSearchMovieIDModeUsesTMDBIDWithoutCaps(t *testing.T) {
 		APIKey: "test-api-key",
 	}, nil)
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:        "2000",
 		TMDBID:     "83533",
 		SearchMode: "id",
@@ -765,7 +765,7 @@ func TestSearchTVIDModeUsesTMDBIDWithoutCaps(t *testing.T) {
 		APIKey: "test-api-key",
 	}, nil)
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		TMDBID:            "250307",
 		Season:            "1",
@@ -803,7 +803,7 @@ func TestSearchTVIDModeOmitsQueryWhenUsingTVSearchParams(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		Query:             "Star Wars Maul Shadow Lord S01E01",
 		TVDBID:            "462715",
@@ -846,7 +846,7 @@ func TestSearchTextModeOrdersQueryParams(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		Query:             "The Last of Us S01E02",
 		Season:            "1",
@@ -880,7 +880,7 @@ func TestSearchTVIDModeOrdersQueryParams(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:               "5000",
 		TVDBID:            "462715",
 		Season:            "1",
@@ -916,7 +916,7 @@ func TestSearchAggregatorIncludesCacheTimeParam(t *testing.T) {
 	}, nil)
 	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{TVSearch: true}}
 
-	_, err := client.Search(indexer.SearchRequest{
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
 		Cat:        "5000",
 		Query:      "Interstellar",
 		SearchMode: "text",

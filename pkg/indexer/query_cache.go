@@ -37,20 +37,44 @@ func BuildQueryCacheKey(indexerName string, req SearchRequest) string {
 		"imdb=" + strings.TrimSpace(req.IMDbID),
 		"tmdb=" + strings.TrimSpace(req.TMDBID),
 		"tvdb=" + strings.TrimSpace(req.TVDBID),
+		"kitsu=" + strings.TrimSpace(req.KitsuID),
 		"cat=" + strings.TrimSpace(req.Cat),
 		"s=" + strings.TrimSpace(req.Season),
 		"ep=" + strings.TrimSpace(req.Episode),
+		"abs=" + strings.TrimSpace(req.AbsoluteEpisode),
 		"limit=" + fmt.Sprintf("%d", req.Limit),
 		"scope=" + strings.TrimSpace(req.SeriesSearchScope),
 		"no_filter=" + fmt.Sprintf("%t", req.DisableResultFiltering),
 		"year_val=" + fmt.Sprintf("%t", req.EnableYearValidation),
 	}
-	if req.OptionalOverrides != nil {
+	// Every override that changes the outgoing indexer request must be part of
+	// the key, or requests with different effective parameters share a cache
+	// entry (e.g. anime-widened TV categories vs the plain default).
+	if ov := req.OptionalOverrides; ov != nil {
 		parts = append(parts,
-			"ov_limit="+fmt.Sprintf("%d", req.OptionalOverrides.SearchResultLimit),
+			"ov_limit="+fmt.Sprintf("%d", ov.SearchResultLimit),
+			"ov_movie_cats="+strPtrOrEmpty(ov.MovieCategories),
+			"ov_tv_cats="+strPtrOrEmpty(ov.TVCategories),
+			"ov_lang="+strPtrOrEmpty(ov.SearchTitleLanguage),
+			"ov_no_id="+boolPtrKey(ov.DisableIdSearch),
+			"ov_no_str="+boolPtrKey(ov.DisableStringSearch),
 		)
 	}
 	return strings.Join(parts, "|")
+}
+
+func strPtrOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(*p)
+}
+
+func boolPtrKey(p *bool) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%t", *p)
 }
 
 func (qc *QueryCache) Get(key string) (*SearchResponse, bool) {
@@ -140,12 +164,12 @@ func NewCachedIndexer(underlying Indexer, cache *QueryCache, ttl time.Duration) 
 	}
 }
 
-func (c *CachedIndexer) Search(req SearchRequest) (*SearchResponse, error) {
+func (c *CachedIndexer) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	if c.underlying == nil {
 		return nil, nil
 	}
 	if c.cache == nil {
-		return c.underlying.Search(req)
+		return c.underlying.Search(ctx, req)
 	}
 
 	key := BuildQueryCacheKey(c.Name(), req)
@@ -159,7 +183,7 @@ func (c *CachedIndexer) Search(req SearchRequest) (*SearchResponse, error) {
 			return cachedResp, nil
 		}
 		logger.Debug("Indexer query cache miss", "indexer", c.Name(), "key", key)
-		resp, err := c.underlying.Search(req)
+		resp, err := c.underlying.Search(ctx, req)
 		if err != nil || resp == nil {
 			return resp, err
 		}
@@ -183,8 +207,8 @@ func (c *CachedIndexer) DownloadNZB(ctx context.Context, nzbURL string) ([]byte,
 	return c.underlying.DownloadNZB(ctx, nzbURL)
 }
 
-func (c *CachedIndexer) Ping() error {
-	return c.underlying.Ping()
+func (c *CachedIndexer) Ping(ctx context.Context) error {
+	return c.underlying.Ping(ctx)
 }
 
 func (c *CachedIndexer) Name() string {

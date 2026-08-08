@@ -25,7 +25,6 @@ const (
 
 var (
 	par2MainPacketHeader = []byte("PAR 2.0\x00Main\x00\x00\x00\x00")
-	par2IFSCPacketHeader = []byte("PAR 2.0\x00IFSC\x00\x00\x00\x00")
 	par2RecvPacketHeader = []byte("PAR 2.0\x00RecvSlic")
 
 	gf16InitOnce sync.Once
@@ -111,11 +110,6 @@ type par2FileMeta struct {
 	hashMD5    [16]byte
 	sliceStart int
 	sliceCount int
-}
-
-type par2RecvSlice struct {
-	exponent uint32
-	data     []byte
 }
 
 type par2SetMeta struct {

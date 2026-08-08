@@ -23,8 +23,7 @@ type LoginResponse struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -34,11 +33,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adminUsername := s.config.GetAdminUsername()
+	adminUsername := s.adminUsername()
 	if req.Username != adminUsername {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(LoginResponse{
+		writeJSON(w, http.StatusUnauthorized, LoginResponse{
 			Success: false,
 			Error:   "Invalid credentials",
 		})
@@ -47,9 +44,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	stream, err := s.streamManager.Authenticate(req.Username, req.Password, adminUsername, s.config.AdminPasswordHash, s.config.AdminToken)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(LoginResponse{
+		writeJSON(w, http.StatusUnauthorized, LoginResponse{
 			Success: false,
 			Error:   "Invalid credentials",
 		})
@@ -67,12 +62,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var mustChangePassword bool
-	if stream.Username == s.config.GetAdminUsername() {
+	if stream.Username == s.adminUsername() {
 		mustChangePassword = s.config.AdminMustChangePassword
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LoginResponse{
+	writeJSON(w, http.StatusOK, LoginResponse{
 		Success:            true,
 		Token:              stream.Token,
 		User:               stream.Username,
@@ -81,16 +75,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	version := "dev"
 	if s.strmServer != nil {
 		version = s.strmServer.Version()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"version": version})
+	writeJSON(w, http.StatusOK, map[string]string{"version": version})
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +95,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("auth_session")
 		if err == nil && cookie != nil {
 			cookiePresent = true
-			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.config.GetAdminUsername(), s.config.AdminToken)
+			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.config.AdminToken)
 			if err == nil {
 				logger.Debug("Auth check authenticated", "via", "cookie")
 				authViaCookie = true
@@ -119,7 +111,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && parts[0] == "Bearer" {
 				var err error
-				stream, err = s.streamManager.AuthenticateToken(parts[1], s.config.GetAdminUsername(), s.config.AdminToken)
+				stream, err = s.streamManager.AuthenticateToken(parts[1], s.adminUsername(), s.config.AdminToken)
 				if err == nil {
 					logger.Debug("Auth check authenticated", "via", "bearer")
 					ok = true
@@ -132,7 +124,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 
 	if ok {
 		var mustChangePassword bool
-		if stream.Username == s.config.GetAdminUsername() {
+		if stream.Username == s.adminUsername() {
 			mustChangePassword = s.config.AdminMustChangePassword
 		}
 		out := map[string]interface{}{
@@ -146,20 +138,16 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		if s.strmServer != nil {
 			out["version"] = s.strmServer.Version()
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
+		writeJSON(w, http.StatusOK, out)
 	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{
 			"authenticated": false,
 		})
 	}
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -171,18 +159,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Forbidden", http.MethodPost) {
 		return
 	}
 	var req struct {
@@ -190,19 +171,16 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
-	adminUsername := s.config.GetAdminUsername()
+	adminUsername := s.adminUsername()
 	if req.Username != "" && req.Username != adminUsername {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid username"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid username"})
 		return
 	}
 	if len(strings.TrimSpace(req.Password)) < 6 {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Password must be at least 6 characters long"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Password must be at least 6 characters long"})
 		return
 	}
 	newHash := auth.HashPassword(req.Password)
@@ -211,12 +189,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	s.config.AdminMustChangePassword = false
 	s.mu.Unlock()
 	if err := s.config.Save(); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "Password updated successfully",
 	})

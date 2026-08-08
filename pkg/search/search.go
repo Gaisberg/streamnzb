@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -66,7 +67,10 @@ func validationProfilesForRequest(req indexer.SearchRequest) []indexer.Validatio
 	return nil
 }
 
-func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentType string) ([]*release.Release, error) {
+func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.SearchRequest, contentType string) ([]*release.Release, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if idx == nil {
 		return nil, nil
 	}
@@ -136,7 +140,7 @@ func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentT
 		return nil, nil
 	}
 
-	resp, err := idxForMode.Search(searchReq)
+	resp, err := idxForMode.Search(ctx, searchReq)
 	if err != nil {
 		mode := "text"
 		if runIDSearch {
@@ -166,17 +170,32 @@ func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentT
 	}
 
 	releases, _ = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
+	// The per-profile pass re-validates ALL raw releases once per profile (a
+	// full title parse each) purely to produce per-profile debug stats — skip
+	// the whole sweep unless debug logging is actually on.
+	if logger.DebugEnabled() {
+		logPerProfileValidationStats(req, contentType, rawReleases, runIDSearch)
+	}
+
+	logger.Debug("Search request finished",
+		"stream", req.StreamLabel,
+		"request", req.RequestLabel,
+		"mode", indexer.SearchModeLabel(req.SearchMode),
+		"raw_results", len(rawReleases),
+		"final_results", len(releases),
+	)
+	return releases, nil
+}
+
+// logPerProfileValidationStats emits the per-validation-profile debug stats
+// that used to run unconditionally on the hot path.
+func logPerProfileValidationStats(req indexer.SearchRequest, contentType string, rawReleases []*release.Release, runIDSearch bool) {
 	for _, profile := range validationProfilesForRequest(req) {
 		_, profileStats := ValidateSearchResultsWithStatsForQueries(rawReleases, contentType, []string{profile.Query}, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
 		validationAttrs := []any{
 			"stream", req.StreamLabel,
 			"request", req.RequestLabel,
-			"mode", func() string {
-				if runIDSearch {
-					return "id"
-				}
-				return "text"
-			}(),
+			"mode", indexer.SearchModeLabel(req.SearchMode),
 			"type", contentType,
 			"raw_results", profileStats.RawResults,
 			"final_results", profileStats.FinalResults,
@@ -209,24 +228,4 @@ func RunIndexerSearches(idx indexer.Indexer, req indexer.SearchRequest, contentT
 		}
 		logger.Debug("Search request validation", validationAttrs...)
 	}
-
-	switch {
-	case !runIDSearch:
-		logger.Debug("Search request finished",
-			"stream", req.StreamLabel,
-			"request", req.RequestLabel,
-			"mode", "text",
-			"raw_results", len(rawReleases),
-			"final_results", len(releases),
-		)
-	default:
-		logger.Debug("Search request finished",
-			"stream", req.StreamLabel,
-			"request", req.RequestLabel,
-			"mode", "id",
-			"raw_results", len(rawReleases),
-			"final_results", len(releases),
-		)
-	}
-	return releases, nil
 }

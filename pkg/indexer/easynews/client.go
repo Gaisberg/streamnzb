@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"streamnzb/pkg/core/config"
@@ -40,17 +39,7 @@ type Client struct {
 	searchTimeout   time.Duration
 	downloadTimeout time.Duration
 
-	apiLimit          int
-	apiUsed           int
-	apiRemaining      int
-	downloadLimit     int
-	downloadUsed      int
-	downloadRemaining int
-	searchesCount     int
-	totalResponseMS   int64
-	usageManager      *indexer.UsageManager
-	requestLimiter    *indexer.RequestLimiter
-	mu                sync.RWMutex
+	core *indexer.ClientCore
 }
 
 var _ indexer.Indexer = (*Client)(nil)
@@ -82,21 +71,14 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 	}
 
 	c := &Client{
-		username:          username,
-		password:          password,
-		name:              name,
-		grabHeader:        grabHeader,
-		downloadBase:      downloadBase,
-		searchTimeout:     searchTimeout,
-		downloadTimeout:   downloadTimeout,
-		usageManager:      um,
-		apiLimit:          apiLimit,
-		apiUsed:           0,
-		apiRemaining:      apiLimit,
-		downloadLimit:     downloadLimit,
-		downloadUsed:      0,
-		downloadRemaining: downloadLimit,
-		requestLimiter:    indexer.NewRequestLimiter(rateLimitRPS),
+		username:        username,
+		password:        password,
+		name:            name,
+		grabHeader:      grabHeader,
+		downloadBase:    downloadBase,
+		searchTimeout:   searchTimeout,
+		downloadTimeout: downloadTimeout,
+		core:            indexer.NewClientCore(name, apiLimit, downloadLimit, rateLimitRPS, um),
 		client: &http.Client{
 			Timeout:   searchTimeout,
 			Transport: searchTransport,
@@ -105,22 +87,6 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 			Timeout:   downloadTimeout,
 			Transport: downloadTransport,
 		},
-	}
-
-	if um != nil && name != "" {
-		usage := um.GetIndexerUsage(name)
-		c.apiUsed = usage.APIHitsUsed
-		c.downloadUsed = usage.DownloadsUsed
-
-		c.apiRemaining = apiLimit - usage.APIHitsUsed
-		c.downloadRemaining = downloadLimit - usage.DownloadsUsed
-
-		if c.apiRemaining < 0 && apiLimit > 0 {
-			c.apiRemaining = 0
-		}
-		if c.downloadRemaining < 0 && downloadLimit > 0 {
-			c.downloadRemaining = 0
-		}
 	}
 
 	return c, nil
@@ -141,73 +107,21 @@ func (c *Client) Name() string {
 }
 
 func (c *Client) GetUsage() indexer.Usage {
-	usageData := c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	u := indexer.Usage{
-		APIHitsLimit:       c.apiLimit,
-		APIHitsUsed:        c.apiUsed,
-		APIHitsRemaining:   c.apiRemaining,
-		DownloadsLimit:     c.downloadLimit,
-		DownloadsUsed:      c.downloadUsed,
-		DownloadsRemaining: c.downloadRemaining,
-		SearchesCount:      c.searchesCount,
-	}
-	if c.searchesCount > 0 {
-		u.AvgResponseMS = float64(c.totalResponseMS) / float64(c.searchesCount)
-	}
-	c.mu.RUnlock()
-	if usageData != nil {
-		u.AllTimeAPIHitsUsed = usageData.AllTimeAPIHitsUsed
-		u.AllTimeDownloadsUsed = usageData.AllTimeDownloadsUsed
-	}
-	return u
+	return c.core.Usage()
 }
 
-func (c *Client) refreshUsageFromManager() *indexer.UsageData {
-	if c.usageManager == nil || c.name == "" {
-		return nil
+func (c *Client) Ping(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	ud := c.usageManager.GetIndexerUsage(c.name)
-	c.mu.Lock()
-	c.apiUsed = ud.APIHitsUsed
-	c.downloadUsed = ud.DownloadsUsed
-	if c.apiLimit > 0 {
-		c.apiRemaining = c.apiLimit - c.apiUsed
-		if c.apiRemaining < 0 {
-			c.apiRemaining = 0
-		}
-	}
-	if c.downloadLimit > 0 {
-		c.downloadRemaining = c.downloadLimit - c.downloadUsed
-		if c.downloadRemaining < 0 {
-			c.downloadRemaining = 0
-		}
-	}
-	c.mu.Unlock()
-
-	return ud
-}
-
-func (c *Client) recordSearchDuration(elapsed time.Duration) {
-	ms := elapsed.Milliseconds()
-	if ms < 0 {
-		ms = 0
-	}
-	c.mu.Lock()
-	c.searchesCount++
-	c.totalResponseMS += ms
-	c.mu.Unlock()
-}
-
-func (c *Client) Ping() error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.searchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
 	defer cancel()
-	if err := c.requestLimiter.Wait(ctx); err != nil {
+	if err := c.core.Limiter.Wait(ctx); err != nil {
 		return err
 	}
 
+	// Easynews exposes no cheap auth-check endpoint; a minimal real search is
+	// the only reliable credential probe.
 	testQuery := "dune"
 	_, _, err := c.searchInternal(ctx, testQuery, "", "", config.SeriesSearchScopeNone, "", false)
 	if err != nil {
@@ -216,17 +130,20 @@ func (c *Client) Ping() error {
 	return nil
 }
 
-func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	if err := c.checkAPILimit(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), c.searchTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
 	defer cancel()
-	if err := c.requestLimiter.Wait(ctx); err != nil {
+	if err := c.core.Limiter.Wait(ctx); err != nil {
 		return nil, err
 	}
 
-	query := prepareEasynewsQuery(req.Query, req.SearchMode, req.OptionalOverrides)
+	query := prepareEasynewsQuery(req.Query)
 
 	season := req.Season
 	episode := req.Episode
@@ -235,12 +152,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,
 		"request", req.RequestLabel,
-		"mode", func() string {
-			if strings.EqualFold(strings.TrimSpace(req.SearchMode), "id") {
-				return "id"
-			}
-			return "text"
-		}(),
+		"mode", indexer.SearchModeLabel(req.SearchMode),
 		"indexer", c.name,
 		"type", "easynews",
 		"url", searchURL,
@@ -253,16 +165,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		return nil, fmt.Errorf("easynews search failed: %w", err)
 	}
 
-	c.mu.Lock()
-	c.apiUsed++
-	if c.apiRemaining > 0 {
-		c.apiRemaining--
-	}
-	c.mu.Unlock()
-
-	if c.usageManager != nil && c.name != "" {
-		c.usageManager.IncrementUsed(c.name, 1, 0)
-	}
+	c.core.RecordAPIHit(nil)
 
 	items := make([]indexer.Item, 0, len(results))
 	for _, result := range results {
@@ -283,12 +186,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	logger.Debug("Search request result",
 		"stream", req.StreamLabel,
 		"request", req.RequestLabel,
-		"mode", func() string {
-			if strings.EqualFold(strings.TrimSpace(req.SearchMode), "id") {
-				return "id"
-			}
-			return "text"
-		}(),
+		"mode", indexer.SearchModeLabel(req.SearchMode),
 		"indexer", c.name,
 		"type", "easynews",
 		"filtered_results", len(items),
@@ -296,7 +194,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		"total_results", totalResults,
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 	)
-	c.recordSearchDuration(time.Since(startedAt))
+	c.core.RecordSearchDuration(time.Since(startedAt))
 
 	return &indexer.SearchResponse{
 		Channel: indexer.Channel{
@@ -305,7 +203,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	}, nil
 }
 
-func prepareEasynewsQuery(baseQuery, searchMode string, overrides *config.IndexerSearchConfig) string {
+func prepareEasynewsQuery(baseQuery string) string {
 	return release.NormalizeTitleForSearchQuery(baseQuery)
 }
 
@@ -318,7 +216,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.downloadTimeout)
 	defer cancel()
-	if err := c.requestLimiter.Wait(ctx); err != nil {
+	if err := c.core.Limiter.Wait(ctx); err != nil {
 		return nil, err
 	}
 
@@ -342,20 +240,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 		return nil, fmt.Errorf("failed to download NZB: %w", err)
 	}
 
-	c.mu.Lock()
-	c.apiUsed++
-	c.downloadUsed++
-	if c.apiRemaining > 0 {
-		c.apiRemaining--
-	}
-	if c.downloadRemaining > 0 {
-		c.downloadRemaining--
-	}
-	c.mu.Unlock()
-
-	if c.usageManager != nil && c.name != "" {
-		c.usageManager.IncrementUsed(c.name, 1, 1)
-	}
+	c.core.RecordGrab(nil)
 
 	return nzbData, nil
 }
@@ -521,25 +406,11 @@ func (c *Client) downloadNZBInternal(ctx context.Context, payload map[string]int
 }
 
 func (c *Client) checkAPILimit() error {
-	c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.apiLimit > 0 && c.apiRemaining <= 0 {
-		return fmt.Errorf("API limit reached for %s", c.Name())
-	}
-	return nil
+	return c.core.CheckAPILimit(c.Name())
 }
 
 func (c *Client) checkDownloadLimit() error {
-	c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.downloadLimit > 0 && c.downloadRemaining <= 0 {
-		return fmt.Errorf("download limit reached for %s", c.Name())
-	}
-	return nil
+	return c.core.CheckDownloadLimit(c.Name())
 }
 
 type easynewsSearchResponse struct {

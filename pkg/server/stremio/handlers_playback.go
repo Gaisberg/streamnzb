@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,14 +25,13 @@ import (
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
-	"streamnzb/pkg/media/ffprobe"
-	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/media/nzb"
-	"streamnzb/pkg/media/seek"
 	"streamnzb/pkg/media/unpack"
+	"streamnzb/pkg/playback"
 	searchparser "streamnzb/pkg/search/parser"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
+	"streamnzb/pkg/usenet/nntp"
 )
 
 type writeTimeoutResponseWriter struct {
@@ -491,8 +489,8 @@ var streamSinkKey = streamSinkKeyType{}
 
 const streamSlotPrefix = "stream:"
 
-var ErrPlaybackStartupTimeout = errors.New("playback startup timeout")
-var ErrFirstSegmentUnavailable = errors.New("first segment not found (430)")
+var ErrPlaybackStartupTimeout = playback.ErrPlaybackStartupTimeout
+var ErrFirstSegmentUnavailable = playback.ErrFirstSegmentUnavailable
 
 func (s *Server) playbackStartupTimeout() time.Duration {
 	s.mu.RLock()
@@ -502,6 +500,33 @@ func (s *Server) playbackStartupTimeout() time.Duration {
 		return time.Duration(config.DefaultPlaybackStartupTimeoutSeconds) * time.Second
 	}
 	return cfg.EffectivePlaybackStartupTimeout()
+}
+
+func (s *Server) effectiveFFprobePath() string {
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.EffectiveFFprobePath()
+}
+
+// notePendingLibrarySave persists the pending (pre-verdict) library entry once
+// per session; the sync.Map guard lives here because every HTTP range request
+// re-runs the playback open path and each save gzips the full NZB.
+func (s *Server) notePendingLibrarySave(sess *session.Session, bp unpack.Blueprint, name string, size int64) {
+	sessionID := sess.ID
+	if _, already := s.pendingLibrarySavedIDs.LoadOrStore(sessionID, struct{}{}); already {
+		return
+	}
+	go s.saveSessionToLibrary(sess, bp, name, size, persistence.LibraryStatusPending)
+	if done := sess.Done(); done != nil {
+		go func() {
+			<-done
+			s.pendingLibrarySavedIDs.Delete(sessionID)
+		}()
+	}
 }
 
 type StreamSlotKey struct {
@@ -516,10 +541,6 @@ func (k StreamSlotKey) SlotPath(index int) string {
 
 func (k StreamSlotKey) CacheKey() string {
 	return k.StreamID + ":" + k.ContentType + ":" + k.ID
-}
-
-func (k StreamSlotKey) RawCacheKey() string {
-	return k.ContentType + ":" + k.ID
 }
 
 func (s *Server) baseURLWithToken(stream *auth.Stream) string {
@@ -614,24 +635,6 @@ func streamIndexerSelections(stream *auth.Stream) []string {
 	return append([]string(nil), stream.IndexerSelections...)
 }
 
-func (s *Server) allAvailIndexerHosts() []string {
-	if len(s.availNZBIndexerHosts) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(s.availNZBIndexerHosts))
-	hosts := make([]string, 0, len(s.availNZBIndexerHosts))
-	for _, host := range s.availNZBIndexerHosts {
-		host = strings.TrimSpace(host)
-		if host == "" || seen[host] {
-			continue
-		}
-		seen[host] = true
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
 func (s *Server) indexerHostsForStream(stream *auth.Stream) []string {
 	if len(s.availNZBIndexerHosts) == 0 {
 		return nil
@@ -653,17 +656,6 @@ func (s *Server) indexerHostsForStream(stream *auth.Stream) []string {
 	return hosts
 }
 
-func streamIndexerOverrides(stream *auth.Stream) map[string]config.IndexerSearchConfig {
-	if stream == nil || len(stream.IndexerOverrides) == 0 {
-		return nil
-	}
-	out := make(map[string]config.IndexerSearchConfig, len(stream.IndexerOverrides))
-	for name, override := range stream.IndexerOverrides {
-		out[name] = override
-	}
-	return out
-}
-
 func streamResultsMode(stream *auth.Stream) string {
 	if streamUsesAIOStreamsProfile(stream) {
 		return "display_all"
@@ -678,41 +670,6 @@ func streamResultsMode(stream *auth.Stream) string {
 	default:
 		return "combined_stream"
 	}
-}
-
-func stableIndexerOverridesKey(overrides map[string]config.IndexerSearchConfig) string {
-	if len(overrides) == 0 {
-		return "none"
-	}
-	data, err := json.Marshal(overrides)
-	if err != nil {
-		return "error"
-	}
-	return string(data)
-}
-
-func streamSearchQueryCacheKey(stream *auth.Stream, contentType string) string {
-	names := streamSearchQueryNames(stream, contentType)
-	queryComponent := "none"
-	if streamCombinesResults(stream) && len(names) > 0 {
-		sort.Strings(names)
-	}
-	if len(names) > 0 {
-		queryComponent = strings.Join(names, ",")
-	}
-	return fmt.Sprintf(
-		"stream=%s|queries=%s|providers=%s|selected_indexers=%s|overrides=%s|avail=%t|indexers=%s|combine=%t|failover=%t|results=%s",
-		streamID(stream),
-		queryComponent,
-		strings.Join(streamProviderSelections(stream), ","),
-		strings.Join(streamIndexerSelections(stream), ","),
-		stableIndexerOverridesKey(streamIndexerOverrides(stream)),
-		streamUsesAvailNZB(stream),
-		streamIndexerMode(stream),
-		streamCombinesResults(stream),
-		streamFailoverEnabled(stream),
-		streamResultsMode(stream),
-	)
 }
 
 func hasResolvedIdentifiers(req indexer.SearchRequest) bool {
@@ -1065,9 +1022,11 @@ func parseStreamSlotID(sessionID string) (streamId, contentType, id string, inde
 }
 
 func isSegmentUnavailableErr(err error) bool {
+	if nntp.IsArticleNotFound(err) {
+		return true
+	}
 	for e := err; e != nil; e = errors.Unwrap(e) {
-		s := e.Error()
-		if strings.Contains(s, "segment unavailable") || strings.Contains(s, "430") || strings.Contains(s, "no such article") {
+		if strings.Contains(e.Error(), "segment unavailable") {
 			return true
 		}
 	}
@@ -1087,23 +1046,6 @@ func isDataCorruptErr(err error) bool {
 	return false
 }
 
-func classifyPlaybackStartupErr(phase string, startupTimeout time.Duration, startupCtx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(startupCtx.Err(), context.DeadlineExceeded) {
-		return playbackStartupTimeoutErr(startupTimeout, phase, err)
-	}
-	return err
-}
-
-func playbackStartupTimeoutErr(startupTimeout time.Duration, phase string, cause error) error {
-	if cause != nil {
-		return fmt.Errorf("%w during %s after %s: %v", ErrPlaybackStartupTimeout, phase, startupTimeout, cause)
-	}
-	return fmt.Errorf("%w during %s after %s", ErrPlaybackStartupTimeout, phase, startupTimeout)
-}
-
 func isPlayPrepareCancellation(err error) bool {
 	if err == nil || errors.Is(err, ErrPlaybackStartupTimeout) {
 		return false
@@ -1121,9 +1063,17 @@ func isIndexerLimitErr(err error) bool {
 		strings.Contains(value, "request limit reached")
 }
 
-type playbackSourceOpenResult struct {
-	stream io.ReadSeekCloser
-	err    error
+// redirectToNextSlotOrFail sends the client to the next failover slot, or
+// disconnects it when no slot is left. Used on the two paths where a slot is
+// already known to have failed before any response was written.
+func (s *Server) redirectToNextSlotOrFail(w http.ResponseWriter, r *http.Request, sessionID string, streamConfig *auth.Stream, logMsg string) {
+	if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
+		logger.Info(logMsg, "from", sessionID, "to", nextID)
+		w.Header().Set("Location", s.baseURLWithToken(streamConfig)+"/play/"+nextID)
+		w.WriteHeader(http.StatusFound)
+		return
+	}
+	forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
 }
 
 // handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,
@@ -1152,14 +1102,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		// The session may have been deleted by a concurrent internal failover (e.g. exceeded failure threshold).
 		// If the slot was marked as failed, redirect the client to the next working slot rather than 404.
 		if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
-			if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
-				nextURL := s.baseURLWithToken(streamConfig) + "/play/" + nextID
-				logger.Info("Session deleted (slot failed during playback), redirecting to next", "from", sessionID, "to", nextID)
-				w.Header().Set("Location", nextURL)
-				w.WriteHeader(http.StatusFound)
-				return
-			}
-			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+			s.redirectToNextSlotOrFail(w, r, sessionID, streamConfig,
+				"Session deleted (slot failed during playback), redirecting to next")
 			return
 		}
 		recoveredSess, recoveredID, recoverErr := s.recoverPlaySessionAfterEviction(r.Context(), sessionID, streamConfig)
@@ -1172,14 +1116,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		sess = recoveredSess
 		sessionID = recoveredID
 	} else if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
-		if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
-			nextURL := s.baseURLWithToken(streamConfig) + "/play/" + nextID
-			logger.Info("Redirecting to next fallback (slot failed during playback)", "from", sessionID, "to", nextID)
-			w.Header().Set("Location", nextURL)
-			w.WriteHeader(http.StatusFound)
-			return
-		}
-		forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+		s.redirectToNextSlotOrFail(w, r, sessionID, streamConfig,
+			"Redirecting to next fallback (slot failed during playback)")
 		return
 	}
 
@@ -1243,15 +1181,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			if !temporaryLimitErr {
 				s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
 			}
-			availOutcome := availOutcomeForFailure(prepareErr)
-			if s.shouldReportBadReleaseToAvailNZB(prepareErr) && s.availReporter != nil {
-				if shouldReportBadReleaseAllProviders(prepareErr) {
-					availOutcome = s.availReporter.ReportBadAllProviders(sess, prepareErr.Error())
-				} else {
-					availOutcome = s.availReporter.ReportBad(sess, prepareErr.Error())
-				}
-			}
-			s.applyReportedBadReleaseToCaches(sess, availOutcome)
+			availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true)
 			// Gate failure recording: concurrent goroutines for the same session (Stremio's automatic
 			// re-requests) must not each insert a Failure row. Only the first one wins.
 			if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(sessionID, struct{}{}); !alreadyFailed {
@@ -1354,15 +1284,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
 		if errSess, _ := s.sessionManager.GetSession(playbackSessionID); errSess != nil {
 			errSess.ResetPlaybackStream()
-			availOutcome := availOutcomeForFailure(readErr)
-			if s.shouldReportBadReleaseToAvailNZB(readErr) && s.availReporter != nil {
-				if shouldReportBadReleaseAllProviders(readErr) {
-					availOutcome = s.availReporter.ReportBadAllProviders(errSess, readErr.Error())
-				} else {
-					availOutcome = s.availReporter.ReportBad(errSess, readErr.Error())
-				}
-			}
-			s.applyReportedBadReleaseToCaches(errSess, availOutcome)
+			availOutcome := s.reportBadReleaseOutcome(errSess, readErr, true)
 			if _, alreadySucceeded := s.recordedSuccessSessionIDs.Load(playbackSessionID); !alreadySucceeded {
 				if _, alreadyFailed := s.recordedFailureSessionIDs.LoadOrStore(playbackSessionID, struct{}{}); !alreadyFailed {
 					s.recordFailureAttempt(errSess, readErr, availOutcome)
@@ -1391,8 +1313,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 	bufW.onFirstWrite = func() {
 		ttffOnce.Do(func() {
 			pName := providerName
-			if pName == "" && sess != nil && sess.Release != nil {
-				pName = sess.Release.Indexer
+			if rel := sess.Release(); pName == "" && rel != nil {
+				pName = rel.Indexer
 			}
 			ttffDuration := time.Since(playStart)
 			metrics.Default().RecordPlaybackTTFF(metrics.PlaybackTTFFSample{
@@ -1561,370 +1483,11 @@ func newMediaResponseWriter(w http.ResponseWriter, name string) *bufferedRespons
 	return newBufferedResponseWriter(newWriteTimeoutResponseWriter(w, 10*time.Minute), 256*1024)
 }
 
-type preparedPlaybackStream struct {
-	Stream         io.ReadSeekCloser
-	Spec           session.PlaybackStreamSpec
-	StartupInfo    seek.StreamStartInfo
-	HasStartupInfo bool
-	Mode           string
-}
+// preparedPlaybackStream is the server-side name for playback.Prepared.
+type preparedPlaybackStream = playback.Prepared
 
-// preparePlaybackStream probes with a temporary reader when startup metadata is missing,
-// then opens a fresh playback reader for the current HTTP request while caching the
-// validated playback spec/startup metadata on the session.
 func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Session) (preparedPlaybackStream, error) {
-	preparedStream := preparedPlaybackStream{}
-
-	snapshot, haveSnapshot := sess.PlaybackStreamSnapshot()
-	if haveSnapshot {
-		preparedStream.Spec = snapshot.Spec
-		preparedStream.StartupInfo = snapshot.StartupInfo
-		preparedStream.HasStartupInfo = snapshot.HasStartupInfo
-	}
-
-	needProbe := !haveSnapshot || !snapshot.HasStartupInfo
-	if needProbe {
-		startupTimeout := s.playbackStartupTimeout()
-		probeCtx, cancel := context.WithTimeout(ctx, startupTimeout)
-		spec, startupInfo, err := s.probePlaybackSource(probeCtx, sess)
-		err = classifyPlaybackStartupErr("probe", startupTimeout, probeCtx, err)
-		cancel()
-		if err != nil {
-			return preparedPlaybackStream{}, err
-		}
-		preparedStream.Spec = spec
-		preparedStream.StartupInfo = startupInfo
-		preparedStream.HasStartupInfo = true
-	}
-
-	if preparedStream.Spec.Key == "" {
-		return preparedPlaybackStream{}, fmt.Errorf("playback stream spec missing for session %s", sess.ID)
-	}
-
-	stream, err := s.openExpectedPlaybackSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, s.playbackStartupTimeout())
-	if err != nil {
-		sess.ResetPlaybackStream()
-		return preparedPlaybackStream{}, err
-	}
-
-	preparedStream.Stream = stream
-	preparedStream.Mode = "per_request"
-	sess.CachePlaybackStreamSnapshot(preparedStream.Spec, preparedStream.StartupInfo, preparedStream.HasStartupInfo)
-	return preparedStream, nil
-}
-
-func (s *Server) openExpectedPlaybackSourceWithStartupTimeout(ctx context.Context, sess *session.Session, spec session.PlaybackStreamSpec, startupTimeout time.Duration) (io.ReadSeekCloser, error) {
-	openCtx, cancel := context.WithCancel(ctx)
-	resultCh := make(chan playbackSourceOpenResult, 1)
-	done := make(chan struct{})
-	go func() {
-		stream, err := s.openExpectedPlaybackSource(openCtx, sess, spec)
-		select {
-		case resultCh <- playbackSourceOpenResult{stream: stream, err: err}:
-		case <-done:
-			if stream != nil {
-				_ = stream.Close()
-			}
-		}
-	}()
-
-	timer := time.NewTimer(startupTimeout)
-	defer timer.Stop()
-
-	cleanup := func() {
-		close(done)
-		cancel()
-		select {
-		case res := <-resultCh:
-			if res.stream != nil {
-				_ = res.stream.Close()
-			}
-		default:
-		}
-	}
-
-	select {
-	case res := <-resultCh:
-		close(done)
-		if res.err != nil {
-			cancel()
-			return nil, res.err
-		}
-		return res.stream, nil
-	case <-timer.C:
-		cleanup()
-		return nil, playbackStartupTimeoutErr(startupTimeout, "open", nil)
-	case <-ctx.Done():
-		cleanup()
-		return nil, ctx.Err()
-	}
-}
-
-func (s *Server) openExpectedPlaybackSource(ctx context.Context, sess *session.Session, spec session.PlaybackStreamSpec) (io.ReadSeekCloser, error) {
-	bodyStream, bodyName, bodySize, err := s.openPlaybackSource(ctx, sess)
-	if err != nil {
-		return nil, err
-	}
-	if bodyName != spec.Name || bodySize != spec.Size {
-		_ = bodyStream.Close()
-		return nil, fmt.Errorf("playback stream changed during open: expected %q (%d), got %q (%d)", spec.Name, spec.Size, bodyName, bodySize)
-	}
-	return bodyStream, nil
-}
-
-// probePlaybackSource validates the selected media and gathers startup metadata using
-// a disposable probe reader so that small scans never disturb the session body stream.
-func (s *Server) probePlaybackSource(ctx context.Context, sess *session.Session) (session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
-	probeStream, probeName, probeSize, err := s.openPlaybackSource(ctx, sess)
-	if err != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, err
-	}
-	defer probeStream.Close()
-
-	startInfo, inspectErr := seek.InspectStreamStart(probeStream, probeSize, probeName, unpack.ProbeSize)
-	if inspectErr != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
-	}
-	if !startInfo.HeaderValid {
-		if peek, err := readProbePrefix(probeStream, 16); err == nil && len(peek) > 0 {
-			logger.Debug("Probe rejected container header",
-				"session", sess.ID,
-				"name", probeName,
-				"size", probeSize,
-				"prefix_hex", fmt.Sprintf("% x", peek),
-				"encrypted_blueprint", blueprintAnyEncrypted(sess),
-				"password_len", nzbPasswordLen(sess))
-		}
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe: invalid container header for %s", probeName)
-	}
-
-	return newPlaybackStreamSpec(sess.ID, probeName, probeSize), startInfo, nil
-}
-
-// newPlaybackStreamSpec creates the stable session/file key used to cache validated
-// playback metadata and verify that fresh per-request readers still target the same file.
-func newPlaybackStreamSpec(sessionID, name string, size int64) session.PlaybackStreamSpec {
-	return session.PlaybackStreamSpec{
-		Key:  fmt.Sprintf("%s|%s|%d", sessionID, name, size),
-		Name: name,
-		Size: size,
-	}
-}
-
-func cacheReturnedPlaybackBlueprint(sess *session.Session, bp interface{}) {
-	if sess == nil || bp == nil {
-		return
-	}
-	sess.SetBlueprint(bp)
-}
-
-func readProbePrefix(stream io.ReadSeeker, n int) ([]byte, error) {
-	if _, err := stream.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, n)
-	got, err := io.ReadFull(stream, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && err != io.EOF {
-		return buf[:got], err
-	}
-	if _, err := stream.Seek(0, io.SeekStart); err != nil {
-		return buf[:got], err
-	}
-	return buf[:got], nil
-}
-
-func blueprintAnyEncrypted(sess *session.Session) bool {
-	if sess == nil || sess.Blueprint == nil {
-		return false
-	}
-	if bp, ok := sess.Blueprint.(*unpack.ArchiveBlueprint); ok {
-		return bp.AnyEncrypted
-	}
-	return false
-}
-
-func nzbPasswordLen(sess *session.Session) int {
-	if sess == nil || sess.NZB == nil {
-		return 0
-	}
-	return len(sess.NZB.Password())
-}
-
-func verifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (bool, error) {
-	if len(files) == 0 {
-		return false, errors.New("no files in release")
-	}
-	if len(files) == 1 {
-		return files[0].CheckFirstSegmentExists(ctx)
-	}
-
-	n := len(files)
-	sampleIndicesMap := make(map[int]bool)
-	sampleIndicesMap[0] = true
-	sampleIndicesMap[n-1] = true
-
-	// Sample up to 11 points across the RAR volume list (decile sampling)
-	step := float64(n-1) / 10.0
-	for i := 0; i <= 10; i++ {
-		idx := int(float64(i) * step)
-		if idx >= 0 && idx < n {
-			sampleIndicesMap[idx] = true
-		}
-	}
-
-	var indices []int
-	for idx := range sampleIndicesMap {
-		indices = append(indices, idx)
-	}
-	sort.Ints(indices)
-
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	type statResult struct {
-		file *loader.File
-		ok   bool
-		err  error
-	}
-
-	ch := make(chan statResult, len(indices))
-	for _, idx := range indices {
-		f := files[idx]
-		go func(targetFile *loader.File) {
-			ok, err := targetFile.CheckFirstSegmentExists(ctx)
-			ch <- statResult{file: targetFile, ok: ok, err: err}
-		}(f)
-	}
-
-	var firstErr error
-	for range indices {
-		res := <-ch
-		if res.err != nil && firstErr == nil {
-			firstErr = res.err
-		}
-		if !res.ok {
-			name := "unknown"
-			if res.file != nil {
-				name = res.file.Name()
-			}
-			return false, fmt.Errorf("archive volume %s segment unavailable: %w", name, ErrFirstSegmentUnavailable)
-		}
-	}
-	if firstErr != nil {
-		return false, firstErr
-	}
-	return true, nil
-}
-
-// openPlaybackSource opens a fresh reader for the currently selected playback source.
-// Callers decide whether that reader is used as a disposable probe stream or as the
-// request-local body stream for a single /play response.
-func (s *Server) openPlaybackSource(ctx context.Context, sess *session.Session) (io.ReadSeekCloser, string, int64, error) {
-	sessionID := sess.ID
-	if _, err := sess.GetOrDownloadNZBWithContext(ctx, s.sessionManager); err != nil {
-		logger.Error("Failed to lazy load NZB", "id", sessionID, "err", err)
-		return nil, "", 0, err
-	}
-
-	files := sess.Files
-	if len(files) == 0 {
-		if sess.File != nil {
-			files = []*loader.File{sess.File}
-		} else {
-			logger.Error("No files in session", "id", sessionID)
-			if sess.NZB != nil {
-				s.validator.InvalidateCache(sess.NZB.Hash())
-			}
-			return nil, "", 0, fmt.Errorf("no files in session %s", sessionID)
-		}
-	}
-
-	// STAT check required archive volume segments before opening stream; fail fast on 430.
-	if len(files) > 0 {
-		exists, statErr := verifyRequiredArchivesExist(ctx, files)
-		if statErr != nil {
-			logger.Debug("Stat archive volume segment failed", "id", sessionID, "err", statErr)
-			return nil, "", 0, statErr
-		}
-		if !exists {
-			return nil, "", 0, fmt.Errorf("archive volume segment unavailable: %w", ErrFirstSegmentUnavailable)
-		}
-	}
-
-	// Skip IsFailed() when the session is actively serving OR has already validated playback.
-	// Stremio often cancels the initial probe request (dropping ActivePlays back to 0) immediately
-	// before sending a follow-up range request. During that brief gap IsActivelyServing() is false,
-	// but HasPreviouslyServed() tells us the file was already validated.
-	// If the file is truly bad during streaming, onReadError will catch it.
-	if !sess.IsActivelyServing() && !sess.HasPreviouslyServed() {
-		for _, f := range files {
-			if f.IsFailed() {
-				logger.Error("Session file has too many failures", "session", sessionID, "file", f.Name())
-				if sess.NZB != nil {
-					s.validator.InvalidateCache(sess.NZB.Hash())
-				}
-				return nil, "", 0, fmt.Errorf("file %s exceeded failure threshold", f.Name())
-			}
-		}
-	}
-
-	password := ""
-	if sess.NZB != nil {
-		password = sess.NZB.Password()
-	}
-	unpackFiles := make([]unpack.UnpackableFile, len(files))
-	for i := range files {
-		unpackFiles[i] = files[i]
-	}
-	target := unpack.EpisodeTarget{}
-	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
-	}
-	hints := unpack.StreamSelectionHints{
-		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
-	}
-	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
-	cacheReturnedPlaybackBlueprint(sess, bp)
-	if err != nil {
-		logger.Error("Failed to open media stream", "id", sessionID, "err", err)
-		if sess.NZB != nil {
-			s.validator.InvalidateCache(sess.NZB.Hash())
-		}
-		return nil, "", 0, err
-	}
-	// Persist NZB + blueprint immediately (status pending) so the mapping work is
-	// kept even when playback later fails or is abandoned; the good/bad verdict
-	// is applied once known. Library-sourced sessions already have their entry.
-	// Once per session — every HTTP range request runs preparePlaybackStream, and
-	// each save gzips the full NZB, so an unguarded save here would re-upsert on
-	// every seek/reconnect.
-	if sess.Release != nil && !sess.Release.IsLibraryResult() {
-		if _, already := s.pendingLibrarySavedIDs.LoadOrStore(sessionID, struct{}{}); !already {
-			go s.saveSessionToLibrary(sess, bp, name, size, persistence.LibraryStatusPending)
-			if done := sess.Done(); done != nil {
-				go func() {
-					<-done
-					s.pendingLibrarySavedIDs.Delete(sessionID)
-				}()
-			}
-		}
-	}
-	if !sess.IsPlaybackValidated() {
-		ffprobePath := ""
-		if s.config != nil {
-			ffprobePath = s.config.EffectiveFFprobePath()
-		}
-		if err := unpack.ValidateMediaStreamHasVideoWithFFprobe(stream, name, ffprobePath); err != nil {
-			logger.Warn("Media stream container track validation failed", "id", sessionID, "name", name, "err", err)
-			stream.Close()
-			return nil, "", 0, fmt.Errorf("container track validation failed: %w", err)
-		}
-		s.sessionManager.MarkPlaybackValidated(sessionID)
-	} else {
-		logger.Debug("Skipping redundant FFprobe validation (session already validated)", "id", sessionID)
-	}
-	sess.SetSelectedPlaybackFile(name)
-	return stream, name, size, nil
+	return s.playback.Prepare(ctx, sess)
 }
 
 // prefetchNextFallbackNZB starts a background goroutine to resolve the next fallback slot and
@@ -2080,8 +1643,8 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string) {
 	}
 	detailsURL := strings.TrimSpace(sess.ReleaseURL())
 	releaseTitle := ""
-	if sess.Release != nil {
-		releaseTitle = strings.TrimSpace(sess.Release.Title)
+	if rel := sess.Release(); rel != nil {
+		releaseTitle = strings.TrimSpace(rel.Title)
 	}
 
 	// 1. Mark bad in the library (kept stored so the Library UI can show and
@@ -2161,6 +1724,25 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 	s.purgeFailedRelease(sess, outcome.Reason)
 }
 
+// reportBadReleaseOutcome runs the shared bad-release ritual: derive the
+// default outcome, report to AvailNZB when permitted, then apply the verdict
+// to the playlist/raw caches. requireReportGate preserves the serve-path rule
+// that only definitive failures reach AvailNZB; the speculative pre-probe
+// path gates on preProbeConfirmsBadRelease before calling and passes false.
+func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error, requireReportGate bool) availnzb.ReportOutcome {
+	availOutcome := availOutcomeForFailure(streamErr)
+	canReport := s.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
+	if canReport {
+		if shouldReportBadReleaseAllProviders(streamErr) {
+			availOutcome = s.availReporter.ReportBadAllProviders(sess, streamErr.Error())
+		} else {
+			availOutcome = s.availReporter.ReportBad(sess, streamErr.Error())
+		}
+	}
+	s.applyReportedBadReleaseToCaches(sess, availOutcome)
+	return availOutcome
+}
+
 // preProbeConfirmsBadRelease decides whether a speculative pre-probe failure is a
 // confident bad-release signal worth poisoning the slot and reporting to AvailNZB.
 //
@@ -2237,11 +1819,6 @@ func availOutcomeForFailure(err error) availnzb.ReportOutcome {
 	default:
 		return availnzb.ReportOutcome{}
 	}
-}
-
-// recordAttemptParams builds persistence params from a session.
-func (s *Server) recordAttemptParams(sess *session.Session) persistence.RecordAttemptParams {
-	return s.recordAttemptParamsForOutcome(sess, false)
 }
 
 func (s *Server) recordAttemptParamsForOutcome(sess *session.Session, success bool) persistence.RecordAttemptParams {
@@ -2379,11 +1956,6 @@ func providerHostsForOutcome(sess *session.Session, success bool) []string {
 	return sess.AttemptedProviderHosts()
 }
 
-func (s *Server) recordAttemptParamsForFailure(sess *session.Session) persistence.RecordAttemptParams {
-	params := s.recordAttemptParamsForOutcome(sess, false)
-	return params
-}
-
 // recordPreloadAttempt inserts a preload row when we are about to try playing a slot (result not yet known).
 func (s *Server) recordPreloadAttempt(sess *session.Session) {
 	if s.attemptRecorder == nil || sess == nil {
@@ -2391,12 +1963,17 @@ func (s *Server) recordPreloadAttempt(sess *session.Session) {
 	}
 	p := s.recordAttemptParamsForOutcome(sess, false)
 	s.attemptRecorder.RecordPreloadAttempt(p)
+	s.notifyAttemptRecorded()
+}
+
+// recordAttempt writes one NZB attempt to the persistence layer when attemptRecorder is set (or updates existing preload row).
+// notifyAttemptRecorded pokes the dashboard after an attempt row changes.
+func (s *Server) notifyAttemptRecorded() {
 	if s.onAttemptRecorded != nil {
 		s.onAttemptRecorded()
 	}
 }
 
-// recordAttempt writes one NZB attempt to the persistence layer when attemptRecorder is set (or updates existing preload row).
 func (s *Server) recordAttempt(sess *session.Session, success bool, failureReason string, availOutcome availnzb.ReportOutcome) {
 	if s.attemptRecorder == nil || sess == nil {
 		return
@@ -2408,25 +1985,11 @@ func (s *Server) recordAttempt(sess *session.Session, success bool, failureReaso
 	p.AvailStatus = availOutcome.Status
 	p.AvailReason = availOutcome.Reason
 	s.attemptRecorder.RecordAttempt(p)
-	if s.onAttemptRecorded != nil {
-		s.onAttemptRecorded()
-	}
+	s.notifyAttemptRecorded()
 }
 
 func (s *Server) recordFailureAttempt(sess *session.Session, streamErr error, availOutcome availnzb.ReportOutcome) {
-	if s.attemptRecorder == nil || sess == nil {
-		return
-	}
-	s.clearPendingAttemptResolution(sess.ID)
-	p := s.recordAttemptParamsForFailure(sess)
-	p.Success = false
-	p.FailureReason = normalizeAttemptReason(streamErr.Error())
-	p.AvailStatus = availOutcome.Status
-	p.AvailReason = availOutcome.Reason
-	s.attemptRecorder.RecordAttempt(p)
-	if s.onAttemptRecorded != nil {
-		s.onAttemptRecorded()
-	}
+	s.recordAttempt(sess, false, errorString(streamErr), availOutcome)
 }
 
 func (s *Server) recordPendingAttempt(sess *session.Session, reason string, availOutcome availnzb.ReportOutcome) {
@@ -2438,9 +2001,7 @@ func (s *Server) recordPendingAttempt(sess *session.Session, reason string, avai
 	p.AvailStatus = availOutcome.Status
 	p.AvailReason = availOutcome.Reason
 	s.attemptRecorder.UpdatePendingAttempt(p)
-	if s.onAttemptRecorded != nil {
-		s.onAttemptRecorded()
-	}
+	s.notifyAttemptRecorded()
 	s.schedulePendingAttemptResolution(sess, reason, availOutcome)
 }
 
@@ -2558,8 +2119,9 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID, 
 	// Populate the library from a real successful play, not just speculative
 	// pre-probe, so the cache reflects actual usage even when pre-probing is
 	// limited or disabled. Skip sessions already sourced from the library.
-	if sess.Release != nil && !sess.Release.IsLibraryResult() {
-		go s.saveSessionToLibrary(sess, sess.Blueprint, sess.SelectedPlaybackFile(), 0, persistence.LibraryStatusGood)
+	rel := sess.Release()
+	if rel != nil && !rel.IsLibraryResult() {
+		go s.saveSessionToLibrary(sess, sess.Blueprint(), sess.SelectedPlaybackFile(), 0, persistence.LibraryStatusGood)
 	}
 	// Flip any matching stored library rows to good. This covers sessions the
 	// save above cannot: direct play carries no Release (title only, in
@@ -2568,8 +2130,8 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID, 
 	if s.attemptRecorder != nil {
 		if libStore := s.attemptRecorder.LibraryStore(); libStore != nil {
 			const reason = "sustained playback reached good threshold"
-			if sess.Release != nil && sess.Release.DetailsURL != "" {
-				libStore.MarkStatusByDetailsURL(sess.Release.DetailsURL, persistence.LibraryStatusGood, reason)
+			if rel != nil && rel.DetailsURL != "" {
+				libStore.MarkStatusByDetailsURL(rel.DetailsURL, persistence.LibraryStatusGood, reason)
 			}
 			title := sess.ReportReleaseName()
 			if title == "" {
@@ -2582,9 +2144,9 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID, 
 	}
 	// A sustained good play overrides any stale persistent bad verdict (e.g. one
 	// recorded after this playlist was cached, or a prior false positive).
-	if s.attemptRecorder != nil && sess.Release != nil && sess.Release.DetailsURL != "" {
+	if s.attemptRecorder != nil && rel != nil && rel.DetailsURL != "" {
 		if badStore := s.attemptRecorder.BadReleaseStore(); badStore != nil {
-			badStore.Forget(sess.Release.DetailsURL)
+			badStore.Forget(rel.DetailsURL)
 		}
 	}
 	if done := sess.Context().Done(); done != nil {
@@ -2676,7 +2238,7 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		return
 	}
 
-	files := sess.Files
+	files := sess.Files()
 	if len(files) == 0 {
 		http.Error(w, "No files in NZB", http.StatusInternalServerError)
 		return
@@ -2686,8 +2248,8 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 		unpackFiles[i] = files[i]
 	}
 	password := ""
-	if sess.NZB != nil {
-		password = sess.NZB.Password()
+	if sessNZB := sess.NZB(); sessNZB != nil {
+		password = sessNZB.Password()
 	}
 	// Cancel stream when either request ends or session is closed (e.g. from dashboard).
 	mergedCtx, mergedCancel := context.WithCancel(r.Context())
@@ -2716,8 +2278,8 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 	}
 	openCtx, openCancel := context.WithTimeout(mergedCtx, startupTimeout)
 	defer openCancel()
-	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(openCtx, unpackFiles, sess.Blueprint, password, target, hints)
-	cacheReturnedPlaybackBlueprint(sess, bp)
+	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(openCtx, unpackFiles, sess.Blueprint(), password, target, hints)
+	playback.CacheReturnedBlueprint(sess, bp)
 	if err != nil {
 		logger.Error("Failed to open media stream", "err", err)
 		http.Error(w, "Failed to open media stream: "+err.Error(), http.StatusInternalServerError)
@@ -2772,133 +2334,7 @@ func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamC
 }
 
 func (s *Server) preProbeSessionSync(ctx context.Context, sess *session.Session) (bool, error) {
-	if sess == nil {
-		return false, errors.New("nil session")
-	}
-
-	if sess.IsWarm() {
-		return true, nil
-	}
-
-	logger.Debug("Speculative pre-probing starting for session", "slot", sess.ID, "title", sess.Release.Title)
-
-	// 1. Fetch the NZB and construct loader files
-	if _, err := sess.GetOrDownloadNZBWithContext(ctx, s.sessionManager); err != nil {
-		return false, fmt.Errorf("download NZB: %w", err)
-	}
-
-	// 2. Resolve the obfuscated names and verify archive volume availability
-	files := sess.Files
-	if len(files) > 0 {
-		exists, statErr := verifyRequiredArchivesExist(ctx, files)
-		if statErr != nil {
-			return false, fmt.Errorf("stat check: %w", statErr)
-		}
-		if !exists {
-			return false, errors.New("archive volume segment unavailable")
-		}
-	}
-
-	// 3. Trigger direct media stream hints parsing (name overrides)
-	unpackFiles := make([]unpack.UnpackableFile, len(files))
-	for idx := range files {
-		unpackFiles[idx] = files[idx]
-	}
-	password := ""
-	if sess.NZB != nil {
-		password = sess.NZB.Password()
-	}
-	target := unpack.EpisodeTarget{}
-	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
-	}
-	hints := unpack.StreamSelectionHints{
-		AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess),
-	}
-
-	streamReader, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint, password, target, hints)
-	if err != nil {
-		return false, fmt.Errorf("media stream mapping: %w", err)
-	}
-
-	// Store the NZB + blueprint immediately (status pending) so the expensive
-	// download/mapping work survives even if validation below is interrupted;
-	// the verdict is applied once known.
-	s.saveSessionToLibrary(sess, bp, name, size, persistence.LibraryStatusPending)
-
-	// Dense article check of the SELECTED file: every startup-window article plus
-	// spread samples across all its volumes. Catches holes past the sparse
-	// first-segment sampling (e.g. 121MB into an 8.7GB release) before the
-	// release is ever offered, and before the forced decode downloads anything.
-	if err := verifySelectedFileArticlesDense(ctx, bp); err != nil {
-		logger.Warn("Speculative pre-probing rejected release via dense article STAT", "slot", sess.ID, "file", name, "err", err)
-		if streamReader != nil {
-			streamReader.Close()
-		}
-		return false, fmt.Errorf("speculative pre-probing rejected stream: %w", err)
-	}
-
-	ffprobePath := ""
-	if s.config != nil {
-		ffprobePath = s.config.EffectiveFFprobePath()
-	}
-	logger.Info("Speculative pre-probing executing FFprobe validation", "slot", sess.ID, "file", name)
-	probeRes, err := unpack.ValidateMediaStreamWithOptions(ctx, streamReader, name, ffprobePath, unpack.ValidateOptions{
-		ForceDecode:   true,
-		StrictFFprobe: true,
-	})
-	if err != nil {
-		logger.Warn("Speculative pre-probing rejected audio-only or unplayable stream via FFprobe", "slot", sess.ID, "name", name, "err", err)
-		if streamReader != nil {
-			streamReader.Close()
-		}
-		return false, fmt.Errorf("speculative pre-probing rejected stream: %w", err)
-	}
-	if probeRes != nil {
-		sess.SetMediaCapabilities(mediaCapabilitiesFromProbe(probeRes))
-	}
-
-	cacheReturnedPlaybackBlueprint(sess, bp)
-	sess.SetSelectedPlaybackFile(name)
-	s.saveSessionToLibrary(sess, bp, name, size, persistence.LibraryStatusGood)
-	if streamReader != nil {
-		streamReader.Close()
-	}
-
-	logger.Info("Speculative pre-probing successfully completed", "slot", sess.ID, "title", sess.Release.Title, "file", name, "size", size)
-	return true, nil
-}
-
-// mediaCapabilitiesFromProbe converts an ffprobe result into the session-level
-// capability record surfaced to clients.
-func mediaCapabilitiesFromProbe(res *ffprobe.FFprobeResult) *session.MediaCapabilities {
-	if res == nil {
-		return nil
-	}
-	return &session.MediaCapabilities{
-		VideoCodec:    res.VideoCodec,
-		AudioCodec:    res.AudioCodec,
-		Width:         res.Width,
-		Height:        res.Height,
-		Profile:       res.Profile,
-		PixFmt:        res.PixFmt,
-		BitDepth:      res.BitDepth,
-		HDR:           res.HDR,
-		DolbyVision:   res.DolbyVision,
-		ColorTransfer: res.ColorTransfer,
-		CodecTag:      res.CodecTag,
-	}
-}
-
-func (s *Server) speculativelyPreProbeSession(sess *session.Session) {
-	if sess == nil || sess.IsWarm() || sess.IsNZBDownloadInFlight() || (sess.Release != nil && sess.Release.IsLibraryResult()) {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		_, _ = s.preProbeSessionSync(ctx, sess)
-	}()
+	return s.playback.PreProbe(ctx, sess)
 }
 
 // preProbeCacheKeyFromSlot derives the StreamSlotKey cache key from a slot path,
@@ -2951,101 +2387,77 @@ func (s *Server) cancelPreProbeForContentSlot(slotPath string) {
 	}
 }
 
-func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
-	if streamUsesAIOStreamsProfile(stream) {
-		logger.Debug("Skipping speculative pre-probing in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
+// preProbeSlots warms up to maxAttempts slots in order, stopping at the first
+// one that probes clean. Failures that definitively prove a bad release are
+// reported; anything inconclusive just moves to the next slot. Runs in the
+// background under a 3-minute budget, cancellable via cacheKey when real
+// playback starts.
+func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts int) {
+	if maxAttempts <= 0 || len(slotPaths) == 0 {
 		return
 	}
-
-	maxAttempts := s.config.EffectiveSpeculativePreProbingMaxAttempts()
-	if maxAttempts <= 0 || list == nil || len(list.Candidates) == 0 {
-		return
+	if maxAttempts > len(slotPaths) {
+		maxAttempts = len(slotPaths)
 	}
-	n := len(list.Candidates)
-	if maxAttempts > n {
-		maxAttempts = n
-	}
-	useSlotPaths := len(list.SlotPaths) == n
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		defer s.registerPreProbeCancel(key.CacheKey(), cancel)()
+		defer s.registerPreProbeCancel(cacheKey, cancel)()
 
 		for i := 0; i < maxAttempts; i++ {
-			if list.Candidates[i].Release != nil && list.Candidates[i].Release.IsLibraryResult() {
-				logger.Debug("Skipping speculative pre-probing for library candidate", "title", list.Candidates[i].Release.Title)
-				continue
-			}
-			playPath := key.SlotPath(i)
-			if useSlotPaths {
-				playPath = list.SlotPaths[i]
-			}
-			sess, err := s.sessionManager.GetSession(playPath)
-			if err != nil || (sess != nil && sess.Release != nil && sess.Release.IsLibraryResult()) {
+			sess, err := s.sessionManager.GetSession(slotPaths[i])
+			// Library-sourced releases were already validated when stored, so
+			// re-probing buys nothing. They still consume an attempt, matching
+			// the previous behaviour.
+			if rel := sess.Release(); err != nil || (rel != nil && rel.IsLibraryResult()) {
+				if err == nil {
+					logger.Debug("Skipping speculative pre-probing for library candidate", "title", sess.ReportReleaseName())
+				}
 				continue
 			}
 			ok, probeErr := s.preProbeSessionSync(ctx, sess)
 			if ok {
-				logger.Info("Speculative failover pre-probing found ready stream candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.Release.Title)
-				break
+				logger.Info("Speculative failover pre-probing found ready stream candidate",
+					"attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.ReportReleaseName())
+				return
 			}
-			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
+			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate",
+				"attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 			if s.preProbeConfirmsBadRelease(probeErr) {
-				availOutcome := availOutcomeForFailure(probeErr)
-				if s.availReporter != nil {
-					if shouldReportBadReleaseAllProviders(probeErr) {
-						availOutcome = s.availReporter.ReportBadAllProviders(sess, probeErr.Error())
-					} else {
-						availOutcome = s.availReporter.ReportBad(sess, probeErr.Error())
-					}
-				}
-				s.applyReportedBadReleaseToCaches(sess, availOutcome)
+				s.reportBadReleaseOutcome(sess, probeErr, false)
 			}
 		}
 	}()
 }
 
-func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
-	maxAttempts := s.config.EffectiveSpeculativePreProbingMaxAttempts()
-	if maxAttempts <= 0 || len(order) == 0 {
+func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
+	if streamUsesAIOStreamsProfile(stream) {
+		logger.Debug("Skipping speculative pre-probing in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
 		return
 	}
-	n := len(order)
-	if maxAttempts > n {
-		maxAttempts = n
+	if list == nil || len(list.Candidates) == 0 {
+		return
 	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		defer s.registerPreProbeCancel(preProbeCacheKeyFromSlot(order[0]), cancel)()
-
-		for i := 0; i < maxAttempts; i++ {
-			slotPath := order[i]
-			sess, err := s.sessionManager.GetSession(slotPath)
-			if err != nil || (sess != nil && sess.Release != nil && sess.Release.IsLibraryResult()) {
-				continue
-			}
-			ok, probeErr := s.preProbeSessionSync(ctx, sess)
-			if ok {
-				logger.Info("Speculative failover pre-probing found ready stream candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.Release.Title)
-				break
-			}
-			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate", "attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
-			if s.preProbeConfirmsBadRelease(probeErr) {
-				availOutcome := availOutcomeForFailure(probeErr)
-				if s.availReporter != nil {
-					if shouldReportBadReleaseAllProviders(probeErr) {
-						availOutcome = s.availReporter.ReportBadAllProviders(sess, probeErr.Error())
-					} else {
-						availOutcome = s.availReporter.ReportBad(sess, probeErr.Error())
-					}
-				}
-				s.applyReportedBadReleaseToCaches(sess, availOutcome)
-			}
+	slotPaths := make([]string, len(list.Candidates))
+	useSlotPaths := len(list.SlotPaths) == len(list.Candidates)
+	for i := range list.Candidates {
+		if useSlotPaths {
+			slotPaths[i] = list.SlotPaths[i]
+			continue
 		}
-	}()
+		slotPaths[i] = key.SlotPath(i)
+	}
+
+	s.preProbeSlots(key.CacheKey(), slotPaths, s.config.EffectiveSpeculativePreProbingMaxAttempts())
+}
+
+func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
+	if len(order) == 0 {
+		return
+	}
+	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, s.config.EffectiveSpeculativePreProbingMaxAttempts())
 }
 
 // saveSessionToLibrary upserts the session's NZB + blueprint into the library.
@@ -3053,8 +2465,9 @@ func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
 // blueprint are known (so nothing is lost if validation/playback is interrupted),
 // then LibraryStatusGood once validated or played through — a pending re-save
 // never downgrades an existing good/bad verdict (enforced in StoreItem).
-func (s *Server) saveSessionToLibrary(sess *session.Session, bp interface{}, mediaFileName string, mediaFileSize int64, status string) {
-	if s == nil || s.attemptRecorder == nil || sess == nil || sess.Release == nil {
+func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint, mediaFileName string, mediaFileSize int64, status string) {
+	rel := sess.Release()
+	if s == nil || s.attemptRecorder == nil || sess == nil || rel == nil {
 		return
 	}
 	if s.config != nil && !s.config.EffectiveLibraryAutoSave() {
@@ -3112,10 +2525,10 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp interface{}, med
 		KitsuID:       kitsuID,
 		Season:        season,
 		Episode:       episode,
-		ReleaseTitle:  sess.Release.Title,
-		DetailsURL:    sess.Release.DetailsURL,
-		IndexerName:   sess.Release.Indexer,
-		SizeBytes:     sess.Release.Size,
+		ReleaseTitle:  rel.Title,
+		DetailsURL:    rel.DetailsURL,
+		IndexerName:   rel.Indexer,
+		SizeBytes:     rel.Size,
 		NZBData:       sess.NZBBytes,
 		BlueprintJSON: bpJSON,
 		MediaFileName: mediaFileName,
@@ -3133,9 +2546,9 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp interface{}, med
 	}
 
 	if err := libStore.StoreItem(item); err != nil {
-		logger.Warn("Failed to save session to library", "title", sess.Release.Title, "err", err)
+		logger.Warn("Failed to save session to library", "title", rel.Title, "err", err)
 	} else {
-		logger.Debug("Saved session to library", "title", sess.Release.Title, "type", contentType, "id", contentID, "status", status)
+		logger.Debug("Saved session to library", "title", rel.Title, "type", contentType, "id", contentID, "status", status)
 		if s.config != nil {
 			_ = libStore.EnforceQuota(s.config.EffectiveLibraryMaxItems(), s.config.EffectiveLibraryMaxSizeMB())
 		}

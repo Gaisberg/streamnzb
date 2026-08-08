@@ -52,18 +52,24 @@ func buildTimeRangeSQL(base string, from, to *time.Time) (string, []interface{})
 	return base + " WHERE " + strings.Join(clauses, " AND "), args
 }
 
-func computeCounterDeltaFloat(baseline float64, hasBaseline bool, values []float64) float64 {
+// deleteMetricRows removes rows from a metrics table, optionally narrowed by
+// name and a collected_at range.
+// counterDelta sums the growth of a monotonic counter across samples,
+// treating any decrease as a reset (the provider restarted, so the new value
+// is the whole delta). baseline is the last value before the window;
+// hasBaseline false means the window starts from zero.
+func counterDelta[T int64 | float64](baseline T, hasBaseline bool, values []T) T {
 	if len(values) == 0 {
 		return 0
 	}
-	var total float64
+	var total T
 	current := baseline
 	if !hasBaseline {
 		current = 0
 	}
 	for _, val := range values {
 		if val >= current {
-			total += (val - current)
+			total += val - current
 		} else {
 			total += val
 		}
@@ -72,24 +78,84 @@ func computeCounterDeltaFloat(baseline float64, hasBaseline bool, values []float
 	return total
 }
 
-func computeCounterDeltaInt(baseline int64, hasBaseline bool, values []int64) int64 {
-	if len(values) == 0 {
-		return 0
-	}
-	var total int64
-	current := baseline
-	if !hasBaseline {
-		current = 0
-	}
-	for _, val := range values {
-		if val >= current {
-			total += (val - current)
-		} else {
-			total += val
+func (m *StateManager) deleteMetricRows(table, nameCol, name string, from, to *time.Time) error {
+	name = strings.TrimSpace(name)
+	return m.withWriteLock(func(db *sql.DB) error {
+		clauses := make([]string, 0, 3)
+		args := make([]interface{}, 0, 3)
+		if name != "" {
+			clauses = append(clauses, nameCol+" = ?")
+			args = append(args, name)
 		}
-		current = val
+		if from != nil {
+			clauses = append(clauses, "collected_at >= ?")
+			args = append(args, from.Unix())
+		}
+		if to != nil {
+			clauses = append(clauses, "collected_at < ?")
+			args = append(args, to.Unix())
+		}
+		query := "DELETE FROM " + table
+		if len(clauses) > 0 {
+			query += " WHERE " + strings.Join(clauses, " AND ")
+		}
+		_, err := db.Exec(query, args...)
+		return err
+	})
+}
+
+// baselineFrom finds the last sample before `from` so counter deltas have a
+// starting point, falling back to `from` itself when there is none.
+func (m *StateManager) baselineFrom(table string, from *time.Time) *time.Time {
+	if from == nil {
+		return nil
 	}
-	return total
+	var baselineTs int64
+	err := m.db.QueryRow(`SELECT MAX(collected_at) FROM `+table+` WHERE collected_at < ?`, from.Unix()).Scan(&baselineTs)
+	if err == nil && baselineTs > 0 {
+		t := time.Unix(baselineTs, 0)
+		return &t
+	}
+	return from
+}
+
+// orNow substitutes the current time for a zero timestamp.
+func orNow(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Now()
+	}
+	return t
+}
+
+// reverse flips a slice in place; the sample queries read newest-first and
+// callers want oldest-first.
+func reverse[T any](s []T) {
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
+}
+
+// withTx runs fn inside a transaction, rolling back unless fn commits by
+// returning nil.
+func (m *StateManager) withTx(db *sql.DB, fn func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]ProviderMetric, error) {
@@ -100,49 +166,10 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 		query string
 		args  []interface{}
 	)
-	var fetchFrom *time.Time
-	if from != nil {
-		var baselineTs int64
-		err := m.db.QueryRow(`SELECT MAX(collected_at) FROM provider_metrics WHERE collected_at < ?`, from.Unix()).Scan(&baselineTs)
-		if err == nil && baselineTs > 0 {
-			t := time.Unix(baselineTs, 0)
-			fetchFrom = &t
-		} else {
-			fetchFrom = from
-		}
-	}
+	fetchFrom := m.baselineFrom("provider_metrics", from)
 
-	if fetchFrom != nil && to != nil {
-		query = `
-			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
-			FROM provider_metrics
-			WHERE collected_at >= ? AND collected_at < ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, fetchFrom.Unix(), to.Unix())
-	} else if fetchFrom != nil {
-		query = `
-			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
-			FROM provider_metrics
-			WHERE collected_at >= ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, fetchFrom.Unix())
-	} else if to != nil {
-		query = `
-			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
-			FROM provider_metrics
-			WHERE collected_at < ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, to.Unix())
-	} else {
-		query = `
-			SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
-			FROM provider_metrics
-			ORDER BY collected_at ASC
-		`
-	}
+	query, args = buildTimeRangeSQL("SELECT collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count FROM provider_metrics", fetchFrom, to)
+	query += " ORDER BY collected_at ASC"
 
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
@@ -255,9 +282,9 @@ func (m *StateManager) GetProviderMetricsSummary(from, to *time.Time) ([]Provide
 			IdleConns:        latest.IdleConns,
 			MaxConns:         maxConns,
 			CurrentSpeedMbps: maxSpeed,
-			DownloadedMB:     computeCounterDeltaFloat(bDl, hasBaseline, dlMBs),
-			ArticleAvailable: computeCounterDeltaInt(bAvail, hasBaseline, availCounts),
-			ArticleMissing:   computeCounterDeltaInt(bMiss, hasBaseline, missCounts),
+			DownloadedMB:     counterDelta(bDl, hasBaseline, dlMBs),
+			ArticleAvailable: counterDelta(bAvail, hasBaseline, availCounts),
+			ArticleMissing:   counterDelta(bMiss, hasBaseline, missCounts),
 		}
 	}
 
@@ -285,49 +312,10 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		query string
 		args  []interface{}
 	)
-	var fetchFrom *time.Time
-	if from != nil {
-		var baselineTs int64
-		err := m.db.QueryRow(`SELECT MAX(collected_at) FROM indexer_metrics WHERE collected_at < ?`, from.Unix()).Scan(&baselineTs)
-		if err == nil && baselineTs > 0 {
-			t := time.Unix(baselineTs, 0)
-			fetchFrom = &t
-		} else {
-			fetchFrom = from
-		}
-	}
+	fetchFrom := m.baselineFrom("indexer_metrics", from)
 
-	if fetchFrom != nil && to != nil {
-		query = `
-			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-			FROM indexer_metrics
-			WHERE collected_at >= ? AND collected_at < ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, fetchFrom.Unix(), to.Unix())
-	} else if fetchFrom != nil {
-		query = `
-			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-			FROM indexer_metrics
-			WHERE collected_at >= ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, fetchFrom.Unix())
-	} else if to != nil {
-		query = `
-			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-			FROM indexer_metrics
-			WHERE collected_at < ?
-			ORDER BY collected_at ASC
-		`
-		args = append(args, to.Unix())
-	} else {
-		query = `
-			SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-			FROM indexer_metrics
-			ORDER BY collected_at ASC
-		`
-	}
+	query, args = buildTimeRangeSQL("SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count FROM indexer_metrics", fetchFrom, to)
+	query += " ORDER BY collected_at ASC"
 
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
@@ -463,15 +451,15 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		agg[name] = IndexerMetric{
 			CollectedAt:         latest.CollectedAt,
 			IndexerName:         name,
-			APIHitsUsed:         int(computeCounterDeltaInt(bAPI, hasBaseline, apiHits)),
+			APIHitsUsed:         int(counterDelta(bAPI, hasBaseline, apiHits)),
 			APIHitsLimit:        apiLimit,
-			DownloadsUsed:       int(computeCounterDeltaInt(bDl, hasBaseline, dlHits)),
+			DownloadsUsed:       int(counterDelta(bDl, hasBaseline, dlHits)),
 			DownloadsLimit:      dlLimit,
-			SearchesCount:       int(computeCounterDeltaInt(bSearch, hasBaseline, searchHits)),
-			UniqueHitsCount:     computeCounterDeltaInt(bUnique, hasBaseline, uniqueHits),
+			SearchesCount:       int(counterDelta(bSearch, hasBaseline, searchHits)),
+			UniqueHitsCount:     counterDelta(bUnique, hasBaseline, uniqueHits),
 			AvgResponseMS:       latestAvgResp,
-			AvailAvailableCount: computeCounterDeltaInt(bAvail, hasBaseline, availHits),
-			AvailDiscardedCount: computeCounterDeltaInt(bDiscard, hasBaseline, discardHits),
+			AvailAvailableCount: counterDelta(bAvail, hasBaseline, availHits),
+			AvailDiscardedCount: counterDelta(bDiscard, hasBaseline, discardHits),
 		}
 	}
 
@@ -505,88 +493,69 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 		return nil
 	}
 	return m.withWriteLock(func(db *sql.DB) error {
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			return err
-		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
-			}
-		}()
+		return m.withTx(db, func(tx *sql.Tx) error {
 
-		if len(providers) > 0 {
-			stmt, err := tx.Prepare(`
-				INSERT INTO provider_metrics (
-					collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`)
-			if err != nil {
-				return err
-			}
-			defer stmt.Close()
-			for _, p := range providers {
-				collectedAt := p.CollectedAt
-				if collectedAt.IsZero() {
-					collectedAt = time.Now()
-				}
-				if _, err := stmt.Exec(
-					collectedAt.Unix(),
-					p.ProviderName,
-					p.Host,
-					p.ActiveConns,
-					p.IdleConns,
-					p.MaxConns,
-					p.CurrentSpeedMbps,
-					p.DownloadedMB,
-					p.UsagePercent,
-					p.ArticleAvailable,
-					p.ArticleMissing,
-				); err != nil {
+			if len(providers) > 0 {
+				stmt, err := tx.Prepare(`
+					INSERT INTO provider_metrics (
+						collected_at, provider_name, host, active_conns, idle_conns, max_conns, current_speed_mbps, downloaded_mb, usage_percent, article_available_count, article_missing_count
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`)
+				if err != nil {
 					return err
 				}
-			}
-		}
-
-		if len(indexers) > 0 {
-			stmt, err := tx.Prepare(`
-				INSERT INTO indexer_metrics (
-					collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`)
-			if err != nil {
-				return err
-			}
-			defer stmt.Close()
-			for _, idx := range indexers {
-				collectedAt := idx.CollectedAt
-				if collectedAt.IsZero() {
-					collectedAt = time.Now()
+				defer stmt.Close()
+				for _, p := range providers {
+					collectedAt := orNow(p.CollectedAt)
+					if _, err := stmt.Exec(
+						collectedAt.Unix(),
+						p.ProviderName,
+						p.Host,
+						p.ActiveConns,
+						p.IdleConns,
+						p.MaxConns,
+						p.CurrentSpeedMbps,
+						p.DownloadedMB,
+						p.UsagePercent,
+						p.ArticleAvailable,
+						p.ArticleMissing,
+					); err != nil {
+						return err
+					}
 				}
-				if _, err := stmt.Exec(
-					collectedAt.Unix(),
-					idx.IndexerName,
-					idx.APIHitsUsed,
-					idx.APIHitsLimit,
-					idx.DownloadsUsed,
-					idx.DownloadsLimit,
-					idx.SearchesCount,
-					idx.UniqueHitsCount,
-					idx.AvgResponseMS,
-					idx.AvailAvailableCount,
-					idx.AvailDiscardedCount,
-				); err != nil {
+			}
+
+			if len(indexers) > 0 {
+				stmt, err := tx.Prepare(`
+					INSERT INTO indexer_metrics (
+						collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`)
+				if err != nil {
 					return err
 				}
+				defer stmt.Close()
+				for _, idx := range indexers {
+					collectedAt := orNow(idx.CollectedAt)
+					if _, err := stmt.Exec(
+						collectedAt.Unix(),
+						idx.IndexerName,
+						idx.APIHitsUsed,
+						idx.APIHitsLimit,
+						idx.DownloadsUsed,
+						idx.DownloadsLimit,
+						idx.SearchesCount,
+						idx.UniqueHitsCount,
+						idx.AvgResponseMS,
+						idx.AvailAvailableCount,
+						idx.AvailDiscardedCount,
+					); err != nil {
+						return err
+					}
+				}
 			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		committed = true
-		return nil
+			return nil
+		})
 	})
 }
 
@@ -607,51 +576,36 @@ func (m *StateManager) RecordPerformanceMetrics(records []PerformanceMetricRecor
 		return nil
 	}
 	return m.withWriteLock(func(db *sql.DB) error {
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			return err
-		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
-			}
-		}()
+		return m.withTx(db, func(tx *sql.Tx) error {
 
-		stmt, err := tx.Prepare(`
-			INSERT INTO performance_metrics (
-				collected_at, metric_type, sample_count, min_ms, max_ms, avg_ms, p50_ms, p95_ms, p99_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
-
-		for _, rec := range records {
-			collectedAt := rec.CollectedAt
-			if collectedAt.IsZero() {
-				collectedAt = time.Now()
-			}
-			if _, err := stmt.Exec(
-				collectedAt.Unix(),
-				rec.MetricType,
-				rec.SampleCount,
-				rec.MinMS,
-				rec.MaxMS,
-				rec.AvgMS,
-				rec.P50MS,
-				rec.P95MS,
-				rec.P99MS,
-			); err != nil {
+			stmt, err := tx.Prepare(`
+				INSERT INTO performance_metrics (
+					collected_at, metric_type, sample_count, min_ms, max_ms, avg_ms, p50_ms, p95_ms, p99_ms
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`)
+			if err != nil {
 				return err
 			}
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		committed = true
-		return nil
+			defer stmt.Close()
+
+			for _, rec := range records {
+				collectedAt := orNow(rec.CollectedAt)
+				if _, err := stmt.Exec(
+					collectedAt.Unix(),
+					rec.MetricType,
+					rec.SampleCount,
+					rec.MinMS,
+					rec.MaxMS,
+					rec.AvgMS,
+					rec.P50MS,
+					rec.P95MS,
+					rec.P99MS,
+				); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 }
 
@@ -735,10 +689,7 @@ func (m *StateManager) RecordStreamAPISample(rec StreamAPISampleRecord) error {
 		return nil
 	}
 	return m.withWriteLock(func(db *sql.DB) error {
-		ts := rec.Timestamp
-		if ts.IsZero() {
-			ts = time.Now()
-		}
+		ts := orNow(rec.Timestamp)
 		_, err := db.Exec(`
 			INSERT INTO stream_api_samples (
 				timestamp, content_type, content_id, total_duration_ms,
@@ -755,14 +706,8 @@ func (m *StateManager) RecordPlaybackTTFFSample(rec PlaybackTTFFSampleRecord) er
 		return nil
 	}
 	return m.withWriteLock(func(db *sql.DB) error {
-		ts := rec.Timestamp
-		if ts.IsZero() {
-			ts = time.Now()
-		}
-		isCacheHitInt := 0
-		if rec.IsCacheHit {
-			isCacheHitInt = 1
-		}
+		ts := orNow(rec.Timestamp)
+		isCacheHitInt := boolToInt(rec.IsCacheHit)
 		_, err := db.Exec(`
 			INSERT INTO playback_ttff_samples (
 				timestamp, session_id, provider_name, ttff_ms,
@@ -804,9 +749,7 @@ func (m *StateManager) GetRecentStreamAPISamples(limit int) ([]StreamAPISampleRe
 		rec.Timestamp = time.Unix(ts, 0)
 		results = append(results, rec)
 	}
-	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
-		results[i], results[j] = results[j], results[i]
-	}
+	reverse(results)
 	return results, nil
 }
 
@@ -842,60 +785,14 @@ func (m *StateManager) GetRecentPlaybackTTFFSamples(limit int) ([]PlaybackTTFFSa
 		rec.IsCacheHit = isCacheHitInt != 0
 		results = append(results, rec)
 	}
-	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
-		results[i], results[j] = results[j], results[i]
-	}
+	reverse(results)
 	return results, nil
 }
 
 func (m *StateManager) DeleteProviderMetrics(name string, from, to *time.Time) error {
-	name = strings.TrimSpace(name)
-	return m.withWriteLock(func(db *sql.DB) error {
-		clauses := make([]string, 0, 3)
-		args := make([]interface{}, 0, 3)
-		if name != "" {
-			clauses = append(clauses, "provider_name = ?")
-			args = append(args, name)
-		}
-		if from != nil {
-			clauses = append(clauses, "collected_at >= ?")
-			args = append(args, from.Unix())
-		}
-		if to != nil {
-			clauses = append(clauses, "collected_at < ?")
-			args = append(args, to.Unix())
-		}
-		query := "DELETE FROM provider_metrics"
-		if len(clauses) > 0 {
-			query += " WHERE " + strings.Join(clauses, " AND ")
-		}
-		_, err := db.Exec(query, args...)
-		return err
-	})
+	return m.deleteMetricRows("provider_metrics", "provider_name", name, from, to)
 }
 
 func (m *StateManager) DeleteIndexerMetrics(name string, from, to *time.Time) error {
-	name = strings.TrimSpace(name)
-	return m.withWriteLock(func(db *sql.DB) error {
-		clauses := make([]string, 0, 3)
-		args := make([]interface{}, 0, 3)
-		if name != "" {
-			clauses = append(clauses, "indexer_name = ?")
-			args = append(args, name)
-		}
-		if from != nil {
-			clauses = append(clauses, "collected_at >= ?")
-			args = append(args, from.Unix())
-		}
-		if to != nil {
-			clauses = append(clauses, "collected_at < ?")
-			args = append(args, to.Unix())
-		}
-		query := "DELETE FROM indexer_metrics"
-		if len(clauses) > 0 {
-			query += " WHERE " + strings.Join(clauses, " AND ")
-		}
-		_, err := db.Exec(query, args...)
-		return err
-	})
+	return m.deleteMetricRows("indexer_metrics", "indexer_name", name, from, to)
 }

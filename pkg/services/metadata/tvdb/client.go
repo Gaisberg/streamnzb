@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
+	"sync"
 	"time"
 )
 
@@ -22,12 +23,46 @@ const (
 	tokenValidDays = 25
 )
 
+// metadataCacheTTL bounds the in-memory response caches. Content metadata is
+// effectively immutable, so a generous TTL only guards against unbounded growth
+// of rarely-repeated keys.
+const metadataCacheTTL = 24 * time.Hour
+
+type cacheEntry struct {
+	value   interface{}
+	expires time.Time
+}
+
+func cacheGet(m *sync.Map, key string) (interface{}, bool) {
+	v, ok := m.Load(key)
+	if !ok {
+		return nil, false
+	}
+	entry := v.(cacheEntry)
+	if time.Now().After(entry.expires) {
+		m.Delete(key)
+		return nil, false
+	}
+	return entry.value, true
+}
+
+func cachePut(m *sync.Map, key string, value interface{}) {
+	m.Store(key, cacheEntry{value: value, expires: time.Now().Add(metadataCacheTTL)})
+}
+
 type Client struct {
-	apiKey     string
-	dataDir    string
-	client     *http.Client
+	apiKey  string
+	dataDir string
+	client  *http.Client
+	BaseURL string
+
+	// tokenMu guards tokenCache; the client is shared across concurrent
+	// requests and a 401 storm must not interleave invalidate/refresh.
+	tokenMu    sync.Mutex
 	tokenCache string
-	BaseURL    string
+
+	resolveCache sync.Map // remoteID -> string (TVDB id)
+	seriesCache  sync.Map // seriesID -> *SeriesDetails
 }
 
 func NewClient(apiKey, dataDir string) *Client {
@@ -90,6 +125,9 @@ func (c *Client) ensureToken() (string, error) {
 	if c.apiKey == "" {
 		return "", fmt.Errorf("TVDB API key not configured")
 	}
+
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
 
 	if c.tokenCache != "" {
 		return c.tokenCache, nil
@@ -160,44 +198,61 @@ func (c *Client) login() (string, error) {
 }
 
 func (c *Client) invalidateToken() {
+	c.tokenMu.Lock()
 	c.tokenCache = ""
+	c.tokenMu.Unlock()
+	// Clear the persisted copy too, or ensureToken would reload the same
+	// server-rejected token and the retry could never succeed.
+	if manager, err := persistence.GetManager(c.dataDir); err == nil {
+		_ = manager.Set(stateKey, tokenState{})
+	}
 }
 
 func (c *Client) doRequest(method, path string, body []byte) (*http.Response, error) {
-	token, err := c.ensureToken()
-	if err != nil {
-		return nil, err
+	// One retry: the persisted token can be expired (e.g. past day 25); a 401
+	// invalidates it and the second attempt logs in fresh instead of failing
+	// the first request after every expiry.
+	for attempt := 0; ; attempt++ {
+		token, err := c.ensureToken()
+		if err != nil {
+			return nil, err
+		}
+		var req *http.Request
+		if body != nil {
+			req, err = http.NewRequest(method, c.BaseURL+path, bytes.NewReader(body))
+		} else {
+			req, err = http.NewRequest(method, c.BaseURL+path, nil)
+		}
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			resp.Body.Close()
+			c.invalidateToken()
+			if attempt == 0 {
+				continue
+			}
+			return nil, fmt.Errorf("TVDB token invalid or expired")
+		}
+		return resp, nil
 	}
-	var req *http.Request
-	if body != nil {
-		req, err = http.NewRequest(method, c.BaseURL+path, bytes.NewReader(body))
-	} else {
-		req, err = http.NewRequest(method, c.BaseURL+path, nil)
-	}
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		c.invalidateToken()
-
-		resp.Body.Close()
-		return nil, fmt.Errorf("TVDB token invalid or expired")
-	}
-	return resp, nil
 }
 
 func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 	if c.apiKey == "" {
 		return "", fmt.Errorf("TVDB API key not configured")
+	}
+	if cached, ok := cacheGet(&c.resolveCache, remoteID); ok {
+		return cached.(string), nil
 	}
 	resp, err := c.doRequest("GET", "/search/remoteid/"+remoteID, nil)
 	if err != nil {
@@ -223,15 +278,21 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 	for _, item := range out.Data {
 		if item.Episode != nil && item.Episode.SeriesID != 0 {
 			logger.Debug("Resolved TVDB ID from remote ID", "remote", remoteID, "tvdb", item.Episode.SeriesID)
-			return strconv.Itoa(item.Episode.SeriesID), nil
+			id := strconv.Itoa(item.Episode.SeriesID)
+			cachePut(&c.resolveCache, remoteID, id)
+			return id, nil
 		}
 		if item.Series != nil && item.Series.ID != 0 {
 			logger.Debug("Resolved TVDB ID from remote ID (series)", "remote", remoteID, "tvdb", item.Series.ID)
-			return strconv.Itoa(item.Series.ID), nil
+			id := strconv.Itoa(item.Series.ID)
+			cachePut(&c.resolveCache, remoteID, id)
+			return id, nil
 		}
 		if item.Movie != nil && item.Movie.ID != 0 {
 			logger.Debug("Resolved TVDB ID from remote ID (movie)", "remote", remoteID, "tvdb", item.Movie.ID)
-			return strconv.Itoa(item.Movie.ID), nil
+			id := strconv.Itoa(item.Movie.ID)
+			cachePut(&c.resolveCache, remoteID, id)
+			return id, nil
 		}
 	}
 	return "", fmt.Errorf("no TVDB ID found for remote ID: %s", remoteID)
@@ -253,6 +314,9 @@ func (c *Client) GetSeriesDetails(seriesID string) (*SeriesDetails, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("TVDB API key not configured")
 	}
+	if cached, ok := cacheGet(&c.seriesCache, seriesID); ok {
+		return cached.(*SeriesDetails), nil
+	}
 	resp, err := c.doRequest("GET", "/series/"+seriesID, nil)
 	if err != nil {
 		return nil, err
@@ -270,5 +334,6 @@ func (c *Client) GetSeriesDetails(seriesID string) (*SeriesDetails, error) {
 	if out.Status != successVal {
 		return nil, fmt.Errorf("TVDB get series failed: status=%s", out.Status)
 	}
+	cachePut(&c.seriesCache, seriesID, &out.Data)
 	return &out.Data, nil
 }

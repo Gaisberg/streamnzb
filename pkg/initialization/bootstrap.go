@@ -41,16 +41,6 @@ func WaitForInputAndExit(err error) {
 	os.Exit(1)
 }
 
-func Bootstrap() (*InitializedComponents, error) {
-
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("configuration error: %w", err)
-	}
-
-	return BuildComponents(cfg)
-}
-
 func hostFromIndexerURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {

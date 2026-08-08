@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/persistence"
@@ -46,8 +45,7 @@ func parseDateParam(raw string) (*time.Time, error) {
 }
 
 func (s *Server) handleGetIndexerCaps(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	s.mu.RLock()
@@ -56,18 +54,11 @@ func (s *Server) handleGetIndexerCaps(w http.ResponseWriter, r *http.Request) {
 	if caps == nil {
 		caps = make(map[string]*indexer.Caps)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(caps)
+	writeJSON(w, http.StatusOK, caps)
 }
 
 func (s *Server) handleRefreshIndexerCaps(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Forbidden", http.MethodPost) {
 		return
 	}
 	s.mu.RLock()
@@ -95,18 +86,11 @@ func (s *Server) handleRefreshIndexerCaps(w http.ResponseWriter, r *http.Request
 	s.mu.Lock()
 	s.indexerCaps = caps
 	s.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(caps)
+	writeJSON(w, http.StatusOK, caps)
 }
 
 func (s *Server) handleCloseSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Forbidden", http.MethodPost) {
 		return
 	}
 	var req struct {
@@ -118,18 +102,11 @@ func (s *Server) handleCloseSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessionMgr.DeleteSession(req.ID)
 	logger.Debug("API closing session", "id", req.ID)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Forbidden", http.MethodPost) {
 		return
 	}
 	go func() {
@@ -140,13 +117,11 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		cmd.Start()
 		os.Exit(0)
 	}()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Restarting..."})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "Restarting..."})
 }
 
 func (s *Server) handleDownloadLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 
@@ -173,16 +148,14 @@ func (s *Server) handleDownloadLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	s.mu.RLock()
 	lister := s.attemptLister
 	s.mu.RUnlock()
 	if lister == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]persistence.NZBAttempt{})
+		writeJSON(w, http.StatusOK, []persistence.NZBAttempt{})
 		return
 	}
 	q := r.URL.Query()
@@ -214,13 +187,11 @@ func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []persistence.NZBAttempt{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	s.mu.RLock()
@@ -231,8 +202,7 @@ func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
 		Indexers:  []persistence.IndexerMetric{},
 	}
 	if mgr == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	providers, err := mgr.GetLatestProviderMetrics()
@@ -249,8 +219,7 @@ func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Providers = providers
 	resp.Indexers = indexers
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
@@ -265,8 +234,7 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 			Indexers:  []persistence.IndexerMetric{},
 		}
 		if mgr == nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 
@@ -304,8 +272,7 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 		resp.Providers = providers
 		resp.Indexers = indexers
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		writeJSON(w, http.StatusOK, resp)
 
 	case http.MethodDelete:
 		if mgr == nil {
@@ -353,8 +320,7 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Deleted %s statistics for %q in given range", targetType, name),
 		})
@@ -365,8 +331,7 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePerformanceStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	collector := metrics.Default()
@@ -376,6 +341,5 @@ func (s *Server) handlePerformanceStats(w http.ResponseWriter, r *http.Request) 
 		RecentStreams: collector.GetStreamAPISamples(),
 		RecentTTFF:    collector.GetPlaybackTTFFSamples(),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }

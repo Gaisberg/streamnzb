@@ -15,6 +15,7 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/api"
@@ -38,6 +39,16 @@ var (
 	Version = "dev"
 )
 
+// firstNonEmpty returns the first non-empty value, or "" when all are empty.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to configuration file or directory")
@@ -49,6 +60,18 @@ func main() {
 	}
 
 	env.DefaultIndexerUserAgent = "StreamNZB/" + Version
+
+	// Pin the data directory from the -config flag before anything (logger,
+	// persistence, builders) resolves it independently. Re-pinned below from
+	// cfg.LoadedPath once the config file location is authoritative.
+	if p := strings.TrimSpace(configPath); p != "" {
+		clean := filepath.Clean(p)
+		if fi, err := os.Stat(clean); err == nil && fi.IsDir() {
+			paths.SetDataDir(clean)
+		} else {
+			paths.SetDataDir(filepath.Dir(clean))
+		}
+	}
 
 	logger.Init(env.LogLevel())
 
@@ -70,36 +93,23 @@ func main() {
 		// for non-cache (session, NZB, runtime) and use the rest for segment cache so we stay closer to the limit.
 	}
 
-	availNZBUrl := os.Getenv(env.AvailNZBURL)
-	if availNZBUrl == "" {
-		availNZBUrl = AvailNZBURL
-	}
-	availNZBAPIKey := os.Getenv(env.AvailNZBAPIKey)
-	if availNZBAPIKey == "" {
-		availNZBAPIKey = AvailNZBAPIKey
-	}
-	userTMDBKey := os.Getenv(env.TMDBAPIKey)
-	if userTMDBKey == "" {
-		userTMDBKey = strings.TrimSpace(cfg.TMDBAPIKey)
-	}
-	userTVDBKey := os.Getenv(env.TVDBAPIKey)
-	if userTVDBKey == "" {
-		userTVDBKey = strings.TrimSpace(cfg.TVDBAPIKey)
-	}
-	effectiveTMDBKey := userTMDBKey
-	if effectiveTMDBKey == "" {
-		effectiveTMDBKey = TMDBKey
-	}
-	effectiveTVDBKey := userTVDBKey
-	if effectiveTVDBKey == "" {
-		effectiveTVDBKey = TVDBKey
-	}
+	// Precedence for each: environment, then the user's config, then the
+	// key baked in at build time.
+	availNZBUrl := firstNonEmpty(os.Getenv(env.AvailNZBURL), AvailNZBURL)
+	availNZBAPIKey := firstNonEmpty(os.Getenv(env.AvailNZBAPIKey), AvailNZBAPIKey)
+	userTMDBKey := firstNonEmpty(os.Getenv(env.TMDBAPIKey), strings.TrimSpace(cfg.TMDBAPIKey))
+	userTVDBKey := firstNonEmpty(os.Getenv(env.TVDBAPIKey), strings.TrimSpace(cfg.TVDBAPIKey))
+	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
+	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 
 	dataDir := filepath.Dir(cfg.LoadedPath)
 	if dataDir == "" || dataDir == "." {
 		dataDir, _ = os.Getwd()
 	}
+	// Authoritative pin: every later paths.GetDataDir() (builders, logger
+	// rotation, TVDB state) now agrees with where the config actually lives.
+	paths.SetDataDir(dataDir)
 
 	stateMgr, err := persistence.GetManager(dataDir)
 	if err != nil {
@@ -192,7 +202,7 @@ func main() {
 
 	sessionTTL := time.Duration(cfg.EffectiveSessionTTLSeconds()) * time.Second
 	postPlaybackTTL := time.Duration(cfg.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second
-	sessionManager := session.NewManager(comp.StreamingPools, comp.UsenetPool, sessionTTL)
+	sessionManager := session.NewManager(comp.UsenetPool, sessionTTL)
 	sessionManager.SetPostPlaybackEvictTTL(postPlaybackTTL)
 	logger.Info("Session manager initialized", "ttl", sessionTTL, "post_playback_ttl", postPlaybackTTL)
 

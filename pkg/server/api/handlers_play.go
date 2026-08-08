@@ -22,8 +22,7 @@ type directPlayResponse struct {
 }
 
 func (s *Server) handleDirectPlayNZB(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 	if s.strmServer == nil {
@@ -73,8 +72,7 @@ func (s *Server) handleDirectPlayNZB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(directPlayResponse{
+	writeJSON(w, http.StatusOK, directPlayResponse{
 		SessionID:       sessionID,
 		PlayURL:         s.strmServer.DirectPlayPathForSession(sessionID, stream),
 		PlayPath:        s.strmServer.DirectPlayPathForSession(sessionID, stream),

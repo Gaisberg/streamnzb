@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"path/filepath"
 	"testing"
 
 	"streamnzb/pkg/core/config"
@@ -54,6 +55,9 @@ func TestSetConfigReloadsInMemoryStreamsFromConfig(t *testing.T) {
 // field added to Stream but missed here is dropped without any error.
 func TestUpdateStreamConfigPersistsProfileBindings(t *testing.T) {
 	cfg := &config.Config{
+		// Saves go to a temp file: Config.Save requires an explicit path so it
+		// can never write a stray config.json into the package directory.
+		LoadedPath: filepath.Join(t.TempDir(), "config.json"),
 		Streams: map[string]*config.StreamEntry{
 			"default": {Username: "default", Token: "token-default"},
 		},
@@ -98,6 +102,7 @@ func TestUpdateStreamConfigPersistsProfileBindings(t *testing.T) {
 
 func TestUpdateStreamConfigClearsProfileBindings(t *testing.T) {
 	cfg := &config.Config{
+		LoadedPath: filepath.Join(t.TempDir(), "config.json"),
 		Streams: map[string]*config.StreamEntry{
 			"default": {
 				Username:            "default",

@@ -23,7 +23,6 @@ import (
 	"streamnzb/pkg/media/seek"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/release"
-	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
 )
 
@@ -57,12 +56,17 @@ type playbackLease struct {
 
 type Session struct {
 	ID         string
-	NZB        *nzb.NZB
-	Files      []*loader.File
-	File       *loader.File
 	StreamName string
 
-	Blueprint           interface{}
+	// nzbData, files, file, blueprint, rel and clients are mutated under mu by
+	// the lazy NZB download and by close/teardown; read them only through the
+	// locked accessors (NZB, Files, File, Blueprint, Release) and snapshot into
+	// a local before dereferencing — never re-fetch after a nil check.
+	nzbData *nzb.NZB
+	files   []*loader.File
+	file    *loader.File
+
+	blueprint           unpack.Blueprint
 	CreatedAt           time.Time
 	LastAccess          time.Time
 	ActivePlays         int32
@@ -70,13 +74,13 @@ type Session struct {
 	PlaybackStartedAt   time.Time // when ActivePlays went from 0 to >0; used to evict stuck sessions
 	PlaybackEndedAt     time.Time // when ActivePlays went to 0; used to evict session soon after stream stops
 	playbackStarting    int       // number of in-flight playback startups; prevents background refresh from replacing the session mid-startup
-	Clients             map[string]time.Time
+	clients             map[string]time.Time
 	mu                  sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	Release  *release.Release
+	rel      *release.Release
 	NZBBytes []byte
 
 	ContentIDs *AvailReportMeta
@@ -178,7 +182,60 @@ func (s *Session) IsWarm() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.NZB != nil
+	return s.nzbData != nil
+}
+
+// NZB returns the parsed NZB, or nil before the lazy download completes or
+// after teardown. Snapshot into a local before dereferencing.
+func (s *Session) NZB() *nzb.NZB {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nzbData
+}
+
+// Files returns the loader files backing this session (nil after teardown).
+func (s *Session) Files() []*loader.File {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.files
+}
+
+// File returns the single pre-selected loader file, if any.
+func (s *Session) File() *loader.File {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.file
+}
+
+// Blueprint returns the cached archive blueprint (nil when not yet scanned or
+// after teardown).
+func (s *Session) Blueprint() unpack.Blueprint {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blueprint
+}
+
+// Release returns the release this session was created from (nil after
+// teardown). Snapshot into a local before dereferencing.
+func (s *Session) Release() *release.Release {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rel
 }
 
 func (s *Session) IsNZBDownloadInFlight() bool {
@@ -191,32 +248,38 @@ func (s *Session) IsNZBDownloadInFlight() bool {
 }
 
 func (s *Session) ReleaseURL() string {
-	if s.Release != nil && s.Release.DetailsURL != "" {
-		return s.Release.DetailsURL
+	s.mu.Lock()
+	rel, downloadURL := s.rel, s.downloadURL
+	s.mu.Unlock()
+	if rel != nil && rel.DetailsURL != "" {
+		return rel.DetailsURL
 	}
-	return s.downloadURL
+	return downloadURL
 }
 
 func (s *Session) ReportSize() int64 {
-	if s.NZB != nil {
-		return s.NZB.TotalSize()
+	s.mu.Lock()
+	nzbData, rel := s.nzbData, s.rel
+	s.mu.Unlock()
+	if nzbData != nil {
+		return nzbData.TotalSize()
 	}
-	if s.Release != nil {
-		return s.Release.Size
+	if rel != nil {
+		return rel.Size
 	}
 	return 0
 }
 
 func (s *Session) ReportReleaseName() string {
-	if s.Release != nil {
-		return s.Release.Title
+	if rel := s.Release(); rel != nil {
+		return rel.Title
 	}
 	return ""
 }
 
 func (s *Session) ReleaseIndexer() string {
-	if s.Release != nil {
-		return s.Release.Indexer
+	if rel := s.Release(); rel != nil {
+		return rel.Indexer
 	}
 	return ""
 }
@@ -227,77 +290,63 @@ func (s *Session) ProviderHosts() []string {
 	return append([]string(nil), s.providerHosts...)
 }
 
-func (s *Session) UsedProviderHosts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.usedProviders) == 0 {
+// sortedHostSet renders a provider-host set as a sorted slice. Callers must
+// already hold s.mu.
+func sortedHostSet(set map[string]struct{}) []string {
+	if len(set) == 0 {
 		return nil
 	}
-	hosts := make([]string, 0, len(s.usedProviders))
-	for host := range s.usedProviders {
+	hosts := make([]string, 0, len(set))
+	for host := range set {
 		hosts = append(hosts, host)
 	}
 	sort.Strings(hosts)
 	return hosts
 }
 
-func (s *Session) AttemptedProviderHosts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.attemptedProviders) == 0 {
-		return nil
-	}
-	hosts := make([]string, 0, len(s.attemptedProviders))
-	for host := range s.attemptedProviders {
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
-func (s *Session) ServedProviderHosts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.servedProviders) == 0 {
-		return nil
-	}
-	hosts := make([]string, 0, len(s.servedProviders))
-	for host := range s.servedProviders {
-		hosts = append(hosts, host)
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
-func (s *Session) RecordAttemptedProviderHost(host string) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.attemptedProviders == nil {
-		s.attemptedProviders = make(map[string]struct{})
-	}
-	s.attemptedProviders[host] = struct{}{}
-}
-
-func (s *Session) RecordAttemptedProviderHosts(hosts []string) {
-	if len(hosts) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.attemptedProviders == nil {
-		s.attemptedProviders = make(map[string]struct{})
-	}
+// addHostsLocked inserts the non-empty hosts into *set, creating it on first
+// use. Callers must already hold s.mu.
+func addHostsLocked(set *map[string]struct{}, hosts ...string) {
 	for _, host := range hosts {
 		host = strings.TrimSpace(host)
 		if host == "" {
 			continue
 		}
-		s.attemptedProviders[host] = struct{}{}
+		if *set == nil {
+			*set = make(map[string]struct{})
+		}
+		(*set)[host] = struct{}{}
 	}
+}
+
+func (s *Session) UsedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sortedHostSet(s.usedProviders)
+}
+
+func (s *Session) AttemptedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sortedHostSet(s.attemptedProviders)
+}
+
+func (s *Session) ServedProviderHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sortedHostSet(s.servedProviders)
+}
+
+func (s *Session) RecordAttemptedProviderHost(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	addHostsLocked(&s.attemptedProviders, host)
+}
+
+func (s *Session) RecordAttemptedProviderHosts(hosts []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	addHostsLocked(&s.attemptedProviders, hosts...)
 }
 
 func (s *Session) RecordConfiguredProviderHostsAttempted() {
@@ -306,49 +355,21 @@ func (s *Session) RecordConfiguredProviderHostsAttempted() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.providerHosts) == 0 {
-		return
-	}
-	if s.attemptedProviders == nil {
-		s.attemptedProviders = make(map[string]struct{})
-	}
-	for _, host := range s.providerHosts {
-		host = strings.TrimSpace(host)
-		if host == "" {
-			continue
-		}
-		s.attemptedProviders[host] = struct{}{}
-	}
+	addHostsLocked(&s.attemptedProviders, s.providerHosts...)
 }
 
+// RecordUsedProviderHost marks a host as used, which also implies attempted.
 func (s *Session) RecordUsedProviderHost(host string) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.usedProviders == nil {
-		s.usedProviders = make(map[string]struct{})
-	}
-	if s.attemptedProviders == nil {
-		s.attemptedProviders = make(map[string]struct{})
-	}
-	s.attemptedProviders[host] = struct{}{}
-	s.usedProviders[host] = struct{}{}
+	addHostsLocked(&s.attemptedProviders, host)
+	addHostsLocked(&s.usedProviders, host)
 }
 
 func (s *Session) RecordServedProviderHost(host string) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.servedProviders == nil {
-		s.servedProviders = make(map[string]struct{})
-	}
-	s.servedProviders[host] = struct{}{}
+	addHostsLocked(&s.servedProviders, host)
 }
 
 func (s *Session) BeginServeProviderTracking() {
@@ -474,10 +495,11 @@ func (s *Session) IsActivelyServing() bool {
 // Used by tryPlaySlot to skip IsFailed() for sessions that proved their file was good but whose
 // ActivePlays is momentarily 0 between the client cancelling an initial probe and sending a
 // follow-up range request.
+// HasPreviouslyServed reports whether playback was ever validated for this
+// session. It is the same condition as IsPlaybackValidated, named for the
+// serve-path callers that ask "has this already worked once?".
 func (s *Session) HasPreviouslyServed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return !s.PlaybackValidatedAt.IsZero()
+	return s.IsPlaybackValidated()
 }
 
 func (s *Session) IsPlaybackValidated() bool {
@@ -512,7 +534,6 @@ type failoverOrderEntry struct {
 
 type Manager struct {
 	sessions                 map[string]*Session
-	pools                    []*nntp.ClientPool
 	usenetPool               *pool.Pool
 	estimator                *loader.SegmentSizeEstimator
 	ttl                      time.Duration
@@ -522,16 +543,24 @@ type Manager struct {
 	failoverOrder            sync.Map
 	slotFailedDuringPlayback sync.Map // slotPath -> *failedSlotEntry (430 during streaming)
 	stopCh                   chan struct{}
+	stopOnce                 sync.Once
 }
 
 type failedSlotEntry struct {
 	expiresAt time.Time
 }
 
-func (s *Session) SetBlueprint(bp interface{}) {
+func (s *Session) SetBlueprint(bp unpack.Blueprint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Blueprint = bp
+	s.blueprint = bp
+}
+
+// SetRelease attaches the release this session was created from.
+func (s *Session) SetRelease(rel *release.Release) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rel = rel
 }
 
 func (s *Session) SetSelectedPlaybackFile(name string) {
@@ -705,23 +734,29 @@ func (s *Session) acquirePlaybackStream(spec PlaybackStreamSpec, open func() (io
 	}
 }
 
+// resetLocked clears the cached playback stream state and returns the detached
+// stream, which the caller must close OUTSIDE the lock - Close can touch the
+// network on some stream types.
+func (st *playbackStreamState) resetLocked() io.ReadSeekCloser {
+	if st == nil {
+		return nil
+	}
+	stream := st.stream
+	st.stream = nil
+	st.spec = PlaybackStreamSpec{}
+	st.opening = false
+	st.inUse = false
+	st.startupInfo = seek.StreamStartInfo{}
+	st.hasStartupInfo = false
+	if st.cond != nil {
+		st.cond.Broadcast()
+	}
+	return stream
+}
+
 func (s *Session) ResetPlaybackStream() {
 	s.mu.Lock()
-	state := s.playback
-	if state == nil {
-		s.mu.Unlock()
-		return
-	}
-	stream := state.stream
-	state.stream = nil
-	state.spec = PlaybackStreamSpec{}
-	state.opening = false
-	state.inUse = false
-	state.startupInfo = seek.StreamStartInfo{}
-	state.hasStartupInfo = false
-	if state.cond != nil {
-		state.cond.Broadcast()
-	}
+	stream := s.playback.resetLocked()
 	s.mu.Unlock()
 
 	if stream != nil {
@@ -777,10 +812,9 @@ func (l *playbackLease) Close() error {
 	return nil
 }
 
-func NewManager(pools []*nntp.ClientPool, usenetPool *pool.Pool, ttl time.Duration) *Manager {
+func NewManager(usenetPool *pool.Pool, ttl time.Duration) *Manager {
 	m := &Manager{
 		sessions:             make(map[string]*Session),
-		pools:                pools,
 		usenetPool:           usenetPool,
 		estimator:            loader.NewSegmentSizeEstimator(),
 		ttl:                  ttl,
@@ -806,13 +840,11 @@ func (m *Manager) SetPostPlaybackEvictTTL(d time.Duration) {
 }
 
 // Shutdown stops the background cleanup goroutine. Call during application shutdown.
+// Safe to call more than once.
 func (m *Manager) Shutdown() {
-	select {
-	case <-m.stopCh:
-		// already closed
-	default:
+	m.stopOnce.Do(func() {
 		close(m.stopCh)
-	}
+	})
 }
 
 type AvailReportMeta struct {
@@ -851,7 +883,6 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 		return nil, fmt.Errorf("no content files found in NZB")
 	}
 	m.mu.RLock()
-	pools := m.pools
 	usenetPool := m.usenetPool
 	estimator := m.estimator
 	m.mu.RUnlock()
@@ -862,21 +893,21 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &Session{
 		ID:             sessionID,
-		NZB:            nzbData,
-		Release:        rel,
+		nzbData:        nzbData,
+		rel:            rel,
 		ContentIDs:     contentIDs,
 		CreatedAt:      time.Now(),
 		LastAccess:     time.Now(),
-		Clients:        make(map[string]time.Time),
+		clients:        make(map[string]time.Time),
 		ctx:            ctx,
 		cancel:         cancel,
 		segmentFetcher: segmentFetcher,
 		providerHosts:  append([]string(nil), providerHosts...),
 	}
 	session.segmentFetcher = attachProviderTracking(session, session.segmentFetcher)
-	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, pools, session.segmentFetcher, estimator)
-	session.Files = loaderFiles
-	session.File = loaderFiles[0]
+	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, session.segmentFetcher, estimator)
+	session.files = loaderFiles
+	session.file = loaderFiles[0]
 
 	logger.Debug("session CreateSession", "id", sessionID, "files", len(loaderFiles))
 	m.mu.Lock()
@@ -906,15 +937,10 @@ func selectSessionContentFiles(nzbData *nzb.NZB, contentIDs *AvailReportMeta) []
 	return nzbData.GetSessionContentFilesForEpisode(season, episode, absolute)
 }
 
-func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.FileInfo, pools []*nntp.ClientPool, usenetPool loader.SegmentFetcher, estimator *loader.SegmentSizeEstimator) []*loader.File {
+func buildLoaderFiles(ctx context.Context, ownerID string, contentFiles []*nzb.FileInfo, fetcher loader.SegmentFetcher, estimator *loader.SegmentSizeEstimator) []*loader.File {
 	loaderFiles := make([]*loader.File, 0, len(contentFiles))
 	for _, info := range contentFiles {
-		var lf *loader.File
-		if usenetPool != nil {
-			lf = loader.NewFile(ctx, info.File, nil, estimator, usenetPool)
-		} else {
-			lf = loader.NewFile(ctx, info.File, pools, estimator, nil)
-		}
+		lf := loader.NewFile(ctx, info.File, estimator, fetcher)
 		lf.SetOwnerSessionID(ownerID)
 		loaderFiles = append(loaderFiles, lf)
 	}
@@ -943,7 +969,6 @@ func (m *Manager) VerifyLibraryNZB(ctx context.Context, nzbBytes []byte, content
 	}
 
 	m.mu.RLock()
-	pools := m.pools
 	usenetPool := m.usenetPool
 	estimator := m.estimator
 	m.mu.RUnlock()
@@ -952,11 +977,11 @@ func (m *Manager) VerifyLibraryNZB(ctx context.Context, nzbBytes []byte, content
 	if usenetPool != nil {
 		fetcher = usenetPool.Subset(nil)
 	}
-	if fetcher == nil && len(pools) == 0 {
+	if fetcher == nil {
 		return false, fmt.Errorf("no usenet providers available")
 	}
 
-	files := buildLoaderFiles(ctx, "library-verify", contentFiles[:1], pools, fetcher, estimator)
+	files := buildLoaderFiles(ctx, "library-verify", contentFiles[:1], fetcher, estimator)
 	if len(files) == 0 {
 		return false, fmt.Errorf("no loader files built")
 	}
@@ -1024,8 +1049,8 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 	session := &Session{
 		ID:             sessionID,
 		StreamName:     streamName,
-		NZB:            nil,
-		Release:        rel,
+		nzbData:        nil,
+		rel:            rel,
 		ContentIDs:     contentIDs,
 		ContentType:    contentType,
 		ContentID:      contentID,
@@ -1034,7 +1059,7 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 		indexer:        idx,
 		CreatedAt:      time.Now(),
 		LastAccess:     time.Now(),
-		Clients:        make(map[string]time.Time),
+		clients:        make(map[string]time.Time),
 		ctx:            ctx,
 		cancel:         cancel,
 		segmentFetcher: trackedFetcher,
@@ -1073,14 +1098,14 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 }
 
 func (s *Session) GetOrDownloadNZB(manager *Manager) (*nzb.NZB, error) {
-	return s.GetOrDownloadNZBWithContext(context.TODO(), manager)
+	return s.GetOrDownloadNZBWithContext(s.Context(), manager)
 }
 
 func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Manager) (*nzb.NZB, error) {
 	for {
 		s.mu.Lock()
-		if s.NZB != nil {
-			nzb := s.NZB
+		if s.nzbData != nil {
+			nzb := s.nzbData
 			s.mu.Unlock()
 			return nzb, nil
 		}
@@ -1102,7 +1127,7 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 			case <-done:
 				releaseEffectiveCtx()
 				s.mu.Lock()
-				nzb := s.NZB
+				nzb := s.nzbData
 				inFlightErr := s.nzbDownloadErr
 				s.mu.Unlock()
 				if nzb != nil {
@@ -1125,9 +1150,9 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		segmentFetcher := s.segmentFetcher
 		itemTitle := ""
 		indexerName := ""
-		if s.Release != nil {
-			itemTitle = s.Release.Title
-			indexerName = s.Release.Indexer
+		if s.rel != nil {
+			itemTitle = s.rel.Title
+			indexerName = s.rel.Indexer
 		}
 		sessionFileCtx := sessionCtx
 		if sessionFileCtx == nil {
@@ -1189,14 +1214,13 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 					err = fmt.Errorf("no content files found in lazy NZB")
 				} else {
 					manager.mu.RLock()
-					pools := manager.pools
 					usenetPool := manager.usenetPool
 					estimator := manager.estimator
 					manager.mu.RUnlock()
 					if segmentFetcher == nil && usenetPool != nil {
 						segmentFetcher = usenetPool.Subset(nil)
 					}
-					loaderFiles = buildLoaderFiles(sessionFileCtx, sessionID, contentFiles, pools, segmentFetcher, estimator)
+					loaderFiles = buildLoaderFiles(sessionFileCtx, sessionID, contentFiles, segmentFetcher, estimator)
 				}
 			}
 
@@ -1213,22 +1237,22 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 			if finalErr == nil && sessionFileCtx.Err() != nil {
 				finalErr = fmt.Errorf("failed to lazy download NZB: %w", sessionFileCtx.Err())
 			}
-			if finalErr == nil && s.NZB == nil {
-				s.NZB = parsedNZB
+			if finalErr == nil && s.nzbData == nil {
+				s.nzbData = parsedNZB
 				s.NZBBytes = data
-				s.Files = loaderFiles
-				s.File = loaderFiles[0]
+				s.files = loaderFiles
+				s.file = loaderFiles[0]
 				logger.Debug("session GetOrDownloadNZB created loader files", "id", s.ID, "files", len(loaderFiles))
 				// Best-effort: rehydrate a persisted library blueprint against the fresh
 				// loader files so playback skips ScanArchive. Falls back silently to a
 				// full scan (Blueprint stays nil) if the volume set no longer matches.
-				if s.Blueprint == nil && s.libraryBlueprintJSON != "" {
+				if s.blueprint == nil && s.libraryBlueprintJSON != "" {
 					unpackables := make([]unpack.UnpackableFile, len(loaderFiles))
 					for i := range loaderFiles {
 						unpackables[i] = loaderFiles[i]
 					}
 					if bp, ok := unpack.RehydrateArchiveBlueprint([]byte(s.libraryBlueprintJSON), unpackables); ok {
-						s.Blueprint = bp
+						s.blueprint = bp
 						logger.Debug("Reused persisted archive blueprint from library (skipped rescan)", "id", s.ID, "file", bp.MainFileName, "parts", len(bp.Parts))
 					}
 				}
@@ -1244,7 +1268,7 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		case <-done:
 			releaseEffectiveCtx()
 			s.mu.Lock()
-			nzb := s.NZB
+			nzb := s.nzbData
 			downloadErr := s.nzbDownloadErr
 			s.mu.Unlock()
 			if nzb != nil {
@@ -1392,21 +1416,6 @@ func freeOSMemory() {
 	debug.FreeOSMemory()
 }
 
-func summarizeClientPools(pools []*nntp.ClientPool) string {
-	if len(pools) == 0 {
-		return "none"
-	}
-	parts := make([]string, 0, len(pools))
-	for i, p := range pools {
-		if p == nil {
-			parts = append(parts, fmt.Sprintf("pool[%d](nil)", i))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("pool[%d](host=%s total=%d idle=%d active=%d)", i, p.Host(), p.TotalConnections(), p.IdleConnections(), p.ActiveConnections()))
-	}
-	return strings.Join(parts, "; ")
-}
-
 func (m *Manager) traceTeardownSnapshot(trigger, sessionID string) {
 	m.logTeardownSnapshot(trigger, sessionID, "immediate")
 	for _, delay := range []time.Duration{5 * time.Second, 15 * time.Second} {
@@ -1431,11 +1440,10 @@ func (m *Manager) logTeardownSnapshot(trigger, sessionID, checkpoint string) {
 	for _, sess := range m.sessions {
 		sess.mu.Lock()
 		activePlays += int(sess.ActivePlays)
-		activeClients += len(sess.Clients)
+		activeClients += len(sess.clients)
 		sess.mu.Unlock()
 	}
 	usenetPool := m.usenetPool
-	pools := append([]*nntp.ClientPool(nil), m.pools...)
 	m.mu.RUnlock()
 
 	var mem runtime.MemStats
@@ -1468,8 +1476,6 @@ func (m *Manager) logTeardownSnapshot(trigger, sessionID, checkpoint string) {
 			"usenet_cache", snapshot.CacheSummary(),
 			"usenet_providers", snapshot.ProviderSummary(),
 		)
-	} else {
-		fields = append(fields, "nntp_pools", summarizeClientPools(pools))
 	}
 	logger.Trace("session teardown snapshot", fields...)
 }
@@ -1485,7 +1491,7 @@ func (m *Manager) sessionsWithFilesIDs() []string {
 	ids := make([]string, 0)
 	for id, s := range m.sessions {
 		s.mu.Lock()
-		has := s.File != nil || len(s.Files) > 0
+		has := s.file != nil || len(s.files) > 0
 		s.mu.Unlock()
 		if has {
 			ids = append(ids, id)
@@ -1499,15 +1505,16 @@ func (m *Manager) sessionsWithFilesIDs() []string {
 // session has active loader files.  Call after removing a session from the map
 // and closing it, while NOT holding m.mu (it acquires a read lock internally).
 func (m *Manager) maybePurgePoolCache() {
-	if m.usenetPool == nil {
-		return
-	}
 	m.mu.RLock()
+	usenetPool := m.usenetPool
 	active := m.hasSessionsWithFiles()
 	m.mu.RUnlock()
+	if usenetPool == nil {
+		return
+	}
 	if !active {
 		logger.Debug("session: no sessions with active files, purging segment cache")
-		m.usenetPool.PurgeCache()
+		usenetPool.PurgeCache()
 	}
 }
 
@@ -1553,8 +1560,8 @@ func (m *Manager) ClearBlueprintCache() int {
 			continue
 		}
 		sess.mu.Lock()
-		if sess.Blueprint != nil {
-			sess.Blueprint = nil
+		if sess.blueprint != nil {
+			sess.blueprint = nil
 			cleared++
 		}
 		sess.mu.Unlock()
@@ -1569,7 +1576,6 @@ func (s *Session) Close() {
 
 func (s *Session) closeWithLogging(debugLog bool, reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if debugLog {
 		logger.Debug("session Close", "id", s.ID)
 	} else {
@@ -1579,35 +1585,30 @@ func (s *Session) closeWithLogging(debugLog bool, reason string) {
 		s.cancel()
 		s.cancel = nil
 	}
-	if s.playback != nil {
-		if s.playback.stream != nil {
-			_ = s.playback.stream.Close()
-			s.playback.stream = nil
-		}
-		s.playback.spec = PlaybackStreamSpec{}
-		s.playback.opening = false
-		s.playback.inUse = false
-		s.playback.startupInfo = seek.StreamStartInfo{}
-		s.playback.hasStartupInfo = false
-		if s.playback.cond != nil {
-			s.playback.cond.Broadcast()
-		}
-		s.playback = nil
-	}
+	// Detach the playback stream under the lock but close it outside: Close may
+	// touch the network on some stream types, and holding s.mu across IO is the
+	// exact hazard the playback-lease code is careful to avoid.
+	oldStream := s.playback.resetLocked()
+	s.playback = nil
 	s.selectedPlaybackFile = ""
 	s.playbackStarting = 0
 
 	// Release heavyweight references so a closed session cannot pin NZB / unpack /
 	// loader graphs or deferred-download state after it has been removed.
-	s.Files = nil
-	s.File = nil
-	s.NZB = nil
-	s.Blueprint = nil
-	s.Release = nil
+	s.files = nil
+	s.file = nil
+	s.nzbData = nil
+	s.blueprint = nil
+	s.rel = nil
 	s.ContentIDs = nil
-	s.Clients = nil
+	s.clients = nil
 	s.downloadURL = ""
 	s.indexer = nil
+	s.mu.Unlock()
+
+	if oldStream != nil {
+		_ = oldStream.Close()
+	}
 	logger.Trace("session Close released references", "id", s.ID)
 }
 
@@ -1638,13 +1639,13 @@ func (m *Manager) cleanup() {
 		session.mu.Lock()
 		// Evict stale Clients entries before computing hasActivePlayback.
 		// Without this, a disconnected client whose IP was never seen by GetActiveSessions
-		// keeps len(session.Clients) > 0, which blocks all eviction paths indefinitely.
-		for ip, lastSeen := range session.Clients {
+		// keeps len(session.clients) > 0, which blocks all eviction paths indefinitely.
+		for ip, lastSeen := range session.clients {
 			if now.Sub(lastSeen) > clientStaleTTL {
-				delete(session.Clients, ip)
+				delete(session.clients, ip)
 			}
 		}
-		hasActivePlayback := session.ActivePlays > 0 || len(session.Clients) > 0
+		hasActivePlayback := session.ActivePlays > 0 || len(session.clients) > 0
 		evictIdle := !hasActivePlayback && session.PlaybackEndedAt.IsZero() && now.Sub(session.LastAccess) > m.ttl
 		evictPostPlayback := !hasActivePlayback && !session.PlaybackEndedAt.IsZero() && now.Sub(session.PlaybackEndedAt) > m.postPlaybackEvictTTL
 		evictStuckPlayback := hasActivePlayback && !session.PlaybackStartedAt.IsZero() && now.Sub(session.PlaybackStartedAt) > m.maxPlaybackDuration
@@ -1710,87 +1711,87 @@ func (m *Manager) cleanup() {
 
 }
 
+// withSession runs fn against the named session with s.mu held, or does
+// nothing when the session is gone. Unlike GetSession it does NOT touch
+// LastAccess, so callers that want the access time refreshed set it in fn -
+// making that write visible rather than an accident of the lookup helper.
+func (m *Manager) withSession(id string, fn func(*Session)) {
+	m.mu.RLock()
+	s := m.sessions[id]
+	m.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(s)
+}
+
 func (m *Manager) StartPlayback(id, ip string) {
-	s, err := m.GetSession(id)
-	if err == nil {
-		s.mu.Lock()
+	m.withSession(id, func(s *Session) {
+		now := time.Now()
 		if s.ActivePlays == 0 {
-			s.PlaybackStartedAt = time.Now()
+			s.PlaybackStartedAt = now
 		}
 		s.ActivePlays++
-		s.Clients[ip] = time.Now()
-		s.mu.Unlock()
-	}
+		s.clients[ip] = now
+		s.LastAccess = now
+	})
 }
 
 func (m *Manager) MarkPlaybackValidated(id string) {
-	s, err := m.GetSession(id)
-	if err == nil {
-		s.mu.Lock()
+	m.withSession(id, func(s *Session) {
+		now := time.Now()
 		if s.PlaybackValidatedAt.IsZero() {
-			s.PlaybackValidatedAt = time.Now()
+			s.PlaybackValidatedAt = now
 		}
 		s.playbackStarting = 0
-		s.mu.Unlock()
-	}
+		s.LastAccess = now
+	})
 }
 
 func (m *Manager) BeginPlaybackStartup(id string) {
-	now := time.Now()
-	m.mu.RLock()
-	s := m.sessions[id]
-	if s != nil {
-		s.mu.Lock()
+	m.withSession(id, func(s *Session) {
 		s.playbackStarting++
-		s.LastAccess = now
-		s.mu.Unlock()
-	}
-	m.mu.RUnlock()
+		s.LastAccess = time.Now()
+	})
 }
 
 func (m *Manager) EndPlaybackStartup(id string) {
-	now := time.Now()
-	m.mu.RLock()
-	s := m.sessions[id]
-	if s != nil {
-		s.mu.Lock()
+	m.withSession(id, func(s *Session) {
 		if s.playbackStarting > 0 {
 			s.playbackStarting--
 		}
-		s.LastAccess = now
-		s.mu.Unlock()
-	}
-	m.mu.RUnlock()
+		s.LastAccess = time.Now()
+	})
 }
 
 func (m *Manager) EndPlayback(id, ip string) {
-	s, err := m.GetSession(id)
-	if err == nil {
-		s.mu.Lock()
+	var plays int32
+	m.withSession(id, func(s *Session) {
+		now := time.Now()
 		if s.ActivePlays > 0 {
 			s.ActivePlays--
 		}
 		if s.ActivePlays == 0 {
 			s.PlaybackStartedAt = time.Time{}
-			s.PlaybackEndedAt = time.Now() // so cleanup can evict session after PostPlaybackEvictTTL
+			s.PlaybackEndedAt = now // so cleanup can evict session after PostPlaybackEvictTTL
 		}
-		s.Clients[ip] = time.Now()
-		plays := s.ActivePlays
-		s.mu.Unlock()
-		if plays == 0 {
-			m.traceTeardownSnapshot("playback_ended", id)
-		}
+		s.clients[ip] = now
+		s.LastAccess = now
+		plays = s.ActivePlays
+	})
+	if plays == 0 {
+		m.traceTeardownSnapshot("playback_ended", id)
 	}
 }
 
 func (m *Manager) KeepAlive(id, ip string) {
-	s, err := m.GetSession(id)
-	if err == nil {
-		s.mu.Lock()
-		s.LastAccess = time.Now()
-		s.Clients[ip] = time.Now()
-		s.mu.Unlock()
-	}
+	m.withSession(id, func(s *Session) {
+		now := time.Now()
+		s.LastAccess = now
+		s.clients[ip] = now
+	})
 }
 
 // AddBytesRead adds n to the session's bytes-read counter. Used by the stream read path to track data downloaded before reporting good to AvailNZB.
@@ -1829,22 +1830,22 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 			continue
 		}
 
-		for ip, lastSeen := range s.Clients {
+		for ip, lastSeen := range s.clients {
 			if time.Since(lastSeen) > 60*time.Second {
-				delete(s.Clients, ip)
+				delete(s.clients, ip)
 			}
 		}
-		isActive := len(s.Clients) > 0
+		isActive := len(s.clients) > 0
 		if isActive {
-			clients := make([]string, 0, len(s.Clients))
-			for ip := range s.Clients {
+			clients := make([]string, 0, len(s.clients))
+			for ip := range s.clients {
 				clients = append(clients, ip)
 			}
 			title := "Unknown"
-			if s.Release != nil && s.Release.Title != "" {
-				title = s.Release.Title
-			} else if s.NZB != nil && len(s.NZB.Files) > 0 {
-				parts := strings.Split(fileutil.ExtractFilename(s.NZB.Files[0].Subject), ".")
+			if s.rel != nil && s.rel.Title != "" {
+				title = s.rel.Title
+			} else if s.nzbData != nil && len(s.nzbData.Files) > 0 {
+				parts := strings.Split(fileutil.ExtractFilename(s.nzbData.Files[0].Subject), ".")
 				if len(parts) > 1 {
 					title = strings.Join(parts[:len(parts)-1], ".")
 				} else {
@@ -1862,12 +1863,6 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 	}
 	logger.Trace("session GetActiveSessions done", "sessions", len(snapshot), "active", len(result))
 	return result
-}
-
-func (m *Manager) UpdatePools(pools []*nntp.ClientPool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pools = pools
 }
 
 func (m *Manager) UpdateUsenetPool(up *pool.Pool) {

@@ -11,9 +11,9 @@ import (
 )
 
 type Indexer interface {
-	Search(req SearchRequest) (*SearchResponse, error)
+	Search(ctx context.Context, req SearchRequest) (*SearchResponse, error)
 	DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
-	Ping() error
+	Ping(ctx context.Context) error
 	Name() string
 	GetUsage() Usage
 }

@@ -5,11 +5,12 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/tmdb"
 )
 
-func animeTVMetadata(seasons []tmdb.TVSeasonInfo) *resolvedSearchMetadata {
-	return &resolvedSearchMetadata{
+func animeTVMetadata(seasons []tmdb.TVSeasonInfo) *query.ResolvedSearchMetadata {
+	return &query.ResolvedSearchMetadata{
 		TVDetails: &tmdb.TVDetails{
 			Name:             "One Piece",
 			OriginalLanguage: "ja",
@@ -42,8 +43,8 @@ func TestAbsoluteEpisodeFromMetadata(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := absoluteEpisodeFromMetadata(meta, tc.season, tc.episode); got != tc.want {
-				t.Fatalf("absoluteEpisodeFromMetadata(%q, %q) = %d, want %d", tc.season, tc.episode, got, tc.want)
+			if got := query.AbsoluteEpisodeFromMetadata(meta, tc.season, tc.episode); got != tc.want {
+				t.Fatalf("query.AbsoluteEpisodeFromMetadata(%q, %q) = %d, want %d", tc.season, tc.episode, got, tc.want)
 			}
 		})
 	}
@@ -53,17 +54,17 @@ func TestAbsoluteEpisodeFromMetadata(t *testing.T) {
 		{SeasonNumber: 1, EpisodeCount: 61},
 		{SeasonNumber: 3, EpisodeCount: 14},
 	})
-	if got := absoluteEpisodeFromMetadata(gappy, "3", "1"); got != 0 {
+	if got := query.AbsoluteEpisodeFromMetadata(gappy, "3", "1"); got != 0 {
 		t.Fatalf("expected 0 for gapped season list, got %d", got)
 	}
-	if got := absoluteEpisodeFromMetadata(nil, "2", "2"); got != 0 {
+	if got := query.AbsoluteEpisodeFromMetadata(nil, "2", "2"); got != 0 {
 		t.Fatalf("expected 0 without metadata, got %d", got)
 	}
 }
 
 func TestPrepareAbsoluteEpisodeSearchSupplementsRequest(t *testing.T) {
 	s := &Server{}
-	params := &SearchParams{
+	params := &query.SearchParams{
 		ContentType: "series",
 		Req: indexer.SearchRequest{
 			Season:  "2",
@@ -111,8 +112,8 @@ func TestAppendSearchCategory(t *testing.T) {
 		{"5000,5060", "5000,5060,5070"},
 	}
 	for _, tc := range cases {
-		if got := appendSearchCategory(tc.categories, "5070"); got != tc.want {
-			t.Fatalf("appendSearchCategory(%q) = %q, want %q", tc.categories, got, tc.want)
+		if got := query.AppendSearchCategory(tc.categories, "5070"); got != tc.want {
+			t.Fatalf("query.AppendSearchCategory(%q) = %q, want %q", tc.categories, got, tc.want)
 		}
 	}
 }
@@ -126,7 +127,7 @@ func TestAppendAnimeTVCategoryToEffective(t *testing.T) {
 		"NoOverride": {},
 	}
 
-	appendAnimeTVCategoryToEffective(effective)
+	query.AppendAnimeTVCategoryToEffective(effective)
 
 	if got := *effective["AnimeTosho"].TVCategories; got != "5000,5070" {
 		t.Fatalf("expected widened categories 5000,5070, got %q", got)
@@ -144,12 +145,12 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 	animeSeasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}}
 	cases := []struct {
 		name   string
-		params *SearchParams
+		params *query.SearchParams
 		want   bool
 	}{
 		{
 			name: "kitsu is anime by definition",
-			params: &SearchParams{
+			params: &query.SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{KitsuID: "486", Episode: "63"},
 			},
@@ -157,7 +158,7 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 		},
 		{
 			name: "anime metadata",
-			params: &SearchParams{
+			params: &query.SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{Season: "2", Episode: "2"},
 				Metadata:    animeTVMetadata(animeSeasons),
@@ -166,10 +167,10 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 		},
 		{
 			name: "non-anime content",
-			params: &SearchParams{
+			params: &query.SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{Season: "2", Episode: "2"},
-				Metadata: &resolvedSearchMetadata{
+				Metadata: &query.ResolvedSearchMetadata{
 					TVDetails: &tmdb.TVDetails{
 						Name:             "Breaking Bad",
 						OriginalLanguage: "en",
@@ -182,19 +183,19 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := requestLooksLikeAnime(tc.params); got != tc.want {
-				t.Fatalf("requestLooksLikeAnime() = %v, want %v", got, tc.want)
+			if got := query.RequestLooksLikeAnime(tc.params); got != tc.want {
+				t.Fatalf("query.RequestLooksLikeAnime() = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
 func TestAbsoluteEpisodeForContentKitsuUsesEpisodeDirectly(t *testing.T) {
-	if got := absoluteEpisodeForContent("series", "486", nil, "", "63"); got != 63 {
-		t.Fatalf("absoluteEpisodeForContent(kitsu) = %d, want 63", got)
+	if got := query.AbsoluteEpisodeForContent("series", "486", nil, "", "63"); got != 63 {
+		t.Fatalf("query.AbsoluteEpisodeForContent(kitsu) = %d, want 63", got)
 	}
-	if got := absoluteEpisodeForContent("movie", "486", nil, "", "63"); got != 0 {
-		t.Fatalf("absoluteEpisodeForContent(movie) = %d, want 0", got)
+	if got := query.AbsoluteEpisodeForContent("movie", "486", nil, "", "63"); got != 0 {
+		t.Fatalf("query.AbsoluteEpisodeForContent(movie) = %d, want 0", got)
 	}
 }
 
@@ -204,11 +205,11 @@ func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		params *SearchParams
+		params *query.SearchParams
 	}{
 		{
 			name: "kitsu already absolute",
-			params: &SearchParams{
+			params: &query.SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{KitsuID: "486", Season: "2", Episode: "2"},
 				Metadata:    animeTVMetadata(animeSeasons),
@@ -216,10 +217,10 @@ func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
 		},
 		{
 			name: "non-anime content",
-			params: &SearchParams{
+			params: &query.SearchParams{
 				ContentType: "series",
 				Req:         indexer.SearchRequest{Season: "2", Episode: "2"},
-				Metadata: &resolvedSearchMetadata{
+				Metadata: &query.ResolvedSearchMetadata{
 					TVDetails: &tmdb.TVDetails{
 						Name:             "Breaking Bad",
 						OriginalLanguage: "en",

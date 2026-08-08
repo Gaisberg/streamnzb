@@ -1,7 +1,6 @@
 package unpack
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"testing"
@@ -114,24 +113,5 @@ func TestDedupeVolumeMembers(t *testing.T) {
 	}
 	if deduped[0].Size() != 5000 {
 		t.Errorf("dedupeVolumeMembers kept size %d; want 5000", deduped[0].Size())
-	}
-}
-
-func TestIdentifyRarVolumeHeader(t *testing.T) {
-	// Invalid/empty header
-	if got := IdentifyRarVolumeHeader([]byte("not a rar")); got != nil {
-		t.Errorf("IdentifyRarVolumeHeader(invalid) = %v; want nil", got)
-	}
-
-	// Fake RAR4 signature header
-	rar4Sig := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00}
-	buf := bytes.NewBuffer(rar4Sig)
-	// Main header: CRC(2), Type(0x73), Flags(0x0100 -> first vol), Size(7)
-	buf.Write([]byte{0x00, 0x00, 0x73, 0x00, 0x01, 0x07, 0x00})
-
-	identity := IdentifyRarVolumeHeader(buf.Bytes())
-	// No file header in prefix, should return nil
-	if identity != nil {
-		t.Errorf("IdentifyRarVolumeHeader without file header = %v; want nil", identity)
 	}
 }

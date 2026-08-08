@@ -15,6 +15,7 @@ import (
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/media/seek"
+	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/usenet/pool"
 )
@@ -64,7 +65,9 @@ type fakeIndexer struct {
 	mu       sync.Mutex
 }
 
-func (*fakeIndexer) Search(indexer.SearchRequest) (*indexer.SearchResponse, error) { return nil, nil }
+func (*fakeIndexer) Search(context.Context, indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	return nil, nil
+}
 func (f *fakeIndexer) DownloadNZB(ctx context.Context, rawURL string) ([]byte, error) {
 	f.mu.Lock()
 	f.calls++
@@ -89,9 +92,9 @@ func (f *fakeIndexer) DownloadNZB(ctx context.Context, rawURL string) ([]byte, e
 	}
 	return data, err
 }
-func (*fakeIndexer) Ping() error             { return nil }
-func (*fakeIndexer) Name() string            { return "fake" }
-func (*fakeIndexer) GetUsage() indexer.Usage { return indexer.Usage{} }
+func (*fakeIndexer) Ping(context.Context) error { return nil }
+func (*fakeIndexer) Name() string               { return "fake" }
+func (*fakeIndexer) GetUsage() indexer.Usage    { return indexer.Usage{} }
 func (f *fakeIndexer) Type() string {
 	if f.typeName != "" {
 		return f.typeName
@@ -118,16 +121,16 @@ func TestSessionCloseClearsHeavyReferences(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	file := loader.NewFile(ctx, &nzb.File{Subject: "test.mkv"}, nil, nil, nil)
+	file := loader.NewFile(ctx, &nzb.File{Subject: "test.mkv"}, nil, nil)
 	s := &Session{
 		ID:          "sess-1",
-		NZB:         &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 10}}}}},
-		Files:       []*loader.File{file},
-		File:        file,
-		Blueprint:   &struct{ Data []byte }{Data: make([]byte, 1024)},
-		Release:     &release.Release{Title: "release"},
+		nzbData:     &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 10}}}}},
+		files:       []*loader.File{file},
+		file:        file,
+		blueprint:   &unpack.DirectBlueprint{FileName: "video.mkv"},
+		rel:         &release.Release{Title: "release"},
 		ContentIDs:  &AvailReportMeta{ImdbID: "tt123"},
-		Clients:     map[string]time.Time{"127.0.0.1": time.Now()},
+		clients:     map[string]time.Time{"127.0.0.1": time.Now()},
 		downloadURL: "https://example.invalid/nzb",
 		indexer:     &fakeIndexer{},
 		cancel:      cancel,
@@ -135,10 +138,10 @@ func TestSessionCloseClearsHeavyReferences(t *testing.T) {
 
 	s.Close()
 
-	if s.NZB != nil || s.Blueprint != nil || s.Release != nil || s.ContentIDs != nil {
+	if s.nzbData != nil || s.blueprint != nil || s.rel != nil || s.ContentIDs != nil {
 		t.Fatalf("expected heavy session references to be cleared")
 	}
-	if s.Files != nil || s.File != nil || s.Clients != nil {
+	if s.files != nil || s.file != nil || s.clients != nil {
 		t.Fatalf("expected loader and client references to be cleared")
 	}
 	if s.downloadURL != "" || s.indexer != nil || s.cancel != nil {
@@ -164,10 +167,10 @@ func TestCreateSessionAssignsFileOwners(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession returned error: %v", err)
 	}
-	if s.File == nil {
+	if s.file == nil {
 		t.Fatalf("expected session file to be created")
 	}
-	if got := s.File.OwnerSessionID(); got != "sess-1" {
+	if got := s.file.OwnerSessionID(); got != "sess-1" {
 		t.Fatalf("expected owner session id sess-1, got %q", got)
 	}
 	if got := m.sessionsWithFilesIDs(); len(got) != 1 || got[0] != "sess-1" {
@@ -179,7 +182,7 @@ func TestCreateSessionAssignsFileOwners(t *testing.T) {
 func TestMarkPlaybackValidatedSeparatesValidationFromPlaybackEnd(t *testing.T) {
 	logger.Init("ERROR")
 
-	s := &Session{ID: "sess-1", Clients: make(map[string]time.Time)}
+	s := &Session{ID: "sess-1", clients: make(map[string]time.Time)}
 	m := &Manager{sessions: map[string]*Session{"sess-1": s}}
 
 	if s.HasPreviouslyServed() {
@@ -199,7 +202,7 @@ func TestMarkPlaybackValidatedSeparatesValidationFromPlaybackEnd(t *testing.T) {
 func TestClearBlueprintCacheClearsOnlyBlueprints(t *testing.T) {
 	logger.Init("ERROR")
 
-	sWithBlueprint := &Session{ID: "sess-1", Blueprint: &struct{ Name string }{Name: "cached"}}
+	sWithBlueprint := &Session{ID: "sess-1", blueprint: &unpack.DirectBlueprint{FileName: "cached"}}
 	sWithoutBlueprint := &Session{ID: "sess-2"}
 	m := &Manager{
 		sessions: map[string]*Session{
@@ -212,10 +215,10 @@ func TestClearBlueprintCacheClearsOnlyBlueprints(t *testing.T) {
 	if cleared != 1 {
 		t.Fatalf("ClearBlueprintCache() = %d, want 1", cleared)
 	}
-	if sWithBlueprint.Blueprint != nil {
+	if sWithBlueprint.blueprint != nil {
 		t.Fatalf("expected blueprint to be cleared for sess-1")
 	}
-	if sWithoutBlueprint.Blueprint != nil {
+	if sWithoutBlueprint.blueprint != nil {
 		t.Fatalf("expected nil blueprint to remain nil for sess-2")
 	}
 }
@@ -236,11 +239,11 @@ func TestCreateSessionSelectsRequestedEpisode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession returned error: %v", err)
 	}
-	if got := s.File.Name(); !strings.Contains(got, "S01E05") {
+	if got := s.file.Name(); !strings.Contains(got, "S01E05") {
 		t.Fatalf("expected target episode file, got %q", got)
 	}
-	if len(s.Files) != 1 {
-		t.Fatalf("expected one selected file, got %d", len(s.Files))
+	if len(s.files) != 1 {
+		t.Fatalf("expected one selected file, got %d", len(s.files))
 	}
 	s.Close()
 }
@@ -267,14 +270,14 @@ func TestGetOrDownloadNZBSelectsRequestedEpisode(t *testing.T) {
 	if idx.calls != 1 {
 		t.Fatalf("expected DownloadNZB to be called once, got %d", idx.calls)
 	}
-	if s.File == nil {
+	if s.file == nil {
 		t.Fatal("expected session file after lazy load")
 	}
-	if got := s.File.Name(); !strings.Contains(got, "S01E05") {
+	if got := s.file.Name(); !strings.Contains(got, "S01E05") {
 		t.Fatalf("expected target episode file after lazy load, got %q", got)
 	}
-	if len(s.Files) != 1 {
-		t.Fatalf("expected one selected file after lazy load, got %d", len(s.Files))
+	if len(s.files) != 1 {
+		t.Fatalf("expected one selected file after lazy load, got %d", len(s.files))
 	}
 	s.Close()
 }
@@ -387,8 +390,8 @@ func TestCreateDeferredSessionReplacesStaleDeferredSessionWhenSourceChanges(t *t
 	if first == second {
 		t.Fatal("expected stale deferred session to be replaced")
 	}
-	if second.Release == nil || second.Release.Title != "New Release" {
-		t.Fatalf("expected replacement session to carry new release, got %#v", second.Release)
+	if second.rel == nil || second.rel.Title != "New Release" {
+		t.Fatalf("expected replacement session to carry new release, got %#v", second.rel)
 	}
 	select {
 	case <-first.Done():
@@ -621,11 +624,11 @@ func TestCreateSessionKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateSession returned error: %v", err)
 	}
-	if len(s.Files) != 4 {
-		t.Fatalf("expected broad fallback candidate set, got %d files", len(s.Files))
+	if len(s.files) != 4 {
+		t.Fatalf("expected broad fallback candidate set, got %d files", len(s.files))
 	}
 	var sawA, sawB bool
-	for _, file := range s.Files {
+	for _, file := range s.files {
 		name := file.Name()
 		if strings.Contains(name, "Release.A") {
 			sawA = true
@@ -661,11 +664,11 @@ func TestGetOrDownloadNZBKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.
 	if _, err := s.GetOrDownloadNZB(m); err != nil {
 		t.Fatalf("GetOrDownloadNZB returned error: %v", err)
 	}
-	if len(s.Files) != 4 {
-		t.Fatalf("expected broad fallback candidate set after lazy load, got %d files", len(s.Files))
+	if len(s.files) != 4 {
+		t.Fatalf("expected broad fallback candidate set after lazy load, got %d files", len(s.files))
 	}
 	var sawA, sawB bool
-	for _, file := range s.Files {
+	for _, file := range s.files {
 		name := file.Name()
 		if strings.Contains(name, "Release.A") {
 			sawA = true
@@ -799,7 +802,7 @@ func TestGetOrDownloadNZBWithContextDeduplicatesConcurrentDownloads(t *testing.T
 	if calls != 1 {
 		t.Fatalf("expected DownloadNZB to be called once, got %d", calls)
 	}
-	if s.NZB == nil {
+	if s.nzbData == nil {
 		t.Fatal("expected session NZB to be populated")
 	}
 	s.Close()
@@ -850,7 +853,7 @@ func TestGetOrDownloadNZBWithContextDoesNotRepopulateClosedSession(t *testing.T)
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected session close to cancel merged download context")
 	}
-	if s.NZB != nil || s.Files != nil || s.File != nil {
+	if s.nzbData != nil || s.files != nil || s.file != nil {
 		t.Fatal("expected closed session to stay empty after lazy download finishes")
 	}
 }

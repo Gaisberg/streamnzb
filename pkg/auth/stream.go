@@ -46,9 +46,9 @@ type Stream struct {
 	ResultsMode         string                                `json:"results_mode,omitempty"`
 	AutoAddProviders    *bool                                 `json:"auto_add_providers,omitempty"`
 	AutoAddIndexers     *bool                                 `json:"auto_add_indexers,omitempty"`
-	IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 	ProviderSelections  []string                              `json:"provider_selections,omitempty"`
 	IndexerSelections   []string                              `json:"indexer_selections,omitempty"`
+	IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 	MovieSearchQueries  []string                              `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
@@ -175,28 +175,9 @@ func (dm *StreamManager) load() error {
 			if d == nil {
 				continue
 			}
-			dm.streams[k] = &Stream{
-				Username:            d.Username,
-				Token:               d.Token,
-				Order:               d.Order,
-				FilterSortingMode:   d.FilterSortingMode,
-				IndexerMode:         d.IndexerMode,
-				UseAvailNZB:         d.UseAvailNZB,
-				FilterAvailNZB:      d.FilterAvailNZB,
-				CombineResults:      d.CombineResults,
-				EnableFailover:      d.EnableFailover,
-				ResultsMode:         d.ResultsMode,
-				AutoAddProviders:    d.AutoAddProviders,
-				AutoAddIndexers:     d.AutoAddIndexers,
-				IndexerOverrides:    d.IndexerOverrides,
-				ProviderSelections:  append([]string(nil), d.ProviderSelections...),
-				IndexerSelections:   append([]string(nil), d.IndexerSelections...),
-				MovieSearchQueries:  append([]string(nil), d.MovieSearchQueries...),
-				SeriesSearchQueries: append([]string(nil), d.SeriesSearchQueries...),
-			}
-			if dm.streams[k].IndexerOverrides == nil {
-				dm.streams[k].IndexerOverrides = make(map[string]config.IndexerSearchConfig)
-			}
+			copied := *d
+			copied.deepen()
+			dm.streams[k] = &copied
 		}
 		if _, exists := dm.streams["admin"]; exists {
 			delete(dm.streams, "admin")
@@ -209,6 +190,50 @@ func (dm *StreamManager) load() error {
 	return nil
 }
 
+// Stream and config.StreamEntry declare the same fields in the same order,
+// which makes them directly convertible (struct tags are ignored in
+// conversions). That is deliberate: adding a field to one without the other is
+// a compile error, which is what stops the two from drifting — an earlier
+// hand-written copy in load() silently dropped five fields. Keep both
+// declarations in the same order.
+var _ = func() struct{} {
+	var e config.StreamEntry
+	_ = Stream(e)
+	return struct{}{}
+}()
+
+// deepen replaces shared slices and maps with copies so a converted Stream
+// never aliases the config it came from.
+func (s *Stream) deepen() {
+	s.ProviderSelections = append([]string(nil), s.ProviderSelections...)
+	s.IndexerSelections = append([]string(nil), s.IndexerSelections...)
+	s.MovieSearchQueries = append([]string(nil), s.MovieSearchQueries...)
+	s.SeriesSearchQueries = append([]string(nil), s.SeriesSearchQueries...)
+	s.FilterProfileByType = maps.Clone(s.FilterProfileByType)
+	if s.IndexerOverrides == nil {
+		// A non-nil overrides map doubles as the selected-indexer set at search
+		// time, so it must never be nil on a live Stream.
+		s.IndexerOverrides = make(map[string]config.IndexerSearchConfig)
+	} else {
+		s.IndexerOverrides = maps.Clone(s.IndexerOverrides)
+	}
+}
+
+// streamFromEntry converts a persisted config entry into a runtime Stream.
+func streamFromEntry(e *config.StreamEntry) *Stream {
+	s := Stream(*e)
+	s.deepen()
+	return &s
+}
+
+// streamToEntry converts a runtime Stream into its persisted form.
+func streamToEntry(s *Stream) *config.StreamEntry {
+	clone := *s
+	clone.deepen()
+	e := config.StreamEntry(clone)
+	return &e
+}
+
 func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 	dm.streams = make(map[string]*Stream)
 	if dm.cfg == nil || dm.cfg.Streams == nil {
@@ -218,34 +243,7 @@ func (dm *StreamManager) syncStreamsFromConfigLocked() bool {
 		if e == nil {
 			continue
 		}
-		ov := e.IndexerOverrides
-		if ov == nil {
-			ov = make(map[string]config.IndexerSearchConfig)
-		}
-		dm.streams[k] = &Stream{
-			Username:                  e.Username,
-			Token:                     e.Token,
-			Order:                     e.Order,
-			FilterSortingMode:         e.FilterSortingMode,
-			IndexerMode:               e.IndexerMode,
-			UseAvailNZB:               e.UseAvailNZB,
-			FilterAvailNZB:            e.FilterAvailNZB,
-			CombineResults:            e.CombineResults,
-			EnableFailover:            e.EnableFailover,
-			ResultsMode:               e.ResultsMode,
-			AutoAddProviders:          e.AutoAddProviders,
-			AutoAddIndexers:           e.AutoAddIndexers,
-			IndexerOverrides:          ov,
-			ProviderSelections:        append([]string(nil), e.ProviderSelections...),
-			IndexerSelections:         append([]string(nil), e.IndexerSelections...),
-			MovieSearchQueries:        append([]string(nil), e.MovieSearchQueries...),
-			SeriesSearchQueries:       append([]string(nil), e.SeriesSearchQueries...),
-			FilterProfileName:         e.FilterProfileName,
-			FilterProfileByType:       maps.Clone(e.FilterProfileByType),
-			MuteErrorVideo:            e.MuteErrorVideo,
-			ResultNameTemplate:        e.ResultNameTemplate,
-			ResultDescriptionTemplate: e.ResultDescriptionTemplate,
-		}
+		dm.streams[k] = streamFromEntry(e)
 	}
 	if _, exists := dm.streams["admin"]; exists {
 		delete(dm.streams, "admin")
@@ -259,34 +257,7 @@ func (dm *StreamManager) saveLocked() error {
 	if dm.cfg != nil {
 		dm.cfg.Streams = make(map[string]*config.StreamEntry)
 		for k, d := range dm.streams {
-			ov := d.IndexerOverrides
-			if ov == nil {
-				ov = make(map[string]config.IndexerSearchConfig)
-			}
-			dm.cfg.Streams[k] = &config.StreamEntry{
-				Username:                  d.Username,
-				Token:                     d.Token,
-				Order:                     d.Order,
-				FilterSortingMode:         d.FilterSortingMode,
-				IndexerMode:               d.IndexerMode,
-				UseAvailNZB:               d.UseAvailNZB,
-				FilterAvailNZB:            d.FilterAvailNZB,
-				CombineResults:            d.CombineResults,
-				EnableFailover:            d.EnableFailover,
-				ResultsMode:               d.ResultsMode,
-				AutoAddProviders:          d.AutoAddProviders,
-				AutoAddIndexers:           d.AutoAddIndexers,
-				IndexerOverrides:          ov,
-				ProviderSelections:        append([]string(nil), d.ProviderSelections...),
-				IndexerSelections:         append([]string(nil), d.IndexerSelections...),
-				MovieSearchQueries:        append([]string(nil), d.MovieSearchQueries...),
-				SeriesSearchQueries:       append([]string(nil), d.SeriesSearchQueries...),
-				FilterProfileName:         d.FilterProfileName,
-				FilterProfileByType:       maps.Clone(d.FilterProfileByType),
-				MuteErrorVideo:            d.MuteErrorVideo,
-				ResultNameTemplate:        d.ResultNameTemplate,
-				ResultDescriptionTemplate: d.ResultDescriptionTemplate,
-			}
+			dm.cfg.Streams[k] = streamToEntry(d)
 		}
 		return dm.cfg.Save()
 	}
@@ -397,30 +368,9 @@ func (dm *StreamManager) GetAllStreams() []Stream {
 		if stream.Username == "admin" {
 			continue
 		}
-		streams = append(streams, Stream{
-			Username:                  stream.Username,
-			Token:                     stream.Token,
-			Order:                     stream.Order,
-			FilterSortingMode:         stream.FilterSortingMode,
-			IndexerMode:               stream.IndexerMode,
-			UseAvailNZB:               stream.UseAvailNZB,
-			FilterAvailNZB:            stream.FilterAvailNZB,
-			CombineResults:            stream.CombineResults,
-			EnableFailover:            stream.EnableFailover,
-			ResultsMode:               stream.ResultsMode,
-			AutoAddProviders:          stream.AutoAddProviders,
-			AutoAddIndexers:           stream.AutoAddIndexers,
-			IndexerOverrides:          stream.IndexerOverrides,
-			ProviderSelections:        append([]string(nil), stream.ProviderSelections...),
-			IndexerSelections:         append([]string(nil), stream.IndexerSelections...),
-			MovieSearchQueries:        append([]string(nil), stream.MovieSearchQueries...),
-			SeriesSearchQueries:       append([]string(nil), stream.SeriesSearchQueries...),
-			FilterProfileName:         stream.FilterProfileName,
-			FilterProfileByType:       maps.Clone(stream.FilterProfileByType),
-			MuteErrorVideo:            stream.MuteErrorVideo,
-			ResultNameTemplate:        stream.ResultNameTemplate,
-			ResultDescriptionTemplate: stream.ResultDescriptionTemplate,
-		})
+		copied := *stream
+		copied.deepen()
+		streams = append(streams, copied)
 	}
 
 	sort.Slice(streams, func(i, j int) bool {
@@ -509,6 +459,23 @@ func (dm *StreamManager) CreateStream(username, password string, adminUsername s
 	return stream, nil
 }
 
+// mutate applies fn to the named stream under the write lock and persists the
+// result. what labels the save error, e.g. "stream provider selections".
+func (dm *StreamManager) mutate(username, what string, fn func(*Stream)) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	stream, exists := dm.streams[username]
+	if !exists {
+		return fmt.Errorf("stream not found")
+	}
+	fn(stream)
+	if err := dm.saveLocked(); err != nil {
+		return fmt.Errorf("failed to save %s: %w", what, err)
+	}
+	return nil
+}
+
 func (dm *StreamManager) RegenerateToken(username string) (string, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -552,82 +519,38 @@ func (dm *StreamManager) DeleteStream(username string) error {
 }
 
 func (dm *StreamManager) UpdateStreamIndexerConfig(username string, selections []string, overrides map[string]config.IndexerSearchConfig) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-
-	stream, exists := dm.streams[username]
-	if !exists {
-		return fmt.Errorf("stream not found")
-	}
-
-	if overrides == nil {
-		stream.IndexerOverrides = make(map[string]config.IndexerSearchConfig)
-	} else {
-		stream.IndexerOverrides = overrides
-	}
-	stream.IndexerSelections = append([]string(nil), selections...)
-
-	if err := dm.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save stream indexer overrides: %w", err)
-	}
-	return nil
+	return dm.mutate(username, "stream indexer overrides", func(stream *Stream) {
+		if overrides == nil {
+			stream.IndexerOverrides = make(map[string]config.IndexerSearchConfig)
+		} else {
+			stream.IndexerOverrides = overrides
+		}
+		stream.IndexerSelections = append([]string(nil), selections...)
+	})
 }
 
 func (dm *StreamManager) UpdateStreamSearchQueries(username string, movieSearchQueries, seriesSearchQueries []string) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-
-	stream, exists := dm.streams[username]
-	if !exists {
-		return fmt.Errorf("stream not found")
-	}
-
-	stream.MovieSearchQueries = append([]string(nil), movieSearchQueries...)
-	stream.SeriesSearchQueries = append([]string(nil), seriesSearchQueries...)
-
-	if err := dm.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save stream search queries: %w", err)
-	}
-	return nil
+	return dm.mutate(username, "stream search queries", func(stream *Stream) {
+		stream.MovieSearchQueries = append([]string(nil), movieSearchQueries...)
+		stream.SeriesSearchQueries = append([]string(nil), seriesSearchQueries...)
+	})
 }
 
 func (dm *StreamManager) UpdateStreamProviderSelections(username string, providerSelections []string) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-
-	stream, exists := dm.streams[username]
-	if !exists {
-		return fmt.Errorf("stream not found")
-	}
-
-	stream.ProviderSelections = append([]string(nil), providerSelections...)
-
-	if err := dm.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save stream provider selections: %w", err)
-	}
-	return nil
+	return dm.mutate(username, "stream provider selections", func(stream *Stream) {
+		stream.ProviderSelections = append([]string(nil), providerSelections...)
+	})
 }
 
 func (dm *StreamManager) UpdateStreamGeneralSettings(username, filterSortingMode, indexerMode string, useAvailNZB, combineResults, enableFailover *bool, resultsMode string) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-
-	stream, exists := dm.streams[username]
-	if !exists {
-		return fmt.Errorf("stream not found")
-	}
-
-	stream.FilterSortingMode = strings.TrimSpace(filterSortingMode)
-	stream.IndexerMode = strings.TrimSpace(indexerMode)
-	stream.UseAvailNZB = useAvailNZB
-	stream.CombineResults = combineResults
-	stream.EnableFailover = enableFailover
-	stream.ResultsMode = strings.TrimSpace(resultsMode)
-
-	if err := dm.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save stream general settings: %w", err)
-	}
-	return nil
+	return dm.mutate(username, "stream general settings", func(stream *Stream) {
+		stream.FilterSortingMode = strings.TrimSpace(filterSortingMode)
+		stream.IndexerMode = strings.TrimSpace(indexerMode)
+		stream.UseAvailNZB = useAvailNZB
+		stream.CombineResults = combineResults
+		stream.EnableFailover = enableFailover
+		stream.ResultsMode = strings.TrimSpace(resultsMode)
+	})
 }
 
 // UpdateStreamConfig persists the full stream configuration in a single save.

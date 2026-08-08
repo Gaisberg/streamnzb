@@ -11,13 +11,15 @@ type testIndexer struct {
 	searchFn func(req SearchRequest) (*SearchResponse, error)
 }
 
-func (t *testIndexer) Search(req SearchRequest) (*SearchResponse, error) { return t.searchFn(req) }
+func (t *testIndexer) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+	return t.searchFn(req)
+}
 func (t *testIndexer) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error) {
 	return nil, nil
 }
-func (t *testIndexer) Ping() error     { return nil }
-func (t *testIndexer) Name() string    { return t.name }
-func (t *testIndexer) GetUsage() Usage { return Usage{} }
+func (t *testIndexer) Ping(context.Context) error { return nil }
+func (t *testIndexer) Name() string               { return t.name }
+func (t *testIndexer) GetUsage() Usage            { return Usage{} }
 
 func TestAggregatorFailoverStartsInParallelButKeepsPriority(t *testing.T) {
 	started := make(chan string, 2)
@@ -46,7 +48,7 @@ func TestAggregatorFailoverStartsInParallelButKeepsPriority(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		resp, err := agg.Search(SearchRequest{IndexerMode: "failover"})
+		resp, err := agg.Search(context.Background(), SearchRequest{IndexerMode: "failover"})
 		if err != nil {
 			errCh <- err
 			return

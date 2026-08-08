@@ -153,12 +153,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	contentType := parts[0]
 	id := parts[1]
 
-	logger.Info("Client request", "stream", func() string {
-		if stream != nil {
-			return stream.Username
-		}
-		return "legacy"
-	}(), "type", contentType, "id", id)
+	logger.Info("Client request", "stream", streamLogName(stream), "type", contentType, "id", id)
 
 	const streamRequestTimeout = 30 * time.Second
 	ctx, cancel := context.WithTimeout(r.Context(), streamRequestTimeout)
@@ -190,12 +185,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	})
 
 	logger.Debug("Stream finished",
-		"stream", func() string {
-			if stream != nil {
-				return stream.Username
-			}
-			return "legacy"
-		}(),
+		"stream", streamLogName(stream),
 		"indexer_mode", streamIndexerMode(stream),
 		"search_requests_mode", func() string {
 			if streamCombinesResults(stream) {

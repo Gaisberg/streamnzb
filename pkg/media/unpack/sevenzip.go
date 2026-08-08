@@ -7,7 +7,6 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"streamnzb/pkg/core/logger"
 
@@ -112,7 +111,7 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	return bp, nil
 }
 
-func TrySevenZipNestedArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, interface{}, error) {
+func TrySevenZipNestedArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, Blueprint, error) {
 	depth := NestDepthFromContext(ctx)
 	if depth >= MaxNestDepth {
 		return nil, "", 0, nil, fmt.Errorf("max archive nesting depth (%d) reached", MaxNestDepth)
@@ -201,20 +200,6 @@ func Open7zStreamFromBlueprint(ctx context.Context, bp *SevenZipBlueprint, passw
 
 	vs := NewVirtualStream(ctx, streamParts, bp.TotalSize, 0)
 	return vs, bp.MainFileName, bp.TotalSize, nil
-}
-
-func filter7zFiles(files []UnpackableFile) []UnpackableFile {
-	var result []UnpackableFile
-	for _, f := range files {
-		lower := strings.ToLower(ExtractFilename(f.Name()))
-		if strings.HasSuffix(lower, ".7z") || strings.Contains(lower, ".7z.") {
-			result = append(result, f)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return Get7zVolumeNumber(result[i].Name()) < Get7zVolumeNumber(result[j].Name())
-	})
-	return result
 }
 
 func filesToParts(ctx context.Context, files []UnpackableFile) ([]Part, error) {

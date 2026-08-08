@@ -1,4 +1,4 @@
-package stremio
+package playback
 
 import (
 	"context"
@@ -41,7 +41,7 @@ type statCapableFile interface {
 //
 // Fail-open by design: anything inconclusive (non-archive blueprint, no statter,
 // transient errors, timeout) passes — only a definitive missing article rejects.
-func verifySelectedFileArticlesDense(ctx context.Context, bp interface{}) error {
+func VerifySelectedFileArticlesDense(ctx context.Context, bp unpack.Blueprint) error {
 	ab, ok := bp.(*unpack.ArchiveBlueprint)
 	if !ok || ab == nil || len(ab.Parts) == 0 {
 		return nil

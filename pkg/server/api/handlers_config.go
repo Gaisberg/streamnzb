@@ -1,14 +1,11 @@
 package api
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
-	"streamnzb/pkg/core/paths"
 )
 
 type configPayload struct {
@@ -43,37 +40,28 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	stream, _ := auth.StreamFromContext(r)
 	var cfg config.Config
-	if stream != nil && stream.Username == s.config.GetAdminUsername() {
+	if stream != nil && stream.Username == s.adminUsername() {
 		cfg = configForAdminAPI(s.config)
 	} else {
 		cfg = redactedConfigForViewer(s.config)
 	}
 	if cfg.AdminUsername == "" {
-		cfg.AdminUsername = s.config.GetAdminUsername()
+		cfg.AdminUsername = s.adminUsername()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if stream != nil && stream.Username == s.config.GetAdminUsername() {
-		envKeys := config.GetEnvOverrideKeys()
-		json.NewEncoder(w).Encode(configPayload{Config: cfg, EnvOverrides: envKeys})
+	if stream != nil && stream.Username == s.adminUsername() {
+		writeJSON(w, http.StatusOK, configPayload{Config: cfg, EnvOverrides: config.GetEnvOverrideKeys()})
 	} else {
-		json.NewEncoder(w).Encode(cfg)
+		writeJSON(w, http.StatusOK, cfg)
 	}
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can save global configuration", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Only admin can save global configuration", http.MethodPut) {
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -82,86 +70,27 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.RLock()
-	currentCfg := s.config
-	currentLoadedPath := s.config.LoadedPath
-	s.mu.RUnlock()
-
-	currentJSON, err := json.Marshal(currentCfg)
-	if err != nil {
-		s.writeSaveStatus(w, "error", "Failed to prepare config update", nil)
-		return
-	}
-
-	var newCfg config.Config
-	if err := json.Unmarshal(currentJSON, &newCfg); err != nil {
-		s.writeSaveStatus(w, "error", "Failed to prepare config update", nil)
-		return
-	}
-	clearPatchedFilterProfiles(body, &newCfg)
-	if err := json.Unmarshal(body, &newCfg); err != nil {
-		s.writeSaveStatus(w, "error", "Invalid config data", nil)
-		return
-	}
-	newCfg.AvailNZBMode = config.NormalizeAvailNZBMode(newCfg.AvailNZBMode)
-
-	config.CopyEnvOverridesFrom(currentCfg, &newCfg)
-	newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash
-	newCfg.AdminToken = currentCfg.AdminToken
-	newCfg.AdminMustChangePassword = currentCfg.AdminMustChangePassword
-	newCfg.Streams = cloneStreamEntries(currentCfg.Streams)
-	providerRenames := renamedNamesByIndex(currentCfg.Providers, newCfg.Providers, func(provider config.Provider) string {
-		return provider.Name
-	})
-	indexerRenames := renamedNamesByIndex(currentCfg.Indexers, newCfg.Indexers, func(indexer config.IndexerConfig) string {
-		return indexer.Name
-	})
-	filterProfileRenames := renamedNamesByIndex(currentCfg.FilterProfiles, newCfg.FilterProfiles, func(fp config.FilterProfileConfig) string {
-		return fp.Name
-	})
-	applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
-	applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
-	dropDeletedProviders(newCfg.Streams, newCfg.Providers)
-	dropDeletedIndexers(newCfg.Streams, newCfg.Indexers)
-	dropDeletedFilterProfiles(newCfg.Streams, newCfg.FilterProfiles)
-	newCfg.ApplyProviderDefaults()
-	applyStreamAutoSelections(&newCfg)
-	if newCfg.AdminUsername == "" {
-		newCfg.AdminUsername = currentCfg.GetAdminUsername()
-	}
-
-	plan := validationPlanFromPatch(body, currentCfg, &newCfg)
-	fieldErrors := s.validateConfigWithPlan(&newCfg, plan)
+	cacheSuffix, fieldErrors, errMessage := s.applyConfigPatch(body)
 	if len(fieldErrors) > 0 {
 		s.writeSaveStatus(w, "error", "Validation failed", fieldErrors)
 		return
 	}
-	if currentLoadedPath == "" {
-		currentLoadedPath = filepath.Join(paths.GetDataDir(), "config.json")
-	}
-	newCfg.LoadedPath = currentLoadedPath
-	s.mu.Lock()
-	s.config = &newCfg
-	s.mu.Unlock()
-	if err := s.config.Save(); err != nil {
-		s.writeSaveStatus(w, "error", "Failed to save config: "+err.Error(), nil)
+	if errMessage != "" {
+		s.writeSaveStatus(w, "error", errMessage, nil)
 		return
 	}
-	cacheSuffix := s.clearCachesForScope(cacheClearScopeForPatch(body))
-	s.reloadConfigAsync(&newCfg)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
 		"message": "Configuration saved and reloaded." + cacheSuffix,
 	})
 }
 
 func (s *Server) writeSaveStatus(w http.ResponseWriter, status, message string, errors map[string]string) {
-	w.Header().Set("Content-Type", "application/json")
+	code := http.StatusOK
 	if status == "error" {
-		w.WriteHeader(http.StatusBadRequest)
+		code = http.StatusBadRequest
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, code, map[string]interface{}{
 		"status":  status,
 		"message": message,
 		"errors":  errors,
@@ -169,13 +98,7 @@ func (s *Server) writeSaveStatus(w http.ResponseWriter, status, message string, 
 }
 
 func (s *Server) handleClearCache(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can clear caches", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Only admin can clear caches", http.MethodPost) {
 		return
 	}
 	if s.strmServer == nil {
@@ -187,8 +110,7 @@ func (s *Server) handleClearCache(w http.ResponseWriter, r *http.Request) {
 	if s.sessionMgr != nil {
 		blueprintsCleared = s.sessionMgr.ClearBlueprintCache()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
 		"message": "Search cache and blueprint cache cleared.",
 		"details": map[string]interface{}{

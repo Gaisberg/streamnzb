@@ -121,7 +121,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 		err := session.HandleCommand(cmd, args)
 		if err != nil {
 			logger.Error("NNTP proxy command error", "remote", conn.RemoteAddr(), "cmd", cmd, "err", err)
-			_ = session.WriteLine(fmt.Sprintf("500 %v", err))
+			// A handler that aborts mid-response (e.g. after a partial BODY
+			// stream) sets ShouldQuit; injecting a 500 line into that stream
+			// would corrupt it further, so only respond on intact sessions.
+			if !session.ShouldQuit() {
+				_ = session.WriteLine(fmt.Sprintf("500 %v", err))
+			}
 		}
 
 		if session.ShouldQuit() {

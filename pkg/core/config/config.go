@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -175,6 +176,11 @@ type IndexerConfig struct {
 	DisableIdSearch            *bool  `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool  `json:"disable_string_search,omitempty"`
 
+	// VerifyTLS enables TLS certificate verification for this indexer.
+	// Defaults to false (certificates NOT verified) to keep the historical
+	// behavior for self-signed private indexers.
+	VerifyTLS bool `json:"verify_tls,omitempty"`
+
 	// ProxyURL is an optional HTTP or HTTPS proxy for this indexer (http://host:port or https://...).
 	// When empty, HTTP_PROXY / HTTPS_PROXY / NO_PROXY apply via the default proxy resolution.
 	ProxyURL string `json:"proxy_url,omitempty"`
@@ -299,10 +305,6 @@ func (c *Config) EffectiveSpeculativePreProbingMaxAttempts() int {
 	return DefaultSpeculativePreProbingMaxAttempts
 }
 
-func (c *Config) EffectiveSpeculativePreProbingCount() int {
-	return c.EffectiveSpeculativePreProbingMaxAttempts()
-}
-
 func normalizeSessionTTLMinutes(ttl int) int {
 	if ttl < MinSessionTTLMinutes || ttl > MaxSessionTTLMinutes {
 		return DefaultSessionTTLMinutes
@@ -406,16 +408,6 @@ func (c *Config) EffectiveBadReleaseTTL() time.Duration {
 		hours = c.BadReleaseTTLHours
 	}
 	return time.Duration(hours) * time.Hour
-}
-
-func (e *StreamEntry) EffectiveFilterAvailNZB(cfg *Config) bool {
-	if cfg != nil && NormalizeAvailNZBMode(cfg.AvailNZBMode) == "off" {
-		return false
-	}
-	if e == nil || e.FilterAvailNZB == nil {
-		return false
-	}
-	return *e.FilterAvailNZB
 }
 
 func (c *Config) IsErrorVideoMuted() bool {
@@ -1355,10 +1347,15 @@ func (c *Config) MigrateLegacyIndexers() bool {
 	return changed
 }
 
+// Save writes the config back to the file it was loaded from. It deliberately
+// does not fall back to a relative "config.json": that silently wrote a config
+// into whatever the working directory happened to be (tests littered package
+// directories this way). Callers that legitimately have no loaded path must
+// pick one explicitly via SaveFile.
 func (c *Config) Save() error {
-	path := c.LoadedPath
+	path := strings.TrimSpace(c.LoadedPath)
 	if path == "" {
-		path = "config.json"
+		return errors.New("config: cannot save, no config path is set (use SaveFile with an explicit path)")
 	}
 	return c.SaveFile(path)
 }
@@ -1388,98 +1385,137 @@ func keySet(list []string, s string) bool {
 	return false
 }
 
+// envFieldCopiers maps each env-override key to the single config field it
+// drives. ApplyEnvOverrides and CopyEnvOverridesFrom both run off this table,
+// so a new override is one entry instead of two hand-maintained mirrors that
+// can (and did) drift apart.
+var envFieldCopiers = map[string]func(dst, src *Config){
+	env.KeyAddonPort:          func(d, s *Config) { d.AddonPort = s.AddonPort },
+	env.KeyAddonBaseURL:       func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
+	env.KeyLogLevel:           func(d, s *Config) { d.LogLevel = s.LogLevel },
+	env.KeyKeepLogFiles:       func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
+	env.KeyAvailNZBAPIKey:     func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
+	env.KeyTMDBAPIKey:         func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
+	env.KeyTVDBAPIKey:         func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeyIndexerQueryHeader: func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
+	env.KeyIndexerGrabHeader:  func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
+	env.KeyProviderHeader:     func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
+	env.KeyProxyPort:          func(d, s *Config) { d.ProxyPort = s.ProxyPort },
+	env.KeyProxyHost:          func(d, s *Config) { d.ProxyHost = s.ProxyHost },
+	env.KeyProxyEnabled:       func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
+	env.KeyProxyAuthUser:      func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
+	env.KeyProxyAuthPass:      func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyAdminUsername:      func(d, s *Config) { d.AdminUsername = s.AdminUsername },
+	env.KeyAdminMustChangePwd: func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
+	env.KeyProviders:          func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:           func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+}
+
+// cloneProviders deep-copies the pointer fields so the two configs never share
+// Priority/Enabled storage.
+func cloneProviders(in []Provider) []Provider {
+	out := make([]Provider, len(in))
+	for i, p := range in {
+		out[i] = p
+		if p.Priority != nil {
+			v := *p.Priority
+			out[i].Priority = &v
+		}
+		if p.Enabled != nil {
+			v := *p.Enabled
+			out[i].Enabled = &v
+		}
+	}
+	return out
+}
+
+func cloneIndexers(in []IndexerConfig) []IndexerConfig {
+	out := make([]IndexerConfig, len(in))
+	for i, idx := range in {
+		out[i] = idx
+		if idx.Enabled != nil {
+			v := *idx.Enabled
+			out[i].Enabled = &v
+		}
+	}
+	return out
+}
+
+// copyEnvKeys copies just the named env-driven fields from src to dst.
+func copyEnvKeys(dst, src *Config, keys []string) {
+	for _, k := range keys {
+		if copyField := envFieldCopiers[k]; copyField != nil {
+			copyField(dst, src)
+		}
+	}
+}
+
+// envOverridesAsConfig projects the raw env overrides onto a Config, applying
+// the normalizations that only make sense for env-declared entries (indexers
+// declared via env are always newznab and default to enabled).
+func envOverridesAsConfig(o env.ConfigOverrides) *Config {
+	cfg := &Config{
+		AddonPort:               o.AddonPort,
+		AddonBaseURL:            o.AddonBaseURL,
+		LogLevel:                o.LogLevel,
+		KeepLogFiles:            o.KeepLogFiles,
+		AvailNZBAPIKey:          o.AvailNZBAPIKey,
+		TMDBAPIKey:              o.TMDBAPIKey,
+		TVDBAPIKey:              o.TVDBAPIKey,
+		IndexerQueryHeader:      o.IndexerQueryHeader,
+		IndexerGrabHeader:       o.IndexerGrabHeader,
+		ProviderHeader:          o.ProviderHeader,
+		ProxyPort:               o.ProxyPort,
+		ProxyHost:               o.ProxyHost,
+		ProxyEnabled:            o.ProxyEnabled,
+		ProxyAuthUser:           o.ProxyAuthUser,
+		ProxyAuthPass:           o.ProxyAuthPass,
+		AdminUsername:           o.AdminUsername,
+		AdminMustChangePassword: o.AdminMustChangePwd,
+	}
+	cfg.Providers = make([]Provider, len(o.Providers))
+	for i, p := range o.Providers {
+		cfg.Providers[i] = Provider{
+			Name:        p.Name,
+			Host:        p.Host,
+			Port:        p.Port,
+			Username:    p.Username,
+			Password:    p.Password,
+			Connections: p.Connections,
+			UseSSL:      p.UseSSL,
+			Priority:    p.Priority,
+			Enabled:     p.Enabled,
+		}
+	}
+	cfg.Indexers = make([]IndexerConfig, len(o.Indexers))
+	for i, idx := range o.Indexers {
+		enabled := true
+		if idx.Enabled != nil {
+			enabled = *idx.Enabled
+		}
+		cfg.Indexers[i] = IndexerConfig{
+			Name:    idx.Name,
+			URL:     idx.URL,
+			APIKey:  idx.APIKey,
+			Type:    "newznab",
+			Enabled: &enabled,
+		}
+	}
+	return cfg
+}
+
+// ApplyEnvOverrides writes the env-declared values for keys onto cfg.
 func ApplyEnvOverrides(cfg *Config, o env.ConfigOverrides, keys []string) {
-	if keySet(keys, env.KeyAddonPort) {
-		cfg.AddonPort = o.AddonPort
+	copyEnvKeys(cfg, envOverridesAsConfig(o), keys)
+}
+
+// CopyEnvOverridesFrom carries env-driven fields across a config replacement,
+// so a UI save cannot clobber a value the environment owns.
+func CopyEnvOverridesFrom(src, dst *Config) {
+	if src == nil || dst == nil {
+		return
 	}
-	if keySet(keys, env.KeyAddonBaseURL) {
-		cfg.AddonBaseURL = o.AddonBaseURL
-	}
-	if keySet(keys, env.KeyLogLevel) {
-		cfg.LogLevel = o.LogLevel
-	}
-	if keySet(keys, env.KeyKeepLogFiles) {
-		cfg.KeepLogFiles = o.KeepLogFiles
-	}
-	if keySet(keys, env.KeyAvailNZBAPIKey) {
-		cfg.AvailNZBAPIKey = o.AvailNZBAPIKey
-	}
-	if keySet(keys, env.KeyTMDBAPIKey) {
-		cfg.TMDBAPIKey = o.TMDBAPIKey
-	}
-	if keySet(keys, env.KeyIndexerQueryHeader) {
-		cfg.IndexerQueryHeader = o.IndexerQueryHeader
-	}
-	if keySet(keys, env.KeyIndexerGrabHeader) {
-		cfg.IndexerGrabHeader = o.IndexerGrabHeader
-	}
-	if keySet(keys, env.KeyProviderHeader) {
-		cfg.ProviderHeader = o.ProviderHeader
-	}
-	if keySet(keys, env.KeyTVDBAPIKey) {
-		cfg.TVDBAPIKey = o.TVDBAPIKey
-	}
-	if keySet(keys, env.KeyProxyPort) {
-		cfg.ProxyPort = o.ProxyPort
-	}
-	if keySet(keys, env.KeyProxyHost) {
-		cfg.ProxyHost = o.ProxyHost
-	}
-	if keySet(keys, env.KeyProxyEnabled) {
-		cfg.ProxyEnabled = o.ProxyEnabled
-	}
-	if keySet(keys, env.KeyProxyAuthUser) {
-		cfg.ProxyAuthUser = o.ProxyAuthUser
-	}
-	if keySet(keys, env.KeyProxyAuthPass) {
-		cfg.ProxyAuthPass = o.ProxyAuthPass
-	}
-	if keySet(keys, env.KeyAdminUsername) {
-		cfg.AdminUsername = o.AdminUsername
-	}
-	if keySet(keys, env.KeyAdminMustChangePwd) {
-		cfg.AdminMustChangePassword = o.AdminMustChangePwd
-	}
-	if keySet(keys, env.KeyProviders) {
-		cfg.Providers = make([]Provider, len(o.Providers))
-		for i, p := range o.Providers {
-			var priority *int
-			var enabled *bool
-			if p.Priority != nil {
-				priority = p.Priority
-			}
-			if p.Enabled != nil {
-				enabled = p.Enabled
-			}
-			cfg.Providers[i] = Provider{
-				Name:        p.Name,
-				Host:        p.Host,
-				Port:        p.Port,
-				Username:    p.Username,
-				Password:    p.Password,
-				Connections: p.Connections,
-				UseSSL:      p.UseSSL,
-				Priority:    priority,
-				Enabled:     enabled,
-			}
-		}
-	}
-	if keySet(keys, env.KeyIndexers) {
-		cfg.Indexers = make([]IndexerConfig, len(o.Indexers))
-		for i, idx := range o.Indexers {
-			enabled := true
-			if idx.Enabled != nil {
-				enabled = *idx.Enabled
-			}
-			cfg.Indexers[i] = IndexerConfig{
-				Name:    idx.Name,
-				URL:     idx.URL,
-				APIKey:  idx.APIKey,
-				Type:    "newznab",
-				Enabled: &enabled,
-			}
-		}
-	}
+	copyEnvKeys(dst, src, env.OverrideKeys())
 }
 
 func GetEnvOverrideKeys() []string {
@@ -1516,79 +1552,6 @@ func (c *Config) RedactForAPI() Config {
 		out.Indexers[i] = redactedIndexer
 	}
 	return out
-}
-
-func CopyEnvOverridesFrom(src, dst *Config) {
-	if src == nil || dst == nil {
-		return
-	}
-	keys := env.OverrideKeys()
-	for _, k := range keys {
-		switch k {
-		case env.KeyAddonPort:
-			dst.AddonPort = src.AddonPort
-		case env.KeyAddonBaseURL:
-			dst.AddonBaseURL = src.AddonBaseURL
-		case env.KeyLogLevel:
-			dst.LogLevel = src.LogLevel
-		case env.KeyKeepLogFiles:
-			dst.KeepLogFiles = src.KeepLogFiles
-		case env.KeyAvailNZBAPIKey:
-			dst.AvailNZBAPIKey = src.AvailNZBAPIKey
-		case env.KeyTMDBAPIKey:
-			dst.TMDBAPIKey = src.TMDBAPIKey
-		case env.KeyIndexerQueryHeader:
-			dst.IndexerQueryHeader = src.IndexerQueryHeader
-		case env.KeyIndexerGrabHeader:
-			dst.IndexerGrabHeader = src.IndexerGrabHeader
-		case env.KeyProviderHeader:
-			dst.ProviderHeader = src.ProviderHeader
-		case env.KeyTVDBAPIKey:
-			dst.TVDBAPIKey = src.TVDBAPIKey
-		case env.KeyProxyPort:
-			dst.ProxyPort = src.ProxyPort
-		case env.KeyProxyHost:
-			dst.ProxyHost = src.ProxyHost
-		case env.KeyProxyEnabled:
-			dst.ProxyEnabled = src.ProxyEnabled
-		case env.KeyProxyAuthUser:
-			dst.ProxyAuthUser = src.ProxyAuthUser
-		case env.KeyProxyAuthPass:
-			dst.ProxyAuthPass = src.ProxyAuthPass
-		case env.KeyAdminUsername:
-			dst.AdminUsername = src.AdminUsername
-		case env.KeyAdminMustChangePwd:
-			dst.AdminMustChangePassword = src.AdminMustChangePassword
-		case env.KeyProviders:
-			dst.Providers = make([]Provider, len(src.Providers))
-			for i, p := range src.Providers {
-				var priority *int
-				var enabled *bool
-				if p.Priority != nil {
-					priorityVal := *p.Priority
-					priority = &priorityVal
-				}
-				if p.Enabled != nil {
-					enabledVal := *p.Enabled
-					enabled = &enabledVal
-				}
-				dst.Providers[i] = Provider{
-					Name:        p.Name,
-					Host:        p.Host,
-					Port:        p.Port,
-					Username:    p.Username,
-					Password:    p.Password,
-					Connections: p.Connections,
-					UseSSL:      p.UseSSL,
-					Priority:    priority,
-					Enabled:     enabled,
-				}
-			}
-		case env.KeyIndexers:
-			dst.Indexers = make([]IndexerConfig, len(src.Indexers))
-			copy(dst.Indexers, src.Indexers)
-		}
-	}
 }
 
 func (c *Config) EffectiveFFprobePath() string {

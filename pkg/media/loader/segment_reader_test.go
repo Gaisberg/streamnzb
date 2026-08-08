@@ -22,7 +22,7 @@ func TestSegmentReaderLiveCount(t *testing.T) {
 	}()
 
 	before := LiveSegmentReaders()
-	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil, nil)
+	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil)
 	r := NewSegmentReader(context.Background(), f, 0)
 	if got := LiveSegmentReaders(); got != before+1 {
 		_ = r.Close()
@@ -43,7 +43,7 @@ func TestSegmentReaderLiveDetailsIncludeOwner(t *testing.T) {
 		logger.Log = oldLogger
 	}()
 
-	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil, nil)
+	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil)
 	f.SetOwnerSessionID("sess-42")
 	r := NewSegmentReader(context.Background(), f, 0)
 	defer func() { _ = r.Close() }()
@@ -76,7 +76,7 @@ func TestSegmentReaderSeekIsNonBlocking(t *testing.T) {
 		logger.Log = oldLogger
 	}()
 
-	f := NewFile(context.Background(), testNZBFile("seek-test.mkv", 4, 4, 4), nil, nil, &staticSegmentFetcher{})
+	f := NewFile(context.Background(), testNZBFile("seek-test.mkv", 4, 4, 4), nil, &staticSegmentFetcher{})
 	r := NewSegmentReader(context.Background(), f, 0)
 	defer func() { _ = r.Close() }()
 
@@ -104,7 +104,7 @@ func TestSegmentReaderDoesNotAdvanceBeforeMappedEnd(t *testing.T) {
 	}()
 
 	fetcher := &fixedLenSegmentFetcher{length: 8}
-	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10), nil, fetcher)
 	f.mu.Lock()
 	f.detected = true
 	f.segments[0].StartOffset = 0
@@ -138,7 +138,7 @@ func TestSegmentReaderSeekDoesNotCancelInFlightForegroundRead(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	f := NewFile(context.Background(), testNZBFile("seek-read-test.mkv", 4, 4, 4), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFile("seek-read-test.mkv", 4, 4, 4), nil, fetcher)
 	r := NewSegmentReader(context.Background(), f, 0)
 	var releaseOnce sync.Once
 	releaseFetcher := func() {
@@ -211,25 +211,6 @@ func (f *blockingForegroundSegmentFetcher) FetchSegment(ctx context.Context, seg
 		}
 	}
 	return pool.SegmentData{Body: bytesForSegment(segment.Number, segment.Bytes), Size: segment.Bytes}, nil
-}
-
-func waitForInflightWaiters(t *testing.T, f *File, index, want int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		f.downloadMu.Lock()
-		req := f.inflightDownloads[index]
-		got := 0
-		if req != nil {
-			got = req.waiters
-		}
-		f.downloadMu.Unlock()
-		if got == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for inflight segment %d to reach %d waiters", index, want)
 }
 
 type fixedLenSegmentFetcher struct {

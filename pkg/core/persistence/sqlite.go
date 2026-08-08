@@ -212,90 +212,76 @@ const (
 	badReleasesIndexExpires = `CREATE INDEX IF NOT EXISTS idx_bad_releases_expires ON bad_releases(expires_at);`
 )
 
-// migrateLibraryBlueprintsMediaCaps adds the media capabilities column for existing DBs (no-op if already present).
-func migrateLibraryBlueprintsMediaCaps(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE library_blueprints ADD COLUMN media_caps_json TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate library_blueprints.media_caps_json: %w", err)
-	}
-	return nil
+// addedColumn is one idempotent ALTER TABLE ADD COLUMN migration. Existing
+// databases get the column; new ones already have it from the CREATE TABLE, so
+// the "duplicate column" error is expected and ignored.
+type addedColumn struct {
+	table  string
+	column string
+	decl   string
 }
 
-// migrateLibraryMultiID adds per-scheme content-id columns so a cached release
-// can be found regardless of which id scheme (imdb/tmdb/tvdb/kitsu) a later
-// request carries. Rows written before this migration keep only content_id.
-func migrateLibraryMultiID(db *sql.DB) error {
-	for _, stmt := range []string{
-		`ALTER TABLE library_nzbs ADD COLUMN imdb_id TEXT`,
-		`ALTER TABLE library_nzbs ADD COLUMN tmdb_id TEXT`,
-		`ALTER TABLE library_nzbs ADD COLUMN tvdb_id TEXT`,
-		`ALTER TABLE library_nzbs ADD COLUMN kitsu_id TEXT`,
-	} {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return fmt.Errorf("migrate library_nzbs multi-id: %w", err)
-		}
-	}
-	for _, idx := range []string{
-		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_imdb ON library_nzbs(imdb_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tmdb ON library_nzbs(tmdb_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tvdb ON library_nzbs(tvdb_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_library_nzbs_kitsu ON library_nzbs(kitsu_id)`,
-	} {
-		if _, err := db.Exec(idx); err != nil {
-			return fmt.Errorf("index library_nzbs multi-id: %w", err)
-		}
-	}
-	return nil
+// addedColumns are applied in order on every startup. Order does not matter —
+// each is independent and idempotent — so new columns just get appended.
+var addedColumns = []addedColumn{
+	{"library_blueprints", "media_caps_json", "TEXT"},
+	// Per-scheme content ids, so a cached release is findable regardless of
+	// which id scheme (imdb/tmdb/tvdb/kitsu) a later request carries. Rows
+	// written before this keep only content_id.
+	{"library_nzbs", "imdb_id", "TEXT"},
+	{"library_nzbs", "tmdb_id", "TEXT"},
+	{"library_nzbs", "tvdb_id", "TEXT"},
+	{"library_nzbs", "kitsu_id", "TEXT"},
+	// Release status lifecycle. Rows written before this only ever existed
+	// after successful validation, so they default to 'good'; new rows are
+	// written 'pending' as soon as the NZB and blueprint are known.
+	{"library_nzbs", "status", "TEXT NOT NULL DEFAULT 'good'"},
+	{"library_nzbs", "status_reason", "TEXT"},
+	// Freshness timestamp for the background re-verification sweep. Legacy
+	// rows get 0, which reads as never verified -> stale.
+	{"library_nzbs", "last_verified_at", "INTEGER NOT NULL DEFAULT 0"},
+	// ffprobe capability fields promoted to indexed columns so the Library UI
+	// and ranking can filter/sort without parsing media_caps_json. NOT used to
+	// gate or reorder by client — codec compatibility is the client decoder's
+	// job.
+	{"library_blueprints", "video_codec", "TEXT"},
+	{"library_blueprints", "height", "INTEGER"},
+	{"library_blueprints", "bit_depth", "INTEGER"},
+	{"library_blueprints", "hdr", "TEXT"},
+	{"library_blueprints", "dolby_vision", "INTEGER"},
+	{"library_blueprints", "audio_codec", "TEXT"},
+	{"provider_metrics", "article_available_count", "INTEGER NOT NULL DEFAULT 0"},
+	{"provider_metrics", "article_missing_count", "INTEGER NOT NULL DEFAULT 0"},
+	{"indexer_metrics", "unique_hits_count", "INTEGER NOT NULL DEFAULT 0"},
+	{"nzb_attempts", "preload", "INTEGER NOT NULL DEFAULT 0"},
+	{"nzb_attempts", "served_file", "TEXT"},
+	{"nzb_attempts", "match_type", "TEXT"},
+	{"nzb_attempts", "indexer_name", "TEXT"},
+	{"nzb_attempts", "stream_name", "TEXT"},
+	{"nzb_attempts", "provider_name", "TEXT"},
+	{"nzb_attempts", "avail_status", "TEXT"},
+	{"nzb_attempts", "avail_reason", "TEXT"},
+	{"nzb_attempts", "ttff_ms", "INTEGER NOT NULL DEFAULT 0"},
 }
 
-// migrateLibraryStatus adds the release status lifecycle columns. Rows written
-// before this migration only ever existed after successful validation, so they
-// default to 'good'; new rows are written 'pending' as soon as the NZB and
-// blueprint are known, then marked 'good'/'bad' once a verdict exists.
-func migrateLibraryStatus(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN status TEXT NOT NULL DEFAULT 'good'`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate library_nzbs.status: %w", err)
-	}
-	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN status_reason TEXT`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate library_nzbs.status_reason: %w", err)
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_library_nzbs_status ON library_nzbs(status)`); err != nil {
-		return fmt.Errorf("index library_nzbs.status: %w", err)
-	}
-	return nil
+// migratedIndexes are created after the column migrations, since several index
+// columns only exist once addedColumns has run.
+var migratedIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_imdb ON library_nzbs(imdb_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tmdb ON library_nzbs(tmdb_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_tvdb ON library_nzbs(tvdb_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_kitsu ON library_nzbs(kitsu_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_status ON library_nzbs(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_verified ON library_nzbs(last_verified_at)`,
 }
 
-// migrateLibraryLastVerified adds the freshness timestamp used by the background
-// re-verification sweep. Legacy rows get 0 (treated as never verified → stale).
-func migrateLibraryLastVerified(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE library_nzbs ADD COLUMN last_verified_at INTEGER NOT NULL DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate library_nzbs.last_verified_at: %w", err)
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_library_nzbs_verified ON library_nzbs(last_verified_at)`); err != nil {
-		return fmt.Errorf("index library_nzbs.last_verified_at: %w", err)
-	}
-	return nil
-}
-
-// migrateLibraryCapColumns promotes key ffprobe capability fields to indexed
-// columns so the library can be filtered/sorted by codec/resolution/HDR in the
-// Library UI and ranking, without parsing media_caps_json. NOT used to gate or
-// reorder by client — codec compatibility is the client decoder's job.
-func migrateLibraryCapColumns(db *sql.DB) error {
-	for _, stmt := range []string{
-		`ALTER TABLE library_blueprints ADD COLUMN video_codec TEXT`,
-		`ALTER TABLE library_blueprints ADD COLUMN height INTEGER`,
-		`ALTER TABLE library_blueprints ADD COLUMN bit_depth INTEGER`,
-		`ALTER TABLE library_blueprints ADD COLUMN hdr TEXT`,
-		`ALTER TABLE library_blueprints ADD COLUMN dolby_vision INTEGER`,
-		`ALTER TABLE library_blueprints ADD COLUMN audio_codec TEXT`,
-	} {
-		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return fmt.Errorf("migrate library_blueprints cap columns: %w", err)
-		}
+// addColumn applies one ALTER TABLE ADD COLUMN, tolerating the column already
+// existing. The duplicate-column check is a string match because the sqlite
+// driver does not surface a typed error for it.
+func addColumn(db *sql.DB, c addedColumn) error {
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.table, c.column, c.decl)
+	if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate %s.%s: %w", c.table, c.column, err)
 	}
 	return nil
 }
@@ -330,148 +316,20 @@ func initSchema(db *sql.DB) error {
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
-	if err := migrateProviderMetricsArticleAvailableCount(db); err != nil {
-		return err
+	for _, c := range addedColumns {
+		if err := addColumn(db, c); err != nil {
+			return err
+		}
 	}
-	_, _ = db.Exec("ALTER TABLE nzb_attempts ADD COLUMN ttff_ms INTEGER NOT NULL DEFAULT 0;")
-	if err := migrateProviderMetricsArticleMissingCount(db); err != nil {
-		return err
-	}
-	if err := migrateIndexerMetricsUniqueHitsCount(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsPreload(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsServedFile(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsMatchType(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsIndexerName(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsStreamName(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsProviderName(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsAvailStatus(db); err != nil {
-		return err
-	}
-	if err := migrateNzbAttemptsAvailReason(db); err != nil {
-		return err
-	}
-	if err := migrateLibraryBlueprintsMediaCaps(db); err != nil {
-		return err
-	}
-	if err := migrateLibraryMultiID(db); err != nil {
-		return err
-	}
-	if err := migrateLibraryCapColumns(db); err != nil {
-		return err
-	}
-	if err := migrateLibraryLastVerified(db); err != nil {
-		return err
-	}
-	if err := migrateLibraryStatus(db); err != nil {
-		return err
+	for _, stmt := range migratedIndexes {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("schema index: %w", err)
+		}
 	}
 	for _, stmt := range []string{nzbAttemptsIndexStream, nzbAttemptsIndexProvider, nzbAttemptsIndexIndexer} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("schema: %w", err)
 		}
-	}
-	return nil
-}
-
-// migrateNzbAttemptsPreload adds preload column for existing DBs (no-op if already present).
-func migrateNzbAttemptsPreload(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN preload INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.preload: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsServedFile(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN served_file TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.served_file: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsMatchType(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN match_type TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.match_type: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsIndexerName(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN indexer_name TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.indexer_name: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsStreamName(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN stream_name TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.stream_name: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsProviderName(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN provider_name TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.provider_name: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsAvailStatus(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN avail_status TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.avail_status: %w", err)
-	}
-	return nil
-}
-
-func migrateNzbAttemptsAvailReason(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE nzb_attempts ADD COLUMN avail_reason TEXT`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate nzb_attempts.avail_reason: %w", err)
-	}
-	return nil
-}
-
-func migrateProviderMetricsArticleAvailableCount(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE provider_metrics ADD COLUMN article_available_count INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate provider_metrics.article_available_count: %w", err)
-	}
-	return nil
-}
-
-func migrateProviderMetricsArticleMissingCount(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE provider_metrics ADD COLUMN article_missing_count INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate provider_metrics.article_missing_count: %w", err)
-	}
-	return nil
-}
-
-func migrateIndexerMetricsUniqueHitsCount(db *sql.DB) error {
-	_, err := db.Exec(`ALTER TABLE indexer_metrics ADD COLUMN unique_hits_count INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return fmt.Errorf("migrate indexer_metrics.unique_hits_count: %w", err)
 	}
 	return nil
 }

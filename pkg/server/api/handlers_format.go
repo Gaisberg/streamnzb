@@ -13,13 +13,10 @@ import (
 // sample results, exactly as the live stream path would. Result formats are
 // configuration, so this is admin-only like the other config endpoints.
 func (s *Server) handleFormatPreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	s.mu.RLock()
-	adminUsername := s.config.GetAdminUsername()
-	s.mu.RUnlock()
+	adminUsername := s.adminUsername()
 	if stream, _ := auth.StreamFromContext(r); stream == nil || stream.Username != adminUsername {
 		http.Error(w, "Only admin can preview result formats", http.StatusForbidden)
 		return
@@ -39,6 +36,5 @@ func (s *Server) handleFormatPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(stremio.RenderFormatPreview(req.NameTemplate, req.DescriptionTemplate))
+	writeJSON(w, http.StatusOK, stremio.RenderFormatPreview(req.NameTemplate, req.DescriptionTemplate))
 }

@@ -19,7 +19,7 @@ const testDirectPlayNZB = `<?xml version="1.0" encoding="UTF-8"?>
 </nzb>`
 
 func TestCreateDirectPlaySessionFromNZBData(t *testing.T) {
-	mgr := session.NewManager(nil, nil, time.Hour)
+	mgr := session.NewManager(nil, time.Hour)
 	t.Cleanup(mgr.Shutdown)
 
 	s := &Server{

@@ -11,7 +11,9 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/playback"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
@@ -29,7 +31,7 @@ func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
 
-	manager := session.NewManager(nil, nil, time.Minute)
+	manager := session.NewManager(nil, time.Minute)
 	t.Cleanup(manager.Shutdown)
 	server := &Server{config: &config.Config{}, sessionManager: manager}
 	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
@@ -44,13 +46,13 @@ func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 				{},
 				{Release: &release.Release{Link: "https://example.invalid/2"}},
 			},
-			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID},
 		},
 		until: time.Now().Add(time.Minute),
 	})
 	server.rawSearchCache.Store(key.StreamID+":"+key.ContentType+":"+key.ID, &rawSearchCacheEntry{
 		raw: &rawSearchResult{
-			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID},
 		},
 		until: time.Now().Add(time.Minute),
 	})
@@ -86,7 +88,7 @@ func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing
 	initFailoverTestLogger()
 	t.Parallel()
 
-	manager := session.NewManager(nil, nil, time.Minute)
+	manager := session.NewManager(nil, time.Minute)
 	t.Cleanup(manager.Shutdown)
 	server := &Server{sessionManager: manager}
 	key := StreamSlotKey{StreamID: "stream_test", ContentType: "series", ID: "tt123:1:4"}
@@ -109,7 +111,7 @@ func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing
 	})
 	server.rawSearchCache.Store(key.StreamID+":"+key.ContentType+":"+key.ID, &rawSearchCacheEntry{
 		raw: &rawSearchResult{
-			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID},
 			IndexerReleases: []*release.Release{
 				{Title: "failed", DetailsURL: failedDetailsURL, Available: &availTrue},
 				{Title: "other", DetailsURL: otherDetailsURL, Available: &availTrue},
@@ -139,10 +141,9 @@ func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing
 		until: time.Now().Add(time.Minute),
 	})
 
-	server.applyReportedBadReleaseToCaches(&session.Session{
-		ID:      key.SlotPath(0),
-		Release: &release.Release{DetailsURL: failedDetailsURL},
-	}, availnzb.SentOutcome(false))
+	failedSess := &session.Session{ID: key.SlotPath(0)}
+	failedSess.SetRelease(&release.Release{DetailsURL: failedDetailsURL})
+	server.applyReportedBadReleaseToCaches(failedSess, availnzb.SentOutcome(false))
 
 	cachedPlaylistValue, ok := server.playlistCache.Load(key.CacheKey())
 	if !ok {
@@ -191,7 +192,7 @@ func TestRecoverPlaySessionAfterEvictionStartsFromFirstSlot(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
 
-	manager := session.NewManager(nil, nil, time.Minute)
+	manager := session.NewManager(nil, time.Minute)
 	t.Cleanup(manager.Shutdown)
 	server := &Server{config: &config.Config{}, sessionManager: manager}
 	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
@@ -202,7 +203,7 @@ func TestRecoverPlaySessionAfterEvictionStartsFromFirstSlot(t *testing.T) {
 				{Release: &release.Release{Link: "https://example.invalid/0"}},
 				{Release: &release.Release{Link: "https://example.invalid/1"}},
 			},
-			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID},
 		},
 		until: time.Now().Add(time.Minute),
 	})
@@ -257,7 +258,7 @@ func TestClassifyPlaybackStartupErrWrapsOwnTimeout(t *testing.T) {
 	defer cancel()
 	<-ctx.Done()
 
-	err := classifyPlaybackStartupErr("probe", 5*time.Second, ctx, context.DeadlineExceeded)
+	err := playback.ClassifyStartupErr("probe", 5*time.Second, ctx, context.DeadlineExceeded)
 	if !errors.Is(err, ErrPlaybackStartupTimeout) {
 		t.Fatalf("expected startup timeout error, got %v", err)
 	}
@@ -273,7 +274,7 @@ func TestClassifyPlaybackStartupErrPreservesParentCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := classifyPlaybackStartupErr("open", 5*time.Second, ctx, context.Canceled)
+	err := playback.ClassifyStartupErr("open", 5*time.Second, ctx, context.Canceled)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
@@ -310,7 +311,7 @@ func TestRecoverPlaySessionAfterEvictionPrioritizesRequestedSlot(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
 
-	manager := session.NewManager(nil, nil, time.Minute)
+	manager := session.NewManager(nil, time.Minute)
 	t.Cleanup(manager.Shutdown)
 	server := &Server{config: &config.Config{}, sessionManager: manager}
 	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
@@ -322,7 +323,7 @@ func TestRecoverPlaySessionAfterEvictionPrioritizesRequestedSlot(t *testing.T) {
 				{Release: &release.Release{Link: "https://example.invalid/1"}},
 				{Release: &release.Release{Link: "https://example.invalid/2"}},
 			},
-			Params: &SearchParams{ContentType: key.ContentType, ID: key.ID},
+			Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID},
 		},
 		until: time.Now().Add(time.Minute),
 	})

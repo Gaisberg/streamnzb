@@ -25,14 +25,12 @@ type tmdbSearchResult struct {
 }
 
 func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]tmdbSearchResult{})
+		writeJSON(w, http.StatusOK, []tmdbSearchResult{})
 		return
 	}
 	client := tmdb.NewClient(s.tmdbAPIKey)
@@ -92,8 +90,7 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		results = append(results, item)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	writeJSON(w, http.StatusOK, results)
 }
 
 type tmdbTVDetailsResponse struct {
@@ -120,8 +117,7 @@ type tmdbTVEpisodeInfo struct {
 }
 
 func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 	if _, ok := auth.StreamFromContext(r); !ok {
@@ -161,8 +157,7 @@ func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
 				Name:         se.Name,
 			})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tmdbTVDetailsResponse{Name: details.Name, Seasons: seasons})
+		writeJSON(w, http.StatusOK, tmdbTVDetailsResponse{Name: details.Name, Seasons: seasons})
 		return
 	}
 	if len(parts) >= 3 && parts[1] == "seasons" {
@@ -187,8 +182,7 @@ func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
 				AirDate:       ep.AirDate,
 			})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tmdbTVSeasonResponse{SeasonNumber: season.SeasonNumber, Episodes: episodes})
+		writeJSON(w, http.StatusOK, tmdbTVSeasonResponse{SeasonNumber: season.SeasonNumber, Episodes: episodes})
 		return
 	}
 	http.NotFound(w, r)
@@ -228,8 +222,7 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Stream search failed", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"streams": streams})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"streams": streams})
 }
 
 func (s *Server) handleSearchReleases(w http.ResponseWriter, r *http.Request) {

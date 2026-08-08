@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"streamnzb/pkg/media/loader"
 )
 
 type archiveScanIOTraceContextKey struct{}
-type skipGapProbingContextKey struct{}
 
 const MaxNestDepth = 3
 
@@ -23,21 +23,6 @@ func NestDepthFromContext(ctx context.Context) int {
 	}
 	depth, _ := ctx.Value(nestDepthContextKey{}).(int)
 	return depth
-}
-
-func WithSkipGapProbing(ctx context.Context, enabled bool) context.Context {
-	if !enabled {
-		return ctx
-	}
-	return context.WithValue(ctx, skipGapProbingContextKey{}, true)
-}
-
-func IsSkipGapProbingEnabled(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	enabled, _ := ctx.Value(skipGapProbingContextKey{}).(bool)
-	return enabled
 }
 
 func WithArchiveScanIOTrace(ctx context.Context) context.Context {
@@ -59,7 +44,7 @@ func playbackSegmentMapCtx(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return WithSkipGapProbing(ctx, true)
+	return loader.WithSkipGapProbing(ctx, true)
 }
 
 var ErrArchiveFastProbe = errors.New("archive fast probe incomplete")

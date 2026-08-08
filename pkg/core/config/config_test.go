@@ -11,6 +11,7 @@ import (
 
 	"github.com/dreulavelle/jhin/rank"
 
+	"streamnzb/pkg/core/env"
 	coreenv "streamnzb/pkg/core/env"
 )
 
@@ -336,34 +337,6 @@ func TestApplyEnvOverridesForcesAdminPasswordResetPrompt(t *testing.T) {
 	}
 }
 
-func TestStreamEntryEffectiveFilterAvailNZBDefaultsDisabled(t *testing.T) {
-	stream := &StreamEntry{}
-	cfg := &Config{AvailNZBMode: "on"}
-	if stream.EffectiveFilterAvailNZB(cfg) {
-		t.Fatalf("EffectiveFilterAvailNZB() = true, want false by default")
-	}
-}
-
-func TestStreamEntryEffectiveFilterAvailNZBHonorsExplicitValue(t *testing.T) {
-	cfg := &Config{AvailNZBMode: "on"}
-	stream := &StreamEntry{FilterAvailNZB: ptrBool(true)}
-	if !stream.EffectiveFilterAvailNZB(cfg) {
-		t.Fatalf("EffectiveFilterAvailNZB() = false, want true")
-	}
-	stream = &StreamEntry{FilterAvailNZB: ptrBool(false)}
-	if stream.EffectiveFilterAvailNZB(cfg) {
-		t.Fatalf("EffectiveFilterAvailNZB() = true, want false")
-	}
-}
-
-func TestStreamEntryEffectiveFilterAvailNZBDisabledWhenAvailNZBModeOff(t *testing.T) {
-	cfg := &Config{AvailNZBMode: "off"}
-	stream := &StreamEntry{FilterAvailNZB: ptrBool(true)}
-	if stream.EffectiveFilterAvailNZB(cfg) {
-		t.Fatalf("EffectiveFilterAvailNZB() = true, want false when mode is off")
-	}
-}
-
 func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testing.T) {
 	cfg := &Config{
 		Providers: []Provider{
@@ -629,5 +602,68 @@ func TestResolveConfigPathAndLoadWithPath(t *testing.T) {
 	}
 	if cfg.LoadedPath != customFile {
 		t.Errorf("cfg.LoadedPath = %q, want %q", cfg.LoadedPath, customFile)
+	}
+}
+
+// TestEnvFieldCopiersCoverEveryKey pins the coverage of the env-override
+// table. ApplyEnvOverrides and CopyEnvOverridesFrom used to be two
+// hand-maintained lists over the same keys and had already drifted apart; both
+// now run off envFieldCopiers, so a key without an entry is silently ignored.
+func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
+	// KeyAvailNZBURL is intentionally absent: Config.AvailNZBURL is json:"-"
+	// and is supplied directly by main, never carried across a config save.
+	skip := map[string]bool{env.KeyAvailNZBURL: true}
+
+	all := []string{
+		env.KeyAddonPort, env.KeyAddonBaseURL, env.KeyLogLevel, env.KeyKeepLogFiles,
+		env.KeyProxyPort, env.KeyProxyHost, env.KeyProxyEnabled, env.KeyProxyAuthUser,
+		env.KeyProxyAuthPass, env.KeyProviders, env.KeyIndexers, env.KeyAvailNZBURL,
+		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey,
+		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
+		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
+	}
+	for _, k := range all {
+		_, ok := envFieldCopiers[k]
+		if skip[k] {
+			if ok {
+				t.Errorf("key %q is in the skip list but has a copier", k)
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("env key %q has no entry in envFieldCopiers", k)
+		}
+	}
+	for k := range envFieldCopiers {
+		found := false
+		for _, known := range all {
+			if k == known {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("envFieldCopiers has entry %q that is not a declared env key", k)
+		}
+	}
+}
+
+// TestCopyEnvOverridesFromDeepCopiesProviders guards against the two configs
+// sharing Priority/Enabled pointer storage after a copy.
+func TestCopyEnvOverridesFromDeepCopiesProviders(t *testing.T) {
+	pri := 3
+	on := true
+	src := &Config{Providers: []Provider{{Name: "p", Priority: &pri, Enabled: &on}}}
+	dst := &Config{}
+	copyEnvKeys(dst, src, []string{env.KeyProviders})
+
+	if len(dst.Providers) != 1 || dst.Providers[0].Priority == nil {
+		t.Fatalf("provider not copied: %#v", dst.Providers)
+	}
+	if dst.Providers[0].Priority == src.Providers[0].Priority {
+		t.Error("Priority pointer is shared between configs")
+	}
+	if dst.Providers[0].Enabled == src.Providers[0].Enabled {
+		t.Error("Enabled pointer is shared between configs")
 	}
 }

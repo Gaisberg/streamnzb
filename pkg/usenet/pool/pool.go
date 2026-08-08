@@ -37,16 +37,12 @@ var (
 
 // isArticleNotFound reports whether err indicates 430 No Such Article (article missing on server).
 func isArticleNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "430") || strings.Contains(s, "no such article")
+	return nntp.IsArticleNotFound(err)
 }
 
 // IsArticleNotFoundError reports whether err indicates 430 No Such Article.
 func IsArticleNotFoundError(err error) bool {
-	return isArticleNotFound(err)
+	return nntp.IsArticleNotFound(err)
 }
 
 func shouldCacheFetchedSegment(ctx context.Context) bool {
@@ -72,7 +68,7 @@ type Pool struct {
 	sf                   *singleflight.Group
 	missing              *permanentMissingSegments
 	providerSig          string
-	articleStats         map[string]*providerArticleCounter
+	articleStats         *articleStatsRegistry
 	consecutive430s      map[string]int
 	consecutiveSuccesses map[string]int
 	cooloffUntil         map[string]time.Time
@@ -95,6 +91,77 @@ type providerArticleCounter struct {
 	host             string
 	availableCount   atomic.Int64
 	unavailableCount atomic.Int64
+}
+
+// articleStatsRegistry holds per-provider article counters behind its own lock.
+// A parent Pool and every Subset derived from it share one registry, so the
+// counters must never be guarded by any individual Pool's mutex.
+type articleStatsRegistry struct {
+	mu       sync.RWMutex
+	counters map[string]*providerArticleCounter
+}
+
+func newArticleStatsRegistry(providers []ProviderConfig) *articleStatsRegistry {
+	counters := make(map[string]*providerArticleCounter, len(providers))
+	for i := range providers {
+		providerID := strings.TrimSpace(providers[i].ID)
+		if providerID == "" {
+			continue
+		}
+		host := ""
+		if providers[i].ClientPool != nil {
+			host = providers[i].ClientPool.Host()
+		}
+		counters[providerID] = &providerArticleCounter{host: host}
+	}
+	return &articleStatsRegistry{counters: counters}
+}
+
+// counter returns the counter for providerID, creating it with host from
+// resolveHost when absent.
+func (r *articleStatsRegistry) counter(providerID string, resolveHost func(string) string) *providerArticleCounter {
+	r.mu.RLock()
+	c := r.counters[providerID]
+	r.mu.RUnlock()
+	if c != nil {
+		return c
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c = r.counters[providerID]; c != nil {
+		return c
+	}
+	host := ""
+	if resolveHost != nil {
+		host = resolveHost(providerID)
+	}
+	c = &providerArticleCounter{host: host}
+	r.counters[providerID] = c
+	return c
+}
+
+func (r *articleStatsRegistry) snapshot() []ProviderArticleStats {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.counters))
+	for providerID := range r.counters {
+		ids = append(ids, providerID)
+	}
+	sort.Strings(ids)
+	out := make([]ProviderArticleStats, 0, len(ids))
+	for _, providerID := range ids {
+		counter := r.counters[providerID]
+		if counter == nil {
+			continue
+		}
+		out = append(out, ProviderArticleStats{
+			ProviderID:       providerID,
+			Host:             counter.host,
+			AvailableCount:   counter.availableCount.Load(),
+			UnavailableCount: counter.unavailableCount.Load(),
+		})
+	}
+	return out
 }
 
 type ProviderArticleStats struct {
@@ -337,25 +404,13 @@ func NewPool(cfg *Config) (*Pool, error) {
 	if cache == nil {
 		cache = NoopSegmentCache()
 	}
-	articleStats := make(map[string]*providerArticleCounter, len(providers))
-	for i := range providers {
-		providerID := strings.TrimSpace(providers[i].ID)
-		if providerID == "" {
-			continue
-		}
-		host := ""
-		if providers[i].ClientPool != nil {
-			host = providers[i].ClientPool.Host()
-		}
-		articleStats[providerID] = &providerArticleCounter{host: host}
-	}
 	return &Pool{
 		providers:            providers,
 		cache:                cache,
 		sf:                   &singleflight.Group{},
 		missing:              newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
 		providerSig:          providerSignature(providers),
-		articleStats:         articleStats,
+		articleStats:         newArticleStatsRegistry(providers),
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
 	}, nil
@@ -366,28 +421,17 @@ func (p *Pool) recordArticleResult(providerID string, available bool) {
 	if p == nil || providerID == "" {
 		return
 	}
-	p.mu.RLock()
-	counter := p.articleStats[providerID]
-	p.mu.RUnlock()
-	if counter == nil {
-		p.mu.Lock()
-		if p.articleStats == nil {
-			p.articleStats = make(map[string]*providerArticleCounter)
-		}
-		counter = p.articleStats[providerID]
-		if counter == nil {
-			host := ""
-			for i := range p.providers {
-				if p.providers[i].ID == providerID && p.providers[i].ClientPool != nil {
-					host = p.providers[i].ClientPool.Host()
-					break
-				}
-			}
-			counter = &providerArticleCounter{host: host}
-			p.articleStats[providerID] = counter
-		}
-		p.mu.Unlock()
+	if p.articleStats == nil {
+		return
 	}
+	counter := p.articleStats.counter(providerID, func(id string) string {
+		for i := range p.providers {
+			if p.providers[i].ID == id && p.providers[i].ClientPool != nil {
+				return p.providers[i].ClientPool.Host()
+			}
+		}
+		return ""
+	})
 	if available {
 		counter.availableCount.Add(1)
 		return
@@ -468,30 +512,30 @@ func (p *Pool) providerInCooloff(providerID string) bool {
 }
 
 func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
-	if p == nil {
+	if p == nil || p.articleStats == nil {
 		return nil
 	}
-	p.mu.RLock()
-	ids := make([]string, 0, len(p.articleStats))
-	for providerID := range p.articleStats {
-		ids = append(ids, providerID)
+	return p.articleStats.snapshot()
+}
+
+// logSegmentDecodeFailure records a yEnc decode failure. A cancelled fetch
+// context means we tore the read down ourselves, which is routine during
+// parallel races and seeks, so that logs at Trace; anything else is a real
+// decode failure and logs at Debug.
+func logSegmentDecodeFailure(ctx context.Context, providerID, messageID string, err error, rawBytes int64) {
+	ctxErr := ctx.Err()
+	attrs := []any{
+		"provider", providerID,
+		"err", err,
+		"message_id", messageID,
+		"raw_body_bytes", rawBytes,
+		"ctx_err", ctxErr,
 	}
-	sort.Strings(ids)
-	out := make([]ProviderArticleStats, 0, len(ids))
-	for _, providerID := range ids {
-		counter := p.articleStats[providerID]
-		if counter == nil {
-			continue
-		}
-		out = append(out, ProviderArticleStats{
-			ProviderID:       providerID,
-			Host:             counter.host,
-			AvailableCount:   counter.availableCount.Load(),
-			UnavailableCount: counter.unavailableCount.Load(),
-		})
+	if ctxErr != nil {
+		logger.Trace("fetch segment decode aborted", attrs...)
+		return
 	}
-	p.mu.RUnlock()
-	return out
+	logger.Debug("fetch segment decode failed", attrs...)
 }
 
 func (p *Pool) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []string) (SegmentData, error) {
@@ -620,22 +664,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			// Close ensures EndResponse is called even if decode stopped before EOF.
 			r.Close()
 			if err != nil {
-				ctxErr := fetchCtx.Err()
-				if ctxErr != nil {
-					logger.Trace("fetch segment decode aborted",
-						"provider", providerID,
-						"err", err,
-						"message_id", messageID,
-						"raw_body_bytes", cr.n,
-						"ctx_err", ctxErr)
-				} else {
-					logger.Debug("fetch segment decode failed",
-						"provider", providerID,
-						"err", err,
-						"message_id", messageID,
-						"raw_body_bytes", cr.n,
-						"ctx_err", ctxErr)
-				}
+				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
 				ch <- segResult{err: err, host: host, providerID: providerID}
 				return
 			}
@@ -654,9 +683,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	for range eligible {
 		res := <-ch
 		attempted = appendUniqueHosts(attempted, res.host)
-		if res.host != "" {
-			// no-op, keep host tracking for wrapped error context
-		}
 		if res.err == nil {
 			p.recordArticleResult(res.providerID, true)
 			p.recordSuccess(res.providerID)
@@ -787,22 +813,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			r.Close()
 			if err != nil {
 				discard()
-				ctxErr := fetchCtx.Err()
-				if ctxErr != nil {
-					logger.Trace("fetch segment decode aborted",
-						"provider", providerID,
-						"err", err,
-						"message_id", messageID,
-						"raw_body_bytes", cr.n,
-						"ctx_err", ctxErr)
-				} else {
-					logger.Debug("fetch segment decode failed",
-						"provider", providerID,
-						"err", err,
-						"message_id", messageID,
-						"raw_body_bytes", cr.n,
-						"ctx_err", ctxErr)
-				}
+				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
 				return SegmentData{}, false, err
 			}
 
@@ -1011,96 +1022,56 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 		excludeSet[id] = true
 	}
 
-	// Pass 1: healthy providers — anyone not inside an active 430 cooloff
-	// window. The cooloff is time-boxed and self-healing: a raw consecutive-430
-	// count skip here was PERMANENT for a benched provider (it can only reset
-	// via successes, which require being selected), so one bad-release 430
-	// storm funneled all traffic onto a single provider until restart.
-	for i := range providers {
-		prov := &providers[i]
-		if excludeSet[prov.ID] {
-			continue
-		}
-		if prov.Priority > maxPriority {
-			continue
-		}
-		if prov.IsBackup != useBackup {
-			continue
-		}
-		if p.providerInCooloff(prov.ID) {
-			continue
-		}
-
-		c, ok := prov.ClientPool.TryGet(ctx)
-		if !ok {
-			var getErr error
-			c, getErr = prov.ClientPool.Get(ctx)
-			if getErr != nil {
-				if errors.Is(getErr, context.Canceled) {
-					return nil, nil, nil, "", getErr
-				}
+	// Two passes. Pass 1 takes healthy providers — anyone not inside an active
+	// 430 cooloff window. Pass 2 falls back to benched providers as a last
+	// resort. The cooloff is time-boxed and self-healing: a raw
+	// consecutive-430 count skip was PERMANENT for a benched provider (it can
+	// only reset via successes, which require being selected), so one
+	// bad-release 430 storm funneled all traffic onto a single provider until
+	// restart.
+	for _, wantCooloff := range []bool{false, true} {
+		for i := range providers {
+			prov := &providers[i]
+			if excludeSet[prov.ID] {
 				continue
 			}
-		}
-
-		pool := prov.ClientPool
-		pid := prov.ID
-		var once sync.Once
-		release := func() {
-			once.Do(func() {
-				pool.Put(c)
-			})
-		}
-		discard := func() {
-			once.Do(func() {
-				pool.Discard(c)
-			})
-		}
-		return c, release, discard, pid, nil
-	}
-
-	// Pass 2: last resort — providers inside a cooloff window.
-	for i := range providers {
-		prov := &providers[i]
-		if excludeSet[prov.ID] {
-			continue
-		}
-		if prov.Priority > maxPriority {
-			continue
-		}
-		if prov.IsBackup != useBackup {
-			continue
-		}
-		if !p.providerInCooloff(prov.ID) {
-			continue
-		}
-
-		c, ok := prov.ClientPool.TryGet(ctx)
-		if !ok {
-			var getErr error
-			c, getErr = prov.ClientPool.Get(ctx)
-			if getErr != nil {
-				if errors.Is(getErr, context.Canceled) {
-					return nil, nil, nil, "", getErr
-				}
+			if prov.Priority > maxPriority {
 				continue
 			}
-		}
+			if prov.IsBackup != useBackup {
+				continue
+			}
+			if p.providerInCooloff(prov.ID) != wantCooloff {
+				continue
+			}
 
-		pool := prov.ClientPool
-		pid := prov.ID
-		var once sync.Once
-		release := func() {
-			once.Do(func() {
-				pool.Put(c)
-			})
+			c, ok := prov.ClientPool.TryGet(ctx)
+			if !ok {
+				var getErr error
+				c, getErr = prov.ClientPool.Get(ctx)
+				if getErr != nil {
+					if errors.Is(getErr, context.Canceled) {
+						return nil, nil, nil, "", getErr
+					}
+					continue
+				}
+			}
+
+			pool := prov.ClientPool
+			pid := prov.ID
+			var once sync.Once
+			release := func() {
+				once.Do(func() {
+					pool.Put(c)
+				})
+			}
+			discard := func() {
+				once.Do(func() {
+					pool.Discard(c)
+				})
+			}
+			return c, release, discard, pid, nil
 		}
-		discard := func() {
-			once.Do(func() {
-				pool.Discard(c)
-			})
-		}
-		return c, release, discard, pid, nil
 	}
 
 	return nil, nil, nil, "", ErrNoProvidersAvailable

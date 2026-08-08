@@ -14,9 +14,11 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/ffprobe"
+	"streamnzb/pkg/playback"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
@@ -46,7 +48,7 @@ type Server struct {
 	availNZBIndexerHosts      map[string]string
 	tmdbClient                *tmdb.Client
 	tvdbClient                *tvdb.Client
-	kitsuClient               *KitsuClient
+	kitsuClient               *kitsu.Client
 	streamManager             *auth.StreamManager
 	playlistCache             sync.Map
 	rawSearchCache            sync.Map
@@ -60,6 +62,7 @@ type Server struct {
 	pendingLibrarySavedIDs    sync.Map // session ID -> struct{}; the serve-path pending library save runs once per session, not once per HTTP range request
 	webHandler                http.Handler
 	apiHandler                http.Handler
+	playback                  *playback.Service
 	attemptRecorder           *persistence.StateManager
 	onAttemptRecorded         func()
 	availIndexerStats         map[string]AvailIndexerStats
@@ -130,12 +133,25 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
-		kitsuClient:          NewKitsuClient(nil),
+		kitsuClient:          kitsu.NewClient(nil),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),
 		uniqueIndexerHits:    make(map[string]int64),
 	}
+
+	playbackSvc := &playback.Service{
+		Sessions:                   opts.SessionManager,
+		FFprobePath:                s.effectiveFFprobePath,
+		StartupTimeout:             s.playbackStartupTimeout,
+		AllowLargestDirectFallback: allowLargestDirectFallbackForSession,
+		SaveToLibrary:              s.saveSessionToLibrary,
+		NotePendingLibrarySave:     s.notePendingLibrarySave,
+	}
+	if opts.Validator != nil {
+		playbackSvc.Validator = opts.Validator
+	}
+	s.playback = playbackSvc
 
 	if err := s.CheckPort(opts.Port); err != nil {
 		return nil, err
@@ -174,19 +190,18 @@ func (s *Server) SetAPIHandler(h http.Handler) {
 	s.apiHandler = h
 }
 
+// clearSyncMap removes every entry from m.
+func clearSyncMap(m *sync.Map) {
+	m.Range(func(key, _ interface{}) bool {
+		m.Delete(key)
+		return true
+	})
+}
+
 func (s *Server) ClearSearchCaches() {
-	s.playlistCache.Range(func(key, _ interface{}) bool {
-		s.playlistCache.Delete(key)
-		return true
-	})
-	s.rawSearchCache.Range(func(key, _ interface{}) bool {
-		s.rawSearchCache.Delete(key)
-		return true
-	})
-	s.nextReleaseIndex.Range(func(key, _ interface{}) bool {
-		s.nextReleaseIndex.Delete(key)
-		return true
-	})
+	clearSyncMap(&s.playlistCache)
+	clearSyncMap(&s.rawSearchCache)
+	clearSyncMap(&s.nextReleaseIndex)
 	if s.queryCache != nil {
 		s.queryCache.Clear()
 	}
@@ -199,14 +214,8 @@ func (s *Server) ClearSearchCaches() {
 // filter_sorting_mode) so subsequent requests reuse the cached indexer results
 // and only re-run the cheap filter/sort step.
 func (s *Server) ClearPlaylistCaches() {
-	s.playlistCache.Range(func(key, _ interface{}) bool {
-		s.playlistCache.Delete(key)
-		return true
-	})
-	s.nextReleaseIndex.Range(func(key, _ interface{}) bool {
-		s.nextReleaseIndex.Delete(key)
-		return true
-	})
+	clearSyncMap(&s.playlistCache)
+	clearSyncMap(&s.nextReleaseIndex)
 	logger.Info("Playlist caches cleared (raw search cache preserved)")
 }
 

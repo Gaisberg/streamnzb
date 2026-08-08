@@ -3,7 +3,7 @@ package nntp
 func (c *Client) StatArticle(messageID string) (bool, error) {
 	c.setShortDeadline()
 
-	id, err := c.conn.Cmd("STAT <%s>", messageID)
+	id, err := c.conn.Cmd("STAT %s", formatMessageID(messageID))
 	if err != nil {
 		return false, err
 	}

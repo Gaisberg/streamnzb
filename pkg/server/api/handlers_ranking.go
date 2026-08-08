@@ -32,16 +32,13 @@ type explainResponse struct {
 // handleRankingExplain scores titles against a profile and returns the
 // per-clause breakdown behind each score, including why a release was rejected.
 func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 	// Filter profiles are configuration, and evaluating one compiles patterns
 	// the caller supplies, so this is admin-only like the rest of the config
 	// endpoints.
-	s.mu.RLock()
-	adminUsername := s.config.GetAdminUsername()
-	s.mu.RUnlock()
+	adminUsername := s.adminUsername()
 	if stream, _ := auth.StreamFromContext(r); stream == nil || stream.Username != adminUsername {
 		http.Error(w, "Only admin can evaluate filter profiles", http.StatusForbidden)
 		return
@@ -79,14 +76,11 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		results = append(results, profile.Explain(title, opts))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(explainResponse{Profile: profile.Name, Results: results})
+	writeJSON(w, http.StatusOK, explainResponse{Profile: profile.Name, Results: results})
 }
 
 func writeExplainError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // explainProfile compiles the posted profile definition, or looks up a saved

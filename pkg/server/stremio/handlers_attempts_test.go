@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/media/unpack"
+	"streamnzb/pkg/playback"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
@@ -60,7 +61,7 @@ func TestRecordAttemptParamsFailureUsesAttemptedProvidersWhenNoUsedProvidersExis
 	sess.RecordAttemptedProviderHost("news-a.example.net")
 	sess.RecordAttemptedProviderHost("news-b.example.net")
 
-	params := server.recordAttemptParamsForFailure(sess)
+	params := server.recordAttemptParamsForOutcome(sess, false)
 	if got := params.ProviderName; got != "news-a.example.net, news-b.example.net" {
 		t.Fatalf("ProviderName = %q, want %q", got, "news-a.example.net, news-b.example.net")
 	}
@@ -71,10 +72,10 @@ func TestRecordAttemptParamsDerivesSeasonPackMatchType(t *testing.T) {
 	sess := &session.Session{
 		ContentType: "series",
 		ContentID:   "tt2261227:2:3",
-		Release: &release.Release{
-			Title: "Altered.Carbon.S02.COMPLETE.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
-		},
 	}
+	sess.SetRelease(&release.Release{
+		Title: "Altered.Carbon.S02.COMPLETE.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
+	})
 
 	params := server.recordAttemptParamsForOutcome(sess, true)
 	if got := params.MatchType; got != "season_pack" {
@@ -87,10 +88,10 @@ func TestRecordAttemptParamsDerivesCompletePackMatchType(t *testing.T) {
 	sess := &session.Session{
 		ContentType: "series",
 		ContentID:   "tt3032476:1:2",
-		Release: &release.Release{
-			Title: "The.Good.Place.Complete.Series.1080p.NF.WEB-DL.DD5.1.x264-GROUP",
-		},
 	}
+	sess.SetRelease(&release.Release{
+		Title: "The.Good.Place.Complete.Series.1080p.NF.WEB-DL.DD5.1.x264-GROUP",
+	})
 
 	params := server.recordAttemptParamsForOutcome(sess, true)
 	if got := params.MatchType; got != "complete_pack" {
@@ -109,10 +110,10 @@ func TestAllowLargestDirectFallbackForSessionExactEpisodeOnly(t *testing.T) {
 	exact := &session.Session{
 		ContentType: "series",
 		ContentID:   "tt2261227:2:3",
-		Release: &release.Release{
-			Title: "Altered.Carbon.S02E03.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
-		},
 	}
+	exact.SetRelease(&release.Release{
+		Title: "Altered.Carbon.S02E03.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
+	})
 	if !allowLargestDirectFallbackForSession(exact) {
 		t.Fatal("expected exact episode sessions to allow largest direct fallback")
 	}
@@ -120,10 +121,10 @@ func TestAllowLargestDirectFallbackForSessionExactEpisodeOnly(t *testing.T) {
 	seasonPack := &session.Session{
 		ContentType: "series",
 		ContentID:   "tt2261227:2:3",
-		Release: &release.Release{
-			Title: "Altered.Carbon.S02.COMPLETE.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
-		},
 	}
+	seasonPack.SetRelease(&release.Release{
+		Title: "Altered.Carbon.S02.COMPLETE.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.mkv",
+	})
 	if allowLargestDirectFallbackForSession(seasonPack) {
 		t.Fatal("did not expect season pack sessions to allow largest direct fallback")
 	}
@@ -131,10 +132,10 @@ func TestAllowLargestDirectFallbackForSessionExactEpisodeOnly(t *testing.T) {
 	completePack := &session.Session{
 		ContentType: "series",
 		ContentID:   "tt3032476:1:2",
-		Release: &release.Release{
-			Title: "The.Good.Place.Complete.Series.1080p.NF.WEB-DL.DD5.1.x264-GROUP",
-		},
 	}
+	completePack.SetRelease(&release.Release{
+		Title: "The.Good.Place.Complete.Series.1080p.NF.WEB-DL.DD5.1.x264-GROUP",
+	})
 	if allowLargestDirectFallbackForSession(completePack) {
 		t.Fatal("did not expect complete pack sessions to allow largest direct fallback")
 	}
@@ -146,9 +147,9 @@ func TestCacheReturnedPlaybackBlueprintReplacesStaleBlueprint(t *testing.T) {
 	fresh := &unpack.DirectBlueprint{FileName: "Show.S01E01.mkv", FileIndex: 0, Target: unpack.EpisodeTarget{Season: 1, Episode: 1}}
 	sess.SetBlueprint(stale)
 
-	cacheReturnedPlaybackBlueprint(sess, fresh)
+	playback.CacheReturnedBlueprint(sess, fresh)
 
-	if got := sess.Blueprint; got != fresh {
+	if got := sess.Blueprint(); got != fresh {
 		t.Fatalf("expected session blueprint to be replaced, got %#v", got)
 	}
 }

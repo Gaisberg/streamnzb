@@ -26,12 +26,21 @@ type StateManager struct {
 
 var globalManager *StateManager
 var managerMu sync.Mutex
+var managerDataDir string
 
 func GetManager(dataDir string) (*StateManager, error) {
 	managerMu.Lock()
 	defer managerMu.Unlock()
 
 	if globalManager != nil {
+		// The manager is a process-wide singleton bound to the first dataDir it
+		// was opened with; a different argument here means two call sites
+		// resolved the data directory differently — surface it instead of
+		// silently using the wrong database.
+		if dataDir != "" && managerDataDir != "" && dataDir != managerDataDir {
+			logger.Warn("persistence.GetManager called with a different data dir than the one in use",
+				"requested", dataDir, "active", managerDataDir)
+		}
 		return globalManager, nil
 	}
 
@@ -60,6 +69,7 @@ func GetManager(dataDir string) (*StateManager, error) {
 		badReleaseStore: NewBadReleaseStore(db, wdb),
 	}
 	globalManager = m
+	managerDataDir = dataDir
 	return m, nil
 }
 
@@ -396,11 +406,6 @@ func (m *StateManager) Delete(key string) error {
 	return nil
 }
 
-func (m *StateManager) Save() error {
-	// KV writes are immediate (no dirty buffer); Save is a no-op except for debounce.
-	return nil
-}
-
 func (m *StateManager) scheduleSave() {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
@@ -453,6 +458,7 @@ func (m *StateManager) Close() error {
 
 	if globalManager == m {
 		globalManager = nil
+		managerDataDir = ""
 	}
 	return err
 }

@@ -44,14 +44,12 @@ type LibraryListResponse struct {
 }
 
 func (s *Server) handleGetLibrary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 
 	if s.attemptLister == nil || s.attemptLister.LibraryStore() == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(LibraryListResponse{Items: []LibraryItemDTO{}, Total: 0})
+		writeJSON(w, http.StatusOK, LibraryListResponse{Items: []LibraryItemDTO{}, Total: 0})
 		return
 	}
 
@@ -104,8 +102,7 @@ func (s *Server) handleGetLibrary(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(LibraryListResponse{
+	writeJSON(w, http.StatusOK, LibraryListResponse{
 		Items:  dtos,
 		Total:  total,
 		Offset: offset,
@@ -114,8 +111,7 @@ func (s *Server) handleGetLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePinLibrary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 
@@ -139,8 +135,7 @@ func (s *Server) handlePinLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "id": req.ID, "pinned": req.Pinned})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": req.ID, "pinned": req.Pinned})
 }
 
 func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
@@ -184,19 +179,16 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Library item deleted and playback/search caches cleared", "id", id)
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "id": id})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": id})
 }
 
 func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 
 	if s.attemptLister == nil || s.attemptLister.LibraryStore() == nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"total_items": 0, "max_items": 5000})
+		writeJSON(w, http.StatusOK, map[string]any{"total_items": 0, "max_items": 5000})
 		return
 	}
 
@@ -214,8 +206,7 @@ func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
 		maxSizeMB = s.config.EffectiveLibraryMaxSizeMB()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"total_items":       stats.TotalItems,
 		"total_nzb_bytes":   stats.TotalNZBBytes,
 		"total_media_bytes": stats.TotalMediaBytes,

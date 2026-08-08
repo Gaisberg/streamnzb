@@ -15,7 +15,6 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/decode"
 	"streamnzb/pkg/media/nzb"
-	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/usenet/pool"
 )
 
@@ -142,7 +141,7 @@ func TestDownloadSegmentDeduplicatesConcurrentCalls(t *testing.T) {
 	}()
 
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
-	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
 	results := make(chan []byte, 2)
 	errs := make(chan error, 2)
@@ -187,7 +186,7 @@ func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
 	}()
 
 	fetcher := newDedupBlockingSegmentFetcher(nil, errors.New("boom"))
-	f := NewFile(context.Background(), testNZBFileWithSegments(3, 4), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(3, 4), nil, fetcher)
 
 	results := make(chan []byte, 2)
 	errs := make(chan error, 2)
@@ -235,7 +234,7 @@ func TestOpenStreamCtxUsesProvidedContextForSegmentDetection(t *testing.T) {
 	}()
 
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
-	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -259,7 +258,7 @@ func TestDownloadSegmentLeaderCancellationDoesNotCancelFollower(t *testing.T) {
 	}()
 
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
-	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	defer cancelLeader()
@@ -322,7 +321,7 @@ func TestDownloadSegmentReusesWaiterlessInflightRequest(t *testing.T) {
 	}()
 
 	fetcher := newDedupBlockingSegmentFetcher([]byte("fresh"), nil)
-	f := NewFile(context.Background(), testNZBFileWithSegments(5), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(5), nil, fetcher)
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	defer cancelLeader()
@@ -416,7 +415,7 @@ func TestEnsureSegmentMapUsesActualLastSegmentSize(t *testing.T) {
 	}()
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 8, 5}}
-	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, fetcher)
 
 	if err := f.EnsureSegmentMap(); err != nil {
 		t.Fatalf("EnsureSegmentMap returned error: %v", err)
@@ -457,7 +456,7 @@ func TestEnsureSegmentMapUsesPerSegmentNZBBytes(t *testing.T) {
 	}()
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 12, 5}}
-	f := NewFile(context.Background(), testNZBFileWithSegments(10, 15, 10), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 15, 10), nil, fetcher)
 
 	if err := f.EnsureSegmentMap(); err != nil {
 		t.Fatalf("EnsureSegmentMap returned error: %v", err)
@@ -486,7 +485,7 @@ func TestEnsureSegmentMapSlowModeCalibratesUniformNZB(t *testing.T) {
 	}()
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
-	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, fetcher)
 
 	if err := f.EnsureSegmentMap(); err != nil {
 		t.Fatalf("EnsureSegmentMap returned error: %v", err)
@@ -509,7 +508,7 @@ func TestEnsureSegmentMapFastModeGapProbesSkippedMiddle(t *testing.T) {
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
 	ctx := context.Background()
-	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 10), nil, nil, fetcher)
+	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 10), nil, fetcher)
 
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
@@ -549,7 +548,7 @@ func TestEnsureSegmentMapEstimatorPrimesWithoutNNTPProbes(t *testing.T) {
 	estimator := NewSegmentSizeEstimator()
 	estimator.Set(10, 8)
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 8, 5}}
-	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, estimator, fetcher)
+	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), estimator, fetcher)
 
 	if err := f.EnsureSegmentMap(); err != nil {
 		t.Fatalf("EnsureSegmentMap returned error: %v", err)
@@ -575,8 +574,8 @@ func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
 
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
 	ctx := context.Background()
-	ctx = unpack.WithSkipGapProbing(ctx, true)
-	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 6), nil, nil, fetcher)
+	ctx = WithSkipGapProbing(ctx, true)
+	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 6), nil, fetcher)
 
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
@@ -601,7 +600,7 @@ func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
 	estimator.Set(768000, 768000)
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{768000, 768000, 768000}}
 	ctx := context.Background()
-	f := NewFile(ctx, testNZBFileWithSegments(768000, 768000, 768000), nil, estimator, fetcher)
+	f := NewFile(ctx, testNZBFileWithSegments(768000, 768000, 768000), estimator, fetcher)
 
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)

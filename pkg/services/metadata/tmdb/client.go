@@ -1,8 +1,10 @@
 package tmdb
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -10,13 +12,27 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"strings"
+	"sync"
 	"time"
 )
+
+// responseCacheTTL bounds the in-memory response cache. TMDB metadata is
+// effectively immutable for our purposes; the TTL only caps growth of
+// rarely-repeated keys.
+const responseCacheTTL = 24 * time.Hour
+
+type cachedResponse struct {
+	status  int
+	body    []byte
+	expires time.Time
+}
 
 type Client struct {
 	apiKey  string
 	client  *http.Client
 	BaseURL string
+
+	responseCache sync.Map // full request URL -> cachedResponse
 }
 
 func NewClient(apiKey string) *Client {
@@ -44,8 +60,8 @@ func (c *Client) Ping() error {
 		return fmt.Errorf("TMDB Read Access Token not configured")
 	}
 
-	urlStr := c.BaseURL + "/configuration"
-	resp, err := c.doRequest(urlStr, url.Values{})
+	// Uncached: Ping exists to verify live connectivity and the token.
+	resp, err := c.fetch(c.BaseURL + "/configuration?")
 	if err != nil {
 		return fmt.Errorf("TMDB ping request failed: %w", err)
 	}
@@ -162,109 +178,94 @@ type TVTranslationData struct {
 	Overview string `json:"overview"`
 }
 
-func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, error) {
-	reqURL := fmt.Sprintf("%s?%s", endpoint, params.Encode())
-
+// fetch performs an uncached GET against the TMDB API.
+func (c *Client) fetch(reqURL string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("accept", "application/json")
-
 	return c.client.Do(req)
 }
 
-func (c *Client) Find(externalID, source string) (*FindResponse, error) {
+// doRequest performs a GET against the TMDB API with a 24h response cache.
+// Caching sits here so every endpoint method benefits without per-method
+// bookkeeping; only 200 responses are cached.
+func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, error) {
+	reqURL := fmt.Sprintf("%s?%s", endpoint, params.Encode())
+
+	if v, ok := c.responseCache.Load(reqURL); ok {
+		cached := v.(cachedResponse)
+		if time.Now().Before(cached.expires) {
+			return &http.Response{
+				StatusCode: cached.status,
+				Body:       io.NopCloser(bytes.NewReader(cached.body)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		c.responseCache.Delete(reqURL)
+	}
+
+	resp, err := c.fetch(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return resp, nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	c.responseCache.Store(reqURL, cachedResponse{
+		status:  resp.StatusCode,
+		body:    body,
+		expires: time.Now().Add(responseCacheTTL),
+	})
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
+}
+
+// getJSON performs a cached GET against endpoint and decodes the JSON body
+// into a fresh T. It is a free function because Go does not allow type
+// parameters on methods. label appears in errors, e.g. "movie details".
+func getJSON[T any](c *Client, endpoint string, params url.Values, label string) (*T, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
-
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/find/%s", externalID)
-	params := url.Values{}
-	params.Set("external_source", source)
-
 	resp, err := c.doRequest(endpoint, params)
 	if err != nil {
-		return nil, fmt.Errorf("TMDB find request failed: %w", err)
+		return nil, fmt.Errorf("TMDB %s request failed: %w", label, err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
 	}
-
-	var result FindResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode TMDB response: %w", err)
+	var out T
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode TMDB %s response: %w", label, err)
 	}
+	return &out, nil
+}
 
-	return &result, nil
+func (c *Client) Find(externalID, source string) (*FindResponse, error) {
+	params := url.Values{}
+	params.Set("external_source", source)
+	return getJSON[FindResponse](c, fmt.Sprintf(c.BaseURL+"/find/%s", externalID), params, "find")
 }
 
 func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	if query == "" {
-		return &SearchMultiResponse{Results: []SearchMultiResult{}}, nil
-	}
-	endpoint := "https://api.themoviedb.org/3/search/multi"
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("page", "1")
-	resp, err := c.doRequest(endpoint, params)
-	if err != nil {
-		return nil, fmt.Errorf("TMDB search request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var result SearchMultiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode TMDB search response: %w", err)
-	}
-
-	if len(result.Results) > 20 {
-		result.Results = result.Results[:20]
-	}
-
-	filtered := result.Results[:0]
-	for _, r := range result.Results {
-		if r.MediaType == "movie" || r.MediaType == "tv" {
-			filtered = append(filtered, r)
-		}
-	}
-	result.Results = filtered
-	return &result, nil
+	return getJSON[SearchMultiResponse](c, c.BaseURL+"/search/multi", params, "search")
 }
 
 func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/%s/%d/external_ids", mediaType, tmdbID)
-	params := url.Values{}
-
-	resp, err := c.doRequest(endpoint, params)
-	if err != nil {
-		return nil, fmt.Errorf("TMDB external_ids request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-
-	var result ExternalIDsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode TMDB response: %w", err)
-	}
-
-	return &result, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/external_ids", mediaType, tmdbID)
+	return getJSON[ExternalIDsResponse](c, endpoint, url.Values{}, "external_ids")
 }
 
 // Genre is a TMDB genre. Only the name is used.
@@ -380,67 +381,21 @@ func (c *Client) GetMovieDetails(tmdbID int) (*MovieDetails, error) {
 }
 
 func (c *Client) GetMovieDetailsWithLanguage(tmdbID int, language string) (*MovieDetails, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d", tmdbID)
 	params := url.Values{}
 	if language != "" {
 		params.Set("language", language)
 	}
-	resp, err := c.doRequest(endpoint, params)
-	if err != nil {
-		return nil, fmt.Errorf("TMDB movie details: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var d MovieDetails
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		return nil, fmt.Errorf("TMDB movie decode: %w", err)
-	}
-	return &d, nil
+	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
 }
 
 func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/translations", movieID)
-	resp, err := c.doRequest(endpoint, url.Values{})
-	if err != nil {
-		return nil, fmt.Errorf("TMDB movie translations: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var out MovieTranslationsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("TMDB translations decode: %w", err)
-	}
-	return &out, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/movie/%d/translations", movieID)
+	return getJSON[MovieTranslationsResponse](c, endpoint, url.Values{}, "movie translations")
 }
 
 func (c *Client) GetMovieAlternativeTitles(movieID int) (*MovieAlternativeTitlesResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/alternative_titles", movieID)
-	resp, err := c.doRequest(endpoint, url.Values{})
-	if err != nil {
-		return nil, fmt.Errorf("TMDB movie alternative titles: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var out MovieAlternativeTitlesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("TMDB alternative titles decode: %w", err)
-	}
-	return &out, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/movie/%d/alternative_titles", movieID)
+	return getJSON[MovieAlternativeTitlesResponse](c, endpoint, url.Values{}, "movie alternative titles")
 }
 
 func movieTitleFromTranslations(translations *MovieTranslationsResponse, language string) string {
@@ -546,87 +501,26 @@ func (c *Client) GetTVDetails(tmdbID int) (*TVDetails, error) {
 }
 
 func (c *Client) GetTVDetailsWithLanguage(tmdbID int, language string) (*TVDetails, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d", tmdbID)
 	params := url.Values{}
 	if language != "" {
 		params.Set("language", language)
 	}
-	resp, err := c.doRequest(endpoint, params)
-	if err != nil {
-		return nil, fmt.Errorf("TMDB TV details: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var d TVDetails
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		return nil, fmt.Errorf("TMDB TV decode: %w", err)
-	}
-	return &d, nil
+	return getJSON[TVDetails](c, fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params, "TV details")
 }
 
 func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/translations", tmdbID)
-	resp, err := c.doRequest(endpoint, url.Values{})
-	if err != nil {
-		return nil, fmt.Errorf("TMDB TV translations: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var out TVTranslationsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("TMDB TV translations decode: %w", err)
-	}
-	return &out, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/translations", tmdbID)
+	return getJSON[TVTranslationsResponse](c, endpoint, url.Values{}, "TV translations")
 }
 
 func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/alternative_titles", tmdbID)
-	resp, err := c.doRequest(endpoint, url.Values{})
-	if err != nil {
-		return nil, fmt.Errorf("TMDB TV alternative titles: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var out TVAlternativeTitlesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("TMDB alternative titles decode: %w", err)
-	}
-	return &out, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/alternative_titles", tmdbID)
+	return getJSON[TVAlternativeTitlesResponse](c, endpoint, url.Values{}, "TV alternative titles")
 }
 
 func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("TMDB Read Access Token not configured")
-	}
-	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/tv/%d/season/%d", seriesID, seasonNumber)
-	resp, err := c.doRequest(endpoint, url.Values{})
-	if err != nil {
-		return nil, fmt.Errorf("TMDB TV season details: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
-	}
-	var d TVSeasonDetails
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		return nil, fmt.Errorf("TMDB TV season decode: %w", err)
-	}
-	return &d, nil
+	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/season/%d", seriesID, seasonNumber)
+	return getJSON[TVSeasonDetails](c, endpoint, url.Values{}, "TV season details")
 }
 
 func (c *Client) ResolveTVDBID(imdbID string) (string, error) {

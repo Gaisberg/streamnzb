@@ -154,10 +154,7 @@ func (ls *LibraryStore) StoreItem(item *LibraryItem) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	pinnedInt := 0
-	if item.Pinned {
-		pinnedInt = 1
-	}
+	pinnedInt := boolToInt(item.Pinned)
 
 	// Status defaults to pending; a re-save can promote to good/bad but a later
 	// pending save must never downgrade an existing verdict.
@@ -198,10 +195,7 @@ func (ls *LibraryStore) StoreItem(item *LibraryItem) error {
 		item.MediaFileName != "" || item.VideoCodec != "" || item.Height > 0 ||
 		item.BitDepth > 0 || item.HDR != "" || item.DolbyVision || item.AudioCodec != ""
 	if hasBlueprintRow {
-		dvInt := 0
-		if item.DolbyVision {
-			dvInt = 1
-		}
+		dvInt := boolToInt(item.DolbyVision)
 		_, err = tx.Exec(`
 			INSERT INTO library_blueprints (
 				nzb_id, blueprint_json, media_file_name, media_file_size, media_caps_json,
@@ -620,10 +614,7 @@ func (ls *LibraryStore) SetPinned(id string, pinned bool) error {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	pinnedInt := 0
-	if pinned {
-		pinnedInt = 1
-	}
+	pinnedInt := boolToInt(pinned)
 	_, err := ls.wdb.Exec(`UPDATE library_nzbs SET pinned = ? WHERE id = ?`, pinnedInt, id)
 	return err
 }
@@ -646,22 +637,7 @@ func (ls *LibraryStore) DeleteByDetailsURL(detailsURL string) error {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-
-	var ids []string
-	rows, err := ls.db.Query(`SELECT id FROM library_nzbs WHERE details_url = ?`, detailsURL)
-	if err == nil {
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err == nil {
-				ids = append(ids, id)
-			}
-		}
-		rows.Close()
-	}
-	for _, id := range ids {
-		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-		_, _ = ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
-	}
+	ls.deleteItemsLocked(ls.idsWhereLocked("details_url", detailsURL))
 	return nil
 }
 
@@ -672,22 +648,7 @@ func (ls *LibraryStore) DeleteByTitle(title string) error {
 	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-
-	var ids []string
-	rows, err := ls.db.Query(`SELECT id FROM library_nzbs WHERE release_title = ?`, title)
-	if err == nil {
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err == nil {
-				ids = append(ids, id)
-			}
-		}
-		rows.Close()
-	}
-	for _, id := range ids {
-		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)
-		_, _ = ls.wdb.Exec(`DELETE FROM library_nzbs WHERE id = ?`, id)
-	}
+	ls.deleteItemsLocked(ls.idsWhereLocked("release_title", title))
 	return nil
 }
 
@@ -783,6 +744,24 @@ func (ls *LibraryStore) oldestNonPinnedIDsLocked(n int) []string {
 
 // deleteItemsLocked removes each id from both library tables (no orphaned
 // blueprint rows). The caller must hold ls.mu.
+// idsWhereLocked collects library_nzbs ids matching one column value.
+// Callers must already hold ls.mu.
+func (ls *LibraryStore) idsWhereLocked(col, val string) []string {
+	var ids []string
+	rows, err := ls.db.Query(`SELECT id FROM library_nzbs WHERE `+col+` = ?`, val)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (ls *LibraryStore) deleteItemsLocked(ids []string) {
 	for _, id := range ids {
 		_, _ = ls.wdb.Exec(`DELETE FROM library_blueprints WHERE nzb_id = ?`, id)

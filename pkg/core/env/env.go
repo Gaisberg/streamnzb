@@ -172,104 +172,75 @@ type ConfigOverrides struct {
 	Indexers           []Indexer
 }
 
+// envReader accumulates config overrides read from the environment, tracking
+// which keys were actually set so callers can tell an env-owned field from an
+// unset one.
+type envReader struct {
+	o    *ConfigOverrides
+	keys []string
+}
+
+// str assigns the first non-empty value among envVars to dst and records key.
+// Multiple envVars support the STREAMNZB_-prefixed name plus its legacy alias.
+func (r *envReader) str(dst *string, key string, envVars ...string) {
+	for _, name := range envVars {
+		if v := os.Getenv(name); v != "" {
+			*dst = v
+			r.keys = append(r.keys, key)
+			return
+		}
+	}
+}
+
+// intVal assigns an int-valued env var to dst when it parses and passes valid.
+func (r *envReader) intVal(dst *int, key, envVar string, valid func(int) bool) {
+	v := os.Getenv(envVar)
+	if v == "" {
+		return
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || (valid != nil && !valid(n)) {
+		return
+	}
+	*dst = n
+	r.keys = append(r.keys, key)
+}
+
 func ReadConfigOverrides() (ConfigOverrides, []string) {
 	var o ConfigOverrides
-	var keys []string
+	r := &envReader{o: &o}
 
-	if v := os.Getenv(ADDONPort); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			o.AddonPort = port
-			keys = append(keys, KeyAddonPort)
-		}
-	}
-	if v := os.Getenv(ADDONBaseURL); v != "" {
-		o.AddonBaseURL = v
-		keys = append(keys, KeyAddonBaseURL)
-	}
-	if v := os.Getenv(LOGLevel); v != "" {
-		o.LogLevel = v
-		keys = append(keys, KeyLogLevel)
-	}
-	if v := os.Getenv(KeepLogFiles); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-			o.KeepLogFiles = n
-			keys = append(keys, KeyKeepLogFiles)
-		}
-	}
-	if v := os.Getenv(AvailNZBAPIKey); v != "" {
-		o.AvailNZBAPIKey = v
-		keys = append(keys, KeyAvailNZBAPIKey)
-	}
-	if v := os.Getenv(TMDBAPIKey); v != "" {
-		o.TMDBAPIKey = v
-		keys = append(keys, KeyTMDBAPIKey)
-	}
-	if v := os.Getenv(TVDBAPIKey); v != "" {
-		o.TVDBAPIKey = v
-		keys = append(keys, KeyTVDBAPIKey)
-	}
-	if v := os.Getenv(StreamNZBIndexerQueryHeaderEnv); v != "" {
-		o.IndexerQueryHeader = v
-		keys = append(keys, KeyIndexerQueryHeader)
-	} else if v := os.Getenv(IndexerQueryHeaderEnv); v != "" {
-		o.IndexerQueryHeader = v
-		keys = append(keys, KeyIndexerQueryHeader)
-	}
-	if v := os.Getenv(StreamNZBIndexerGrabHeaderEnv); v != "" {
-		o.IndexerGrabHeader = v
-		keys = append(keys, KeyIndexerGrabHeader)
-	} else if v := os.Getenv(IndexerGrabHeaderEnv); v != "" {
-		o.IndexerGrabHeader = v
-		keys = append(keys, KeyIndexerGrabHeader)
-	}
-	if v := os.Getenv(StreamNZBProviderHeaderEnv); v != "" {
-		o.ProviderHeader = v
-		keys = append(keys, KeyProviderHeader)
-	} else if v := os.Getenv(ProviderHeaderEnv); v != "" {
-		o.ProviderHeader = v
-		keys = append(keys, KeyProviderHeader)
-	}
-
-	if v := os.Getenv(NNTPProxyPort); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			o.ProxyPort = port
-			keys = append(keys, KeyProxyPort)
-		}
-	}
-	if v := os.Getenv(NNTPProxyHost); v != "" {
-		o.ProxyHost = v
-		keys = append(keys, KeyProxyHost)
-	}
+	r.intVal(&o.AddonPort, KeyAddonPort, ADDONPort, nil)
+	r.str(&o.AddonBaseURL, KeyAddonBaseURL, ADDONBaseURL)
+	r.str(&o.LogLevel, KeyLogLevel, LOGLevel)
+	r.intVal(&o.KeepLogFiles, KeyKeepLogFiles, KeepLogFiles, func(n int) bool { return n >= 1 })
+	r.str(&o.AvailNZBAPIKey, KeyAvailNZBAPIKey, AvailNZBAPIKey)
+	r.str(&o.TMDBAPIKey, KeyTMDBAPIKey, TMDBAPIKey)
+	r.str(&o.TVDBAPIKey, KeyTVDBAPIKey, TVDBAPIKey)
+	r.str(&o.IndexerQueryHeader, KeyIndexerQueryHeader, StreamNZBIndexerQueryHeaderEnv, IndexerQueryHeaderEnv)
+	r.str(&o.IndexerGrabHeader, KeyIndexerGrabHeader, StreamNZBIndexerGrabHeaderEnv, IndexerGrabHeaderEnv)
+	r.str(&o.ProviderHeader, KeyProviderHeader, StreamNZBProviderHeaderEnv, ProviderHeaderEnv)
+	r.intVal(&o.ProxyPort, KeyProxyPort, NNTPProxyPort, nil)
+	r.str(&o.ProxyHost, KeyProxyHost, NNTPProxyHost)
 	if v, ok := os.LookupEnv(NNTPProxyEnabled); ok && v != "" {
 		o.ProxyEnabled = getEnvBool(NNTPProxyEnabled, true)
-		keys = append(keys, KeyProxyEnabled)
+		r.keys = append(r.keys, KeyProxyEnabled)
 	}
-	if v := os.Getenv(NNTPProxyAuthUser); v != "" {
-		o.ProxyAuthUser = v
-		keys = append(keys, KeyProxyAuthUser)
-	}
-	if v := os.Getenv(NNTPProxyAuthPass); v != "" {
-		o.ProxyAuthPass = v
-		keys = append(keys, KeyProxyAuthPass)
-	}
-	if v := os.Getenv(AdminUsernameEnv); v != "" {
-		o.AdminUsername = v
-		keys = append(keys, KeyAdminUsername)
-	}
+	r.str(&o.ProxyAuthUser, KeyProxyAuthUser, NNTPProxyAuthUser)
+	r.str(&o.ProxyAuthPass, KeyProxyAuthPass, NNTPProxyAuthPass)
+	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
 	if v, ok := os.LookupEnv(AdminForcePasswordResetEnv); ok && v != "" && getEnvBool(AdminForcePasswordResetEnv, false) {
 		o.AdminMustChangePwd = true
-		keys = append(keys, KeyAdminMustChangePwd)
+		r.keys = append(r.keys, KeyAdminMustChangePwd)
 	}
-	o.Providers = readProvidersFromEnv()
-	if len(o.Providers) > 0 {
-		keys = append(keys, KeyProviders)
+	if o.Providers = readProvidersFromEnv(); len(o.Providers) > 0 {
+		r.keys = append(r.keys, KeyProviders)
 	}
-	o.Indexers = readIndexersFromEnv()
-	if len(o.Indexers) > 0 {
-		keys = append(keys, KeyIndexers)
+	if o.Indexers = readIndexersFromEnv(); len(o.Indexers) > 0 {
+		r.keys = append(r.keys, KeyIndexers)
 	}
 
-	return o, keys
+	return o, r.keys
 }
 
 func OverrideKeys() []string {

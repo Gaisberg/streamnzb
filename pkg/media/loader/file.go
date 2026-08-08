@@ -13,7 +13,6 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/decode"
 	"streamnzb/pkg/media/nzb"
-	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
 )
@@ -48,11 +47,7 @@ const MaxZeroFills = 10
 // isArticleNotFound reports whether err indicates the article is missing (430 No Such Article).
 // Used to fail fast on the first segment instead of zero-filling through many segments.
 func isArticleNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "430") || strings.Contains(s, "no such article")
+	return nntp.IsArticleNotFound(err)
 }
 
 func (f *File) IsFailed() bool {
@@ -69,7 +64,6 @@ type Segment struct {
 
 type File struct {
 	nzbFile   *nzb.File
-	pools     []*nntp.ClientPool
 	fetcher   SegmentFetcher
 	estimator *SegmentSizeEstimator
 	segments  []*Segment
@@ -111,7 +105,7 @@ func (e *zeroFillEligibleError) Error() string { return e.cause.Error() }
 
 func (e *zeroFillEligibleError) Unwrap() error { return e.cause }
 
-func NewFile(ctx context.Context, f *nzb.File, pools []*nntp.ClientPool, estimator *SegmentSizeEstimator, fetcher SegmentFetcher) *File {
+func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, fetcher SegmentFetcher) *File {
 	segments := make([]*Segment, len(f.Segments))
 	var offset int64
 	for i, s := range f.Segments {
@@ -124,7 +118,6 @@ func NewFile(ctx context.Context, f *nzb.File, pools []*nntp.ClientPool, estimat
 	}
 	return &File{
 		nzbFile:           f,
-		pools:             pools,
 		fetcher:           fetcher,
 		estimator:         estimator,
 		segments:          segments,
@@ -341,7 +334,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	}
 
 	includeMiddle := shouldProbeMiddleSegment(ctx, f.segments)
-	indices := segmentProbeIndices(f.segments, knownByNZBBytes, includeMiddle, unpack.IsSkipGapProbingEnabled(ctx))
+	indices := segmentProbeIndices(f.segments, knownByNZBBytes, includeMiddle, IsSkipGapProbingEnabled(ctx))
 	logSegmentProbePlan(ctx, f.Name(), f.segments, indices, knownByNZBBytes, includeMiddle)
 
 	probedByIndex, err := f.probeSegmentIndicesParallel(ctx, indices)
@@ -349,7 +342,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		return err
 	}
 
-	if !unpack.IsSkipGapProbingEnabled(ctx) {
+	if !IsSkipGapProbingEnabled(ctx) {
 		if missing := segmentUnprobedIndices(len(f.segments), indices); len(missing) > 0 {
 			logger.Debug("Segment map gap probe",
 				"name", f.Name(),
@@ -379,7 +372,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		}
 	}
 
-	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, knownByNZBBytes, unpack.IsSkipGapProbingEnabled(ctx))
+	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx))
 	if includeMiddle {
 		mid := middleProbeIndex(len(f.segments))
 		if midDecoded, ok := probedByIndex[mid]; ok {
@@ -551,8 +544,6 @@ func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
 	var err error
 	if f.fetcher != nil {
 		data, err = f.doDownloadSegmentViaFetcher(req.ctx, index)
-	} else {
-		data, err = f.doDownloadSegmentViaPools(req.ctx, index)
 	}
 	logger.Trace("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
 
@@ -587,7 +578,7 @@ func (f *File) finalizeSegmentDownload(index int, data []byte, err error, countF
 	count := f.zeroFillCount
 	if count >= MaxZeroFills {
 		f.zeroFillMu.Unlock()
-		return nil, fmt.Errorf("too many failed segments (%d/%d): %w", count+1, MaxZeroFills, errors.Join(unpack.ErrTooManyZeroFills, eligible.cause))
+		return nil, fmt.Errorf("too many failed segments (%d/%d): %w", count+1, MaxZeroFills, errors.Join(ErrTooManyZeroFills, eligible.cause))
 	}
 	f.zeroFillCount++
 	f.zeroFillMu.Unlock()
@@ -639,132 +630,6 @@ func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]by
 	// Don't cache here when using the pool fetcher: the pool already cached by message ID.
 	// Caching again would double memory use (same segment in pool cache + loader segCache) and double-count the budget.
 	return data.Body, nil
-}
-
-func (f *File) doDownloadSegmentViaPools(ctx context.Context, index int) ([]byte, error) {
-	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	seg := f.segments[index]
-	tried := make([]bool, len(f.pools))
-	var lastErr error
-
-	for attempt := 0; attempt < len(f.pools); attempt++ {
-		select {
-		case <-downloadCtx.Done():
-			logger.Debug("File doDownloadSegmentViaPools: downloadCtx done before attempt", "file", f.Name(), "index", index, "err", downloadCtx.Err())
-			return nil, downloadCtx.Err()
-		default:
-		}
-
-		var client *nntp.Client
-		var clientPool *nntp.ClientPool
-		var poolIdx int = -1
-
-		for i, p := range f.pools {
-			if !tried[i] {
-				logger.Debug("File doDownloadSegmentViaPools: trying pool TryGet", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host())
-				if c, ok := p.TryGet(downloadCtx); ok {
-					client = c
-					clientPool = p
-					poolIdx = i
-					break
-				}
-			}
-		}
-
-		if client == nil {
-			for i, p := range f.pools {
-				if !tried[i] {
-					logger.Debug("File doDownloadSegmentViaPools: pool Get blocking", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host())
-					var err error
-					client, err = p.Get(downloadCtx)
-					if err != nil {
-						logger.Debug("File doDownloadSegmentViaPools: pool Get failed", "file", f.Name(), "index", index, "poolIdx", i, "host", p.Host(), "err", err)
-						tried[i] = true
-						lastErr = err
-						if errors.Is(err, context.Canceled) {
-							return nil, err
-						}
-						continue
-					}
-					clientPool = p
-					poolIdx = i
-					break
-				}
-			}
-		}
-
-		if client == nil {
-			logger.Debug("File doDownloadSegmentViaPools: no client available from any pool", "file", f.Name(), "index", index)
-			break
-		}
-
-		if len(f.nzbFile.Groups) > 0 {
-			client.Group(f.nzbFile.Groups[0])
-		}
-
-		logger.Debug("File doDownloadSegmentViaPools: client body read start", "file", f.Name(), "index", index, "provider", clientPool.Host(), "article", seg.ID)
-		r, err := client.Body(seg.ID)
-		if err != nil {
-			if nntp.IsBenignDisconnect(err) || downloadCtx.Err() != nil {
-				logger.Trace("File doDownloadSegmentViaPools: client body command cancelled", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
-			} else {
-				logger.Debug("File doDownloadSegmentViaPools: client body command failed", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", err)
-			}
-			clientPool.Put(client)
-			tried[poolIdx] = true
-			lastErr = err
-			continue
-		}
-
-		type decodeResult struct {
-			frame *decode.Frame
-			err   error
-		}
-		done := make(chan decodeResult, 1)
-		go func(body io.ReadCloser) {
-			frame, err := decodeAndCloseBody(body, decode.DecodeToBytes)
-			done <- decodeResult{frame, err}
-		}(r)
-
-		select {
-		case <-downloadCtx.Done():
-			logger.Trace("File doDownloadSegmentViaPools: downloadCtx done during body read", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", downloadCtx.Err())
-			clientPool.Discard(client)
-			return nil, downloadCtx.Err()
-		case res := <-done:
-			logger.Debug("File doDownloadSegmentViaPools: body read done", "file", f.Name(), "index", index, "provider", clientPool.Host(), "err", res.err)
-			if res.err != nil {
-				clientPool.Put(client)
-				tried[poolIdx] = true
-				lastErr = res.err
-				continue
-			}
-			clientPool.Put(client)
-			if !shouldPersistDownloadedSegment(downloadCtx) {
-				return nil, downloadCtx.Err()
-			}
-			return res.frame.Data, nil
-		}
-	}
-
-	if lastErr != nil && isArticleNotFound(lastErr) {
-		return nil, fmt.Errorf("segment unavailable: %w", lastErr)
-	}
-
-	if index == 0 {
-		return nil, fmt.Errorf("first segment failed on all providers: %w", lastErr)
-	}
-
-	if isContextErr(lastErr) || !shouldPersistDownloadedSegment(downloadCtx) {
-		if ctxErr := downloadCtx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, lastErr
-	}
-
-	return nil, &zeroFillEligibleError{cause: lastErr}
 }
 
 func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
@@ -847,7 +712,7 @@ func (f *File) OpenPlaybackReaderAt(ctx context.Context, offset int64) (io.ReadC
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
 	}
-	return NewSegmentReaderWithReadAhead(ctx, f, offset, unpack.PlaybackReadAheadSegments), nil
+	return NewSegmentReaderWithReadAhead(ctx, f, offset, PlaybackReadAheadSegments), nil
 }
 
 // PrefetchPlaybackOffset warms the segment cache ahead of an upcoming volume switch.
@@ -859,7 +724,7 @@ func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if idx < 0 {
 		return
 	}
-	end := idx + unpack.PlaybackReadAheadSegments
+	end := idx + PlaybackReadAheadSegments
 	if end > len(f.segments) {
 		end = len(f.segments)
 	}

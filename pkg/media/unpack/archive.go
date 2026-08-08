@@ -11,9 +11,12 @@ import (
 	"unicode"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/media/loader"
 )
 
-var ErrTooManyZeroFills = errors.New("too many failed segments")
+// ErrTooManyZeroFills is re-exported from the loader layer, which owns the
+// zero-fill threshold, so existing callers keep matching one sentinel.
+var ErrTooManyZeroFills = loader.ErrTooManyZeroFills
 var ErrEpisodeTargetNotFound = errors.New("requested episode not found in release")
 
 type ReadSeekCloser interface {
@@ -86,15 +89,11 @@ func blueprintTargetMatches(cachedTarget, requestedTarget EpisodeTarget) bool {
 	return cachedTarget == requestedTarget
 }
 
-func GetMediaStream(ctx context.Context, files []UnpackableFile, cachedBP interface{}, password string) (ReadSeekCloser, string, int64, interface{}, error) {
-	return GetMediaStreamForEpisodeWithHints(ctx, files, cachedBP, password, EpisodeTarget{}, StreamSelectionHints{AllowLargestDirectFallback: true})
-}
-
-func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cachedBP interface{}, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, interface{}, error) {
+func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cachedBP Blueprint, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, Blueprint, error) {
 	return GetMediaStreamForEpisodeWithHints(ctx, files, cachedBP, password, target, StreamSelectionHints{AllowLargestDirectFallback: true})
 }
 
-func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFile, cachedBP interface{}, password string, target EpisodeTarget, hints StreamSelectionHints) (ReadSeekCloser, string, int64, interface{}, error) {
+func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFile, cachedBP Blueprint, password string, target EpisodeTarget, hints StreamSelectionHints) (ReadSeekCloser, string, int64, Blueprint, error) {
 	if err := contextErr(ctx); err != nil {
 		return nil, "", 0, nil, err
 	}
@@ -102,52 +101,23 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 		"target", target,
 		"files", len(files),
 		"cached_type", fmt.Sprintf("%T", cachedBP))
-	rarScanCtx := WithSkipGapProbing(ctx, true)
+	rarScanCtx := loader.WithSkipGapProbing(ctx, true)
 	if cachedBP != nil {
-		switch bp := cachedBP.(type) {
-		case *ArchiveBlueprint:
-			if !blueprintTargetMatches(bp.Target, target) {
-				logger.Debug("Skipping cached RAR blueprint due to target mismatch", "cached", bp.Target, "requested", target)
-				break
+		cachedTarget := cachedBP.TargetEpisode()
+		if !blueprintTargetMatches(cachedTarget, target) {
+			logger.Debug("Skipping cached blueprint due to target mismatch",
+				"kind", cachedBP.Kind(), "cached", cachedTarget, "requested", target)
+		} else {
+			logger.Debug("Using cached blueprint",
+				"kind", cachedBP.Kind(), "cached", cachedTarget, "requested", target)
+			stream, name, size, err := cachedBP.Open(rarScanCtx, files, password)
+			// A stale direct index means the release's file list changed under
+			// the cached plan; fall through to a fresh scan rather than failing.
+			if !errors.Is(err, ErrBlueprintFileIndexOutOfRange) {
+				return stream, name, size, cachedBP, err
 			}
-			logger.Debug("Using cached RAR blueprint", "cached", bp.Target, "requested", target, "file", bp.MainFileName)
-			s, name, size, err := StreamFromBlueprint(rarScanCtx, bp, password)
-			return s, name, size, bp, err
-		case *SevenZipBlueprint:
-			if !blueprintTargetMatches(bp.Target, target) {
-				logger.Debug("Skipping cached 7z blueprint due to target mismatch", "cached", bp.Target, "requested", target)
-				break
-			}
-			logger.Debug("Using cached 7z blueprint", "cached", bp.Target, "requested", target, "file", bp.MainFileName)
-			if len(bp.Files) == 0 {
-				return nil, "", 0, nil, errors.New("7z set empty for cached blueprint")
-			}
-			s, n, sz, err := Open7zStreamFromBlueprint(rarScanCtx, bp, password)
-			if err != nil {
-				err = maybeMarkArchiveFastProbe(rarScanCtx, err)
-			}
-			return s, n, sz, bp, err
-		case *DirectBlueprint:
-			if !blueprintTargetMatches(bp.Target, target) {
-				logger.Debug("Skipping cached direct blueprint due to target mismatch", "cached", bp.Target, "requested", target)
-				break
-			}
-			if bp.FileIndex >= 0 && bp.FileIndex < len(files) {
-				f := files[bp.FileIndex]
-				stream, err := f.OpenStreamCtx(rarScanCtx)
-				if err != nil {
-					return nil, "", 0, nil, err
-				}
-				logger.Debug("Using cached direct blueprint", "cached", bp.Target, "requested", target, "file", bp.FileName, "index", bp.FileIndex)
-				return stream, bp.FileName, f.Size(), bp, nil
-			}
-		case *FailedBlueprint:
-			if !blueprintTargetMatches(bp.Target, target) {
-				logger.Debug("Skipping cached scan failure due to target mismatch", "cached", bp.Target, "requested", target)
-				break
-			}
-			logger.Debug("Using cached scan failure", "cached", bp.Target, "requested", target, "err", bp.Err)
-			return nil, "", 0, bp, bp.Err
+			logger.Debug("Cached direct blueprint index no longer valid, rescanning",
+				"cached", cachedTarget, "files", len(files))
 		}
 	}
 

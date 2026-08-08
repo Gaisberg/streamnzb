@@ -29,18 +29,8 @@ type Client struct {
 	client  *http.Client
 	cfg     config.IndexerConfig
 	caps    *indexer.Caps
-
-	apiLimit          int
-	apiUsed           int
-	apiRemaining      int
-	downloadLimit     int
-	downloadUsed      int
-	downloadRemaining int
-	searchesCount     int
-	totalResponseMS   int64
-	usageManager      *indexer.UsageManager
-	requestLimiter    *indexer.RequestLimiter
-	mu                sync.RWMutex
+	core    *indexer.ClientCore
+	mu      sync.RWMutex // guards caps
 }
 
 var orderedSearchQueryKeys = []string{
@@ -126,64 +116,7 @@ func (c *Client) Type() string {
 }
 
 func (c *Client) GetUsage() indexer.Usage {
-	usageData := c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	u := indexer.Usage{
-		APIHitsLimit:       c.apiLimit,
-		APIHitsUsed:        c.apiUsed,
-		APIHitsRemaining:   c.apiRemaining,
-		DownloadsLimit:     c.downloadLimit,
-		DownloadsUsed:      c.downloadUsed,
-		DownloadsRemaining: c.downloadRemaining,
-		SearchesCount:      c.searchesCount,
-	}
-	if c.searchesCount > 0 {
-		u.AvgResponseMS = float64(c.totalResponseMS) / float64(c.searchesCount)
-	}
-	c.mu.RUnlock()
-	if usageData != nil {
-		u.AllTimeAPIHitsUsed = usageData.AllTimeAPIHitsUsed
-		u.AllTimeDownloadsUsed = usageData.AllTimeDownloadsUsed
-	}
-	return u
-}
-
-func (c *Client) refreshUsageFromManager() *indexer.UsageData {
-	if c.usageManager == nil {
-		return nil
-	}
-
-	ud := c.usageManager.GetIndexerUsage(c.name)
-	c.mu.Lock()
-	c.apiUsed = ud.APIHitsUsed
-	c.downloadUsed = ud.DownloadsUsed
-	if c.apiLimit > 0 {
-		c.apiRemaining = c.apiLimit - c.apiUsed
-		if c.apiRemaining < 0 {
-			c.apiRemaining = 0
-		}
-	}
-	if c.downloadLimit > 0 {
-		c.downloadRemaining = c.downloadLimit - c.downloadUsed
-		if c.downloadRemaining < 0 {
-			c.downloadRemaining = 0
-		}
-	}
-	c.mu.Unlock()
-
-	return ud
-}
-
-func (c *Client) recordSearchDuration(elapsed time.Duration) {
-	ms := elapsed.Milliseconds()
-	if ms < 0 {
-		ms = 0
-	}
-	c.mu.Lock()
-	c.searchesCount++
-	c.totalResponseMS += ms
-	c.mu.Unlock()
+	return c.core.Usage()
 }
 
 func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
@@ -191,7 +124,10 @@ func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 	transport := &http.Transport{
 		Proxy: httpproxy.IndexerProxy(cfg.ProxyURL),
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
+			// Historical default: certificates are NOT verified unless the
+			// indexer opts in via verify_tls (self-signed private indexers
+			// are common). Flipping the default would break existing setups.
+			InsecureSkipVerify: !cfg.VerifyTLS,
 		},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
@@ -208,7 +144,7 @@ func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 		apiPath = "/" + apiPath
 	}
 
-	c := &Client{
+	return &Client{
 		name:    cfg.Name,
 		baseURL: strings.TrimRight(cfg.URL, "/"),
 		apiPath: apiPath,
@@ -218,33 +154,8 @@ func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 			Timeout:   cfg.EffectiveTimeout(),
 			Transport: transport,
 		},
-		apiLimit:          cfg.APIHitsDay,
-		apiUsed:           0,
-		apiRemaining:      cfg.APIHitsDay,
-		downloadLimit:     cfg.DownloadsDay,
-		downloadUsed:      0,
-		downloadRemaining: cfg.DownloadsDay,
-		usageManager:      um,
-		requestLimiter:    indexer.NewRequestLimiter(cfg.RateLimitRPS),
+		core: indexer.NewClientCore(cfg.Name, cfg.APIHitsDay, cfg.DownloadsDay, cfg.RateLimitRPS, um),
 	}
-
-	if um != nil {
-		usage := um.GetIndexerUsage(cfg.Name)
-		c.apiUsed = usage.APIHitsUsed
-		c.downloadUsed = usage.DownloadsUsed
-
-		c.apiRemaining = cfg.APIHitsDay - usage.APIHitsUsed
-		c.downloadRemaining = cfg.DownloadsDay - usage.DownloadsUsed
-
-		if c.apiRemaining < 0 && cfg.APIHitsDay > 0 {
-			c.apiRemaining = 0
-		}
-		if c.downloadRemaining < 0 && cfg.DownloadsDay > 0 {
-			c.downloadRemaining = 0
-		}
-	}
-
-	return c
 }
 
 func (c *Client) effectiveQueryHeader() string {
@@ -262,88 +173,32 @@ func (c *Client) effectiveGrabHeader() string {
 }
 
 func (c *Client) checkAPILimit() error {
-	c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.apiLimit > 0 && c.apiRemaining <= 0 {
-		return fmt.Errorf("API limit reached for %s", c.Name())
-	}
-	return nil
+	return c.core.CheckAPILimit(c.Name())
 }
 
 func (c *Client) checkDownloadLimit() error {
-	c.refreshUsageFromManager()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.downloadLimit > 0 && c.downloadRemaining <= 0 {
-		return fmt.Errorf("download limit reached for %s", c.Name())
-	}
-	return nil
+	return c.core.CheckDownloadLimit(c.Name())
 }
 
-func (c *Client) updateUsageFromHeaders(h http.Header) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if val := h.Get("X-RateLimit-Daily-Limit"); val != "" {
-		if limit, err := strconv.Atoi(val); err == nil {
-			c.apiLimit = limit
-		}
+// requestContext bounds parent with the client timeout so a caller
+// cancellation aborts the request while an absent deadline still cannot hang
+// past the configured indexer timeout.
+func (c *Client) requestContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
 	}
-	if val := h.Get("X-RateLimit-Daily-Remaining"); val != "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.apiRemaining = remaining
-		}
-	}
-
-	if val := h.Get("X-DNZBLimit-Daily-Limit"); val != "" {
-		if limit, err := strconv.Atoi(val); err == nil {
-			c.downloadLimit = limit
-		}
-	}
-	if val := h.Get("X-DNZBLimit-Daily-Remaining"); val != "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.downloadRemaining = remaining
-		}
-	}
-
-	if val := h.Get("x-api-remaining"); val != "" && h.Get("X-RateLimit-Daily-Remaining") == "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.apiRemaining = remaining
-		}
-	}
-	if val := h.Get("x-grab-remaining"); val != "" && h.Get("X-DNZBLimit-Daily-Remaining") == "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.downloadRemaining = remaining
-		}
-	}
-
-	if c.usageManager != nil && (c.apiLimit > 0 || c.downloadLimit > 0) {
-		if c.apiLimit > 0 {
-			c.apiUsed = c.apiLimit - c.apiRemaining
-		}
-		if c.downloadLimit > 0 {
-			c.downloadUsed = c.downloadLimit - c.downloadRemaining
-		}
-		c.usageManager.UpdateUsage(c.name, c.apiUsed, c.downloadUsed)
-	}
-}
-
-func (c *Client) requestContext() (context.Context, context.CancelFunc) {
 	if timeout := c.client.Timeout; timeout > 0 {
-		return context.WithTimeout(context.Background(), timeout)
+		return context.WithTimeout(parent, timeout)
 	}
-	return context.Background(), func() {}
+	return context.WithCancel(parent)
 }
 
 func (c *Client) waitForRateLimit(ctx context.Context) error {
-	return c.requestLimiter.Wait(ctx)
+	return c.core.Limiter.Wait(ctx)
 }
 
-func (c *Client) Ping() error {
-	ctx, cancel := c.requestContext()
+func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := c.requestContext(ctx)
 	defer cancel()
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return err
@@ -367,7 +222,7 @@ func (c *Client) Ping() error {
 }
 
 func (c *Client) GetCaps() (*indexer.Caps, error) {
-	ctx, cancel := c.requestContext()
+	ctx, cancel := c.requestContext(context.Background())
 	defer cancel()
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return nil, err
@@ -452,64 +307,78 @@ func normalizeIMDbID(id string) string {
 	return strings.TrimPrefix(strings.TrimSpace(id), "tt")
 }
 
-func supportsMovieIDParam(caps *indexer.Caps, param string) bool {
-	if caps == nil || len(caps.Searching.MovieSearchSupportedParams) == 0 {
-		return param == "imdbid" || param == "tmdbid"
+// idParamOrder lists the id parameters to try, most specific first. Movie and
+// TV searches probe different ids, and the defaults differ when an indexer
+// publishes no supported-params caps at all.
+var (
+	movieIDParamOrder   = []string{"kitsu", "kitsu_id", "imdbid", "tmdbid"}
+	movieIDParamDefault = map[string]bool{"imdbid": true, "tmdbid": true}
+	tvIDParamOrder      = []string{"kitsu", "kitsu_id", "tvdbid", "tmdbid", "imdbid"}
+	tvIDParamDefault    = map[string]bool{"tvdbid": true, "tmdbid": true, "imdbid": true}
+)
+
+// supportsIDParam reports whether the indexer accepts param, falling back to a
+// conservative default set when it publishes no caps.
+func supportsIDParam(supported map[string]bool, fallback map[string]bool, param string) bool {
+	if len(supported) == 0 {
+		return fallback[param]
 	}
-	return caps.Searching.MovieSearchSupportedParams[param]
+	return supported[param]
 }
 
-func supportsTVIDParam(caps *indexer.Caps, param string) bool {
-	if caps == nil || len(caps.Searching.TVSearchSupportedParams) == 0 {
-		return param == "tvdbid" || param == "tmdbid" || param == "imdbid"
+// selectIDSearchParam picks the first id parameter in order that the indexer
+// supports AND the request actually carries.
+func selectIDSearchParam(req indexer.SearchRequest, order []string, supported, fallback map[string]bool) (string, string) {
+	valueFor := func(param string) string {
+		switch param {
+		case "kitsu", "kitsu_id":
+			return strings.TrimSpace(req.KitsuID)
+		case "imdbid":
+			return normalizeIMDbID(req.IMDbID)
+		case "tmdbid":
+			return strings.TrimSpace(req.TMDBID)
+		case "tvdbid":
+			return strings.TrimSpace(req.TVDBID)
+		}
+		return ""
 	}
-	return caps.Searching.TVSearchSupportedParams[param]
+	for _, param := range order {
+		value := valueFor(param)
+		if value == "" || !supportsIDParam(supported, fallback, param) {
+			continue
+		}
+		return param, value
+	}
+	return "", ""
+}
+
+func movieSupportedParams(caps *indexer.Caps) map[string]bool {
+	if caps == nil {
+		return nil
+	}
+	return caps.Searching.MovieSearchSupportedParams
+}
+
+func tvSupportedParams(caps *indexer.Caps) map[string]bool {
+	if caps == nil {
+		return nil
+	}
+	return caps.Searching.TVSearchSupportedParams
 }
 
 func selectMovieIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (string, string) {
-	if kitsuID := strings.TrimSpace(req.KitsuID); kitsuID != "" {
-		if supportsMovieIDParam(caps, "kitsu") {
-			return "kitsu", kitsuID
-		}
-		if supportsMovieIDParam(caps, "kitsu_id") {
-			return "kitsu_id", kitsuID
-		}
-	}
-	if imdbID := normalizeIMDbID(req.IMDbID); imdbID != "" && supportsMovieIDParam(caps, "imdbid") {
-		return "imdbid", imdbID
-	}
-	if tmdbID := strings.TrimSpace(req.TMDBID); tmdbID != "" && supportsMovieIDParam(caps, "tmdbid") {
-		return "tmdbid", tmdbID
-	}
-	return "", ""
+	return selectIDSearchParam(req, movieIDParamOrder, movieSupportedParams(caps), movieIDParamDefault)
 }
 
 func selectTVIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (string, string) {
-	if kitsuID := strings.TrimSpace(req.KitsuID); kitsuID != "" {
-		if supportsTVIDParam(caps, "kitsu") {
-			return "kitsu", kitsuID
-		}
-		if supportsTVIDParam(caps, "kitsu_id") {
-			return "kitsu_id", kitsuID
-		}
-	}
-	if tvdbID := strings.TrimSpace(req.TVDBID); tvdbID != "" && supportsTVIDParam(caps, "tvdbid") {
-		return "tvdbid", tvdbID
-	}
-	if tmdbID := strings.TrimSpace(req.TMDBID); tmdbID != "" && supportsTVIDParam(caps, "tmdbid") {
-		return "tmdbid", tmdbID
-	}
-	if imdbID := normalizeIMDbID(req.IMDbID); imdbID != "" && supportsTVIDParam(caps, "imdbid") {
-		return "imdbid", imdbID
-	}
-	return "", ""
+	return selectIDSearchParam(req, tvIDParamOrder, tvSupportedParams(caps), tvIDParamDefault)
 }
 
-func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	if err := c.checkAPILimit(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := c.requestContext()
+	ctx, cancel := c.requestContext(ctx)
 	defer cancel()
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return nil, err
@@ -649,12 +518,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,
 		"request", req.RequestLabel,
-		"mode", func() string {
-			if strings.EqualFold(strings.TrimSpace(req.SearchMode), "id") {
-				return "id"
-			}
-			return "text"
-		}(),
+		"mode", indexer.SearchModeLabel(req.SearchMode),
 		"indexer", c.Name(),
 		"type", "newznab",
 		"url", apiURL,
@@ -673,18 +537,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	}
 	defer resp.Body.Close()
 
-	c.mu.Lock()
-	c.apiUsed++
-	if c.apiRemaining > 0 {
-		c.apiRemaining--
-	}
-	c.mu.Unlock()
-
-	c.updateUsageFromHeaders(resp.Header)
-
-	if c.usageManager != nil && c.apiLimit == 0 {
-		c.usageManager.IncrementUsed(c.name, 1, 0)
-	}
+	c.core.RecordAPIHit(resp.Header)
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -731,12 +584,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 	logger.Debug("Search request result",
 		"stream", req.StreamLabel,
 		"request", req.RequestLabel,
-		"mode", func() string {
-			if strings.EqualFold(strings.TrimSpace(req.SearchMode), "id") {
-				return "id"
-			}
-			return "text"
-		}(),
+		"mode", indexer.SearchModeLabel(req.SearchMode),
 		"indexer", c.Name(),
 		"type", "newznab",
 		"raw_results", len(result.Channel.Items),
@@ -744,7 +592,7 @@ func (c *Client) Search(req indexer.SearchRequest) (*indexer.SearchResponse, err
 		"total_results", totalResults,
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 	)
-	c.recordSearchDuration(time.Since(startedAt))
+	c.core.RecordSearchDuration(time.Since(startedAt))
 	return &result, nil
 }
 
@@ -756,7 +604,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := c.requestLimiter.Wait(ctx); err != nil {
+	if err := c.core.Limiter.Wait(ctx); err != nil {
 		return nil, err
 	}
 	nzbURL = c.normalizeDownloadURL(nzbURL)
@@ -772,24 +620,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	}
 	defer resp.Body.Close()
 
-	c.mu.Lock()
-	c.apiUsed++
-	c.downloadUsed++
-	if c.apiRemaining > 0 {
-		c.apiRemaining--
-	}
-	if c.downloadRemaining > 0 {
-		c.downloadRemaining--
-	}
-	c.mu.Unlock()
-
-	c.updateUsageFromHeaders(resp.Header)
-
-	if c.usageManager != nil && c.apiLimit == 0 && c.downloadLimit == 0 {
-		c.usageManager.IncrementUsed(c.name, 1, 1)
-	} else if c.usageManager != nil && c.apiLimit == 0 {
-		c.usageManager.IncrementUsed(c.name, 1, 0)
-	}
+	c.core.RecordGrab(resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s NZB download returned status %d", c.Name(), resp.StatusCode)

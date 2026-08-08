@@ -2,10 +2,10 @@ package availnzb
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,11 +23,6 @@ const (
 )
 
 var ErrRegisterKeyIPAlreadyHasKey = errors.New("availnzb register: ip already has a key")
-
-type KeyStore interface {
-	Get(key string, target interface{}) (bool, error)
-	Set(key string, value interface{}) error
-}
 
 type Client struct {
 	BaseURL string
@@ -122,73 +117,11 @@ func (m *MeResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type KeyCreateRequest struct {
-	Name string `json:"name"`
-}
-
-type KeyCreateResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Token     string `json:"token"`
-	CreatedAt string `json:"created_at"`
-}
-
-type RecoverKeyResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Token     string `json:"token"`
-	IsActive  bool   `json:"is_active"`
-	RotatedAt string `json:"rotated_at"`
-}
-
-func (r *RecoverKeyResponse) UnmarshalJSON(data []byte) error {
-	type recoverKeyResponseAlias RecoverKeyResponse
-	var raw struct {
-		recoverKeyResponseAlias
-		ID json.RawMessage `json:"id"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	id, err := decodeFlexibleString(raw.ID)
-	if err != nil {
-		return fmt.Errorf("decode recover key response id: %w", err)
-	}
-	*r = RecoverKeyResponse(raw.recoverKeyResponseAlias)
-	r.ID = id
-	return nil
-}
-
 type apiErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
 	Detail  string `json:"detail"`
 	Reason  string `json:"reason"`
-}
-
-func (k *KeyCreateResponse) UnmarshalJSON(data []byte) error {
-	type keyCreateResponseAlias KeyCreateResponse
-	var raw struct {
-		keyCreateResponseAlias
-		ID json.RawMessage `json:"id"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	id, err := decodeFlexibleString(raw.ID)
-	if err != nil {
-		return fmt.Errorf("decode key create response id: %w", err)
-	}
-	*k = KeyCreateResponse(raw.keyCreateResponseAlias)
-	k.ID = id
-	return nil
-}
-
-type apiKeyState struct {
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Token     string `json:"token"`
-	CreatedAt string `json:"created_at,omitempty"`
 }
 
 func decodeFlexibleString(data json.RawMessage) (string, error) {
@@ -309,165 +242,6 @@ func (c *Client) SetAPIKey(apiKey string) {
 	c.apiKeyMu.Unlock()
 }
 
-func ResolveStartupAPIKey(store KeyStore, baseURL, explicitKey string) (string, error) {
-	explicitKey = strings.TrimSpace(explicitKey)
-	if explicitKey != "" {
-		logger.Debug("AvailNZB key bootstrap using explicit API key")
-		return explicitKey, nil
-	}
-
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		logger.Debug("AvailNZB key bootstrap skipped", "reason", "no base URL configured")
-		return "", nil
-	}
-	if store == nil {
-		return "", fmt.Errorf("availnzb key bootstrap: store is required")
-	}
-
-	storedKey, err := loadStoredAPIKey(store)
-	if err != nil {
-		return "", err
-	}
-	if storedKey != "" {
-		logger.Debug("AvailNZB key bootstrap using stored API key")
-	}
-	return storedKey, nil
-}
-
-func ResolveAPIKey(store KeyStore, baseURL, explicitKey, appName string) (string, error) {
-	if strings.TrimSpace(explicitKey) != "" {
-		return strings.TrimSpace(explicitKey), nil
-	}
-	resolvedKey, err := ResolveStartupAPIKey(store, baseURL, explicitKey)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(baseURL) == "" {
-		return resolvedKey, nil
-	}
-	if resolvedKey != "" {
-		client := NewClient(baseURL, resolvedKey)
-		if _, err := client.GetMe(); err == nil {
-			return resolvedKey, nil
-		}
-		logger.Info("AvailNZB stored key validation failed, attempting recovery", "err", err)
-		recovered, recoverErr := recoverAndPersistAPIKey(store, client)
-		if recoverErr == nil && strings.TrimSpace(recovered) != "" {
-			return recovered, nil
-		}
-		logger.Warn("AvailNZB key recovery failed, rotating key", "err", recoverErr)
-	}
-
-	return RecoverOrRegisterAndPersistAPIKey(store, baseURL, appName)
-}
-
-func RegisterAndPersistAPIKey(store KeyStore, baseURL, appName string) (string, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		return "", fmt.Errorf("availnzb register: no base URL configured")
-	}
-	if store == nil {
-		return "", fmt.Errorf("availnzb key bootstrap: store is required")
-	}
-	if strings.TrimSpace(appName) == "" {
-		appName = DefaultAppName
-	}
-
-	client := NewClient(baseURL, "")
-	created, err := client.RegisterKey(appName)
-	if err != nil {
-		if errors.Is(err, ErrRegisterKeyIPAlreadyHasKey) {
-			logger.Info("AvailNZB key registration refused (IP already has key), attempting recovery")
-			return recoverAndPersistAPIKey(store, client)
-		}
-		return "", err
-	}
-	if created == nil || strings.TrimSpace(created.Token) == "" {
-		return "", fmt.Errorf("availnzb register: empty token in response")
-	}
-
-	state := apiKeyState{
-		ID:        strings.TrimSpace(created.ID),
-		Name:      strings.TrimSpace(created.Name),
-		Token:     strings.TrimSpace(created.Token),
-		CreatedAt: strings.TrimSpace(created.CreatedAt),
-	}
-	if err := store.Set(apiKeyStateKey, state); err != nil {
-		return "", fmt.Errorf("availnzb key bootstrap: failed to persist API key: %w", err)
-	}
-
-	logger.Info("Registered new AvailNZB API key", "name", state.Name, "id", state.ID)
-	return state.Token, nil
-}
-
-func RecoverOrRegisterAndPersistAPIKey(store KeyStore, baseURL, appName string) (string, error) {
-	baseURL = strings.TrimSpace(baseURL)
-	if baseURL == "" {
-		return "", fmt.Errorf("availnzb recover/register: no base URL configured")
-	}
-	if store == nil {
-		return "", fmt.Errorf("availnzb key bootstrap: store is required")
-	}
-	if strings.TrimSpace(appName) == "" {
-		appName = DefaultAppName
-	}
-
-	client := NewClient(baseURL, "")
-	recovered, recoverErr := recoverAndPersistAPIKey(store, client)
-	if recoverErr == nil && strings.TrimSpace(recovered) != "" {
-		logger.Info("Recovered AvailNZB API key before rolling a new app key")
-		return recovered, nil
-	}
-	logger.Info("AvailNZB key recovery failed, rolling new key", "err", recoverErr)
-
-	return RegisterAndPersistAPIKey(store, baseURL, appName)
-}
-
-func recoverAndPersistAPIKey(store KeyStore, client *Client) (string, error) {
-	recovered, err := client.RecoverKey()
-	if err != nil {
-		return "", fmt.Errorf("availnzb recover: %w", err)
-	}
-	if recovered == nil || strings.TrimSpace(recovered.Token) == "" {
-		return "", fmt.Errorf("availnzb recover: empty token in response")
-	}
-
-	state := apiKeyState{
-		ID:    strings.TrimSpace(recovered.ID),
-		Name:  strings.TrimSpace(recovered.Name),
-		Token: strings.TrimSpace(recovered.Token),
-	}
-	if err := store.Set(apiKeyStateKey, state); err != nil {
-		return "", fmt.Errorf("availnzb key bootstrap: failed to persist recovered API key: %w", err)
-	}
-
-	logger.Info("Recovered existing AvailNZB API key", "name", state.Name, "id", state.ID)
-	return state.Token, nil
-}
-
-func loadStoredAPIKey(store KeyStore) (string, error) {
-	var state apiKeyState
-	found, err := store.Get(apiKeyStateKey, &state)
-	if err == nil {
-		if found && strings.TrimSpace(state.Token) != "" {
-			return strings.TrimSpace(state.Token), nil
-		}
-		return "", nil
-	}
-
-	var legacy string
-	legacyFound, legacyErr := store.Get(apiKeyStateKey, &legacy)
-	if legacyErr == nil {
-		if legacyFound && strings.TrimSpace(legacy) != "" {
-			return strings.TrimSpace(legacy), nil
-		}
-		return "", nil
-	}
-
-	return "", fmt.Errorf("availnzb key bootstrap: failed to read stored API key: %w", err)
-}
-
 func decodeAPIErrorMessage(body []byte) string {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -496,153 +270,6 @@ func decodeAPIErrorMessage(body []byte) string {
 	}
 
 	return strings.TrimSpace(string(trimmed))
-}
-
-func isRegisterKeyIPAlreadyHasKeyMessage(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	if strings.Contains(normalized, "already has a key for your ip") || strings.Contains(normalized, "already has a key for this ip") {
-		return true
-	}
-	hasAlready := strings.Contains(normalized, "already") || strings.Contains(normalized, "existing") || strings.Contains(normalized, "exists")
-	hasIP := strings.Contains(normalized, " ip") || strings.HasPrefix(normalized, "ip ") || strings.Contains(normalized, "ip address")
-	hasKey := strings.Contains(normalized, "key")
-	return hasAlready && hasIP && hasKey
-}
-
-func isAPIKeyMissingMessage(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "x-api-key") && strings.Contains(normalized, "required")
-}
-
-func isAPIKeyTemporarilyAssignedMessage(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "temporarily assigned to another ip")
-}
-
-func registerKeyIPAlreadyHasKeyErr(message string) error {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return ErrRegisterKeyIPAlreadyHasKey
-	}
-	return fmt.Errorf("%w: %s", ErrRegisterKeyIPAlreadyHasKey, message)
-}
-
-func (c *Client) RegisterKey(name string) (*KeyCreateResponse, error) {
-	if c.BaseURL == "" {
-		return nil, fmt.Errorf("availnzb register: no base URL configured")
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = DefaultAppName
-	}
-
-	logger.Debug("AvailNZB RegisterKey", "name", name)
-
-	reqBody, err := json.Marshal(KeyCreateRequest{Name: name})
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", c.BaseURL+apiPath+"/keys/roll_key", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB RegisterKey request failed", "err", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			logger.Error("AvailNZB RegisterKey unexpected status and failed to read error body", "status", resp.StatusCode, "err", readErr)
-			return nil, fmt.Errorf("availnzb register: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if isRegisterKeyIPAlreadyHasKeyMessage(message) {
-			return nil, registerKeyIPAlreadyHasKeyErr(message)
-		}
-		if message != "" {
-			logger.Error("AvailNZB RegisterKey unexpected status", "status", resp.StatusCode, "message", message)
-			return nil, fmt.Errorf("availnzb register: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		logger.Error("AvailNZB RegisterKey unexpected status", "status", resp.StatusCode)
-		return nil, fmt.Errorf("availnzb register: unexpected status code: %d", resp.StatusCode)
-	}
-
-	var created KeyCreateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		logger.Error("AvailNZB RegisterKey decode failed", "err", err)
-		return nil, err
-	}
-
-	return &created, nil
-}
-
-func (c *Client) RecoverKey() (*RecoverKeyResponse, error) {
-	if c.BaseURL == "" {
-		return nil, fmt.Errorf("availnzb recover: no base URL configured")
-	}
-
-	logger.Debug("AvailNZB RecoverKey")
-
-	req, err := http.NewRequest("POST", c.BaseURL+apiPath+"/keys/recover", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(c.GetAPIKey()); token != "" {
-		body, err := json.Marshal(map[string]string{"token": token})
-		if err != nil {
-			return nil, err
-		}
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
-	}
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB RecoverKey request failed", "err", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("availnzb recover: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if message != "" {
-			logger.Error("AvailNZB RecoverKey unexpected status", "status", resp.StatusCode, "message", message)
-			return nil, fmt.Errorf("availnzb recover: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		return nil, fmt.Errorf("availnzb recover: unexpected status code: %d", resp.StatusCode)
-	}
-
-	var recovered RecoverKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&recovered); err != nil {
-		logger.Error("AvailNZB RecoverKey decode failed", "err", err)
-		return nil, err
-	}
-	if id := strings.TrimSpace(recovered.ID); id == "" {
-		return nil, fmt.Errorf("availnzb recover: empty id in response")
-	}
-
-	return &recovered, nil
 }
 
 func (c *Client) ReportAvailability(releaseURL string, providerURL string, status bool, meta ReportMeta) error {
@@ -684,46 +311,16 @@ func (c *Client) ReportAvailability(releaseURL string, providerURL string, statu
 
 	logger.Debug("AvailNZB report", "url", releaseURL, "release_name", body.ReleaseName, "provider", providerURL, "status", status, "imdb_id", body.ImdbID, "tmdb_id", body.TmdbID, "tvdb_id", body.TvdbID, "season", body.Season, "episode", body.Episode)
 
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		logger.Error("AvailNZB report marshal failed", "err", err)
-		return err
-	}
-
-	req, err := http.NewRequest("POST", c.BaseURL+apiPath+"/report", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("X-API-Key", apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			logger.Error("AvailNZB report unexpected status and failed to read error body", "status", resp.StatusCode, "url", releaseURL, "err", readErr)
-			return fmt.Errorf("availnzb report: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if resp.StatusCode == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
-			logger.Warn("AvailNZB report blocked by temporary IP lease", "status", resp.StatusCode, "url", releaseURL, "reason", message)
-			return fmt.Errorf("availnzb report: unexpected status code: %d: api key temporarily assigned to another ip", resp.StatusCode)
-		}
-		if message != "" {
-			logger.Error("AvailNZB report unexpected status", "status", resp.StatusCode, "url", releaseURL, "message", message)
-			return fmt.Errorf("availnzb report: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		logger.Error("AvailNZB report unexpected status", "status", resp.StatusCode, "url", releaseURL)
-		return fmt.Errorf("availnzb report: unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
+	return c.doJSON(context.Background(), requestOptions{
+		method:        "POST",
+		path:          "/report",
+		body:          body,
+		authenticated: true,
+		okStatuses:    []int{http.StatusOK, http.StatusAccepted},
+		errPrefix:     "availnzb report",
+		logAttrs:      []any{"url", releaseURL},
+		classifyErr:   statusAuthErrClassifier("availnzb report", releaseURL),
+	})
 }
 
 type backbonesResponse struct {
@@ -735,28 +332,13 @@ func (c *Client) RefreshBackbones() error {
 	if c.BaseURL == "" {
 		return nil
 	}
-	apiKey := c.GetAPIKey()
-	reqURL := c.BaseURL + apiPath + "/backbones"
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return err
-	}
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB RefreshBackbones request failed", "err", err)
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		logger.Error("AvailNZB RefreshBackbones unexpected status", "status", resp.StatusCode)
-		return fmt.Errorf("availnzb backbones: status %d", resp.StatusCode)
-	}
 	var wrapped backbonesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&wrapped); err != nil {
-		logger.Error("AvailNZB RefreshBackbones decode failed", "err", err)
+	if err := c.doJSON(context.Background(), requestOptions{
+		path:         "/backbones",
+		optionalAuth: true,
+		out:          &wrapped,
+		errPrefix:    "availnzb backbones",
+	}); err != nil {
 		return err
 	}
 	m := make(map[string]string)
@@ -797,46 +379,22 @@ func (c *Client) GetMe() (*MeResponse, error) {
 		logger.Trace("AvailNZB GetMe skipped", "reason", "no base URL")
 		return nil, nil
 	}
-	apiKey := c.GetAPIKey()
-
-	reqURL := c.BaseURL + apiPath + "/me"
 	logger.Debug("AvailNZB GetMe")
 
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
-	}
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB GetMe request failed", "err", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Error("AvailNZB GetMe unexpected status", "status", resp.StatusCode)
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("availnzb me: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if resp.StatusCode == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
-			logger.Warn("AvailNZB GetMe blocked by temporary IP lease", "status", resp.StatusCode, "reason", message)
-			return nil, fmt.Errorf("availnzb me: unexpected status code: %d: api key temporarily assigned to another ip", resp.StatusCode)
-		}
-		if message != "" {
-			return nil, fmt.Errorf("availnzb me: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		return nil, fmt.Errorf("availnzb me: unexpected status code: %d", resp.StatusCode)
-	}
-
 	var me MeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
-		logger.Error("AvailNZB GetMe decode failed", "err", err)
+	if err := c.doJSON(context.Background(), requestOptions{
+		path:         "/me",
+		optionalAuth: true,
+		out:          &me,
+		errPrefix:    "availnzb me",
+		classifyErr: func(status int, message string) error {
+			if status == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
+				logger.Warn("AvailNZB GetMe blocked by temporary IP lease", "status", status, "reason", message)
+				return fmt.Errorf("availnzb me: unexpected status code: %d: api key temporarily assigned to another ip", status)
+			}
+			return nil
+		},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -848,64 +406,47 @@ func (c *Client) GetStatus(releaseURL string) (*StatusResponse, error) {
 		logger.Trace("AvailNZB GetStatus skipped", "reason", "no base URL")
 		return nil, nil
 	}
-	apiKey := c.GetAPIKey()
-
 	params := url.Values{}
 	params.Set("url", releaseURL)
-	reqURL := c.BaseURL + apiPath + "/status/url?" + params.Encode()
 
 	logger.Debug("AvailNZB GetStatus", "url", releaseURL)
 
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB GetStatus request failed", "err", err, "url", releaseURL)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
+	var status StatusResponse
+	err := c.doJSON(context.Background(), requestOptions{
+		path:              "/status/url",
+		query:             params.Encode(),
+		optionalAuth:      true,
+		out:               &status,
+		errPrefix:         "availnzb status",
+		missingIsNotFound: true,
+		classifyErr:       statusAuthErrClassifier("availnzb status", releaseURL),
+	})
+	if errors.Is(err, errNotFound) {
 		logger.Debug("AvailNZB GetStatus", "result", "not_found", "url", releaseURL)
 		return nil, nil
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			logger.Error("AvailNZB GetStatus unexpected status and failed to read error body", "status", resp.StatusCode, "url", releaseURL, "err", readErr)
-			return nil, fmt.Errorf("availnzb status: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if resp.StatusCode == http.StatusUnauthorized && isAPIKeyMissingMessage(message) {
-			logger.Error("AvailNZB GetStatus unexpected status", "status", resp.StatusCode, "url", releaseURL, "api_key_missing", true)
-			return nil, fmt.Errorf("availnzb status: unexpected status code: %d: api key missing", resp.StatusCode)
-		}
-		if resp.StatusCode == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
-			logger.Warn("AvailNZB GetStatus blocked by temporary IP lease", "status", resp.StatusCode, "url", releaseURL, "reason", message)
-			return nil, fmt.Errorf("availnzb status: unexpected status code: %d: api key temporarily assigned to another ip", resp.StatusCode)
-		}
-		if message != "" {
-			logger.Error("AvailNZB GetStatus unexpected status", "status", resp.StatusCode, "url", releaseURL, "message", message)
-			return nil, fmt.Errorf("availnzb status: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		logger.Error("AvailNZB GetStatus unexpected status", "status", resp.StatusCode, "url", releaseURL)
-		return nil, fmt.Errorf("availnzb status: unexpected status code: %d", resp.StatusCode)
-	}
-
-	var status StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		logger.Error("AvailNZB GetStatus decode failed", "err", err)
+	if err != nil {
 		return nil, err
 	}
 
 	logger.Debug("AvailNZB GetStatus", "url", releaseURL, "available", status.Available, "backbones", len(status.Summary))
 	return &status, nil
+}
+
+// statusAuthErrClassifier turns the two auth-shaped rejections the API can
+// return into stable messages, so callers do not have to match server prose.
+func statusAuthErrClassifier(prefix, releaseURL string) func(int, string) error {
+	return func(status int, message string) error {
+		if status == http.StatusUnauthorized && isAPIKeyMissingMessage(message) {
+			logger.Error("AvailNZB request rejected", "op", prefix, "status", status, "url", releaseURL, "api_key_missing", true)
+			return fmt.Errorf("%s: unexpected status code: %d: api key missing", prefix, status)
+		}
+		if status == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
+			logger.Warn("AvailNZB request blocked by temporary IP lease", "op", prefix, "status", status, "url", releaseURL, "reason", message)
+			return fmt.Errorf("%s: unexpected status code: %d: api key temporarily assigned to another ip", prefix, status)
+		}
+		return nil
+	}
 }
 
 type releasesResponseJSON struct {
@@ -934,18 +475,18 @@ func (c *Client) GetReleases(imdbID string, tmdbID string, tvdbID string, season
 		logger.Trace("AvailNZB GetReleases skipped", "reason", "no base URL")
 		return nil, nil
 	}
-	apiKey := c.GetAPIKey()
 
 	var path string
-	if tmdbID != "" && (season > 0 || episode > 0) {
-		path = fmt.Sprintf("%s/status/tmdb/%s/%d/%d", apiPath, url.PathEscape(tmdbID), season, episode)
-	} else if tvdbID != "" && (season > 0 || episode > 0) {
-		path = fmt.Sprintf("%s/status/tvdb/%s/%d/%d", apiPath, url.PathEscape(tvdbID), season, episode)
-	} else if tmdbID != "" {
-		path = apiPath + "/status/tmdb/" + url.PathEscape(tmdbID)
-	} else if imdbID != "" {
-		path = apiPath + "/status/imdb/" + url.PathEscape(imdbID)
-	} else {
+	switch {
+	case tmdbID != "" && (season > 0 || episode > 0):
+		path = fmt.Sprintf("/status/tmdb/%s/%d/%d", url.PathEscape(tmdbID), season, episode)
+	case tvdbID != "" && (season > 0 || episode > 0):
+		path = fmt.Sprintf("/status/tvdb/%s/%d/%d", url.PathEscape(tvdbID), season, episode)
+	case tmdbID != "":
+		path = "/status/tmdb/" + url.PathEscape(tmdbID)
+	case imdbID != "":
+		path = "/status/imdb/" + url.PathEscape(imdbID)
+	default:
 		return nil, fmt.Errorf("availnzb releases: need tmdb_id, imdb_id, or tvdb_id+season+episode")
 	}
 	params := url.Values{}
@@ -955,72 +496,21 @@ func (c *Client) GetReleases(imdbID string, tmdbID string, tvdbID string, season
 	if len(providers) > 0 {
 		params.Set("providers", strings.Join(providers, ","))
 	}
-	reqURL := c.BaseURL + path
-	if len(params) > 0 {
-		reqURL += "?" + params.Encode()
-	}
 
-	logger.Debug("AvailNZB GetReleases", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-		"indexers", len(indexers),
-		"providers", len(providers),
-	)...)
-
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		logger.Error("AvailNZB GetReleases request failed", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-			"err", err,
-		)...)
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			logger.Error("AvailNZB GetReleases unexpected status and failed to read error body", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-				"status", resp.StatusCode,
-				"err", readErr,
-			)...)
-			return nil, fmt.Errorf("availnzb releases: unexpected status code: %d", resp.StatusCode)
-		}
-		message := decodeAPIErrorMessage(body)
-		if resp.StatusCode == http.StatusUnauthorized && isAPIKeyMissingMessage(message) {
-			logger.Error("AvailNZB GetReleases unexpected status", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-				"status", resp.StatusCode,
-				"api_key_missing", true,
-			)...)
-			return nil, fmt.Errorf("availnzb releases: unexpected status code: %d: api key missing", resp.StatusCode)
-		}
-		if resp.StatusCode == http.StatusForbidden && isAPIKeyTemporarilyAssignedMessage(message) {
-			logger.Warn("AvailNZB GetReleases blocked by temporary IP lease", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-				"status", resp.StatusCode,
-				"reason", message,
-			)...)
-			return nil, fmt.Errorf("availnzb releases: unexpected status code: %d: api key temporarily assigned to another ip", resp.StatusCode)
-		}
-		if message != "" {
-			logger.Error("AvailNZB GetReleases unexpected status", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-				"status", resp.StatusCode,
-				"message", message,
-			)...)
-			return nil, fmt.Errorf("availnzb releases: unexpected status code: %d: %s", resp.StatusCode, message)
-		}
-		logger.Error("AvailNZB GetReleases unexpected status", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
-			"status", resp.StatusCode,
-		)...)
-		return nil, fmt.Errorf("availnzb releases: unexpected status code: %d", resp.StatusCode)
-	}
+	logAttrs := availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode)
+	logger.Debug("AvailNZB GetReleases", append(append([]any{}, logAttrs...),
+		"indexers", len(indexers), "providers", len(providers))...)
 
 	var raw releasesResponseJSON
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		logger.Error("AvailNZB GetReleases decode failed", "err", err)
+	if err := c.doJSON(context.Background(), requestOptions{
+		path:         path,
+		query:        params.Encode(),
+		optionalAuth: true,
+		out:          &raw,
+		errPrefix:    "availnzb releases",
+		logAttrs:     logAttrs,
+		classifyErr:  statusAuthErrClassifier("availnzb releases", ""),
+	}); err != nil {
 		return nil, err
 	}
 
@@ -1056,18 +546,35 @@ func (c *Client) GetReleases(imdbID string, tmdbID string, tvdbID string, season
 	return &ReleasesResult{ImdbID: raw.ImdbID, Count: raw.Count, Releases: releases}, nil
 }
 
+// latestSummaryUpdate returns the newest LastUpdated across all backbone
+// reports, or the zero time when there are none.
+func latestSummaryUpdate(summary map[string]BackboneStatus) time.Time {
+	var newest time.Time
+	for _, report := range summary {
+		if report.LastUpdated.After(newest) {
+			newest = report.LastUpdated
+		}
+	}
+	return newest
+}
+
+// backboneSet maps provider hosts onto the set of backbones they sit behind.
+func backboneSet(hostToBackbone map[string]string, hosts []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, h := range hosts {
+		if b := hostToBackbone[strings.ToLower(strings.TrimSpace(h))]; b != "" {
+			out[b] = true
+		}
+	}
+	return out
+}
+
 func (c *Client) OurBackbones(providerHosts []string) (map[string]bool, error) {
 	m, err := c.GetBackbones()
 	if err != nil || m == nil {
 		return nil, err
 	}
-	out := make(map[string]bool)
-	for _, h := range providerHosts {
-		if b := m[strings.ToLower(strings.TrimSpace(h))]; b != "" {
-			out[b] = true
-		}
-	}
-	return out, nil
+	return backboneSet(m, providerHosts), nil
 }
 
 func (c *Client) CheckPreDownload(releaseURL string, validProviderHosts []string) (available bool, lastUpdated time.Time, capableProvider string, err error) {
@@ -1091,29 +598,14 @@ func (c *Client) CheckPreDownload(releaseURL string, validProviderHosts []string
 	if err != nil || len(hostToBackbone) == 0 {
 		logger.Trace("AvailNZB CheckPreDownload", "result", "no_backbone_mapping", "err", err)
 		if status.Available && len(status.Summary) > 0 {
-			for _, report := range status.Summary {
-				if report.LastUpdated.After(lastUpdated) {
-					lastUpdated = report.LastUpdated
-				}
-			}
-			return true, lastUpdated, "", nil
+			return true, latestSummaryUpdate(status.Summary), "", nil
 		}
 		return false, time.Time{}, "", nil
 	}
-	ourBackbones := make(map[string]bool)
-	for _, h := range validProviderHosts {
-		if b := hostToBackbone[strings.ToLower(strings.TrimSpace(h))]; b != "" {
-			ourBackbones[b] = true
-		}
-	}
+	ourBackbones := backboneSet(hostToBackbone, validProviderHosts)
 	if len(ourBackbones) == 0 {
 		if status.Available && len(status.Summary) > 0 {
-			for _, report := range status.Summary {
-				if report.LastUpdated.After(lastUpdated) {
-					lastUpdated = report.LastUpdated
-				}
-			}
-			return true, lastUpdated, "", nil
+			return true, latestSummaryUpdate(status.Summary), "", nil
 		}
 		return false, time.Time{}, "", nil
 	}
@@ -1137,11 +629,7 @@ func (c *Client) CheckPreDownload(releaseURL string, validProviderHosts []string
 		}
 	}
 	if status.Available && !available && len(status.Summary) > 0 {
-		for _, report := range status.Summary {
-			if report.LastUpdated.After(lastUpdated) {
-				lastUpdated = report.LastUpdated
-			}
-		}
+		lastUpdated = latestSummaryUpdate(status.Summary)
 		available = status.Available
 	}
 

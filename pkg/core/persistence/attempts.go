@@ -112,10 +112,7 @@ func (m *StateManager) ResolvePendingAttempt(p RecordAttemptParams) {
 	if m == nil || m.db == nil || p.SlotPath == "" {
 		return
 	}
-	success := 0
-	if p.Success {
-		success = 1
-	}
+	success := boolToInt(p.Success)
 	_ = m.withWriteLock(func(db *sql.DB) error {
 		_, err := db.Exec(`UPDATE nzb_attempts
 			SET preload = 0,
@@ -141,10 +138,7 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 	if m == nil || m.db == nil {
 		return
 	}
-	success := 0
-	if p.Success {
-		success = 1
-	}
+	success := boolToInt(p.Success)
 	err := m.withWriteLock(func(db *sql.DB) error {
 		if p.SlotPath != "" {
 			// Only update the currently-pending preload row (preload=1). Historical resolved rows
@@ -269,42 +263,18 @@ func (m *StateManager) ListAttempts(opts ListAttemptsOptions) ([]NZBAttempt, err
 		a.Success = success != 0
 		a.Preload = preload != 0
 		a.TTFFMS = ttffMs
-		if releaseURL.Valid {
-			a.ReleaseURL = releaseURL.String
-		}
-		if servedFile.Valid {
-			a.ServedFile = servedFile.String
-		}
-		if matchType.Valid {
-			a.MatchType = matchType.String
-		}
-		if failureReason.Valid {
-			a.FailureReason = failureReason.String
-		}
-		if availStatus.Valid {
-			a.AvailStatus = availStatus.String
-		}
-		if availReason.Valid {
-			a.AvailReason = availReason.String
-		}
-		if slotPath.Valid {
-			a.SlotPath = slotPath.String
-		}
-		if contentTitle.Valid {
-			a.ContentTitle = contentTitle.String
-		}
-		if indexerName.Valid {
-			a.IndexerName = indexerName.String
-		}
-		if streamName.Valid {
-			a.StreamName = streamName.String
-		}
-		if providerName.Valid {
-			a.ProviderName = providerName.String
-		}
-		if releaseSize.Valid {
-			a.ReleaseSize = releaseSize.Int64
-		}
+		a.ReleaseURL = releaseURL.String
+		a.ServedFile = servedFile.String
+		a.MatchType = matchType.String
+		a.FailureReason = failureReason.String
+		a.AvailStatus = availStatus.String
+		a.AvailReason = availReason.String
+		a.SlotPath = slotPath.String
+		a.ContentTitle = contentTitle.String
+		a.IndexerName = indexerName.String
+		a.StreamName = streamName.String
+		a.ProviderName = providerName.String
+		a.ReleaseSize = releaseSize.Int64
 		list = append(list, a)
 	}
 	return list, rows.Err()

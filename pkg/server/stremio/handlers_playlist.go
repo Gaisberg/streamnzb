@@ -14,10 +14,10 @@ import (
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
-	"streamnzb/pkg/services/metadata/tmdb"
 )
 
 type namedIndexer interface {
@@ -54,7 +54,7 @@ func indexerNameFromRelease(rel *release.Release) string {
 type playlistResult struct {
 	Candidates       []triage.Candidate
 	FirstIsAvailGood bool
-	Params           *SearchParams
+	Params           *query.SearchParams
 
 	CachedAvailable map[string]bool
 
@@ -79,13 +79,13 @@ type AvailContext struct {
 }
 
 type rawSearchResult struct {
-	Params          *SearchParams
+	Params          *query.SearchParams
 	IndexerReleases []*release.Release
 	Avail           *AvailContext
 }
 
 type playlistSource struct {
-	Params                 *SearchParams
+	Params                 *query.SearchParams
 	Releases               []*release.Release
 	Avail                  *AvailContext
 	CachedAvailable        map[string]bool
@@ -913,46 +913,11 @@ func kindForRequest(source *playlistSource) string {
 				isAnime = true
 				kitsuShowType = meta.KitsuDetails.ShowType
 			} else {
-				isAnime = metadataLooksLikeAnime(meta, contentType)
+				isAnime = query.MetadataLooksLikeAnime(meta, contentType)
 			}
 		}
 	}
 	return ranking.Kind(contentType, kitsuShowType, isAnime)
-}
-
-// metadataLooksLikeAnime treats anime as animation that is not originally in
-// English: an explicit anime genre, or an animation genre on something made in
-// another language. Without metadata it reports false, so a request is only
-// ever promoted to anime on evidence.
-func metadataLooksLikeAnime(meta *resolvedSearchMetadata, contentType string) bool {
-	if meta == nil {
-		return false
-	}
-	var genres []tmdb.Genre
-	var originalLanguage string
-	if strings.EqualFold(strings.TrimSpace(contentType), "movie") {
-		if meta.MovieDetails == nil {
-			return false
-		}
-		genres, originalLanguage = meta.MovieDetails.Genres, meta.MovieDetails.OriginalLanguage
-	} else {
-		if meta.TVDetails == nil {
-			return false
-		}
-		genres, originalLanguage = meta.TVDetails.Genres, meta.TVDetails.OriginalLanguage
-	}
-
-	animation := false
-	for _, genre := range genres {
-		switch strings.ToLower(strings.TrimSpace(genre.Name)) {
-		case "anime":
-			return true
-		case "animation":
-			animation = true
-		}
-	}
-	// TMDB reports ISO 639-1, so English is "en".
-	return animation && !strings.EqualFold(strings.TrimSpace(originalLanguage), "en")
 }
 
 // logRankingSelection records how a request was classified, which profile that
@@ -1060,14 +1025,18 @@ func (s *Server) filterCachedUnhealthyCandidates(merged []triage.Candidate, avai
 	return filtered
 }
 
+// streamLogName labels a stream in logs, falling back to "legacy" for
+// requests that arrive without one.
+func streamLogName(stream *auth.Stream) string {
+	if stream != nil {
+		return stream.Username
+	}
+	return "legacy"
+}
+
 func logStreamFiltering(stream *auth.Stream, filterMode string, inputResults, finalResults int) {
 	logger.Debug("Stream filtering",
-		"stream", func() string {
-			if stream != nil {
-				return stream.Username
-			}
-			return "legacy"
-		}(),
+		"stream", streamLogName(stream),
 		"mode", filterMode,
 		"input_results", inputResults,
 		"final_results", finalResults,
@@ -1092,12 +1061,7 @@ func countCandidatesByUnavailableDetailsURL(candidates []triage.Candidate, unava
 
 func logAvailReportedBadFiltering(stream *auth.Stream, enabled bool, availFilteredOut, unavailableKnown int) {
 	logger.Debug("AvailNZB reported-bad filtering",
-		"stream", func() string {
-			if stream != nil {
-				return stream.Username
-			}
-			return "legacy"
-		}(),
+		"stream", streamLogName(stream),
 		"enabled", enabled,
 		"avail_filtered_out", availFilteredOut,
 		"known_unavailable", unavailableKnown,
@@ -1110,12 +1074,7 @@ func sortCandidates(triageService *triage.Service, candidates []triage.Candidate
 
 func logStreamSorting(stream *auth.Stream, filterMode string, inputResults, finalResults int) {
 	logger.Debug("Stream sorting",
-		"stream", func() string {
-			if stream != nil {
-				return stream.Username
-			}
-			return "legacy"
-		}(),
+		"stream", streamLogName(stream),
 		"mode", filterMode,
 		"input_results", inputResults,
 		"final_results", finalResults,

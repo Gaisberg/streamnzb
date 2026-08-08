@@ -53,12 +53,12 @@ func NewAggregator(indexers ...Indexer) *Aggregator {
 	}
 }
 
-func (a *Aggregator) Ping() error {
+func (a *Aggregator) Ping(ctx context.Context) error {
 	var lastErr error
 	successCount := 0
 
 	for _, idx := range a.Indexers {
-		if err := idx.Ping(); err != nil {
+		if err := idx.Ping(ctx); err != nil {
 			lastErr = err
 		} else {
 			successCount++
@@ -84,6 +84,14 @@ func (a *Aggregator) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, er
 		lastErr = err
 	}
 	return nil, lastErr
+}
+
+// SearchModeLabel renders a request's search mode for logs.
+func SearchModeLabel(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "id") {
+		return "id"
+	}
+	return "text"
 }
 
 // isIDOnlySearch returns true when the request is an ID-based search
@@ -116,14 +124,14 @@ func ShouldSkipIndexerForRequest(req SearchRequest, overrides *config.IndexerSea
 	return shouldSkipIndexer(req, overrides)
 }
 
-func (a *Aggregator) Search(req SearchRequest) (*SearchResponse, error) {
+func (a *Aggregator) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	if strings.EqualFold(strings.TrimSpace(req.IndexerMode), "failover") {
-		return a.searchWithFailover(req)
+		return a.searchWithFailover(ctx, req)
 	}
-	return a.searchCombined(req)
+	return a.searchCombined(ctx, req)
 }
 
-func (a *Aggregator) searchCombined(req SearchRequest) (*SearchResponse, error) {
+func (a *Aggregator) searchCombined(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	resultsChan := make(chan []Item, len(a.Indexers))
 	var wg sync.WaitGroup
 
@@ -131,7 +139,7 @@ func (a *Aggregator) searchCombined(req SearchRequest) (*SearchResponse, error) 
 		wg.Add(1)
 		go func(indexer Indexer, r SearchRequest) {
 			defer wg.Done()
-			items, err := searchItemsForIndexer(indexer, r)
+			items, err := searchItemsForIndexer(ctx, indexer, r)
 			if err != nil {
 				logger.Warn("Indexer search failed", "indexer", indexer.Name(), "err", err)
 				resultsChan <- []Item{}
@@ -202,7 +210,7 @@ func (a *Aggregator) searchCombined(req SearchRequest) (*SearchResponse, error) 
 	return resp, nil
 }
 
-func (a *Aggregator) searchWithFailover(req SearchRequest) (*SearchResponse, error) {
+func (a *Aggregator) searchWithFailover(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	type failoverResult struct {
 		index int
 		items []Item
@@ -212,7 +220,7 @@ func (a *Aggregator) searchWithFailover(req SearchRequest) (*SearchResponse, err
 	results := make(chan failoverResult, len(a.Indexers))
 	for i, idx := range a.Indexers {
 		go func(index int, idx Indexer) {
-			items, err := searchItemsForIndexer(idx, req)
+			items, err := searchItemsForIndexer(ctx, idx, req)
 			results <- failoverResult{
 				index: index,
 				items: items,
@@ -260,7 +268,7 @@ func (a *Aggregator) searchWithFailover(req SearchRequest) (*SearchResponse, err
 	return resp, nil
 }
 
-func searchItemsForIndexer(idx Indexer, req SearchRequest) ([]Item, error) {
+func searchItemsForIndexer(ctx context.Context, idx Indexer, req SearchRequest) ([]Item, error) {
 	var indexerOverrides *config.IndexerSearchConfig
 	if req.EffectiveByIndexer != nil {
 		indexerOverrides = req.EffectiveByIndexer[idx.Name()]
@@ -286,7 +294,7 @@ func searchItemsForIndexer(idx Indexer, req SearchRequest) ([]Item, error) {
 		)
 		return []Item{}, nil
 	}
-	resp, err := idx.Search(reqCopy)
+	resp, err := idx.Search(ctx, reqCopy)
 	if err != nil {
 		return nil, err
 	}

@@ -18,7 +18,7 @@ type recordingIndexer struct {
 	reqs []indexer.SearchRequest
 }
 
-func (r *recordingIndexer) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+func (r *recordingIndexer) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	r.mu.Lock()
 	r.reqs = append(r.reqs, req)
 	r.mu.Unlock()
@@ -26,7 +26,7 @@ func (r *recordingIndexer) Search(req indexer.SearchRequest) (*indexer.SearchRes
 }
 
 func (r *recordingIndexer) DownloadNZB(context.Context, string) ([]byte, error) { return nil, nil }
-func (r *recordingIndexer) Ping() error                                         { return nil }
+func (r *recordingIndexer) Ping(context.Context) error                          { return nil }
 func (r *recordingIndexer) Name() string                                        { return r.name }
 func (r *recordingIndexer) GetUsage() indexer.Usage                             { return indexer.Usage{} }
 
@@ -35,12 +35,12 @@ type staticIndexer struct {
 	resp *indexer.SearchResponse
 }
 
-func (s *staticIndexer) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+func (s *staticIndexer) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	return s.resp, nil
 }
 
 func (s *staticIndexer) DownloadNZB(context.Context, string) ([]byte, error) { return nil, nil }
-func (s *staticIndexer) Ping() error                                         { return nil }
+func (s *staticIndexer) Ping(context.Context) error                          { return nil }
 func (s *staticIndexer) Name() string                                        { return s.name }
 func (s *staticIndexer) GetUsage() indexer.Usage                             { return indexer.Usage{} }
 
@@ -49,12 +49,12 @@ type errIndexer struct {
 	err  error
 }
 
-func (e *errIndexer) Search(req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+func (e *errIndexer) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
 	return nil, e.err
 }
 
 func (e *errIndexer) DownloadNZB(context.Context, string) ([]byte, error) { return nil, nil }
-func (e *errIndexer) Ping() error                                         { return nil }
+func (e *errIndexer) Ping(context.Context) error                          { return nil }
 func (e *errIndexer) Name() string                                        { return e.name }
 func (e *errIndexer) GetUsage() indexer.Usage                             { return indexer.Usage{} }
 
@@ -70,7 +70,7 @@ func TestRunIndexerSearchesTextRequestCarriesSeasonEpisodeWhenEnabled(t *testing
 		ValidationQuery: "The Walking Dead",
 	}
 
-	if _, err := RunIndexerSearches(idx, req, "series"); err != nil {
+	if _, err := RunIndexerSearches(context.Background(), idx, req, "series"); err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestRunIndexerSearchesAlwaysAppliesValidation(t *testing.T) {
 		EnableYearValidation: true,
 	}
 
-	got, err := RunIndexerSearches(idx, req, "movie")
+	got, err := RunIndexerSearches(context.Background(), idx, req, "movie")
 	if err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRunIndexerSearchesQueryWithIDsDoesNotAlsoRunIDSearch(t *testing.T) {
 		ValidationQuery: "Meal Ticket 2026",
 	}
 
-	if _, err := RunIndexerSearches(idx, req, "movie"); err != nil {
+	if _, err := RunIndexerSearches(context.Background(), idx, req, "movie"); err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestRunIndexerSearchesIDModePreservesPreparedQuery(t *testing.T) {
 		ValidationQuery: "The Age of Adaline",
 	}
 
-	if _, err := RunIndexerSearches(idx, req, "movie"); err != nil {
+	if _, err := RunIndexerSearches(context.Background(), idx, req, "movie"); err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}
 
@@ -356,7 +356,7 @@ func TestRunIndexerSearchesReturnsTextSearchErrors(t *testing.T) {
 		RequestLabel:    "Text Request",
 	}
 
-	_, err := RunIndexerSearches(idx, req, "series")
+	_, err := RunIndexerSearches(context.Background(), idx, req, "series")
 	if err == nil {
 		t.Fatalf("expected text search error, got nil")
 	}
@@ -373,7 +373,7 @@ func TestRunIndexerSearchesSkipsWithoutValidationBasis(t *testing.T) {
 		IMDbID:     "tt1655441",
 	}
 
-	got, err := RunIndexerSearches(idx, req, "movie")
+	got, err := RunIndexerSearches(context.Background(), idx, req, "movie")
 	if err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}
@@ -404,7 +404,7 @@ func TestRunIndexerSearchesUsesValidationQueriesWhenPresent(t *testing.T) {
 		EnableYearValidation: true,
 	}
 
-	got, err := RunIndexerSearches(idx, req, "movie")
+	got, err := RunIndexerSearches(context.Background(), idx, req, "movie")
 	if err != nil {
 		t.Fatalf("RunIndexerSearches() error = %v", err)
 	}

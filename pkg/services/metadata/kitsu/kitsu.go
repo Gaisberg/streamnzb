@@ -1,4 +1,4 @@
-package stremio
+package kitsu
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"streamnzb/pkg/core/logger"
 )
 
-type KitsuAnimeDetails struct {
+type AnimeDetails struct {
 	ID             string   `json:"id"`
 	CanonicalTitle string   `json:"canonical_title"`
 	EnglishTitle   string   `json:"english_title,omitempty"`
@@ -25,28 +25,29 @@ type KitsuAnimeDetails struct {
 	TMDBID         string   `json:"tmdb_id,omitempty"`
 }
 
-type kitsuCacheEntry struct {
-	details *KitsuAnimeDetails
+type cacheEntry struct {
+	details *AnimeDetails
 	until   time.Time
 }
 
-type KitsuClient struct {
+type Client struct {
 	httpClient *http.Client
 	cache      sync.Map
-	baseURL    string
+	// BaseURL is the Kitsu API root; exported so tests can point at a stub.
+	BaseURL string
 }
 
-func NewKitsuClient(httpClient *http.Client) *KitsuClient {
+func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 8 * time.Second}
 	}
-	return &KitsuClient{
+	return &Client{
 		httpClient: httpClient,
-		baseURL:    "https://kitsu.app/api/edge",
+		BaseURL:    "https://kitsu.app/api/edge",
 	}
 }
 
-type kitsuAPIResponse struct {
+type apiResponse struct {
 	Data struct {
 		ID         string `json:"id"`
 		Type       string `json:"type"`
@@ -71,19 +72,19 @@ type kitsuAPIResponse struct {
 	} `json:"included"`
 }
 
-func (c *KitsuClient) GetAnimeDetails(ctx context.Context, kitsuID string) (*KitsuAnimeDetails, error) {
+func (c *Client) GetAnimeDetails(ctx context.Context, kitsuID string) (*AnimeDetails, error) {
 	kitsuID = strings.TrimSpace(kitsuID)
 	if kitsuID == "" {
 		return nil, fmt.Errorf("empty kitsu id")
 	}
 
 	if v, ok := c.cache.Load(kitsuID); ok {
-		if ent, _ := v.(*kitsuCacheEntry); ent != nil && time.Now().Before(ent.until) {
+		if ent, _ := v.(*cacheEntry); ent != nil && time.Now().Before(ent.until) {
 			return ent.details, nil
 		}
 	}
 
-	url := fmt.Sprintf("%s/anime/%s?include=mappings", c.baseURL, kitsuID)
+	url := fmt.Sprintf("%s/anime/%s?include=mappings", c.BaseURL, kitsuID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -101,18 +102,18 @@ func (c *KitsuClient) GetAnimeDetails(ctx context.Context, kitsuID string) (*Kit
 		return nil, fmt.Errorf("kitsu API returned status %d", resp.StatusCode)
 	}
 
-	var apiResp kitsuAPIResponse
+	var apiResp apiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("failed to decode kitsu API response: %w", err)
 	}
 
 	attr := apiResp.Data.Attributes
-	details := &KitsuAnimeDetails{
+	details := &AnimeDetails{
 		ID:             apiResp.Data.ID,
 		CanonicalTitle: strings.TrimSpace(attr.CanonicalTitle),
 		EnglishTitle:   strings.TrimSpace(attr.Titles.EN),
 		RomajiTitle:    strings.TrimSpace(attr.Titles.ENJP),
-		Synonyms:       cleanKitsuSynonyms(attr.AbbreviatedTitles),
+		Synonyms:       cleanSynonyms(attr.AbbreviatedTitles),
 		ShowType:       strings.TrimSpace(attr.ShowType),
 	}
 
@@ -157,7 +158,7 @@ func (c *KitsuClient) GetAnimeDetails(ctx context.Context, kitsuID string) (*Kit
 		"tvdb_id", details.TVDBID,
 		"tmdb_id", details.TMDBID)
 
-	c.cache.Store(kitsuID, &kitsuCacheEntry{
+	c.cache.Store(kitsuID, &cacheEntry{
 		details: details,
 		until:   time.Now().Add(24 * time.Hour),
 	})
@@ -165,7 +166,7 @@ func (c *KitsuClient) GetAnimeDetails(ctx context.Context, kitsuID string) (*Kit
 	return details, nil
 }
 
-func cleanKitsuSynonyms(raw []string) []string {
+func cleanSynonyms(raw []string) []string {
 	var out []string
 	seen := make(map[string]bool)
 	for _, s := range raw {

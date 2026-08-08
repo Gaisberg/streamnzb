@@ -1,11 +1,9 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
-	"streamnzb/pkg/auth"
 	"streamnzb/pkg/services/availnzb"
 )
 
@@ -16,14 +14,11 @@ type availNZBStatusResponse struct {
 }
 
 func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can access AvailNZB key status", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Only admin can access AvailNZB key status") {
 		return
 	}
 
@@ -34,29 +29,25 @@ func (s *Server) handleAvailNZBStatus(w http.ResponseWriter, r *http.Request) {
 
 	if availNZBURL == "" {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "AvailNZB URL is not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "AvailNZB URL is not configured"})
 		return
 	}
 	if availNZBAPIKey == "" {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "AvailNZB API key is not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "AvailNZB API key is not configured"})
 		return
 	}
 
 	status, err := availnzb.NewClient(availNZBURL, availNZBAPIKey).GetMe()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(availNZBStatusResponse{
+		writeJSON(w, http.StatusOK, availNZBStatusResponse{
 			StatusError: fmt.Sprintf("Failed to fetch AvailNZB key status: %v", err),
 			APIKey:      availNZBAPIKey,
 		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(availNZBStatusResponse{
+	writeJSON(w, http.StatusOK, availNZBStatusResponse{
 		Status: status,
 		APIKey: availNZBAPIKey,
 	})

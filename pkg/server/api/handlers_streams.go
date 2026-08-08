@@ -43,55 +43,47 @@ func (s *Server) handleManagedStreams(w http.ResponseWriter, r *http.Request) {
 	s.handleStreamByUsername(w, r)
 }
 
-func (s *Server) handleStreamsList(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+// streamToMap projects a stream onto the JSON shape the admin UI expects.
+func streamToMap(d *auth.Stream) map[string]interface{} {
+	return map[string]interface{}{
+		"username":                    d.Username,
+		"token":                       d.Token,
+		"filter_sorting_mode":         d.FilterSortingMode,
+		"indexer_mode":                d.IndexerMode,
+		"use_availnzb":                d.UseAvailNZB,
+		"filter_availnzb":             d.FilterAvailNZB,
+		"combine_results":             d.CombineResults,
+		"enable_failover":             d.EnableFailover,
+		"results_mode":                d.ResultsMode,
+		"auto_add_providers":          d.AutoAddProviders,
+		"auto_add_indexers":           d.AutoAddIndexers,
+		"indexer_overrides":           d.IndexerOverrides,
+		"provider_selections":         d.ProviderSelections,
+		"indexer_selections":          d.IndexerSelections,
+		"movie_search_queries":        d.MovieSearchQueries,
+		"series_search_queries":       d.SeriesSearchQueries,
+		"filter_profile_name":         d.FilterProfileName,
+		"filter_profile_by_type":      d.FilterProfileByType,
+		"mute_error_video":            d.MuteErrorVideo,
+		"result_name_template":        d.ResultNameTemplate,
+		"result_description_template": d.ResultDescriptionTemplate,
 	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can access streams list", http.StatusForbidden)
+}
+
+func (s *Server) handleStreamsList(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r, "Only admin can access streams list", http.MethodGet) {
 		return
 	}
 	streams := s.streamManager.GetAllStreams()
 	list := make([]map[string]interface{}, 0, len(streams))
 	for _, d := range streams {
-		list = append(list, map[string]interface{}{
-			"username":                    d.Username,
-			"token":                       d.Token,
-			"filter_sorting_mode":         d.FilterSortingMode,
-			"indexer_mode":                d.IndexerMode,
-			"use_availnzb":                d.UseAvailNZB,
-			"filter_availnzb":             d.FilterAvailNZB,
-			"combine_results":             d.CombineResults,
-			"enable_failover":             d.EnableFailover,
-			"results_mode":                d.ResultsMode,
-			"auto_add_providers":          d.AutoAddProviders,
-			"auto_add_indexers":           d.AutoAddIndexers,
-			"indexer_overrides":           d.IndexerOverrides,
-			"provider_selections":         d.ProviderSelections,
-			"indexer_selections":          d.IndexerSelections,
-			"movie_search_queries":        d.MovieSearchQueries,
-			"series_search_queries":       d.SeriesSearchQueries,
-			"filter_profile_name":         d.FilterProfileName,
-			"filter_profile_by_type":      d.FilterProfileByType,
-			"mute_error_video":            d.MuteErrorVideo,
-			"result_name_template":        d.ResultNameTemplate,
-			"result_description_template": d.ResultDescriptionTemplate,
-		})
+		list = append(list, streamToMap(&d))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *Server) handleStreamsCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can create streams", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Only admin can create streams", http.MethodPost) {
 		return
 	}
 	var req struct {
@@ -101,18 +93,15 @@ func (s *Server) handleStreamsCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	d, err := s.streamManager.CreateStream(req.Username, "", s.config.GetAdminUsername())
+	d, err := s.streamManager.CreateStream(req.Username, "", s.adminUsername())
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if s.strmServer != nil {
 		s.strmServer.ClearSearchCaches()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"user":    map[string]interface{}{"username": d.Username, "token": d.Token},
 	})
@@ -126,9 +115,7 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "username required", http.StatusBadRequest)
 		return
 	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Forbidden") {
 		return
 	}
 	suffix := ""
@@ -141,53 +128,25 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
-		d, err := s.streamManager.GetStream(username, s.config.GetAdminUsername())
+		d, err := s.streamManager.GetStream(username, s.adminUsername())
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"username":                    d.Username,
-			"token":                       d.Token,
-			"filter_sorting_mode":         d.FilterSortingMode,
-			"indexer_mode":                d.IndexerMode,
-			"use_availnzb":                d.UseAvailNZB,
-			"filter_availnzb":             d.FilterAvailNZB,
-			"combine_results":             d.CombineResults,
-			"enable_failover":             d.EnableFailover,
-			"results_mode":                d.ResultsMode,
-			"auto_add_providers":          d.AutoAddProviders,
-			"auto_add_indexers":           d.AutoAddIndexers,
-			"indexer_overrides":           d.IndexerOverrides,
-			"provider_selections":         d.ProviderSelections,
-			"indexer_selections":          d.IndexerSelections,
-			"movie_search_queries":        d.MovieSearchQueries,
-			"series_search_queries":       d.SeriesSearchQueries,
-			"filter_profile_name":         d.FilterProfileName,
-			"filter_profile_by_type":      d.FilterProfileByType,
-			"mute_error_video":            d.MuteErrorVideo,
-			"result_name_template":        d.ResultNameTemplate,
-			"result_description_template": d.ResultDescriptionTemplate,
-		})
+		writeJSON(w, http.StatusOK, streamToMap(d))
 	case http.MethodDelete:
 		if suffix != "" {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 		if err := s.streamManager.DeleteStream(username); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		if s.strmServer != nil {
 			s.strmServer.ClearSearchCaches()
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": true,
 			"message": fmt.Sprintf("Stream %s deleted successfully", username),
 		})
@@ -198,26 +157,17 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 		}
 		token, err := s.streamManager.RegenerateToken(username)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": token})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "token": token})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	stream, _ := auth.StreamFromContext(r)
-	if stream == nil || stream.Username != s.config.GetAdminUsername() {
-		http.Error(w, "Only admin can save stream configurations", http.StatusForbidden)
+	if !s.requireAdmin(w, r, "Only admin can save stream configurations", http.MethodPut) {
 		return
 	}
 	var streamConfigs map[string]struct {
@@ -250,7 +200,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		updated bool
 	)
 	for username, dc := range streamConfigs {
-		if username == s.config.GetAdminUsername() {
+		if username == s.adminUsername() {
 			continue
 		}
 		providerSelections := append([]string(nil), dc.ProviderSelections...)
@@ -302,16 +252,14 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 	}
 	if len(errors) > 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":  "error",
 			"message": "Some stream configs failed to save",
 			"errors":  errors,
 		})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
 		"message": "Stream configurations saved successfully. Search cache cleared.",
 	})

@@ -76,12 +76,12 @@ func TestReportGoodReturnsSentOnlyAfterSuccessfulDelivery(t *testing.T) {
 	reporter.MinDurationToReportGood = 0
 
 	sess := &session.Session{
-		ID:      "sess-good-sent",
-		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ID: "sess-good-sent",
 		ContentIDs: &session.AvailReportMeta{
 			ImdbID: "tt1234567",
 		},
 	}
+	sess.SetRelease(&release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234})
 	sess.AddBytesRead(2)
 	sess.RecordServedProviderHost("news.example.net")
 
@@ -106,12 +106,12 @@ func TestReportGoodReturnsSkippedWhenDeliveryFails(t *testing.T) {
 	reporter.MinDurationToReportGood = 0
 
 	sess := &session.Session{
-		ID:      "sess-good-failed",
-		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ID: "sess-good-failed",
 		ContentIDs: &session.AvailReportMeta{
 			ImdbID: "tt1234567",
 		},
 	}
+	sess.SetRelease(&release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234})
 	sess.AddBytesRead(2)
 	sess.RecordServedProviderHost("news.example.net")
 
@@ -138,12 +138,12 @@ func TestReportGoodAllowsRetryAfterSkippedAttempt(t *testing.T) {
 	reporter.MinDurationToReportGood = 0
 
 	sess := &session.Session{
-		ID:      "sess-good-retry",
-		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ID: "sess-good-retry",
 		ContentIDs: &session.AvailReportMeta{
 			ImdbID: "tt1234567",
 		},
 	}
+	sess.SetRelease(&release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234})
 	sess.AddBytesRead(2)
 
 	first := reporter.ReportGood(sess, time.Second)
@@ -192,12 +192,12 @@ func TestReportBadFallsBackToAttemptedProviderHosts(t *testing.T) {
 	reporter := NewReporter(client, nil)
 
 	sess := &session.Session{
-		ID:      "sess-bad-fallback",
-		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ID: "sess-bad-fallback",
 		ContentIDs: &session.AvailReportMeta{
 			ImdbID: "tt1234567",
 		},
 	}
+	sess.SetRelease(&release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234})
 	sess.RecordAttemptedProviderHost("news-a.example.net")
 	sess.RecordAttemptedProviderHost("news-b.example.net")
 
@@ -246,12 +246,12 @@ func TestReportBadAllProvidersMergesConfiguredHosts(t *testing.T) {
 	})
 
 	sess := &session.Session{
-		ID:      "sess-bad-all-providers",
-		Release: &release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234},
+		ID: "sess-bad-all-providers",
 		ContentIDs: &session.AvailReportMeta{
 			ImdbID: "tt1234567",
 		},
 	}
+	sess.SetRelease(&release.Release{Title: "Example.Release.2026", DetailsURL: "https://example.invalid/details/123", Size: 1234})
 	sess.RecordAttemptedProviderHost("news-a.example.net")
 	sess.RecordAttemptedProviderHost("news-b.example.net")
 
