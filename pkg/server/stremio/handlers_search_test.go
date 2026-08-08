@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
@@ -730,5 +731,125 @@ func TestBuildStreamDescriptionIncludesJhinScore(t *testing.T) {
 	descAIO := buildAIOStreamDescription("The Movie", "The.Movie.2024.1080p", "altHUB", 1450, false)
 	if !reflect.DeepEqual(descAIO, "The Movie\nThe.Movie.2024.1080p\n🔍 altHUB") {
 		t.Errorf("AIO desc = %q, want no score included", descAIO)
+	}
+}
+
+// delayedLabelIndexer answers per request label and can stall a chosen label,
+// so a test can make completion order differ from configured order.
+type delayedLabelIndexer struct {
+	slowLabel string
+	slowAll   bool
+	delay     time.Duration
+}
+
+func (d *delayedLabelIndexer) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	if d.slowAll || req.RequestLabel == d.slowLabel {
+		select {
+		case <-time.After(d.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &indexer.SearchResponse{Channel: indexer.Channel{Items: []indexer.Item{{
+		Title:         "Zootopia 2 2025",
+		GUID:          "https://example.invalid/" + req.RequestLabel,
+		Comments:      "https://example.invalid/" + req.RequestLabel,
+		ActualIndexer: req.RequestLabel,
+	}}}}, nil
+}
+
+func (d *delayedLabelIndexer) Name() string               { return "Delayed" }
+func (d *delayedLabelIndexer) GetUsage() indexer.Usage    { return indexer.Usage{} }
+func (d *delayedLabelIndexer) Ping(context.Context) error { return nil }
+func (d *delayedLabelIndexer) DownloadNZB(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func combineModeSearchParams() *query.SearchParams {
+	return &query.SearchParams{
+		ContentType: "movie",
+		ID:          "tmdb:1084242",
+		Req: indexer.SearchRequest{
+			TMDBID: "1084242",
+			IMDbID: "tt26443597",
+			Cat:    "2000",
+			Limit:  1000,
+		},
+		Metadata: &query.ResolvedSearchMetadata{
+			MovieDetails: &tmdb.MovieDetails{
+				Title:            "Zootopia 2",
+				OriginalTitle:    "Zootopia 2",
+				OriginalLanguage: "en",
+				ReleaseDate:      "2025-11-26",
+			},
+		},
+		MovieTitleQueries:  make(map[string][]string),
+		SeriesTitleQueries: make(map[string][]string),
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID: "tt26443597",
+			TmdbID: "1084242",
+		},
+	}
+}
+
+// Combine mode runs the configured requests concurrently, so results must be
+// merged by configured order rather than by whichever finished first.
+func TestRunConfiguredSearchRequestsCombineKeepsConfiguredOrder(t *testing.T) {
+	combine := true
+	stream := &auth.Stream{CombineResults: &combine}
+	srv := &Server{
+		config: &config.Config{
+			MovieSearchQueries: []config.SearchQueryConfig{
+				{Name: "Q1", SearchMode: "text"},
+				{Name: "Q2", SearchMode: "text"},
+			},
+		},
+		// Q1 is the slow one; without ordering it would land second.
+		indexer:           &delayedLabelIndexer{slowLabel: "Q1", delay: 120 * time.Millisecond},
+		uniqueIndexerHits: make(map[string]int64),
+	}
+
+	releases, executed, err := srv.runConfiguredSearchRequests(
+		context.Background(), "movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, combineModeSearchParams())
+	if err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	if executed != 2 {
+		t.Fatalf("executedRequests = %d, want 2", executed)
+	}
+	if len(releases) != 2 {
+		t.Fatalf("releases len = %d, want 2", len(releases))
+	}
+	if releases[0].Indexer != "Q1" || releases[1].Indexer != "Q2" {
+		t.Fatalf("expected configured order Q1,Q2; got %s,%s", releases[0].Indexer, releases[1].Indexer)
+	}
+}
+
+// The two requests should overlap, so the whole call costs about one delay
+// rather than the sum of both.
+func TestRunConfiguredSearchRequestsCombineRunsConcurrently(t *testing.T) {
+	combine := true
+	stream := &auth.Stream{CombineResults: &combine}
+	const delay = 150 * time.Millisecond
+	srv := &Server{
+		config: &config.Config{
+			MovieSearchQueries: []config.SearchQueryConfig{
+				{Name: "Q1", SearchMode: "text"},
+				{Name: "Q2", SearchMode: "text"},
+			},
+		},
+		indexer:           &delayedLabelIndexer{slowAll: true, delay: delay},
+		uniqueIndexerHits: make(map[string]int64),
+	}
+
+	start := time.Now()
+	_, _, err := srv.runConfiguredSearchRequests(
+		context.Background(), "movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, combineModeSearchParams())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	if elapsed >= 2*delay {
+		t.Fatalf("requests look sequential: took %v for two %v requests", elapsed, delay)
 	}
 }

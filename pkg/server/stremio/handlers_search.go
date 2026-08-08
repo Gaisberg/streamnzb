@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
@@ -218,15 +219,19 @@ func (s *Server) loadAvailContext(params *query.SearchParams, stream *auth.Strea
 func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, id, streamLabel string, stream *auth.Stream, selectedQueries []string, params *query.SearchParams) ([]*release.Release, int, error) {
 	indexerReleases := make([]*release.Release, 0)
 	executedRequests := 0
-	for _, name := range selectedQueries {
-		searchQuery := s.config.GetSearchQueryByName(contentType, name)
-		if searchQuery == nil {
-			logger.Debug("Stream search query missing", "stream", streamLabel, "content_type", contentType, "id", id, "query", name)
-			continue
-		}
-		params.Req.StreamLabel = streamLabel
-		params.Req.RequestLabel = searchQuery.Name
-		profileParams, profileErr := s.buildSearchParamsFromBase(params, searchQuery)
+	// runOne executes a single configured request. It returns the releases that
+	// request produced, how many indexer round trips it took, and any hard
+	// error. An empty result with no error means "this request matched nothing"
+	// — for a fallback chain that is the cue to try the next one.
+	runOne := func(searchQuery *config.SearchQueryConfig) ([]*release.Release, int, error) {
+		executedRequests := 0
+		var collected []*release.Release
+		// Clone before stamping the labels: the base params are shared across
+		// requests, and in combine mode these run concurrently.
+		base := cloneSearchParams(params)
+		base.Req.StreamLabel = streamLabel
+		base.Req.RequestLabel = searchQuery.Name
+		profileParams, profileErr := s.buildSearchParamsFromBase(base, searchQuery)
 		if profileErr != nil {
 			return nil, executedRequests, profileErr
 		}
@@ -256,7 +261,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				"type", contentType,
 				"id", id,
 			)
-			continue
+			return nil, executedRequests, nil
 		}
 		titleLanguages := query.ValidationTitleLanguages(searchQuery.SearchMode, searchQuery.SearchTitleLanguage, searchQuery.SearchTitleLanguages)
 		if searchMode == "id" && !hasUsableIDSearchIdentifier(profileParams.Req, contentType) {
@@ -266,7 +271,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				"type", contentType,
 				"id", id,
 			)
-			continue
+			return nil, executedRequests, nil
 		}
 		if searchMode != "id" && !hasPreparedTextQueries(profileParams.Req) {
 			logger.Debug("Skipping search request without prepared text queries",
@@ -275,7 +280,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				"type", contentType,
 				"id", id,
 			)
-			continue
+			return nil, executedRequests, nil
 		}
 		effectiveLimit := profileParams.Req.Limit
 		if searchQuery.SearchResultLimit >= 0 {
@@ -375,7 +380,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				requestReleases = append(requestReleases, releases...)
 			}
 			if streamCombinesResults(stream) {
-				indexerReleases = append(indexerReleases, releases...)
+				collected = append(collected, releases...)
 				continue
 			}
 			if len(releases) > 0 {
@@ -385,7 +390,65 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				return releases, executedRequests, nil
 			}
 		}
+		return collected, executedRequests, nil
 	}
+
+	queries := make([]*config.SearchQueryConfig, 0, len(selectedQueries))
+	for _, name := range selectedQueries {
+		searchQuery := s.config.GetSearchQueryByName(contentType, name)
+		if searchQuery == nil {
+			logger.Debug("Stream search query missing", "stream", streamLabel, "content_type", contentType, "id", id, "query", name)
+			continue
+		}
+		queries = append(queries, searchQuery)
+	}
+
+	if !streamCombinesResults(stream) {
+		// Fallback chain: the requests are ordered by preference and the first
+		// one that matches anything wins, so running later requests would be
+		// work whose result is thrown away.
+		for _, searchQuery := range queries {
+			releases, executed, err := runOne(searchQuery)
+			executedRequests += executed
+			if err != nil {
+				return nil, executedRequests, err
+			}
+			if len(releases) > 0 {
+				return releases, executedRequests, nil
+			}
+		}
+		return indexerReleases, executedRequests, nil
+	}
+
+	// Combine mode runs every request regardless, and they share no state, so
+	// there is nothing to gain from waiting for one before starting the next.
+	type queryOutcome struct {
+		releases []*release.Release
+		executed int
+		err      error
+	}
+	outcomes := make([]queryOutcome, len(queries))
+	var wg sync.WaitGroup
+	for i, searchQuery := range queries {
+		wg.Add(1)
+		go func(i int, searchQuery *config.SearchQueryConfig) {
+			defer wg.Done()
+			releases, executed, err := runOne(searchQuery)
+			outcomes[i] = queryOutcome{releases: releases, executed: executed, err: err}
+		}(i, searchQuery)
+	}
+	wg.Wait()
+
+	// Merged in configured order so results stay stable regardless of which
+	// request happened to finish first.
+	for _, outcome := range outcomes {
+		executedRequests += outcome.executed
+		if outcome.err != nil {
+			return nil, executedRequests, outcome.err
+		}
+		indexerReleases = append(indexerReleases, outcome.releases...)
+	}
+
 	if idxName, ok := singleIndexerFromReleases(indexerReleases); ok {
 		s.addUniqueIndexerHits(map[string]int{idxName: 1})
 	}
