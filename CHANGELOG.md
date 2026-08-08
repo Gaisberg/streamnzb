@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.15.0](https://github.com/Gaisberg/streamnzb/compare/v4.14.1...v4.15.0) (2026-08-08)
+
+
+### Features
+
+* **search:** fold absolute-episode querying into series searches as a default-on supplement ([31ff5dc](https://github.com/Gaisberg/streamnzb/commit/31ff5dca52f6a35be35e601b8426e2742b3dcdb0))
+
+
+### Bug Fixes
+
+* architecture pass — concurrency fixes, service extraction, dedupe ([7247e56](https://github.com/Gaisberg/streamnzb/commit/7247e562e9eff597fa5233fec2966ba0e5eaf6ed))
+* **ui:** show server error text instead of the bare HTTP status ([3dec915](https://github.com/Gaisberg/streamnzb/commit/3dec915f88fcdbc85e305012785941765a4c4937))
+* **unpack:** let a continuation RAR volume be scanned on its own ([f1541a6](https://github.com/Gaisberg/streamnzb/commit/f1541a6eb2ac4537161bc3335d9672de2cdf4a85))
+* **unpack:** stop blaming PAR2 for archives the scan could not read ([359540e](https://github.com/Gaisberg/streamnzb/commit/359540e552843cd43ab3131a63b89e9853403d42))
+
+
+### Performance Improvements
+
+* **search:** run combined search requests concurrently ([61c574e](https://github.com/Gaisberg/streamnzb/commit/61c574e5fa599f7403b6e90bca09a17f30bfc929))
+* **unpack:** bound the hunt for a nested set's first volume ([913049f](https://github.com/Gaisberg/streamnzb/commit/913049f7dd7e2ec7c6d00c465c16a18ca2ee2c2d))
+* **usenet:** probe sampled segments together and stage provider fan-out ([b96d6ef](https://github.com/Gaisberg/streamnzb/commit/b96d6ef05c106e3f8dd78481cbae5a8cfac9852e))
+
 ## [4.14.1](https://github.com/Gaisberg/streamnzb/compare/v4.14.0...v4.14.1) (2026-08-07)
 
 
