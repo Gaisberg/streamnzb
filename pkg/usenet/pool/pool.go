@@ -85,6 +85,17 @@ const (
 	// providerCooloffDuration: how long the provider is skipped before one probe
 	// attempt is allowed again (which re-arms the cooloff if it 430s again).
 	providerCooloffDuration = 60 * time.Second
+	// statHedgeDelay: how long StatSegment waits on the leading provider before
+	// consulting the rest anyway. Short enough that a stalled provider does not
+	// hold up validation, long enough that a healthy one answers alone.
+	statHedgeDelay = 150 * time.Millisecond
+	// statConcurrencyDivisor / bounds: a STAT normally costs one connection on
+	// the leading provider, so the per-caller budget is a fraction of that
+	// provider's pool. Callers check several files at once, so this is
+	// deliberately a small slice of capacity rather than most of it.
+	statConcurrencyDivisor = 16
+	minStatConcurrency     = 2
+	maxStatConcurrency     = 8
 )
 
 type providerArticleCounter struct {
@@ -897,7 +908,13 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	}
 	ch := make(chan statResult, len(providers))
 
-	for i := range providers {
+	// A pool with nothing in it cannot prove an article is missing. Report it
+	// as inconclusive so the caller fails open instead of poisoning a release.
+	if len(providers) == 0 {
+		return false, ErrNoProvidersAvailable
+	}
+
+	probe := func(i int) {
 		exclude := make([]string, 0, len(providers)-1)
 		for j := range providerIDs {
 			if j != i {
@@ -966,21 +983,48 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 		}(exclude)
 	}
 
+	// Providers are consulted in order, not all at once. The leading provider
+	// answers the overwhelming majority of STATs by itself, so a blanket
+	// fan-out multiplies connection demand by the provider count for no gain
+	// and queues up the smaller pools first. The rest join as soon as the
+	// leader cannot confirm the article, or once it has been slow enough that
+	// waiting costs more than the extra connections.
+	launched := 0
+	launchRemaining := func() {
+		for launched < len(providers) {
+			probe(launched)
+			launched++
+		}
+	}
+	probe(0)
+	launched = 1
+
+	hedge := time.NewTimer(statHedgeDelay)
+	defer hedge.Stop()
+
 	var lastErr error
 	var attempted []string
 	var attemptedIDs []string
 	sawNotFound := false
 	sawError := false
-	for range providers {
-		res := <-ch
+	for collected := 0; collected < launched || launched < len(providers); {
+		var res statResult
+		select {
+		case <-hedge.C:
+			launchRemaining()
+			continue
+		case res = <-ch:
+		}
+		collected++
 		attempted = appendUniqueHosts(attempted, res.host)
-		if res.host != "" {
-			for i := range providers {
-				if providers[i].ClientPool != nil && providers[i].ClientPool.Host() == res.host {
-					attemptedIDs = appendUniqueHosts(attemptedIDs, providers[i].ID)
-					break
-				}
-			}
+		// Use the id the worker reported rather than reverse-mapping from the
+		// host: two providers can share a hostname (two accounts on the same
+		// backbone), and matching by host collapses them onto whichever comes
+		// first. That left attemptedAllProviderIDs permanently unsatisfiable,
+		// so unanimous 430s were never cached and dead articles were re-STATed
+		// on every pass.
+		if res.providerID != "" {
+			attemptedIDs = appendUniqueHosts(attemptedIDs, res.providerID)
 		}
 		if res.err == nil && res.exists {
 			p.recordArticleResult(res.providerID, true)
@@ -989,6 +1033,10 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 			logger.Trace("stat segment ok", "message_id", messageID)
 			return true, nil
 		}
+		// The leader could not settle it. Bring in every remaining provider at
+		// once so a genuinely missing article still resolves in one more round
+		// trip rather than walking the list one provider at a time.
+		launchRemaining()
 		if res.err != nil {
 			if isArticleNotFound(res.err) {
 				p.recordArticleResult(res.providerID, false)
@@ -1010,6 +1058,34 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	}
 	logger.Trace("stat segment not found (430)", "message_id", messageID)
 	return false, nil
+}
+
+// StatConcurrency reports how many STATs a single caller should run against
+// this pool at once. Staged fan-out means a STAT normally occupies one
+// connection on the leading provider, so the budget is derived from that
+// provider's pool size and kept small: validation checks many files in
+// parallel, and each of those calls gets this same budget.
+func (p *Pool) StatConcurrency() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	leading := 0
+	for _, prov := range p.providers {
+		if prov.IsBackup || prov.ClientPool == nil {
+			continue
+		}
+		if conns := prov.ClientPool.MaxConn(); conns > leading {
+			leading = conns
+		}
+	}
+	budget := leading / statConcurrencyDivisor
+	if budget < minStatConcurrency {
+		return minStatConcurrency
+	}
+	if budget > maxStatConcurrency {
+		return maxStatConcurrency
+	}
+	return budget
 }
 
 func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority int, useBackup bool) (client *nntp.Client, release, discard func(), providerID string, err error) {

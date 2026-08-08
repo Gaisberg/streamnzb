@@ -33,6 +33,16 @@ type SegmentStatter interface {
 	StatSegment(ctx context.Context, messageID string, groups []string) (exists bool, err error)
 }
 
+// StatConcurrencyHinter is optional: when implemented, the fetcher decides how
+// many STATs CheckFirstSegmentExists may have in flight. The fetcher owns the
+// connections, so it is the only thing that can size this sensibly.
+type StatConcurrencyHinter interface {
+	StatConcurrency() int
+}
+
+// defaultStatConcurrency applies when the fetcher offers no hint.
+const defaultStatConcurrency = 4
+
 func shouldPersistDownloadedSegment(ctx context.Context) bool {
 	return ctx == nil || ctx.Err() == nil
 }
@@ -167,12 +177,7 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 
 	statter, ok := f.fetcher.(SegmentStatter)
 	if !ok {
-		f.firstStatMu.Lock()
-		f.firstStatChecked = true
-		f.firstStatExists = true
-		f.firstStatErr = nil
-		f.firstStatMu.Unlock()
-		return true, nil
+		return f.recordFirstStat(true, nil)
 	}
 
 	sampleIndices := map[int]bool{
@@ -187,35 +192,102 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 		len(f.segments) - 1:       true,
 	}
 
+	indices := make([]int, 0, len(sampleIndices))
 	for idx := range sampleIndices {
 		if idx < 0 || idx >= len(f.segments) {
 			continue
 		}
+		indices = append(indices, idx)
+	}
+	// Ascending order so the head segments — the ones that catch a truncated
+	// post — go out in the first batch.
+	sort.Ints(indices)
+
+	msgIDs := make([]string, 0, len(indices))
+	for _, idx := range indices {
 		msgID := strings.TrimSpace(f.segments[idx].ID)
 		if msgID == "" {
-			f.firstStatMu.Lock()
-			f.firstStatChecked = true
-			f.firstStatExists = false
-			f.firstStatMu.Unlock()
-			return false, nil
+			// An article with no message id can never be fetched, so the
+			// release is unplayable regardless of what the server holds.
+			return f.recordFirstStat(false, nil)
 		}
-		exists, err := statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
-		if err != nil || !exists {
-			f.firstStatMu.Lock()
-			f.firstStatChecked = true
-			f.firstStatExists = false
-			f.firstStatErr = err
-			f.firstStatMu.Unlock()
-			return false, err
-		}
+		msgIDs = append(msgIDs, msgID)
 	}
 
+	// The sampled segments are independent of each other, so probe them
+	// together rather than paying one round trip per segment. The fetcher caps
+	// how many run at once, since every file being validated does this at the
+	// same time.
+	limit := defaultStatConcurrency
+	if hinter, ok := f.fetcher.(StatConcurrencyHinter); ok {
+		if hinted := hinter.StatConcurrency(); hinted > 0 {
+			limit = hinted
+		}
+	}
+	if limit > len(msgIDs) {
+		limit = len(msgIDs)
+	}
+
+	statCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		mu       sync.Mutex
+		missing  bool
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, limit)
+	for _, msgID := range msgIDs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(msgID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			exists, err := statter.StatSegment(statCtx, msgID, f.nzbFile.Groups)
+			if err == nil && exists {
+				return
+			}
+			mu.Lock()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if err == nil && !exists {
+				missing = true
+			}
+			definitive := missing
+			mu.Unlock()
+			// One article confirmed missing on every provider settles it; stop
+			// the siblings. Transient errors do not, so those are left to run:
+			// another segment may still return a definitive answer.
+			if definitive {
+				cancel()
+			}
+		}(msgID)
+	}
+	wg.Wait()
+
+	// A definitive miss outranks any error, including the cancellations this
+	// function caused in the siblings it stopped. Without this the release
+	// would be reported as inconclusive and never marked bad.
+	if missing {
+		return f.recordFirstStat(false, nil)
+	}
+	if firstErr != nil {
+		return f.recordFirstStat(false, firstErr)
+	}
+	return f.recordFirstStat(true, nil)
+}
+
+// recordFirstStat caches the outcome so repeat checks on the same file are free.
+func (f *File) recordFirstStat(exists bool, err error) (bool, error) {
 	f.firstStatMu.Lock()
 	f.firstStatChecked = true
-	f.firstStatExists = true
-	f.firstStatErr = nil
+	f.firstStatExists = exists
+	f.firstStatErr = err
 	f.firstStatMu.Unlock()
-	return true, nil
+	return exists, err
 }
 
 // StatSegmentAt STATs the article of the segment at index via the fetcher's

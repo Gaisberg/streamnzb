@@ -133,6 +133,16 @@ func testNZBFileWithSegments(sizes ...int64) *nzb.File {
 	return &nzb.File{Subject: "test.mkv", Groups: []string{"alt.test"}, Segments: segments}
 }
 
+// testNZBFileWithNSegments builds a file of n equally sized segments, so the
+// nine sampled indices in CheckFirstSegmentExists land on distinct articles.
+func testNZBFileWithNSegments(n int) *nzb.File {
+	sizes := make([]int64, n)
+	for i := range sizes {
+		sizes[i] = 1024
+	}
+	return testNZBFileWithSegments(sizes...)
+}
+
 func TestDownloadSegmentDeduplicatesConcurrentCalls(t *testing.T) {
 	oldLogger := logger.Log
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -610,5 +620,186 @@ func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
 	}
 	if calls := fetcher.Calls(); len(calls) != 0 {
 		t.Fatalf("expected no NNTP probes for uniform primed volume, got %v", calls)
+	}
+}
+
+// statSpyFetcher answers STATs from a per-message-ID script and records how
+// many ran at once.
+type statSpyFetcher struct {
+	mu         sync.Mutex
+	calls      int
+	inFlight   int
+	maxInFlopt int
+	hint       int
+	// answer is consulted per message id; a nil entry means "exists".
+	answer func(msgID string) (bool, error)
+	// block, when non-nil, holds every STAT until closed.
+	block chan struct{}
+}
+
+func (s *statSpyFetcher) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []string) (pool.SegmentData, error) {
+	return pool.SegmentData{}, errors.New("not used")
+}
+
+func (s *statSpyFetcher) StatSegment(ctx context.Context, msgID string, groups []string) (bool, error) {
+	s.mu.Lock()
+	s.calls++
+	s.inFlight++
+	if s.inFlight > s.maxInFlopt {
+		s.maxInFlopt = s.inFlight
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inFlight--
+		s.mu.Unlock()
+	}()
+
+	if s.block != nil {
+		select {
+		case <-s.block:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	if s.answer != nil {
+		return s.answer(msgID)
+	}
+	return true, nil
+}
+
+func (s *statSpyFetcher) StatConcurrency() int { return s.hint }
+
+func (s *statSpyFetcher) stats() (calls, maxInFlight int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls, s.maxInFlopt
+}
+
+func TestCheckFirstSegmentExistsAllPresent(t *testing.T) {
+	fetcher := &statSpyFetcher{hint: 4}
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	exists, err := f.CheckFirstSegmentExists(context.Background())
+	if err != nil || !exists {
+		t.Fatalf("expected the file to validate, got exists=%v err=%v", exists, err)
+	}
+	// Nine sampled indices: head 0-4 plus the quarter, half, three-quarter and
+	// final segments.
+	if calls, _ := fetcher.stats(); calls != 9 {
+		t.Fatalf("expected the 9 sampled segments to be probed, got %d", calls)
+	}
+}
+
+// The whole point of the change: the sampled segments go out together instead
+// of one round trip at a time.
+func TestCheckFirstSegmentExistsProbesSegmentsConcurrently(t *testing.T) {
+	fetcher := &statSpyFetcher{hint: 4, block: make(chan struct{})}
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = f.CheckFirstSegmentExists(context.Background())
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	_, maxInFlight := fetcher.stats()
+	close(fetcher.block)
+	<-done
+
+	if maxInFlight != 4 {
+		t.Fatalf("expected 4 concurrent STATs from the hint, saw %d", maxInFlight)
+	}
+}
+
+// The important one: cancelling the siblings must not turn a definitive 430
+// into an inconclusive error, or bad releases stop being marked bad.
+func TestCheckFirstSegmentExistsDefinitiveMissBeatsSiblingCancellation(t *testing.T) {
+	var missOnce sync.Once
+	fetcher := &statSpyFetcher{
+		hint:  8,
+		block: make(chan struct{}),
+	}
+	// One STAT reports a definitive miss immediately; the rest block until the
+	// cancellation caused by that miss releases them with a context error.
+	fetcher.answer = func(msgID string) (bool, error) {
+		definitive := false
+		missOnce.Do(func() { definitive = true })
+		if definitive {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	// Unblock everything: blocked siblings observe ctx cancellation instead.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(fetcher.block)
+	}()
+
+	exists, err := f.CheckFirstSegmentExists(context.Background())
+	if exists {
+		t.Fatal("expected the file to be reported missing")
+	}
+	if err != nil {
+		t.Fatalf("a definitive miss must report (false, nil), not an error: %v", err)
+	}
+}
+
+func TestCheckFirstSegmentExistsTransientErrorIsInconclusive(t *testing.T) {
+	boom := errors.New("connection reset")
+	fetcher := &statSpyFetcher{
+		hint: 4,
+		answer: func(msgID string) (bool, error) {
+			return false, boom
+		},
+	}
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	exists, err := f.CheckFirstSegmentExists(context.Background())
+	if exists {
+		t.Fatal("expected exists=false on a transient error")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the transient error to surface, got %v", err)
+	}
+}
+
+func TestCheckFirstSegmentExistsRespectsConcurrencyHint(t *testing.T) {
+	fetcher := &statSpyFetcher{hint: 2, block: make(chan struct{})}
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = f.CheckFirstSegmentExists(context.Background())
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	_, maxInFlight := fetcher.stats()
+	close(fetcher.block)
+	<-done
+
+	if maxInFlight > 2 {
+		t.Fatalf("hint of 2 exceeded: %d STATs in flight", maxInFlight)
+	}
+}
+
+func TestCheckFirstSegmentExistsCachesResult(t *testing.T) {
+	fetcher := &statSpyFetcher{hint: 4}
+	f := NewFile(context.Background(), testNZBFileWithNSegments(40), nil, fetcher)
+
+	if _, err := f.CheckFirstSegmentExists(context.Background()); err != nil {
+		t.Fatalf("first check failed: %v", err)
+	}
+	firstCalls, _ := fetcher.stats()
+	if _, err := f.CheckFirstSegmentExists(context.Background()); err != nil {
+		t.Fatalf("second check failed: %v", err)
+	}
+	if calls, _ := fetcher.stats(); calls != firstCalls {
+		t.Fatalf("expected the cached result to skip STATs, calls went %d -> %d", firstCalls, calls)
 	}
 }
