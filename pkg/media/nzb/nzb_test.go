@@ -151,3 +151,47 @@ func TestGetSessionContentFilesForEpisodeMatchesAbsoluteNumberedAnime(t *testing
 		t.Fatalf("expected episode 337 file, got %q", files[0].Filename)
 	}
 }
+
+func TestDescribeMissingContentReportsPar2OnlyNZB(t *testing.T) {
+	logger.Init("ERROR")
+
+	// nZEDb-style hashed release whose content file never made it into the
+	// NZB — only the PAR2 recovery set was published.
+	n := &NZB{Files: []File{
+		{Subject: `[02/11] - "18a691ba.par2" yEnc(1/1)`, Segments: []Segment{{ID: "<a>", Bytes: 42199}}},
+		{Subject: `[03/11] - "18a691ba.vol000+001.par2" yEnc(1/1)`, Segments: []Segment{{ID: "<b>", Bytes: 310126}}},
+		{Subject: `[04/11] - "18a691ba.vol001+002.par2" yEnc(1/1)`, Segments: []Segment{{ID: "<c>", Bytes: 578044}}},
+	}}
+
+	if files := n.GetSessionContentFilesForEpisode(0, 0, 0); len(files) != 0 {
+		t.Fatalf("expected no content candidates, got %d", len(files))
+	}
+	detail := n.DescribeMissingContent()
+	if !strings.Contains(detail, "PAR2") {
+		t.Fatalf("expected PAR2-only diagnosis, got %q", detail)
+	}
+	if !strings.Contains(detail, "3") {
+		t.Fatalf("expected the file count in the diagnosis, got %q", detail)
+	}
+}
+
+func TestDescribeMissingContentEmptyWhenPlayableFileExists(t *testing.T) {
+	logger.Init("ERROR")
+
+	n := &NZB{Files: []File{
+		{Subject: `[01/02] - "Show.S01E01.mkv" yEnc(1/1)`, Segments: []Segment{{ID: "<a>", Bytes: 900}}},
+		{Subject: `[02/02] - "Show.S01E01.par2" yEnc(1/1)`, Segments: []Segment{{ID: "<b>", Bytes: 100}}},
+	}}
+
+	if detail := n.DescribeMissingContent(); detail != "" {
+		t.Fatalf("expected no diagnosis when content exists, got %q", detail)
+	}
+}
+
+func TestDescribeMissingContentHandlesEmptyNZB(t *testing.T) {
+	logger.Init("ERROR")
+
+	if detail := (&NZB{}).DescribeMissingContent(); detail == "" {
+		t.Fatal("expected a diagnosis for an NZB with no files")
+	}
+}

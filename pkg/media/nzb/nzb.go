@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"path/filepath"
 	"sort"
@@ -457,6 +458,40 @@ func isContentCandidate(info *FileInfo) bool {
 	return info.IsVideo || info.Extension == ".rar" || info.Extension == ".7z" ||
 		isArchivePart(info.Extension) || isRarVolume(info.Extension) ||
 		isSplitArchivePart(info.Extension) || isRarSplitPart(info.Extension, info.Filename)
+}
+
+// DescribeMissingContent explains why the NZB yields no playable file, so
+// callers can report something actionable instead of a bare "no content
+// files". A PAR2-only NZB is the common case: the indexer published the
+// recovery set but not the content file itself, and no amount of retrying
+// will make it playable. Returns "" when a content candidate does exist.
+func (n *NZB) DescribeMissingContent() string {
+	if n == nil || len(n.Files) == 0 {
+		return "the NZB contains no files"
+	}
+	infos := n.GetFileInfo()
+	var par2, samples, other int
+	for _, info := range infos {
+		if isContentCandidate(info) {
+			return ""
+		}
+		switch {
+		case info.Extension == ".par2":
+			par2++
+		case info.IsSample:
+			samples++
+		default:
+			other++
+		}
+	}
+	switch len(infos) {
+	case par2:
+		return fmt.Sprintf("all %d files are PAR2 recovery data — the content file is missing from the NZB", par2)
+	case samples:
+		return fmt.Sprintf("all %d files are samples", samples)
+	}
+	return fmt.Sprintf("none of the %d files is playable content (%d PAR2, %d sample, %d other)",
+		len(infos), par2, samples, other)
 }
 
 // episodePartialParser parses only the seasons/episodes fields, avoiding the

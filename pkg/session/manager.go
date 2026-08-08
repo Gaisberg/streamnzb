@@ -880,6 +880,9 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	logger.Trace("session CreateSession heavy work", "id", sessionID)
 	contentFiles := selectSessionContentFiles(nzbData, contentIDs)
 	if len(contentFiles) == 0 {
+		if detail := nzbData.DescribeMissingContent(); detail != "" {
+			return nil, fmt.Errorf("no content files found in NZB: %s", detail)
+		}
 		return nil, fmt.Errorf("no content files found in NZB")
 	}
 	m.mu.RLock()

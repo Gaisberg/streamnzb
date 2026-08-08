@@ -11,6 +11,24 @@ export function notifyUnauthorized(detail = {}) {
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT, { detail }))
 }
 
+const MAX_TEXT_ERROR_LENGTH = 300
+
+// readTextError pulls a plain-text error body out of a failed response.
+// Proxies and gateways answer with HTML pages that would be noise in an error
+// toast, so those fall back to the caller's status-line default.
+async function readTextError(res) {
+  let body = ''
+  try {
+    body = (await res.text()).trim()
+  } catch {
+    return ''
+  }
+  if (!body || body.startsWith('<')) return ''
+  return body.length > MAX_TEXT_ERROR_LENGTH
+    ? `${body.slice(0, MAX_TEXT_ERROR_LENGTH)}…`
+    : body
+}
+
 export async function apiFetch(path, options = {}) {
   const url = getApiUrl(path)
   const headers = new Headers(options.headers || {})
@@ -20,6 +38,7 @@ export async function apiFetch(path, options = {}) {
   }
   const res = await fetch(url, { credentials: 'include', ...options, headers })
   let data = null
+  let textError = ''
   const contentType = res.headers.get('content-type')
   if (contentType && contentType.includes('application/json')) {
     try {
@@ -27,12 +46,16 @@ export async function apiFetch(path, options = {}) {
     } catch {
       data = null
     }
+  } else if (!res.ok) {
+    // Go's http.Error replies as text/plain. Without reading it the UI would
+    // only ever show the bare status line ("Bad Request") and drop the reason.
+    textError = await readTextError(res)
   }
   if (!res.ok) {
     if (res.status === 401 && !options.skipAuthNotify) {
       notifyUnauthorized({ path, status: res.status })
     }
-    const err = new Error((data && (data.error || data.message)) || res.statusText)
+    const err = new Error((data && (data.error || data.message)) || textError || res.statusText)
     if (data && data.errors) err.fieldErrors = data.errors
     err.status = res.status
     throw err
