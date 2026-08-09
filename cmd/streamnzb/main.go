@@ -51,8 +51,10 @@ func firstNonEmpty(values ...string) string {
 
 func main() {
 	var configPath string
+	var logFilePath string
 	flag.StringVar(&configPath, "config", "", "Path to configuration file or directory")
 	flag.StringVar(&configPath, "c", "", "Path to configuration file or directory (shorthand)")
+	flag.StringVar(&logFilePath, "log-file", "", "Path to the log file, or a directory to write streamnzb.log into")
 	flag.Parse()
 
 	if err := godotenv.Load(); err != nil {
@@ -73,17 +75,23 @@ func main() {
 		}
 	}
 
+	// The flag outranks LOG_PATH. Nothing opens the log file yet: the default
+	// destination follows the data directory, which is only authoritative once
+	// the config has been located. Startup records buffer until then.
+	logPath := firstNonEmpty(logFilePath, env.LogPath())
 	logger.Init(env.LogLevel())
 
 	logger.Info("Starting StreamNZB", "version", Version)
 
 	cfg, err := config.LoadWithPath(configPath)
 	if err != nil {
+		// Open the log file early on this path so the startup records —
+		// including this failure — land somewhere before we exit.
+		logger.SetLogPath(logPath)
 		initialization.WaitForInputAndExit(fmt.Errorf("configuration error: %w", err))
 	}
 	logger.SetLevel(cfg.LogLevel)
 	logger.SetVerboseNNTPLogging(cfg.VerboseNNTPLogging)
-	logger.PurgeOldLogs(cfg.KeepLogFiles)
 
 	if cfg.MemoryLimitMB > 0 {
 		limit := int64(cfg.MemoryLimitMB) * 1024 * 1024
@@ -110,6 +118,11 @@ func main() {
 	// Authoritative pin: every later paths.GetDataDir() (builders, logger
 	// rotation, TVDB state) now agrees with where the config actually lives.
 	paths.SetDataDir(dataDir)
+
+	// Open the log file only now: the default destination is the data dir just
+	// pinned, and purging has to run against wherever it landed.
+	logger.SetLogPath(logPath)
+	logger.PurgeOldLogs(cfg.KeepLogFiles)
 
 	// Must precede the first GetManager: the manager is a singleton bound to
 	// whatever backend was configured when it opened.

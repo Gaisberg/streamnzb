@@ -12,6 +12,8 @@ const (
 	ADDONPort                      = "ADDON_PORT"
 	ADDONBaseURL                   = "ADDON_BASE_URL"
 	LOGLevel                       = "LOG_LEVEL"
+	LOGPath                        = "LOG_PATH"
+	StreamNZBLogPathEnv            = "STREAMNZB_LOG_PATH"
 	KeepLogFiles                   = "KEEP_LOG_FILES"
 	AvailNZBURL                    = "AVAILNZB_URL"
 	AvailNZBAPIKey                 = "AVAILNZB_API_KEY"
@@ -134,6 +136,17 @@ func LogLevel() string {
 		return v
 	}
 	return "INFO"
+}
+
+// LogPath is where the log file goes: a file path, or a directory to write
+// streamnzb.log into. Empty keeps it in the data directory. Deliberately env
+// (and flag) only — it is a deployment concern, not a user setting, so it is
+// not part of Config.
+func LogPath() string {
+	if v := os.Getenv(StreamNZBLogPathEnv); v != "" {
+		return v
+	}
+	return os.Getenv(LOGPath)
 }
 
 type Provider struct {

@@ -187,30 +187,9 @@ func Init(levelStr string) {
 	}
 	locationMu.Unlock()
 
-	dataDir := paths.GetDataDir()
-	currentPath := GetCurrentLogPath()
-
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
-	} else {
-		logFileMu.Lock()
-		if logFile == nil {
-			if fi, err := os.Stat(currentPath); err == nil && fi.Mode().IsRegular() {
-				ts := fi.ModTime().Format("20060102-150405")
-				archivedName := fmt.Sprintf("streamnzb-%s.log", ts)
-				archivedPath := filepath.Join(dataDir, archivedName)
-				if renameErr := os.Rename(currentPath, archivedPath); renameErr != nil {
-					fmt.Fprintf(os.Stderr, "Failed to rotate log file %s -> %s: %v\n", currentPath, archivedPath, renameErr)
-				}
-			}
-			var err error
-			logFile, err = os.OpenFile(currentPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v\n", currentPath, err)
-			}
-		}
-		logFileMu.Unlock()
-	}
+	// No log file is opened here: the destination is only settled once the
+	// -log-file flag and the config have both been read. Records logged in the
+	// meantime are buffered by Handle and flushed by SetLogPath.
 
 	tzLoc := loc
 	opts := &slog.HandlerOptions{
@@ -258,6 +237,18 @@ var (
 	locationMu  sync.RWMutex
 )
 
+// pending holds records logged before the log file was opened, so startup lines
+// still reach the file once SetLogPath settles where it lives. Guarded by
+// logFileMu; capped so a process that never opens a file cannot grow it.
+var pending []string
+
+const maxPendingLines = 2000
+
+var (
+	logPathMu      sync.RWMutex
+	currentLogPath string
+)
+
 func (h *GlobalBroadcastHandler) Handle(ctx context.Context, r slog.Record) error {
 	r = sanitizeRecord(r)
 
@@ -283,6 +274,8 @@ func (h *GlobalBroadcastHandler) Handle(ctx context.Context, r slog.Record) erro
 	logFileMu.Lock()
 	if logFile != nil {
 		fmt.Fprintln(logFile, msg)
+	} else if len(pending) < maxPendingLines {
+		pending = append(pending, msg)
 	}
 	logFileMu.Unlock()
 
@@ -312,20 +305,122 @@ func GetHistory() []string {
 	return cp
 }
 
+// resolveLogPath expands a configured value into the file to write: empty means
+// <data dir>/streamnzb.log, a directory (existing, or written with a trailing
+// separator) gets streamnzb.log inside it, anything else is the file itself.
+func resolveLogPath(configured string) string {
+	p := strings.TrimSpace(configured)
+	if p == "" {
+		return filepath.Join(paths.GetDataDir(), CurrentLogFileName)
+	}
+	trailingSep := strings.HasSuffix(p, "/") || strings.HasSuffix(p, string(os.PathSeparator))
+	clean := filepath.Clean(p)
+	if trailingSep {
+		return filepath.Join(clean, CurrentLogFileName)
+	}
+	if fi, err := os.Stat(clean); err == nil && fi.IsDir() {
+		return filepath.Join(clean, CurrentLogFileName)
+	}
+	return clean
+}
+
+// SetLogPath points file logging at configured — the -log-file flag or LOG_PATH,
+// empty for the data directory — rotating whatever file is already there and
+// flushing everything logged before the destination was known. Re-setting the
+// same destination is a no-op.
+func SetLogPath(configured string) {
+	logPathMu.Lock()
+	target := resolveLogPath(configured)
+	previous := currentLogPath
+	if target == previous {
+		logPathMu.Unlock()
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		logPathMu.Unlock()
+		fmt.Fprintf(os.Stderr, "Failed to create log directory for %s: %v\n", target, err)
+		return
+	}
+	rotateExisting(target)
+	file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		logPathMu.Unlock()
+		fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v\n", target, err)
+		return
+	}
+	currentLogPath = target
+	logPathMu.Unlock()
+
+	// Swap and flush under one lock so buffered startup lines stay ahead of
+	// whatever is being logged concurrently.
+	logFileMu.Lock()
+	old := logFile
+	logFile = file
+	for _, line := range pending {
+		fmt.Fprintln(file, line)
+	}
+	pending = nil
+	logFileMu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
+	if previous != "" {
+		Info("Log file moved", "from", previous, "to", target)
+	}
+}
+
+// rotateExisting archives the file at path under its own name plus the modified
+// timestamp, e.g. streamnzb.log -> streamnzb-20060102-150405.log.
+func rotateExisting(path string) {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return
+	}
+	dir, stem, ext := rotationParts(path)
+	archived := filepath.Join(dir, fmt.Sprintf("%s-%s%s", stem, fi.ModTime().Format("20060102-150405"), ext))
+	if err := os.Rename(path, archived); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to rotate log file %s -> %s: %v\n", path, archived, err)
+	}
+}
+
+// rotationParts splits a log path into the pieces rotation and purging share:
+// the directory, the base name without extension, and the extension.
+func rotationParts(path string) (dir, stem, ext string) {
+	dir = filepath.Dir(path)
+	base := filepath.Base(path)
+	ext = filepath.Ext(base)
+	stem = strings.TrimSuffix(base, ext)
+	if stem == "" {
+		stem, ext = base, ""
+	}
+	return dir, stem, ext
+}
+
 func GetCurrentLogPath() string {
-	return filepath.Join(paths.GetDataDir(), CurrentLogFileName)
+	logPathMu.RLock()
+	current := currentLogPath
+	logPathMu.RUnlock()
+	if current != "" {
+		return current
+	}
+	return resolveLogPath("")
 }
 
 // PurgeOldLogs removes older rotated log files so at most keepCount log files remain
-// (the current streamnzb.log plus up to keepCount-1 archived streamnzb-*.log files).
-// Only timestamped files (streamnzb-*.log) are considered for deletion; the current
-// streamnzb.log is never removed. keepCount must be at least 1.
+// (the current log file plus up to keepCount-1 archived ones). Only timestamped
+// files rotated out of the current log — streamnzb-*.log next to a streamnzb.log —
+// are considered for deletion; the current file is never removed. keepCount must
+// be at least 1.
 func PurgeOldLogs(keepCount int) {
 	if keepCount < 1 {
 		return
 	}
-	dataDir := paths.GetDataDir()
-	entries, err := os.ReadDir(dataDir)
+	current := GetCurrentLogPath()
+	logDir, stem, ext := rotationParts(current)
+	currentName := filepath.Base(current)
+	archivePrefix := stem + "-"
+	entries, err := os.ReadDir(logDir)
 	if err != nil {
 		return
 	}
@@ -340,10 +435,10 @@ func PurgeOldLogs(keepCount int) {
 			continue
 		}
 		name := e.Name()
-		if name == "streamnzb.log" || !strings.HasPrefix(name, "streamnzb-") || !strings.HasSuffix(name, ".log") {
+		if name == currentName || !strings.HasPrefix(name, archivePrefix) || !strings.HasSuffix(name, ext) {
 			continue
 		}
-		path := filepath.Join(dataDir, name)
+		path := filepath.Join(logDir, name)
 		info, err := e.Info()
 		if err != nil {
 			continue

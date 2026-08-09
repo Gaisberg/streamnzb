@@ -84,7 +84,11 @@ func TestGlobalBroadcastHandlerRedactsUnderlyingOutputAndHistory(t *testing.T) {
 	}
 }
 
-func TestInitTwiceKeepsCurrentLogFile(t *testing.T) {
+// useTempDataDir points paths.GetDataDir at a temp directory and resets the
+// package-level log destination so each test starts from a closed, unpinned
+// logger.
+func useTempDataDir(t *testing.T) string {
+	t.Helper()
 	tempDir := t.TempDir()
 
 	// On Windows, GetDataDir uses LOCALAPPDATA; point it at tempDir so
@@ -99,50 +103,56 @@ func TestInitTwiceKeepsCurrentLogFile(t *testing.T) {
 		if err := os.Chdir(tempDir); err != nil {
 			t.Fatalf("Chdir temp dir: %v", err)
 		}
-		defer func() { _ = os.Chdir(oldWD) }()
+		t.Cleanup(func() { _ = os.Chdir(oldWD) })
 	}
 
-	dataDir := paths.GetDataDir()
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-
-	logFileMu.Lock()
-	oldLogFile := logFile
-	if oldLogFile != nil {
-		_ = oldLogFile.Close()
-	}
-	logFile = nil
-	logFileMu.Unlock()
-	defer func() {
+	reset := func() {
 		logFileMu.Lock()
 		if logFile != nil {
 			_ = logFile.Close()
 		}
 		logFile = nil
+		pending = nil
 		logFileMu.Unlock()
-	}()
+		logPathMu.Lock()
+		currentLogPath = ""
+		logPathMu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+
+	dataDir := paths.GetDataDir()
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	return dataDir
+}
+
+func TestSetLogPathRotatesOnceAndKeepsCurrentLogFile(t *testing.T) {
+	dataDir := useTempDataDir(t)
 
 	if err := os.WriteFile(GetCurrentLogPath(), []byte("old log\n"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	Init("INFO")
+	SetLogPath("")
 	archived, err := filepath.Glob(filepath.Join(dataDir, "streamnzb-*.log"))
 	if err != nil {
-		t.Fatalf("Glob after first init: %v", err)
+		t.Fatalf("Glob after first open: %v", err)
 	}
 	if len(archived) != 1 {
-		t.Fatalf("expected 1 archived log after first init, got %d", len(archived))
+		t.Fatalf("expected 1 archived log after first open, got %d", len(archived))
 	}
 
 	SetLevel("DEBUG")
+	SetLogPath("")
 	archived, err = filepath.Glob(filepath.Join(dataDir, "streamnzb-*.log"))
 	if err != nil {
-		t.Fatalf("Glob after second init: %v", err)
+		t.Fatalf("Glob after second open: %v", err)
 	}
 	if len(archived) != 1 {
-		t.Fatalf("expected second init to keep current log file, got %d archived logs", len(archived))
+		t.Fatalf("expected re-setting the same path to keep the current log file, got %d archived logs", len(archived))
 	}
 
 	Info("still writing to current log")
@@ -154,8 +164,75 @@ func TestInitTwiceKeepsCurrentLogFile(t *testing.T) {
 	if !strings.Contains(text, "still writing to current log") {
 		t.Fatalf("expected current log file to contain new log entry, got %q", text)
 	}
+	// Logged before the file existed: it must still have been flushed into it.
 	if !strings.Contains(text, "Logger initialized") {
-		t.Fatalf("expected current log file to remain active after second init, got %q", text)
+		t.Fatalf("expected buffered startup records in the current log file, got %q", text)
+	}
+}
+
+func TestSetLogPathHonorsCustomFileAndDirectory(t *testing.T) {
+	dataDir := useTempDataDir(t)
+
+	custom := filepath.Join(t.TempDir(), "aggregated", "snzb.log")
+	Init("INFO")
+	SetLogPath(custom)
+
+	if got := GetCurrentLogPath(); got != custom {
+		t.Fatalf("GetCurrentLogPath() = %q, want %q", got, custom)
+	}
+	Info("custom path entry")
+	content, err := os.ReadFile(custom)
+	if err != nil {
+		t.Fatalf("ReadFile custom log: %v", err)
+	}
+	if !strings.Contains(string(content), "custom path entry") {
+		t.Fatalf("expected custom log file to contain the entry, got %q", content)
+	}
+	// The whole point of the setting: nothing is left behind in the data dir.
+	if _, err := os.Stat(filepath.Join(dataDir, CurrentLogFileName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no log file in the data dir, stat err = %v", err)
+	}
+
+	dir := t.TempDir()
+	SetLogPath(dir)
+	if got, want := GetCurrentLogPath(), filepath.Join(dir, CurrentLogFileName); got != want {
+		t.Fatalf("GetCurrentLogPath() for a directory = %q, want %q", got, want)
+	}
+}
+
+func TestPurgeOldLogsFollowsCustomLogPath(t *testing.T) {
+	useTempDataDir(t)
+
+	logDir := t.TempDir()
+	custom := filepath.Join(logDir, "snzb.log")
+	Init("INFO")
+	SetLogPath(custom)
+
+	for i, name := range []string{"snzb-20240101-000000.log", "snzb-20240102-000000.log", "snzb-20240103-000000.log"} {
+		path := filepath.Join(logDir, name)
+		if err := os.WriteFile(path, []byte("archived\n"), 0644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+		when := time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(path, when, when); err != nil {
+			t.Fatalf("Chtimes %s: %v", name, err)
+		}
+	}
+
+	PurgeOldLogs(2)
+
+	archived, err := filepath.Glob(filepath.Join(logDir, "snzb-*.log"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("expected 1 archived log to survive, got %d (%v)", len(archived), archived)
+	}
+	if filepath.Base(archived[0]) != "snzb-20240103-000000.log" {
+		t.Fatalf("expected the newest archive to survive, got %q", archived[0])
+	}
+	if _, err := os.Stat(custom); err != nil {
+		t.Fatalf("expected the current log file to survive purging: %v", err)
 	}
 }
 

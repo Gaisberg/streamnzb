@@ -597,6 +597,7 @@ type Config struct {
 	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
 
 	// KeepLogFiles is how many log files to keep (current streamnzb.log + rotated streamnzb-*.log). Default 9.
+	// Where those files live is set by -log-file / LOG_PATH — see env.LogPath.
 	KeepLogFiles int `json:"keep_log_files,omitempty"`
 
 	// NZBHistoryRetentionDays controls how many days NZB attempt history is kept. Default 90.
