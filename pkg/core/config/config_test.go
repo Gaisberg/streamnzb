@@ -97,41 +97,159 @@ func TestSeriesSearchScopeRequiresValidation(t *testing.T) {
 	}
 }
 
+// TestDefaultSearchQuerySettingsMatchExpectedModes pins the four stock search
+// requests to the settings the UI advertises as the defaults, field by field.
 func TestDefaultSearchQuerySettingsMatchExpectedModes(t *testing.T) {
 	cfg := &Config{}
 	if !cfg.applyStreamModelUpgradeDefaults() {
 		t.Fatalf("expected defaults to be applied")
 	}
 
-	if cfg.MovieSearchQueries[0].SearchResultLimit != 0 {
-		t.Fatalf("expected DefaultMovieText limit max/0, got %d", cfg.MovieSearchQueries[0].SearchResultLimit)
+	cases := []struct {
+		want SearchQueryConfig
+		got  []SearchQueryConfig
+		at   int
+	}{
+		{
+			at:  0,
+			got: cfg.MovieSearchQueries,
+			want: SearchQueryConfig{
+				Name:                "DefaultMovieText",
+				SearchMode:          "text",
+				MovieCategories:     "2000",
+				SearchResultLimit:   0,
+				SearchTitleLanguage: "en-US",
+				IncludeYear:         ptrBool(true),
+			},
+		},
+		{
+			at:  1,
+			got: cfg.MovieSearchQueries,
+			want: SearchQueryConfig{
+				Name:                 "DefaultMovieID",
+				SearchMode:           "id",
+				MovieCategories:      "2000",
+				SearchResultLimit:    0,
+				SearchTitleLanguages: []string{"en-US", ""},
+				IncludeYear:          ptrBool(true),
+			},
+		},
+		{
+			at:  0,
+			got: cfg.SeriesSearchQueries,
+			want: SearchQueryConfig{
+				Name:                "DefaultTVText",
+				SearchMode:          "text",
+				TVCategories:        "5000",
+				SearchResultLimit:   0,
+				SearchTitleLanguage: "en-US",
+				IncludeYear:         ptrBool(false),
+				SeriesSearchScope:   SeriesSearchScopeSeasonEpisode,
+				TryAbsoluteEpisode:  ptrBool(true),
+			},
+		},
+		{
+			at:  1,
+			got: cfg.SeriesSearchQueries,
+			want: SearchQueryConfig{
+				Name:                 "DefaultTVID",
+				SearchMode:           "id",
+				TVCategories:         "5000",
+				SearchResultLimit:    0,
+				SearchTitleLanguages: []string{"en-US", ""},
+				IncludeYear:          ptrBool(false),
+				SeriesSearchScope:    SeriesSearchScopeSeasonEpisode,
+				TryAbsoluteEpisode:   ptrBool(true),
+			},
+		},
 	}
-	if cfg.MovieSearchQueries[0].IncludeYear == nil || !*cfg.MovieSearchQueries[0].IncludeYear {
-		t.Fatalf("expected DefaultMovieText year enabled")
+
+	for _, tc := range cases {
+		if tc.at >= len(tc.got) {
+			t.Fatalf("expected a query at index %d for %s", tc.at, tc.want.Name)
+		}
+		got := tc.got[tc.at]
+		t.Run(tc.want.Name, func(t *testing.T) {
+			if got.Name != tc.want.Name {
+				t.Fatalf("name = %q, want %q", got.Name, tc.want.Name)
+			}
+			if got.SearchMode != tc.want.SearchMode {
+				t.Errorf("search_mode = %q, want %q", got.SearchMode, tc.want.SearchMode)
+			}
+			if got.MovieCategories != tc.want.MovieCategories {
+				t.Errorf("movie_categories = %q, want %q", got.MovieCategories, tc.want.MovieCategories)
+			}
+			if got.TVCategories != tc.want.TVCategories {
+				t.Errorf("tv_categories = %q, want %q", got.TVCategories, tc.want.TVCategories)
+			}
+			if got.SearchResultLimit != tc.want.SearchResultLimit {
+				t.Errorf("search_result_limit = %d, want %d (max)", got.SearchResultLimit, tc.want.SearchResultLimit)
+			}
+			if got.SearchTitleLanguage != tc.want.SearchTitleLanguage {
+				t.Errorf("search_title_language = %q, want %q", got.SearchTitleLanguage, tc.want.SearchTitleLanguage)
+			}
+			if !reflect.DeepEqual(got.SearchTitleLanguages, tc.want.SearchTitleLanguages) {
+				t.Errorf("search_title_languages = %#v, want %#v", got.SearchTitleLanguages, tc.want.SearchTitleLanguages)
+			}
+			if got.IncludeYear == nil || *got.IncludeYear != *tc.want.IncludeYear {
+				t.Errorf("include_year = %v, want %v", got.IncludeYear, *tc.want.IncludeYear)
+			}
+			if got.SeriesSearchScope != tc.want.SeriesSearchScope {
+				t.Errorf("series_search_scope = %q, want %q", got.SeriesSearchScope, tc.want.SeriesSearchScope)
+			}
+			if tc.want.TryAbsoluteEpisode == nil {
+				if got.TryAbsoluteEpisode != nil {
+					t.Errorf("try_absolute_episode = %v, want unset", *got.TryAbsoluteEpisode)
+				}
+			} else if got.TryAbsoluteEpisode == nil || *got.TryAbsoluteEpisode != *tc.want.TryAbsoluteEpisode {
+				t.Errorf("try_absolute_episode = %v, want %v", got.TryAbsoluteEpisode, *tc.want.TryAbsoluteEpisode)
+			}
+		})
 	}
-	if cfg.MovieSearchQueries[1].SearchResultLimit != 0 {
-		t.Fatalf("expected DefaultMovieID limit max/0, got %d", cfg.MovieSearchQueries[1].SearchResultLimit)
+}
+
+// TestBackfillIncludeYearFollowsContentType pins the backfill fallback to the
+// same rule ensureDefaultMigrationSearchQueries uses — year for movies, none
+// for series — so a config missing include_year lands on the current default
+// rather than the retired mode-based one. An explicit legacy value still wins.
+func TestBackfillIncludeYearFollowsContentType(t *testing.T) {
+	cases := []struct {
+		name     string
+		query    SearchQueryConfig
+		isSeries bool
+		want     bool
+	}{
+		{name: "movie text", query: SearchQueryConfig{SearchMode: "text"}, want: true},
+		{name: "movie id", query: SearchQueryConfig{SearchMode: "id"}, want: true},
+		{name: "series text", query: SearchQueryConfig{SearchMode: "text"}, isSeries: true, want: false},
+		{name: "series id", query: SearchQueryConfig{SearchMode: "id"}, isSeries: true, want: false},
+		{
+			name:     "series text keeps explicit legacy year",
+			query:    SearchQueryConfig{SearchMode: "text", LegacyIncludeYearInTextSearch: ptrBool(true)},
+			isSeries: true,
+			want:     true,
+		},
+		{
+			name:  "movie text keeps explicit legacy no-year",
+			query: SearchQueryConfig{SearchMode: "text", LegacyIncludeYearInTextSearch: ptrBool(false)},
+			want:  false,
+		},
 	}
-	if cfg.MovieSearchQueries[1].IncludeYear == nil || *cfg.MovieSearchQueries[1].IncludeYear {
-		t.Fatalf("expected DefaultMovieID year disabled")
-	}
-	if got := cfg.MovieSearchQueries[1].SearchTitleLanguages; !strings.EqualFold(strings.Join(got, "|"), strings.Join([]string{"en-US", ""}, "|")) {
-		t.Fatalf("expected DefaultMovieID title languages [en-US original], got %#v", got)
-	}
-	if cfg.SeriesSearchQueries[0].SearchResultLimit != 0 {
-		t.Fatalf("expected DefaultTVText limit max/0, got %d", cfg.SeriesSearchQueries[0].SearchResultLimit)
-	}
-	if cfg.SeriesSearchQueries[0].IncludeYear == nil || !*cfg.SeriesSearchQueries[0].IncludeYear {
-		t.Fatalf("expected DefaultTVText year enabled")
-	}
-	if cfg.SeriesSearchQueries[1].SearchResultLimit != 0 {
-		t.Fatalf("expected DefaultTVID limit max/0, got %d", cfg.SeriesSearchQueries[1].SearchResultLimit)
-	}
-	if cfg.SeriesSearchQueries[1].IncludeYear == nil || *cfg.SeriesSearchQueries[1].IncludeYear {
-		t.Fatalf("expected DefaultTVID year disabled")
-	}
-	if got := cfg.SeriesSearchQueries[1].SearchTitleLanguages; !strings.EqualFold(strings.Join(got, "|"), strings.Join([]string{"en-US", ""}, "|")) {
-		t.Fatalf("expected DefaultTVID title languages [en-US original], got %#v", got)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query := tc.query
+			backfillLegacySearchQuerySettingsForQuery(&query, tc.isSeries)
+			if query.IncludeYear == nil {
+				t.Fatal("expected include_year to be backfilled")
+			}
+			if *query.IncludeYear != tc.want {
+				t.Errorf("include_year = %v, want %v", *query.IncludeYear, tc.want)
+			}
+			if query.LegacyIncludeYearInTextSearch != nil {
+				t.Error("expected the legacy year field to be cleared")
+			}
+		})
 	}
 }
 
@@ -161,8 +279,8 @@ func TestBackfillLegacySearchQuerySettings(t *testing.T) {
 	if got := cfg.MovieSearchQueries[1].SearchTitleLanguages; !reflect.DeepEqual(got, []string{"en-US", ""}) {
 		t.Fatalf("expected DefaultMovieID title languages [en-US original] after backfill, got %#v", got)
 	}
-	if cfg.SeriesSearchQueries[0].IncludeYear == nil || !*cfg.SeriesSearchQueries[0].IncludeYear {
-		t.Fatal("expected DefaultTVText year enabled after backfill")
+	if cfg.SeriesSearchQueries[0].IncludeYear == nil || *cfg.SeriesSearchQueries[0].IncludeYear {
+		t.Fatal("expected DefaultTVText year disabled after backfill")
 	}
 	if cfg.SeriesSearchQueries[0].SeriesSearchScope != SeriesSearchScopeSeasonEpisode {
 		t.Fatalf("expected DefaultTVText scope %q after legacy backfill, got %q", SeriesSearchScopeSeasonEpisode, cfg.SeriesSearchQueries[0].SeriesSearchScope)
@@ -407,8 +525,8 @@ func TestApplyStreamModelUpgradeDefaultsCreatesQueriesAndDefaultStream(t *testin
 	if got := NormalizeSeriesSearchScope(cfg.SeriesSearchQueries[0].SeriesSearchScope); got != SeriesSearchScopeSeasonEpisode {
 		t.Fatalf("expected DefaultTVText scope season_episode, got %q", got)
 	}
-	if cfg.SeriesSearchQueries[0].IncludeYear == nil || !*cfg.SeriesSearchQueries[0].IncludeYear {
-		t.Fatalf("expected DefaultTVText year enabled")
+	if cfg.SeriesSearchQueries[0].IncludeYear == nil || *cfg.SeriesSearchQueries[0].IncludeYear {
+		t.Fatalf("expected DefaultTVText year disabled")
 	}
 	if got := NormalizeSeriesSearchScope(cfg.SeriesSearchQueries[1].SeriesSearchScope); got != SeriesSearchScopeSeasonEpisode {
 		t.Fatalf("expected DefaultTVID scope season_episode, got %q", got)

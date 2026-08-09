@@ -1044,6 +1044,11 @@ func (c *Config) applyStreamModelUpgradeDefaults() bool {
 	return changed
 }
 
+// ensureDefaultMigrationSearchQueries seeds the four stock search requests.
+// Movie queries carry the year because movie releases are named with one;
+// series queries do not, because scene TV releases are named
+// "Title.S01E01.1080p..." — a year token narrows the indexer query to nothing
+// and arms year validation against results that can never carry one.
 func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 	changed := false
 	if c.ensureMovieSearchQuery(SearchQueryConfig{
@@ -1052,7 +1057,7 @@ func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 		SearchResultLimit:   0,
 		MovieCategories:     "2000",
 		IncludeYear:         ptrBool(true),
-		SearchTitleLanguage: "",
+		SearchTitleLanguage: "en-US",
 	}) {
 		changed = true
 	}
@@ -1061,7 +1066,7 @@ func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 		SearchMode:           "id",
 		SearchResultLimit:    0,
 		MovieCategories:      "2000",
-		IncludeYear:          ptrBool(false),
+		IncludeYear:          ptrBool(true),
 		SearchTitleLanguages: DefaultIDSearchTitleLanguages(),
 	}) {
 		changed = true
@@ -1071,9 +1076,10 @@ func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 		SearchMode:          "text",
 		SearchResultLimit:   0,
 		TVCategories:        "5000",
-		IncludeYear:         ptrBool(true),
+		IncludeYear:         ptrBool(false),
 		SeriesSearchScope:   SeriesSearchScopeSeasonEpisode,
-		SearchTitleLanguage: "",
+		TryAbsoluteEpisode:  ptrBool(true),
+		SearchTitleLanguage: "en-US",
 	}) {
 		changed = true
 	}
@@ -1084,6 +1090,7 @@ func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 		TVCategories:         "5000",
 		IncludeYear:          ptrBool(false),
 		SeriesSearchScope:    SeriesSearchScopeSeasonEpisode,
+		TryAbsoluteEpisode:   ptrBool(true),
 		SearchTitleLanguages: DefaultIDSearchTitleLanguages(),
 	}) {
 		changed = true
@@ -1097,13 +1104,12 @@ func backfillLegacySearchQuerySettingsForQuery(query *SearchQueryConfig, isSerie
 	}
 	changed := false
 	if query.IncludeYear == nil {
-		switch {
-		case query.LegacyIncludeYearInTextSearch != nil:
+		if query.LegacyIncludeYearInTextSearch != nil {
 			query.IncludeYear = ptrBool(*query.LegacyIncludeYearInTextSearch)
-		case strings.EqualFold(strings.TrimSpace(query.SearchMode), "id"):
-			query.IncludeYear = ptrBool(false)
-		default:
-			query.IncludeYear = ptrBool(true)
+		} else {
+			// Same rule the stock queries use: movie releases are named with a
+			// year, series releases are not.
+			query.IncludeYear = ptrBool(!isSeries)
 		}
 		changed = true
 	}
