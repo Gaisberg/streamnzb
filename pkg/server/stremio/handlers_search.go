@@ -25,8 +25,8 @@ import (
 // indexers and fansub groups use — and marks the request so validation accepts
 // absolute-numbered releases. The queries land in params.AbsoluteQueries and
 // run as trailing text searches after the request's own queries. Returns false
-// when the supplement does not apply: non-anime content, Kitsu (already
-// absolute), or an absolute number that cannot be derived from metadata.
+// when the supplement does not apply: non-anime content, or an absolute number
+// that is neither already resolved nor derivable from metadata.
 func (s *Server) prepareAbsoluteEpisodeSearch(params *query.SearchParams, streamLabel string, searchQuery *config.SearchQueryConfig) bool {
 	if params == nil || params.ContentType != "series" {
 		return false
@@ -40,20 +40,21 @@ func (s *Server) prepareAbsoluteEpisodeSearch(params *query.SearchParams, stream
 		)
 		return false
 	}
-	if req.KitsuID != "" {
-		return skip("kitsu episode is already absolute")
-	}
-	if !query.MetadataLooksLikeAnime(params.Metadata, params.ContentType) {
-		return skip("content not detected as anime")
-	}
-	absolute := query.AbsoluteEpisodeFromMetadata(params.Metadata, req.Season, req.Episode)
+	// A Kitsu entry spanning a whole series resolves its absolute number up
+	// front, where deriving one from season/episode would not work.
+	absolute, _ := strconv.Atoi(req.AbsoluteEpisode)
 	if absolute <= 0 {
-		return skip("absolute episode not derivable from metadata")
+		if !query.RequestLooksLikeAnime(params) {
+			return skip("content not detected as anime")
+		}
+		absolute = query.AbsoluteEpisodeFromMetadata(params.Metadata, req.Season, req.Episode)
+		if absolute <= 0 {
+			return skip("absolute episode not derivable from metadata")
+		}
+		// The absolute number lets validation accept absolute-numbered
+		// releases regardless of which query surfaced them.
+		req.AbsoluteEpisode = strconv.Itoa(absolute)
 	}
-
-	// The absolute number lets validation accept absolute-numbered releases
-	// regardless of which query surfaced them.
-	req.AbsoluteEpisode = strconv.Itoa(absolute)
 
 	language := ""
 	if searchQuery != nil {
@@ -826,6 +827,48 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	} else if looksLikeTMDBID(searchID) && req.TVDBID == "" {
 		req.TMDBID = searchID
 	}
+
+	// Kitsu addresses anime per entry — usually one season, often one cour —
+	// and numbers episodes within that entry, while Kitsu's own mappings carry
+	// neither the season nor the offset (most modern entries map only to
+	// AniList/MAL). anime-lists supplies both, turning kitsu:49016:3 into the
+	// S03E15 that releases are actually named by. A mapped request is an
+	// ordinary series request from here on, so it takes the same TMDB/TVDB
+	// path as the equivalent tt id instead of the Kitsu-title fallback below.
+	kitsuMapped := false
+	if kitsuID != "" && s.animeLists != nil {
+		if mapping, ok := s.animeLists.LookupKitsu(kitsuID); ok {
+			if req.IMDbID == "" && mapping.IMDbID != "" {
+				req.IMDbID = mapping.IMDbID
+			}
+			if req.TVDBID == "" && mapping.TVDBID != "" {
+				req.TVDBID = mapping.TVDBID
+			}
+			if req.TMDBID == "" && mapping.TMDBID != "" {
+				req.TMDBID = mapping.TMDBID
+			}
+			kitsuMapped = req.IMDbID != "" || req.TVDBID != "" || req.TMDBID != ""
+
+			entryEpisode, _ := strconv.Atoi(kitsuEpisode)
+			if season, episode, resolved := mapping.ResolveEpisode(entryEpisode); resolved {
+				req.Season = strconv.Itoa(season)
+				req.Episode = strconv.Itoa(episode)
+			} else if mapping.SpansSeries() && entryEpisode > 0 {
+				// The entry covers the whole series, so the requested number
+				// is already the series' absolute episode.
+				req.AbsoluteEpisode = kitsuEpisode
+			}
+			logMetadataResolutionState(contentType, id, "anime_lists", "kitsu_id", kitsuID,
+				"status", "success",
+				"imdb_id", req.IMDbID, "tvdb_id", req.TVDBID, "tmdb_id", req.TMDBID,
+				"season", req.Season, "episode", req.Episode,
+				"absolute_episode", req.AbsoluteEpisode)
+		} else {
+			logMetadataResolutionState(contentType, id, "anime_lists", "kitsu_id", kitsuID,
+				"status", "empty", "ready", s.animeLists.Ready())
+		}
+	}
+
 	imdbForText := req.IMDbID
 	tmdbForText := req.TMDBID
 	if strings.Contains(id, ":") {
@@ -840,7 +883,10 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		req.Cat = "5000"
 	}
 
-	if kitsuID != "" && s.kitsuClient != nil {
+	// Only when anime-lists could not place the entry: Kitsu's own titles and
+	// ids are the last resort, and its per-entry titles ("Fire Force Season 3
+	// Part 2") match release names far less often than the series title does.
+	if kitsuID != "" && !kitsuMapped && s.kitsuClient != nil {
 		if details, err := s.kitsuClient.GetAnimeDetails(context.Background(), kitsuID); err == nil && details != nil {
 			params.Metadata.KitsuDetails = details
 			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "success", "title", details.CanonicalTitle)
@@ -1054,7 +1100,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	seasonNum, _ := strconv.Atoi(req.Season)
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
-	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.KitsuID, params.Metadata, req.Season, req.Episode)
+	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.AbsoluteEpisode, params.Metadata, req.Season, req.Episode)
 	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var movieDetails *tmdb.MovieDetails

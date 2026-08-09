@@ -190,29 +190,64 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 	}
 }
 
-func TestAbsoluteEpisodeForContentKitsuUsesEpisodeDirectly(t *testing.T) {
-	if got := query.AbsoluteEpisodeForContent("series", "486", nil, "", "63"); got != 63 {
-		t.Fatalf("query.AbsoluteEpisodeForContent(kitsu) = %d, want 63", got)
+func TestAbsoluteEpisodeForContentPrefersResolvedAbsolute(t *testing.T) {
+	if got := query.AbsoluteEpisodeForContent("series", "63", nil, "", ""); got != 63 {
+		t.Fatalf("query.AbsoluteEpisodeForContent(resolved) = %d, want 63", got)
 	}
-	if got := query.AbsoluteEpisodeForContent("movie", "486", nil, "", "63"); got != 0 {
+	if got := query.AbsoluteEpisodeForContent("movie", "63", nil, "", ""); got != 0 {
 		t.Fatalf("query.AbsoluteEpisodeForContent(movie) = %d, want 0", got)
+	}
+	// Without a resolved number it still derives one from anime metadata.
+	metadata := animeTVMetadata([]tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}, {SeasonNumber: 2, EpisodeCount: 16}})
+	if got := query.AbsoluteEpisodeForContent("series", "", metadata, "2", "2"); got != 63 {
+		t.Fatalf("query.AbsoluteEpisodeForContent(derived) = %d, want 63", got)
+	}
+}
+
+// A Kitsu entry spanning a whole series resolves its absolute number up front
+// and has no season to derive one from, so the supplement must use what the
+// request already carries.
+func TestPrepareAbsoluteEpisodeSearchUsesResolvedAbsolute(t *testing.T) {
+	s := &Server{}
+	params := &query.SearchParams{
+		ContentType: "series",
+		Req:         indexer.SearchRequest{KitsuID: "486", AbsoluteEpisode: "63"},
+		Metadata:    animeTVMetadata(nil),
+	}
+	if !s.prepareAbsoluteEpisodeSearch(params, "default", nil) {
+		t.Fatal("expected supplement to apply for a resolved absolute episode")
+	}
+	if params.Req.AbsoluteEpisode != "63" {
+		t.Fatalf("absolute episode = %q, want 63", params.Req.AbsoluteEpisode)
+	}
+	found := false
+	for _, q := range params.AbsoluteQueries {
+		if q == "One Piece 63" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an absolute-numbered query, got %v", params.AbsoluteQueries)
 	}
 }
 
 func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
 	s := &Server{}
-	animeSeasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}, {SeasonNumber: 2, EpisodeCount: 16}}
 
 	cases := []struct {
 		name   string
 		params *query.SearchParams
 	}{
 		{
-			name: "kitsu already absolute",
+			// A gap in the season list makes the sum unreliable.
+			name: "absolute not derivable from metadata",
 			params: &query.SearchParams{
 				ContentType: "series",
-				Req:         indexer.SearchRequest{KitsuID: "486", Season: "2", Episode: "2"},
-				Metadata:    animeTVMetadata(animeSeasons),
+				Req:         indexer.SearchRequest{Season: "3", Episode: "2"},
+				Metadata: animeTVMetadata([]tmdb.TVSeasonInfo{
+					{SeasonNumber: 1, EpisodeCount: 61},
+					{SeasonNumber: 3, EpisodeCount: 14},
+				}),
 			},
 		},
 		{

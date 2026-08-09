@@ -915,14 +915,14 @@ func AppendSearchCategory(categories, cat string) string {
 
 // AbsoluteEpisodeForContent returns the anime absolute episode number for a
 // series request, or 0 when it does not apply: movie content, non-anime
-// metadata, or a number that cannot be derived. Kitsu-addressed requests
-// already carry the absolute number as their episode.
-func AbsoluteEpisodeForContent(contentType, kitsuID string, metadata *ResolvedSearchMetadata, season, episode string) int {
+// metadata, or a number that cannot be derived. An already-resolved absolute
+// number wins — a Kitsu entry spanning a whole series carries one directly,
+// where deriving it from season/episode would not work.
+func AbsoluteEpisodeForContent(contentType, resolvedAbsolute string, metadata *ResolvedSearchMetadata, season, episode string) int {
 	if contentType != "series" {
 		return 0
 	}
-	if kitsuID != "" {
-		absolute, _ := strconv.Atoi(episode)
+	if absolute, err := strconv.Atoi(strings.TrimSpace(resolvedAbsolute)); err == nil && absolute > 0 {
 		return absolute
 	}
 	if !MetadataLooksLikeAnime(metadata, contentType) {

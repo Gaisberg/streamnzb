@@ -69,6 +69,7 @@ type StateManager struct {
 	backend         string
 	libraryStore    *LibraryStore
 	badReleaseStore *BadReleaseStore
+	animeMappings   *AnimeMappingStore
 	mu              sync.RWMutex
 	saveTimer       *time.Timer
 	saveMu          sync.Mutex
@@ -150,13 +151,15 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		}
 	}
 
-	return &StateManager{
+	mgr := &StateManager{
 		db:              db,
 		wdb:             wdb,
 		backend:         backend,
 		libraryStore:    NewLibraryStore(db, wdb),
 		badReleaseStore: NewBadReleaseStore(db, wdb),
-	}, nil
+	}
+	mgr.animeMappings = NewAnimeMappingStore(mgr, db, wdb)
+	return mgr, nil
 }
 
 // openPools opens the configured database and returns the read and write
@@ -274,6 +277,13 @@ func (m *StateManager) BadReleaseStore() *BadReleaseStore {
 		return nil
 	}
 	return m.badReleaseStore
+}
+
+func (m *StateManager) AnimeMappingStore() *AnimeMappingStore {
+	if m == nil {
+		return nil
+	}
+	return m.animeMappings
 }
 
 func mergeMisplacedDatabases(target *connRef, dataDir string) {

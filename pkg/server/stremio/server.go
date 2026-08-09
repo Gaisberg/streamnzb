@@ -18,6 +18,7 @@ import (
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/animelists"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -49,6 +50,7 @@ type Server struct {
 	tmdbClient                *tmdb.Client
 	tvdbClient                *tvdb.Client
 	kitsuClient               *kitsu.Client
+	animeLists                *animelists.Store
 	streamManager             *auth.StreamManager
 	playlistCache             sync.Map
 	rawSearchCache            sync.Map
@@ -134,6 +136,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
 		kitsuClient:          kitsu.NewClient(nil),
+		animeLists:           animelists.GetStore(opts.AttemptRecorder.AnimeMappingStore()),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),

@@ -19,6 +19,25 @@ const (
 		updated_at {INT}
 	);`
 
+	// anime_mappings is a cache of an external list (Fribb's anime-lists), not
+	// user state: it is replaced wholesale on refresh and can be rebuilt by
+	// re-downloading. It lives here anyway so everything StreamNZB persists
+	// stays in one place rather than beside the database as its own file.
+	//
+	// has_season distinguishes "no season published" — the entry spans the
+	// whole series and numbers episodes absolutely — from season 0, which means
+	// specials.
+	animeMappingsSchema = `CREATE TABLE IF NOT EXISTS anime_mappings (
+		kitsu_id {INT} PRIMARY KEY,
+		imdb_id {TEXT},
+		tvdb_id {TEXT},
+		tmdb_id {TEXT},
+		has_season {INT} NOT NULL DEFAULT 0,
+		season {INT} NOT NULL DEFAULT 0,
+		episode_offset {INT} NOT NULL DEFAULT 0,
+		entry_type {TEXT}
+	);`
+
 	nzbAttemptsSchema = `CREATE TABLE IF NOT EXISTS nzb_attempts (
 		id {ID},
 		tried_at {INT} NOT NULL,
@@ -264,6 +283,7 @@ func initSchema(c *connRef) error {
 		libraryBlueprintsSchema,
 		badReleasesSchema,
 		badReleasesIndexExpires,
+		animeMappingsSchema,
 	} {
 		if _, err := c.Exec(d.ExpandDDL(stmt)); err != nil {
 			return fmt.Errorf("schema: %w", err)
