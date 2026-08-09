@@ -1,27 +1,19 @@
 package persistence
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 )
 
 // TestInitSchemaIsIdempotentAndComplete runs initSchema twice against a fresh
 // database and asserts every column the code reads actually exists. Running it
 // twice also proves the ALTER TABLE migrations tolerate already-present
-// columns, which is the property the "duplicate column" check provides.
+// columns, which is the property the duplicate-column handling provides.
 func TestInitSchemaIsIdempotentAndComplete(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", sqliteDSN(filepath.Join(dir, "test.db")))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	mgr := openTestManager(t)
 
-	for i := 0; i < 2; i++ {
-		if err := initSchema(db); err != nil {
-			t.Fatalf("initSchema pass %d: %v", i+1, err)
-		}
+	// newManager already ran it once; a second pass must be a no-op.
+	if err := initSchema(mgr.wdb); err != nil {
+		t.Fatalf("initSchema second pass: %v", err)
 	}
 
 	want := map[string][]string{
@@ -33,7 +25,7 @@ func TestInitSchemaIsIdempotentAndComplete(t *testing.T) {
 			"provider_name", "avail_status", "avail_reason", "ttff_ms"},
 	}
 	for table, columns := range want {
-		have, err := tableColumns(db, table)
+		have, err := tableColumns(mgr.db, table)
 		if err != nil {
 			t.Fatalf("tableColumns(%s): %v", table, err)
 		}

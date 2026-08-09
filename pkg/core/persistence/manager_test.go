@@ -10,17 +10,8 @@ import (
 )
 
 func TestStateManager(t *testing.T) {
-	logger.Init("DEBUG")
-	tempDir, err := os.MkdirTemp("", "state_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to get manager: %v", err)
-	}
+	db := suiteDB(t)
+	mgr := db.open(t)
 	defer mgr.Close()
 
 	key := "test_key"
@@ -46,11 +37,7 @@ func TestStateManager(t *testing.T) {
 	}
 
 	mgr.Close()
-	globalManager = nil
-	mgr2, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to reload manager: %v", err)
-	}
+	mgr2 := db.open(t)
 	defer mgr2.Close()
 
 	var retrieved2 map[string]string
@@ -67,12 +54,8 @@ func TestStateManager(t *testing.T) {
 }
 
 func TestMigration(t *testing.T) {
-	logger.Init("DEBUG")
-	tempDir, err := os.MkdirTemp("", "migration_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	db := suiteDB(t)
+	tempDir := db.dataDir
 
 	usageData := map[string]interface{}{
 		"indexer1": map[string]interface{}{
@@ -84,11 +67,7 @@ func TestMigration(t *testing.T) {
 	data, _ := json.Marshal(usageData)
 	os.WriteFile(usagePath, data, 0644)
 
-	globalManager = nil
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to get manager: %v", err)
-	}
+	mgr := db.open(t)
 	defer mgr.Close()
 
 	var migratedUsage map[string]interface{}
@@ -153,7 +132,7 @@ func TestGetManagerMergesMisplacedSiblingDatabase(t *testing.T) {
 		1740000000000, "movie", "tt123", "Example", "Example.Release", "https://example.invalid", 1234, "movie.mkv", 1, "", "slot-1", 0, "Indexer"); err != nil {
 		t.Fatalf("insert attempt: %v", err)
 	}
-	if err := setKV(sourceDB, "provider_usage", []byte(`{"example":1}`)); err != nil {
+	if err := setKV(newConnRef(sourceDB, sqliteDialect{}), "provider_usage", []byte(`{"example":1}`)); err != nil {
 		t.Fatalf("insert kv: %v", err)
 	}
 	if err := sourceDB.Close(); err != nil {

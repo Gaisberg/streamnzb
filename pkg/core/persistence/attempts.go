@@ -59,9 +59,13 @@ func (m *StateManager) RecordPreloadAttempt(p RecordAttemptParams) {
 		return
 	}
 	// INSERT only when no active (preload=1) row exists for this slot yet.
-	_ = m.withWriteLock(func(db *sql.DB) error {
+	_ = m.withWriteLock(func(db *connRef) error {
+		// The CASTs are load-bearing: a bare SELECT ?, ?, ... gives Postgres no
+		// column context to infer parameter types from, so it refuses the query.
 		_, err := db.Exec(`INSERT INTO nzb_attempts (tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, preload)
-				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 1
+				SELECT CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
+				       CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT),
+				       0, '', '', '', CAST(? AS TEXT), 1
 			WHERE NOT EXISTS (SELECT 1 FROM nzb_attempts WHERE slot_path = ? AND preload = 1)`,
 			time.Now().UnixMilli(),
 			p.StreamName,
@@ -88,18 +92,18 @@ func (m *StateManager) UpdatePendingAttempt(p RecordAttemptParams) {
 	if m == nil || m.db == nil || p.SlotPath == "" {
 		return
 	}
-	_ = m.withWriteLock(func(db *sql.DB) error {
+	_ = m.withWriteLock(func(db *connRef) error {
 		_, err := db.Exec(`UPDATE nzb_attempts
-			SET served_file = COALESCE(NULLIF(?, ''), served_file),
-				match_type = COALESCE(NULLIF(?, ''), match_type),
-				indexer_name = COALESCE(NULLIF(?, ''), indexer_name),
-				stream_name = COALESCE(NULLIF(?, ''), stream_name),
-				provider_name = COALESCE(NULLIF(?, ''), provider_name),
-				content_title = COALESCE(NULLIF(?, ''), content_title),
-				failure_reason = COALESCE(NULLIF(?, ''), failure_reason),
-				avail_status = COALESCE(NULLIF(?, ''), avail_status),
-				avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
-				ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
+			SET served_file = COALESCE(NULLIF(CAST(? AS TEXT), ''), served_file),
+				match_type = COALESCE(NULLIF(CAST(? AS TEXT), ''), match_type),
+				indexer_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), indexer_name),
+				stream_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), stream_name),
+				provider_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), provider_name),
+				content_title = COALESCE(NULLIF(CAST(? AS TEXT), ''), content_title),
+				failure_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), failure_reason),
+				avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
+				avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
+				ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
 			WHERE slot_path = ? AND preload = 1`,
 			p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.FailureReason, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 		return err
@@ -113,20 +117,20 @@ func (m *StateManager) ResolvePendingAttempt(p RecordAttemptParams) {
 		return
 	}
 	success := boolToInt(p.Success)
-	_ = m.withWriteLock(func(db *sql.DB) error {
+	_ = m.withWriteLock(func(db *connRef) error {
 		_, err := db.Exec(`UPDATE nzb_attempts
 			SET preload = 0,
 				success = ?,
 				failure_reason = ?,
-				served_file = COALESCE(NULLIF(?, ''), served_file),
-				match_type = COALESCE(NULLIF(?, ''), match_type),
-				indexer_name = COALESCE(NULLIF(?, ''), indexer_name),
-				stream_name = COALESCE(NULLIF(?, ''), stream_name),
-				provider_name = COALESCE(NULLIF(?, ''), provider_name),
-				content_title = COALESCE(NULLIF(?, ''), content_title),
-				avail_status = COALESCE(NULLIF(?, ''), avail_status),
-				avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
-				ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
+				served_file = COALESCE(NULLIF(CAST(? AS TEXT), ''), served_file),
+				match_type = COALESCE(NULLIF(CAST(? AS TEXT), ''), match_type),
+				indexer_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), indexer_name),
+				stream_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), stream_name),
+				provider_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), provider_name),
+				content_title = COALESCE(NULLIF(CAST(? AS TEXT), ''), content_title),
+				avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
+				avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
+				ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
 			WHERE slot_path = ? AND preload = 1`,
 			success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 		return err
@@ -139,7 +143,7 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 		return
 	}
 	success := boolToInt(p.Success)
-	err := m.withWriteLock(func(db *sql.DB) error {
+	err := m.withWriteLock(func(db *connRef) error {
 		if p.SlotPath != "" {
 			// Only update the currently-pending preload row (preload=1). Historical resolved rows
 			// for the same slot_path (previous plays) must not be mutated.
@@ -148,14 +152,14 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 					success = ?,
 					failure_reason = ?,
 					served_file = ?,
-					match_type = COALESCE(NULLIF(?, ''), match_type),
-					indexer_name = COALESCE(NULLIF(?, ''), indexer_name),
-					stream_name = COALESCE(NULLIF(?, ''), stream_name),
-					provider_name = COALESCE(NULLIF(?, ''), provider_name),
-					content_title = COALESCE(NULLIF(?, ''), content_title),
-					avail_status = COALESCE(NULLIF(?, ''), avail_status),
-					avail_reason = COALESCE(NULLIF(?, ''), avail_reason),
-					ttff_ms = CASE WHEN ? > 0 THEN ? ELSE ttff_ms END
+					match_type = COALESCE(NULLIF(CAST(? AS TEXT), ''), match_type),
+					indexer_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), indexer_name),
+					stream_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), stream_name),
+					provider_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), provider_name),
+					content_title = COALESCE(NULLIF(CAST(? AS TEXT), ''), content_title),
+					avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
+					avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
+					ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
 				WHERE slot_path = ? AND preload = 1`,
 				success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
 			if err == nil {
@@ -286,7 +290,7 @@ func (m *StateManager) DeleteAttemptsBefore(cutoff time.Time) (int64, error) {
 		return 0, nil
 	}
 	var deleted int64
-	err := m.withWriteLock(func(db *sql.DB) error {
+	err := m.withWriteLock(func(db *connRef) error {
 		res, err := db.Exec(`DELETE FROM nzb_attempts WHERE tried_at < ?`, cutoff.UnixMilli())
 		if err != nil {
 			return err

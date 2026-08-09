@@ -261,6 +261,47 @@ func TestRedactProxyURLForAPI(t *testing.T) {
 	}
 }
 
+func TestRedactDatabaseURLForAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"url form keeps host and database", "postgres://user:secret@db:5432/streamnzb", "postgres://db:5432/streamnzb"},
+		{"url form with options", "postgresql://u:p@db:5432/snzb?sslmode=disable", "postgresql://db:5432/snzb?sslmode=disable"},
+		// Keyword form hides the password nowhere url.Parse can reach, so the
+		// whole string goes rather than leak it.
+		{"keyword form is blanked", "host=db user=u password=secret dbname=snzb", ""},
+		{"empty stays empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactDatabaseURLForAPI(tc.in)
+			if got != tc.want {
+				t.Fatalf("RedactDatabaseURLForAPI(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.Contains(got, "secret") {
+				t.Fatalf("redacted form still contains the password: %q", got)
+			}
+		})
+	}
+}
+
+// TestRedactForAPIStripsDatabasePassword guards the whole-config path the
+// settings page actually fetches, not just the helper.
+func TestRedactForAPIStripsDatabasePassword(t *testing.T) {
+	cfg := &Config{
+		DatabaseDriver: "postgres",
+		DatabaseURL:    "postgres://user:secret@db:5432/streamnzb",
+	}
+	out := cfg.RedactForAPI()
+	if strings.Contains(out.DatabaseURL, "secret") {
+		t.Fatalf("RedactForAPI leaked the database password: %q", out.DatabaseURL)
+	}
+	if out.DatabaseDriver != "postgres" {
+		t.Fatalf("DatabaseDriver should survive redaction, got %q", out.DatabaseDriver)
+	}
+}
+
 func TestMigrateLegacyIndexersBackfillsEasynewsTimeout(t *testing.T) {
 	cfg := &Config{
 		Indexers: []IndexerConfig{
@@ -621,6 +662,7 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey,
 		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
 		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
+		env.KeyDatabaseDriver, env.KeyDatabaseURL,
 	}
 	for _, k := range all {
 		_, ok := envFieldCopiers[k]

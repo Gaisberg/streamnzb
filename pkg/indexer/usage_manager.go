@@ -45,6 +45,35 @@ func GetUsageManager(sm *persistence.StateManager) (*UsageManager, error) {
 	return m, nil
 }
 
+// FlushUsageManager persists in-memory usage to the database currently behind
+// the state manager. Called before a database swap so counters recorded since
+// the last save land in the database being left, and are carried across by the
+// import rather than lost.
+func FlushUsageManager() error {
+	managerMu.Lock()
+	m := globalManager
+	managerMu.Unlock()
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.save()
+}
+
+// ReloadUsageManager re-reads usage after the database behind the state manager
+// changed. Without it the manager keeps serving — and flushing — counters it
+// loaded from the previous database.
+func ReloadUsageManager() error {
+	managerMu.Lock()
+	m := globalManager
+	managerMu.Unlock()
+	if m == nil {
+		return nil
+	}
+	return m.load()
+}
+
 func (m *UsageManager) load() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

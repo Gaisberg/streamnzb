@@ -6,7 +6,7 @@ const pageTitles = {
   "nzb-history": "History",
   "direct-play": "Direct Play",
   logs: "Logs",
-  "settings-network": "Network Settings",
+  "settings-general": "General Settings",
   "settings-indexers": "Indexers",
   "settings-providers": "Providers",
   filters: "Filters",

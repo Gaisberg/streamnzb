@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiFetch } from '@/api'
 
-const NETWORK_TAB_FIELDS = [
+const GENERAL_TAB_FIELDS = [
   'addon_port',
   'addon_base_url',
   'proxy_enabled',
@@ -13,13 +13,17 @@ const NETWORK_TAB_FIELDS = [
   'indexer_query_header',
   'indexer_grab_header',
   'provider_header',
+  'database_driver',
+  'database_url',
+  'nzb_history_retention_days',
+  'tmdb_api_key',
+  'tvdb_api_key',
 ]
 
 const ADVANCED_TAB_FIELDS = [
   'log_level',
   'verbose_nntp_logging',
   'keep_log_files',
-  'nzb_history_retention_days',
   'playback_startup_timeout_seconds',
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
@@ -28,8 +32,6 @@ const ADVANCED_TAB_FIELDS = [
   'mute_error_video',
   'memory_limit_mb',
   'availnzb_mode',
-  'tmdb_api_key',
-  'tvdb_api_key',
   'library_search_mode',
   'library_max_items',
   'library_max_size_mb',
@@ -55,13 +57,13 @@ export function fieldToTab(fieldName) {
   if (fieldName.startsWith('providers')) return 'providers'
   if (fieldName.startsWith('filter_profiles')) return 'filters'
   if (fieldName.startsWith('movie_search_queries') || fieldName.startsWith('series_search_queries')) return 'search_query'
-  if (NETWORK_TAB_FIELDS.includes(fieldName)) return 'network'
+  if (GENERAL_TAB_FIELDS.includes(fieldName)) return 'general'
   if (ADVANCED_TAB_FIELDS.includes(fieldName)) return 'advanced'
   return null
 }
 
 export function isConfigTab(tabId) {
-  return tabId === 'network' || tabId === 'advanced'
+  return tabId === 'general' || tabId === 'advanced'
 }
 
 function pickConfigSlice(values, keys) {
@@ -129,12 +131,12 @@ export function useSettingsState({
   const [visibleFooterStatus, setVisibleFooterStatus] = useState(null)
   const [footerStatusVisible, setFooterStatusVisible] = useState(false)
   const [lastSettingsSaveCard, setLastSettingsSaveCard] = useState('')
-  const [lastConfigSaveSource, setLastConfigSaveSource] = useState('network')
+  const [lastConfigSaveSource, setLastConfigSaveSource] = useState('general')
   const footerTimeoutRef = useRef(null)
   const footerHideTimeoutRef = useRef(null)
 
-  const networkInitialValues = useMemo(
-    () => pickConfigSlice(configSnapshot, NETWORK_TAB_FIELDS),
+  const generalInitialValues = useMemo(
+    () => pickConfigSlice(configSnapshot, GENERAL_TAB_FIELDS),
     [configSnapshot]
   )
 
@@ -200,7 +202,7 @@ export function useSettingsState({
   useEffect(() => {
     if (!isConfigTab(lastConfigSaveSource)) return
     if (tabsWithErrors.size > 0 && !tabsWithErrors.has(activeTab)) {
-      const firstErrorTabOrder = ['network', 'indexers', 'providers', 'search_query', 'advanced']
+      const firstErrorTabOrder = ['general', 'indexers', 'providers', 'search_query', 'advanced']
       const firstErrorTab = firstErrorTabOrder.find((tabId) => tabsWithErrors.has(tabId))
       if (firstErrorTab) setActiveTab(firstErrorTab)
     }
@@ -208,11 +210,12 @@ export function useSettingsState({
 
   const errorCount = saveStatus.errors ? Object.keys(saveStatus.errors).length : 0
   const settingsCardTitles = {
-    network: 'Network',
+    general: 'General',
     advanced: 'Advanced',
     addon: 'Addon',
     proxy: 'NNTP Proxy Server',
     useragent: 'User-Agent',
+    database: 'Database',
     admin: 'Logs',
     memory: 'Memory & Cache',
     playback: 'Playback',
@@ -232,7 +235,7 @@ export function useSettingsState({
         : saveStatus.msg
 
   useEffect(() => {
-    if (activeTab !== 'advanced' && activeTab !== 'network') return
+    if (activeTab !== 'advanced' && activeTab !== 'general') return
     if (lastConfigSaveSource !== activeTab) {
       setVisibleFooterStatus(null)
       return
@@ -337,7 +340,7 @@ export function useSettingsState({
         }
       }
       console.error('Error saving configuration:', errorMessage, error)
-      if (sourceTab !== 'network' && sourceTab !== 'advanced' && sourceTab !== 'providers' && sourceTab !== 'indexers') {
+      if (sourceTab !== 'general' && sourceTab !== 'advanced' && sourceTab !== 'providers' && sourceTab !== 'indexers') {
         showFooterStatus({ type: 'error', message: errorMessage })
       }
       setError('root', { message: `Failed to save configuration: ${errorMessage}` })
@@ -345,9 +348,9 @@ export function useSettingsState({
     }
   }, [activeTab, configSnapshot, getValues, sendCommand, setConfigSnapshot, setError, showFooterStatus])
 
-  const handleNetworkPersist = useCallback((payload, cardId = 'network') => {
+  const handleGeneralPersist = useCallback((payload, cardId = 'general') => {
     setLastSettingsSaveCard(cardId)
-    return submitSettings(payload, 'network')
+    return submitSettings(payload, 'general')
   }, [submitSettings])
 
   const handleAdvancedPersist = useCallback((payload, cardId = 'advanced') => {
@@ -371,8 +374,8 @@ export function useSettingsState({
     footerStatusVisible,
     handleAdvancedPersist,
     handleClearCache,
-    handleNetworkPersist,
-    networkInitialValues,
+    handleGeneralPersist,
+    generalInitialValues,
     showFooterStatus,
     submitSettings,
     tabsWithErrors,

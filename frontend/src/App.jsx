@@ -218,8 +218,8 @@ function App() {
   }, [theme]);
 
   const settingsTabMap = {
-    'settings': 'network',
-    'settings-network': 'network',
+    'settings': 'general',
+    'settings-general': 'general',
     'settings-indexers': 'indexers',
     'settings-providers': 'providers',
     'settings-search': 'search_query',
@@ -391,7 +391,7 @@ function App() {
                 adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
                 indexerCaps={indexerCaps}
                 stats={stats}
-                activeTab={settingsTabMap[activePage] || 'network'}
+                activeTab={settingsTabMap[activePage] || 'general'}
                 hideTabs={true}
               />
             </div>

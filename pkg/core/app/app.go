@@ -167,12 +167,18 @@ type ReloadScope struct {
 	Indexers  bool
 	Providers bool
 	Proxy     bool
+	Database  bool
+	AddonPort bool
 }
 
-func (s ReloadScope) Any() bool { return s.Indexers || s.Providers || s.Proxy }
+func (s ReloadScope) Any() bool {
+	return s.Indexers || s.Providers || s.Proxy || s.Database || s.AddonPort
+}
 
-// ReloadScopeFull marks every subsystem changed — used when there is no prior
-// config to diff against.
+// ReloadScopeFull marks every rebuildable subsystem changed — used when there
+// is no prior config to diff against. Database and AddonPort stay out of it on
+// purpose: reopening the database and rebinding the listener are disruptive
+// rather than merely expensive, so they only ever run off an observed change.
 func ReloadScopeFull() ReloadScope {
 	return ReloadScope{Indexers: true, Providers: true, Proxy: true}
 }
@@ -190,6 +196,9 @@ func ConfigChanged(old, new_ *config.Config) ReloadScope {
 			old.ProxyEnabled != new_.ProxyEnabled ||
 			old.ProxyAuthUser != new_.ProxyAuthUser ||
 			old.ProxyAuthPass != new_.ProxyAuthPass,
+		Database: old.DatabaseDriver != new_.DatabaseDriver ||
+			old.DatabaseURL != new_.DatabaseURL,
+		AddonPort: old.AddonPort != new_.AddonPort,
 	}
 }
 

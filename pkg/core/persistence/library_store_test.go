@@ -1,27 +1,13 @@
 package persistence
 
 import (
-	"os"
 	"testing"
 	"time"
-
-	"streamnzb/pkg/core/logger"
 )
 
 func newTestLibraryStore(t *testing.T) *LibraryStore {
 	t.Helper()
-	logger.Init("ERROR")
-	tempDir, err := os.MkdirTemp("", "library_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tempDir) })
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("get manager: %v", err)
-	}
-	t.Cleanup(func() { mgr.Close() })
-	ls := mgr.LibraryStore()
+	ls := openTestManager(t).LibraryStore()
 	if ls == nil {
 		t.Fatal("nil library store")
 	}
@@ -264,23 +250,7 @@ func TestLibraryStatusLifecycle(t *testing.T) {
 }
 
 func TestLibraryStoreRoundTripMediaCaps(t *testing.T) {
-	logger.Init("ERROR")
-	tempDir, err := os.MkdirTemp("", "library_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("get manager: %v", err)
-	}
-	defer mgr.Close()
-
-	ls := mgr.LibraryStore()
-	if ls == nil {
-		t.Fatal("nil library store")
-	}
+	ls := newTestLibraryStore(t)
 
 	item := &LibraryItem{
 		ContentType:   "series",

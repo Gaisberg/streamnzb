@@ -1,7 +1,6 @@
 package persistence
 
 import (
-	"database/sql"
 	"os"
 	"testing"
 )
@@ -14,11 +13,11 @@ func TestRealDBMigration(t *testing.T) {
 	if path == "" {
 		t.Skip("STREAMNZB_TEST_DB not set")
 	}
-	db, err := sql.Open("sqlite", sqliteDSN(path))
+	db, closeDB, err := openSQLiteFile(path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer closeDB()
 	if err := initSchema(db); err != nil {
 		t.Fatalf("initSchema on real DB: %v", err)
 	}

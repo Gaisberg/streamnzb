@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
@@ -45,6 +46,7 @@ type Server struct {
 	clientsMu       sync.Mutex
 	logCh           chan string
 	attemptLister   *persistence.StateManager
+	addonRebind     func(int) error
 	availNZBStore   availnzb.KeyStore
 	metricsMu       sync.Mutex
 	lastMetricsAt   time.Time
@@ -144,6 +146,14 @@ func (s *Server) SetIndexerCaps(caps map[string]*indexer.Caps) {
 	s.indexerCaps = caps
 }
 
+// SetAddonRebinder installs the composition root's port-rebind hook, used when
+// a config reload changes the addon port.
+func (s *Server) SetAddonRebinder(rebind func(int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.addonRebind = rebind
+}
+
 func (s *Server) SetAttemptLister(m *persistence.StateManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,7 +250,22 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 	if comp.IndexerCaps != nil {
 		s.indexerCaps = comp.IndexerCaps
 	}
+	stateMgr := s.attemptLister
+	rebindAddon := s.addonRebind
 	s.mu.Unlock()
+
+	if scope.Database {
+		if err := initialization.ReloadDatabase(stateMgr, comp.Config); err != nil {
+			// The old database is still attached and working — the swap is
+			// all-or-nothing — so this degrades to "setting did not apply".
+			logger.Error("Failed to switch database; staying on the current one", "err", err)
+		}
+	}
+	if scope.AddonPort && rebindAddon != nil {
+		if err := rebindAddon(comp.Config.AddonPort); err != nil {
+			logger.Error("Failed to rebind addon port; still serving on the previous one", "err", err)
+		}
+	}
 
 	if restartProxy && oldProxy != nil {
 		logger.Info("Stopping NNTP Proxy for reload...")

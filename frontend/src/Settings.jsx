@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { AlertTriangle, Network, SlidersHorizontal, Server, Globe, Search, Loader2, Filter } from "lucide-react"
+import { AlertTriangle, Settings2, SlidersHorizontal, Server, Globe, Search, Loader2, Filter } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
-import { NetworkSettingsSection } from "@/components/NetworkSettingsSection"
+import { GeneralSettingsSection } from "@/components/GeneralSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,7 +15,7 @@ import { normalizeAvailNZBMode } from '@/lib/availnzb'
 import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from '@/lib/config'
 
 const TABS = [
-  { id: 'network', label: 'Network', icon: Network },
+  { id: 'general', label: 'General', icon: Settings2 },
   { id: 'indexers', label: 'Indexers', icon: Server },
   { id: 'providers', label: 'Providers', icon: Globe },
   { id: 'search_query', label: 'Search', icon: Search },
@@ -54,9 +54,9 @@ function Settings({
   hideTabs = false,
 }) {
   const [internalActiveTab, setInternalActiveTab] = useState(() => {
-    if (typeof window === 'undefined') return 'network'
-    const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'network'
-    return TABS.some((tab) => tab.id === savedTab) ? savedTab : 'network'
+    if (typeof window === 'undefined') return 'general'
+    const savedTab = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'general'
+    return TABS.some((tab) => tab.id === savedTab) ? savedTab : 'general'
   })
 
   const activeTab = activeTabProp || internalActiveTab
@@ -225,7 +225,7 @@ function Settings({
 
   const handleTabChange = (nextTab) => {
     if (nextTab === activeTab) return
-    // Blur first so auto-save inputs on the Network/Advanced tabs commit any
+    // Blur first so auto-save inputs on the General/Advanced tabs commit any
     // pending edit before the tab switches.
     if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur()
@@ -242,8 +242,8 @@ function Settings({
     footerStatusVisible,
     handleAdvancedPersist,
     handleClearCache,
-    handleNetworkPersist,
-    networkInitialValues,
+    handleGeneralPersist,
+    generalInitialValues,
     showFooterStatus,
     submitSettings,
     tabsWithErrors,
@@ -310,11 +310,11 @@ function Settings({
           </div>
         )}
 
-        {activeTab === 'network' && (
-        <NetworkSettingsSection
-          initialValues={networkInitialValues}
+        {activeTab === 'general' && (
+        <GeneralSettingsSection
+          initialValues={generalInitialValues}
           envOverrides={envOverrides}
-          onPersist={handleNetworkPersist}
+          onPersist={handleGeneralPersist}
           saveStatus={saveStatus}
           />
         )}

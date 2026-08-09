@@ -12,6 +12,7 @@ StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integ
 - **Stream-based addon** — Define global providers, indexers, search queries, and filter profiles once, then create one or more streams that decide which resources belong to each stream manifest.
 - **NNTP proxy** — Standard NNTP (default port 119) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database. Bad releases are skipped; success/failure is reported on play so the shared DB stays current.
+- **SQLite or Postgres** — A local file by default, or point it at an existing Postgres server. Switching migrates your data either way, without a restart.
 - **Single binary** — Docker image or native Windows/Linux/macOS. No other containers required.
 
 
@@ -45,9 +46,10 @@ Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/rele
 ### Setup Guide
 
 1. Open `http://localhost:7000`. Default login is `admin` / `admin`; you'll be asked to change the password.
-2. Go to **Network** (under Settings) and set your addon **Base URL** and **Port**.
+2. Go to **General** (under Settings) and set your addon **Base URL** and **Port**.
    - If using Tailscale, use the IP address of the machine running StreamNZB. Example: `http://100.64.0.1:7000`
    - If using a domain name, make sure it is reachable from your client. Example: `http://streamnzb.example.com:7000` or `https://streamnzb.example.com`
+   - Changing the port takes effect immediately, without a restart — but it closes the connection this page is served over, so reopen StreamNZB on the new port afterwards.
 3. Go to **Providers** and add at least one Usenet provider (host, port, username, password, connections).
 4. Go to **Indexers** and add at least one Newznab-compatible indexer (URL + API key).
 5. Go to **Filters** to configure release filtering profiles and ranking rules.
@@ -56,6 +58,39 @@ Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/rele
    - Select which providers, indexers, search queries, and filter profiles belong to this stream.
    - Configure stream options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
 8. Click **Install** on your stream to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
+
+### Database: SQLite (default) or Postgres
+
+StreamNZB stores its library, NZB history, and metrics in SQLite at
+`<data dir>/streamnzb.db`. No setup is needed — this is the default.
+
+To use an existing Postgres server instead, go to **General** (under Settings)
+and set the **Database** backend to Postgres with your connection string.
+StreamNZB checks the server is reachable before saving, then switches over
+without a restart.
+
+Equivalently, via environment variables:
+
+```env
+DATABASE_DRIVER=postgres
+DATABASE_URL=postgres://user:password@db-host:5432/streamnzb?sslmode=disable
+```
+
+or `database_driver` / `database_url` in `config.json`.
+
+Switching backends carries your data with it — library, NZB history, bad
+releases, and metrics — in either direction, and leaves the database you came
+from untouched. Switching back later syncs only what the other side added in
+the meantime, so nothing is lost or duplicated by moving between the two. Set
+`database_skip_migration: true` in `config.json` to switch without copying.
+
+The one exception is switching *into* a database that already holds history but
+has never been synced with the one you are leaving: there is no way to tell what
+it already has, so history is left alone rather than duplicated (the library and
+settings still migrate). Every switch after that is incremental.
+
+> One StreamNZB instance per database. Instances cache state in memory and would
+> overwrite each other's indexer usage counters if they shared one.
 
 ### Force password reset on next startup
 
@@ -73,7 +108,7 @@ When it remains enabled, StreamNZB will keep forcing the password-reset prompt o
 
 StreamNZB separates global configuration from per-stream behavior:
 
-- **Network** — Base URL, port, HTTP proxy, and network settings.
+- **General** — Base URL, port, NNTP proxy, User-Agent headers, database backend, and metadata API keys.
 - **Indexers** — Global registry of Newznab and EasyNews search sources.
 - **Providers** — Global registry of Usenet provider server connections.
 - **Filters** — Release filtering rules and `jhin` ranking profiles.

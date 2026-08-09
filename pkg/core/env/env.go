@@ -32,6 +32,10 @@ const (
 	StreamNZBIndexerGrabHeaderEnv  = "STREAMNZB_INDEXER_GRAB_HEADER"
 	StreamNZBProviderHeaderEnv     = "STREAMNZB_PROVIDER_HEADER"
 	ConfigPath                     = "CONFIG_PATH"
+	DatabaseDriverEnv              = "DATABASE_DRIVER"
+	DatabaseURLEnv                 = "DATABASE_URL"
+	StreamNZBDatabaseDriverEnv     = "STREAMNZB_DATABASE_DRIVER"
+	StreamNZBDatabaseURLEnv        = "STREAMNZB_DATABASE_URL"
 )
 
 const (
@@ -55,6 +59,8 @@ const (
 	KeyProviderHeader     = "provider_header"
 	KeyAdminUsername      = "admin_username"
 	KeyAdminMustChangePwd = "admin_must_change_password"
+	KeyDatabaseDriver     = "database_driver"
+	KeyDatabaseURL        = "database_url"
 )
 
 const AdminUsernameEnv = "ADMIN_USERNAME"
@@ -168,6 +174,8 @@ type ConfigOverrides struct {
 	ProxyAuthPass      string
 	AdminUsername      string
 	AdminMustChangePwd bool
+	DatabaseDriver     string
+	DatabaseURL        string
 	Providers          []Provider
 	Indexers           []Indexer
 }
@@ -229,6 +237,8 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	r.str(&o.ProxyAuthUser, KeyProxyAuthUser, NNTPProxyAuthUser)
 	r.str(&o.ProxyAuthPass, KeyProxyAuthPass, NNTPProxyAuthPass)
 	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
+	r.str(&o.DatabaseDriver, KeyDatabaseDriver, StreamNZBDatabaseDriverEnv, DatabaseDriverEnv)
+	r.str(&o.DatabaseURL, KeyDatabaseURL, StreamNZBDatabaseURLEnv, DatabaseURLEnv)
 	if v, ok := os.LookupEnv(AdminForcePasswordResetEnv); ok && v != "" && getEnvBool(AdminForcePasswordResetEnv, false) {
 		o.AdminMustChangePwd = true
 		r.keys = append(r.keys, KeyAdminMustChangePwd)

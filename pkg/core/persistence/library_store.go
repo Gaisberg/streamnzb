@@ -73,12 +73,12 @@ type LibraryStats struct {
 }
 
 type LibraryStore struct {
-	db  *sql.DB // shared read pool
-	wdb *sql.DB // single-connection write handle
+	db  *connRef // shared read handle
+	wdb *connRef // write handle
 	mu  sync.RWMutex
 }
 
-func NewLibraryStore(db, wdb *sql.DB) *LibraryStore {
+func NewLibraryStore(db, wdb *connRef) *LibraryStore {
 	return &LibraryStore{db: db, wdb: wdb}
 }
 
@@ -660,15 +660,17 @@ func (ls *LibraryStore) GetStats() (LibraryStats, error) {
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
 
+	// SUM over a 64-bit column yields numeric on Postgres, which will not scan
+	// into an int64; the CAST pins it to an integer on both backends.
 	_ = ls.db.QueryRow(`
 		SELECT COUNT(*),
-		       COALESCE(SUM(length(nzb_data)), 0),
-		       COALESCE(SUM(size_bytes), 0)
+		       COALESCE(CAST(SUM(length(nzb_data)) AS BIGINT), 0),
+		       COALESCE(CAST(SUM(size_bytes) AS BIGINT), 0)
 		FROM library_nzbs
 	`).Scan(&stats.TotalItems, &stats.TotalNZBBytes, &stats.TotalSizeBytes)
 
 	_ = ls.db.QueryRow(`
-		SELECT COALESCE(SUM(media_file_size), 0) FROM library_blueprints
+		SELECT COALESCE(CAST(SUM(media_file_size) AS BIGINT), 0) FROM library_blueprints
 	`).Scan(&stats.TotalMediaBytes)
 
 	_ = ls.db.QueryRow(`SELECT COUNT(*) FROM library_nzbs WHERE pinned = 1`).Scan(&stats.PinnedItems)
@@ -700,7 +702,7 @@ func (ls *LibraryStore) EnforceQuota(maxItems int, maxSizeMB int) error {
 	if maxSizeMB > 0 {
 		limit := int64(maxSizeMB) * 1024 * 1024
 		var total int64
-		_ = ls.db.QueryRow(`SELECT COALESCE(SUM(length(nzb_data)), 0) FROM library_nzbs`).Scan(&total)
+		_ = ls.db.QueryRow(`SELECT COALESCE(CAST(SUM(length(nzb_data)) AS BIGINT), 0) FROM library_nzbs`).Scan(&total)
 		if total > limit {
 			rows, err := ls.db.Query(`SELECT id, length(nzb_data) FROM library_nzbs WHERE pinned = 0 ORDER BY last_accessed_at ASC`)
 			if err == nil {

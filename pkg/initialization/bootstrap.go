@@ -77,47 +77,7 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	}
 
 	if stateMgr != nil {
-		streamRecords, err := stateMgr.GetRecentStreamAPISamples(1000)
-		if err != nil {
-			logger.Warn("Failed to load recent stream API samples", "err", err)
-		}
-		ttffRecords, err := stateMgr.GetRecentPlaybackTTFFSamples(1000)
-		if err != nil {
-			logger.Warn("Failed to load recent TTFF samples", "err", err)
-		}
-
-		streamSamples := make([]metrics.StreamAPISample, 0, len(streamRecords))
-		for _, r := range streamRecords {
-			streamSamples = append(streamSamples, metrics.StreamAPISample{
-				Timestamp:        r.Timestamp,
-				ContentType:      r.ContentType,
-				ID:               r.ID,
-				TotalDuration:    time.Duration(r.TotalDurationMS) * time.Millisecond,
-				MetadataDuration: time.Duration(r.MetadataDurationMS) * time.Millisecond,
-				SearchDuration:   time.Duration(r.SearchDurationMS) * time.Millisecond,
-				RankingDuration:  time.Duration(r.RankingDurationMS) * time.Millisecond,
-				AvailNZBDuration: time.Duration(r.AvailNZBDurationMS) * time.Millisecond,
-				CandidateCount:   r.CandidateCount,
-				ResultCount:      r.ResultCount,
-			})
-		}
-		ttffSamples := make([]metrics.PlaybackTTFFSample, 0, len(ttffRecords))
-		for _, r := range ttffRecords {
-			ttffSamples = append(ttffSamples, metrics.PlaybackTTFFSample{
-				Timestamp:           r.Timestamp,
-				SessionID:           r.SessionID,
-				ProviderName:        r.ProviderName,
-				TTFF:                time.Duration(r.TTFFMS) * time.Millisecond,
-				SessionResolution:   time.Duration(r.SessionResolutionMS) * time.Millisecond,
-				NZBFetchDuration:    time.Duration(r.NZBFetchDurationMS) * time.Millisecond,
-				NNTPConnectDuration: time.Duration(r.NNTPConnectDurationMS) * time.Millisecond,
-				ProbeDuration:       time.Duration(r.ProbeDurationMS) * time.Millisecond,
-				FirstByteDuration:   time.Duration(r.FirstByteDurationMS) * time.Millisecond,
-				IsCacheHit:          r.IsCacheHit,
-			})
-		}
-		metrics.Default().Hydrate(streamSamples, ttffSamples)
-
+		HydrateMetricsFromState(stateMgr)
 		stateRef := stateMgr
 		metrics.Default().SetOnStreamAPISample(func(s metrics.StreamAPISample) {
 			_ = stateRef.RecordStreamAPISample(persistence.StreamAPISampleRecord{
@@ -468,4 +428,53 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 		UsenetPool:         usenetPool,
 		SegmentCacheBudget: segmentCacheBudget,
 	}
+}
+
+// HydrateMetricsFromState fills the in-memory metrics ring from persisted
+// samples. Called at startup, and again after a database swap — the ring would
+// otherwise keep showing samples read from the database that was left behind.
+func HydrateMetricsFromState(stateMgr *persistence.StateManager) {
+	if stateMgr == nil {
+		return
+	}
+	streamRecords, err := stateMgr.GetRecentStreamAPISamples(1000)
+	if err != nil {
+		logger.Warn("Failed to load recent stream API samples", "err", err)
+	}
+	ttffRecords, err := stateMgr.GetRecentPlaybackTTFFSamples(1000)
+	if err != nil {
+		logger.Warn("Failed to load recent TTFF samples", "err", err)
+	}
+
+	streamSamples := make([]metrics.StreamAPISample, 0, len(streamRecords))
+	for _, r := range streamRecords {
+		streamSamples = append(streamSamples, metrics.StreamAPISample{
+			Timestamp:        r.Timestamp,
+			ContentType:      r.ContentType,
+			ID:               r.ID,
+			TotalDuration:    time.Duration(r.TotalDurationMS) * time.Millisecond,
+			MetadataDuration: time.Duration(r.MetadataDurationMS) * time.Millisecond,
+			SearchDuration:   time.Duration(r.SearchDurationMS) * time.Millisecond,
+			RankingDuration:  time.Duration(r.RankingDurationMS) * time.Millisecond,
+			AvailNZBDuration: time.Duration(r.AvailNZBDurationMS) * time.Millisecond,
+			CandidateCount:   r.CandidateCount,
+			ResultCount:      r.ResultCount,
+		})
+	}
+	ttffSamples := make([]metrics.PlaybackTTFFSample, 0, len(ttffRecords))
+	for _, r := range ttffRecords {
+		ttffSamples = append(ttffSamples, metrics.PlaybackTTFFSample{
+			Timestamp:           r.Timestamp,
+			SessionID:           r.SessionID,
+			ProviderName:        r.ProviderName,
+			TTFF:                time.Duration(r.TTFFMS) * time.Millisecond,
+			SessionResolution:   time.Duration(r.SessionResolutionMS) * time.Millisecond,
+			NZBFetchDuration:    time.Duration(r.NZBFetchDurationMS) * time.Millisecond,
+			NNTPConnectDuration: time.Duration(r.NNTPConnectDurationMS) * time.Millisecond,
+			ProbeDuration:       time.Duration(r.ProbeDurationMS) * time.Millisecond,
+			FirstByteDuration:   time.Duration(r.FirstByteDurationMS) * time.Millisecond,
+			IsCacheHit:          r.IsCacheHit,
+		})
+	}
+	metrics.Default().Hydrate(streamSamples, ttffSamples)
 }

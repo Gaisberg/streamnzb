@@ -1,27 +1,13 @@
 package persistence
 
 import (
-	"os"
 	"testing"
 	"time"
-
-	"streamnzb/pkg/core/logger"
 )
 
 func newTestBadReleaseStore(t *testing.T) *BadReleaseStore {
 	t.Helper()
-	logger.Init("ERROR")
-	tempDir, err := os.MkdirTemp("", "badrel_test")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tempDir) })
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("get manager: %v", err)
-	}
-	t.Cleanup(func() { mgr.Close() })
-	bs := mgr.BadReleaseStore()
+	bs := openTestManager(t).BadReleaseStore()
 	if bs == nil {
 		t.Fatal("nil bad release store")
 	}

@@ -55,6 +55,32 @@ func GetProviderUsageManager(sm *persistence.StateManager) (*ProviderUsageManage
 	return m, nil
 }
 
+// FlushProviderUsage persists pending usage to the database currently behind
+// the state manager, so a database swap does not strand the bytes counted since
+// the last flush tick.
+func FlushProviderUsage() error {
+	providerManagerMu.Lock()
+	m := providerManager
+	providerManagerMu.Unlock()
+	if m == nil {
+		return nil
+	}
+	return m.flushIfDirty()
+}
+
+// ReloadProviderUsage re-reads usage after the database behind the state
+// manager changed. The flush loop keeps running against the manager, so without
+// this it would write totals from the previous database into the new one.
+func ReloadProviderUsage() error {
+	providerManagerMu.Lock()
+	m := providerManager
+	providerManagerMu.Unlock()
+	if m == nil {
+		return nil
+	}
+	return m.load()
+}
+
 func (m *ProviderUsageManager) load() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

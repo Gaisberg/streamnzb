@@ -1,30 +1,13 @@
 package persistence
 
 import (
-	"os"
 	"testing"
 	"time"
 )
 
 func newTestStateManager(t *testing.T) *StateManager {
 	t.Helper()
-	tempDir, err := os.MkdirTemp("", "persistence-attempts-")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if globalManager != nil {
-			_ = globalManager.Close()
-		}
-		globalManager = nil
-		_ = os.RemoveAll(tempDir)
-	})
-	globalManager = nil
-	mgr, err := GetManager(tempDir)
-	if err != nil {
-		t.Fatalf("failed to get manager: %v", err)
-	}
-	return mgr
+	return openTestManager(t)
 }
 
 func TestRecordPreloadAttemptUsesSharedWriteLock(t *testing.T) {

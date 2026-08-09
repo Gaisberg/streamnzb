@@ -260,6 +260,22 @@ func RedactProxyURLForAPI(raw string) string {
 	return u.String()
 }
 
+// RedactDatabaseURLForAPI strips the credentials from a Postgres DSN for
+// display. URL-form DSNs keep their host and database so the settings page can
+// show what is configured; keyword-form DSNs (host=... password=...) are
+// blanked wholesale, because there the secret is not confined to a userinfo
+// section url.Parse can remove.
+func RedactDatabaseURLForAPI(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.HasPrefix(s, "postgres://") && !strings.HasPrefix(s, "postgresql://") {
+		return ""
+	}
+	return RedactProxyURLForAPI(s)
+}
+
 func (ic IndexerConfig) EffectiveTimeoutSeconds() int {
 	if ic.TimeoutSeconds > 0 {
 		return ic.TimeoutSeconds
@@ -557,6 +573,17 @@ type Config struct {
 	IndexerProxyURL    string `json:"indexer_proxy_url,omitempty"`
 
 	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
+
+	// DatabaseDriver selects the persistence backend: "sqlite" (default,
+	// <data dir>/streamnzb.db) or "postgres". DatabaseURL is the Postgres
+	// connection string. Changing either is applied by a config reload —
+	// see initialization.ReloadDatabase — not only at startup.
+	DatabaseDriver string `json:"database_driver,omitempty"`
+	DatabaseURL    string `json:"database_url,omitempty"`
+	// DatabaseSkipMigration suppresses carrying data across when the backend
+	// changes. The migration copies in whichever direction the switch goes and
+	// leaves the database being left untouched, so the default is to run it.
+	DatabaseSkipMigration bool `json:"database_skip_migration,omitempty"`
 
 	Streams map[string]*StreamEntry `json:"streams,omitempty"`
 
@@ -1409,6 +1436,8 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyAdminMustChangePwd: func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyProviders:          func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
 	env.KeyIndexers:           func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:     func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:        func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1472,6 +1501,8 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		ProxyAuthPass:           o.ProxyAuthPass,
 		AdminUsername:           o.AdminUsername,
 		AdminMustChangePassword: o.AdminMustChangePwd,
+		DatabaseDriver:          o.DatabaseDriver,
+		DatabaseURL:             o.DatabaseURL,
 	}
 	cfg.Providers = make([]Provider, len(o.Providers))
 	for i, p := range o.Providers {
@@ -1535,6 +1566,7 @@ func (c *Config) RedactForAPI() Config {
 	out.AvailNZBAPIKey = ""
 	out.TMDBAPIKey = ""
 	out.TVDBAPIKey = ""
+	out.DatabaseURL = RedactDatabaseURLForAPI(c.DatabaseURL)
 	out.Providers = make([]Provider, len(c.Providers))
 	for i, provider := range c.Providers {
 		redactedProvider := provider

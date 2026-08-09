@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"time"
 )
@@ -80,7 +79,7 @@ func counterDelta[T int64 | float64](baseline T, hasBaseline bool, values []T) T
 
 func (m *StateManager) deleteMetricRows(table, nameCol, name string, from, to *time.Time) error {
 	name = strings.TrimSpace(name)
-	return m.withWriteLock(func(db *sql.DB) error {
+	return m.withWriteLock(func(db *connRef) error {
 		clauses := make([]string, 0, 3)
 		args := make([]interface{}, 0, 3)
 		if name != "" {
@@ -137,8 +136,8 @@ func reverse[T any](s []T) {
 
 // withTx runs fn inside a transaction, rolling back unless fn commits by
 // returning nil.
-func (m *StateManager) withTx(db *sql.DB, fn func(*sql.Tx) error) error {
-	tx, err := db.BeginTx(context.Background(), nil)
+func (m *StateManager) withTx(c *connRef, fn func(*txn) error) error {
+	tx, err := c.BeginTx(context.Background())
 	if err != nil {
 		return err
 	}
@@ -492,8 +491,8 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 	if len(providers) == 0 && len(indexers) == 0 {
 		return nil
 	}
-	return m.withWriteLock(func(db *sql.DB) error {
-		return m.withTx(db, func(tx *sql.Tx) error {
+	return m.withWriteLock(func(db *connRef) error {
+		return m.withTx(db, func(tx *txn) error {
 
 			if len(providers) > 0 {
 				stmt, err := tx.Prepare(`
@@ -575,8 +574,8 @@ func (m *StateManager) RecordPerformanceMetrics(records []PerformanceMetricRecor
 	if len(records) == 0 {
 		return nil
 	}
-	return m.withWriteLock(func(db *sql.DB) error {
-		return m.withTx(db, func(tx *sql.Tx) error {
+	return m.withWriteLock(func(db *connRef) error {
+		return m.withTx(db, func(tx *txn) error {
 
 			stmt, err := tx.Prepare(`
 				INSERT INTO performance_metrics (
@@ -688,11 +687,11 @@ func (m *StateManager) RecordStreamAPISample(rec StreamAPISampleRecord) error {
 	if m == nil || m.db == nil {
 		return nil
 	}
-	return m.withWriteLock(func(db *sql.DB) error {
+	return m.withWriteLock(func(db *connRef) error {
 		ts := orNow(rec.Timestamp)
 		_, err := db.Exec(`
 			INSERT INTO stream_api_samples (
-				timestamp, content_type, content_id, total_duration_ms,
+				"timestamp", content_type, content_id, total_duration_ms,
 				metadata_duration_ms, search_duration_ms, ranking_duration_ms, avail_nzb_duration_ms,
 				candidate_count, result_count
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -705,12 +704,12 @@ func (m *StateManager) RecordPlaybackTTFFSample(rec PlaybackTTFFSampleRecord) er
 	if m == nil || m.db == nil {
 		return nil
 	}
-	return m.withWriteLock(func(db *sql.DB) error {
+	return m.withWriteLock(func(db *connRef) error {
 		ts := orNow(rec.Timestamp)
 		isCacheHitInt := boolToInt(rec.IsCacheHit)
 		_, err := db.Exec(`
 			INSERT INTO playback_ttff_samples (
-				timestamp, session_id, provider_name, ttff_ms,
+				"timestamp", session_id, provider_name, ttff_ms,
 				session_resolution_ms, nzb_fetch_duration_ms, nntp_connect_duration_ms,
 				probe_duration_ms, first_byte_duration_ms, is_cache_hit
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -729,9 +728,9 @@ func (m *StateManager) GetRecentStreamAPISamples(limit int) ([]StreamAPISampleRe
 		limit = 1000
 	}
 	rows, err := m.db.Query(`
-		SELECT timestamp, content_type, content_id, total_duration_ms, metadata_duration_ms, search_duration_ms, ranking_duration_ms, avail_nzb_duration_ms, candidate_count, result_count
+		SELECT "timestamp", content_type, content_id, total_duration_ms, metadata_duration_ms, search_duration_ms, ranking_duration_ms, avail_nzb_duration_ms, candidate_count, result_count
 		FROM stream_api_samples
-		ORDER BY timestamp DESC
+		ORDER BY "timestamp" DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -763,9 +762,9 @@ func (m *StateManager) GetRecentPlaybackTTFFSamples(limit int) ([]PlaybackTTFFSa
 		limit = 1000
 	}
 	rows, err := m.db.Query(`
-		SELECT timestamp, session_id, provider_name, ttff_ms, session_resolution_ms, nzb_fetch_duration_ms, nntp_connect_duration_ms, probe_duration_ms, first_byte_duration_ms, is_cache_hit
+		SELECT "timestamp", session_id, provider_name, ttff_ms, session_resolution_ms, nzb_fetch_duration_ms, nntp_connect_duration_ms, probe_duration_ms, first_byte_duration_ms, is_cache_hit
 		FROM playback_ttff_samples
-		ORDER BY timestamp DESC
+		ORDER BY "timestamp" DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {

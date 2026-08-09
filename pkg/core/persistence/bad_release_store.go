@@ -1,7 +1,6 @@
 package persistence
 
 import (
-	"database/sql"
 	"strings"
 	"sync"
 	"time"
@@ -15,12 +14,12 @@ import (
 // Entries carry a TTL so a release is eventually retried (articles can be
 // reposted, and a rare false positive must not blacklist a release forever).
 type BadReleaseStore struct {
-	db  *sql.DB // shared read pool
-	wdb *sql.DB // single-connection write handle
+	db  *connRef // shared read handle
+	wdb *connRef // write handle
 	mu  sync.RWMutex
 }
 
-func NewBadReleaseStore(db, wdb *sql.DB) *BadReleaseStore {
+func NewBadReleaseStore(db, wdb *connRef) *BadReleaseStore {
 	return &BadReleaseStore{db: db, wdb: wdb}
 }
 

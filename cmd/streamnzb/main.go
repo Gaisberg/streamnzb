@@ -111,10 +111,19 @@ func main() {
 	// rotation, TVDB state) now agrees with where the config actually lives.
 	paths.SetDataDir(dataDir)
 
+	// Must precede the first GetManager: the manager is a singleton bound to
+	// whatever backend was configured when it opened.
+	persistence.Configure(persistence.Settings{
+		Backend:     cfg.DatabaseDriver,
+		DSN:         cfg.DatabaseURL,
+		MigrateData: !cfg.DatabaseSkipMigration,
+	})
+
 	stateMgr, err := persistence.GetManager(dataDir)
 	if err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("failed to get state manager: %v", err))
 	}
+	logger.Info("Database ready", "backend", stateMgr.Backend())
 
 	{
 		var stateAdmin struct {
@@ -264,12 +273,17 @@ func main() {
 		}
 	}
 
-	addr := fmt.Sprintf(":%d", comp.Config.AddonPort)
+	addonServer := newRebindableServer(mux)
+	// Lets a config reload move the addon to a new port without a restart.
+	apiServer.SetAddonRebinder(addonServer.rebind)
 
 	logger.Info("Stremio addon server starting", "base_url", comp.Config.AddonBaseURL, "port", comp.Config.AddonPort)
 	logger.Info("Note: Access requires stream authentication tokens")
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := addonServer.start(comp.Config.AddonPort); err != nil {
+		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", err))
+	}
+	if err := addonServer.wait(); err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", err))
 	}
 }

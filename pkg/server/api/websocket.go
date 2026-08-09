@@ -235,7 +235,8 @@ func (s *Server) reloadConfig(newCfg *config.Config) {
 		}
 		s.ReloadFromComponents(comp, scope)
 		logger.Info("Reload: configuration reloaded successfully",
-			"indexers", scope.Indexers, "providers", scope.Providers, "proxy", scope.Proxy)
+			"indexers", scope.Indexers, "providers", scope.Providers, "proxy", scope.Proxy,
+			"database", scope.Database, "addon_port", scope.AddonPort)
 		return
 	}
 	base, err := initialization.BuildComponents(newCfg)

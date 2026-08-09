@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Settings, LogOut, Network, Server, Globe, Search,
+  LayoutDashboard, Settings, LogOut, Settings2, Server, Globe, Search,
   Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal, Library
 } from "lucide-react"
 import {
@@ -35,7 +35,7 @@ const navMain = [
 ]
 
 const navSettings = [
-  { id: "settings-network", title: "Network", icon: Network },
+  { id: "settings-general", title: "General", icon: Settings2 },
   { id: "settings-indexers", title: "Indexers", icon: Server },
   { id: "settings-providers", title: "Providers", icon: Globe },
   { id: "filters", title: "Filters", icon: SlidersHorizontal },

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"streamnzb/pkg/core/paths"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"strings"
@@ -40,6 +41,7 @@ type configValidationPlan struct {
 	validateTVDBAPIKey             bool
 	validateSpeculativePreProbing  bool
 	validateFilterProfiles         bool
+	validateDatabase               bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
@@ -57,6 +59,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateTVDBAPIKey:             true,
 		validateSpeculativePreProbing:  true,
 		validateFilterProfiles:         true,
+		validateDatabase:               true,
 	}
 }
 
@@ -96,6 +99,8 @@ var patchKeysNoCacheImpact = map[string]bool{
 	"library_max_items":                   true,
 	"library_max_size_mb":                 true,
 	"ffprobe_path":                        true,
+	"database_driver":                     true,
+	"database_url":                        true,
 }
 
 // patchKeysPlaylistOnly are config fields that change how cached raw results
@@ -136,6 +141,11 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	if _, ok := raw["indexer_proxy_url"]; ok {
 		plan.validateIndexerProxyURL = true
 	}
+	_, patchedDriver := raw["database_driver"]
+	_, patchedDatabaseURL := raw["database_url"]
+	if patchedDriver || patchedDatabaseURL {
+		plan.validateDatabase = true
+	}
 	if _, ok := raw["movie_search_queries"]; ok {
 		plan.validateMovieSearchQueries = true
 		plan.validateDeviceAssignments = true
@@ -172,6 +182,30 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 
 	return plan
+}
+
+// databaseVerifyTimeout bounds the connection probe so a save against an
+// unreachable host fails fast instead of hanging the request.
+const databaseVerifyTimeout = 5 * time.Second
+
+// validateDatabaseSettings checks the persistence settings and dials the server
+// when Postgres is selected, so an unusable connection string is rejected at
+// save time rather than stopping the next startup. It returns the field the
+// error belongs to.
+func validateDatabaseSettings(cfg *config.Config) (string, error) {
+	settings := persistence.Settings{Backend: cfg.DatabaseDriver, DSN: cfg.DatabaseURL}
+	if err := persistence.ValidateSettings(settings); err != nil {
+		if strings.TrimSpace(cfg.DatabaseURL) == "" {
+			return "database_url", err
+		}
+		return "database_driver", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), databaseVerifyTimeout)
+	defer cancel()
+	if err := persistence.VerifySettings(ctx, settings); err != nil {
+		return "database_url", err
+	}
+	return "", nil
 }
 
 func changedIndexes[T any](current, next []T) map[int]bool {
@@ -318,6 +352,11 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		count := cfg.EffectiveSpeculativePreProbingMaxAttempts()
 		if count < 0 || count > 5 {
 			errors["speculative_preprobing_max_attempts"] = "Must be between 0 and 5"
+		}
+	}
+	if plan.validateDatabase {
+		if field, err := validateDatabaseSettings(cfg); err != nil {
+			errors[field] = err.Error()
 		}
 	}
 	if plan.validateIndexerProxyURL {
