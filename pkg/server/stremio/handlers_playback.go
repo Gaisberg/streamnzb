@@ -1637,7 +1637,13 @@ func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, stre
 	return nil, err
 }
 
-func (s *Server) purgeFailedRelease(sess *session.Session, reason string) {
+// purgeFailedRelease retires a release after a failed attempt. durable says
+// whether the failure actually proved the release broken: only then does the
+// verdict outlive the attempt as a library bad status and a multi-day ban. An
+// inconclusive failure still fails the slot and drops the release from the
+// in-memory playlist so failover moves on, but leaves nothing behind — the
+// release is offered again on the next search.
+func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durable bool) {
 	if s == nil || sess == nil {
 		return
 	}
@@ -1647,9 +1653,14 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string) {
 		releaseTitle = strings.TrimSpace(rel.Title)
 	}
 
+	if !durable {
+		logger.Info("Release attempt failed inconclusively; no persistent bad verdict recorded",
+			"url", detailsURL, "title", releaseTitle, "reason", reason)
+	}
+
 	// 1. Mark bad in the library (kept stored so the Library UI can show and
 	// filter bad releases; excluded from playback candidates by the store).
-	if s.attemptRecorder != nil {
+	if durable && s.attemptRecorder != nil {
 		if libStore := s.attemptRecorder.LibraryStore(); libStore != nil {
 			if detailsURL != "" {
 				libStore.MarkStatusByDetailsURL(detailsURL, persistence.LibraryStatusBad, reason)
@@ -1717,11 +1728,11 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string) {
 	s.sessionManager.SetSlotFailedDuringPlayback(sess.ID)
 }
 
-func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome availnzb.ReportOutcome) {
+func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome availnzb.ReportOutcome, durable bool) {
 	if s == nil || sess == nil {
 		return
 	}
-	s.purgeFailedRelease(sess, outcome.Reason)
+	s.purgeFailedRelease(sess, outcome.Reason, durable)
 }
 
 // reportBadReleaseOutcome runs the shared bad-release ritual: derive the
@@ -1739,8 +1750,28 @@ func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error,
 			availOutcome = s.availReporter.ReportBad(sess, streamErr.Error())
 		}
 	}
-	s.applyReportedBadReleaseToCaches(sess, availOutcome)
+	s.applyReportedBadReleaseToCaches(sess, availOutcome, conclusiveBadRelease(streamErr))
 	return availOutcome
+}
+
+// conclusiveBadRelease reports whether a failure proves the release itself is
+// broken, as opposed to the attempt having been cut short. Only a conclusive
+// failure earns a durable verdict; the cases carved out here are all ones the
+// code already describes as temporary elsewhere, yet each of them used to
+// leave the release banned for the full bad-release TTL.
+func conclusiveBadRelease(streamErr error) bool {
+	if streamErr == nil {
+		return false
+	}
+	switch {
+	case errors.Is(streamErr, ErrPlaybackStartupTimeout),
+		errors.Is(streamErr, context.DeadlineExceeded),
+		errors.Is(streamErr, context.Canceled),
+		errors.Is(streamErr, unpack.ErrArchiveFastProbe),
+		isIndexerLimitErr(streamErr):
+		return false
+	}
+	return true
 }
 
 // preProbeConfirmsBadRelease decides whether a speculative pre-probe failure is a

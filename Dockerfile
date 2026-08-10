@@ -1,7 +1,10 @@
 ARG TARGETARCH
 
 FROM alpine:latest
-RUN apk add --no-cache ca-certificates tzdata
+# sqlite is the CLI only — the server itself uses a pure-Go driver and does not
+# link against it. It ships so maintenance SQL against /app/data/streamnzb.db
+# can be run from inside the container without installing anything first.
+RUN apk add --no-cache ca-certificates tzdata sqlite
 WORKDIR /app
 
 ARG TARGETARCH

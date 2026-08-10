@@ -314,9 +314,36 @@ func nzbPasswordLen(sess *session.Session) int {
 	return 0
 }
 
+// statSampleBudget bounds the pre-open STAT sampling. The check is a fail-fast
+// optimization rather than a correctness gate, so it must not swallow the whole
+// startup phase it runs inside: it gets at most this long, and at most half of
+// whatever the caller's deadline has left, then reports what it has.
+const statSampleBudget = 10 * time.Second
+
+// statSampleCtx derives the sampling deadline from the caller's remaining
+// budget. Taking the phase deadline verbatim made the sampling outlive the
+// phase that owned it, so every probe was still in flight when the phase
+// expired and the release took the blame for it.
+func statSampleCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := statSampleBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		if half := time.Until(deadline) / 2; half < budget {
+			budget = half
+		}
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
 // VerifyRequiredArchivesExist STAT-samples the first segment of the archive
 // volumes (decile sampling across the set) so playback fails fast on 430
 // instead of stalling mid-stream.
+//
+// The three outcomes are kept distinct, because only one of them says anything
+// about the release:
+//
+//	(true, nil)                          every sampled volume is present
+//	(false, wrapped ErrFirstSegment…)    a volume is missing on every provider
+//	(false, err)                         inconclusive — no verdict was reached
 func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (bool, error) {
 	if len(files) == 0 {
 		return false, errors.New("no files in release")
@@ -345,7 +372,7 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 	}
 	sort.Ints(indices)
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := statSampleCtx(ctx)
 	defer cancel()
 
 	type statResult struct {
@@ -363,11 +390,20 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 		}(f)
 	}
 
+	// A missing article and a STAT that never got an answer both arrive as
+	// ok=false; only the first proves anything about the release. Collapsing
+	// the two is what turned provider blips and expired deadlines into
+	// permanent bad verdicts, so they stay apart here: a proven-missing volume
+	// wins immediately, and inconclusive probes are held back to surface only
+	// when nothing was proven missing.
 	var firstErr error
 	for range indices {
 		res := <-ch
-		if res.err != nil && firstErr == nil {
-			firstErr = res.err
+		if res.err != nil {
+			if firstErr == nil {
+				firstErr = res.err
+			}
+			continue
 		}
 		if !res.ok {
 			name := "unknown"
@@ -405,14 +441,20 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 		}
 	}
 
-	// STAT check required archive volume segments before opening stream; fail fast on 430.
+	// STAT-sample the archive volumes before opening so a release with a hole
+	// fails now instead of stalling mid-stream. Only a proven-missing article
+	// stops the open: when the probes cannot reach a verdict in their budget we
+	// continue and let the read surface a real 430, because a slow or flaky
+	// provider is not evidence about the release.
 	if len(files) > 0 {
 		exists, statErr := VerifyRequiredArchivesExist(ctx, files)
-		if statErr != nil {
-			logger.Debug("Stat archive volume segment failed", "id", sessionID, "err", statErr)
+		switch {
+		case errors.Is(statErr, ErrFirstSegmentUnavailable):
+			logger.Debug("Stat archive volume segment missing", "id", sessionID, "err", statErr)
 			return nil, "", 0, statErr
-		}
-		if !exists {
+		case statErr != nil:
+			logger.Debug("Stat archive volume sampling inconclusive, opening anyway", "id", sessionID, "err", statErr)
+		case !exists:
 			return nil, "", 0, fmt.Errorf("archive volume segment unavailable: %w", ErrFirstSegmentUnavailable)
 		}
 	}
@@ -501,10 +543,15 @@ func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, er
 	files := sess.Files()
 	if len(files) > 0 {
 		exists, statErr := VerifyRequiredArchivesExist(ctx, files)
-		if statErr != nil {
+		switch {
+		case errors.Is(statErr, ErrFirstSegmentUnavailable):
 			return false, fmt.Errorf("stat check: %w", statErr)
-		}
-		if !exists {
+		case statErr != nil:
+			// The pre-probe still fails — it cannot vouch for this release —
+			// but the wording carries no bad-release verdict for the caller's
+			// classifier to act on.
+			return false, fmt.Errorf("stat check inconclusive: %w", statErr)
+		case !exists:
 			return false, errors.New("archive volume segment unavailable")
 		}
 	}
