@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.16.0](https://github.com/Gaisberg/streamnzb/compare/v4.15.0...v4.16.0) (2026-08-10)
+
+
+### Features
+
+* **history:** search-centric history with funnel diagnostics, plus optional debug stream row ([1ed3dc9](https://github.com/Gaisberg/streamnzb/commit/1ed3dc979d0d2371f4be5ae86416a50ec08ac0af))
+* **logging:** add custom log file path via -log-file flag and LOG_PATH env ([8d7c379](https://github.com/Gaisberg/streamnzb/commit/8d7c379a20d5d41a12727914d65255fb2d8cb582))
+* **persistence:** add Postgres support alongside SQLite ([7c952f8](https://github.com/Gaisberg/streamnzb/commit/7c952f8ed7a2e08e2e00fd263d5512f5bc75a2b9)), closes [#169](https://github.com/Gaisberg/streamnzb/issues/169)
+
+
+### Bug Fixes
+
+* **config:** default series search queries to no year ([bf2274e](https://github.com/Gaisberg/streamnzb/commit/bf2274e722edb7358c894f049f2cc07b3c46c589))
+* **playback:** stop indexer rate limits and episode-match misses from blacklisting good releases ([ecaa2fa](https://github.com/Gaisberg/streamnzb/commit/ecaa2fab97fbdf73cb2c446b19e72e18e518b517))
+* **playback:** stop transient STAT failures from blacklisting good releases ([d237933](https://github.com/Gaisberg/streamnzb/commit/d237933b9756910490533e4c0be66df094b76fe1))
+* **stremio:** map Kitsu ids to aired season/episode via anime-lists ([5549045](https://github.com/Gaisberg/streamnzb/commit/5549045cb148f7e4d3c15925e985a91d1a0f6a27))
+* **usenet:** fail fast on mid-body connection stalls via rolling read deadline ([2e12bb4](https://github.com/Gaisberg/streamnzb/commit/2e12bb46fb4f73e1e7ffd705bf010777a7a919fc))
+
 ## [4.15.0](https://github.com/Gaisberg/streamnzb/compare/v4.14.1...v4.15.0) (2026-08-08)
 
 
