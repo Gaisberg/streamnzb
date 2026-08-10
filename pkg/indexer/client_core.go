@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,7 +27,17 @@ type ClientCore struct {
 	downloadRemaining int
 	searchesCount     int
 	totalResponseMS   int64
+	throttledUntil    time.Time
 }
+
+// Rate-limit cooldown bounds. An indexer that answers 429 without a usable
+// Retry-After gets DefaultThrottleCooldown; one that asks for an implausibly
+// long pause is capped, since a multi-hour ban applied from a single header we
+// cannot verify would silently retire the indexer for the rest of the session.
+const (
+	DefaultThrottleCooldown = 60 * time.Second
+	MaxThrottleCooldown     = 15 * time.Minute
+)
 
 // NewClientCore builds the core and restores persisted usage counters for
 // name when a usage manager is available.
@@ -128,7 +139,7 @@ func (c *ClientCore) CheckAPILimit(displayName string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.apiLimit > 0 && c.apiRemaining <= 0 {
-		return fmt.Errorf("API limit reached for %s", displayName)
+		return fmt.Errorf("API limit reached for %s: %w", displayName, ErrRateLimited)
 	}
 	return nil
 }
@@ -141,7 +152,7 @@ func (c *ClientCore) CheckDownloadLimit(displayName string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.downloadLimit > 0 && c.downloadRemaining <= 0 {
-		return fmt.Errorf("download limit reached for %s", displayName)
+		return fmt.Errorf("download limit reached for %s: %w", displayName, ErrRateLimited)
 	}
 	return nil
 }
@@ -203,6 +214,75 @@ func (c *ClientCore) RecordGrab(h http.Header) {
 	} else if apiLimit == 0 {
 		c.IncrementUsed(1, 0)
 	}
+}
+
+// NoteThrottled opens a cooldown after an indexer refuses a request, honouring
+// Retry-After when the response carries a usable one. Until it expires,
+// CheckThrottled short-circuits further requests without a round trip — which
+// is the point: playback failover walks candidates one at a time, so without a
+// cooldown a single throttled indexer gets one full grab attempt per candidate
+// it supplied, at whatever rate the failover loop runs.
+func (c *ClientCore) NoteThrottled(h http.Header, now time.Time) time.Duration {
+	cooldown := DefaultThrottleCooldown
+	if d, ok := parseRetryAfter(h.Get("Retry-After"), now); ok {
+		cooldown = d
+	}
+	if cooldown > MaxThrottleCooldown {
+		cooldown = MaxThrottleCooldown
+	}
+	if cooldown <= 0 {
+		cooldown = DefaultThrottleCooldown
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Never shorten a cooldown already in force: a burst of concurrent grabs
+	// all come back 429 and the last one must not undercut the first.
+	if until := now.Add(cooldown); until.After(c.throttledUntil) {
+		c.throttledUntil = until
+	}
+	return c.throttledUntil.Sub(now)
+}
+
+// CheckThrottled reports the remaining cooldown as an ErrRateLimited error, or
+// nil when the indexer is free to try again.
+func (c *ClientCore) CheckThrottled(displayName string, now time.Time) error {
+	c.mu.RLock()
+	until := c.throttledUntil
+	c.mu.RUnlock()
+	if until.IsZero() || !now.Before(until) {
+		return nil
+	}
+	return fmt.Errorf("%s is in a rate-limit cooldown for another %s: %w", displayName, until.Sub(now).Round(time.Second), ErrRateLimited)
+}
+
+// ThrottledUntil exposes the cooldown deadline for status reporting.
+func (c *ClientCore) ThrottledUntil() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.throttledUntil
+}
+
+// parseRetryAfter reads both Retry-After forms: delta-seconds, and an HTTP-date
+// deadline. A value that is absent, malformed, or already in the past yields
+// ok=false so the caller falls back to its default.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if deadline, err := http.ParseTime(value); err == nil {
+		if d := deadline.Sub(now); d > 0 {
+			return d, true
+		}
+	}
+	return 0, false
 }
 
 // ApplyHeaderUsage ingests the de-facto newznab rate-limit response headers,

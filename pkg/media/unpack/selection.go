@@ -73,6 +73,19 @@ func selectEpisodeCandidateOrError(candidates []namedEpisodeCandidate, target Ep
 	}
 	if len(candidates) == 1 {
 		baseName := filepath.Base(candidates[0].Name)
+		// An obfuscated stem carries no episode information, but the parser
+		// still digs numbers out of the hex (a stem ending "...361e72" reads as
+		// episode 72). Trusting that turns the sole media file in the archive
+		// into a mismatch and fails a release that does contain the episode, so
+		// obfuscated names are treated as unparseable here regardless of what
+		// came back.
+		if looksObfuscatedFilename(baseName) {
+			logger.Debug("Skipping episode title check for single-candidate release with obfuscated filename",
+				"target", target,
+				"scope", scope,
+				"name", candidates[0].Name)
+			return namedEpisodeCandidate{}, false, nil
+		}
 		parsed := searchparser.ParseReleaseTitle(baseName)
 		if parsed == nil || (parsed.Season == 0 && parsed.Episode == 0 && len(parsed.Episodes) == 0) {
 			logger.Debug("Skipping episode title check for single-candidate release with unparseable filename",

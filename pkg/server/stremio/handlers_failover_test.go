@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/playback"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/query"
@@ -294,7 +296,18 @@ func TestIsIndexerLimitErr(t *testing.T) {
 		{name: "download limit", err: errors.New("failed to lazy download NZB: download limit reached for Easynews"), want: true},
 		{name: "api limit", err: errors.New("API limit reached for NZBPlanet"), want: true},
 		{name: "request limit", err: errors.New("NzbPlanet request limit reached (code 429): daily quota exhausted"), want: true},
+		{
+			name: "wrapped rate limit sentinel",
+			err:  fmt.Errorf("failed to lazy download NZB: %w", fmt.Errorf("Treasuremaps NZB download returned status 429: %w", indexer.ErrRateLimited)),
+			want: true,
+		},
+		{
+			name: "bare 429 text with the wrap chain flattened",
+			err:  errors.New("failed to lazy download NZB: Treasuremaps NZB download returned status 429"),
+			want: true,
+		},
 		{name: "segment unavailable", err: errors.New("segment unavailable: first segment not found (430)"), want: false},
+		{name: "not found", err: errors.New("Treasuremaps NZB download returned status 404"), want: false},
 		{name: "nil", err: nil, want: false},
 	}
 

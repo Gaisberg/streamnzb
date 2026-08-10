@@ -323,6 +323,10 @@ func (c *Client) searchInternal(ctx context.Context, query, season, episode, sco
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if isThrottleStatus(resp.StatusCode) {
+			c.noteThrottled(resp.Header, resp.StatusCode)
+			return nil, 0, fmt.Errorf("easynews search failed with status %d: %s: %w", resp.StatusCode, string(body), indexer.ErrRateLimited)
+		}
 		return nil, 0, fmt.Errorf("easynews search failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -392,6 +396,10 @@ func (c *Client) downloadNZBInternal(ctx context.Context, payload map[string]int
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if isThrottleStatus(resp.StatusCode) {
+			c.noteThrottled(resp.Header, resp.StatusCode)
+			return nil, fmt.Errorf("easynews NZB download failed with status %d: %s: %w", resp.StatusCode, string(body), indexer.ErrRateLimited)
+		}
 		return nil, fmt.Errorf("easynews NZB download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -406,11 +414,43 @@ func (c *Client) downloadNZBInternal(ctx context.Context, payload map[string]int
 }
 
 func (c *Client) checkAPILimit() error {
+	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
+		return err
+	}
 	return c.core.CheckAPILimit(c.Name())
 }
 
 func (c *Client) checkDownloadLimit() error {
+	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
+		return err
+	}
 	return c.core.CheckDownloadLimit(c.Name())
+}
+
+// noteThrottled mirrors the newznab client: one cooldown per indexer, opened by
+// whichever request first gets refused.
+func (c *Client) noteThrottled(h http.Header, status int) {
+	remaining := c.core.NoteThrottled(h, time.Now())
+	logger.Warn("Indexer rate limited; pausing requests",
+		"indexer", c.Name(),
+		"status", status,
+		"retry_after", h.Get("Retry-After"),
+		"cooldown", remaining.Round(time.Second))
+}
+
+// isThrottleStatus reports whether a status means "not now" rather than
+// "not ever". 404/410 are absent on purpose: those are about the content.
+func isThrottleStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
 type easynewsSearchResponse struct {

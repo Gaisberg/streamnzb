@@ -79,3 +79,29 @@ func TestSelectDirectFileIndexFailsWhenRequestedEpisodeMissing(t *testing.T) {
 		t.Fatalf("expected no selected index, got %d", idx)
 	}
 }
+
+// From the field logs: a S01E01E02 pack whose sole inner file was obfuscated.
+// ParseReleaseTitle read the hex stem "...00361e72" as episode 72, so the
+// single-candidate escape hatch did not fire and a release that did contain the
+// requested episode failed outright — and was banned for the bad-release TTL.
+func TestSelectEpisodeCandidateAcceptsLoneObfuscatedFile(t *testing.T) {
+	target := EpisodeTarget{Season: 1, Episode: 1}
+	candidates := []namedEpisodeCandidate{
+		{Name: "cc3299e0692fb5e3a8737f1c00361e72.mkv", Size: 700, Order: 0},
+	}
+	if _, _, err := selectEpisodeCandidateOrError(candidates, target, "rar_main_media"); err != nil {
+		t.Fatalf("lone obfuscated media file must not fail the release, got %v", err)
+	}
+}
+
+// The escape hatch is only for the ambiguous case: a readable filename that
+// names a different episode is still a real mismatch.
+func TestSelectEpisodeCandidateRejectsLoneNamedWrongEpisode(t *testing.T) {
+	target := EpisodeTarget{Season: 1, Episode: 1}
+	candidates := []namedEpisodeCandidate{
+		{Name: "Show.S01E06.mkv", Size: 700, Order: 0},
+	}
+	if _, _, err := selectEpisodeCandidateOrError(candidates, target, "rar_main_media"); !errors.Is(err, ErrEpisodeTargetNotFound) {
+		t.Fatalf("expected ErrEpisodeTargetNotFound, got %v", err)
+	}
+}

@@ -3,12 +3,14 @@ package stremio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/playback"
 	"streamnzb/pkg/release"
@@ -91,6 +93,13 @@ func TestConclusiveBadRelease(t *testing.T) {
 		{"deadline exceeded", context.DeadlineExceeded, false},
 		{"canceled", context.Canceled, false},
 		{"fast probe heuristic", unpack.ErrArchiveFastProbe, false},
+		// Both from the field logs: an indexer throttling our grab, and our own
+		// matcher failing to find the episode inside an archive that holds it.
+		// Neither says anything about the release, yet both used to ban it.
+		{"indexer throttled the grab", fmt.Errorf("failed to lazy download NZB: %w",
+			fmt.Errorf("Treasuremaps NZB download returned status 429: %w", indexer.ErrRateLimited)), false},
+		{"episode matcher found no file", fmt.Errorf("%w: season=1 episode=1 scope=rar_main_media candidates=1",
+			unpack.ErrEpisodeTargetNotFound), false},
 		{"nil", nil, false},
 	}
 	for _, tc := range tests {

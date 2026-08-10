@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -173,11 +174,28 @@ func (c *Client) effectiveGrabHeader() string {
 }
 
 func (c *Client) checkAPILimit() error {
+	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
+		return err
+	}
 	return c.core.CheckAPILimit(c.Name())
 }
 
 func (c *Client) checkDownloadLimit() error {
+	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
+		return err
+	}
 	return c.core.CheckDownloadLimit(c.Name())
+}
+
+// noteThrottled opens the shared cooldown and logs it once, so a burst of
+// concurrent refusals does not produce one warning per candidate.
+func (c *Client) noteThrottled(h http.Header, status int) {
+	remaining := c.core.NoteThrottled(h, time.Now())
+	logger.Warn("Indexer rate limited; pausing requests",
+		"indexer", c.Name(),
+		"status", status,
+		"retry_after", h.Get("Retry-After"),
+		"cooldown", remaining.Round(time.Second))
 }
 
 // requestContext bounds parent with the client timeout so a caller
@@ -282,7 +300,7 @@ func (c *Client) checkNewznabError(bodyBytes []byte) error {
 		case apiErr.Code >= 100 && apiErr.Code <= 199:
 			return fmt.Errorf("%s authentication error (code %d): %s", c.Name(), apiErr.Code, apiErr.Description)
 		case apiErr.Code == 201:
-			return fmt.Errorf("%s request limit reached (code %d): %s", c.Name(), apiErr.Code, apiErr.Description)
+			return fmt.Errorf("%s request limit reached (code %d): %s: %w", c.Name(), apiErr.Code, apiErr.Description, indexer.ErrRateLimited)
 		case apiErr.Code >= 200 && apiErr.Code <= 299:
 			return fmt.Errorf("%s request error (code %d): %s", c.Name(), apiErr.Code, apiErr.Description)
 		case apiErr.Code >= 300 && apiErr.Code <= 399:
@@ -545,14 +563,24 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	}
 
 	if resp.StatusCode != http.StatusOK {
-
+		if isTransientDownloadStatus(resp.StatusCode) {
+			c.noteThrottled(resp.Header, resp.StatusCode)
+		}
 		if err := c.checkNewznabError(bodyBytes); err != nil {
 			return nil, err
+		}
+		if isTransientDownloadStatus(resp.StatusCode) {
+			return nil, fmt.Errorf("%s returned status %d: %s: %w", c.Name(), resp.StatusCode, string(bodyBytes), indexer.ErrRateLimited)
 		}
 		return nil, fmt.Errorf("%s returned status %d: %s", c.Name(), resp.StatusCode, string(bodyBytes))
 	}
 
 	if err := c.checkNewznabError(bodyBytes); err != nil {
+		// Newznab reports quota exhaustion as an error document under HTTP 200,
+		// so the status check above never sees it.
+		if errors.Is(err, indexer.ErrRateLimited) {
+			c.noteThrottled(resp.Header, resp.StatusCode)
+		}
 		return nil, err
 	}
 
@@ -620,11 +648,25 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	}
 	defer resp.Body.Close()
 
-	c.core.RecordGrab(resp.Header)
-
 	if resp.StatusCode != http.StatusOK {
+		// A throttled or overloaded indexer says nothing about the release, so
+		// tag those statuses as temporary. Without this the caller reads the
+		// bare status text as a definitive failure and bans a good release for
+		// the full bad-release TTL.
+		//
+		// Usage is deliberately not recorded here: a refused grab handed back
+		// no NZB, so charging it against the daily download budget spends quota
+		// on nothing. Only the headers are ingested, since a 429 is often the
+		// most accurate statement of remaining quota we ever get.
+		c.core.ApplyHeaderUsage(resp.Header)
+		if isTransientDownloadStatus(resp.StatusCode) {
+			c.noteThrottled(resp.Header, resp.StatusCode)
+			return nil, fmt.Errorf("%s NZB download returned status %d: %w", c.Name(), resp.StatusCode, indexer.ErrRateLimited)
+		}
 		return nil, fmt.Errorf("%s NZB download returned status %d", c.Name(), resp.StatusCode)
 	}
+
+	c.core.RecordGrab(resp.Header)
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -632,6 +674,22 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	}
 
 	return data, nil
+}
+
+// isTransientDownloadStatus reports whether an NZB download status means the
+// indexer declined to serve us right now rather than the NZB being gone. 404
+// and 410 are deliberately absent: those do implicate the release.
+func isTransientDownloadStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
 func (c *Client) normalizeDownloadURL(rawURL string) string {

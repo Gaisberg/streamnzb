@@ -2,6 +2,7 @@ package newznab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -928,5 +929,92 @@ func TestSearchAggregatorIncludesCacheTimeParam(t *testing.T) {
 	want := "apikey=test-api-key&t=search&cat=5000&q=Interstellar&cachetime=60&offset=0&limit=2000&o=xml"
 	if gotRawQuery != want {
 		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
+	}
+}
+
+// The field scenario: Treasuremaps answered 429 to every grab during playback
+// failover. The first refusal must open a cooldown so the remaining candidates
+// from that indexer fail instantly and locally, instead of each one spending a
+// full round trip to be told "too many requests" again.
+func TestDownloadNZBOn429OpensCooldownAndStopsFurtherRequests(t *testing.T) {
+	logger.Init("ERROR")
+	var requests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:   "Treasuremaps",
+		URL:    server.URL,
+		APIKey: "test-api-key",
+	}, nil)
+
+	_, err := client.DownloadNZB(context.Background(), server.URL+"/api?t=get&guid=a")
+	if !errors.Is(err, indexer.ErrRateLimited) {
+		t.Fatalf("a 429 grab must classify as rate limited, got %v", err)
+	}
+
+	for i := 0; i < 8; i++ {
+		if _, err := client.DownloadNZB(context.Background(), server.URL+"/api?t=get&guid=b"); !errors.Is(err, indexer.ErrRateLimited) {
+			t.Fatalf("grab %d during cooldown = %v, want ErrRateLimited", i, err)
+		}
+	}
+
+	if requests != 1 {
+		t.Fatalf("indexer received %d requests; the cooldown should have stopped every grab after the first", requests)
+	}
+}
+
+// A refused grab returns no NZB, so it must not spend the daily download budget.
+func TestDownloadNZBOn429DoesNotSpendDownloadBudget(t *testing.T) {
+	logger.Init("ERROR")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:         "Treasuremaps",
+		URL:          server.URL,
+		APIKey:       "test-api-key",
+		DownloadsDay: 100,
+	}, nil)
+
+	before := client.GetUsage().DownloadsUsed
+	if _, err := client.DownloadNZB(context.Background(), server.URL+"/api?t=get&guid=a"); !errors.Is(err, indexer.ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
+	}
+	if after := client.GetUsage().DownloadsUsed; after != before {
+		t.Fatalf("DownloadsUsed went %d -> %d; a refused grab must not consume quota", before, after)
+	}
+}
+
+// 404 stays definitive: that one really is about the NZB, not the indexer.
+func TestDownloadNZBOn404DoesNotOpenCooldown(t *testing.T) {
+	logger.Init("ERROR")
+	var requests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{Name: "Treasuremaps", URL: server.URL, APIKey: "k"}, nil)
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.DownloadNZB(context.Background(), server.URL+"/api?t=get&guid=a"); err == nil {
+			t.Fatal("expected an error for 404")
+		} else if errors.Is(err, indexer.ErrRateLimited) {
+			t.Fatalf("404 must not classify as rate limited, got %v", err)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("indexer received %d requests, want 2; 404 must not open a cooldown", requests)
 	}
 }

@@ -65,6 +65,7 @@ type bufferedResponseWriter struct {
 	flushCalls   int64
 	flushError   string
 	onFirstWrite func()
+	writeBlocked atomic.Int64 // ns spent in Write (client/proxy backpressure)
 }
 
 func newBufferedResponseWriter(w http.ResponseWriter, size int) *bufferedResponseWriter {
@@ -83,7 +84,9 @@ func (b *bufferedResponseWriter) Write(p []byte) (n int, err error) {
 		}
 	}
 	b.writeCalls++
+	writeStart := time.Now()
 	n, err = b.bw.Write(p)
+	b.writeBlocked.Add(time.Since(writeStart).Nanoseconds())
 	b.bytesWritten += int64(n)
 	return n, err
 }
@@ -120,6 +123,7 @@ type bufferedResponseSnapshot struct {
 	WriteCalls    int64
 	FlushCalls    int64
 	FlushError    string
+	WriteBlocked  time.Duration
 }
 
 func (b *bufferedResponseWriter) Snapshot() bufferedResponseSnapshot {
@@ -134,6 +138,7 @@ func (b *bufferedResponseWriter) Snapshot() bufferedResponseSnapshot {
 		WriteCalls:    b.writeCalls,
 		FlushCalls:    b.flushCalls,
 		FlushError:    b.flushError,
+		WriteBlocked:  time.Duration(b.writeBlocked.Load()),
 	}
 }
 
@@ -144,18 +149,22 @@ type StreamMonitor struct {
 	manager       *session.Manager
 	onReadError   func(slotPath string, err error)
 	onProgress    func()
+	onServeWindow func()
 	lastUpdate    time.Time
 	mu            sync.Mutex
 	readErrorOnce sync.Once
 	bytesRead     atomic.Int64
 	readCalls     atomic.Int64
+	readBlocked   atomic.Int64 // ns spent in Read (usenet/reader backpressure)
 	sawEOF        atomic.Bool
 	lastReadErr   atomic.Value
 }
 
 func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 	s.readCalls.Add(1)
+	readStart := time.Now()
 	n, err = s.ReadSeekCloser.Read(p)
+	s.readBlocked.Add(time.Since(readStart).Nanoseconds())
 	if n > 0 {
 		s.bytesRead.Add(int64(n))
 		if s.manager != nil {
@@ -176,12 +185,17 @@ func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 		})
 	}
 	if s.manager != nil && time.Since(s.lastUpdate) > 10*time.Second {
+		windowElapsed := false
 		s.mu.Lock()
 		if time.Since(s.lastUpdate) > 10*time.Second {
 			s.manager.KeepAlive(s.sessionID, s.clientIP)
 			s.lastUpdate = time.Now()
+			windowElapsed = true
 		}
 		s.mu.Unlock()
+		if windowElapsed && s.onServeWindow != nil {
+			s.onServeWindow()
+		}
 	}
 	return n, err
 }
@@ -191,6 +205,7 @@ type streamMonitorSnapshot struct {
 	ReadCalls     int64
 	SawEOF        bool
 	LastReadError string
+	ReadBlocked   time.Duration
 }
 
 func (s *StreamMonitor) Snapshot() streamMonitorSnapshot {
@@ -203,6 +218,7 @@ func (s *StreamMonitor) Snapshot() streamMonitorSnapshot {
 		ReadCalls:     s.readCalls.Load(),
 		SawEOF:        s.sawEOF.Load(),
 		LastReadError: lastReadErr,
+		ReadBlocked:   time.Duration(s.readBlocked.Load()),
 	}
 }
 
@@ -1053,14 +1069,27 @@ func isPlayPrepareCancellation(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+// isIndexerLimitErr reports whether a failure came from the indexer declining
+// to serve us — a quota, a throttle, or a 429/5xx on the grab — rather than
+// from anything wrong with the release.
+//
+// indexer.ErrRateLimited is the authoritative signal. The string matching below
+// stays as a backstop for limit errors that reach us across a boundary that
+// flattens the wrap chain (persisted attempt reasons, proxied indexers), which
+// is also how a plain HTTP 429 used to slip through: it matched none of these
+// phrases and so earned the release a full-TTL ban.
 func isIndexerLimitErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, indexer.ErrRateLimited) {
+		return true
+	}
 	value := strings.ToLower(err.Error())
 	return strings.Contains(value, "download limit reached") ||
 		strings.Contains(value, "api limit reached") ||
-		strings.Contains(value, "request limit reached")
+		strings.Contains(value, "request limit reached") ||
+		strings.Contains(value, "returned status 429")
 }
 
 // redirectToNextSlotOrFail sends the client to the next failover slot, or
@@ -1192,7 +1221,13 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 				}(sessionID, sess.Done())
 			}
 			s.sessionManager.DeleteSession(sessionID)
-			if !temporaryLimitErr && streamFailoverEnabled(streamConfig) {
+			// A throttled indexer must not end the attempt: the remaining
+			// candidates usually come from other indexers, and stopping here
+			// hands the client nothing over a failure that says only "not from
+			// this indexer, not right now". The slot stays unpoisoned above so
+			// it can be retried once the limit clears; the indexer's own
+			// cooldown keeps the walk past its other candidates cheap.
+			if streamFailoverEnabled(streamConfig) {
 				if nextSess, nextID, switchErr := s.switchToNextFallback(r.Context(), sess, streamConfig); nextID != "" && switchErr == nil {
 					logger.Info("Playback failover advanced", "from", sessionID, "to", nextID, "err", prepareErr)
 					sess, sessionID = nextSess, nextID
@@ -1336,6 +1371,30 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 	monitoredStream.onProgress = func() {
 		s.commitGoodAttemptIfQualified(sess, sessionID, requestedSessionID, serveStartedAt)
 	}
+	// Per-window serve telemetry: splits each ~10s window into time blocked
+	// reading (usenet/reader side) vs writing (client/proxy side), so a
+	// buffering report can be attributed to the right leg of the pipeline.
+	// Called only from the serving goroutine, so plain closure state is safe.
+	windowStart := serveStartedAt
+	var windowBytes int64
+	var windowReadBlocked, windowWriteBlocked time.Duration
+	monitoredStream.onServeWindow = func() {
+		now := time.Now()
+		streamStats := monitoredStream.Snapshot()
+		writeBlocked := time.Duration(bufW.writeBlocked.Load())
+		logger.Debug("Serve window",
+			"session", sessionID,
+			"window", now.Sub(windowStart).Round(time.Millisecond),
+			"bytes", streamStats.BytesRead-windowBytes,
+			"read_blocked", (streamStats.ReadBlocked - windowReadBlocked).Round(time.Millisecond),
+			"write_blocked", (writeBlocked - windowWriteBlocked).Round(time.Millisecond),
+			"served_total", streamStats.BytesRead,
+		)
+		windowStart = now
+		windowBytes = streamStats.BytesRead
+		windowReadBlocked = streamStats.ReadBlocked
+		windowWriteBlocked = writeBlocked
+	}
 	effectiveRange := r.Header.Get("Range")
 	probeLikeServe := false
 	probeLikeServeReason := ""
@@ -1389,6 +1448,8 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			"stream_reads", streamStats.ReadCalls,
 			"stream_eof", streamStats.SawEOF,
 			"stream_error", streamStats.LastReadError,
+			"stream_read_blocked", streamStats.ReadBlocked.Round(time.Millisecond),
+			"response_write_blocked", responseStats.WriteBlocked.Round(time.Millisecond),
 			"request_context_err", errorString(r.Context().Err()),
 			"serve_context_err", errorString(mergedCtx.Err()),
 			"failed_over", failedOver,
@@ -1768,6 +1829,11 @@ func conclusiveBadRelease(streamErr error) bool {
 		errors.Is(streamErr, context.DeadlineExceeded),
 		errors.Is(streamErr, context.Canceled),
 		errors.Is(streamErr, unpack.ErrArchiveFastProbe),
+		// Our episode matcher failed to line the target up with a file in the
+		// archive. That is a verdict about the match, not about the release —
+		// obfuscated inner filenames and multi-episode packs both land here
+		// while holding the episode we asked for.
+		errors.Is(streamErr, unpack.ErrEpisodeTargetNotFound),
 		isIndexerLimitErr(streamErr):
 		return false
 	}
