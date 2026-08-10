@@ -169,6 +169,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	if streams == nil {
 		streams = []Stream{}
 	}
+	// Deliberately prepended even to an empty response: a search filtered down
+	// to nothing is exactly the case the debug row needs to explain.
+	if s.config != nil && s.config.SearchDebugStream {
+		if dbg := s.buildSearchDebugStream(key, baseURL); dbg != nil {
+			streams = append([]Stream{*dbg}, streams...)
+		}
+	}
 
 	candidateCount := 0
 	if list != nil {

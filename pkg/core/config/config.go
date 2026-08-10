@@ -549,6 +549,11 @@ type Config struct {
 	AddonBaseURL       string `json:"addon_base_url"`
 	LogLevel           string `json:"log_level"`
 	VerboseNNTPLogging bool   `json:"verbose_nntp_logging,omitempty"`
+	// SearchDebugStream prepends a non-playable-looking debug row to every
+	// stream response summarizing the search funnel (per-indexer timings and
+	// filter drops). Selecting it plays the top real result via redirect, so
+	// autoplay clients lose nothing.
+	SearchDebugStream bool `json:"search_debug_stream,omitempty"`
 
 	AdminUsername           string `json:"admin_username"`
 	AdminPasswordHash       string `json:"admin_password_hash"`

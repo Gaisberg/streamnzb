@@ -12,6 +12,7 @@ StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integ
 - **Stream-based addon** — Define global providers, indexers, search queries, and filter profiles once, then create one or more streams that decide which resources belong to each stream manifest.
 - **NNTP proxy** — Standard NNTP (default port 119) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database. Bad releases are skipped; success/failure is reported on play so the shared DB stays current.
+- **Search history & diagnostics** — The **History** page shows every search with its play attempts nested under it: per-indexer API timings, what validation/dedup/filtering dropped and why, including searches that returned nothing. An optional **Search debug stream** toggle (under Advanced) prepends the same summary as a result row in Stremio — selecting it just plays the top real result.
 - **SQLite or Postgres** — A local file by default, or point it at an existing Postgres server. Switching migrates your data either way, without a restart.
 - **Single binary** — Docker image or native Windows/Linux/macOS. No other containers required.
 
@@ -78,9 +79,9 @@ DATABASE_URL=postgres://user:password@db-host:5432/streamnzb?sslmode=disable
 
 or `database_driver` / `database_url` in `config.json`.
 
-Switching backends carries your data with it — library, NZB history, bad
-releases, and metrics — in either direction, and leaves the database you came
-from untouched. Switching back later syncs only what the other side added in
+Switching backends carries your data with it — library, search and play
+history, bad releases, and metrics — in either direction, and leaves the
+database you came from untouched. Switching back later syncs only what the other side added in
 the meantime, so nothing is lost or duplicated by moving between the two. Set
 `database_skip_migration: true` in `config.json` to switch without copying.
 
@@ -154,7 +155,7 @@ AvailNZB is only used when both the global setting and the stream setting allow 
 
 ## Troubleshooting
 
-If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). Include downloaded logs when relevant, and include the copied bad match report from **History** when the issue is about a wrong or poor release match. Sensitive data should be automatically redacted but please double-check before posting.
+If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). Include downloaded logs when relevant, and include the copied bad match report from **History** when the issue is about a wrong or poor release match. For "why am I getting no (or few) streams", expand the request on **History** — its search panel shows what each indexer returned and what filtering dropped. Sensitive data should be automatically redacted but please double-check before posting.
 
 
 ## Support

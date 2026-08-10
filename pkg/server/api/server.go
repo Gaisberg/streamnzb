@@ -396,6 +396,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("/api/logs/download", authMiddleware(http.HandlerFunc(s.handleDownloadLogs)))
 	mux.Handle("/api/nzb-attempts", authMiddleware(http.HandlerFunc(s.handleNZBAttempts)))
+	mux.Handle("/api/search-diagnostics", authMiddleware(http.HandlerFunc(s.handleSearchDiagnostics)))
 
 	mux.Handle("/api/library", authMiddleware(http.HandlerFunc(s.handleGetLibrary)))
 	mux.Handle("/api/library/pin", authMiddleware(http.HandlerFunc(s.handlePinLibrary)))

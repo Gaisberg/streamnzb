@@ -23,6 +23,7 @@ const GENERAL_TAB_FIELDS = [
 const ADVANCED_TAB_FIELDS = [
   'log_level',
   'verbose_nntp_logging',
+  'search_debug_stream',
   'keep_log_files',
   'playback_startup_timeout_seconds',
   'session_ttl_minutes',

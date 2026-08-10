@@ -14,6 +14,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search"
+	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -673,8 +674,12 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	} else if len(indexerReleases) == 0 && len(libraryReleases) > 0 && libMode == "fallback_only" {
 		indexerReleases = libraryReleases
 	}
+	dedupInput := len(indexerReleases)
 	indexerReleases = dedupeCombinedSearchResults(streamLabel, stream, indexerReleases, executedRequests)
+	diag.From(ctx).SetDedup(dedupInput, len(indexerReleases))
+	beforeBad := len(indexerReleases)
 	indexerReleases = s.filterBadReleases(streamLabel, indexerReleases)
+	diag.From(ctx).SetBadFiltered(beforeBad - len(indexerReleases))
 	availCtx = alignAvailContextWithSearch(availCtx, indexerReleases)
 	enrichSearchResultsWithAvail(streamLabel, indexerReleases, availCtx)
 	logger.Debug("Playback candidate build finished",

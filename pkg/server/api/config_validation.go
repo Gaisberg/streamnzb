@@ -77,6 +77,7 @@ const (
 var patchKeysNoCacheImpact = map[string]bool{
 	"log_level":                           true,
 	"verbose_nntp_logging":                true,
+	"search_debug_stream":                 true,
 	"keep_log_files":                      true,
 	"nzb_history_retention_days":          true,
 	"playback_startup_timeout_seconds":    true,

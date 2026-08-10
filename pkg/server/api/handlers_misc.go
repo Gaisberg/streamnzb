@@ -190,6 +190,42 @@ func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleSearchDiagnostics serves the persisted search-funnel records the
+// history page attaches to its request groups.
+func (s *Server) handleSearchDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	s.mu.RLock()
+	lister := s.attemptLister
+	s.mu.RUnlock()
+	if lister == nil {
+		writeJSON(w, http.StatusOK, []persistence.SearchDiagnostic{})
+		return
+	}
+	q := r.URL.Query()
+	opts := persistence.ListSearchDiagnosticsOptions{
+		StreamName:  q.Get("stream_name"),
+		ContentType: q.Get("content_type"),
+		ContentID:   q.Get("content_id"),
+	}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			opts.Limit = n
+		}
+	}
+	list, err := lister.ListSearchDiagnostics(opts)
+	if err != nil {
+		logger.Error("ListSearchDiagnostics failed", "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []persistence.SearchDiagnostic{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 func (s *Server) handlePersistedStats(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return

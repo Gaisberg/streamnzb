@@ -182,6 +182,22 @@ const (
 		expires_at {INT} NOT NULL
 	);`
 	badReleasesIndexExpires = `CREATE INDEX IF NOT EXISTS idx_bad_releases_expires ON bad_releases(expires_at);`
+
+	// One row per uncached playlist build: the search funnel for that request
+	// (per-indexer timings, validation drops, dedup, profile rejections) as a
+	// JSON payload. The queryable columns exist only to find the row for a
+	// history entry; everything the UI renders lives in the payload.
+	searchDiagnosticsSchema = `CREATE TABLE IF NOT EXISTS search_diagnostics (
+		id {ID},
+		created_at {INT} NOT NULL,
+		stream_name {TEXT},
+		content_type {TEXT} NOT NULL,
+		content_id {TEXT} NOT NULL,
+		content_title {TEXT},
+		payload {TEXT} NOT NULL
+	);`
+	searchDiagnosticsIndexCreated = `CREATE INDEX IF NOT EXISTS idx_search_diagnostics_created ON search_diagnostics(created_at DESC);`
+	searchDiagnosticsIndexContent = `CREATE INDEX IF NOT EXISTS idx_search_diagnostics_content ON search_diagnostics(content_type, content_id);`
 )
 
 // addedColumn is one idempotent ALTER TABLE ADD COLUMN migration. Existing
@@ -283,6 +299,9 @@ func initSchema(c *connRef) error {
 		libraryBlueprintsSchema,
 		badReleasesSchema,
 		badReleasesIndexExpires,
+		searchDiagnosticsSchema,
+		searchDiagnosticsIndexCreated,
+		searchDiagnosticsIndexContent,
 		animeMappingsSchema,
 	} {
 		if _, err := c.Exec(d.ExpandDDL(stmt)); err != nil {

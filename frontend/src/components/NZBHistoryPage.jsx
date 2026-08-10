@@ -259,7 +259,226 @@ function buildRequestGroups(attempts) {
     .sort((a, b) => new Date(b.requestTime || 0) - new Date(a.requestTime || 0))
 }
 
+const historyWindowMs = 15 * 60 * 1000
+
+function diagnosticContentKey(d) {
+  return [d.stream_name || 'default', d.content_type || '', d.content_id || ''].join('::')
+}
+
+// diagnosticStreamCount reads how many streams a search ultimately returned
+// from its payload: the profile's kept count when a profile ran, otherwise
+// whatever survived dedup.
+function diagnosticStreamCount(diagnostic) {
+  const snap = parseDiagnosticPayload(diagnostic)
+  if (!snap) return null
+  if (snap.profile_name) return snap.profile_kept || 0
+  return snap.dedup_output || 0
+}
+
+// buildHistoryTimeline merges play-attempt groups with search-diagnostics rows
+// into one timeline. Searches are the primary events: a diagnostics row inside
+// an attempt group's window attaches to that group, and rows no attempt ever
+// followed (browsed past, or filtered to zero streams) become their own
+// "search" entries so they stop being invisible. Attempts with no matching
+// search — direct-play NZBs, cache-served plays hours after the build, rows
+// predating diagnostics — keep their attempt-only group untouched.
+function buildHistoryTimeline(attemptGroups, diagnostics, includeSearchOnly) {
+  const rows = Array.isArray(diagnostics) ? diagnostics : []
+  const consumed = new Set()
+
+  const groups = attemptGroups.map((group) => {
+    const latest = group.latest
+    if (!latest) return group
+    const key = [latest.stream_name || 'default', group.contentType, group.contentID].join('::')
+    const from = new Date(group.requestTime).getTime() - historyWindowMs
+    const to = new Date(latest.tried_at).getTime() + historyWindowMs
+    let best = null
+    for (const d of rows) {
+      if (diagnosticContentKey(d) !== key) continue
+      const at = new Date(d.created_at).getTime()
+      if (at < from || at > to) continue
+      // Every row in the window belongs to this request; rebuilds otherwise
+      // resurface as bogus search-only entries. The newest one is shown.
+      consumed.add(d.id)
+      if (!best || at > new Date(best.created_at).getTime()) best = d
+    }
+    return best ? { ...group, diagnostic: best } : group
+  })
+
+  if (includeSearchOnly) {
+    const leftover = rows.filter((d) => !consumed.has(d.id))
+    const byContent = new Map()
+    leftover.forEach((d) => {
+      const key = diagnosticContentKey(d)
+      const list = byContent.get(key) || []
+      list.push(d)
+      byContent.set(key, list)
+    })
+    byContent.forEach((contentRows) => {
+      const sorted = [...contentRows].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      let cluster = []
+      const flush = () => {
+        if (cluster.length === 0) return
+        const newest = cluster[0]
+        groups.push({
+          kind: 'search',
+          key: `search::${newest.id}`,
+          contentType: newest.content_type || '',
+          contentID: newest.content_id || '',
+          streamName: newest.stream_name || 'default',
+          title: formatContentTitle(newest.content_title, newest.content_type, newest.content_id),
+          attempts: [],
+          latest: null,
+          requestTime: newest.created_at,
+          okCount: 0,
+          failedCount: 0,
+          preloadCount: 0,
+          diagnostic: newest,
+          streamCount: diagnosticStreamCount(newest),
+        })
+        cluster = []
+      }
+      sorted.forEach((d) => {
+        if (cluster.length === 0) {
+          cluster = [d]
+          return
+        }
+        const previous = cluster[cluster.length - 1]
+        const gap = Math.abs(new Date(previous.created_at).getTime() - new Date(d.created_at).getTime())
+        if (gap <= historyWindowMs) {
+          cluster.push(d)
+          return
+        }
+        flush()
+        cluster = [d]
+      })
+      flush()
+    })
+  }
+
+  return groups.sort((a, b) => new Date(b.requestTime || 0) - new Date(a.requestTime || 0))
+}
+
+function parseDiagnosticPayload(diagnostic) {
+  if (!diagnostic?.payload) return null
+  try {
+    return JSON.parse(diagnostic.payload)
+  } catch {
+    return null
+  }
+}
+
+function FunnelChip({ label, value }) {
+  return (
+    <div className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/95 px-2 py-1 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+function SearchDiagnosticsPanel({ diagnostic }) {
+  const [showRejected, setShowRejected] = useState(false)
+  const snap = useMemo(() => parseDiagnosticPayload(diagnostic), [diagnostic])
+  if (!snap) return null
+
+  const validation = Array.isArray(snap.validation) ? snap.validation : []
+  const calls = Array.isArray(snap.indexer_calls) ? snap.indexer_calls : []
+  const rejected = Array.isArray(snap.rejected) ? snap.rejected : []
+  const rawTotal = validation.reduce((sum, v) => sum + (v.raw || 0), 0)
+  const validatedTotal = validation.reduce((sum, v) => sum + (v.kept || 0), 0)
+  const droppedTitle = validation.reduce((sum, v) => sum + (v.dropped_title || 0), 0)
+  const droppedYear = validation.reduce((sum, v) => sum + (v.dropped_year || 0), 0)
+
+  return (
+    <div className="mb-3 rounded-lg border border-border/60 bg-background/95 px-3 py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <SearchIcon className="size-4 text-muted-foreground" />
+          Search
+        </div>
+        <div className="text-xs text-muted-foreground tabular-nums">{snap.total_ms >= 0 ? `${snap.total_ms} ms` : ''}</div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {rawTotal > 0 && <FunnelChip label="Raw" value={rawTotal} />}
+        {rawTotal > 0 && <FunnelChip label="Validated" value={validatedTotal} />}
+        {droppedTitle > 0 && <FunnelChip label="Title mismatch" value={`−${droppedTitle}`} />}
+        {droppedYear > 0 && <FunnelChip label="Year mismatch" value={`−${droppedYear}`} />}
+        {snap.dedup_input > 0 && <FunnelChip label="Deduped" value={snap.dedup_output} />}
+        {snap.bad_filtered > 0 && <FunnelChip label="Known bad" value={`−${snap.bad_filtered}`} />}
+        {snap.profile_name && <FunnelChip label={`Profile (${snap.profile_name})`} value={`${snap.profile_input} → ${snap.profile_kept}`} />}
+      </div>
+
+      {calls.length > 0 && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/60 text-left text-muted-foreground">
+                <th className="py-1 pr-3 font-medium">Indexer</th>
+                <th className="py-1 pr-3 font-medium">Mode</th>
+                <th className="py-1 pr-3 text-right font-medium">Time</th>
+                <th className="py-1 pr-3 text-right font-medium">Results</th>
+                <th className="py-1 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calls.map((call, index) => (
+                <tr key={`${call.indexer}-${call.mode}-${index}`} className="border-b border-border/40 last:border-0">
+                  <td className="py-1 pr-3">{call.indexer}</td>
+                  <td className="py-1 pr-3 text-muted-foreground">{call.mode || '—'}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums">{call.cached ? '⚡' : ''} {call.duration_ms} ms</td>
+                  <td className="py-1 pr-3 text-right tabular-nums">{call.results}</td>
+                  <td className="py-1">
+                    {call.error
+                      ? <span className="text-red-500 [overflow-wrap:anywhere]" title={call.error}>{call.error.length > 60 ? `${call.error.slice(0, 60)}…` : call.error}</span>
+                      : <span className="text-muted-foreground">{call.cached ? 'cached' : 'ok'}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rejected.length > 0 && (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setShowRejected((current) => !current)}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {showRejected ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+            Rejected by profile ({rejected.length})
+          </button>
+          {showRejected && (
+            <div className="mt-2 space-y-1.5">
+              {rejected.map((r, index) => (
+                <div key={`${r.title}-${index}`} className="rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+                  <div className="break-words text-xs [overflow-wrap:anywhere]">{r.title || '—'}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    {r.indexer && <span className="text-[10px] text-muted-foreground">{r.indexer}</span>}
+                    {(r.reasons || []).map((reason) => (
+                      <Badge key={reason} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                        {reason}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function formatGroupStatus(group) {
+  if (group.kind === 'search') {
+    if (group.streamCount === 0) return 'No results'
+    return 'Searched'
+  }
   if (group.okCount > 0) return 'OK'
   if (group.preloadCount > 0 && group.failedCount === 0) return 'Pending'
   if (shortReason(group.latest?.failure_reason) === 'Short play') return 'Short play'
@@ -273,6 +492,9 @@ function formatAvailStatus(value) {
 }
 
 function statusTone(group) {
+  if (group.kind === 'search') {
+    return group.streamCount === 0 ? 'warning' : 'secondary'
+  }
   if (group.okCount > 0) return 'success'
   if (group.preloadCount > 0 && group.failedCount === 0) return 'secondary'
   if (shortReason(group.latest?.failure_reason) === 'Short play') return 'warning'
@@ -365,6 +587,7 @@ function formatResultFilterLabel(value) {
 
 export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
   const [attempts, setAttempts] = useState([])
+  const [diagnostics, setDiagnostics] = useState([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
@@ -385,6 +608,13 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
     if (showLoadingSpinner) setLoading(true)
     else setRefreshing(true)
     setError(null)
+    // Diagnostics are decoration on the groups: their failure must never take
+    // the history page down, so that fetch swallows its own errors.
+    apiFetch('/api/search-diagnostics?limit=200')
+      .then((data) => {
+        if (Array.isArray(data)) setDiagnostics(data)
+      })
+      .catch(() => {})
     apiFetch('/api/nzb-attempts?limit=200')
       .then((data) => {
         if (Array.isArray(data)) setAttempts(data)
@@ -420,7 +650,23 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
     ))
   }, [attempts, timeframe, resultFilter, streamFilter, search])
 
-  const requestGroups = useMemo(() => buildRequestGroups(filteredAttempts), [filteredAttempts])
+  const filteredDiagnostics = useMemo(() => {
+    return diagnostics.filter((d) => {
+      const asEvent = { tried_at: d.created_at, stream_name: d.stream_name }
+      return (
+        withinTimeframe(asEvent, timeframe) &&
+        matchesStream(asEvent, streamFilter) &&
+        (!search || [d.content_title, d.content_id].filter(Boolean).join(' ').toLowerCase().includes(search.toLowerCase()))
+      )
+    })
+  }, [diagnostics, timeframe, streamFilter, search])
+
+  // Search-only entries carry no attempt to satisfy a result filter, so they
+  // surface only on the unfiltered view.
+  const requestGroups = useMemo(
+    () => buildHistoryTimeline(buildRequestGroups(filteredAttempts), filteredDiagnostics, resultFilter === 'all'),
+    [filteredAttempts, filteredDiagnostics, resultFilter]
+  )
 
   const summary = useMemo(() => ({
     requests: requestGroups.length,
@@ -491,10 +737,10 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
             <div className="min-w-0 flex-1 max-w-[42rem] space-y-0.5">
               <CardTitle className="flex items-center gap-2">
                 <History className="size-5" />
-                NZB play attempts
+                History
               </CardTitle>
               <CardDescription>
-                Browse recent play attempts grouped by requested movie or episode. Filters and summary reflect the currently visible set.
+                Browse recent searches and play attempts grouped by requested movie or episode — including searches nothing was played from. Filters and summary reflect the currently visible set.
               </CardDescription>
             </div>
             <Button
@@ -624,7 +870,9 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                       {formatGroupStatus(group)}
                                     </Badge>
                                     <span className="text-xs text-muted-foreground">
-                                      {group.attempts.length}
+                                      {group.kind === 'search'
+                                        ? (group.streamCount == null ? '—' : `${group.streamCount} streams`)
+                                        : group.attempts.length}
                                     </span>
                                     {expanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
                                   </div>
@@ -634,7 +882,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                     {group.title}
                                   </div>
                                   <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                                    {[group.latest?.stream_name || 'default', formatContentTypeLabel(group.contentType), group.latest?.content_id || '—'].join(' • ')}
+                                    {[group.latest?.stream_name || group.streamName || 'default', formatContentTypeLabel(group.contentType), group.latest?.content_id || group.contentID || '—'].join(' • ')}
                                   </div>
                                 </div>
                               </button>
@@ -642,6 +890,12 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                               {expanded && (
                                 <div className="border-t border-border/60 bg-muted/20 px-3 py-3 md:px-5 md:py-4">
                                   <div className="animate-in slide-in-from-top-1 fade-in-0 space-y-2 duration-200">
+                                    <SearchDiagnosticsPanel diagnostic={group.diagnostic} />
+                                    {group.attempts.length === 0 && (
+                                      <div className="rounded-lg border border-dashed border-border/60 px-3 py-3 text-center text-xs text-muted-foreground">
+                                        No play attempts followed this search.
+                                      </div>
+                                    )}
                                     {group.attempts.map((attempt) => {
                                       const reasonLabel = shortReason(attempt.failure_reason)
                                       const attemptBadgeLabel = formatAttemptBadgeLabel(attempt)

@@ -116,6 +116,14 @@ var importTables = []importTable{
 		),
 	},
 	{
+		name:       "search_diagnostics",
+		syncColumn: "created_at",
+		columns: cols(
+			num("created_at"), txt("stream_name"), txt("content_type"),
+			txt("content_id"), txt("content_title"), txt("payload"),
+		),
+	},
+	{
 		name:       "provider_metrics",
 		syncColumn: "collected_at",
 		columns: cols(

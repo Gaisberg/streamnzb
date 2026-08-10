@@ -8,11 +8,15 @@ import (
 
 	"github.com/dreulavelle/jhin/rank"
 
+	"encoding/json"
+
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/search/ranking"
@@ -233,11 +237,44 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 }
 
 func (s *Server) buildPlaylistUncached(ctx context.Context, key StreamSlotKey, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
+	// Diagnose every uncached build: the collector rides ctx through search,
+	// validation, dedup and the filter profile, and the snapshot lands as one
+	// history row. Cache hits skip this whole path, which is the right
+	// granularity — a cached playlist answers with the funnel of the build
+	// that produced it.
+	ctx, collector := diag.Begin(ctx)
 	raw, err := s.getOrBuildRawSearchResult(ctx, key.ContentType, key.ID, stream)
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	return s.buildPlaylistFromRaw(raw, isAIOStreams, stream)
+	list, err := s.buildPlaylistFromRaw(ctx, raw, isAIOStreams, stream)
+	if err == nil {
+		s.recordSearchDiagnostics(key, stream, raw, collector)
+	}
+	return list, err
+}
+
+// recordSearchDiagnostics persists the collector's snapshot for the history
+// page. Best-effort: diagnostics must never fail a playlist build.
+func (s *Server) recordSearchDiagnostics(key StreamSlotKey, stream *auth.Stream, raw *rawSearchResult, collector *diag.Collector) {
+	if s == nil || s.attemptRecorder == nil || collector == nil {
+		return
+	}
+	payload, err := json.Marshal(collector.Snapshot())
+	if err != nil {
+		return
+	}
+	title := ""
+	if raw != nil && raw.Params != nil {
+		title = raw.Params.ContentTitle
+	}
+	s.attemptRecorder.RecordSearchDiagnostic(persistence.SearchDiagnostic{
+		StreamName:   streamID(stream),
+		ContentType:  key.ContentType,
+		ContentID:    key.ID,
+		ContentTitle: title,
+		Payload:      string(payload),
+	})
 }
 
 func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id string, stream *auth.Stream) (*rawSearchResult, error) {
@@ -412,12 +449,12 @@ func releasesToCandidates(releases []*release.Release) []triage.Candidate {
 	return out
 }
 
-func (s *Server) buildPlaylistFromRaw(raw *rawSearchResult, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
+func (s *Server) buildPlaylistFromRaw(ctx context.Context, raw *rawSearchResult, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
 	filterMode, filteringActive := resolveFilterMode(stream)
 	source := buildPlaylistSource(raw, filteringActive)
 	inputCandidates := buildPlaylistCandidates(source)
 	candidates := s.applyPlaylistFiltering(inputCandidates, source, isAIOStreams, filteringActive, filterMode, stream)
-	candidates = s.applyRanking(candidates, source, filteringActive, filterMode, stream)
+	candidates = s.applyRanking(ctx, candidates, source, filteringActive, filterMode, stream)
 	s.recordAvailIndexerStats(inputCandidates, candidates, source, filteringActive, stream)
 	res := buildPlaylistResult(source, candidates)
 	res.IsAIOStreams = isAIOStreams
@@ -843,7 +880,7 @@ func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *p
 //
 // Streams with no profile bound keep the pre-jhin ordering, so filtering stays
 // opt-in rather than silently changing what an unconfigured stream returns.
-func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSource, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
+func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate, source *playlistSource, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
 	kind := kindForRequest(source)
 	profile := s.profileForKind(kind, stream)
 	inputResults := len(candidates)
@@ -859,8 +896,9 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 		return candidates
 	}
 
-	results := profile.Apply(candidates, rank.RankOptions{})
+	results, rejected := profile.ApplyWithRejected(candidates, rank.RankOptions{})
 	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
+	diag.From(ctx).SetProfile(profile.Name, inputResults, len(results), rejectedForDiag(rejected))
 
 	libraryBonus := profile.LibraryScoreBonus
 
@@ -885,6 +923,24 @@ func (s *Server) applyRanking(candidates []triage.Candidate, source *playlistSou
 
 	logStreamFiltering(stream, filterMode, inputResults, len(out))
 	logStreamSorting(stream, filterMode, inputResults, len(out))
+	return out
+}
+
+// rejectedForDiag converts the profile's turned-away releases into the diag
+// shape: title, source indexer and jhin's reasons, nothing else.
+func rejectedForDiag(rejected []ranking.Result) []diag.RejectedRelease {
+	if len(rejected) == 0 {
+		return nil
+	}
+	out := make([]diag.RejectedRelease, 0, len(rejected))
+	for _, r := range rejected {
+		rr := diag.RejectedRelease{Reasons: r.Torrent.Rejections}
+		if r.Candidate.Release != nil {
+			rr.Title = r.Candidate.Release.Title
+			rr.Indexer = indexerNameFromRelease(r.Candidate.Release)
+		}
+		out = append(out, rr)
+	}
 	return out
 }
 

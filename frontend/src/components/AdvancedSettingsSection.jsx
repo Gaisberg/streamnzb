@@ -15,7 +15,7 @@ import { normalizeAvailNZBMode } from "@/lib/availnzb"
 import { cn } from "@/lib/utils"
 
 const CARD_FIELDS = {
-  admin: ['log_level', 'verbose_nntp_logging', 'keep_log_files'],
+  admin: ['log_level', 'verbose_nntp_logging', 'search_debug_stream', 'keep_log_files'],
   memory: ['memory_limit_mb'],
   playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_preprobing_max_attempts', 'mute_error_video'],
   library: ['library_search_mode', 'library_max_items', 'library_max_size_mb', 'library_auto_save'],
@@ -43,6 +43,7 @@ function pickInitialValues(values = {}) {
   return {
     log_level: values.log_level ?? 'INFO',
     verbose_nntp_logging: values.verbose_nntp_logging === true,
+    search_debug_stream: values.search_debug_stream === true,
     keep_log_files: Number(values.keep_log_files ?? 9) || 9,
     memory_limit_mb: Number(values.memory_limit_mb ?? 512),
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
@@ -208,6 +209,24 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                           </FormControl>
                         </div>
                         <FormDescription className="mt-3">Include low-level NNTP connection and pool logs in DEBUG output.</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={control} name="search_debug_stream" render={({ field }) => (
+                      <FormItem className="relative rounded-none border-0 p-3">
+                        <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                        <div className={stackedFieldRowClass}>
+                          <div className="sm:flex-1">
+                            <FormLabel className={labelClass}>Search debug stream</FormLabel>
+                          </div>
+                          <FormControl>
+                            <Switch
+                              checked={field.value === true}
+                              onCheckedChange={(checked) => { field.onChange(checked); commitField('search_debug_stream') }}
+                            />
+                          </FormControl>
+                        </div>
+                        <FormDescription className="mt-3">Prepend a debug result to stream responses showing indexer timings and what filtering dropped. Selecting it plays the top real result.</FormDescription>
                         <FormMessage />
                       </FormItem>
                     )} />

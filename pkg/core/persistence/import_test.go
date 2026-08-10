@@ -37,6 +37,10 @@ func seedSQLiteSource(t *testing.T) string {
 	); err != nil {
 		t.Fatalf("seed metrics: %v", err)
 	}
+	src.RecordSearchDiagnostic(SearchDiagnostic{
+		StreamName: "default", ContentType: "movie", ContentID: "tt0111161",
+		ContentTitle: "Imported Movie", Payload: `{"total_ms":1500}`,
+	})
 	if err := src.Close(); err != nil {
 		t.Fatalf("close source: %v", err)
 	}
@@ -94,6 +98,57 @@ func TestMigrateDataCarriesEveryTable(t *testing.T) {
 	indexers, err := target.GetIndexerMetricsSummary(nil, nil)
 	if err != nil || len(indexers) != 1 {
 		t.Fatalf("indexer metrics not imported: n=%d err=%v", len(indexers), err)
+	}
+
+	diags, err := target.ListSearchDiagnostics(ListSearchDiagnosticsOptions{ContentID: "tt0111161"})
+	if err != nil || len(diags) != 1 {
+		t.Fatalf("search diagnostics not imported: n=%d err=%v", len(diags), err)
+	}
+	if diags[0].Payload != `{"total_ms":1500}` || diags[0].ContentTitle != "Imported Movie" {
+		t.Fatalf("diagnostics row not faithful: %+v", diags[0])
+	}
+}
+
+// TestImportTablesCoverSchema pins the migration list to the schema: a table
+// created by initSchema must either be in importTables or be deliberately
+// listed as not-migrated here. Without this, adding a table silently strands
+// its data on the old backend the next time someone switches databases.
+func TestImportTablesCoverSchema(t *testing.T) {
+	mgr := openTestManager(t)
+
+	// Rebuilt from remote sources on demand; carrying it across backends would
+	// only migrate a cache.
+	notMigrated := map[string]bool{
+		"anime_mappings": true,
+	}
+
+	imported := map[string]bool{}
+	for _, tbl := range importTables {
+		imported[tbl.name] = true
+	}
+
+	var query string
+	if mgr.db.dialect().Name() == BackendPostgres {
+		query = `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()`
+	} else {
+		query = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+	}
+	rows, err := mgr.db.Query(query)
+	if err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		if !imported[name] && !notMigrated[name] {
+			t.Errorf("table %s is in the schema but neither in importTables nor the not-migrated list — its rows would be stranded on a backend switch", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate tables: %v", err)
 	}
 }
 

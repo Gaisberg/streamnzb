@@ -11,6 +11,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/diag"
 )
 
 type QueryCache struct {
@@ -168,13 +169,43 @@ func (c *CachedIndexer) Search(ctx context.Context, req SearchRequest) (*SearchR
 	if c.underlying == nil {
 		return nil, nil
 	}
+	// Every path out of this method reports here: this wrapper fronts every
+	// concrete indexer client, which makes it the one place per-indexer search
+	// timing can be captured without touching each client.
+	started := time.Now()
+	report := func(resp *SearchResponse, err error, cached bool) {
+		col := diag.From(ctx)
+		if col == nil {
+			return
+		}
+		call := diag.IndexerCall{
+			Indexer:    c.Name(),
+			Mode:       strings.ToLower(strings.TrimSpace(req.SearchMode)),
+			DurationMS: time.Since(started).Milliseconds(),
+			Cached:     cached,
+		}
+		if resp != nil {
+			call.Results = len(resp.Releases)
+			if call.Results == 0 {
+				call.Results = len(resp.Channel.Items)
+			}
+		}
+		if err != nil {
+			call.Error = err.Error()
+		}
+		col.AddIndexerCall(call)
+	}
+
 	if c.cache == nil {
-		return c.underlying.Search(ctx, req)
+		resp, err := c.underlying.Search(ctx, req)
+		report(resp, err, false)
+		return resp, err
 	}
 
 	key := BuildQueryCacheKey(c.Name(), req)
 	if cachedResp, ok := c.cache.Get(key); ok {
 		logger.Debug("Indexer query cache hit", "indexer", c.Name(), "key", key, "releases", len(cachedResp.Releases))
+		report(cachedResp, nil, true)
 		return cachedResp, nil
 	}
 
@@ -192,6 +223,7 @@ func (c *CachedIndexer) Search(ctx context.Context, req SearchRequest) (*SearchR
 	})
 
 	if err != nil {
+		report(nil, err, false)
 		return nil, err
 	}
 
@@ -200,6 +232,7 @@ func (c *CachedIndexer) Search(ctx context.Context, req SearchRequest) (*SearchR
 	}
 
 	resp, _ := v.(*SearchResponse)
+	report(resp, nil, shared)
 	return cloneSearchResponse(resp), nil
 }
 

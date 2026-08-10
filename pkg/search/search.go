@@ -9,6 +9,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/diag"
 )
 
 func validationQueriesForRequest(req indexer.SearchRequest) []string {
@@ -169,7 +170,16 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 		}
 	}
 
-	releases, _ = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
+	var valStats ValidationStats
+	releases, valStats = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
+	diag.From(ctx).AddValidation(diag.ValidationStat{
+		Request:      req.RequestLabel,
+		Mode:         indexer.SearchModeLabel(searchReq.SearchMode),
+		Raw:          valStats.RawResults,
+		Kept:         valStats.FinalResults,
+		DroppedTitle: valStats.DroppedTitle,
+		DroppedYear:  valStats.DroppedYear,
+	})
 	// The per-profile pass re-validates ALL raw releases once per profile (a
 	// full title parse each) purely to produce per-profile debug stats — skip
 	// the whole sweep unless debug logging is actually on.

@@ -154,16 +154,27 @@ type Result struct {
 // rejects, and returns them in the profile's sort order. Candidates are always
 // evaluated so that rejected releases can still be explained in the UI.
 func (p *Profile) Apply(candidates []triage.Candidate, opts rank.RankOptions) []Result {
+	kept, _ := p.ApplyWithRejected(candidates, opts)
+	return kept
+}
+
+// ApplyWithRejected is Apply plus the releases the profile turned away, each
+// still carrying the reasons jhin refused it. A profile that filters a result
+// set down to nothing looks identical to an indexer that found nothing unless
+// the rejections survive this call, so diagnostics use this form.
+func (p *Profile) ApplyWithRejected(candidates []triage.Candidate, opts rank.RankOptions) (kept, rejected []Result) {
 	results := p.Evaluate(candidates, opts)
 
-	kept := results[:0]
+	kept = results[:0]
 	for _, r := range results {
 		if r.Torrent.Fetch {
 			kept = append(kept, r)
+		} else {
+			rejected = append(rejected, r)
 		}
 	}
 	p.SortResults(kept)
-	return kept
+	return kept, rejected
 }
 
 // Evaluate ranks every candidate without dropping anything.
