@@ -16,6 +16,14 @@ import (
 
 const dialTimeout = 30 * time.Second
 
+// bodyReadIdleTimeout is a rolling deadline for article body reads: it is
+// refreshed on every Read, so it bounds how long a body read may sit without
+// receiving any bytes — not the total body transfer time. A healthy provider
+// streams continuously; a connection that goes silent mid-body (silently
+// dropped by NAT/firewall, provider-side kill) previously blocked the fetch
+// for the full 5-minute absolute deadline, stalling playback on that segment.
+const bodyReadIdleTimeout = 15 * time.Second
+
 type Client struct {
 	conn    *textproto.Conn
 	netConn net.Conn
@@ -212,10 +220,8 @@ func (c *Client) Body(messageID string) (io.ReadCloser, error) {
 			return nil, err
 		}
 
-		c.setDeadline()
-		if c.netConn != nil {
-			c.netConn.SetDeadline(time.Now().Add(5 * time.Minute))
-		}
+		// Body reads use the rolling idle deadline set by metricReader; the
+		// fetch context's overall timeout bounds the total transfer.
 		metricR := &metricReader{r: c.conn.DotReader(), client: c}
 
 		return &bodyReader{
@@ -232,6 +238,9 @@ type metricReader struct {
 }
 
 func (m *metricReader) Read(p []byte) (n int, err error) {
+	if m.client.netConn != nil {
+		m.client.netConn.SetReadDeadline(time.Now().Add(bodyReadIdleTimeout))
+	}
 	n, err = m.r.Read(p)
 	if n > 0 && m.client.pool != nil {
 		m.client.pool.TrackRead(n)

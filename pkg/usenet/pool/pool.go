@@ -675,6 +675,9 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			// Close ensures EndResponse is called even if decode stopped before EOF.
 			r.Close()
 			if err != nil {
+				// A failed decode leaves unread body bytes on the wire; the
+				// connection is desynced and must not go back to the pool.
+				discard()
 				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
 				ch <- segResult{err: err, host: host, providerID: providerID}
 				return

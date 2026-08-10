@@ -54,6 +54,11 @@ func decodeAndCloseBody(body io.ReadCloser, decodeFn func(io.Reader) (*decode.Fr
 
 const MaxZeroFills = 10
 
+// slowSegmentFetchThreshold flags segment downloads that took long enough to
+// drain a player's buffer; one Warn per slow segment confirms mid-stream
+// stalls in the field without needing Trace-level logs.
+const slowSegmentFetchThreshold = 10 * time.Second
+
 // isArticleNotFound reports whether err indicates the article is missing (430 No Such Article).
 // Used to fail fast on the first segment instead of zero-filling through many segments.
 func isArticleNotFound(err error) bool {
@@ -612,10 +617,14 @@ func (f *File) releaseInflightDownloadWaiter(index int, req *inflightSegmentDown
 
 func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
 	logger.Trace("File runInflightDownload: start fetch", "file", f.Name(), "index", index, "viaFetcher", f.fetcher != nil)
+	start := time.Now()
 	var data []byte
 	var err error
 	if f.fetcher != nil {
 		data, err = f.doDownloadSegmentViaFetcher(req.ctx, index)
+	}
+	if elapsed := time.Since(start); elapsed > slowSegmentFetchThreshold && req.ctx.Err() == nil {
+		logger.Warn("Slow segment fetch", "file", f.Name(), "index", index, "duration", elapsed, "err", err)
 	}
 	logger.Trace("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
 
