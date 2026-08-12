@@ -23,15 +23,16 @@ import (
 )
 
 type Client struct {
-	baseURL string
-	apiPath string
-	apiKey  string
-	name    string
-	client  *http.Client
-	cfg     config.IndexerConfig
-	caps    *indexer.Caps
-	core    *indexer.ClientCore
-	mu      sync.RWMutex // guards caps
+	baseURL    string
+	apiPath    string
+	baseParams url.Values // query params carried by the configured URL/api_path (e.g. NZBHydra2's ?indexers=...)
+	apiKey     string
+	name       string
+	client     *http.Client
+	cfg        config.IndexerConfig
+	caps       *indexer.Caps
+	core       *indexer.ClientCore
+	mu         sync.RWMutex // guards caps
 }
 
 var orderedSearchQueryKeys = []string{
@@ -145,18 +146,60 @@ func NewClient(cfg config.IndexerConfig, um *indexer.UsageManager) *Client {
 		apiPath = "/" + apiPath
 	}
 
+	// Users paste full API endpoints copied from other tools, e.g. NZBHydra2's
+	// "http://host:5076/api?indexers=abc". Split any query params off the URL
+	// and api_path so they ride along on every request instead of corrupting
+	// the request path, and don't append api_path again when the URL already
+	// ends with it.
+	baseParams := url.Values{}
+	if idx := strings.Index(apiPath, "?"); idx >= 0 {
+		if vals, err := url.ParseQuery(apiPath[idx+1:]); err == nil {
+			for key, values := range vals {
+				baseParams[key] = values
+			}
+		}
+		apiPath = apiPath[:idx]
+	}
+	baseURL := strings.TrimRight(cfg.URL, "/")
+	if u, err := url.Parse(strings.TrimSpace(cfg.URL)); err == nil && u.Host != "" {
+		if u.RawQuery != "" {
+			for key, values := range u.Query() {
+				baseParams[key] = values
+			}
+			u.RawQuery = ""
+		}
+		u.Fragment = ""
+		u.Path = strings.TrimRight(u.Path, "/")
+		if u.Path != "" && strings.HasSuffix(u.Path, apiPath) {
+			apiPath = ""
+		}
+		baseURL = u.String()
+	}
+
 	return &Client{
-		name:    cfg.Name,
-		baseURL: strings.TrimRight(cfg.URL, "/"),
-		apiPath: apiPath,
-		apiKey:  cfg.APIKey,
-		cfg:     cfg,
+		name:       cfg.Name,
+		baseURL:    baseURL,
+		apiPath:    apiPath,
+		baseParams: baseParams,
+		apiKey:     cfg.APIKey,
+		cfg:        cfg,
 		client: &http.Client{
 			Timeout:   cfg.EffectiveTimeout(),
 			Transport: transport,
 		},
 		core: indexer.NewClientCore(cfg.Name, cfg.APIHitsDay, cfg.DownloadsDay, cfg.RateLimitRPS, um),
 	}
+}
+
+// buildAPIURL merges the query params carried by the configured URL/api_path
+// into params (request params win) and returns the full request URL.
+func (c *Client) buildAPIURL(params url.Values) string {
+	for key, values := range c.baseParams {
+		if _, ok := params[key]; !ok {
+			params[key] = values
+		}
+	}
+	return fmt.Sprintf("%s%s?%s", c.baseURL, c.apiPath, encodeOrderedQuery(params, orderedSearchQueryKeys))
 }
 
 func (c *Client) effectiveQueryHeader() string {
@@ -221,7 +264,10 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return err
 	}
-	apiURL := fmt.Sprintf("%s%s?t=caps&apikey=%s", c.baseURL, c.apiPath, c.apiKey)
+	params := url.Values{}
+	params.Set("t", "caps")
+	params.Set("apikey", c.apiKey)
+	apiURL := c.buildAPIURL(params)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return err
@@ -245,10 +291,12 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return nil, err
 	}
-	apiURL := fmt.Sprintf("%s%s?t=caps", c.baseURL, c.apiPath)
+	params := url.Values{}
+	params.Set("t", "caps")
 	if c.apiKey != "" {
-		apiURL += "&apikey=" + url.QueryEscape(c.apiKey)
+		params.Set("apikey", c.apiKey)
 	}
+	apiURL := c.buildAPIURL(params)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create caps request: %w", err)
@@ -532,7 +580,7 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		params.Set("cachetime", strconv.Itoa(c.cfg.SearchResultsCacheTime))
 	}
 
-	apiURL := fmt.Sprintf("%s%s?%s", c.baseURL, c.apiPath, encodeOrderedQuery(params, orderedSearchQueryKeys))
+	apiURL := c.buildAPIURL(params)
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,
 		"request", req.RequestLabel,
@@ -592,6 +640,12 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	for i := range result.Channel.Items {
 		item := &result.Channel.Items[i]
 		item.SourceIndexer = c
+
+		// NZBHydra2 tags each result with the indexer it came from; surface it
+		// so aggregated results stay attributable per sub-indexer.
+		if actual := item.GetAttribute("hydraIndexerName"); actual != "" && !strings.EqualFold(actual, c.Name()) {
+			item.ActualIndexer = c.Name() + " - " + actual
+		}
 
 		if item.Size <= 0 {
 			if item.Enclosure.Length > 0 {

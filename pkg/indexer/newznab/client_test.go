@@ -127,6 +127,145 @@ func TestNewznabSearch(t *testing.T) {
 	}
 }
 
+// Users paste full API endpoints copied from other tools, e.g. NZBHydra2's
+// "http://host:5076/api?indexers=abc". The query params must ride along on
+// every request and the api path must not be appended twice.
+func TestNewClientPreservesURLQueryParams(t *testing.T) {
+	var gotPath string
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:   "NZBHydra2",
+		URL:    server.URL + "/api?indexers=abc,def",
+		APIKey: "test-api-key",
+	}, nil)
+
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat:        "2000",
+		Query:      "Test Movie",
+		SearchMode: "text",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if gotPath != "/api" {
+		t.Fatalf("path = %q, want %q", gotPath, "/api")
+	}
+	if got := gotQuery.Get("indexers"); got != "abc,def" {
+		t.Fatalf("indexers = %q, want %q", got, "abc,def")
+	}
+	if got := gotQuery.Get("apikey"); got != "test-api-key" {
+		t.Fatalf("apikey = %q, want %q", got, "test-api-key")
+	}
+
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping() error = %v", err)
+	}
+	if gotPath != "/api" {
+		t.Fatalf("ping path = %q, want %q", gotPath, "/api")
+	}
+	if got := gotQuery.Get("indexers"); got != "abc,def" {
+		t.Fatalf("ping indexers = %q, want %q", got, "abc,def")
+	}
+}
+
+// The same pasted-endpoint tolerance for api_path: a query string there must
+// become request params instead of corrupting the path.
+func TestNewClientPreservesAPIPathQueryParams(t *testing.T) {
+	var gotPath string
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:    "NZBHydra2",
+		URL:     server.URL,
+		APIPath: "/api?indexers=abc",
+		APIKey:  "test-api-key",
+	}, nil)
+
+	_, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat:        "2000",
+		Query:      "Test Movie",
+		SearchMode: "text",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	if gotPath != "/api" {
+		t.Fatalf("path = %q, want %q", gotPath, "/api")
+	}
+	if got := gotQuery.Get("indexers"); got != "abc" {
+		t.Fatalf("indexers = %q, want %q", got, "abc")
+	}
+}
+
+// NZBHydra2 tags each result with the indexer it came from; the release must
+// surface it as "<configured name> - <sub-indexer>".
+func TestSearchSurfacesHydraIndexerName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<newznab:response offset="0" total="2"/>
+<item>
+	<title>Tagged Release</title>
+	<newznab:attr name="size" value="100"/>
+	<newznab:attr name="hydraIndexerName" value="NZBgeek"/>
+</item>
+<item>
+	<title>Untagged Release</title>
+	<newznab:attr name="size" value="200"/>
+</item>
+</channel>
+</rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name:   "Hydra",
+		Type:   "aggregator",
+		URL:    server.URL,
+		APIKey: "test-api-key",
+	}, nil)
+
+	resp, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat:        "2000",
+		Query:      "Test Movie",
+		SearchMode: "text",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(resp.Channel.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(resp.Channel.Items))
+	}
+
+	tagged := resp.Channel.Items[0].ToRelease()
+	if tagged.Indexer != "Hydra - NZBgeek" {
+		t.Fatalf("tagged release indexer = %q, want %q", tagged.Indexer, "Hydra - NZBgeek")
+	}
+	untagged := resp.Channel.Items[1].ToRelease()
+	if untagged.Indexer != "Hydra" {
+		t.Fatalf("untagged release indexer = %q, want %q", untagged.Indexer, "Hydra")
+	}
+}
+
 func TestNewznabPagination(t *testing.T) {
 	logger.Init("DEBUG")
 	callCount := 0
