@@ -1815,6 +1815,7 @@ type ActiveSessionInfo struct {
 	Title     string   `json:"title"`
 	Clients   []string `json:"clients"`
 	StartTime string   `json:"start_time"`
+	BytesRead int64    `json:"bytes_read"`
 }
 
 func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
@@ -1827,6 +1828,7 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 	m.mu.RUnlock()
 
 	var result []ActiveSessionInfo
+	createdAt := make(map[string]time.Time)
 	for _, s := range snapshot {
 
 		if !s.mu.TryLock() {
@@ -1844,6 +1846,7 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 			for ip := range s.clients {
 				clients = append(clients, ip)
 			}
+			sort.Strings(clients)
 			title := "Unknown"
 			if s.rel != nil && s.rel.Title != "" {
 				title = s.rel.Title
@@ -1860,10 +1863,20 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 				Title:     title,
 				Clients:   clients,
 				StartTime: s.CreatedAt.Format(time.Kitchen),
+				BytesRead: s.BytesRead(),
 			})
+			createdAt[s.ID] = s.CreatedAt
 		}
 		s.mu.Unlock()
 	}
+	// Oldest-first so entries keep their position in the dashboard list as sessions come and go.
+	sort.Slice(result, func(i, j int) bool {
+		ti, tj := createdAt[result[i].ID], createdAt[result[j].ID]
+		if !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return result[i].ID < result[j].ID
+	})
 	logger.Trace("session GetActiveSessions done", "sessions", len(snapshot), "active", len(result))
 	return result
 }

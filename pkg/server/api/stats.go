@@ -196,7 +196,15 @@ func (s *Server) collectStats() SystemStats {
 			}
 		}
 
-		for ip, g := range groups {
+		// Iterate in sorted IP order so proxy entries keep a stable position in the dashboard list.
+		ips := make([]string, 0, len(groups))
+		for ip := range groups {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+
+		for _, ip := range ips {
+			g := groups[ip]
 			title := fmt.Sprintf("Proxy Client (%d conns)", g.count)
 			if g.group != "" {
 				title = fmt.Sprintf("Proxy: %s (%d conns)", g.group, g.count)

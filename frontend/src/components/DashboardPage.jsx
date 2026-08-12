@@ -12,7 +12,7 @@ import {
 import { ComposedChart, Area, XAxis, YAxis } from "recharts"
 import { Activity, Globe, X, MonitorPlay, Loader2 } from "lucide-react"
 import { isAvailNZBEnabled } from "@/lib/availnzb"
-import { cn } from "@/lib/utils"
+import { cn, formatBytes } from "@/lib/utils"
 
 const chartConfig = {
   speed: {
@@ -279,7 +279,10 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
                       >
                         {sess.title}
                       </div>
-                      <div className="text-xs text-muted-foreground truncate min-w-0">{sess.clients.join(', ')}</div>
+                      <div className="text-xs text-muted-foreground truncate min-w-0">
+                        {sess.clients.join(', ')}
+                        {sess.bytes_read > 0 && <span className="tabular-nums"> • {formatBytes(sess.bytes_read)} downloaded</span>}
+                      </div>
                     </CardContent>
                     <Button
                       variant="ghost"

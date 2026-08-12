@@ -169,4 +169,3 @@ If StreamNZB is useful to you, you can support development here:
 
 - [dreulavelle](https://github.com/dreulavelle) for [jhin](https://github.com/dreulavelle/jhin) (the release parsing & ranking engine) and contributions.
 - [javi11](https://github.com/javi11) for Go-based RAR and 7z streaming ([altmount](https://github.com/javi11/altmount)).
-- [Augment](https://www.augmentcode.com/) for helping with the project.
