@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { Loader2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -68,7 +68,8 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
 
   const form = useForm({ defaultValues: defaults })
   const { control, reset, setError, clearErrors } = form
-  const proxyEnabled = form.watch('proxy_enabled') !== false
+  const proxyEnabled = useWatch({ control, name: 'proxy_enabled' }) !== false
+  const usingPostgres = useWatch({ control, name: 'database_driver' }) === 'postgres'
   const { saveField, saveFields, savingField, hasFieldChanged, revertField } = useFieldAutoSave({
     form,
     savedValues: defaults,
@@ -131,7 +132,6 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
   const labelClass = "min-w-0 text-sm font-medium"
   const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
-  const usingPostgres = form.watch('database_driver') === 'postgres'
 
   return (
     <Form {...form}>
