@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.17.0](https://github.com/Gaisberg/streamnzb/compare/v4.16.0...v4.17.0) (2026-08-14)
+
+
+### Features
+
+* **dashboard:** show per-session downloaded bytes and keep active list order stable ([8795218](https://github.com/Gaisberg/streamnzb/commit/8795218f0d1711fe94bc3e51f85817a238807a3f))
+* **indexer:** support query params in newznab URLs and surface Hydra sub-indexer names ([f3ba4d2](https://github.com/Gaisberg/streamnzb/commit/f3ba4d20ff9ea789507efebfe284d32267b0b7db)), closes [#59](https://github.com/Gaisberg/streamnzb/issues/59)
+* **providers:** add connection latency and throughput speed tests ([dc93b62](https://github.com/Gaisberg/streamnzb/commit/dc93b62f555c4bcf534ffad7dc995f904da0c45e))
+* **streams:** cap playback connections per provider, per stream ([fede8de](https://github.com/Gaisberg/streamnzb/commit/fede8ded571b3a4fd403c3337d7f7be430a942ab))
+* **streams:** enable or disable providers per stream ([28917fb](https://github.com/Gaisberg/streamnzb/commit/28917fba5e659bdecc496ed38e2c80d32e94c8d6))
+
 ## [4.16.0](https://github.com/Gaisberg/streamnzb/compare/v4.15.0...v4.16.0) (2026-08-10)
 
 
