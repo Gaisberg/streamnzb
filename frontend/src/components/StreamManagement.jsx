@@ -60,6 +60,16 @@ function pickConnectionLimits(limits, selectedProviders) {
   return kept
 }
 
+// Mirrors MaxAddonNameLength and the default manifest name in
+// pkg/server/stremio/manifest.go. Keep them in step.
+const MAX_ADDON_NAME_LENGTH = 60
+const SERVICE_NAME = 'StreamNZB'
+
+function defaultAddonName(streamName) {
+  const trimmed = (streamName || '').trim()
+  return trimmed ? `${SERVICE_NAME} · ${trimmed}` : SERVICE_NAME
+}
+
 // activeProviderNames mirrors Stream.ActiveProviderSelections on the backend:
 // summaries should count what the stream actually uses, not what is merely
 // listed. Keep the two in step.
@@ -92,6 +102,7 @@ function normalizeStreamDraft(draft) {
     filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
     result_name_template: draft?.result_name_template || '',
     result_description_template: draft?.result_description_template || '',
+    addon_name: (draft?.addon_name || '').trim(),
   }
 }
 
@@ -117,6 +128,7 @@ function buildStreamDraft(stream) {
     filter_profile_by_type: stream?.filter_profile_by_type || {},
     result_name_template: stream?.result_name_template || '',
     result_description_template: stream?.result_description_template || '',
+    addon_name: stream?.addon_name || '',
   })
 }
 
@@ -150,6 +162,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     filter_profile_by_type: draft.filter_profile_by_type || {},
     result_name_template: draft.result_name_template || '',
     result_description_template: draft.result_description_template || '',
+    addon_name: draft.addon_name || '',
   }
 }
 
@@ -431,6 +444,7 @@ function StreamDialog({
   onOpenChange,
   initialStream,
   mode = 'edit',
+  existingNames = [],
   providerNames,
   providerConnectionTotals,
   enabledProviderNames,
@@ -532,6 +546,8 @@ function StreamDialog({
     const nextFieldErrors = {}
     if (!next.username) {
       nextFieldErrors.username = 'Stream name is required'
+    } else if (existingNames.some((name) => name.toLowerCase() === next.username.toLowerCase() && name !== initialStream?.username)) {
+      nextFieldErrors.username = 'A stream with that name already exists.'
     }
     if (next.providers.length === 0) {
       nextFieldErrors.providers = 'Add at least one provider.'
@@ -589,9 +605,13 @@ function StreamDialog({
               className={fieldErrors.username ? "border-destructive focus-visible:ring-destructive" : ""}
               value={draft.username || ''}
               onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))}
-              disabled={isEditing}
               placeholder="Stream01"
             />
+            {isEditing && (
+              <p className="text-xs text-muted-foreground">
+                Renaming keeps the token, so an installed addon URL keeps working. The stream's history moves with it.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border">
@@ -617,6 +637,25 @@ function StreamDialog({
 
           {activeTab === 'general' && (
             <div className="space-y-6">
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex flex-col gap-3 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between">
+                  <div className="text-sm font-medium">Addon name</div>
+                  <Input
+                    className="h-9 w-full min-[420px]:w-64"
+                    value={draft.addon_name || ''}
+                    maxLength={MAX_ADDON_NAME_LENGTH}
+                    onChange={(event) => setDraft((current) => ({ ...current, addon_name: event.target.value }))}
+                    placeholder={defaultAddonName(draft.username)}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  What this stream calls itself in the client's addon list and on every result it returns. Leave blank to use “{defaultAddonName(draft.username)}”.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Clients cache the manifest, so an already-installed addon keeps its old name until it is reinstalled.
+                </p>
+              </div>
+
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-medium">Filter/Sorting</div>
@@ -1118,8 +1157,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         auto_add_indexers: draft.auto_add_indexers,
         filter_availnzb: draft.filter_availnzb,
         provider_selections: draft.providers || [],
-    provider_connection_limits: draft.provider_connection_limits || {},
-    disabled_providers: draft.disabled_providers || [],
+        provider_connection_limits: draft.provider_connection_limits || {},
+        disabled_providers: draft.disabled_providers || [],
         indexer_selections: draft.indexers || [],
         indexer_overrides: buildIndexerOverrides(draft.indexers, existingStream?.indexer_overrides),
         movie_search_queries: draft.movie_search_queries || [],
@@ -1128,6 +1167,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         filter_profile_by_type: draft.filter_profile_by_type || {},
         result_name_template: draft.result_name_template || '',
         result_description_template: draft.result_description_template || '',
+        addon_name: draft.addon_name || '',
       },
     }
     await apiFetch('/api/streams/configs', {
@@ -1204,19 +1244,32 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     setDialogSaving(true)
     showStatus(null)
     let saved = false
+    const previousName = editingStream.username
+    const nextName = (draft.username || '').trim()
     try {
-      await saveStreamAssignments(editingStream.username, draft, editingStream)
+      // The rename has to land first: the config save is keyed by stream name,
+      // so sending it under the old name would write to a stream that is about
+      // to move, and under the new one to a stream that does not exist yet.
+      if (nextName && nextName !== previousName) {
+        await apiFetch(`/api/streams/${encodeURIComponent(previousName)}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: nextName }),
+        })
+      }
+      const savedName = nextName || previousName
+      await saveStreamAssignments(savedName, draft, editingStream)
       saved = true
       setStreams((prev) => {
         const next = prev.map((stream) =>
-          stream.username === editingStream.username
-            ? buildStreamStateFromDraft(editingStream.username, stream.token, draft, editingStream.indexer_overrides)
+          stream.username === previousName
+            ? buildStreamStateFromDraft(savedName, stream.token, draft, editingStream.indexer_overrides)
             : stream
         )
         onStreamsChange?.(mapStreamsByUsername(next))
         return next
       })
-      const status = { type: 'success', message: `Stream "${editingStream.username}" saved successfully.${CACHE_CLEARED_SUFFIX}` }
+      const status = { type: 'success', message: `Stream "${savedName}" saved successfully.${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)
       showFooterStatus(status)
       setEditingStream(null)
@@ -1496,6 +1549,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             }}
             initialStream={addDialogDraft}
             mode="add"
+            existingNames={streams.map((stream) => stream.username).filter(Boolean)}
             providerNames={providerNames}
             providerConnectionTotals={providerConnectionTotals}
             enabledProviderNames={enabledProviderNames}
@@ -1516,6 +1570,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             }}
             initialStream={editingStream}
             mode="edit"
+            existingNames={streams.map((stream) => stream.username).filter(Boolean)}
             providerNames={providerNames}
             providerConnectionTotals={providerConnectionTotals}
             enabledProviderNames={enabledProviderNames}

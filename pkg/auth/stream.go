@@ -66,6 +66,10 @@ type Stream struct {
 	// stream's Stremio results render. Empty uses the built-in format.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
+	// AddonName replaces the manifest name reported to clients. See
+	// config.StreamEntry; the two structs are converted into each other, so
+	// their fields must stay in step.
+	AddonName string `json:"addon_name,omitempty"`
 }
 
 // ActiveProviderSelections lists the providers this stream actually uses, in
@@ -536,6 +540,56 @@ func (dm *StreamManager) RegenerateToken(username string) (string, error) {
 	return token, nil
 }
 
+// RenameStream moves a stream to a new name, keeping its token and every
+// setting. The token is what addon URLs are built from, so a rename does not
+// break an installed manifest — only the login name and the label change.
+func (dm *StreamManager) RenameStream(oldName, newName, adminUsername string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("stream name is required")
+	}
+	if adminUsername == "" {
+		adminUsername = "admin"
+	}
+	if strings.EqualFold(newName, adminUsername) {
+		return fmt.Errorf("cannot rename a stream to the admin name")
+	}
+
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	stream, exists := dm.streams[oldName]
+	if !exists {
+		return fmt.Errorf("stream not found")
+	}
+	if oldName == newName {
+		return nil
+	}
+	// Names are compared case-insensitively so a rename cannot produce two
+	// streams that a human would read as the same one.
+	for name := range dm.streams {
+		if name != oldName && strings.EqualFold(name, newName) {
+			return fmt.Errorf("stream %q already exists", newName)
+		}
+	}
+
+	stream.Username = newName
+	delete(dm.streams, oldName)
+	dm.streams[newName] = stream
+
+	if err := dm.saveLocked(); err != nil {
+		// Put it back so memory does not disagree with what is on disk.
+		stream.Username = oldName
+		delete(dm.streams, newName)
+		dm.streams[oldName] = stream
+		return fmt.Errorf("failed to save stream: %w", err)
+	}
+
+	logger.Info("Renamed stream", "from", oldName, "to", newName)
+	return nil
+}
+
 func (dm *StreamManager) DeleteStream(username string) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -627,6 +681,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
 	stream.ResultNameTemplate = strings.TrimSpace(streamConfig.ResultNameTemplate)
 	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)
+	stream.AddonName = strings.TrimSpace(streamConfig.AddonName)
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)

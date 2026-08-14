@@ -125,11 +125,12 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	stream, _ := auth.StreamFromContext(r)
 	isAdmin := stream != nil && stream.Username == s.config.GetAdminUsername()
 
-	streamName := ""
+	streamName, addonName := "", ""
 	if stream != nil {
 		streamName = stream.Username
+		addonName = stream.AddonName
 	}
-	data, err := manifest.ToJSONForDevice(isAdmin, streamName)
+	data, err := manifest.ToJSONForDevice(isAdmin, streamName, addonName)
 	if err != nil {
 		http.Error(w, "Failed to generate manifest", http.StatusInternalServerError)
 		return
@@ -172,7 +173,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	// Deliberately prepended even to an empty response: a search filtered down
 	// to nothing is exactly the case the debug row needs to explain.
 	if s.config != nil && s.config.SearchDebugStream {
-		if dbg := s.buildSearchDebugStream(key, baseURL); dbg != nil {
+		if dbg := s.buildSearchDebugStream(key, ServiceName(stream), baseURL); dbg != nil {
 			streams = append([]Stream{*dbg}, streams...)
 		}
 	}
@@ -394,12 +395,18 @@ func buildAIOStreamDescription(contentTitle, releaseTitle, indexerName string, s
 		lines = append(lines, strings.Join(metaParts, " • "))
 	}
 	if len(lines) == 0 {
-		return "StreamNZB"
+		// Degenerate case: nothing at all to say about the release. The default
+		// name is fine here — a stream's override brands the lines above, which
+		// by definition do not exist.
+		return DefaultServiceName
 	}
 	return strings.Join(lines, "\n")
 }
 
-func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamName, baseURL string, showAll bool, format *resultFormat) []Stream {
+func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamName, service, baseURL string, showAll bool, format *resultFormat) []Stream {
+	if service == "" {
+		service = DefaultServiceName
+	}
 	nameLeft := streamName
 	if nameLeft == "" {
 		nameLeft = key.StreamID
@@ -427,7 +434,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			capsLine := capsSummaryLine(cand.Release)
 			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
 			if format != nil {
-				ctx := newFormatContext(cand, i+1, len(list.Candidates), key.StreamID, contentTitle, capsLine, isAvail)
+				ctx := newFormatContext(cand, i+1, len(list.Candidates), service, key.StreamID, contentTitle, capsLine, isAvail)
 				sName = renderResultTemplate(format.name, ctx, sName)
 				desc = renderResultTemplate(format.description, ctx, desc)
 			}
@@ -451,9 +458,9 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			})
 		}
 	} else {
-		branding := "StreamNZB"
+		branding := service
 		if list.FirstIsAvailGood {
-			branding = "StreamNZB [availNZB]"
+			branding = service + " [availNZB]"
 		}
 		var line2 string
 		var firstRel *release.Release
@@ -508,7 +515,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			nextPath := playPath
 			nextURL := baseURL + "/next/" + nextPath
 			nextName := nameLeft + " (next release)"
-			nextDesc := "StreamNZB\nTry next release in list"
+			nextDesc := service + "\nTry next release in list"
 			nextFailoverId := "streamnzb-next-" + nextPath
 			nextHints := streamBehaviorHints(nameLeft, key.StreamID, nil, nil, nameLeft)
 			streams = append(streams, Stream{

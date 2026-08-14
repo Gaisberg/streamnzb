@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -302,4 +303,36 @@ func (m *StateManager) DeleteAttemptsBefore(cutoff time.Time) (int64, error) {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// RenameStreamReferences repoints history rows at a stream's new name.
+//
+// Both the NZB attempt log and the search diagnostics store the stream name as
+// plain text, and the history UI filters on it — leaving the old value behind
+// would make a renamed stream look like it had never played anything, while its
+// past runs sat under a name that no longer exists.
+func (m *StateManager) RenameStreamReferences(oldName, newName string) (int64, error) {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if m == nil || m.db == nil || oldName == "" || newName == "" || oldName == newName {
+		return 0, nil
+	}
+	var updated int64
+	err := m.withWriteLock(func(db *connRef) error {
+		return m.withTx(db, func(tx *txn) error {
+			for _, table := range []string{"nzb_attempts", "search_diagnostics"} {
+				res, err := tx.Exec(`UPDATE `+table+` SET stream_name = ? WHERE stream_name = ?`, newName, oldName)
+				if err != nil {
+					return err
+				}
+				affected, _ := res.RowsAffected()
+				updated += affected
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return 0, err
+	}
+	return updated, nil
 }

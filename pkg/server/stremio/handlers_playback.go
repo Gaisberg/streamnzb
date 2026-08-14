@@ -321,21 +321,30 @@ func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stre
 	if list != nil && !list.IsAIOStreams {
 		format = resultFormatForStream(stream)
 	}
-	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), baseURL, showAll, format), list, nil
+	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), ServiceName(stream), baseURL, showAll, format), list, nil
 }
 
 // streamDisplayName is the label clients render next to each result. The
 // stream config's name rides on a second line under the service name, so
 // multiple installed configs are tellable apart in Stremio.
+// streamDisplayName is the bold label on every result: the stream's service
+// name, with the stream's own name under it. A stream that set an addon name
+// gets that instead of the default, and drops the second line — the override is
+// already the name it wants to be known by, so repeating the stream name under
+// it would undo the point of setting one.
 func streamDisplayName(stream *auth.Stream) string {
+	service := ServiceName(stream)
+	if stream != nil && NormalizeAddonName(stream.AddonName) != "" {
+		return service
+	}
 	name := ""
 	if stream != nil {
 		name = strings.TrimSpace(stream.Username)
 	}
 	if name == "" {
-		return "StreamNZB"
+		return service
 	}
-	return "StreamNZB\n" + name
+	return service + "\n" + name
 }
 
 // bootstrapPlaylistForPlay rebuilds the play list and deferred sessions the same way as /stream.

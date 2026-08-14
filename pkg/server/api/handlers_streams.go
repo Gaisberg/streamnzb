@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/server/stremio"
 )
 
@@ -69,6 +70,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"mute_error_video":            d.MuteErrorVideo,
 		"result_name_template":        d.ResultNameTemplate,
 		"result_description_template": d.ResultDescriptionTemplate,
+		"addon_name":                  d.AddonName,
 	}
 }
 
@@ -153,19 +155,63 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 			"message": fmt.Sprintf("Stream %s deleted successfully", username),
 		})
 	case http.MethodPost:
-		if suffix != "regenerate-token" {
+		switch suffix {
+		case "regenerate-token":
+			token, err := s.streamManager.RegenerateToken(username)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "token": token})
+		case "rename":
+			s.handleStreamRename(w, r, username)
+		default:
 			http.Error(w, "Not found", http.StatusNotFound)
-			return
 		}
-		token, err := s.streamManager.RegenerateToken(username)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "token": token})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleStreamRename renames a stream in place. The token is untouched, so an
+// already-installed addon keeps working; what moves with the name is the
+// stream's own history, which the history UI filters by name.
+func (s *Server) handleStreamRename(w http.ResponseWriter, r *http.Request, username string) {
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	newName := strings.TrimSpace(req.Username)
+	if err := s.streamManager.RenameStream(username, newName, s.adminUsername()); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.mu.RLock()
+	mgr := s.attemptLister
+	s.mu.RUnlock()
+	if mgr != nil {
+		if updated, err := mgr.RenameStreamReferences(username, newName); err != nil {
+			// The stream itself is renamed; stale history is worth a log, not a
+			// failed request the admin cannot act on.
+			logger.Error("Renaming stream history failed", "from", username, "to", newName, "err", err)
+		} else if updated > 0 {
+			logger.Info("Repointed stream history", "from", username, "to", newName, "rows", updated)
+		}
+	}
+
+	if s.strmServer != nil {
+		s.strmServer.ClearSearchCaches()
+	}
+	s.broadcastConfig()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"username": newName,
+		"message":  fmt.Sprintf("Stream renamed to %s", newName),
+	})
 }
 
 func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +240,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		MuteErrorVideo            *bool                                 `json:"mute_error_video"`
 		ResultNameTemplate        string                                `json:"result_name_template"`
 		ResultDescriptionTemplate string                                `json:"result_description_template"`
+		AddonName                 string                                `json:"addon_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&streamConfigs); err != nil {
 		s.writeSaveStatus(w, "error", "Invalid stream config data", nil)
@@ -253,6 +300,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			MuteErrorVideo:            dc.MuteErrorVideo,
 			ResultNameTemplate:        dc.ResultNameTemplate,
 			ResultDescriptionTemplate: dc.ResultDescriptionTemplate,
+			AddonName:                 stremio.NormalizeAddonName(dc.AddonName),
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 			continue

@@ -20,7 +20,7 @@ import (
 // the request context. Library-only extras (Caps) are empty for fresh indexer
 // hits because their real media properties are unknown until playback.
 type FormatContext struct {
-	Service      string     // "StreamNZB"
+	Service      string     // addon name override, or "StreamNZB"
 	Stream       string     // stream config name, e.g. "Standalone"
 	Content      string     // requested title, e.g. "Ted Lasso"
 	ReleaseTitle string     // full release name
@@ -181,9 +181,12 @@ func humanAge(pubDate string) string {
 	}
 }
 
-func newFormatContext(cand triage.Candidate, index, count int, streamID, contentTitle, caps string, avail bool) FormatContext {
+func newFormatContext(cand triage.Candidate, index, count int, service, streamID, contentTitle, caps string, avail bool) FormatContext {
+	if service == "" {
+		service = DefaultServiceName
+	}
 	ctx := FormatContext{
-		Service: "StreamNZB",
+		Service: service,
 		Stream:  streamID,
 		Content: contentTitle,
 		Index:   index,
@@ -464,7 +467,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			Grabs:     fx.grabs,
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
-		ctx := newFormatContext(cand, i+1, len(fixtures), "Standalone", fx.content, fx.caps, fx.avail)
+		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail)
 
 		builtinName := "StreamNZB\nStandalone"
 		if fx.avail {

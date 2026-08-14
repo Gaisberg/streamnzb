@@ -19,7 +19,10 @@ import (
 //
 // The row is built even when the playlist came out empty: a search that was
 // filtered down to nothing is exactly the case the summary needs to explain.
-func (s *Server) buildSearchDebugStream(key StreamSlotKey, baseURL string) *Stream {
+func (s *Server) buildSearchDebugStream(key StreamSlotKey, service, baseURL string) *Stream {
+	if service == "" {
+		service = DefaultServiceName
+	}
 	if s == nil || s.attemptRecorder == nil {
 		return nil
 	}
@@ -38,7 +41,7 @@ func (s *Server) buildSearchDebugStream(key StreamSlotKey, baseURL string) *Stre
 	}
 
 	return &Stream{
-		Name:        "StreamNZB\nDebug",
+		Name:        service + "\nDebug",
 		URL:         baseURL + "/play/" + key.SlotPath(0) + "?src=debug",
 		Description: formatSearchDebugDescription(&snap),
 		BehaviorHints: &BehaviorHints{

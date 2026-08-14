@@ -693,6 +693,9 @@ type StreamEntry struct {
 	// FormatContext). Empty uses the built-in format.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
+	// AddonName replaces the manifest name this stream reports to clients.
+	// Empty keeps the default, which is the service name plus the stream name.
+	AddonName string `json:"addon_name,omitempty"`
 }
 
 // DefaultLibraryScoreBonus is the ranking bonus added to cached library

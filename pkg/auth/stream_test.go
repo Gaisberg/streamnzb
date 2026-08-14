@@ -146,3 +146,73 @@ func TestActiveProviderSelectionsPassesThroughWhenNoneDisabled(t *testing.T) {
 		t.Fatal("a nil stream should have no active providers")
 	}
 }
+
+func newTestStreamManager(t *testing.T, names ...string) *StreamManager {
+	t.Helper()
+	// Saves go to a temp file: Config.Save requires an explicit path so it can
+	// never write a stray config.json into the package directory.
+	cfg := &config.Config{
+		LoadedPath: filepath.Join(t.TempDir(), "config.json"),
+		Streams:    make(map[string]*config.StreamEntry),
+	}
+	dm := &StreamManager{streams: make(map[string]*Stream), cfg: cfg, saveFn: func() error { return nil }}
+	for _, name := range names {
+		dm.streams[name] = &Stream{Username: name, Token: "token-" + name}
+	}
+	return dm
+}
+
+func TestRenameStreamKeepsTokenAndSettings(t *testing.T) {
+	dm := newTestStreamManager(t, "Living Room")
+	dm.streams["Living Room"].ProviderSelections = []string{"Eweka"}
+
+	if err := dm.RenameStream("Living Room", "Lounge", "admin"); err != nil {
+		t.Fatalf("rename failed: %v", err)
+	}
+	if _, exists := dm.streams["Living Room"]; exists {
+		t.Fatal("the old name should be gone")
+	}
+	renamed, exists := dm.streams["Lounge"]
+	if !exists {
+		t.Fatal("the stream should be reachable under its new name")
+	}
+	if renamed.Username != "Lounge" {
+		t.Fatalf("Username = %q, want Lounge", renamed.Username)
+	}
+	if renamed.Token != "token-Living Room" {
+		t.Fatalf("token changed on rename (%q) — installed addon URLs would break", renamed.Token)
+	}
+	if len(renamed.ProviderSelections) != 1 || renamed.ProviderSelections[0] != "Eweka" {
+		t.Fatalf("settings did not survive the rename: %#v", renamed.ProviderSelections)
+	}
+}
+
+func TestRenameStreamRejectsCollisionsAndAdmin(t *testing.T) {
+	dm := newTestStreamManager(t, "Alpha", "Beta")
+
+	if err := dm.RenameStream("Alpha", "beta", "admin"); err == nil {
+		t.Fatal("a case-insensitive collision should be refused")
+	}
+	if _, exists := dm.streams["Alpha"]; !exists {
+		t.Fatal("a refused rename must leave the stream where it was")
+	}
+	if err := dm.RenameStream("Alpha", "Admin", "admin"); err == nil {
+		t.Fatal("renaming onto the admin name should be refused")
+	}
+	if err := dm.RenameStream("Alpha", "  ", "admin"); err == nil {
+		t.Fatal("a blank name should be refused")
+	}
+	if err := dm.RenameStream("Missing", "Gamma", "admin"); err == nil {
+		t.Fatal("renaming an unknown stream should fail")
+	}
+}
+
+func TestRenameStreamToSameNameIsANoop(t *testing.T) {
+	dm := newTestStreamManager(t, "Alpha")
+	if err := dm.RenameStream("Alpha", "Alpha", "admin"); err != nil {
+		t.Fatalf("renaming to the same name should succeed: %v", err)
+	}
+	if _, exists := dm.streams["Alpha"]; !exists {
+		t.Fatal("the stream should still be there")
+	}
+}

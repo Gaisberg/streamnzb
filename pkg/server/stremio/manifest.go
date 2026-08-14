@@ -3,6 +3,8 @@ package stremio
 import (
 	"encoding/json"
 	"strings"
+
+	"streamnzb/pkg/auth"
 )
 
 type ManifestBehaviorHints struct {
@@ -49,7 +51,7 @@ func NewManifest(version string) *Manifest {
 	return &Manifest{
 		ID:          "community.streamnzb",
 		Version:     manifestVersion(version),
-		Name:        "StreamNZB",
+		Name:        DefaultServiceName,
 		Description: "Stream content directly from Usenet",
 		Resources:   []string{"stream"},
 		Types:       []string{"movie", "series", "anime", "other", "documentary", "tv"},
@@ -59,13 +61,49 @@ func NewManifest(version string) *Manifest {
 	}
 }
 
-// ToJSONForDevice renders the manifest for one requesting device. streamName
-// is the stream config the token resolved to; it is appended to the service
-// name so multiple installed configs are tellable apart in client addon lists.
-func (m *Manifest) ToJSONForDevice(isAdmin bool, streamName string) ([]byte, error) {
+// DefaultServiceName is what a stream calls itself when it has no addon name
+// override — in the manifest, and as the branding line on every result.
+const DefaultServiceName = "StreamNZB"
+
+// MaxAddonNameLength bounds a stream's addon name override. Clients render it
+// in a list, so an unbounded string would push everything else off the row.
+const MaxAddonNameLength = 60
+
+// ServiceName is the label a stream presents itself under: its addon name
+// override, or the default. Anything that brands a result should go through
+// here — an override the client sees in its addon list but not on the results
+// underneath it looks like two different addons.
+func ServiceName(stream *auth.Stream) string {
+	if stream != nil {
+		if name := NormalizeAddonName(stream.AddonName); name != "" {
+			return name
+		}
+	}
+	return DefaultServiceName
+}
+
+// NormalizeAddonName trims an override and caps its length. Empty means "use
+// the default name".
+func NormalizeAddonName(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) > MaxAddonNameLength {
+		name = strings.TrimSpace(name[:MaxAddonNameLength])
+	}
+	return name
+}
+
+// ToJSONForDevice renders the manifest for one requesting device.
+//
+// streamName is the stream config the token resolved to; it is appended to the
+// service name so multiple installed configs are tellable apart in client addon
+// lists. addonName overrides that whole label — a stream that sets one is asking
+// for a specific name in the client, not a suffix on ours.
+func (m *Manifest) ToJSONForDevice(isAdmin bool, streamName, addonName string) ([]byte, error) {
 
 	out := *m
-	if name := strings.TrimSpace(streamName); name != "" {
+	if override := NormalizeAddonName(addonName); override != "" {
+		out.Name = override
+	} else if name := strings.TrimSpace(streamName); name != "" {
 		out.Name = out.Name + " · " + name
 	}
 	out.BehaviorHints = &ManifestBehaviorHints{

@@ -45,7 +45,7 @@ func TestBuildSearchDebugStreamExplainsFilteredToNothing(t *testing.T) {
 	})
 
 	key := StreamSlotKey{StreamID: "default", ContentType: "movie", ID: "tt27419466"}
-	dbg := server.buildSearchDebugStream(key, "http://localhost:7000/token")
+	dbg := server.buildSearchDebugStream(key, "Dandelion is 1337", "http://localhost:7000/token")
 	if dbg == nil {
 		t.Fatal("expected a debug stream for content with recorded diagnostics")
 	}
@@ -66,7 +66,7 @@ func TestBuildSearchDebugStreamExplainsFilteredToNothing(t *testing.T) {
 func TestBuildSearchDebugStreamAbsentWithoutDiagnostics(t *testing.T) {
 	server, _ := newBadReleaseTestServer(t)
 	key := StreamSlotKey{StreamID: "default", ContentType: "movie", ID: "tt-never-searched"}
-	if dbg := server.buildSearchDebugStream(key, "http://localhost:7000/t"); dbg != nil {
+	if dbg := server.buildSearchDebugStream(key, "", "http://localhost:7000/t"); dbg != nil {
 		t.Fatalf("expected no debug stream without diagnostics, got %+v", dbg)
 	}
 }
@@ -84,5 +84,35 @@ func TestSummarizeIndexerCallsOneModeSucceeding(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], "833ms/8") {
 		t.Fatalf("expected aggregated timing/results, got %q", lines[0])
+	}
+}
+
+func TestSearchDebugStreamUsesTheStreamsServiceName(t *testing.T) {
+	server, mgr := newBadReleaseTestServer(t)
+	server.config = nil
+
+	payload, err := json.Marshal(diag.Snapshot{ProfileName: "Default Profile", TotalMS: 12})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	mgr.RecordSearchDiagnostic(persistence.SearchDiagnostic{
+		StreamName:  "default",
+		ContentType: "movie",
+		ContentID:   "tt27419466",
+		Payload:     string(payload),
+	})
+	key := StreamSlotKey{StreamID: "default", ContentType: "movie", ID: "tt27419466"}
+
+	dbg := server.buildSearchDebugStream(key, "Dandelion is 1337", "http://localhost:7000/token")
+	if dbg == nil {
+		t.Fatal("expected a debug stream")
+	}
+	if dbg.Name != "Dandelion is 1337\nDebug" {
+		t.Fatalf("debug row name = %q, want the stream's addon name — a row still branded StreamNZB reads as a second addon", dbg.Name)
+	}
+
+	fallback := server.buildSearchDebugStream(key, "", "http://localhost:7000/token")
+	if fallback == nil || fallback.Name != DefaultServiceName+"\nDebug" {
+		t.Fatalf("without an override the debug row should use the default name, got %#v", fallback)
 	}
 }
