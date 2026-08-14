@@ -308,3 +308,56 @@ func TestDropDeletedIndexersClearsDanglingReferences(t *testing.T) {
 		t.Error("override for surviving indexer should remain")
 	}
 }
+
+func TestSanitizeConnectionLimitsKeepsOnlyMeaningfulCaps(t *testing.T) {
+	providers := []config.Provider{
+		{Name: "Eweka", Connections: 50},
+		{Name: "Newshosting", Connections: 20},
+	}
+	selected := []string{"Eweka", "Newshosting"}
+
+	limits := sanitizeConnectionLimits(map[string]int{
+		"Eweka":       8,  // kept
+		"Newshosting": 20, // equals the pool size, so it caps nothing
+		"Unselected":  4,  // not selected by this stream
+	}, selected, providers)
+
+	if len(limits) != 1 {
+		t.Fatalf("expected 1 kept limit, got %#v", limits)
+	}
+	if limits["Eweka"] != 8 {
+		t.Errorf("expected Eweka capped at 8, got %#v", limits)
+	}
+}
+
+func TestSanitizeConnectionLimitsDropsNonPositive(t *testing.T) {
+	providers := []config.Provider{{Name: "Eweka", Connections: 50}}
+	if limits := sanitizeConnectionLimits(map[string]int{"Eweka": 0}, []string{"Eweka"}, providers); limits != nil {
+		t.Errorf("zero means uncapped and should be dropped, got %#v", limits)
+	}
+	if limits := sanitizeConnectionLimits(map[string]int{"Eweka": -3}, []string{"Eweka"}, providers); limits != nil {
+		t.Errorf("negative limits should be dropped, got %#v", limits)
+	}
+}
+
+func TestRenameAndDeleteFollowConnectionLimits(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			ProviderSelections:       []string{"OldName", "Doomed"},
+			ProviderConnectionLimits: map[string]int{"OldName": 8, "Doomed": 4},
+		},
+	}
+
+	applyStreamNameRenames(streams, map[string]string{"oldname": "NewName"}, nil)
+	if streams["default"].ProviderConnectionLimits["NewName"] != 8 {
+		t.Errorf("cap should follow the rename, got %#v", streams["default"].ProviderConnectionLimits)
+	}
+
+	dropDeletedProviders(streams, []config.Provider{{Name: "NewName"}})
+	if _, ok := streams["default"].ProviderConnectionLimits["Doomed"]; ok {
+		t.Errorf("cap for a deleted provider should be removed, got %#v", streams["default"].ProviderConnectionLimits)
+	}
+	if streams["default"].ProviderConnectionLimits["NewName"] != 8 {
+		t.Errorf("surviving cap should remain, got %#v", streams["default"].ProviderConnectionLimits)
+	}
+}

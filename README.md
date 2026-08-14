@@ -137,6 +137,7 @@ StreamNZB separates global configuration from per-stream behavior:
 Each stream configuration defines:
 
 - **Resource Selections** — Which providers, indexers, search queries, and filter profiles are active for the manifest.
+- **Per-provider connection caps** — Optionally limit how many of a provider's connections this stream may hold during playback, so one manifest cannot monopolise the account. It is a ceiling, not a reservation: it stops a stream taking everything, but does not hold connections back for anyone else. The provider speed test tells you the floor — the connection count each resolution needs.
 - **Indexer Mode** — `Combine` (parallel query) or `Failover` (sequential).
 - **Search Query Mode** — `Combine` or `First hit`.
 - **Results Mode & Limit** — Resolution ordering and maximum release count returned to Stremio.

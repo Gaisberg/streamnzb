@@ -92,10 +92,11 @@ func applyStreamNameRenames(streams map[string]*config.StreamEntry, providerRena
 		}
 		if len(providerRenames) > 0 {
 			stream.ProviderSelections = renameSelectionList(stream.ProviderSelections, providerRenames)
+			stream.ProviderConnectionLimits = renameMapKeys(stream.ProviderConnectionLimits, providerRenames)
 		}
 		if len(indexerRenames) > 0 {
 			stream.IndexerSelections = renameSelectionList(stream.IndexerSelections, indexerRenames)
-			stream.IndexerOverrides = renameIndexerOverrides(stream.IndexerOverrides, indexerRenames)
+			stream.IndexerOverrides = renameMapKeys(stream.IndexerOverrides, indexerRenames)
 		}
 	}
 }
@@ -173,12 +174,14 @@ func renameSelectionList(existing []string, renamedByLower map[string]string) []
 	return next
 }
 
-func renameIndexerOverrides(overrides map[string]config.IndexerSearchConfig, renamedByLower map[string]string) map[string]config.IndexerSearchConfig {
-	if len(overrides) == 0 || len(renamedByLower) == 0 {
-		return overrides
+// renameMapKeys re-keys a name-keyed map after a rename, so per-name settings
+// follow the thing they belong to instead of pointing at a name that is gone.
+func renameMapKeys[T any](byName map[string]T, renamedByLower map[string]string) map[string]T {
+	if len(byName) == 0 || len(renamedByLower) == 0 {
+		return byName
 	}
-	next := make(map[string]config.IndexerSearchConfig, len(overrides))
-	for name, override := range overrides {
+	next := make(map[string]T, len(byName))
+	for name, value := range byName {
 		target := strings.TrimSpace(name)
 		if renamed, ok := renamedByLower[strings.ToLower(target)]; ok {
 			target = renamed
@@ -186,7 +189,7 @@ func renameIndexerOverrides(overrides map[string]config.IndexerSearchConfig, ren
 		if target == "" {
 			continue
 		}
-		next[target] = override
+		next[target] = value
 	}
 	return next
 }
@@ -255,6 +258,40 @@ func filterIndexerOverrides(
 	return filtered
 }
 
+// sanitizeConnectionLimits keeps only the caps that mean something: the
+// provider must be selected by this stream, and the cap must be below the
+// provider's own pool size — a cap at or above it is just "uncapped" written
+// the long way, and storing it would make the config lie after someone lowers
+// the provider's connection count.
+func sanitizeConnectionLimits(limits map[string]int, selected []string, providers []config.Provider) map[string]int {
+	if len(limits) == 0 {
+		return nil
+	}
+	poolSize := make(map[string]int, len(providers))
+	for _, provider := range providers {
+		if name := strings.TrimSpace(provider.Name); name != "" {
+			poolSize[name] = provider.Connections
+		}
+	}
+
+	cleaned := make(map[string]int, len(limits))
+	for _, name := range selected {
+		trimmed := strings.TrimSpace(name)
+		limit, ok := limits[trimmed]
+		if !ok || limit <= 0 {
+			continue
+		}
+		if total, known := poolSize[trimmed]; known && limit >= total {
+			continue
+		}
+		cleaned[trimmed] = limit
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
 // enabledNames lists the trimmed names of items that are not explicitly
 // disabled (a nil Enabled pointer means enabled).
 func enabledNames[T any](items []T, enabledOf func(T) *bool, nameOf func(T) string) []string {
@@ -312,7 +349,7 @@ func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles 
 func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []config.Provider) {
 	known := lowerNameSet(providers, func(x config.Provider) string { return x.Name })
 	for _, stream := range streams {
-		if stream == nil || len(stream.ProviderSelections) == 0 {
+		if stream == nil || (len(stream.ProviderSelections) == 0 && len(stream.ProviderConnectionLimits) == 0) {
 			continue
 		}
 		next := make([]string, 0, len(stream.ProviderSelections))
@@ -322,6 +359,11 @@ func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []co
 			}
 		}
 		stream.ProviderSelections = next
+		for name := range stream.ProviderConnectionLimits {
+			if key := strings.ToLower(strings.TrimSpace(name)); key == "" || !known[key] {
+				delete(stream.ProviderConnectionLimits, name)
+			}
+		}
 	}
 }
 

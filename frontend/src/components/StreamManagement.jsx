@@ -48,8 +48,21 @@ function sortedByKey(value) {
   return out
 }
 
+// pickConnectionLimits keeps caps only for providers the stream still selects,
+// so removing a provider does not leave a limit behind that silently reapplies
+// if it is added back later.
+function pickConnectionLimits(limits, selectedProviders) {
+  const kept = {}
+  selectedProviders.forEach((name) => {
+    const limit = Number.parseInt(limits?.[name], 10)
+    if (Number.isFinite(limit) && limit > 0) kept[name] = limit
+  })
+  return kept
+}
+
 function normalizeStreamDraft(draft) {
   const normalizedFilterSortingMode = draft?.filter_sorting_mode === 'aiostreams' ? 'aiostreams' : 'none'
+  const providers = uniquePreserveOrder(draft?.providers)
   return {
     filter_sorting_mode: normalizedFilterSortingMode,
     indexer_mode: draft?.indexer_mode === 'failover' ? 'failover' : 'combine',
@@ -60,7 +73,8 @@ function normalizeStreamDraft(draft) {
     auto_add_providers: draft?.auto_add_providers === true,
     auto_add_indexers: draft?.auto_add_indexers === true,
     filter_availnzb: draft?.filter_availnzb === true,
-    providers: uniquePreserveOrder(draft?.providers),
+    providers,
+    provider_connection_limits: pickConnectionLimits(draft?.provider_connection_limits, providers),
     indexers: uniquePreserveOrder(draft?.indexers),
     indexer_overrides: draft?.indexer_overrides || {},
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
@@ -84,6 +98,7 @@ function buildStreamDraft(stream) {
     auto_add_indexers: stream?.auto_add_indexers,
     filter_availnzb: stream?.filter_availnzb,
     providers: stream?.provider_selections || stream?.providers || [],
+    provider_connection_limits: stream?.provider_connection_limits || {},
     indexers: stream?.indexer_selections || stream?.indexers || Object.keys(stream?.indexer_overrides || {}),
     indexer_overrides: stream?.indexer_overrides || {},
     movie_search_queries: stream?.movie_search_queries || [],
@@ -115,6 +130,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     auto_add_indexers: draft.auto_add_indexers,
     filter_availnzb: draft.filter_availnzb,
     provider_selections: draft.providers || [],
+    provider_connection_limits: draft.provider_connection_limits || {},
     indexer_selections: draft.indexers || [],
     indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
     movie_search_queries: draft.movie_search_queries || [],
@@ -222,7 +238,7 @@ function SummaryRow({ label, values, icon: Icon }) {
   )
 }
 
-function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false }) {
+function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false, renderRowExtra = null }) {
   const [dragIndex, setDragIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
   const selectedValues = useMemo(
@@ -349,6 +365,7 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error, he
                 <GripVertical className="h-4 w-4" />
               </div>
               <div className="min-w-0 flex-1 text-sm font-medium">{value}</div>
+              {renderRowExtra?.(value)}
               {!membershipLocked && (
                 <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
                   Remove
@@ -404,6 +421,7 @@ function StreamDialog({
   initialStream,
   mode = 'edit',
   providerNames,
+  providerConnectionTotals,
   enabledProviderNames,
   indexerNames,
   enabledIndexerNames,
@@ -458,6 +476,22 @@ function StreamDialog({
         ? uniquePreserveOrder([...currentValues, value])
         : currentValues.filter((entry) => entry !== value)
       return { ...current, [field]: nextValues }
+    })
+  }
+
+  // A blank field means "no cap", so the entry is dropped rather than stored as
+  // zero — the backend treats a missing key and a zero the same way, and keeping
+  // the map sparse means a provider's own connection count stays the default.
+  const setConnectionLimit = (providerName, rawValue) => {
+    setDraft((current) => {
+      const limits = { ...(current.provider_connection_limits || {}) }
+      const parsed = Number.parseInt(rawValue, 10)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        delete limits[providerName]
+      } else {
+        limits[providerName] = parsed
+      }
+      return { ...current, provider_connection_limits: limits }
     })
   }
 
@@ -773,8 +807,25 @@ function StreamDialog({
                 onToggle={(value, checked) => toggleListValue('providers', value, checked)}
                 onMove={(fromIndex, toIndex) => moveListValue('providers', fromIndex, toIndex)}
                 error={fieldErrors.providers}
-                helperText="Priority is based on position. Drag to reorder."
+                helperText="Priority is based on position. Drag to reorder. Max connections caps what this stream may hold at once during playback — leave blank for no cap."
                 membershipLocked={draft.auto_add_providers === true}
+                renderRowExtra={(providerName) => {
+                  const total = providerConnectionTotals?.[providerName]
+                  const value = draft.provider_connection_limits?.[providerName]
+                  return (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Input
+                        type="number"
+                        min={1}
+                        max={total || undefined}
+                        placeholder={total ? `max ${total}` : 'max'}
+                        className="h-8 w-24"
+                        value={value ?? ''}
+                        onChange={(event) => setConnectionLimit(providerName, event.target.value)}
+                      />
+                    </div>
+                  )
+                }}
               />
             </div>
           )}
@@ -913,6 +964,14 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       .filter(Boolean),
     [globalConfig]
   )
+  // Each provider's own pool size, so a per-stream cap can be bounded by it.
+  const providerConnectionTotals = useMemo(
+    () => (globalConfig?.providers || []).reduce((acc, provider) => {
+      if (provider?.name) acc[provider.name] = Number(provider.connections) || 0
+      return acc
+    }, {}),
+    [globalConfig]
+  )
   const movieQueryNames = useMemo(() => movieSearchQueries.map((query) => query.name).filter(Boolean), [movieSearchQueries])
   const seriesQueryNames = useMemo(() => seriesSearchQueries.map((query) => query.name).filter(Boolean), [seriesSearchQueries])
   const enabledIndexerNames = useMemo(
@@ -1019,6 +1078,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         auto_add_indexers: draft.auto_add_indexers,
         filter_availnzb: draft.filter_availnzb,
         provider_selections: draft.providers || [],
+    provider_connection_limits: draft.provider_connection_limits || {},
         indexer_selections: draft.indexers || [],
         indexer_overrides: buildIndexerOverrides(draft.indexers, existingStream?.indexer_overrides),
         movie_search_queries: draft.movie_search_queries || [],
@@ -1409,6 +1469,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             initialStream={addDialogDraft}
             mode="add"
             providerNames={providerNames}
+            providerConnectionTotals={providerConnectionTotals}
             enabledProviderNames={enabledProviderNames}
             indexerNames={indexerNames}
             enabledIndexerNames={enabledIndexerNames}
@@ -1428,6 +1489,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             initialStream={editingStream}
             mode="edit"
             providerNames={providerNames}
+            providerConnectionTotals={providerConnectionTotals}
             enabledProviderNames={enabledProviderNames}
             indexerNames={indexerNames}
             enabledIndexerNames={enabledIndexerNames}

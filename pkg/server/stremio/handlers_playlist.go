@@ -394,11 +394,18 @@ func (s *Server) providerHostsForStream(stream *auth.Stream) []string {
 	return nil
 }
 
+// segmentFetcherForStream builds this stream's view of the usenet pool, capped
+// by its per-provider connection limits. The lease key is the stream username,
+// so all of a stream's sessions draw on one connection budget instead of each
+// getting a fresh allowance.
 func (s *Server) segmentFetcherForStream(stream *auth.Stream) loader.SegmentFetcher {
 	if s.sessionManager == nil {
 		return nil
 	}
-	return s.sessionManager.SegmentFetcherForProviders(streamProviderSelections(stream))
+	if stream == nil {
+		return s.sessionManager.SegmentFetcherForProviders(nil)
+	}
+	return s.sessionManager.SegmentFetcherForLease(stream.Username, streamProviderSelections(stream), stream.ProviderConnectionLimits)
 }
 
 func buildAllReleasesFromRaw(raw *rawSearchResult) []*release.Release {

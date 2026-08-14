@@ -74,6 +74,11 @@ type Pool struct {
 	cooloffUntil         map[string]time.Time
 	mu                   sync.RWMutex
 	activeFetches        atomic.Int64
+
+	// leases is shared with every Subset; limiter is the one this view draws
+	// on, nil on the parent and on uncapped subsets.
+	leases  *leaseRegistry
+	limiter *leaseLimiter
 }
 
 const (
@@ -424,6 +429,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 		articleStats:         newArticleStatsRegistry(providers),
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
+		leases:               newLeaseRegistry(),
 	}, nil
 }
 
@@ -1108,6 +1114,11 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 	// only reset via successes, which require being selected), so one
 	// bad-release 430 storm funneled all traffic onto a single provider until
 	// restart.
+	// A provider skipped only because this lease is at its connection cap is
+	// remembered rather than failed: if no other provider can serve, waiting for
+	// one of our own permits is better than reporting no providers available.
+	var cappedOut *ProviderConfig
+
 	for _, wantCooloff := range []bool{false, true} {
 		for i := range providers {
 			prov := &providers[i]
@@ -1124,36 +1135,82 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 				continue
 			}
 
+			releasePermit, permitted := p.tryPermit(prov.ID)
+			if !permitted {
+				if cappedOut == nil {
+					cappedOut = prov
+				}
+				continue
+			}
+
 			c, ok := prov.ClientPool.TryGet(ctx)
 			if !ok {
 				var getErr error
 				c, getErr = prov.ClientPool.Get(ctx)
 				if getErr != nil {
+					releasePermit()
 					if errors.Is(getErr, context.Canceled) {
 						return nil, nil, nil, "", getErr
 					}
 					continue
 				}
 			}
-
-			pool := prov.ClientPool
-			pid := prov.ID
-			var once sync.Once
-			release := func() {
-				once.Do(func() {
-					pool.Put(c)
-				})
-			}
-			discard := func() {
-				once.Do(func() {
-					pool.Discard(c)
-				})
-			}
-			return c, release, discard, pid, nil
+			return p.leaseConnection(c, prov, releasePermit)
 		}
 	}
 
+	if cappedOut != nil {
+		releasePermit, permitted := p.waitPermit(ctx, cappedOut.ID)
+		if !permitted {
+			return nil, nil, nil, "", ctx.Err()
+		}
+		c, err := cappedOut.ClientPool.Get(ctx)
+		if err != nil {
+			releasePermit()
+			return nil, nil, nil, "", err
+		}
+		return p.leaseConnection(c, cappedOut, releasePermit)
+	}
+
 	return nil, nil, nil, "", ErrNoProvidersAvailable
+}
+
+// tryPermit takes a per-lease permit without waiting. Uncapped views always
+// succeed with a no-op release.
+func (p *Pool) tryPermit(providerID string) (func(), bool) {
+	if p.limiter == nil {
+		return func() {}, true
+	}
+	return p.limiter.tryAcquire(providerID)
+}
+
+// waitPermit blocks for a per-lease permit until ctx ends.
+func (p *Pool) waitPermit(ctx context.Context, providerID string) (func(), bool) {
+	if p.limiter == nil {
+		return func() {}, true
+	}
+	return p.limiter.acquire(ctx, providerID)
+}
+
+// leaseConnection wraps a checked-out client so returning it also returns the
+// lease permit, exactly once, whichever way the caller finishes with it.
+func (p *Pool) leaseConnection(c *nntp.Client, prov *ProviderConfig, releasePermit func()) (*nntp.Client, func(), func(), string, error) {
+	clientPool := prov.ClientPool
+	pid := prov.ID
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			clientPool.Put(c)
+			releasePermit()
+		})
+	}
+	discard := func() {
+		once.Do(func() {
+			clientPool.Discard(c)
+			releasePermit()
+		})
+	}
+	return c, release, discard, pid, nil
 }
 
 func (p *Pool) GetConnection(ctx context.Context, exclude []string, maxPriority int, useBackup bool) (client *nntp.Client, release, discard func(), providerID string, err error) {
@@ -1229,6 +1286,19 @@ func (p *Pool) ProviderHosts() []string {
 	return hosts
 }
 
+// SubsetForLease is Subset with a per-lease connection cap. leaseKey identifies
+// whose budget this is (a stream username); limits maps provider ID to the most
+// connections that lease may hold at once. All subsets sharing a leaseKey draw
+// on one budget, so a stream cannot sidestep its cap by holding several views.
+func (p *Pool) SubsetForLease(leaseKey string, providerIDs []string, limits map[string]int) *Pool {
+	subset := p.Subset(providerIDs)
+	if subset == nil {
+		return nil
+	}
+	subset.limiter = p.leases.limiter(leaseKey, limits)
+	return subset
+}
+
 func (p *Pool) Subset(providerIDs []string) *Pool {
 	if p == nil {
 		return nil
@@ -1271,6 +1341,7 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		articleStats:         p.articleStats,
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
+		leases:               p.leases,
 	}
 }
 

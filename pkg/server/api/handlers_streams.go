@@ -59,6 +59,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"auto_add_indexers":           d.AutoAddIndexers,
 		"indexer_overrides":           d.IndexerOverrides,
 		"provider_selections":         d.ProviderSelections,
+		"provider_connection_limits":  d.ProviderConnectionLimits,
 		"indexer_selections":          d.IndexerSelections,
 		"movie_search_queries":        d.MovieSearchQueries,
 		"series_search_queries":       d.SeriesSearchQueries,
@@ -182,6 +183,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		AutoAddIndexers           *bool                                 `json:"auto_add_indexers"`
 		IndexerOverrides          map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 		ProviderSelections        []string                              `json:"provider_selections"`
+		ProviderConnectionLimits  map[string]int                        `json:"provider_connection_limits"`
 		IndexerSelections         []string                              `json:"indexer_selections"`
 		MovieSearchQueries        []string                              `json:"movie_search_queries"`
 		SeriesSearchQueries       []string                              `json:"series_search_queries"`
@@ -205,6 +207,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		}
 		providerSelections := append([]string(nil), dc.ProviderSelections...)
 		indexerSelections := append([]string(nil), dc.IndexerSelections...)
+		connectionLimits := sanitizeConnectionLimits(dc.ProviderConnectionLimits, providerSelections, s.config.Providers)
 		indexerOverrides := cloneIndexerOverrides(dc.IndexerOverrides)
 		if dc.AutoAddProviders != nil && *dc.AutoAddProviders {
 			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(s.config.Providers))
@@ -229,6 +232,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			AutoAddIndexers:           dc.AutoAddIndexers,
 			IndexerOverrides:          indexerOverrides,
 			ProviderSelections:        providerSelections,
+			ProviderConnectionLimits:  connectionLimits,
 			IndexerSelections:         indexerSelections,
 			MovieSearchQueries:        dc.MovieSearchQueries,
 			SeriesSearchQueries:       dc.SeriesSearchQueries,

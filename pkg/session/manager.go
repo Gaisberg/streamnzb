@@ -1900,6 +1900,26 @@ func (m *Manager) SegmentFetcherForProviders(providerIDs []string) loader.Segmen
 	return subset
 }
 
+// SegmentFetcherForLease is SegmentFetcherForProviders with the caller's
+// per-provider connection caps applied. leaseKey identifies whose budget the
+// connections come out of, so every fetcher handed to one stream shares a
+// single cap rather than getting a fresh allowance per session.
+func (m *Manager) SegmentFetcherForLease(leaseKey string, providerIDs []string, limits map[string]int) loader.SegmentFetcher {
+	if leaseKey == "" || len(limits) == 0 {
+		return m.SegmentFetcherForProviders(providerIDs)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.usenetPool == nil {
+		return nil
+	}
+	subset := m.usenetPool.SubsetForLease(leaseKey, providerIDs, limits)
+	if subset == nil {
+		return m.usenetPool
+	}
+	return subset
+}
+
 func (m *Manager) ProviderHostsForProviders(providerIDs []string) []string {
 	fetcher := m.SegmentFetcherForProviders(providerIDs)
 	if fetcher == nil {

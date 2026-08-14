@@ -654,24 +654,30 @@ type Config struct {
 }
 
 type StreamEntry struct {
-	Username            string                         `json:"username"`
-	Token               string                         `json:"token"`
-	Order               int                            `json:"order,omitempty"`
-	FilterSortingMode   string                         `json:"filter_sorting_mode,omitempty"`
-	IndexerMode         string                         `json:"indexer_mode,omitempty"`
-	UseAvailNZB         *bool                          `json:"use_availnzb,omitempty"`
-	FilterAvailNZB      *bool                          `json:"filter_availnzb,omitempty"`
-	CombineResults      *bool                          `json:"combine_results,omitempty"`
-	EnableFailover      *bool                          `json:"enable_failover,omitempty"`
-	ResultsMode         string                         `json:"results_mode,omitempty"`
-	AutoAddProviders    *bool                          `json:"auto_add_providers,omitempty"`
-	AutoAddIndexers     *bool                          `json:"auto_add_indexers,omitempty"`
-	ProviderSelections  []string                       `json:"provider_selections,omitempty"`
-	IndexerSelections   []string                       `json:"indexer_selections,omitempty"`
-	IndexerOverrides    map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
-	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
-	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
-	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
+	Username           string   `json:"username"`
+	Token              string   `json:"token"`
+	Order              int      `json:"order,omitempty"`
+	FilterSortingMode  string   `json:"filter_sorting_mode,omitempty"`
+	IndexerMode        string   `json:"indexer_mode,omitempty"`
+	UseAvailNZB        *bool    `json:"use_availnzb,omitempty"`
+	FilterAvailNZB     *bool    `json:"filter_availnzb,omitempty"`
+	CombineResults     *bool    `json:"combine_results,omitempty"`
+	EnableFailover     *bool    `json:"enable_failover,omitempty"`
+	ResultsMode        string   `json:"results_mode,omitempty"`
+	AutoAddProviders   *bool    `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers    *bool    `json:"auto_add_indexers,omitempty"`
+	ProviderSelections []string `json:"provider_selections,omitempty"`
+	// ProviderConnectionLimits caps how many of a provider's connections this
+	// stream may hold at once during playback, by provider name. A missing or
+	// zero entry means uncapped. It is a ceiling, not a reservation: it stops
+	// one stream monopolizing a provider, but does not hold connections back
+	// for anyone.
+	ProviderConnectionLimits map[string]int                 `json:"provider_connection_limits,omitempty"`
+	IndexerSelections        []string                       `json:"indexer_selections,omitempty"`
+	IndexerOverrides         map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
+	MovieSearchQueries       []string                       `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries      []string                       `json:"series_search_queries,omitempty"`
+	FilterProfileName        string                         `json:"filter_profile_name,omitempty"`
 	// FilterProfileByType selects a profile per content kind — "movie",
 	// "series" or "anime" — falling back to FilterProfileName when a kind has
 	// no entry. Anime is matched first when the request resolved via Kitsu.

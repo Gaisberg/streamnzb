@@ -34,26 +34,30 @@ func parseTrailingNumber(value string) (int, bool) {
 }
 
 type Stream struct {
-	Username            string                                `json:"username"`
-	Token               string                                `json:"token"`
-	Order               int                                   `json:"order,omitempty"`
-	FilterSortingMode   string                                `json:"filter_sorting_mode,omitempty"`
-	IndexerMode         string                                `json:"indexer_mode,omitempty"`
-	UseAvailNZB         *bool                                 `json:"use_availnzb,omitempty"`
-	FilterAvailNZB      *bool                                 `json:"filter_availnzb,omitempty"`
-	CombineResults      *bool                                 `json:"combine_results,omitempty"`
-	EnableFailover      *bool                                 `json:"enable_failover,omitempty"`
-	ResultsMode         string                                `json:"results_mode,omitempty"`
-	AutoAddProviders    *bool                                 `json:"auto_add_providers,omitempty"`
-	AutoAddIndexers     *bool                                 `json:"auto_add_indexers,omitempty"`
-	ProviderSelections  []string                              `json:"provider_selections,omitempty"`
-	IndexerSelections   []string                              `json:"indexer_selections,omitempty"`
-	IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
-	MovieSearchQueries  []string                              `json:"movie_search_queries,omitempty"`
-	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
-	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
-	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
-	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
+	Username           string   `json:"username"`
+	Token              string   `json:"token"`
+	Order              int      `json:"order,omitempty"`
+	FilterSortingMode  string   `json:"filter_sorting_mode,omitempty"`
+	IndexerMode        string   `json:"indexer_mode,omitempty"`
+	UseAvailNZB        *bool    `json:"use_availnzb,omitempty"`
+	FilterAvailNZB     *bool    `json:"filter_availnzb,omitempty"`
+	CombineResults     *bool    `json:"combine_results,omitempty"`
+	EnableFailover     *bool    `json:"enable_failover,omitempty"`
+	ResultsMode        string   `json:"results_mode,omitempty"`
+	AutoAddProviders   *bool    `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers    *bool    `json:"auto_add_indexers,omitempty"`
+	ProviderSelections []string `json:"provider_selections,omitempty"`
+	// ProviderConnectionLimits caps this stream's concurrent connections per
+	// provider during playback. See config.StreamEntry; the two structs are
+	// converted into each other, so their fields must stay in step.
+	ProviderConnectionLimits map[string]int                        `json:"provider_connection_limits,omitempty"`
+	IndexerSelections        []string                              `json:"indexer_selections,omitempty"`
+	IndexerOverrides         map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+	MovieSearchQueries       []string                              `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries      []string                              `json:"series_search_queries,omitempty"`
+	FilterProfileName        string                                `json:"filter_profile_name,omitempty"`
+	FilterProfileByType      map[string]string                     `json:"filter_profile_by_type,omitempty"`
+	MuteErrorVideo           *bool                                 `json:"mute_error_video,omitempty"`
 	// ResultNameTemplate and ResultDescriptionTemplate customize how this
 	// stream's Stremio results render. Empty uses the built-in format.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
@@ -206,6 +210,7 @@ var _ = func() struct{} {
 // never aliases the config it came from.
 func (s *Stream) deepen() {
 	s.ProviderSelections = append([]string(nil), s.ProviderSelections...)
+	s.ProviderConnectionLimits = maps.Clone(s.ProviderConnectionLimits)
 	s.IndexerSelections = append([]string(nil), s.IndexerSelections...)
 	s.MovieSearchQueries = append([]string(nil), s.MovieSearchQueries...)
 	s.SeriesSearchQueries = append([]string(nil), s.SeriesSearchQueries...)
@@ -581,6 +586,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 		stream.IndexerOverrides = streamConfig.IndexerOverrides
 	}
 	stream.ProviderSelections = append([]string(nil), streamConfig.ProviderSelections...)
+	stream.ProviderConnectionLimits = maps.Clone(streamConfig.ProviderConnectionLimits)
 	stream.IndexerSelections = append([]string(nil), streamConfig.IndexerSelections...)
 	stream.MovieSearchQueries = append([]string(nil), streamConfig.MovieSearchQueries...)
 	stream.SeriesSearchQueries = append([]string(nil), streamConfig.SeriesSearchQueries...)
