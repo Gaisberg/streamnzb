@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { apiFetch, getApiUrl, notifyUnauthorized } from '@/api'
+import { apiFetch, getApiUrl, notifySpeedTestProgress, notifyUnauthorized } from '@/api'
 
 const MAX_HISTORY = 20
 const MAX_LOGS = 200
@@ -137,6 +137,9 @@ export function useAdminRuntime({
             break
           case 'nzb_attempts_updated':
             setNzbAttemptsRefreshTrigger((value) => value + 1)
+            break
+          case 'speedtest_progress':
+            notifySpeedTestProgress(msg.payload)
             break
           case 'auth_info': {
             if (!isActiveSocket(socket)) return

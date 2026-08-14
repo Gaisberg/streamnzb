@@ -11,6 +11,17 @@ export function notifyUnauthorized(detail = {}) {
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT, { detail }))
 }
 
+// Speed test steps arrive over the websocket while the POST that started the run
+// is still open. They go out as a window event rather than runtime state so the
+// provider dialog can listen directly instead of threading progress through
+// every settings component in between.
+export const SPEEDTEST_PROGRESS_EVENT = 'streamnzb:speedtest-progress'
+
+export function notifySpeedTestProgress(detail = {}) {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(SPEEDTEST_PROGRESS_EVENT, { detail }))
+}
+
 const MAX_TEXT_ERROR_LENGTH = 300
 
 // readTextError pulls a plain-text error body out of a failed response.

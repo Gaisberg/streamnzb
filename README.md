@@ -104,6 +104,24 @@ ADMIN_FORCE_PASSWORD_RESET=true
 After the password has been changed, remove or disable this env var.
 When it remains enabled, StreamNZB will keep forcing the password-reset prompt on startup.
 
+### Provider speed test
+
+Each provider card in **Settings → Providers** has a speed test (the gauge icon). It measures two things:
+
+- **Test connection** — dials, authenticates, then times a single `DATE` round-trip. The timer starts only once the connection is established, so the number is server responsiveness, not handshake overhead.
+- **Speed test** — downloads real articles at 1, 2, 4, 8 … up to your configured connection count and reports throughput plus time-to-first-byte at each step. The point is the *knee*: the smallest connection count that already reaches peak speed, which you can apply back to the provider with one click. Results also translate into playback terms — the cheapest connection count that sustains 720p, 1080p and 4K (remux-class bitrates, plus 25% headroom for peaks and seeks), and how many concurrent streams the peak covers.
+
+By default it downloads a fixed public test NZB, which keeps results comparable between providers; switching the source to **My library** uses your most recent stored release instead, for articles of realistic age. Providers are tested one at a time — they share one uplink — and the downloaded bytes count against your account's usage like any other download.
+
+Ceilings are deployment-level and env-only. The byte ceiling is shared fairly across the ramp, so a fast connection gets shorter — but still valid — measurement windows rather than four good steps and one starved one. Steps the ceiling ended early show their actual window length next to the speed; anything under 1.5 s is flagged and left out of the peak. On a gigabit line a full ramp wants roughly 2 GiB for full-length steps.
+
+```env
+STREAMNZB_SPEEDTEST_NZB_URL=https://sabnzbd.org/tests/test_download_1GB.nzb
+STREAMNZB_SPEEDTEST_MAX_BYTES=1073741824
+STREAMNZB_SPEEDTEST_MAX_SECONDS=60
+STREAMNZB_SPEEDTEST_STEP_SECONDS=6
+```
+
 
 ## Stream Model
 

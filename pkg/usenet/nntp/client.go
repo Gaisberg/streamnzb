@@ -327,15 +327,26 @@ func (c *Client) HealthyForCheckout(maxIdle time.Duration) bool {
 	if !c.LastUsed.IsZero() && time.Since(c.LastUsed) <= maxIdle {
 		return true
 	}
+	return c.Ping() == nil
+}
+
+// Ping issues DATE and waits for the reply under a short (2s) deadline. It is
+// the cheapest full round-trip on an established connection, so timing it
+// measures server responsiveness alone — no TCP/TLS handshake, greeting or auth
+// folded in.
+func (c *Client) Ping() error {
+	if c == nil || c.conn == nil {
+		return errors.New("nntp: ping on closed client")
+	}
 	c.setShortDeadline()
 	id, err := c.conn.Cmd("DATE")
 	if err != nil {
-		return false
+		return err
 	}
 	c.conn.StartResponse(id)
 	_, _, err = c.conn.ReadCodeLine(111)
 	c.conn.EndResponse(id)
-	return err == nil
+	return err
 }
 
 // readMultiLine consumes a dot-terminated multi-line response via DotReader,

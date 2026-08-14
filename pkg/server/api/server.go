@@ -22,6 +22,7 @@ import (
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/nntp/proxy"
+	"streamnzb/pkg/usenet/speedtest"
 )
 
 type Server struct {
@@ -48,6 +49,7 @@ type Server struct {
 	attemptLister   *persistence.StateManager
 	addonRebind     func(int) error
 	availNZBStore   availnzb.KeyStore
+	speedTester     *speedtest.Tester
 	metricsMu       sync.Mutex
 	lastMetricsAt   time.Time
 	metricsInFlight bool
@@ -91,6 +93,7 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 		tvdbAPIKey:     tvdbAPIKey,
 		clients:        make(map[*Client]bool),
 		logCh:          make(chan string, 100),
+		speedTester:    speedtest.NewTester(),
 	}
 
 	logger.SetBroadcast(s.logCh)
@@ -377,6 +380,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/devices/", authMiddleware(http.HandlerFunc(s.handleManagedStreams)))
 	mux.Handle("/api/streams", authMiddleware(http.HandlerFunc(s.handleManagedStreams)))
 	mux.Handle("/api/streams/", authMiddleware(http.HandlerFunc(s.handleManagedStreams)))
+	mux.Handle("/api/providers/test", authMiddleware(http.HandlerFunc(s.handleProviderTest)))
+	mux.Handle("/api/providers/speedtest", authMiddleware(http.HandlerFunc(s.handleProviderSpeedTest)))
 	mux.Handle("/api/indexer/caps", authMiddleware(http.HandlerFunc(s.handleGetIndexerCaps)))
 	mux.Handle("/api/indexer/caps/refresh", authMiddleware(http.HandlerFunc(s.handleRefreshIndexerCaps)))
 	mux.Handle("/api/stats/persisted", authMiddleware(http.HandlerFunc(s.handlePersistedStats)))

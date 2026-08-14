@@ -8,8 +8,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { ProviderSpeedTestDialog } from "@/components/ProviderSpeedTestDialog"
 import { apiFetch } from "@/api"
-import { Download, ExternalLink, Plus, Settings, Trash2 } from "lucide-react"
+import { Download, ExternalLink, Gauge, Plus, Settings, Trash2 } from "lucide-react"
 
 const PROVIDER_PRESETS = [
   {
@@ -480,6 +481,7 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
 export function ProviderSettings({ fields = [], replace, onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
   const providers = fields
   const [editingIndex, setEditingIndex] = useState(null)
+  const [speedTestIndex, setSpeedTestIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [knownOnlineHosts, setKnownOnlineHosts] = useState({})
   const [deleteTarget, setDeleteTarget] = useState(null)
@@ -547,6 +549,14 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
     replaceProviders(normalizedProviders)
     setDeleteBlockedName('')
     onStatus?.({ type: 'success', message: `Provider "${draft.name || draft.host}" saved successfully.${CACHE_CLEARED_SUFFIX}` })
+  }
+
+  // Applying the suggested connection count goes through the normal save path,
+  // so it validates, persists and reloads exactly like an edit in the dialog.
+  const handleApplyConnections = async (index, connections) => {
+    const current = providers[index]
+    if (!current || !connections) return
+    await handleSave(index, { ...normalizeProviderDraft(current), connections })
   }
 
   const onRequestDelete = async (index) => {
@@ -654,6 +664,18 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
                                   <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => {
                                     setDeleteBlockedName('')
                                     onClearStatus?.()
+                                    setSpeedTestIndex(index)
+                                  }}>
+                                    <Gauge className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Speed test provider</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" onClick={() => {
+                                    setDeleteBlockedName('')
+                                    onClearStatus?.()
                                     setEditingIndex(index)
                                   }}>
                                     <Settings className="h-4 w-4" />
@@ -703,6 +725,13 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
                       description="Edit provider settings."
                       saveLabel="Save"
                       editing
+                    />
+
+                    <ProviderSpeedTestDialog
+                      open={speedTestIndex === index}
+                      onOpenChange={(nextOpen) => setSpeedTestIndex(nextOpen ? index : null)}
+                      provider={normalized}
+                      onApplyConnections={(connections) => handleApplyConnections(index, connections)}
                     />
                   </Card>
                 )

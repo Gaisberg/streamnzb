@@ -38,6 +38,10 @@ const (
 	DatabaseURLEnv                 = "DATABASE_URL"
 	StreamNZBDatabaseDriverEnv     = "STREAMNZB_DATABASE_DRIVER"
 	StreamNZBDatabaseURLEnv        = "STREAMNZB_DATABASE_URL"
+	SpeedTestNZBURLEnv             = "STREAMNZB_SPEEDTEST_NZB_URL"
+	SpeedTestMaxBytesEnv           = "STREAMNZB_SPEEDTEST_MAX_BYTES"
+	SpeedTestMaxSecondsEnv         = "STREAMNZB_SPEEDTEST_MAX_SECONDS"
+	SpeedTestStepSecondsEnv        = "STREAMNZB_SPEEDTEST_STEP_SECONDS"
 )
 
 const (
@@ -147,6 +151,60 @@ func LogPath() string {
 		return v
 	}
 	return os.Getenv(LOGPath)
+}
+
+// Speed test ceilings. Like LogPath these are deliberately env (and flag) only:
+// they bound how much provider quota and wall clock a benchmark may spend, which
+// is a deployment concern rather than a per-user setting, so they stay out of
+// Config and the settings UI.
+const (
+	DefaultSpeedTestNZBURL      = "https://sabnzbd.org/tests/test_download_1GB.nzb"
+	DefaultSpeedTestMaxBytes    = int64(1) << 30 // 1 GiB of provider quota
+	DefaultSpeedTestMaxSeconds  = 60
+	DefaultSpeedTestStepSeconds = 6
+)
+
+// SpeedTestNZBURL is the NZB whose articles the throughput test downloads.
+// A fixed public post keeps results comparable across providers and installs.
+func SpeedTestNZBURL() string {
+	if v := strings.TrimSpace(os.Getenv(SpeedTestNZBURLEnv)); v != "" {
+		return v
+	}
+	return DefaultSpeedTestNZBURL
+}
+
+// SpeedTestMaxBytes caps the wire bytes one benchmark run may download.
+func SpeedTestMaxBytes() int64 {
+	if v := positiveInt(SpeedTestMaxBytesEnv); v > 0 {
+		return int64(v)
+	}
+	return DefaultSpeedTestMaxBytes
+}
+
+// SpeedTestMaxSeconds caps the wall clock of one benchmark run, ramp included.
+func SpeedTestMaxSeconds() int {
+	if v := positiveInt(SpeedTestMaxSecondsEnv); v > 0 {
+		return v
+	}
+	return DefaultSpeedTestMaxSeconds
+}
+
+// SpeedTestStepSeconds is how long each connection-count step of the ramp runs,
+// warm-up included.
+func SpeedTestStepSeconds() int {
+	if v := positiveInt(SpeedTestStepSecondsEnv); v > 0 {
+		return v
+	}
+	return DefaultSpeedTestStepSeconds
+}
+
+// positiveInt reads name as a positive integer, returning 0 when unset or junk.
+func positiveInt(name string) int {
+	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
 }
 
 type Provider struct {
