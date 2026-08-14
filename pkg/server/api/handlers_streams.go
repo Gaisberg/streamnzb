@@ -60,6 +60,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"indexer_overrides":           d.IndexerOverrides,
 		"provider_selections":         d.ProviderSelections,
 		"provider_connection_limits":  d.ProviderConnectionLimits,
+		"disabled_providers":          d.DisabledProviders,
 		"indexer_selections":          d.IndexerSelections,
 		"movie_search_queries":        d.MovieSearchQueries,
 		"series_search_queries":       d.SeriesSearchQueries,
@@ -184,6 +185,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		IndexerOverrides          map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 		ProviderSelections        []string                              `json:"provider_selections"`
 		ProviderConnectionLimits  map[string]int                        `json:"provider_connection_limits"`
+		DisabledProviders         []string                              `json:"disabled_providers"`
 		IndexerSelections         []string                              `json:"indexer_selections"`
 		MovieSearchQueries        []string                              `json:"movie_search_queries"`
 		SeriesSearchQueries       []string                              `json:"series_search_queries"`
@@ -207,7 +209,6 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		}
 		providerSelections := append([]string(nil), dc.ProviderSelections...)
 		indexerSelections := append([]string(nil), dc.IndexerSelections...)
-		connectionLimits := sanitizeConnectionLimits(dc.ProviderConnectionLimits, providerSelections, s.config.Providers)
 		indexerOverrides := cloneIndexerOverrides(dc.IndexerOverrides)
 		if dc.AutoAddProviders != nil && *dc.AutoAddProviders {
 			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(s.config.Providers))
@@ -215,6 +216,16 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		if dc.AutoAddIndexers != nil && *dc.AutoAddIndexers {
 			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
 			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
+		}
+		// Sanitized after the sync so per-provider settings survive a provider
+		// that sync just added back to the list.
+		connectionLimits := sanitizeConnectionLimits(dc.ProviderConnectionLimits, providerSelections, s.config.Providers)
+		disabledProviders := sanitizeDisabledProviders(dc.DisabledProviders, providerSelections)
+		// An empty provider list means "every provider" downstream, so disabling
+		// all of them would silently do the opposite of what was asked.
+		if len(providerSelections) > 0 && len(disabledProviders) == len(providerSelections) {
+			errors = append(errors, fmt.Sprintf("Stream %s must keep at least one provider enabled", username))
+			continue
 		}
 		if err := stremio.ValidateResultTemplates(dc.ResultNameTemplate, dc.ResultDescriptionTemplate); err != nil {
 			errors = append(errors, fmt.Sprintf("Invalid result format for %s: %v", username, err))
@@ -233,6 +244,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			IndexerOverrides:          indexerOverrides,
 			ProviderSelections:        providerSelections,
 			ProviderConnectionLimits:  connectionLimits,
+			DisabledProviders:         disabledProviders,
 			IndexerSelections:         indexerSelections,
 			MovieSearchQueries:        dc.MovieSearchQueries,
 			SeriesSearchQueries:       dc.SeriesSearchQueries,

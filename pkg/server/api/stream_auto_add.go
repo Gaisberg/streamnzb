@@ -92,6 +92,7 @@ func applyStreamNameRenames(streams map[string]*config.StreamEntry, providerRena
 		}
 		if len(providerRenames) > 0 {
 			stream.ProviderSelections = renameSelectionList(stream.ProviderSelections, providerRenames)
+			stream.DisabledProviders = renameSelectionList(stream.DisabledProviders, providerRenames)
 			stream.ProviderConnectionLimits = renameMapKeys(stream.ProviderConnectionLimits, providerRenames)
 		}
 		if len(indexerRenames) > 0 {
@@ -258,6 +259,28 @@ func filterIndexerOverrides(
 	return filtered
 }
 
+// sanitizeDisabledProviders keeps only entries the stream actually selects, so
+// a provider dropped from the list does not come back disabled if it is added
+// again later.
+func sanitizeDisabledProviders(disabled []string, selected []string) []string {
+	if len(disabled) == 0 {
+		return nil
+	}
+	selectedSet := make(map[string]bool, len(selected))
+	for _, name := range selected {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			selectedSet[key] = true
+		}
+	}
+	kept := filterNames(disabled, func(name string) bool {
+		return selectedSet[strings.ToLower(strings.TrimSpace(name))]
+	})
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
 // sanitizeConnectionLimits keeps only the caps that mean something: the
 // provider must be selected by this stream, and the cap must be below the
 // provider's own pool size — a cap at or above it is just "uncapped" written
@@ -344,27 +367,40 @@ func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles 
 	}
 }
 
-// dropDeletedProviders clears references to providers that no longer exist
-// from stream ProviderSelections.
+// dropDeletedProviders clears references to providers that no longer exist from
+// a stream's selections, its disabled list and its connection caps.
 func dropDeletedProviders(streams map[string]*config.StreamEntry, providers []config.Provider) {
 	known := lowerNameSet(providers, func(x config.Provider) string { return x.Name })
+	keep := func(name string) bool {
+		key := strings.ToLower(strings.TrimSpace(name))
+		return key != "" && known[key]
+	}
 	for _, stream := range streams {
-		if stream == nil || (len(stream.ProviderSelections) == 0 && len(stream.ProviderConnectionLimits) == 0) {
+		if stream == nil {
 			continue
 		}
-		next := make([]string, 0, len(stream.ProviderSelections))
-		for _, item := range stream.ProviderSelections {
-			if key := strings.ToLower(strings.TrimSpace(item)); key != "" && known[key] {
-				next = append(next, item)
-			}
-		}
-		stream.ProviderSelections = next
+		stream.ProviderSelections = filterNames(stream.ProviderSelections, keep)
+		stream.DisabledProviders = filterNames(stream.DisabledProviders, keep)
 		for name := range stream.ProviderConnectionLimits {
-			if key := strings.ToLower(strings.TrimSpace(name)); key == "" || !known[key] {
+			if !keep(name) {
 				delete(stream.ProviderConnectionLimits, name)
 			}
 		}
 	}
+}
+
+// filterNames keeps the entries satisfying keep, preserving order.
+func filterNames(names []string, keep func(string) bool) []string {
+	if len(names) == 0 {
+		return names
+	}
+	next := make([]string, 0, len(names))
+	for _, name := range names {
+		if keep(name) {
+			next = append(next, name)
+		}
+	}
+	return next
 }
 
 // dropDeletedIndexers clears references to indexers that no longer exist

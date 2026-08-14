@@ -125,3 +125,24 @@ func TestUpdateStreamConfigClearsProfileBindings(t *testing.T) {
 		t.Errorf("expected bindings to be cleared, got %#v", stream.FilterProfileByType)
 	}
 }
+
+func TestActiveProviderSelectionsDropsDisabled(t *testing.T) {
+	stream := &Stream{
+		ProviderSelections: []string{"Eweka", "Newshosting", "Frugal"},
+		DisabledProviders:  []string{"newshosting"},
+	}
+	active := stream.ActiveProviderSelections()
+	if len(active) != 2 || active[0] != "Eweka" || active[1] != "Frugal" {
+		t.Fatalf("active = %#v, want [Eweka Frugal] in priority order", active)
+	}
+}
+
+func TestActiveProviderSelectionsPassesThroughWhenNoneDisabled(t *testing.T) {
+	stream := &Stream{ProviderSelections: []string{"Eweka"}}
+	if active := stream.ActiveProviderSelections(); len(active) != 1 || active[0] != "Eweka" {
+		t.Fatalf("active = %#v, want [Eweka]", active)
+	}
+	if (*Stream)(nil).ActiveProviderSelections() != nil {
+		t.Fatal("a nil stream should have no active providers")
+	}
+}

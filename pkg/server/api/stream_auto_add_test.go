@@ -361,3 +361,34 @@ func TestRenameAndDeleteFollowConnectionLimits(t *testing.T) {
 		t.Errorf("surviving cap should remain, got %#v", streams["default"].ProviderConnectionLimits)
 	}
 }
+
+func TestSanitizeDisabledProvidersKeepsOnlySelected(t *testing.T) {
+	kept := sanitizeDisabledProviders([]string{"Eweka", "Removed"}, []string{"Eweka", "Newshosting"})
+	if len(kept) != 1 || kept[0] != "Eweka" {
+		t.Fatalf("expected [Eweka], got %#v", kept)
+	}
+	if got := sanitizeDisabledProviders([]string{"Removed"}, []string{"Eweka"}); got != nil {
+		t.Fatalf("expected nil when nothing survives, got %#v", got)
+	}
+}
+
+func TestDisabledProvidersSurviveSyncAndFollowRenames(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {
+			AutoAddProviders:   boolPtr(true),
+			ProviderSelections: []string{"OldName", "Newshosting"},
+			DisabledProviders:  []string{"OldName"},
+		},
+	}
+
+	applyStreamNameRenames(streams, map[string]string{"oldname": "NewName"}, nil)
+	disabled := streams["default"].DisabledProviders
+	if len(disabled) != 1 || disabled[0] != "NewName" {
+		t.Fatalf("disabled entry should follow the rename, got %#v", disabled)
+	}
+
+	dropDeletedProviders(streams, []config.Provider{{Name: "Newshosting"}})
+	if len(streams["default"].DisabledProviders) != 0 {
+		t.Fatalf("disabled entry for a deleted provider should be removed, got %#v", streams["default"].DisabledProviders)
+	}
+}

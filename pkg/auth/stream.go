@@ -50,18 +50,48 @@ type Stream struct {
 	// ProviderConnectionLimits caps this stream's concurrent connections per
 	// provider during playback. See config.StreamEntry; the two structs are
 	// converted into each other, so their fields must stay in step.
-	ProviderConnectionLimits map[string]int                        `json:"provider_connection_limits,omitempty"`
-	IndexerSelections        []string                              `json:"indexer_selections,omitempty"`
-	IndexerOverrides         map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
-	MovieSearchQueries       []string                              `json:"movie_search_queries,omitempty"`
-	SeriesSearchQueries      []string                              `json:"series_search_queries,omitempty"`
-	FilterProfileName        string                                `json:"filter_profile_name,omitempty"`
-	FilterProfileByType      map[string]string                     `json:"filter_profile_by_type,omitempty"`
-	MuteErrorVideo           *bool                                 `json:"mute_error_video,omitempty"`
+	ProviderConnectionLimits map[string]int `json:"provider_connection_limits,omitempty"`
+	// DisabledProviders are selected providers this stream currently does not
+	// use. See config.StreamEntry; the two structs are converted into each
+	// other, so their fields must stay in step.
+	DisabledProviders   []string                              `json:"disabled_providers,omitempty"`
+	IndexerSelections   []string                              `json:"indexer_selections,omitempty"`
+	IndexerOverrides    map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
+	MovieSearchQueries  []string                              `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
+	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
+	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
+	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
 	// ResultNameTemplate and ResultDescriptionTemplate customize how this
 	// stream's Stremio results render. Empty uses the built-in format.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
+}
+
+// ActiveProviderSelections lists the providers this stream actually uses, in
+// priority order: its selections minus the ones disabled at stream level.
+// Callers should prefer this over reading ProviderSelections directly, which is
+// membership (what sync maintains) rather than intent.
+func (s *Stream) ActiveProviderSelections() []string {
+	if s == nil {
+		return nil
+	}
+	if len(s.DisabledProviders) == 0 {
+		return append([]string(nil), s.ProviderSelections...)
+	}
+	disabled := make(map[string]bool, len(s.DisabledProviders))
+	for _, name := range s.DisabledProviders {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			disabled[key] = true
+		}
+	}
+	active := make([]string, 0, len(s.ProviderSelections))
+	for _, name := range s.ProviderSelections {
+		if !disabled[strings.ToLower(strings.TrimSpace(name))] {
+			active = append(active, name)
+		}
+	}
+	return active
 }
 
 func (s *Stream) EffectiveFilterAvailNZB(cfg *config.Config) bool {
@@ -211,6 +241,7 @@ var _ = func() struct{} {
 func (s *Stream) deepen() {
 	s.ProviderSelections = append([]string(nil), s.ProviderSelections...)
 	s.ProviderConnectionLimits = maps.Clone(s.ProviderConnectionLimits)
+	s.DisabledProviders = append([]string(nil), s.DisabledProviders...)
 	s.IndexerSelections = append([]string(nil), s.IndexerSelections...)
 	s.MovieSearchQueries = append([]string(nil), s.MovieSearchQueries...)
 	s.SeriesSearchQueries = append([]string(nil), s.SeriesSearchQueries...)
@@ -587,6 +618,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	}
 	stream.ProviderSelections = append([]string(nil), streamConfig.ProviderSelections...)
 	stream.ProviderConnectionLimits = maps.Clone(streamConfig.ProviderConnectionLimits)
+	stream.DisabledProviders = append([]string(nil), streamConfig.DisabledProviders...)
 	stream.IndexerSelections = append([]string(nil), streamConfig.IndexerSelections...)
 	stream.MovieSearchQueries = append([]string(nil), streamConfig.MovieSearchQueries...)
 	stream.SeriesSearchQueries = append([]string(nil), streamConfig.SeriesSearchQueries...)

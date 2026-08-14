@@ -672,12 +672,17 @@ type StreamEntry struct {
 	// zero entry means uncapped. It is a ceiling, not a reservation: it stops
 	// one stream monopolizing a provider, but does not hold connections back
 	// for anyone.
-	ProviderConnectionLimits map[string]int                 `json:"provider_connection_limits,omitempty"`
-	IndexerSelections        []string                       `json:"indexer_selections,omitempty"`
-	IndexerOverrides         map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
-	MovieSearchQueries       []string                       `json:"movie_search_queries,omitempty"`
-	SeriesSearchQueries      []string                       `json:"series_search_queries,omitempty"`
-	FilterProfileName        string                         `json:"filter_profile_name,omitempty"`
+	ProviderConnectionLimits map[string]int `json:"provider_connection_limits,omitempty"`
+	// DisabledProviders are selected providers this stream currently does not
+	// use. Disabling rather than removing is what makes a stream-level opinion
+	// survive automatic sync: sync owns which providers are in the list, this
+	// owns which of them are active.
+	DisabledProviders   []string                       `json:"disabled_providers,omitempty"`
+	IndexerSelections   []string                       `json:"indexer_selections,omitempty"`
+	IndexerOverrides    map[string]IndexerSearchConfig `json:"indexer_overrides,omitempty"`
+	MovieSearchQueries  []string                       `json:"movie_search_queries,omitempty"`
+	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
+	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
 	// FilterProfileByType selects a profile per content kind — "movie",
 	// "series" or "anime" — falling back to FilterProfileName when a kind has
 	// no entry. Anime is matched first when the request resolved via Kitsu.

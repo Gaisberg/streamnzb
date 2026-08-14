@@ -60,6 +60,14 @@ function pickConnectionLimits(limits, selectedProviders) {
   return kept
 }
 
+// activeProviderNames mirrors Stream.ActiveProviderSelections on the backend:
+// summaries should count what the stream actually uses, not what is merely
+// listed. Keep the two in step.
+function activeProviderNames(stream) {
+  const disabled = new Set(stream?.disabled_providers || [])
+  return (stream?.provider_selections || []).filter((name) => !disabled.has(name))
+}
+
 function normalizeStreamDraft(draft) {
   const normalizedFilterSortingMode = draft?.filter_sorting_mode === 'aiostreams' ? 'aiostreams' : 'none'
   const providers = uniquePreserveOrder(draft?.providers)
@@ -75,6 +83,7 @@ function normalizeStreamDraft(draft) {
     filter_availnzb: draft?.filter_availnzb === true,
     providers,
     provider_connection_limits: pickConnectionLimits(draft?.provider_connection_limits, providers),
+    disabled_providers: uniquePreserveOrder(draft?.disabled_providers).filter((name) => providers.includes(name)),
     indexers: uniquePreserveOrder(draft?.indexers),
     indexer_overrides: draft?.indexer_overrides || {},
     movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
@@ -99,6 +108,7 @@ function buildStreamDraft(stream) {
     filter_availnzb: stream?.filter_availnzb,
     providers: stream?.provider_selections || stream?.providers || [],
     provider_connection_limits: stream?.provider_connection_limits || {},
+    disabled_providers: stream?.disabled_providers || [],
     indexers: stream?.indexer_selections || stream?.indexers || Object.keys(stream?.indexer_overrides || {}),
     indexer_overrides: stream?.indexer_overrides || {},
     movie_search_queries: stream?.movie_search_queries || [],
@@ -131,6 +141,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     filter_availnzb: draft.filter_availnzb,
     provider_selections: draft.providers || [],
     provider_connection_limits: draft.provider_connection_limits || {},
+    disabled_providers: draft.disabled_providers || [],
     indexer_selections: draft.indexers || [],
     indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
     movie_search_queries: draft.movie_search_queries || [],
@@ -238,7 +249,7 @@ function SummaryRow({ label, values, icon: Icon }) {
   )
 }
 
-function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false, renderRowExtra = null }) {
+function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false, renderRowExtra = null, dimmedValues = [] }) {
   const [dragIndex, setDragIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
   const selectedValues = useMemo(
@@ -364,7 +375,7 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error, he
               >
                 <GripVertical className="h-4 w-4" />
               </div>
-              <div className="min-w-0 flex-1 text-sm font-medium">{value}</div>
+              <div className={`min-w-0 flex-1 text-sm font-medium ${dimmedValues.includes(value) ? 'text-muted-foreground line-through' : ''}`}>{value}</div>
               {renderRowExtra?.(value)}
               {!membershipLocked && (
                 <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
@@ -495,6 +506,17 @@ function StreamDialog({
     })
   }
 
+  // Disabling keeps the provider in the list, which is what lets a stream-level
+  // opinion survive automatic sync — sync owns membership, this owns which
+  // members are live.
+  const setProviderEnabled = (providerName, enabled) => {
+    setDraft((current) => {
+      const disabled = (current.disabled_providers || []).filter((name) => name !== providerName)
+      if (!enabled) disabled.push(providerName)
+      return { ...current, disabled_providers: disabled }
+    })
+  }
+
   const moveListValue = (field, fromIndex, toIndex) => {
     setDraft((current) => {
       const nextValues = [...uniquePreserveOrder(current[field])]
@@ -513,6 +535,8 @@ function StreamDialog({
     }
     if (next.providers.length === 0) {
       nextFieldErrors.providers = 'Add at least one provider.'
+    } else if (next.disabled_providers.length === next.providers.length) {
+      nextFieldErrors.providers = 'Keep at least one provider enabled.'
     }
     if (next.indexers.length === 0) {
       nextFieldErrors.indexers = 'Add at least one indexer.'
@@ -807,11 +831,13 @@ function StreamDialog({
                 onToggle={(value, checked) => toggleListValue('providers', value, checked)}
                 onMove={(fromIndex, toIndex) => moveListValue('providers', fromIndex, toIndex)}
                 error={fieldErrors.providers}
-                helperText="Priority is based on position. Drag to reorder. Max connections caps what this stream may hold at once during playback — leave blank for no cap."
+                helperText="Priority is based on position. Drag to reorder. The toggle turns a provider off for this stream without removing it, so the choice survives automatic sync. Max connections caps what this stream may hold at once during playback — leave blank for no cap."
                 membershipLocked={draft.auto_add_providers === true}
+                dimmedValues={draft.disabled_providers || []}
                 renderRowExtra={(providerName) => {
                   const total = providerConnectionTotals?.[providerName]
                   const value = draft.provider_connection_limits?.[providerName]
+                  const enabled = !(draft.disabled_providers || []).includes(providerName)
                   return (
                     <div className="flex shrink-0 items-center gap-2">
                       <Input
@@ -821,8 +847,22 @@ function StreamDialog({
                         placeholder={total ? `max ${total}` : 'max'}
                         className="h-8 w-24"
                         value={value ?? ''}
+                        disabled={!enabled}
                         onChange={(event) => setConnectionLimit(providerName, event.target.value)}
                       />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="inline-flex h-8 items-center">
+                            <Switch
+                              checked={enabled}
+                              onCheckedChange={(checked) => setProviderEnabled(providerName, checked === true)}
+                              className="h-5 w-10 data-[state=checked]:bg-green-500 data-[state=unchecked]:bg-muted-foreground/30"
+                              thumbClassName="h-4 w-4 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0"
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>{enabled ? 'Disable for this stream' : 'Enable for this stream'}</TooltipContent>
+                      </Tooltip>
                     </div>
                   )
                 }}
@@ -1079,6 +1119,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         filter_availnzb: draft.filter_availnzb,
         provider_selections: draft.providers || [],
     provider_connection_limits: draft.provider_connection_limits || {},
+    disabled_providers: draft.disabled_providers || [],
         indexer_selections: draft.indexers || [],
         indexer_overrides: buildIndexerOverrides(draft.indexers, existingStream?.indexer_overrides),
         movie_search_queries: draft.movie_search_queries || [],
@@ -1149,24 +1190,11 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const handleCloneStream = (stream) => {
     if (!stream?.username) return
     const nextName = nextStreamName(streams)
-    const draft = normalizeStreamDraft({
-      filter_sorting_mode: stream.filter_sorting_mode,
-      indexer_mode: stream.indexer_mode,
-      username: nextName,
-      combine_results: stream.combine_results,
-      enable_failover: stream.enable_failover,
-      results_mode: stream.results_mode,
-      auto_add_providers: stream.auto_add_providers,
-      auto_add_indexers: stream.auto_add_indexers,
-      filter_availnzb: stream.filter_availnzb,
-      providers: stream.provider_selections || [],
-      indexers: stream.indexer_selections || Object.keys(stream.indexer_overrides || {}),
-      indexer_overrides: stream.indexer_overrides || {},
-      movie_search_queries: stream.movie_search_queries || [],
-      series_search_queries: stream.series_search_queries || [],
-      filter_profile_name: stream.filter_profile_name || '',
-      filter_profile_by_type: stream.filter_profile_by_type || {},
-    })
+    // Reuse the same builder the editor uses, so a clone keeps every field a
+    // stream has. The hand-written copy this replaces silently dropped the
+    // result templates, and would have dropped connection caps and per-stream
+    // provider toggles too.
+    const draft = { ...buildStreamDraft(stream), username: nextName }
     setAddDialogDraft(draft)
     setShowAddDialog(true)
   }
@@ -1371,7 +1399,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                         {expandedStreams[stream.username] ? (
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
                             <SummaryRow label="General" icon={Settings} values={generalDetailValues(stream)} />
-                            <SummaryRow label="Providers" icon={Globe} values={stream.provider_selections || []} />
+                            <SummaryRow label="Providers" icon={Globe} values={activeProviderNames(stream)} />
                             <SummaryRow label="Indexers" icon={Server} values={stream.indexer_selections || Object.keys(stream.indexer_overrides || {})} />
                             <SummaryRow label="Movie" icon={Search} values={stream.movie_search_queries || []} />
                             <SummaryRow label="TV" icon={Search} values={stream.series_search_queries || []} />
@@ -1397,7 +1425,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                                 <Globe className="h-3.5 w-3.5" />
                                 <span className="hidden sm:inline">Providers</span>
                               </div>
-                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.provider_selections || []).length}</div>
+                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{activeProviderNames(stream).length}</div>
                             </div>
                             <div className="space-y-1 text-center sm:text-left">
                               <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">

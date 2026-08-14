@@ -142,7 +142,7 @@ func logStreamConfiguration(streamLabel, contentType string, stream *auth.Stream
 		"results_mode", streamResultsMode(stream),
 		"failover", streamFailoverEnabled(stream),
 		"availnzb", streamUsesAvailNZB(stream),
-		"providers", append([]string(nil), stream.ProviderSelections...),
+		"providers", stream.ActiveProviderSelections(),
 		"indexers", append([]string(nil), stream.IndexerSelections...),
 		"requests", append([]string(nil), selectedQueries...),
 	)

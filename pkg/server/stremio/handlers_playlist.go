@@ -123,10 +123,7 @@ type rawSearchCacheEntry struct {
 }
 
 func streamProviderSelections(stream *auth.Stream) []string {
-	if stream == nil {
-		return nil
-	}
-	return append([]string(nil), stream.ProviderSelections...)
+	return stream.ActiveProviderSelections()
 }
 
 // filterPlaylistByOrder keeps only candidates whose slot path appears in order (same key, valid index), in that order.
