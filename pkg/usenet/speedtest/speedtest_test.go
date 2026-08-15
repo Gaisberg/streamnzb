@@ -209,6 +209,24 @@ func TestBudgetReachedHonoursStepShareAndCeiling(t *testing.T) {
 	}
 }
 
+func TestStepAllowanceReservesHalfForTheFinalStep(t *testing.T) {
+	// Four ramp steps share half of 4000, so 500 each; the final step is handed
+	// everything left, whatever the ramp did or did not spend.
+	if got := stepAllowance(4000, 0, 5); got != 500 {
+		t.Fatalf("first ramp step allowance = %d, want 500", got)
+	}
+	if got := stepAllowance(2200, 3, 5); got != 1100 {
+		t.Fatalf("last ramp step allowance = %d, want 1100", got)
+	}
+	if got := stepAllowance(2200, 4, 5); got != 2200 {
+		t.Fatalf("final step allowance = %d, want all 2200", got)
+	}
+	// A quick run is a single step and owns the whole ceiling.
+	if got := stepAllowance(4000, 0, 1); got != 4000 {
+		t.Fatalf("single-step allowance = %d, want 4000", got)
+	}
+}
+
 func TestPeakAndKneeAllZero(t *testing.T) {
 	peak, knee, plateau := peakAndKnee([]StepResult{{Connections: 1}, {Connections: 2}})
 	if peak != 0 || knee != 0 || plateau {

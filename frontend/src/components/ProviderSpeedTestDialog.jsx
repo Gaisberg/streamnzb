@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -65,13 +65,46 @@ function formatMs(value) {
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ms`
 }
 
+// useSmoothed eases a value toward its target one animation frame at a time.
+//
+// The dial's fill and its knob have to move as one, and two CSS transitions
+// cannot promise that: a rotate-about-a-point is interpolated as a matrix, so
+// the knob cuts a chord across the dial instead of riding the arc, and it lands
+// out of step with the fill. Smoothing a single number here and deriving the
+// readout, the fill and the knob from it keeps all three locked together.
+function useSmoothed(target) {
+  const [value, setValue] = useState(target)
+  const latest = useRef(target)
+
+  useEffect(() => {
+    let frame = 0
+    const step = () => {
+      const distance = target - latest.current
+      // A fifth of the remaining distance per frame closes on a new reading
+      // well inside the 250ms between samples, without visible stepping.
+      const next = Math.abs(distance) < 0.01 ? target : latest.current + distance * 0.2
+      latest.current = next
+      setValue(next)
+      if (next !== target) frame = requestAnimationFrame(step)
+    }
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [target])
+
+  return value
+}
+
 function Speedometer({ mbps, peakMbps, caption }) {
-  const fraction = gaugeFraction(mbps)
+  const smoothed = useSmoothed(mbps || 0)
+  const fraction = gaugeFraction(smoothed)
   const peakFraction = gaugeFraction(peakMbps)
   const start = polar(GAUGE_RADIUS, 0)
   const end = polar(GAUGE_RADIUS, 1)
   const arcPath = `M ${start.x} ${start.y} A ${GAUGE_RADIUS} ${GAUGE_RADIUS} 0 1 1 ${end.x} ${end.y}`
-  const display = mbps ? (mbps >= 100 ? mbps.toFixed(0) : mbps.toFixed(1)) : '0.0'
+  const knob = polar(GAUGE_RADIUS, fraction)
+  const peakInner = polar(GAUGE_RADIUS - 9, peakFraction)
+  const peakOuter = polar(GAUGE_RADIUS + 9, peakFraction)
+  const display = smoothed ? (smoothed >= 100 ? smoothed.toFixed(0) : smoothed.toFixed(1)) : '0.0'
 
   return (
     <div className="relative mx-auto w-full max-w-[260px]">
@@ -91,7 +124,6 @@ function Speedometer({ mbps, peakMbps, caption }) {
           strokeLinecap="round"
           pathLength={100}
           strokeDasharray={`${fraction * 100} 100`}
-          style={{ transition: 'stroke-dasharray 250ms linear' }}
         />
 
         {GAUGE_TICKS.map((tick) => {
@@ -112,32 +144,25 @@ function Speedometer({ mbps, peakMbps, caption }) {
         })}
 
         {peakMbps > 0 && (
-          <g transform={`rotate(${GAUGE_START_ANGLE + peakFraction * GAUGE_SWEEP} ${GAUGE_CX} ${GAUGE_CY})`}>
-            <line
-              x1={GAUGE_CX + GAUGE_RADIUS - 9}
-              y1={GAUGE_CY}
-              x2={GAUGE_CX + GAUGE_RADIUS + 9}
-              y2={GAUGE_CY}
-              stroke="hsl(var(--foreground))"
-              strokeWidth={2}
-              opacity={0.45}
-            />
-          </g>
+          <line
+            x1={peakInner.x}
+            y1={peakInner.y}
+            x2={peakOuter.x}
+            y2={peakOuter.y}
+            stroke="hsl(var(--foreground))"
+            strokeWidth={2}
+            opacity={0.45}
+          />
         )}
 
-        <g
-          transform={`rotate(${GAUGE_START_ANGLE + fraction * GAUGE_SWEEP} ${GAUGE_CX} ${GAUGE_CY})`}
-          style={{ transition: 'transform 250ms linear' }}
-        >
-          <circle
-            cx={GAUGE_CX + GAUGE_RADIUS}
-            cy={GAUGE_CY}
-            r={7}
-            fill="hsl(var(--background))"
-            stroke="hsl(var(--primary))"
-            strokeWidth={3}
-          />
-        </g>
+        <circle
+          cx={knob.x}
+          cy={knob.y}
+          r={7}
+          fill="hsl(var(--background))"
+          stroke="hsl(var(--primary))"
+          strokeWidth={3}
+        />
       </svg>
 
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
@@ -166,6 +191,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
   const [liveSteps, setLiveSteps] = useState([])
   const [samples, setSamples] = useState([])
   const [liveMbps, setLiveMbps] = useState(0)
+  const [livePeak, setLivePeak] = useState(0)
   const [liveConnections, setLiveConnections] = useState(0)
   const [running, setRunning] = useState(false)
   const [connectionResult, setConnectionResult] = useState(null)
@@ -181,6 +207,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
     setLiveSteps([])
     setSamples([])
     setLiveMbps(0)
+    setLivePeak(0)
     setConnectionResult(null)
     apiFetch('/api/providers/speedtest')
       .then((reports) => setReport(reports?.[providerName] || null))
@@ -198,6 +225,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
       if (detail.sample) {
         const mbps = detail.sample.mbps || 0
         setLiveMbps(mbps)
+        setLivePeak((current) => Math.max(current, mbps))
         setLiveConnections(detail.sample.connections || 0)
         setSamples((current) => [...current, { mbps: Number(mbps.toFixed(2)) }].slice(-MAX_SAMPLES))
         return
@@ -216,6 +244,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
     setLiveSteps([])
     setSamples([])
     setLiveMbps(0)
+    setLivePeak(0)
     setLiveConnections(0)
     setReport(null)
     try {
@@ -272,12 +301,27 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
 
   const peakMbps = report?.peak_mbps || Math.max(0, ...steps.map((step) => step.mbps || 0))
   const gaugeValue = running ? liveMbps : peakMbps
+  // While the run is live the marker is a high-water mark of the needle itself,
+  // so it moves the moment a reading beats the best one seen rather than waiting
+  // for the step to finish. Once the run is over it goes back to the report's
+  // peak — the steady-state figure the suggestion is measured against, and the
+  // one the needle is now parked on — instead of an instantaneous sample spike.
+  const markerMbps = running ? Math.max(livePeak, peakMbps) : peakMbps
   const suggested = report?.suggested_connections || 0
   const plateauFound = Boolean(report?.plateau_found)
-  const configured = report?.configured_connections || provider?.connections || 0
+  // The saved provider wins over the stored report: the report records what the
+  // last run measured, but everything shown here — what the next run will ramp
+  // to, and whether the suggestion differs from what is set — is about the
+  // provider's current connection count.
+  const configured = provider?.connections || report?.configured_connections || 0
   // Only a real plateau is worth acting on. Without one the ramp merely ran out
   // of connections, so the number is a floor, not a recommendation.
   const canApply = plateauFound && suggested > 0 && suggested !== configured
+  // A single-step run has nothing to compare: a quick test measures only the
+  // count it was handed back, so reporting it as "suggested" would dress the
+  // input up as a finding. While a run is in flight the toggle is frozen, so it
+  // already says which kind of run this is, before any step has landed.
+  const canSuggest = running ? !quick : steps.length > 1
   const latency = report?.latency_ms || connectionResult?.latency_ms || 0
   const hasResults = Boolean(report) || steps.length > 0 || running
 
@@ -376,7 +420,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] sm:items-center">
               <Speedometer
                 mbps={gaugeValue}
-                peakMbps={peakMbps}
+                peakMbps={markerMbps}
                 caption={running ? 'Mbps live' : 'Mbps peak'}
               />
 
@@ -406,19 +450,21 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
                   </div>
                 </Panel>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className={`grid gap-3 ${canSuggest ? 'grid-cols-2' : 'grid-cols-1'}`}>
                   <Panel label="Ping" value={formatMs(latency)} hint="DATE round-trip" />
-                  <Panel
-                    label="Suggested"
-                    value={suggested ? (plateauFound ? `${suggested}` : `≥${suggested}`) : '—'}
-                    hint={
-                      !suggested
-                        ? 'connections'
-                        : plateauFound
-                          ? `connections (set: ${configured})`
-                          : 'still climbing at max'
-                    }
-                  />
+                  {canSuggest && (
+                    <Panel
+                      label="Suggested"
+                      value={suggested ? (plateauFound ? `${suggested}` : `≥${suggested}`) : '—'}
+                      hint={
+                        !suggested
+                          ? 'connections'
+                          : plateauFound
+                            ? `connections (set: ${configured})`
+                            : 'still climbing at max'
+                      }
+                    />
+                  )}
                 </div>
 
                 {report && (
@@ -444,7 +490,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
                     <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{tier.label}</span>
                   </div>
                   <div className="mt-1 text-lg font-semibold tabular-nums">
-                    {tier.connections
+                    {canSuggest && tier.connections
                       ? `${tier.connections} conn${tier.connections === 1 ? '' : 's'}`
                       : tier.achieved ? 'OK' : 'Too slow'}
                   </div>

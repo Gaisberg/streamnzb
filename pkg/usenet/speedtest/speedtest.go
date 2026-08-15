@@ -39,6 +39,9 @@ const (
 	kneeFraction = 0.95
 	// maxRampSteps bounds how long a full ramp can take.
 	maxRampSteps = 5
+	// finalStepReserve is the share of the byte ceiling kept for the last step,
+	// which measures the configured connection count.
+	finalStepReserve = 0.5
 	// minTrustedWindowMS is the shortest measurement window still steady enough
 	// to compare steps against each other.
 	minTrustedWindowMS = 1500
@@ -274,16 +277,16 @@ func (t *Tester) Run(ctx context.Context, req Request) (*Report, error) {
 		"steps", steps, "source", corpus.Label)
 
 	for i, connections := range steps {
-		// Fair-share the byte ceiling: each step may spend its slice of what is
-		// left, so a fast early step cannot eat the budget and leave the last
-		// one with a fraction of a window. Unspent budget rolls forward.
+		// Share the byte ceiling out step by step, so a fast early step cannot
+		// eat the budget and leave a later one with a fraction of a window.
+		// Unspent budget rolls forward.
 		spent := state.bytes.Load()
 		remaining := state.maxBytes - spent
 		if remaining <= 0 {
 			logger.Info("Provider speed test stopped at the byte ceiling", "provider", provider.Name, "remaining_steps", len(steps)-i)
 			break
 		}
-		state.stepLimit.Store(spent + remaining/int64(len(steps)-i))
+		state.stepLimit.Store(spent + stepAllowance(remaining, i, len(steps)))
 
 		result := state.runStep(runCtx, pool, connections, stepDuration)
 		report.Steps = append(report.Steps, result)
@@ -393,8 +396,8 @@ func (s *runState) warning(steps []StepResult) string {
 	for _, step := range steps {
 		if step.Truncated && step.WindowMS < minTrustedWindowMS {
 			notes = append(notes, fmt.Sprintf(
-				"the %d MB byte ceiling cut at least one step below a steady window — raise STREAMNZB_SPEEDTEST_MAX_BYTES to measure it properly",
-				s.maxBytes/(1024*1024)))
+				"the %s byte ceiling cut at least one step below a steady window — raise STREAMNZB_SPEEDTEST_MAX_BYTES to measure it properly",
+				humanBytes(s.maxBytes)))
 			break
 		}
 	}
@@ -619,6 +622,22 @@ func (a *stepAccum) fill(result *StepResult) {
 	result.TTFBP95 = percentileMS(a.ttfb, 0.95)
 }
 
+// stepAllowance is how much of the remaining byte ceiling step index may spend.
+//
+// An equal split starves the measurement that matters most: the final step runs
+// the configured connection count — the number the peak, the suggestion and the
+// resolution verdicts are all read off — and it is also the fastest, so it burns
+// its slice soonest. finalStepReserve is held back for it, and the ramp below
+// shares the rest.
+func stepAllowance(remaining int64, index, steps int) int64 {
+	last := steps - 1
+	if index >= last {
+		return remaining
+	}
+	allowance := int64(float64(remaining) * (1 - finalStepReserve))
+	return allowance / int64(last-index)
+}
+
 // rampSteps derives the connection counts to measure. The ladder is what makes
 // the result actionable — one number at full depth cannot say whether the
 // configured connection count is buying anything.
@@ -724,6 +743,16 @@ func percentileMS(samples []time.Duration, p float64) float64 {
 		index = len(sorted) - 1
 	}
 	return float64(sorted[index].Microseconds()) / 1000
+}
+
+// humanBytes renders a ceiling the way it is set: whole GiB once it reaches one,
+// MiB below that.
+func humanBytes(n int64) string {
+	const gib = int64(1) << 30
+	if n >= gib {
+		return fmt.Sprintf("%.4g GiB", float64(n)/float64(gib))
+	}
+	return fmt.Sprintf("%d MiB", n/(1024*1024))
 }
 
 func msSince(start time.Time) float64 {
