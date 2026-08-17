@@ -11,8 +11,9 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { ResultFormatEditor } from "@/components/ResultFormatEditor"
+import { SortableList, SortableRow } from "@/components/SortableList"
 import { apiFetch } from "@/api"
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clipboard, Copy, Globe, GripVertical, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2 } from "lucide-react"
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2 } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
@@ -263,8 +264,6 @@ function SummaryRow({ label, values, icon: Icon }) {
 }
 
 function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false, renderRowExtra = null, dimmedValues = [] }) {
-  const [dragIndex, setDragIndex] = useState(null)
-  const [dragOverIndex, setDragOverIndex] = useState(null)
   const selectedValues = useMemo(
     () => uniquePreserveOrder(selected).filter((value) => values.includes(value)),
     [selected, values]
@@ -273,43 +272,6 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error, he
     () => values.filter((value) => !selectedValues.includes(value)),
     [values, selectedValues]
   )
-
-  const handleDrop = (targetIndex) => {
-    if (dragIndex === null || dragIndex === targetIndex) {
-      setDragIndex(null)
-      setDragOverIndex(null)
-      return
-    }
-    onMove?.(dragIndex, targetIndex)
-    setDragIndex(null)
-    setDragOverIndex(null)
-  }
-
-  const handleDragStart = (event, index) => {
-    const row = event.currentTarget.closest('[data-drag-row="true"]')
-    if (row) {
-      const dragPreview = row.cloneNode(true)
-      dragPreview.style.position = 'fixed'
-      dragPreview.style.top = '-9999px'
-      dragPreview.style.left = '-9999px'
-      dragPreview.style.width = `${row.getBoundingClientRect().width}px`
-      dragPreview.style.pointerEvents = 'none'
-      dragPreview.style.opacity = '0.95'
-      dragPreview.style.transform = 'scale(1)'
-      dragPreview.style.boxShadow = '0 12px 28px rgba(0, 0, 0, 0.18)'
-      dragPreview.style.borderRadius = '10px'
-      dragPreview.style.background = 'var(--background)'
-      document.body.appendChild(dragPreview)
-      event.dataTransfer.setDragImage(dragPreview, 24, 24)
-      window.setTimeout(() => {
-        if (dragPreview.parentNode) {
-          dragPreview.parentNode.removeChild(dragPreview)
-        }
-      }, 0)
-    }
-    event.dataTransfer.effectAllowed = 'move'
-    setDragIndex(index)
-  }
 
   return (
     <div className={`space-y-3 rounded-md border p-3 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'}`}>
@@ -355,48 +317,19 @@ function SelectionSection({ title, values, selected, onToggle, onMove, error, he
             No entries added yet.
           </div>
         ) : (
-          selectedValues.map((value, index) => (
-            <div
-              key={value}
-              data-drag-row="true"
-              className={`flex items-center gap-3 rounded-md border px-3 py-2 transition ${
-                dragIndex === index
-                  ? 'border-primary/40 bg-muted/50 opacity-60'
-                  : 'border-border/60'
-              }`}
-            >
-              <div
-                className={`flex h-9 w-9 shrink-0 cursor-grab items-center justify-center rounded-md border border-dashed transition ${
-                  dragOverIndex === index
-                    ? 'border-destructive/60 bg-destructive/10 text-destructive'
-                    : 'border-border/80 bg-muted/30 text-muted-foreground hover:bg-muted/50'
-                }`}
-                draggable
-                onDragStart={(event) => handleDragStart(event, index)}
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  if (dragOverIndex !== index) setDragOverIndex(index)
-                }}
-                onDragLeave={() => {
-                  if (dragOverIndex === index) setDragOverIndex(null)
-                }}
-                onDrop={() => handleDrop(index)}
-                onDragEnd={() => {
-                  setDragIndex(null)
-                  setDragOverIndex(null)
-                }}
-              >
-                <GripVertical className="h-4 w-4" />
-              </div>
-              <div className={`min-w-0 flex-1 text-sm font-medium ${dimmedValues.includes(value) ? 'text-muted-foreground line-through' : ''}`}>{value}</div>
-              {renderRowExtra?.(value)}
-              {!membershipLocked && (
-                <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
-                  Remove
-                </Button>
-              )}
-            </div>
-          ))
+          <SortableList ids={selectedValues} onMove={(from, to) => onMove?.(from, to)} disabled={!onMove}>
+            {selectedValues.map((value) => (
+              <SortableRow key={value} id={value} disabled={!onMove}>
+                <div className={`min-w-0 flex-1 text-sm font-medium ${dimmedValues.includes(value) ? 'text-muted-foreground line-through' : ''}`}>{value}</div>
+                {renderRowExtra?.(value)}
+                {!membershipLocked && (
+                  <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
+                    Remove
+                  </Button>
+                )}
+              </SortableRow>
+            ))}
+          </SortableList>
         )}
       </div>
       {error && <div className="text-sm text-destructive">{error}</div>}
