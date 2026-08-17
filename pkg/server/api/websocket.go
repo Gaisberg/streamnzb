@@ -14,7 +14,6 @@ import (
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
-	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/usenet/validation"
 
@@ -253,12 +252,12 @@ func (s *Server) reloadConfig(newCfg *config.Config) {
 	tvdbAPIKey := s.tvdbAPIKey
 	s.mu.RUnlock()
 	availClient := availnzb.NewClient(availNZBURL, availNZBAPIKey)
-	tmdbClient := tmdb.NewClient(tmdbAPIKey)
+	tmdbClient := s.cachedTMDBClient(tmdbAPIKey)
 	dataDir := filepath.Dir(base.Config.LoadedPath)
 	if dataDir == "" {
 		dataDir, _ = os.Getwd()
 	}
-	tvdbClient := tvdb.NewClient(tvdbAPIKey, dataDir)
+	tvdbClient := tvdb.NewClientWithCache(tvdbAPIKey, dataDir, s.metadataCache("tvdb"))
 	comp := &app.Components{
 		Config:               base.Config,
 		Indexer:              base.Indexer,

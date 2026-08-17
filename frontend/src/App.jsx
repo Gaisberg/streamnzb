@@ -9,6 +9,7 @@ import { DashboardPage } from "@/components/DashboardPage"
 import { StatisticsPage } from "@/components/StatisticsPage"
 import { LogsPage } from "@/components/LogsPage"
 import { FiltersPage } from "@/components/FiltersPage"
+import { MetadataPage } from "@/components/MetadataPage"
 import { NZBHistoryPage } from "@/components/NZBHistoryPage"
 import { LibraryPage } from "@/components/LibraryPage"
 import { ProfilePage } from "@/components/ProfilePage"
@@ -365,6 +366,16 @@ function App() {
               <FiltersPage
                 config={config}
                 onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
+                isSaving={isSaving}
+                saveStatus={saveStatus}
+              />
+            </div>
+          )}
+          {activePage === 'metadata' && (
+            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+              <MetadataPage
+                config={config}
+                onPersist={(patch) => sendCommand('save_config', patch)}
                 isSaving={isSaving}
                 saveStatus={saveStatus}
               />

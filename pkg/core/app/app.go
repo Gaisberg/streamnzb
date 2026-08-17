@@ -10,10 +10,12 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/metacache"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/usenet/nntp"
@@ -139,8 +141,8 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 		}
 	}(availClient)
 	dataDir := resolveDataDir(opts.DataDir, cfg.LoadedPath)
-	tmdbClient := tmdb.NewClient(a.effectiveTMDBKey())
-	tvdbClient := tvdb.NewClient(a.effectiveTVDBKey(), dataDir)
+	tmdbClient := tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
+	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
 
 	return &Components{
 		Config:               base.Config,
@@ -202,14 +204,28 @@ func ConfigChanged(old, new_ *config.Config) ReloadScope {
 	}
 }
 
+// metadataResponseCache builds the persistent L2-backed response cache for one
+// metadata source. The persistence manager is a process singleton already
+// opened by BuildComponents; if it is somehow unavailable the cache degrades to
+// in-memory-only via a nil store.
+func metadataResponseCache(dataDir, source string) *metacache.Cache {
+	sm, err := persistence.GetManager(dataDir)
+	if err != nil {
+		return metacache.New(nil, source)
+	}
+	return metacache.New(sm.MetadataCacheStore(), source)
+}
+
 // refreshLightComponents applies the cheap per-reload swaps shared by every
 // non-full reload path: config pointer, triage state, and metadata clients.
+// Rebuilt clients only lose their in-memory L1 — the persistent response cache
+// carries across reloads (and restarts).
 func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
 	comp.Config = newCfg
 	comp.Triage = triage.NewService()
-	comp.TMDBClient = tmdb.NewClient(a.effectiveTMDBKey())
 	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
-	comp.TVDBClient = tvdb.NewClient(a.effectiveTVDBKey(), dataDir)
+	comp.TMDBClient = tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
+	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
 }
 
 func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {

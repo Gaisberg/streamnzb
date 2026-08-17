@@ -3,12 +3,13 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg)](https://buymeacoffee.com/gaisberg)
 [![Discord](https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&logoColor=white)](https://snzb.stream/discord)
 
-StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integration with [AIOStreams](https://github.com/Viren070/AIOStreams)). It searches your configured indexers, filters and ranks releases using the [jhin](https://github.com/dreulavelle/jhin) parsing and ranking engine, checks availability via [AvailNZB](https://check.snzb.stream), and streams releases on-the-fly from your Usenet providers. One binary provides the addon UI, stream management, NNTP proxy, and playback pipeline behind a single IP. No extra containers, just your Usenet provider(s) and indexer(s).
+StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integration with [AIOStreams](https://github.com/Viren070/AIOStreams)). It searches your configured indexers, filters and ranks releases using the [jhin](https://github.com/dreulavelle/jhin) parsing and ranking engine, checks availability via [AvailNZB](https://check.snzb.stream), and streams releases on-the-fly from your Usenet providers. It is also a **complete metadata provider**: browsable catalogs, search, posters, episode lists, air dates and personalized rows all come from the addon itself — install StreamNZB and nothing else, no Cinemeta, no separate catalog addons, no companion apps. One binary provides the addon UI, stream management, NNTP proxy, and playback pipeline behind a single IP. No extra containers, just your Usenet provider(s) and indexer(s).
 
 
 ## What it does
 
 - **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
+- **The only addon you need** — StreamNZB serves catalogs and full metadata alongside streams: trending/popular/top-rated rows, search, series pages with episode lists and exact air dates, plus per-stream **Continue Watching** and **Because You Watched** rows built from your own playback history. Works out of the box in any Stremio-compatible client, including ones without Cinemeta.
 - **Stream-based addon** — Define global providers, indexers, search queries, and filter profiles once, then create one or more streams that decide which resources belong to each stream manifest.
 - **NNTP proxy** — Standard NNTP (default port 119) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database. Bad releases are skipped; success/failure is reported on play so the shared DB stays current.
@@ -55,10 +56,11 @@ Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/rele
 4. Go to **Indexers** and add at least one Newznab-compatible indexer (URL + API key).
 5. Go to **Filters** to configure release filtering profiles and ranking rules.
 6. Go to **Search** and configure your movie and/or TV search queries.
-7. Go to **Streams** and click **Add Stream** to create a stream manifest.
+7. Optionally go to **Metadata** to curate the catalogs your clients see (trending rows are on by default) — see [Metadata & Catalogs](#metadata--catalogs).
+8. Go to **Streams** and click **Add Stream** to create a stream manifest.
    - Select which providers, indexers, search queries, and filter profiles belong to this stream.
    - Configure stream options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
-8. Click **Install** on your stream to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
+9. Click **Install** on your stream to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
 
 ### Database: SQLite (default) or Postgres
 
@@ -145,11 +147,27 @@ dots; leaving it unset sends StreamNZB's own accepted-container list, so the
 server-side and client-side filters cannot drift apart.
 
 
+## Metadata & Catalogs
+
+StreamNZB is a full metadata provider, on by default — your client needs no other addon or application for browsing, search, or title pages.
+
+- **Catalogs** — A fresh install serves one trending row per media type (movies, series, anime), each carrying search. The **Metadata** page offers an 18-catalog registry across TMDB, TVDB, Kitsu and local rows (popular, top rated, now playing, upcoming, Popular/New on TVDB, and more): add them from the search dialog, drag to reorder, remove with one click. Changes save automatically.
+- **Personal rows** — **Continue Watching** and **Because You Watched** are built from each stream's *own* playback history, so every household member with their own stream gets personal rows from the same server.
+- **No duplicate rows** — A title appears only in the highest-ordered catalog that carries it; your row order doubles as the dedup priority.
+- **Sources** — Series metadata comes from TVDB, movies from TMDB, anime from Kitsu (configurable per media type), with TVMaze as the air-date authority. Episodes that have not aired yet answer instantly with no results instead of burning an indexer search, and the empty answer expires exactly at air time.
+- **Opting out** — Prefer Cinemeta or another metadata addon? Turn the master switch off on the Metadata page and StreamNZB serves streams only, exactly as before.
+
+Built-in fallback TMDB/TVDB keys make this work with zero setup; adding your own keys on the Metadata page raises the ceiling and is recommended for anything beyond personal use.
+
+> This product uses the TMDB API but is not endorsed or certified by TMDB. Series metadata is provided by [TheTVDB](https://thetvdb.com) — consider subscribing to support them.
+
+
 ## Stream Model
 
 StreamNZB separates global configuration from per-stream behavior:
 
-- **General** — Base URL, port, NNTP proxy, User-Agent headers, database backend, and metadata API keys.
+- **General** — Base URL, port, NNTP proxy, User-Agent headers, and database backend.
+- **Metadata** — Catalogs and their order, per-media-type metadata sources, TVMaze air dates, and TMDB/TVDB API keys.
 - **Indexers** — Global registry of Newznab and EasyNews search sources.
 - **Providers** — Global registry of Usenet provider server connections.
 - **Filters** — Release filtering rules and `jhin` ranking profiles.

@@ -62,6 +62,11 @@ type Snapshot struct {
 	ProfileKept  int               `json:"profile_kept,omitempty"`
 	Rejected     []RejectedRelease `json:"rejected,omitempty"`
 
+	// UnairedAirsAt (RFC 3339) is set when the search was short-circuited
+	// because the episode has not aired yet — the reason there are no
+	// indexer calls to report.
+	UnairedAirsAt string `json:"unaired_airs_at,omitempty"`
+
 	TotalMS int64 `json:"total_ms"`
 }
 
@@ -117,6 +122,15 @@ func (c *Collector) SetDedup(input, output int) {
 	}
 	c.mu.Lock()
 	c.snap.DedupInput, c.snap.DedupOutput = input, output
+	c.mu.Unlock()
+}
+
+func (c *Collector) SetUnaired(airsAt string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.snap.UnairedAirsAt = airsAt
 	c.mu.Unlock()
 }
 

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/services/metadata/metacache"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,12 +66,26 @@ type Client struct {
 
 	resolveCache sync.Map // remoteID -> string (TVDB id)
 	seriesCache  sync.Map // seriesID -> *SeriesDetails
+
+	// cache backs the meta-source endpoints (extended details, episodes) with
+	// the shared persistent response cache. The auth token lives in a header,
+	// never in the key.
+	cache *metacache.Cache
 }
 
 func NewClient(apiKey, dataDir string) *Client {
+	return NewClientWithCache(apiKey, dataDir, nil)
+}
+
+// NewClientWithCache builds a client backed by the shared persistent response
+// cache. A nil cache degrades to in-memory-only caching.
+func NewClientWithCache(apiKey, dataDir string, cache *metacache.Cache) *Client {
 	baseURL := "https://api4.thetvdb.com/v4"
 	if envURL := os.Getenv("STREAMNZB_TVDB_BASE_URL"); envURL != "" {
 		baseURL = envURL
+	}
+	if cache == nil {
+		cache = metacache.New(nil, "tvdb")
 	}
 	transport := &http.Transport{
 		MaxIdleConns:        100,
@@ -83,6 +100,7 @@ func NewClient(apiKey, dataDir string) *Client {
 			Transport: transport,
 		},
 		BaseURL: baseURL,
+		cache:   cache,
 	}
 }
 
@@ -296,6 +314,209 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no TVDB ID found for remote ID: %s", remoteID)
+}
+
+// episodesCacheTTL bounds the episode-list cache: air dates and late episode
+// additions of running shows change, unlike the rest of TVDB's metadata.
+const episodesCacheTTL = 6 * time.Hour
+
+// getBodyCached GETs path through the shared response cache. Only 200 bodies
+// are cached; the auth token lives in a header and never reaches the key.
+func (c *Client) getBodyCached(path string, ttl time.Duration) ([]byte, error) {
+	if body, ok := c.cache.Get(path); ok {
+		return body, nil
+	}
+	resp, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TVDB %s returned status: %d", path, resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.cache.Put(path, body, ttl)
+	return body, nil
+}
+
+// SeriesExtended carries the display fields of /series/{id}/extended — the
+// meta-source record, unlike the resolution-only SeriesDetails.
+type SeriesExtended struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Overview   string `json:"overview"`
+	Image      string `json:"image"` // poster; TVDB returns absolute URLs
+	FirstAired string `json:"firstAired"`
+	Year       string `json:"year"`
+	Status     struct {
+		Name string `json:"name"`
+	} `json:"status"`
+	AverageRuntime int `json:"averageRuntime"`
+	Genres         []struct {
+		Name string `json:"name"`
+	} `json:"genres"`
+	Artworks []struct {
+		Image string `json:"image"`
+		Type  int    `json:"type"`
+	} `json:"artworks"`
+	RemoteIDs []struct {
+		ID         string `json:"id"`
+		SourceName string `json:"sourceName"`
+	} `json:"remoteIds"`
+}
+
+// IMDbID returns the IMDb remote id ("tt..."), or "".
+func (s *SeriesExtended) IMDbID() string {
+	for _, remote := range s.RemoteIDs {
+		if strings.EqualFold(remote.SourceName, "IMDB") && strings.HasPrefix(remote.ID, "tt") {
+			return remote.ID
+		}
+	}
+	return ""
+}
+
+// artworkTypeSeriesBackground is TVDB's artwork type id for series fanart.
+const artworkTypeSeriesBackground = 3
+
+// Background returns the first background artwork, or "".
+func (s *SeriesExtended) Background() string {
+	for _, art := range s.Artworks {
+		if art.Type == artworkTypeSeriesBackground && art.Image != "" {
+			return art.Image
+		}
+	}
+	return ""
+}
+
+type seriesExtendedResponse struct {
+	Status string         `json:"status"`
+	Data   SeriesExtended `json:"data"`
+}
+
+// GetSeriesExtended fetches the extended series record (artwork, overview,
+// genres, status).
+func (c *Client) GetSeriesExtended(seriesID string) (*SeriesExtended, error) {
+	if c == nil {
+		return nil, fmt.Errorf("TVDB client not configured")
+	}
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	body, err := c.getBodyCached("/series/"+seriesID+"/extended", metadataCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	var out seriesExtendedResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("failed to decode TVDB response: %w", err)
+	}
+	if out.Status != successVal {
+		return nil, fmt.Errorf("TVDB series extended failed: status=%s", out.Status)
+	}
+	return &out.Data, nil
+}
+
+// Episode is one episode from /series/{id}/episodes/default, in TVDB's
+// default (aired) season order.
+type Episode struct {
+	SeasonNumber int    `json:"seasonNumber"`
+	Number       int    `json:"number"`
+	Name         string `json:"name"`
+	Aired        string `json:"aired"`
+	Overview     string `json:"overview"`
+	Image        string `json:"image"`
+}
+
+type seriesEpisodesResponse struct {
+	Status string `json:"status"`
+	Data   struct {
+		Episodes []Episode `json:"episodes"`
+	} `json:"data"`
+	Links struct {
+		Next *string `json:"next"`
+	} `json:"links"`
+}
+
+// episodesMaxPages caps pagination; TVDB pages hold 500 episodes, so the cap
+// only truncates extreme long-runners.
+const episodesMaxPages = 6
+
+// GetSeriesEpisodes fetches the full default-order episode list.
+func (c *Client) GetSeriesEpisodes(seriesID string) ([]Episode, error) {
+	if c == nil {
+		return nil, fmt.Errorf("TVDB client not configured")
+	}
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	var episodes []Episode
+	for page := 0; page < episodesMaxPages; page++ {
+		body, err := c.getBodyCached(fmt.Sprintf("/series/%s/episodes/default?page=%d", seriesID, page), episodesCacheTTL)
+		if err != nil {
+			// A missing later page must not throw away what is already fetched.
+			if page > 0 {
+				break
+			}
+			return nil, err
+		}
+		var out seriesEpisodesResponse
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, fmt.Errorf("failed to decode TVDB episodes response: %w", err)
+		}
+		if out.Status != successVal {
+			return nil, fmt.Errorf("TVDB series episodes failed: status=%s", out.Status)
+		}
+		episodes = append(episodes, out.Data.Episodes...)
+		if out.Links.Next == nil || *out.Links.Next == "" {
+			break
+		}
+	}
+	return episodes, nil
+}
+
+// SeriesListing is one row of a /series/filter listing.
+type SeriesListing struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Year     string `json:"year"`
+	Overview string `json:"overview"`
+}
+
+type seriesFilterResponse struct {
+	Status string          `json:"status"`
+	Data   []SeriesListing `json:"data"`
+}
+
+// listingCacheTTL bounds filter listings, whose ordering drifts.
+const listingCacheTTL = 3 * time.Hour
+
+// FilterSeries fetches one page of TVDB's series filter listing. sort is
+// "score" (TVDB's popularity ranking) or "firstAired". The endpoint requires
+// a country and language; english-language titles are the pragmatic default.
+func (c *Client) FilterSeries(sort string, page int) ([]SeriesListing, error) {
+	if c == nil {
+		return nil, fmt.Errorf("TVDB client not configured")
+	}
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	path := fmt.Sprintf("/series/filter?country=usa&lang=eng&sort=%s&sortType=desc&page=%d", sort, page)
+	body, err := c.getBodyCached(path, listingCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	var out seriesFilterResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("failed to decode TVDB filter response: %w", err)
+	}
+	if out.Status != successVal {
+		return nil, fmt.Errorf("TVDB series filter failed: status=%s", out.Status)
+	}
+	return out.Data, nil
 }
 
 type SeriesDetails struct {

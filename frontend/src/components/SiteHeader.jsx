@@ -10,6 +10,7 @@ const pageTitles = {
   "settings-indexers": "Indexers",
   "settings-providers": "Providers",
   filters: "Filters",
+  metadata: "Metadata",
   "settings-search": "Search Settings",
   install: "Streams",
   streams: "Streams",

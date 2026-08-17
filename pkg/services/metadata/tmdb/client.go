@@ -11,34 +11,41 @@ import (
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/services/metadata/metacache"
 	"strings"
-	"sync"
 	"time"
 )
 
-// responseCacheTTL bounds the in-memory response cache. TMDB metadata is
-// effectively immutable for our purposes; the TTL only caps growth of
-// rarely-repeated keys.
+// responseCacheTTL is the default response TTL. TMDB metadata is effectively
+// immutable for our purposes; the TTL only caps growth of rarely-repeated keys.
 const responseCacheTTL = 24 * time.Hour
 
-type cachedResponse struct {
-	status  int
-	body    []byte
-	expires time.Time
-}
+// volatileCacheTTL covers endpoints whose results are expected to change
+// between visits (trending, popular, search listings).
+const volatileCacheTTL = 3 * time.Hour
 
 type Client struct {
 	apiKey  string
 	client  *http.Client
 	BaseURL string
 
-	responseCache sync.Map // full request URL -> cachedResponse
+	cache *metacache.Cache // request path -> body; L1 + persistent L2
 }
 
 func NewClient(apiKey string) *Client {
+	return NewClientWithCache(apiKey, nil)
+}
+
+// NewClientWithCache builds a client backed by the shared persistent response
+// cache. A nil cache degrades to in-memory-only caching, which is what the
+// plain NewClient and tests get.
+func NewClientWithCache(apiKey string, cache *metacache.Cache) *Client {
 	baseURL := "https://api.themoviedb.org/3"
 	if envURL := os.Getenv("STREAMNZB_TMDB_BASE_URL"); envURL != "" {
 		baseURL = envURL
+	}
+	if cache == nil {
+		cache = metacache.New(nil, "tmdb")
 	}
 	transport := &http.Transport{
 		MaxIdleConns:        100,
@@ -52,6 +59,7 @@ func NewClient(apiKey string) *Client {
 			Transport: transport,
 		},
 		BaseURL: baseURL,
+		cache:   cache,
 	}
 }
 
@@ -189,22 +197,21 @@ func (c *Client) fetch(reqURL string) (*http.Response, error) {
 	return c.client.Do(req)
 }
 
-// doRequest performs a GET against the TMDB API with a 24h response cache.
+// doRequest performs a GET against the TMDB API with a response cache.
 // Caching sits here so every endpoint method benefits without per-method
-// bookkeeping; only 200 responses are cached.
+// bookkeeping; only 200 responses are cached. Cache keys are the request path
+// relative to BaseURL so persisted entries are independent of base-URL
+// overrides (tests, STREAMNZB_TMDB_BASE_URL).
 func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, error) {
 	reqURL := fmt.Sprintf("%s?%s", endpoint, params.Encode())
+	cacheKey := strings.TrimPrefix(reqURL, c.BaseURL)
 
-	if v, ok := c.responseCache.Load(reqURL); ok {
-		cached := v.(cachedResponse)
-		if time.Now().Before(cached.expires) {
-			return &http.Response{
-				StatusCode: cached.status,
-				Body:       io.NopCloser(bytes.NewReader(cached.body)),
-				Header:     make(http.Header),
-			}, nil
-		}
-		c.responseCache.Delete(reqURL)
+	if body, ok := c.cache.Get(cacheKey); ok {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
 	}
 
 	resp, err := c.fetch(reqURL)
@@ -219,13 +226,24 @@ func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	c.responseCache.Store(reqURL, cachedResponse{
-		status:  resp.StatusCode,
-		body:    body,
-		expires: time.Now().Add(responseCacheTTL),
-	})
+	c.cache.Put(cacheKey, body, ttlForEndpoint(cacheKey))
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, nil
+}
+
+// ttlForEndpoint picks the cache TTL by endpoint class: listing endpoints whose
+// contents drift (trending, popular, search, ...) get a short TTL, everything
+// else the long default.
+func ttlForEndpoint(cacheKey string) time.Duration {
+	if strings.HasPrefix(cacheKey, "/trending/") || strings.HasPrefix(cacheKey, "/search/") {
+		return volatileCacheTTL
+	}
+	for _, listing := range []string{"/popular", "/top_rated", "/now_playing", "/upcoming", "/on_the_air"} {
+		if strings.Contains(cacheKey, listing) {
+			return volatileCacheTTL
+		}
+	}
+	return responseCacheTTL
 }
 
 // getJSON performs a cached GET against endpoint and decodes the JSON body
@@ -263,6 +281,51 @@ func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
 	return getJSON[SearchMultiResponse](c, c.BaseURL+"/search/multi", params, "search")
 }
 
+// ListingResponse is the shared shape of TMDB's paged listing endpoints
+// (trending, popular, per-type search); results reuse the search result shape.
+type ListingResponse struct {
+	Page       int                 `json:"page"`
+	Results    []SearchMultiResult `json:"results"`
+	TotalPages int                 `json:"total_pages"`
+}
+
+// GetListing fetches one paged listing. mediaType is "movie" or "tv"; kind is
+// "trending" (the weekly window) or one of TMDB's list endpoints (popular,
+// top_rated, now_playing, upcoming, on_the_air).
+func (c *Client) GetListing(mediaType, kind string, page int) (*ListingResponse, error) {
+	params := url.Values{}
+	params.Set("page", strconv.Itoa(max(page, 1)))
+	var endpoint string
+	switch kind {
+	case "trending":
+		endpoint = fmt.Sprintf(c.BaseURL+"/trending/%s/week", mediaType)
+	case "popular", "top_rated", "now_playing", "upcoming", "on_the_air":
+		endpoint = fmt.Sprintf(c.BaseURL+"/%s/%s", mediaType, kind)
+	default:
+		return nil, fmt.Errorf("unknown TMDB listing kind %q", kind)
+	}
+	return getJSON[ListingResponse](c, endpoint, params, "listing "+kind)
+}
+
+// GetRecommendations fetches TMDB's recommendations for one title — the seed
+// of "Because You Watched" catalog rows. mediaType is "movie" or "tv".
+func (c *Client) GetRecommendations(mediaType string, tmdbID, page int) (*ListingResponse, error) {
+	params := url.Values{}
+	params.Set("page", strconv.Itoa(max(page, 1)))
+	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/recommendations", mediaType, tmdbID)
+	return getJSON[ListingResponse](c, endpoint, params, "recommendations")
+}
+
+// SearchByType searches one media type ("movie" or "tv") — unlike SearchMulti,
+// results are homogeneous, which is what a typed catalog needs.
+func (c *Client) SearchByType(mediaType, query string, page int) (*ListingResponse, error) {
+	params := url.Values{}
+	params.Set("query", query)
+	params.Set("page", strconv.Itoa(max(page, 1)))
+	endpoint := fmt.Sprintf(c.BaseURL+"/search/%s", mediaType)
+	return getJSON[ListingResponse](c, endpoint, params, "search")
+}
+
 func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsResponse, error) {
 	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/external_ids", mediaType, tmdbID)
 	return getJSON[ExternalIDsResponse](c, endpoint, url.Values{}, "external_ids")
@@ -281,6 +344,14 @@ type MovieDetails struct {
 	OriginalTitle    string  `json:"original_title"`
 	OriginalLanguage string  `json:"original_language"`
 	Genres           []Genre `json:"genres"`
+	// Display fields, used by the Stremio meta resource.
+	Overview     string  `json:"overview"`
+	PosterPath   string  `json:"poster_path"`
+	BackdropPath string  `json:"backdrop_path"`
+	Runtime      int     `json:"runtime"`
+	VoteAverage  float64 `json:"vote_average"`
+	IMDbID       string  `json:"imdb_id"`
+	Tagline      string  `json:"tagline"`
 }
 
 type TVDetails struct {
@@ -292,6 +363,17 @@ type TVDetails struct {
 	NumberOfSeasons  int            `json:"number_of_seasons"`
 	Seasons          []TVSeasonInfo `json:"seasons"`
 	Genres           []Genre        `json:"genres"`
+	// Display fields, used by the Stremio meta resource.
+	Overview       string  `json:"overview"`
+	PosterPath     string  `json:"poster_path"`
+	BackdropPath   string  `json:"backdrop_path"`
+	VoteAverage    float64 `json:"vote_average"`
+	EpisodeRunTime []int   `json:"episode_run_time"`
+	Status         string  `json:"status"`
+	LastAirDate    string  `json:"last_air_date"`
+	// ExternalIDs is populated only when the details request appended
+	// external_ids (see GetTVDetailsWithSeasons).
+	ExternalIDs *ExternalIDsResponse `json:"external_ids"`
 }
 
 type TVSeasonInfo struct {
@@ -307,9 +389,11 @@ type TVSeasonDetails struct {
 
 type TVEpisodeInfo struct {
 	EpisodeNumber int    `json:"episode_number"`
+	SeasonNumber  int    `json:"season_number"`
 	Name          string `json:"name"`
 	Overview      string `json:"overview"`
 	AirDate       string `json:"air_date"`
+	StillPath     string `json:"still_path"`
 }
 
 func (c *Client) GetMovieTitle(imdbID string, tmdbID string) (string, error) {
@@ -521,6 +605,71 @@ func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesRespons
 func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {
 	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/season/%d", seriesID, seasonNumber)
 	return getJSON[TVSeasonDetails](c, endpoint, url.Values{}, "TV season details")
+}
+
+// maxAppendedSeasons caps the seasons batched into one details request.
+// append_to_response accepts at most 20 appended resources; the first batch
+// also carries external_ids.
+const maxAppendedSeasons = 19
+
+// GetTVDetailsWithSeasons fetches TV details plus the given seasons' episode
+// lists using append_to_response, so a whole series costs ceil(n/19) requests
+// instead of one per season. The first batch also appends external_ids into
+// TVDetails.ExternalIDs. Appended seasons arrive as top-level "season/N" keys,
+// which is why the body is decoded twice: once into TVDetails, once into a raw
+// map the season payloads are picked from.
+func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDetails, map[int]*TVSeasonDetails, error) {
+	if c.apiKey == "" {
+		return nil, nil, fmt.Errorf("TMDB Read Access Token not configured")
+	}
+	var details *TVDetails
+	seasons := make(map[int]*TVSeasonDetails, len(seasonNumbers))
+	for start := 0; start == 0 || start < len(seasonNumbers); start += maxAppendedSeasons {
+		batch := seasonNumbers[min(start, len(seasonNumbers)):min(start+maxAppendedSeasons, len(seasonNumbers))]
+		appends := make([]string, 0, len(batch)+1)
+		if start == 0 {
+			appends = append(appends, "external_ids")
+		}
+		for _, n := range batch {
+			appends = append(appends, fmt.Sprintf("season/%d", n))
+		}
+		params := url.Values{}
+		params.Set("append_to_response", strings.Join(appends, ","))
+
+		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params)
+		if err != nil {
+			return nil, nil, fmt.Errorf("TMDB TV details request failed: %w", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, nil, fmt.Errorf("TMDB returned status: %d", resp.StatusCode)
+		}
+		if start == 0 {
+			details = &TVDetails{}
+			if err := json.Unmarshal(body, details); err != nil {
+				return nil, nil, fmt.Errorf("failed to decode TMDB TV details response: %w", err)
+			}
+		}
+		var sidecar map[string]json.RawMessage
+		if err := json.Unmarshal(body, &sidecar); err != nil {
+			return nil, nil, fmt.Errorf("failed to decode TMDB appended seasons: %w", err)
+		}
+		for _, n := range batch {
+			raw, ok := sidecar[fmt.Sprintf("season/%d", n)]
+			if !ok {
+				continue
+			}
+			var sd TVSeasonDetails
+			if err := json.Unmarshal(raw, &sd); err == nil {
+				seasons[n] = &sd
+			}
+		}
+	}
+	return details, seasons, nil
 }
 
 func (c *Client) ResolveTVDBID(imdbID string) (string, error) {

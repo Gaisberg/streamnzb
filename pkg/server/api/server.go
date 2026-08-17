@@ -393,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/auth/change-password", authMiddleware(http.HandlerFunc(s.handleChangePassword)))
 	mux.Handle("/api/tmdb/search", authMiddleware(http.HandlerFunc(s.handleTMDBSearch)))
 	mux.Handle("/api/tmdb/tv/", authMiddleware(http.HandlerFunc(s.handleTMDBTV)))
+	mux.Handle("/api/metadata/catalogs", authMiddleware(http.HandlerFunc(s.handleMetadataCatalogs)))
 	mux.Handle("/api/search/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
 	mux.Handle("/api/search/releases", authMiddleware(http.HandlerFunc(s.handleSearchReleases)))
 	mux.Handle("/api/play/nzb", authMiddleware(http.HandlerFunc(s.handleDirectPlayNZB)))

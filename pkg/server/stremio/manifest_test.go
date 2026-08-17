@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/config"
 )
 
 func manifestName(t *testing.T, isAdmin bool, streamName, addonName string) string {
@@ -67,6 +68,123 @@ func TestServiceNameFallsBackToTheDefault(t *testing.T) {
 	}
 	if got := ServiceName(&auth.Stream{Username: "Living Room", AddonName: "  Usenet 4K  "}); got != "Usenet 4K" {
 		t.Fatalf("ServiceName = %q, want the trimmed override", got)
+	}
+}
+
+// TestForConfigDisabledIsByteIdentical pins the opt-out contract: with the
+// metadata master switch explicitly off (or no config at all), the manifest
+// must be exactly what the addon served before catalogs/meta existed.
+func TestForConfigDisabledIsByteIdentical(t *testing.T) {
+	base := NewManifest("1.2.3")
+	baseline, err := base.ToJSONForDevice(false, "Living Room", "")
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	for name, cfg := range map[string]*config.Config{
+		"nil config": nil,
+		"master off": {Metadata: config.MetadataConfig{Enabled: boolPtr(false)}},
+	} {
+		got, err := base.ForConfig(cfg).ToJSONForDevice(false, "Living Room", "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if string(got) != string(baseline) {
+			t.Fatalf("%s: manifest differs from the pre-feature manifest", name)
+		}
+	}
+}
+
+// The master switch defaults to on: an untouched config already declares the
+// metadata resources.
+func TestForConfigEnabledDeclaresResourcesAndCatalogs(t *testing.T) {
+	base := NewManifest("1.2.3")
+	cfg := &config.Config{}
+
+	out := base.ForConfig(cfg)
+	if len(out.Resources) != 3 || out.Resources[0] != "stream" || out.Resources[1] != "catalog" || out.Resources[2] != "meta" {
+		t.Fatalf("Resources = %v", out.Resources)
+	}
+	if len(out.Catalogs) == 0 {
+		t.Fatal("expected default catalogs with an empty toggle list")
+	}
+	// Search-capable catalogs must declare the extra or clients never search.
+	foundSearch := false
+	for _, cat := range out.Catalogs {
+		for _, extra := range cat.Extra {
+			if extra.Name == "search" {
+				foundSearch = true
+			}
+		}
+	}
+	if !foundSearch {
+		t.Fatal("no catalog declares the search extra")
+	}
+
+	// The copy is shallow: the base manifest must be untouched.
+	if len(base.Resources) != 1 || base.Resources[0] != "stream" {
+		t.Fatalf("base manifest Resources mutated: %v", base.Resources)
+	}
+	if len(base.Catalogs) != 0 {
+		t.Fatalf("base manifest Catalogs mutated: %v", base.Catalogs)
+	}
+}
+
+func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
+	cfg := &config.Config{Metadata: config.MetadataConfig{
+		Catalogs: []config.CatalogToggle{
+			{ID: "kitsu.trending.anime", Enabled: true},
+			{ID: "tmdb.trending.movie", Enabled: true},
+			{ID: "tmdb.popular.movie", Enabled: false},
+			{ID: "not.a.real.catalog", Enabled: true},
+			{ID: "kitsu.trending.anime", Enabled: true}, // duplicate
+		},
+	}}
+	defs := enabledCatalogDefs(cfg)
+	if len(defs) != 2 {
+		t.Fatalf("defs = %d, want 2 (disabled, unknown, duplicate dropped)", len(defs))
+	}
+	// Config order wins over registry order.
+	if defs[0].ID != "kitsu.trending.anime" || defs[1].ID != "tmdb.trending.movie" {
+		t.Fatalf("order = [%s, %s]", defs[0].ID, defs[1].ID)
+	}
+
+	// Master off: nothing, regardless of toggles.
+	cfg.Metadata.Enabled = boolPtr(false)
+	if defs := enabledCatalogDefs(cfg); len(defs) != 0 {
+		t.Fatalf("master off must disable all catalogs, got %d", len(defs))
+	}
+}
+
+// TestDefaultCatalogsAreOneFlagshipPerType pins the suppressed default set: a
+// fresh install gets exactly one search-carrying trending row per media type;
+// everything else is opt-in from the Metadata page.
+func TestDefaultCatalogsAreOneFlagshipPerType(t *testing.T) {
+	defs := enabledCatalogDefs(&config.Config{})
+	want := []string{"tmdb.trending.movie", "tmdb.trending.series", "kitsu.trending.anime"}
+	if len(defs) != len(want) {
+		t.Fatalf("defaults = %d catalogs, want %d", len(defs), len(want))
+	}
+	for i, id := range want {
+		if defs[i].ID != id {
+			t.Fatalf("defaults[%d] = %s, want %s", i, defs[i].ID, id)
+		}
+		if !defs[i].SupportsSearch {
+			t.Fatalf("default %s must carry the search extra", id)
+		}
+	}
+}
+
+// TestEnabledCatalogDefsNilVersusEmpty pins the two distinct zero states: a
+// never-configured (nil) list gets the registry defaults, while an explicitly
+// saved empty list means none — a meta-only setup with every catalog removed.
+func TestEnabledCatalogDefsNilVersusEmpty(t *testing.T) {
+	nilCfg := &config.Config{}
+	if defs := enabledCatalogDefs(nilCfg); len(defs) == 0 {
+		t.Fatal("nil catalog list must yield the registry defaults")
+	}
+	emptyCfg := &config.Config{Metadata: config.MetadataConfig{Catalogs: []config.CatalogToggle{}}}
+	if defs := enabledCatalogDefs(emptyCfg); len(defs) != 0 {
+		t.Fatalf("explicit empty catalog list must yield none, got %d", len(defs))
 	}
 }
 

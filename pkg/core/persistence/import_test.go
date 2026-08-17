@@ -120,6 +120,7 @@ func TestImportTablesCoverSchema(t *testing.T) {
 	// only migrate a cache.
 	notMigrated := map[string]bool{
 		"anime_mappings": true,
+		"metadata_cache": true,
 	}
 
 	imported := map[string]bool{}

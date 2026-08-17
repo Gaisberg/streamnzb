@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/config"
 )
 
 type ManifestBehaviorHints struct {
@@ -27,9 +28,18 @@ type Manifest struct {
 }
 
 type Catalog struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	Type  string         `json:"type"`
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Extra []CatalogExtra `json:"extra,omitempty"`
+}
+
+// CatalogExtra declares one extra a catalog supports (search, skip). Without
+// the declaration clients never send the extra, so search and pagination hang
+// off this.
+type CatalogExtra struct {
+	Name       string `json:"name"`
+	IsRequired bool   `json:"isRequired,omitempty"`
 }
 
 func manifestVersion(version string) string {
@@ -59,6 +69,23 @@ func NewManifest(version string) *Manifest {
 		IDPrefixes:  []string{"tt", "tmdb", "kitsu", "tvdb"},
 		Logo:        "https://cdn.discordapp.com/icons/1470288400157380710/6f397b4a2e9561dc7ad43526588cfd67.png",
 	}
+}
+
+// ForConfig renders the manifest for the current config: with the metadata
+// master switch on, the addon declares the meta and catalog resources plus the
+// enabled catalogs; with it off, the result is identical to the stream-only
+// manifest this addon always served. Derived per request so config reloads
+// take effect without rebuilding the base manifest.
+//
+// The value copy is shallow — fresh slices are assigned, never appended, so
+// the shared base manifest's backing arrays are never written.
+func (m *Manifest) ForConfig(cfg *config.Config) *Manifest {
+	out := *m
+	if cfg != nil && cfg.EffectiveMetadataEnabled() {
+		out.Resources = []string{"stream", "catalog", "meta"}
+		out.Catalogs = enabledCatalogs(cfg)
+	}
+	return &out
 }
 
 // DefaultServiceName is what a stream calls itself when it has no addon name

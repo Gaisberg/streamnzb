@@ -19,6 +19,7 @@ const (
 	AvailNZBAPIKey                     = "AVAILNZB_API_KEY"
 	TMDBAPIKey                         = "TMDB_API_KEY"
 	TVDBAPIKey                         = "TVDB_API_KEY"
+	MetadataEnabledEnv                 = "METADATA_ENABLED"
 	NNTPProxyPort                      = "NNTP_PROXY_PORT"
 	NNTPProxyHost                      = "NNTP_PROXY_HOST"
 	NNTPProxyEnabled                   = "NNTP_PROXY_ENABLED"
@@ -66,6 +67,7 @@ const (
 	KeyAvailNZBAPIKey     = "availnzb_api_key"
 	KeyTMDBAPIKey         = "tmdb_api_key"
 	KeyTVDBAPIKey         = "tvdb_api_key"
+	KeyMetadataEnabled    = "metadata_enabled"
 	KeyIndexerQueryHeader = "indexer_query_header"
 	KeyIndexerGrabHeader  = "indexer_grab_header"
 	KeyProviderHeader     = "provider_header"
@@ -305,6 +307,7 @@ type ConfigOverrides struct {
 	AdminMustChangePwd bool
 	DatabaseDriver     string
 	DatabaseURL        string
+	MetadataEnabled    bool
 	Providers          []Provider
 	Indexers           []Indexer
 }
@@ -354,6 +357,10 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	r.str(&o.AvailNZBAPIKey, KeyAvailNZBAPIKey, AvailNZBAPIKey)
 	r.str(&o.TMDBAPIKey, KeyTMDBAPIKey, TMDBAPIKey)
 	r.str(&o.TVDBAPIKey, KeyTVDBAPIKey, TVDBAPIKey)
+	if v, ok := os.LookupEnv(MetadataEnabledEnv); ok && v != "" {
+		o.MetadataEnabled = getEnvBool(MetadataEnabledEnv, false)
+		r.keys = append(r.keys, KeyMetadataEnabled)
+	}
 	r.str(&o.IndexerQueryHeader, KeyIndexerQueryHeader, StreamNZBIndexerQueryHeaderEnv, IndexerQueryHeaderEnv)
 	r.str(&o.IndexerGrabHeader, KeyIndexerGrabHeader, StreamNZBIndexerGrabHeaderEnv, IndexerGrabHeaderEnv)
 	r.str(&o.ProviderHeader, KeyProviderHeader, StreamNZBProviderHeaderEnv, ProviderHeaderEnv)

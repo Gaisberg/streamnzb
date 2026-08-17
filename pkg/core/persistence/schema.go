@@ -198,6 +198,21 @@ const (
 	);`
 	searchDiagnosticsIndexCreated = `CREATE INDEX IF NOT EXISTS idx_search_diagnostics_created ON search_diagnostics(created_at DESC);`
 	searchDiagnosticsIndexContent = `CREATE INDEX IF NOT EXISTS idx_search_diagnostics_content ON search_diagnostics(content_type, content_id);`
+
+	// metadata_cache is a rebuildable cache of metadata API responses (TMDB,
+	// Kitsu, TVMaze, ...), keyed by provider and request path. Like
+	// anime_mappings it is excluded from backend-switch imports: losing it only
+	// costs re-fetches.
+	metadataCacheSchema = `CREATE TABLE IF NOT EXISTS metadata_cache (
+		source {TEXT} NOT NULL,
+		cache_key {TEXT} NOT NULL,
+		body {BLOB} NOT NULL,
+		fetched_at {INT} NOT NULL,
+		expires_at {INT} NOT NULL,
+		PRIMARY KEY (source, cache_key)
+	);`
+	metadataCacheIndexExpires = `CREATE INDEX IF NOT EXISTS idx_metadata_cache_expires ON metadata_cache(expires_at);`
+	metadataCacheIndexFetched = `CREATE INDEX IF NOT EXISTS idx_metadata_cache_fetched ON metadata_cache(fetched_at);`
 )
 
 // addedColumn is one idempotent ALTER TABLE ADD COLUMN migration. Existing
@@ -303,6 +318,9 @@ func initSchema(c *connRef) error {
 		searchDiagnosticsIndexCreated,
 		searchDiagnosticsIndexContent,
 		animeMappingsSchema,
+		metadataCacheSchema,
+		metadataCacheIndexExpires,
+		metadataCacheIndexFetched,
 	} {
 		if _, err := c.Exec(d.ExpandDDL(stmt)); err != nil {
 			return fmt.Errorf("schema: %w", err)

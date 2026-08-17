@@ -30,6 +30,50 @@ type NZBAttempt struct {
 	TTFFMS        int64     `json:"ttff_ms,omitempty"`
 }
 
+// PlayedContent is one successful playback row, newest first: what a stream
+// actually played, as opposed to what the shared library merely caches.
+type PlayedContent struct {
+	ContentID    string
+	ContentTitle string
+}
+
+// RecentPlayedContent lists successful (non-preload) playback rows for one
+// content type, newest first. streamName narrows to one stream's history;
+// empty means any stream. Episodes of one series come back as separate rows —
+// the caller collapses them to series granularity.
+func (m *StateManager) RecentPlayedContent(streamName, contentType string, limit int) ([]PlayedContent, error) {
+	if m == nil || m.db == nil || limit <= 0 {
+		return nil, nil
+	}
+	query := `SELECT content_id, content_title FROM nzb_attempts
+		WHERE success = 1 AND preload = 0 AND content_type = ?`
+	args := []any{contentType}
+	if streamName != "" {
+		query += ` AND stream_name = ?`
+		args = append(args, streamName)
+	}
+	query += ` ORDER BY tried_at DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var played []PlayedContent
+	for rows.Next() {
+		var p PlayedContent
+		var title sql.NullString
+		if err := rows.Scan(&p.ContentID, &title); err != nil {
+			return nil, err
+		}
+		p.ContentTitle = title.String
+		played = append(played, p)
+	}
+	return played, rows.Err()
+}
+
 // RecordAttemptParams holds the fields needed to record an NZB attempt.
 type RecordAttemptParams struct {
 	StreamName    string

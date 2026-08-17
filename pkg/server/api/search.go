@@ -9,8 +9,23 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/server/stremio"
+	"streamnzb/pkg/services/metadata/metacache"
 	"streamnzb/pkg/services/metadata/tmdb"
 )
+
+// metadataCache builds a persistent-cache handle for one metadata source, so
+// per-request throwaway clients still reuse earlier fetches instead of hitting
+// the provider fresh on every admin request.
+func (s *Server) metadataCache(source string) *metacache.Cache {
+	s.mu.RLock()
+	sm := s.attemptLister
+	s.mu.RUnlock()
+	return metacache.New(sm.MetadataCacheStore(), source)
+}
+
+func (s *Server) cachedTMDBClient(apiKey string) *tmdb.Client {
+	return tmdb.NewClientWithCache(apiKey, s.metadataCache("tmdb"))
+}
 
 type tmdbSearchResult struct {
 	ID        string `json:"id"`
@@ -33,7 +48,7 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []tmdbSearchResult{})
 		return
 	}
-	client := tmdb.NewClient(s.tmdbAPIKey)
+	client := s.cachedTMDBClient(s.tmdbAPIKey)
 	resp, err := client.SearchMulti(q)
 	if err != nil {
 		logger.Debug("TMDB search failed", "query", q, "err", err)
@@ -139,7 +154,7 @@ func (s *Server) handleTMDBTV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tv id", http.StatusBadRequest)
 		return
 	}
-	client := tmdb.NewClient(s.tmdbAPIKey)
+	client := s.cachedTMDBClient(s.tmdbAPIKey)
 
 	if len(parts) == 1 || (len(parts) == 2 && parts[1] == "details") {
 

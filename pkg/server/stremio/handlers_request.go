@@ -40,7 +40,11 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 			effectivePath = "/" + parts[1]
 		}
 		isDebugPlayRoute := strings.HasPrefix(path, "/debug/play") || strings.HasPrefix(effectivePath, "/debug/play")
-		isStremioRoute := effectivePath == "/manifest.json" || effectivePath == FailoverOrderPath || strings.HasPrefix(effectivePath, "/stream/") || strings.HasPrefix(effectivePath, "/play/") || strings.HasPrefix(effectivePath, "/next/") || strings.HasPrefix(effectivePath, "/debug/play")
+		// NOTE: this route set and the dispatch chain below must stay in
+		// lockstep — a prefix listed in only one of them either serves the SPA
+		// to bad tokens (missing here) or falls through to the SPA entirely
+		// (missing below).
+		isStremioRoute := effectivePath == "/manifest.json" || effectivePath == FailoverOrderPath || strings.HasPrefix(effectivePath, "/stream/") || strings.HasPrefix(effectivePath, "/meta/") || strings.HasPrefix(effectivePath, "/catalog/") || strings.HasPrefix(effectivePath, "/play/") || strings.HasPrefix(effectivePath, "/next/") || strings.HasPrefix(effectivePath, "/debug/play")
 
 		if len(parts) >= 1 && parts[0] != "" {
 			token := parts[0]
@@ -83,6 +87,10 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 			s.handleManifest(w, r)
 		} else if strings.HasPrefix(path, "/stream/") {
 			s.handleStream(w, r, authenticatedStream)
+		} else if strings.HasPrefix(path, "/meta/") {
+			s.handleMeta(w, r)
+		} else if strings.HasPrefix(path, "/catalog/") {
+			s.handleCatalog(w, r)
 		} else if strings.HasPrefix(path, "/play/") {
 			s.handlePlay(w, r, authenticatedStream)
 		} else if strings.HasPrefix(path, "/next/") {
@@ -120,17 +128,18 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	manifest := s.manifest
+	cfg := s.config
 	s.mu.RUnlock()
 
 	stream, _ := auth.StreamFromContext(r)
-	isAdmin := stream != nil && stream.Username == s.config.GetAdminUsername()
+	isAdmin := stream != nil && stream.Username == cfg.GetAdminUsername()
 
 	streamName, addonName := "", ""
 	if stream != nil {
 		streamName = stream.Username
 		addonName = stream.AddonName
 	}
-	data, err := manifest.ToJSONForDevice(isAdmin, streamName, addonName)
+	data, err := manifest.ForConfig(cfg).ToJSONForDevice(isAdmin, streamName, addonName)
 	if err != nil {
 		http.Error(w, "Failed to generate manifest", http.StatusInternalServerError)
 		return

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
@@ -612,6 +613,29 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		return &rawSearchResult{
 			Params:          params,
 			IndexerReleases: nil,
+			Avail: &AvailContext{
+				ByDetailsURL:            make(map[string]*availnzb.ReleaseWithStatus),
+				AvailableByDetailsURL:   make(map[string]bool),
+				UnavailableByDetailsURL: make(map[string]bool),
+			},
+		}, nil
+	}
+
+	// Air-date gate: a positively-unaired episode gets an instant empty result
+	// instead of a full indexer fan-out that cannot find anything. Strictly
+	// failure-open — only a trusted source saying "airs in the future" gates.
+	if aired, airsAt, known := s.episodeAiredState(ctx, contentType, params.ContentIDs); known && !aired {
+		logger.Info("Episode has not aired yet; skipping search",
+			"stream", streamLabel,
+			"type", contentType,
+			"id", id,
+			"airs_at", airsAt.Format(time.RFC3339),
+		)
+		diag.From(ctx).SetUnaired(airsAt.UTC().Format(time.RFC3339))
+		return &rawSearchResult{
+			Params:  params,
+			Unaired: true,
+			AirsAt:  airsAt,
 			Avail: &AvailContext{
 				ByDetailsURL:            make(map[string]*availnzb.ReleaseWithStatus),
 				AvailableByDetailsURL:   make(map[string]bool),

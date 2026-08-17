@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/search/diag"
@@ -58,6 +59,14 @@ func (s *Server) buildSearchDebugStream(key StreamSlotKey, service, baseURL stri
 // is the at-a-glance shape of the search.
 func formatSearchDebugDescription(snap *diag.Snapshot) string {
 	lines := make([]string, 0, 6)
+
+	if snap.UnairedAirsAt != "" {
+		when := snap.UnairedAirsAt
+		if t, err := time.Parse(time.RFC3339, when); err == nil {
+			when = t.Format("2006-01-02 15:04 MST")
+		}
+		lines = append(lines, "⏳ Not aired yet — airs "+when)
+	}
 
 	rawTotal, keptTotal := 0, 0
 	for _, v := range snap.Validation {

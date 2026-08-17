@@ -11,12 +11,12 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { cn } from "@/lib/utils"
 
+// The TMDB/TVDB API keys live on the Metadata page, next to what they power.
 const CARD_FIELDS = {
   addon: ['addon_base_url', 'addon_port'],
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   useragent: ['indexer_query_header', 'indexer_grab_header', 'provider_header'],
   database: ['database_driver', 'database_url', 'nzb_history_retention_days'],
-  metadata: ['tmdb_api_key', 'tvdb_api_key'],
 }
 
 const FIELD_CARD = Object.fromEntries(
@@ -52,8 +52,6 @@ function pickInitialValues(values = {}) {
     database_driver: values.database_driver || 'sqlite',
     database_url: values.database_url ?? '',
     nzb_history_retention_days: Number.isFinite(parsedRetentionDays) ? parsedRetentionDays : 90,
-    tmdb_api_key: values.tmdb_api_key ?? '',
-    tvdb_api_key: values.tvdb_api_key ?? '',
   }
 }
 
@@ -361,43 +359,6 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
                     <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="VLC/1.2.3.4" onBlur={blurCommit(field, 'provider_header')} /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Custom provider-facing User-Agent header.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )} />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1 max-w-[34rem] space-y-0.5">
-                <CardTitle>Metadata APIs</CardTitle>
-                <CardDescription>Optional API keys and tokens for metadata enrichment during search and matching. Built-in defaults are available, but using your own credentials is recommended.</CardDescription>
-              </div>
-              <div className="shrink-0">{renderCardSpinner('metadata')}</div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border border-border/60">
-              <FormField control={control} name="tmdb_api_key" render={({ field }) => (
-                <FormItem className="rounded-none border-0 p-3">
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
-                    <FormLabel className="min-w-0 text-sm font-medium xl:flex-1 flex items-center gap-1.5">TMDB Read Access Token <EnvOverrideIndicator show={envOverrides.includes('tmdb_api_key')} /></FormLabel>
-                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className="h-9 w-full font-mono text-xs" {...field} value={field.value || ''} onBlur={blurCommit(field, 'tmdb_api_key')} /></div></FormControl>
-                  </div>
-                  <FormDescription className="mt-3">Used for localized titles, year enrichment, and text-based movie/show name resolution. Without it, text-search metadata is limited and some requests fall back to ID-only behavior.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <FormField control={control} name="tvdb_api_key" render={({ field }) => (
-                <FormItem className="relative rounded-none border-0 p-3">
-                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
-                    <FormLabel className="min-w-0 text-sm font-medium xl:flex-1 flex items-center gap-1.5">TVDB API Key <EnvOverrideIndicator show={envOverrides.includes('tvdb_api_key')} /></FormLabel>
-                    <FormControl><div className="w-full xl:max-w-3xl"><PasswordInput className="h-9 w-full font-mono text-xs" {...field} value={field.value || ''} onBlur={blurCommit(field, 'tvdb_api_key')} /></div></FormControl>
-                  </div>
-                  <FormDescription className="mt-3">Used primarily for series metadata ID resolution. When available, StreamNZB can resolve TVDB IDs directly before falling back to TMDB-based lookup.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )} />

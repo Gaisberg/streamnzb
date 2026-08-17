@@ -648,9 +648,72 @@ type Config struct {
 	// MuteErrorVideo controls whether the "Failed to start video" playback error stream is muted.
 	MuteErrorVideo *bool `json:"mute_error_video,omitempty"`
 
+	// Metadata controls the Stremio metadata-provider surface (meta resource +
+	// catalogs). On by default; with the master switch explicitly off the
+	// addon manifest stays stream-only, exactly as before the feature existed.
+	Metadata MetadataConfig `json:"metadata,omitempty"`
+
 	LoadedPath string `json:"-"`
 
 	ResetLegacyStreamState bool `json:"-"`
+}
+
+// MetadataConfig is the metadata-provider section. Catalogs lists the enabled
+// catalogs from the built-in registry in display order. nil means "never
+// configured" (registry defaults apply); an explicitly saved empty list means
+// none — the tag must not be omitempty or the two collapse on save. Unknown
+// ids are ignored read-side so a stale config never breaks the manifest.
+type MetadataConfig struct {
+	// Enabled is the master switch, on by default — nil means on, so only an
+	// explicit false turns the provider off (and survives saves).
+	Enabled  *bool           `json:"enabled,omitempty"`
+	Catalogs []CatalogToggle `json:"catalogs"`
+
+	// Per-media-type meta sources. Empty means the default; unknown values
+	// normalize to the default read-side. Today only series has a real
+	// choice (TVDB default, TMDB alternative) — movies are TMDB-only and
+	// anime Kitsu-only, the fields exist so future sources slot in without
+	// a config migration.
+	MovieSource  string `json:"movie_source,omitempty"`
+	SeriesSource string `json:"series_source,omitempty"`
+	AnimeSource  string `json:"anime_source,omitempty"`
+
+	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
+	// unaired-episode gate). nil means enabled.
+	TVMazeAirDates *bool `json:"tvmaze_air_dates,omitempty"`
+}
+
+// EffectiveMetadataEnabled reports whether the metadata provider (meta +
+// catalog resources) is on. Default true.
+func (c *Config) EffectiveMetadataEnabled() bool {
+	if c == nil || c.Metadata.Enabled == nil {
+		return true
+	}
+	return *c.Metadata.Enabled
+}
+
+// EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"
+// (default) or "tmdb". Whichever is not primary stays the fallback.
+func (c *Config) EffectiveSeriesMetaSource() string {
+	if c != nil && c.Metadata.SeriesSource == "tmdb" {
+		return "tmdb"
+	}
+	return "tvdb"
+}
+
+// EffectiveTVMazeAirDates reports whether TVMaze air-date overlays and gating
+// are enabled. Default true.
+func (c *Config) EffectiveTVMazeAirDates() bool {
+	if c == nil || c.Metadata.TVMazeAirDates == nil {
+		return true
+	}
+	return *c.Metadata.TVMazeAirDates
+}
+
+// CatalogToggle enables or disables one registry catalog by id.
+type CatalogToggle struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
 }
 
 type StreamEntry struct {
@@ -1464,6 +1527,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyIndexers:           func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
 	env.KeyDatabaseDriver:     func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
 	env.KeyDatabaseURL:        func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled:    func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1529,6 +1593,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		AdminMustChangePassword: o.AdminMustChangePwd,
 		DatabaseDriver:          o.DatabaseDriver,
 		DatabaseURL:             o.DatabaseURL,
+		Metadata:                MetadataConfig{Enabled: &o.MetadataEnabled},
 	}
 	cfg.Providers = make([]Provider, len(o.Providers))
 	for i, p := range o.Providers {

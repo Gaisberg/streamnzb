@@ -20,8 +20,10 @@ import (
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/animelists"
 	"streamnzb/pkg/services/metadata/kitsu"
+	"streamnzb/pkg/services/metadata/metacache"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
+	"streamnzb/pkg/services/metadata/tvmaze"
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/usenet/validation"
 )
@@ -50,6 +52,7 @@ type Server struct {
 	tmdbClient                *tmdb.Client
 	tvdbClient                *tvdb.Client
 	kitsuClient               *kitsu.Client
+	tvmazeClient              *tvmaze.Client
 	animeLists                *animelists.Store
 	streamManager             *auth.StreamManager
 	playlistCache             sync.Map
@@ -135,7 +138,8 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
-		kitsuClient:          kitsu.NewClient(nil),
+		kitsuClient:          kitsu.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "kitsu")),
+		tvmazeClient:         tvmaze.NewClient(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "tvmaze")),
 		animeLists:           animelists.GetStore(opts.AttemptRecorder.AnimeMappingStore()),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,

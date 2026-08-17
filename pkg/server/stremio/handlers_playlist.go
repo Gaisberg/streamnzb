@@ -86,6 +86,11 @@ type rawSearchResult struct {
 	Params          *query.SearchParams
 	IndexerReleases []*release.Release
 	Avail           *AvailContext
+	// Unaired marks an empty result produced by the air-date gate rather than
+	// by a search: the episode positively airs at AirsAt, so no indexer was
+	// asked. The cache entry expires at air time instead of the normal TTL.
+	Unaired bool
+	AirsAt  time.Time
 }
 
 type playlistSource struct {
@@ -285,7 +290,7 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 			logger.Debug("Playback candidate cache hit", "key", rawKey, "releases", releaseCount)
 			// Sliding expiry: keep the entry alive while it is being used.
 			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
-			s.rawSearchCache.CompareAndSwap(rawKey, v, &rawSearchCacheEntry{raw: ent.raw, until: time.Now().Add(s.playlistCacheTTL())})
+			s.rawSearchCache.CompareAndSwap(rawKey, v, &rawSearchCacheEntry{raw: ent.raw, until: s.rawSearchCacheUntil(ent.raw)})
 			return cloneRawSearchResult(ent.raw), nil
 		}
 	}
@@ -294,8 +299,19 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 	if err != nil || raw == nil {
 		return nil, err
 	}
-	s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: raw, until: time.Now().Add(s.playlistCacheTTL())})
+	s.rawSearchCache.Store(rawKey, &rawSearchCacheEntry{raw: raw, until: s.rawSearchCacheUntil(raw)})
 	return cloneRawSearchResult(raw), nil
+}
+
+// rawSearchCacheUntil picks a cache deadline for one raw result: the normal
+// sliding TTL, clamped to air time for an unaired short-circuit so the empty
+// result stops being served the moment the episode is out.
+func (s *Server) rawSearchCacheUntil(raw *rawSearchResult) time.Time {
+	until := time.Now().Add(s.playlistCacheTTL())
+	if raw != nil && raw.Unaired && !raw.AirsAt.IsZero() && raw.AirsAt.Before(until) {
+		return raw.AirsAt
+	}
+	return until
 }
 
 func (s *Server) GetSearchReleases(ctx context.Context, contentType, id string) (*SearchReleasesResponse, error) {
@@ -577,8 +593,10 @@ func cloneRawSearchResult(raw *rawSearchResult) *rawSearchResult {
 		return nil
 	}
 	next := &rawSearchResult{
-		Params: cloneSearchParams(raw.Params),
-		Avail:  cloneAvailContext(raw.Avail),
+		Params:  cloneSearchParams(raw.Params),
+		Avail:   cloneAvailContext(raw.Avail),
+		Unaired: raw.Unaired,
+		AirsAt:  raw.AirsAt,
 	}
 	if raw.IndexerReleases != nil {
 		next.IndexerReleases = make([]*release.Release, 0, len(raw.IndexerReleases))

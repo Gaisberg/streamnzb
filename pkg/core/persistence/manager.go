@@ -70,6 +70,7 @@ type StateManager struct {
 	libraryStore    *LibraryStore
 	badReleaseStore *BadReleaseStore
 	animeMappings   *AnimeMappingStore
+	metadataCache   *MetadataCacheStore
 	mu              sync.RWMutex
 	saveTimer       *time.Timer
 	saveMu          sync.Mutex
@@ -157,6 +158,7 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		backend:         backend,
 		libraryStore:    NewLibraryStore(db, wdb),
 		badReleaseStore: NewBadReleaseStore(db, wdb),
+		metadataCache:   NewMetadataCacheStore(db, wdb),
 	}
 	mgr.animeMappings = NewAnimeMappingStore(mgr, db, wdb)
 	return mgr, nil
@@ -284,6 +286,13 @@ func (m *StateManager) AnimeMappingStore() *AnimeMappingStore {
 		return nil
 	}
 	return m.animeMappings
+}
+
+func (m *StateManager) MetadataCacheStore() *MetadataCacheStore {
+	if m == nil {
+		return nil
+	}
+	return m.metadataCache
 }
 
 func mergeMisplacedDatabases(target *connRef, dataDir string) {
