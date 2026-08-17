@@ -99,7 +99,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.Unlock()
 	}()
 
-	session.WriteLine("200 StreamNZB NNTP Proxy ready (posting prohibited)")
+	session.WriteLine("201 StreamNZB NNTP Proxy ready (posting prohibited)")
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {

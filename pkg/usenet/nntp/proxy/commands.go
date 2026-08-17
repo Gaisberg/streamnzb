@@ -49,12 +49,11 @@ func (s *Session) handleCapabilities(args []string) error {
 		"101 Capability list:",
 		"VERSION 2",
 		"READER",
-		"POST",
-		"IHAVE",
-		"STREAMING",
+		"LIST ACTIVE",
 	}
 
-	if s.authUser != "" {
+	// RFC 4643: AUTHINFO must not be advertised after successful authentication.
+	if s.authUser != "" && !s.authenticated {
 		capabilities = append(capabilities, "AUTHINFO USER")
 	}
 
