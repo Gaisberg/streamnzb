@@ -527,7 +527,7 @@ export function ProfileEditor({ profile, onChange }) {
           </FieldRow>
           <FieldRow
             label="Preference bonus"
-            hint="Added once when a preferred pattern or language matches."
+            hint="Added once when a preferred pattern matches, and once more when a preferred language matches — a release matching both gets it twice. Same setting as the preferred language bonus on the Languages tab."
           >
             <NumberField
               value={options.preferred_bonus ?? 10000}
@@ -537,7 +537,7 @@ export function ProfileEditor({ profile, onChange }) {
           </FieldRow>
           <FieldRow
             label="Title match strictness"
-            hint="How closely a release title must match what was requested, from 0 to 1. Higher is stricter."
+            hint="How closely a release title must match a requested title, from 0 to 1. Higher is stricter. Only applies where a target title is given — the Try it out bench. Live results are already title-checked during search, before the profile runs."
           >
             <NumberField
               value={options.title_threshold ?? 0.85}
@@ -670,7 +670,7 @@ export function ProfileEditor({ profile, onChange }) {
           <div className="flex items-center justify-between gap-4">
             <div className="flex min-w-0 items-center gap-1.5">
               <Label className="text-sm font-normal">Preferred language score bonus</Label>
-              <Hint>Score bonus added to releases matching any language in your preferred list.</Hint>
+              <Hint>Score bonus added to releases matching any language in your preferred list. Same setting as the preference bonus on the Quality tab — preferred patterns add it separately.</Hint>
             </div>
             <span className={cn(
               "w-20 text-right font-mono text-xs tabular-nums font-semibold",

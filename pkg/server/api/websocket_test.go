@@ -8,8 +8,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dreulavelle/jhin/rank"
+
 	"streamnzb/pkg/core/config"
 )
+
+// A profile whose pattern cannot compile would be skipped by the ranking
+// reload — its streams would silently stop filtering — so the save must be
+// rejected instead.
+func TestValidateConfigRejectsUncompilableFilterProfile(t *testing.T) {
+	s := &Server{}
+
+	spec := rank.Default()
+	spec.Require = []string{"("}
+	cfg := &config.Config{
+		FilterProfiles: []config.FilterProfileConfig{{Name: "Broken", Ranking: &spec}},
+	}
+
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateFilterProfiles: true})
+	if got := errs["filter_profiles.0.ranking"]; got == "" {
+		t.Fatalf("expected a compile error for the broken pattern, got %#v", errs)
+	}
+}
 
 func TestValidateConfigRejectsUnresolvedProwlarrIndexerPlaceholder(t *testing.T) {
 	enabled := true

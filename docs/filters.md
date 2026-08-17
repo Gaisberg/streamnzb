@@ -9,7 +9,7 @@ Parsing and scoring are powered by [jhin](https://github.com/dreulavelle/jhin): 
 Two separate mechanisms, and keeping them apart is the key to configuring profiles well:
 
 - **Rejection** removes a release entirely: disabled resolutions, blocked traits (the allow/block switch on a trait), "Must match" / "Never match" rules, language requirements/exclusions, garbage and adult removal.
-- **Scoring** only orders what survives: every detected trait adds its score, preferred patterns and languages add the preference bonus, weighted preferences stack on top. Kept releases are returned best-score first. By default score never rejects anything — the minimum-score threshold ships effectively disabled so that a low score sorts a release last rather than hiding it.
+- **Scoring** only orders what survives: every detected trait adds its score, preferred patterns and languages each add the preference bonus, weighted preferences stack on top. Kept releases are returned best-score first. By default score never rejects anything — the minimum-score threshold ships effectively disabled so that a low score sorts a release last rather than hiding it.
 
 So: to *never see* something, block it; to *see it later*, score it down.
 
@@ -34,7 +34,7 @@ Note: the default stream created on first install is set to AIOStreams mode, so 
 - **Resolutions** — toggle the tiers this profile offers (4K down to 240p, plus *Unknown* for unparsable titles). A disabled tier rejects.
 - **Remove garbage titles** — rejects camcorder, telesync, telecine and screener rips and source-less junk (leaked/pre-retail copies). Turn it off to decide those sources one by one on the Scoring tab.
 - **Skip adult content**.
-- **Thresholds** — **Minimum score** (default is far below any real score, i.e. no floor), **Preference bonus** (how much a "Prefer" match adds, default +10000), and **Title match strictness**.
+- **Thresholds** — **Minimum score** (default is far below any real score, i.e. no floor), **Preference bonus** (added once when a preferred pattern matches and once more when a preferred language matches, default +10000 — the same setting the Languages tab surfaces as its bonus slider), and **Title match strictness** (how closely a name must match a requested title; only applies where a target title is known, i.e. the Try it out bench — live results are already title-validated during search, before the profile runs).
 
 ### Scoring
 
@@ -44,7 +44,7 @@ Every trait jhin can detect, grouped (Sources, Codecs, HDR & bit depth, Audio, C
 
 ### Rules
 
-Regular expressions matched against the full release name (case-insensitive; wrap in `/slashes/` for case-sensitive):
+Regular expressions matched against the full release name (case-insensitive; wrap in `/slashes/` for case-sensitive). Patterns are compiled when the config is saved — a pattern that fails to compile rejects the save with the compile error, so a broken profile can never silently stop filtering its streams.
 
 - **Must match** — every pattern must appear or the release is rejected. For either/or, use one pattern: `(IMAX|Extended)`.
 - **Never match** — any match rejects.

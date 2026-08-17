@@ -43,12 +43,6 @@ func Kind(contentType, kitsuShowType string, isAnime bool) string {
 	return KindSeries
 }
 
-// Sort keys for jhin evaluation.
-const (
-	SortResolution = "resolution"
-	SortRank       = "rank"
-)
-
 // Service compiles filter profiles into jhin rankers and keeps them until the
 // config changes. rank.New compiles every pattern in the profile, so it must
 // not run per request.
@@ -57,13 +51,12 @@ type Service struct {
 	profiles map[string]*Profile
 }
 
-// Profile is a compiled filter profile: the jhin ranker plus the sort chain
-// and the content kinds it applies to.
+// Profile is a compiled filter profile: the jhin ranker plus the content
+// kinds it applies to.
 type Profile struct {
-	Name      string
-	Ranker    *rank.Ranker
-	Spec      rank.Profile
-	SortOrder []string
+	Name   string
+	Ranker *rank.Ranker
+	Spec   rank.Profile
 	// LibraryScoreBonus is added to cached library releases on top of the
 	// ranker's score. Resolved from the profile config (default 500, 0 when
 	// disabled there).
@@ -84,34 +77,44 @@ func (s *Service) Reload(cfg *config.Config) []error {
 	var errs []error
 
 	for _, fp := range cfg.FilterProfiles {
-		// Ranking is materialized at config load; synthesizing here is only a
-		// guard for profiles built in memory (tests, the explain preview).
-		spec := rank.Default()
-		if fp.Ranking != nil {
-			spec = *fp.Ranking
-		} else {
-			spec = config.Synthesize(fp)
-		}
-		spec.Name = fp.Name
-
-		ranker, err := rank.New(spec)
+		profile, err := Compile(fp)
 		if err != nil {
 			errs = append(errs, &ProfileError{Name: fp.Name, Err: err})
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(fp.Name))
-		compiled[key] = &Profile{
-			Name:              fp.Name,
-			Ranker:            ranker,
-			Spec:              spec,
-			LibraryScoreBonus: fp.EffectiveLibraryScoreBonus(),
-		}
+		compiled[strings.ToLower(strings.TrimSpace(fp.Name))] = profile
 	}
 
 	s.mu.Lock()
 	s.profiles = compiled
 	s.mu.Unlock()
 	return errs
+}
+
+// Compile builds the jhin ranker for one profile config. Config validation
+// uses it too, so a pattern that cannot compile is rejected at save time with
+// the same error Reload would report.
+func Compile(fp config.FilterProfileConfig) (*Profile, error) {
+	// Ranking is materialized at config load; synthesizing here is only a
+	// guard for profiles built in memory (tests, the explain preview).
+	spec := rank.Default()
+	if fp.Ranking != nil {
+		spec = *fp.Ranking
+	} else {
+		spec = config.Synthesize(fp)
+	}
+	spec.Name = fp.Name
+
+	ranker, err := rank.New(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &Profile{
+		Name:              fp.Name,
+		Ranker:            ranker,
+		Spec:              spec,
+		LibraryScoreBonus: fp.EffectiveLibraryScoreBonus(),
+	}, nil
 }
 
 type ProfileError struct {

@@ -185,7 +185,6 @@ function Settings({
           allowed_languages: profile.allowed_languages || [],
           blocked_languages: profile.blocked_languages || [],
           preferred_languages: profile.preferred_languages || [],
-          sort_order: profile.sort_order || [],
         })) || [],
       }
       reset({

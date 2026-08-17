@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
+	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/usenet/nntp"
 )
 
@@ -435,6 +436,12 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("filter_profiles.%d.name", i)] = "Name must be unique"
 				}
 				seen[key] = true
+			}
+			// A profile that fails to compile would be skipped by the ranking
+			// reload, silently leaving its streams unfiltered — reject the save
+			// instead so the bad pattern never reaches the config.
+			if _, err := ranking.Compile(fp); err != nil {
+				errors[fmt.Sprintf("filter_profiles.%d.ranking", i)] = err.Error()
 			}
 		}
 	}

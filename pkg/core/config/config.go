@@ -147,7 +147,6 @@ type FilterProfileConfig struct {
 	// PreferredLanguages is used by the "language" sort criterion: releases that include
 	// any preferred language rank higher than releases that do not.
 	PreferredLanguages []string `json:"preferred_languages,omitempty"`
-	SortOrder          []string `json:"sort_order,omitempty"`
 }
 
 type IndexerConfig struct {
@@ -747,8 +746,9 @@ type StreamEntry struct {
 	SeriesSearchQueries []string                       `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                         `json:"filter_profile_name,omitempty"`
 	// FilterProfileByType selects a profile per content kind — "movie",
-	// "series" or "anime" — falling back to FilterProfileName when a kind has
-	// no entry. Anime is matched first when the request resolved via Kitsu.
+	// "series", "anime_movie" or "anime_show" — falling back to
+	// FilterProfileName when a kind has no entry. Anime is matched first when
+	// the request resolved via Kitsu.
 	FilterProfileByType map[string]string `json:"filter_profile_by_type,omitempty"`
 	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
 	// ResultNameTemplate and ResultDescriptionTemplate customize how this

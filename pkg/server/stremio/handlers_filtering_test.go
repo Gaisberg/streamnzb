@@ -5,6 +5,7 @@ import (
 
 	"github.com/dreulavelle/jhin/rank"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/query"
@@ -86,8 +87,7 @@ func TestSynthesizedProfileFiltering(t *testing.T) {
 // Sorting runs off jhin's score.
 func TestProfileSortOrder(t *testing.T) {
 	profile := profileFor(t, config.FilterProfileConfig{
-		Name:      "Sorting",
-		SortOrder: []string{"resolution", "rank"},
+		Name: "Sorting",
 	})
 
 	cands := candidatesFor(
@@ -249,6 +249,25 @@ func TestMetadataLooksLikeAnime(t *testing.T) {
 				t.Errorf("query.MetadataLooksLikeAnime() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// AIOStreams owns filtering and ordering for streams in that mode, so a bound
+// profile must never apply — the UI blocks the combination, but a directly
+// edited config can still carry it.
+func TestProfileForKindIgnoresProfileInAIOStreamsMode(t *testing.T) {
+	cfg := &config.Config{
+		FilterProfiles: []config.FilterProfileConfig{{Name: "Movies"}},
+	}
+	s := &Server{rankingService: newRankingService(cfg)}
+	stream := &auth.Stream{Username: "u", FilterProfileName: "Movies"}
+
+	if got := s.profileForKind(ranking.KindMovie, stream); got == nil {
+		t.Fatal("expected the bound profile outside AIOStreams mode")
+	}
+	stream.FilterSortingMode = "aiostreams"
+	if got := s.profileForKind(ranking.KindMovie, stream); got != nil {
+		t.Errorf("expected no profile in AIOStreams mode, got %q", got.Name)
 	}
 }
 

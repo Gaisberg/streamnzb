@@ -135,7 +135,7 @@ export const ATTRIBUTE_LABELS = ATTRIBUTE_GROUPS.reduce((acc, group) => {
 
 // The baseline a trait falls back to when a profile does not change it.
 export const DEFAULT_POLICIES = {
-  remux: { fetch: true, rank: 5000 }, webdl: { fetch: true, rank: 200 },
+  remux: { fetch: true, rank: 10000 }, webdl: { fetch: true, rank: 200 },
   web: { fetch: true, rank: 100 }, bluray: { fetch: true, rank: 100 },
   webrip: { fetch: true, rank: -1000 }, dvd: { fetch: false, rank: -5000 },
   hdtv: { fetch: true, rank: -5000 }, bdrip: { fetch: false, rank: -5000 },
@@ -181,8 +181,8 @@ export const LANGUAGE_CODES = [
 
 export const LANGUAGE_OPTIONS = [
   { code: "all", name: "All Languages", isGroup: true },
-  { code: "common", name: "Common Languages (en, ja, ko, zh, fr, es, de, ru, it, pt)", isGroup: true },
-  { code: "anime", name: "Anime Languages (ja, en)", isGroup: true },
+  { code: "common", name: "Common Languages (de, es, hi, ta, ru, ua, th, it, zh, ar, fr)", isGroup: true },
+  { code: "anime", name: "Anime Languages (ja, zh, ko)", isGroup: true },
   { code: "non_anime", name: "Non-Anime Languages", isGroup: true },
   { code: "en", name: "English" },
   { code: "ja", name: "Japanese" },
@@ -229,15 +229,6 @@ export const LANGUAGE_OPTIONS = [
 
 // Each of these resolves to a set of language codes.
 export const LANGUAGE_GROUPS = ["anime", "common", "non_anime", "all"]
-
-export const SORT_KEYS = [
-  { key: "resolution", label: "Resolution", hint: "Highest tier first" },
-  { key: "rank", label: "Score", hint: "Highest scoring first" },
-  { key: "title_ratio", label: "Title match", hint: "Closest match to what was requested" },
-  { key: "size", label: "Size", hint: "Largest first" },
-  { key: "age", label: "Age", hint: "Newest first" },
-  { key: "grabs", label: "Grabs", hint: "Most grabbed first" },
-]
 
 // Common weighted patterns, so the usual preferences do not need a regex.
 // These match on the release name, which is the only place they appear.
@@ -326,7 +317,6 @@ export function defaultProfile(name = "New Profile") {
   return {
     name,
     ranking: defaultRankProfile(name),
-    sort_order: ["resolution", "rank", "size", "age"],
   }
 }
 

@@ -1033,8 +1033,16 @@ func logRankingSelection(source *playlistSource, stream *auth.Stream, kind strin
 
 // profileForKind resolves the filter profile for a request of this content
 // kind, preferring a per-content-kind binding over the stream default.
+//
+// AIOStreams owns filtering and ordering for streams in that mode, so a bound
+// profile is ignored rather than letting both systems shape one result set.
+// The UI blocks the combination, but a config edited directly can still
+// carry it.
 func (s *Server) profileForKind(kind string, stream *auth.Stream) *ranking.Profile {
 	if s == nil || s.rankingService == nil || stream == nil {
+		return nil
+	}
+	if streamUsesAIOStreamsProfile(stream) {
 		return nil
 	}
 	name := ranking.SelectName(stream.FilterProfileByType, stream.FilterProfileName, kind)

@@ -1,0 +1,3 @@
+# gofmt always writes LF, so Go sources must check out as LF — otherwise every
+# build.sh run on a core.autocrlf=true machine rewrites the whole tree.
+*.go text eol=lf
