@@ -113,6 +113,18 @@ const PROVIDER_PRESETS = [
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
+// The standard NNTP ports. Toggling SSL moves between them, so the usual case
+// needs no second edit — but only while the port still is one of them: a port
+// the user typed themselves is theirs to keep.
+const SSL_PORT = 563
+const PLAIN_PORT = 119
+
+function portForSSL(port, useSSL) {
+  const current = Number(port)
+  if (current !== SSL_PORT && current !== PLAIN_PORT) return port
+  return useSSL ? SSL_PORT : PLAIN_PORT
+}
+
 function normalizeName(value) {
   return (value || '').trim().toLowerCase()
 }
@@ -214,7 +226,11 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
   const controlWideClass = `${controlBaseClass} min-[360px]:w-[14rem]`
   const controlNameClass = `${controlBaseClass} flex items-center gap-2 min-[360px]:w-[16.5rem]`
   const controlNarrowClass = `${controlBaseClass} min-[360px]:w-[9rem]`
-  const controlSwitchClass = `${controlBaseClass} flex min-h-9 items-center`
+  // A switch has no width of its own to override the stacked-layout w-full with,
+  // and the base class pins it against shrinking — so without w-auto it claims
+  // the whole row, squeezes the label box to nothing and sits on top of the
+  // label text instead of lining up with the inputs above it.
+  const controlSwitchClass = `${controlBaseClass} flex min-h-9 items-center min-[360px]:w-auto`
 
   const handleSave = async () => {
     const nextFieldErrors = {}
@@ -381,7 +397,7 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
                   <Label className="text-sm font-medium">Port</Label>
                 </div>
                 <div className={controlNarrowClass}>
-                  <Input className={`h-9 ${fieldClass('port')}`} type="number" min={1} value={draft.port} onChange={(event) => update('port', event.target.value === '' ? 563 : Number(event.target.value))} />
+                  <Input className={`h-9 ${fieldClass('port')}`} type="number" min={1} value={draft.port} onChange={(event) => update('port', event.target.value === '' ? (draft.use_ssl ? SSL_PORT : PLAIN_PORT) : Number(event.target.value))} />
                 </div>
               </div>
             </div>
@@ -393,7 +409,13 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
                   <Label className="text-sm font-medium">SSL</Label>
                 </div>
                 <div className={controlSwitchClass}>
-                  <Switch checked={draft.use_ssl} onCheckedChange={(checked) => update('use_ssl', checked === true)} />
+                  <Switch
+                    checked={draft.use_ssl}
+                    onCheckedChange={(checked) => {
+                      const useSSL = checked === true
+                      setDraft((current) => ({ ...current, use_ssl: useSSL, port: portForSSL(current.port, useSSL) }))
+                    }}
+                  />
                 </div>
               </div>
             </div>
