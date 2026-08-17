@@ -43,7 +43,7 @@ services:
       - /path/to/config:/app/data
 ```
 
-Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/releases) page (Windows, Linux, macOS). See `.env.example` for config via environment variables.
+Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/releases) page (Windows, Linux, macOS). See [Configuration](docs/configuration.md) for startup flags and config via environment variables.
 
 ### Setup Guide
 
@@ -56,171 +56,36 @@ Or run the binary from the [releases](https://github.com/Gaisberg/streamnzb/rele
 4. Go to **Indexers** and add at least one Newznab-compatible indexer (URL + API key).
 5. Go to **Filters** to configure release filtering profiles and ranking rules.
 6. Go to **Search** and configure your movie and/or TV search queries.
-7. Optionally go to **Metadata** to curate the catalogs your clients see (trending rows are on by default) — see [Metadata & Catalogs](#metadata--catalogs).
+7. Optionally go to **Metadata** to curate the catalogs your clients see (trending rows are on by default) — see [Metadata & Catalogs](docs/metadata.md).
 8. Go to **Streams** and click **Add Stream** to create a stream manifest.
    - Select which providers, indexers, search queries, and filter profiles belong to this stream.
    - Configure stream options such as indexer mode, search query mode, results mode, failover, and AvailNZB behavior.
 9. Click **Install** on your stream to add the manifest directly to your Stremio client (or copy the manifest URL for optional use in AIOStreams).
 
-### Database: SQLite (default) or Postgres
 
-StreamNZB stores its library, NZB history, and metrics in SQLite at
-`<data dir>/streamnzb.db`. No setup is needed — this is the default.
+## Documentation
 
-To use an existing Postgres server instead, go to **General** (under Settings)
-and set the **Database** backend to Postgres with your connection string.
-StreamNZB checks the server is reachable before saving, then switches over
-without a restart.
+Full reference documentation lives in the [docs](docs/README.md) folder:
 
-Equivalently, via environment variables:
-
-```env
-DATABASE_DRIVER=postgres
-DATABASE_URL=postgres://user:password@db-host:5432/streamnzb?sslmode=disable
-```
-
-or `database_driver` / `database_url` in `config.json`.
-
-Switching backends carries your data with it — library, search and play
-history, bad releases, and metrics — in either direction, and leaves the
-database you came from untouched. Switching back later syncs only what the other side added in
-the meantime, so nothing is lost or duplicated by moving between the two. Set
-`database_skip_migration: true` in `config.json` to switch without copying.
-
-The one exception is switching *into* a database that already holds history but
-has never been synced with the one you are leaving: there is no way to tell what
-it already has, so history is left alone rather than duplicated (the library and
-settings still migrate). Every switch after that is incremental.
-
-> One StreamNZB instance per database. Instances cache state in memory and would
-> overwrite each other's indexer usage counters if they shared one.
-
-### Force password reset on next startup
-
-If you need to force the admin account to land on the password-change screen after restart, set:
-
-```env
-ADMIN_FORCE_PASSWORD_RESET=true
-```
-
-After the password has been changed, remove or disable this env var.
-When it remains enabled, StreamNZB will keep forcing the password-reset prompt on startup.
-
-### Provider speed test
-
-Each provider card in **Settings → Providers** has a speed test (the gauge icon). It measures two things:
-
-- **Test connection** — dials, authenticates, then times a single `DATE` round-trip. The timer starts only once the connection is established, so the number is server responsiveness, not handshake overhead.
-- **Speed test** — downloads real articles at 1, 2, 4, 8 … up to your configured connection count and reports throughput plus time-to-first-byte at each step. The point is the *knee*: the smallest connection count that already reaches peak speed, which you can apply back to the provider with one click. Results also translate into playback terms — the cheapest connection count that sustains 720p, 1080p and 4K (remux-class bitrates, plus 25% headroom for peaks and seeks), and how many concurrent streams the peak covers.
-
-By default it downloads a fixed public test NZB, which keeps results comparable between providers; switching the source to **My library** uses your most recent stored release instead, for articles of realistic age. Providers are tested one at a time — they share one uplink — and the downloaded bytes count against your account's usage like any other download.
-
-Ceilings are deployment-level and env-only. The byte ceiling is shared across the ramp with half of it reserved for the final step — that step measures your configured connection count, and it is also the fastest, so an equal split would starve exactly the measurement the report is built on. Steps the ceiling ended early show their actual window length next to the speed; anything under 1.5 s is flagged and left out of the peak. The default 4 GiB covers a full-length ramp up to roughly 2 Gbit; past that, raise it (a run costs about your line rate × 30 s) or accept shorter windows on the top step.
-
-```env
-STREAMNZB_SPEEDTEST_NZB_URL=https://sabnzbd.org/tests/test_download_10GB.nzb
-STREAMNZB_SPEEDTEST_MAX_BYTES=4294967296
-STREAMNZB_SPEEDTEST_MAX_SECONDS=60
-STREAMNZB_SPEEDTEST_STEP_SECONDS=6
-```
-
-### Easynews advanced search
-
-Easynews indexers search the `3.0` API (`/3.0/api/search`); NZB creation has no
-`3.0` equivalent and is the one call still made against `2.0`.
-
-Searches run in Easynews' advanced mode by default, which filters server-side
-so junk never reaches StreamNZB's own filters: `spamf` drops posts Easynews has
-flagged as spam, and `fex` limits results to the video containers StreamNZB
-would accept anyway. These are deployment-level and env-only — not in the
-settings UI.
-
-```env
-STREAMNZB_EASYNEWS_ADVANCED_SEARCH=false
-STREAMNZB_EASYNEWS_SPAM_FILTER=false
-STREAMNZB_EASYNEWS_FILE_EXTENSIONS=mkv,mp4,avi
-```
-
-Turning advanced search off disables all three. The spam filter follows advanced
-search unless set explicitly. The extension list is comma-separated without
-dots; leaving it unset sends StreamNZB's own accepted-container list, so the
-server-side and client-side filters cannot drift apart.
-
-
-## Metadata & Catalogs
-
-StreamNZB is a full metadata provider, on by default — your client needs no other addon or application for browsing, search, or title pages.
-
-- **Catalogs** — A fresh install serves one trending row per media type (movies, series, anime), each carrying search. The **Metadata** page offers an 18-catalog registry across TMDB, TVDB, Kitsu and local rows (popular, top rated, now playing, upcoming, Popular/New on TVDB, and more): add them from the search dialog, drag to reorder, remove with one click. Changes save automatically.
-- **Personal rows** — **Continue Watching** and **Because You Watched** are built from each stream's *own* playback history, so every household member with their own stream gets personal rows from the same server.
-- **No duplicate rows** — A title appears only in the highest-ordered catalog that carries it; your row order doubles as the dedup priority.
-- **Sources** — Series metadata comes from TVDB, movies from TMDB, anime from Kitsu (configurable per media type), with TVMaze as the air-date authority. Episodes that have not aired yet answer instantly with no results instead of burning an indexer search, and the empty answer expires exactly at air time.
-- **Opting out** — Prefer Cinemeta or another metadata addon? Turn the master switch off on the Metadata page and StreamNZB serves streams only, exactly as before.
-
-Built-in fallback TMDB/TVDB keys make this work with zero setup; adding your own keys on the Metadata page raises the ceiling and is recommended for anything beyond personal use.
-
-> This product uses the TMDB API but is not endorsed or certified by TMDB. Series metadata is provided by [TheTVDB](https://thetvdb.com) — consider subscribing to support them.
-
-
-## Stream Model
-
-StreamNZB separates global configuration from per-stream behavior:
-
-- **General** — Base URL, port, NNTP proxy, User-Agent headers, and database backend.
-- **Metadata** — Catalogs and their order, per-media-type metadata sources, TVMaze air dates, and TMDB/TVDB API keys.
-- **Indexers** — Global registry of Newznab and EasyNews search sources.
-- **Providers** — Global registry of Usenet provider server connections.
-- **Filters** — Release filtering rules and `jhin` ranking profiles.
-- **Search** — Reusable movie and TV search query templates.
-- **Streams** — Configured Stremio addon manifests (`<token>/manifest.json`). A stream can be renamed at any time; manifest URLs are built from the token, not the name, so an already-installed addon keeps working, and the stream's playback history moves with it.
-
-Each stream configuration defines:
-
-- **Addon Name** — Optional override for the name this stream reports to clients. Blank shows `StreamNZB · <stream name>`; setting it replaces that label entirely, so a stream can appear as, say, `Usenet 4K` in the client's addon list *and* on every result it returns (including the `{{.Service}}` template variable). Clients cache the manifest, so an already-installed addon keeps its old name until it is reinstalled — results relabel immediately.
-- **Resource Selections** — Which providers, indexers, search queries, and filter profiles are active for the manifest.
-- **Per-provider enable/disable** — Turn a provider off for one stream without removing it from the list. Because it stays a member, the choice survives automatic sync, which owns membership rather than intent. At least one provider must stay enabled.
-- **Per-provider connection caps** — Optionally limit how many of a provider's connections this stream may hold during playback, so one manifest cannot monopolise the account. It is a ceiling, not a reservation: it stops a stream taking everything, but does not hold connections back for anyone else. The provider speed test tells you the floor — the connection count each resolution needs.
-- **Indexer Mode** — `Combine` (parallel query) or `Failover` (sequential).
-- **Search Query Mode** — `Combine` or `First hit`.
-- **Results Mode & Limit** — Resolution ordering and maximum release count returned to Stremio.
-- **Filter Profiles** — General and per-kind (Movie, Series, Anime) release filter bindings powered by `jhin`.
-- **Failover & AvailNZB** — Automatic stream fallback walking and community availability checking.
-
-This architecture allows running multiple distinct Stremio manifests from a single StreamNZB instance, each tailored with different search rules, filters, or provider selections.
-
-
-## Optional: Using with AIOStreams
-
-StreamNZB works directly out-of-the-box with Stremio using its own built-in release parsing and filter profiles. If you use [AIOStreams](https://github.com/Viren070/AIOStreams), you can also add StreamNZB as an addon preset to consolidate streams alongside other addons.
-
-**Setup:**
-
-1. In StreamNZB, create or choose the stream you want AIOStreams to use.
-2. Copy that stream's manifest URL (for example `https://your-host:7000/<token>/manifest.json`).
-3. In AIOStreams, add the StreamNZB preset and paste the manifest URL.
-4. **No Usenet service required in AIOStreams** — StreamNZB handles all Usenet provider connections, NZB fetching, and streaming internally. Skip the AIOStreams Usenet service configuration entirely.
-5. Optionally configure additional filtering, sorting, or formatting rules in the AIOStreams UI if desired.
-
-
-## AvailNZB
-
-[AvailNZB](https://check.snzb.stream) is a community availability database. StreamNZB doesn't download or validate NZBs before showing results — it builds an ordered play list from indexer search plus AvailNZB (skipping releases already reported bad), then tries on play. Success/failure is reported so the shared DB stays current.
-
-AvailNZB is controlled at two levels:
-
-- **Global** in **Advanced** (under Settings)
-- **Per stream** in **Streams → Add/Change → General**
-
-AvailNZB is only used when both the global setting and the stream setting allow it.
+- [Configuration](docs/configuration.md) — startup flags, data directory, and the full environment variable reference
+- [Database backends](docs/database.md) — SQLite (default), Postgres, and switching between them
+- [Remote access](docs/remote-access.md) — VPN and reverse proxy setups for streaming away from home
+- [Provider speed test](docs/speed-test.md) — measuring provider throughput and finding the right connection count
+- [Easynews advanced search](docs/easynews.md) — server-side filtering options for Easynews indexers
+- [Metadata & catalogs](docs/metadata.md) — StreamNZB as a full Stremio metadata provider
+- [Stream model](docs/stream-model.md) — global configuration vs. per-stream behavior
+- [Filters & ranking](docs/filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
+- [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
+- [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
+- [AvailNZB](docs/availnzb.md) — community availability database integration
+- [Using with AIOStreams](docs/aiostreams.md) — adding StreamNZB as an AIOStreams preset
+- [Troubleshooting](docs/troubleshooting.md) — reporting problems, Cloudflare Tunnel buffering, admin password recovery
+- [Backup & updates](docs/backup-and-updates.md) — what to back up and how to update safely
 
 
 ## Troubleshooting
 
-If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). Include downloaded logs when relevant, and include the copied bad match report from **History** when the issue is about a wrong or poor release match. For "why am I getting no (or few) streams", expand the request on **History** — its search panel shows what each indexer returned and what filtering dropped. Sensitive data should be automatically redacted but please double-check before posting.
-
-### Buffering behind Cloudflare Tunnel
-
-Exposing StreamNZB through a Cloudflare Tunnel (`cloudflared`) is not recommended. The playback path streams large amounts of video data continuously, and routing it through the tunnel can throttle sustained throughput and cause unnecessary buffering — even when the server itself is keeping up. If you see buffering that doesn't match the connection speeds on the dashboard, try playing directly against the server (LAN address or a direct reverse proxy) to rule the tunnel out. For remote access, prefer a VPN (e.g. WireGuard/Tailscale) or a plain reverse proxy on a directly reachable host. Proxying large volumes of video traffic through Cloudflare may also violate their terms of service.
+If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). See the [troubleshooting guide](docs/troubleshooting.md) for what to include and common issues.
 
 
 ## Support
