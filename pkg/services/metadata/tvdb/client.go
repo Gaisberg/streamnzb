@@ -350,6 +350,7 @@ type SeriesExtended struct {
 	Overview   string `json:"overview"`
 	Image      string `json:"image"` // poster; TVDB returns absolute URLs
 	FirstAired string `json:"firstAired"`
+	LastAired  string `json:"lastAired"`
 	Year       string `json:"year"`
 	Status     struct {
 		Name string `json:"name"`
@@ -366,6 +367,31 @@ type SeriesExtended struct {
 		ID         string `json:"id"`
 		SourceName string `json:"sourceName"`
 	} `json:"remoteIds"`
+	// Characters carries the cast (and other people) in TVDB's sort order.
+	Characters []struct {
+		PersonName string `json:"personName"`
+		PeopleType string `json:"peopleType"`
+	} `json:"characters"`
+	Trailers []struct {
+		URL string `json:"url"`
+	} `json:"trailers"`
+}
+
+// Cast returns the actor names in TVDB's order, capped at limit.
+func (s *SeriesExtended) Cast(limit int) []string {
+	var cast []string
+	seen := make(map[string]bool)
+	for _, ch := range s.Characters {
+		if !strings.EqualFold(ch.PeopleType, "Actor") || ch.PersonName == "" || seen[ch.PersonName] {
+			continue
+		}
+		seen[ch.PersonName] = true
+		cast = append(cast, ch.PersonName)
+		if len(cast) >= limit {
+			break
+		}
+	}
+	return cast
 }
 
 // IMDbID returns the IMDb remote id ("tt..."), or "".

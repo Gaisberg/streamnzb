@@ -101,7 +101,20 @@ func TestBuildMovieMeta(t *testing.T) {
 				"id": 603, "title": "The Matrix", "release_date": "1999-03-30",
 				"overview": "A hacker learns the truth.", "poster_path": "/p.jpg",
 				"backdrop_path": "/b.jpg", "runtime": 136, "vote_average": 8.2,
-				"imdb_id": "tt0133093", "genres": [{"id": 878, "name": "Science Fiction"}]
+				"imdb_id": "tt0133093", "genres": [{"id": 878, "name": "Science Fiction"}],
+				"credits": {
+					"cast": [{"name": "Keanu Reeves", "order": 0}, {"name": "Carrie-Anne Moss", "order": 1}],
+					"crew": [
+						{"name": "Lana Wachowski", "job": "Director"},
+						{"name": "Lilly Wachowski", "job": "Director"},
+						{"name": "Lana Wachowski", "job": "Writer"}
+					]
+				},
+				"videos": {"results": [
+					{"key": "fan123", "site": "YouTube", "type": "Trailer", "official": false},
+					{"key": "vKQi3bBA1y8", "site": "YouTube", "type": "Trailer", "official": true},
+					{"key": "clip99", "site": "YouTube", "type": "Clip", "official": true}
+				]}
 			}`))
 		default:
 			http.NotFound(w, r)
@@ -123,6 +136,23 @@ func TestBuildMovieMeta(t *testing.T) {
 	}
 	if len(meta.Genres) != 1 || meta.Genres[0] != "Science Fiction" {
 		t.Fatalf("genres = %v", meta.Genres)
+	}
+	// The details-panel fields Cinemeta users expect.
+	if len(meta.Cast) != 2 || meta.Cast[0] != "Keanu Reeves" {
+		t.Fatalf("cast = %v", meta.Cast)
+	}
+	if len(meta.Director) != 2 || len(meta.Writer) != 1 {
+		t.Fatalf("director/writer = %v / %v", meta.Director, meta.Writer)
+	}
+	// Official trailers first, clips excluded.
+	if len(meta.Trailers) != 2 || meta.Trailers[0].Source != "vKQi3bBA1y8" {
+		t.Fatalf("trailers = %v", meta.Trailers)
+	}
+	if meta.Released != "1999-03-30T00:00:00.000Z" {
+		t.Fatalf("released = %q", meta.Released)
+	}
+	if meta.Logo != "https://images.metahub.space/logo/medium/tt0133093/img" {
+		t.Fatalf("logo = %q", meta.Logo)
 	}
 }
 
@@ -253,8 +283,15 @@ func tvdbStubHandler() http.HandlerFunc {
 			_, _ = w.Write([]byte(`{"status": "success", "data": {
 				"id": 121361, "name": "Game of Thrones (TVDB)", "overview": "From TVDB.",
 				"image": "https://artworks.thetvdb.com/got.jpg", "year": "2011",
+				"lastAired": "2019-05-19", "status": {"name": "Ended"},
 				"averageRuntime": 55, "genres": [{"name": "Fantasy"}],
-				"artworks": [{"image": "https://artworks.thetvdb.com/got-fanart.jpg", "type": 3}]
+				"artworks": [{"image": "https://artworks.thetvdb.com/got-fanart.jpg", "type": 3}],
+				"characters": [
+					{"personName": "Emilia Clarke", "peopleType": "Actor"},
+					{"personName": "Ramin Djawadi", "peopleType": "Musician"},
+					{"personName": "Kit Harington", "peopleType": "Actor"}
+				],
+				"trailers": [{"url": "https://www.youtube.com/watch?v=KPLWWIOCOOQ"}]
 			}}`))
 		case r.URL.Path == "/series/121361/episodes/default":
 			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
@@ -332,6 +369,19 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 	if ep.Thumbnail != "https://artworks.thetvdb.com/e1.jpg" {
 		t.Fatalf("thumbnail = %q, want TVDB's episode image", ep.Thumbnail)
+	}
+	// Details-panel enrichment: actors only, ended-run year range, trailer id.
+	if len(meta.Cast) != 2 || meta.Cast[0] != "Emilia Clarke" || meta.Cast[1] != "Kit Harington" {
+		t.Fatalf("cast = %v", meta.Cast)
+	}
+	if meta.ReleaseInfo != "2011-2019" {
+		t.Fatalf("releaseInfo = %q, want the ended-run year range", meta.ReleaseInfo)
+	}
+	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "KPLWWIOCOOQ" {
+		t.Fatalf("trailers = %v", meta.Trailers)
+	}
+	if meta.Logo != "https://images.metahub.space/logo/medium/tt0944947/img" {
+		t.Fatalf("logo = %q", meta.Logo)
 	}
 }
 

@@ -352,6 +352,40 @@ type MovieDetails struct {
 	VoteAverage  float64 `json:"vote_average"`
 	IMDbID       string  `json:"imdb_id"`
 	Tagline      string  `json:"tagline"`
+	// Credits and Videos are populated only when the details request appended
+	// them (GetMovieDetailsFull).
+	Credits *Credits `json:"credits"`
+	Videos  *Videos  `json:"videos"`
+}
+
+// Credits is the appended credits payload shared by movie and TV details.
+type Credits struct {
+	Cast []struct {
+		Name  string `json:"name"`
+		Order int    `json:"order"`
+	} `json:"cast"`
+	Crew []struct {
+		Name string `json:"name"`
+		Job  string `json:"job"`
+	} `json:"crew"`
+}
+
+// Videos is the appended videos payload; Key is a YouTube id for Site YouTube.
+type Videos struct {
+	Results []struct {
+		Key      string `json:"key"`
+		Site     string `json:"site"`
+		Type     string `json:"type"`
+		Official bool   `json:"official"`
+	} `json:"results"`
+}
+
+// GetMovieDetailsFull fetches movie details with credits and videos appended —
+// one request, everything the meta resource renders.
+func (c *Client) GetMovieDetailsFull(tmdbID int) (*MovieDetails, error) {
+	params := url.Values{}
+	params.Set("append_to_response", "credits,videos")
+	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
 }
 
 type TVDetails struct {
@@ -371,9 +405,11 @@ type TVDetails struct {
 	EpisodeRunTime []int   `json:"episode_run_time"`
 	Status         string  `json:"status"`
 	LastAirDate    string  `json:"last_air_date"`
-	// ExternalIDs is populated only when the details request appended
-	// external_ids (see GetTVDetailsWithSeasons).
+	// ExternalIDs, Credits and Videos are populated only when the details
+	// request appended them (see GetTVDetailsWithSeasons).
 	ExternalIDs *ExternalIDsResponse `json:"external_ids"`
+	Credits     *Credits             `json:"credits"`
+	Videos      *Videos              `json:"videos"`
 }
 
 type TVSeasonInfo struct {
@@ -609,8 +645,8 @@ func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetail
 
 // maxAppendedSeasons caps the seasons batched into one details request.
 // append_to_response accepts at most 20 appended resources; the first batch
-// also carries external_ids.
-const maxAppendedSeasons = 19
+// also carries external_ids, credits and videos.
+const maxAppendedSeasons = 17
 
 // GetTVDetailsWithSeasons fetches TV details plus the given seasons' episode
 // lists using append_to_response, so a whole series costs ceil(n/19) requests
@@ -626,9 +662,9 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDe
 	seasons := make(map[int]*TVSeasonDetails, len(seasonNumbers))
 	for start := 0; start == 0 || start < len(seasonNumbers); start += maxAppendedSeasons {
 		batch := seasonNumbers[min(start, len(seasonNumbers)):min(start+maxAppendedSeasons, len(seasonNumbers))]
-		appends := make([]string, 0, len(batch)+1)
+		appends := make([]string, 0, len(batch)+3)
 		if start == 0 {
-			appends = append(appends, "external_ids")
+			appends = append(appends, "external_ids", "credits", "videos")
 		}
 		for _, n := range batch {
 			appends = append(appends, fmt.Sprintf("season/%d", n))

@@ -14,20 +14,33 @@ type MetaVideo struct {
 	Thumbnail string `json:"thumbnail,omitempty"`
 }
 
-// MetaObject is a Stremio meta resource object.
+// MetaObject is a Stremio meta resource object. Cast, Director, Writer,
+// Released and Trailers are what clients render on the details panel — a meta
+// without them looks bare next to Cinemeta's.
 type MetaObject struct {
-	ID          string      `json:"id"`
-	Type        string      `json:"type"`
-	Name        string      `json:"name"`
-	Poster      string      `json:"poster,omitempty"`
-	Background  string      `json:"background,omitempty"`
-	Logo        string      `json:"logo,omitempty"`
-	Description string      `json:"description,omitempty"`
-	ReleaseInfo string      `json:"releaseInfo,omitempty"`
-	IMDBRating  string      `json:"imdbRating,omitempty"`
-	Runtime     string      `json:"runtime,omitempty"`
-	Genres      []string    `json:"genres,omitempty"`
-	Videos      []MetaVideo `json:"videos,omitempty"`
+	ID          string        `json:"id"`
+	Type        string        `json:"type"`
+	Name        string        `json:"name"`
+	Poster      string        `json:"poster,omitempty"`
+	Background  string        `json:"background,omitempty"`
+	Logo        string        `json:"logo,omitempty"`
+	Description string        `json:"description,omitempty"`
+	ReleaseInfo string        `json:"releaseInfo,omitempty"`
+	Released    string        `json:"released,omitempty"` // ISO 8601
+	IMDBRating  string        `json:"imdbRating,omitempty"`
+	Runtime     string        `json:"runtime,omitempty"`
+	Genres      []string      `json:"genres,omitempty"`
+	Cast        []string      `json:"cast,omitempty"`
+	Director    []string      `json:"director,omitempty"`
+	Writer      []string      `json:"writer,omitempty"`
+	Trailers    []MetaTrailer `json:"trailers,omitempty"`
+	Videos      []MetaVideo   `json:"videos,omitempty"`
+}
+
+// MetaTrailer is one trailer entry; Source is a YouTube video id.
+type MetaTrailer struct {
+	Source string `json:"source"`
+	Type   string `json:"type"`
 }
 
 // MetaResponse is the /meta/{type}/{id}.json envelope. CacheMaxAge and

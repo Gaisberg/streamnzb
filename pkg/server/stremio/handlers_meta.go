@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -177,11 +178,15 @@ func pickFindResult(find *tmdb.FindResponse, contentType string) (tmdb.Result, b
 	return tmdb.Result{}, false
 }
 
+// metahubLogoURL serves title logos keyed by imdb id — the same CDN Cinemeta
+// points clients at, so coverage matches what users are used to.
+const metahubLogoURL = "https://images.metahub.space/logo/medium/%s/img"
+
 func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*MetaObject, error) {
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
 	}
-	details, err := s.tmdbClient.GetMovieDetails(rid.tmdbID)
+	details, err := s.tmdbClient.GetMovieDetailsFull(rid.tmdbID)
 	if err != nil {
 		return nil, err
 	}
@@ -202,8 +207,12 @@ func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*Meta
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
+	if rid.imdbID != "" {
+		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
+	}
 	if len(details.ReleaseDate) >= 4 {
 		meta.ReleaseInfo = details.ReleaseDate[:4]
+		meta.Released = details.ReleaseDate + "T00:00:00.000Z"
 	}
 	if details.VoteAverage > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", details.VoteAverage)
@@ -211,7 +220,65 @@ func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*Meta
 	if details.Runtime > 0 {
 		meta.Runtime = fmt.Sprintf("%d min", details.Runtime)
 	}
+	applyTMDBCredits(meta, details.Credits)
+	meta.Trailers = tmdbTrailers(details.Videos)
 	return meta, nil
+}
+
+const metaCastLimit = 10
+
+// applyTMDBCredits fills cast/director/writer from an appended credits payload.
+func applyTMDBCredits(meta *MetaObject, credits *tmdb.Credits) {
+	if credits == nil {
+		return
+	}
+	for _, member := range credits.Cast {
+		if member.Name == "" {
+			continue
+		}
+		meta.Cast = append(meta.Cast, member.Name)
+		if len(meta.Cast) >= metaCastLimit {
+			break
+		}
+	}
+	seen := make(map[string]bool)
+	for _, member := range credits.Crew {
+		if member.Name == "" || seen[member.Job+member.Name] {
+			continue
+		}
+		seen[member.Job+member.Name] = true
+		switch member.Job {
+		case "Director":
+			meta.Director = append(meta.Director, member.Name)
+		case "Writer", "Screenplay", "Story":
+			meta.Writer = append(meta.Writer, member.Name)
+		}
+	}
+}
+
+// tmdbTrailers extracts YouTube trailers from an appended videos payload,
+// official uploads first.
+func tmdbTrailers(videos *tmdb.Videos) []MetaTrailer {
+	if videos == nil {
+		return nil
+	}
+	var official, rest []MetaTrailer
+	for _, video := range videos.Results {
+		if video.Site != "YouTube" || video.Type != "Trailer" || video.Key == "" {
+			continue
+		}
+		trailer := MetaTrailer{Source: video.Key, Type: "Trailer"}
+		if video.Official {
+			official = append(official, trailer)
+		} else {
+			rest = append(rest, trailer)
+		}
+	}
+	trailers := append(official, rest...)
+	if len(trailers) > 3 {
+		trailers = trailers[:3]
+	}
+	return trailers
 }
 
 // currentConfig snapshots the config pointer under the lock; Reload swaps it.
@@ -276,20 +343,42 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string
 		Description: ext.Overview,
 		Poster:      ext.Image,
 		Background:  ext.Background(),
+		Cast:        ext.Cast(metaCastLimit),
 	}
 	for _, g := range ext.Genres {
 		if g.Name != "" {
 			meta.Genres = append(meta.Genres, g.Name)
 		}
 	}
-	switch {
-	case len(ext.Year) >= 4:
-		meta.ReleaseInfo = ext.Year[:4]
-	case len(ext.FirstAired) >= 4:
-		meta.ReleaseInfo = ext.FirstAired[:4]
+	firstYear := ext.Year
+	if len(firstYear) < 4 && len(ext.FirstAired) >= 4 {
+		firstYear = ext.FirstAired[:4]
+	}
+	lastYear := ""
+	if len(ext.LastAired) >= 4 {
+		lastYear = ext.LastAired[:4]
+	}
+	meta.ReleaseInfo = seriesReleaseInfo(firstYear, lastYear, ext.Status.Name)
+	if len(ext.FirstAired) >= 10 {
+		meta.Released = ext.FirstAired + "T00:00:00.000Z"
 	}
 	if ext.AverageRuntime > 0 {
 		meta.Runtime = fmt.Sprintf("%d min", ext.AverageRuntime)
+	}
+	// The canonical id stays as requested; the logo CDN just needs imdb.
+	if rid.imdbID == "" {
+		rid.imdbID = ext.IMDbID()
+	}
+	if rid.imdbID != "" {
+		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
+	}
+	for _, trailer := range ext.Trailers {
+		if ytID := youtubeIDFromURL(trailer.URL); ytID != "" {
+			meta.Trailers = append(meta.Trailers, MetaTrailer{Source: ytID, Type: "Trailer"})
+			if len(meta.Trailers) >= 3 {
+				break
+			}
+		}
 	}
 
 	episodes, err := s.tvdbClient.GetSeriesEpisodes(tvdbID)
@@ -362,15 +451,26 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if len(details.FirstAirDate) >= 4 {
-		meta.ReleaseInfo = details.FirstAirDate[:4]
+	if rid.imdbID != "" {
+		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
 	}
+	firstYear, lastYear := "", ""
+	if len(details.FirstAirDate) >= 4 {
+		firstYear = details.FirstAirDate[:4]
+		meta.Released = details.FirstAirDate + "T00:00:00.000Z"
+	}
+	if len(details.LastAirDate) >= 4 {
+		lastYear = details.LastAirDate[:4]
+	}
+	meta.ReleaseInfo = seriesReleaseInfo(firstYear, lastYear, details.Status)
 	if details.VoteAverage > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", details.VoteAverage)
 	}
 	if len(details.EpisodeRunTime) > 0 && details.EpisodeRunTime[0] > 0 {
 		meta.Runtime = fmt.Sprintf("%d min", details.EpisodeRunTime[0])
 	}
+	applyTMDBCredits(meta, details.Credits)
+	meta.Trailers = tmdbTrailers(details.Videos)
 
 	overlay := s.tvmazeEpisodeOverlay(ctx, rid.imdbID, rid.tvdbID)
 	for _, n := range seasonNumbers {
@@ -397,6 +497,41 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 		}
 	}
 	return meta, nil
+}
+
+// seriesReleaseInfo renders the year range clients show under a series title:
+// "2011-2019" for a finished run, "2011-" for a continuing one, the bare year
+// when the end is unknown or the same year.
+func seriesReleaseInfo(firstYear, lastYear, status string) string {
+	if firstYear == "" {
+		return ""
+	}
+	switch strings.ToLower(status) {
+	case "ended", "canceled", "cancelled":
+		if lastYear != "" && lastYear != firstYear {
+			return firstYear + "-" + lastYear
+		}
+		return firstYear
+	case "continuing", "returning series", "in production":
+		return firstYear + "-"
+	}
+	return firstYear
+}
+
+// youtubeIDFromURL extracts a YouTube video id from watch?v= and youtu.be
+// forms; anything else yields "".
+func youtubeIDFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch strings.TrimPrefix(u.Hostname(), "www.") {
+	case "youtube.com", "m.youtube.com":
+		return u.Query().Get("v")
+	case "youtu.be":
+		return strings.Trim(u.Path, "/")
+	}
+	return ""
 }
 
 // seriesMetaType echoes the client's requested type for series-like content so
