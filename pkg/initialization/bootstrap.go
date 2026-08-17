@@ -190,7 +190,7 @@ func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *
 				downloadBase = downloadBase[:len(downloadBase)-1]
 			}
 
-			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), effectiveProxyURL, idxCfg.GrabHeader, usageMgr)
+			easynewsClient, err := easynews.NewClient(idxCfg.Username, idxCfg.Password, idxCfg.Name, downloadBase, idxCfg.APIHitsDay, idxCfg.DownloadsDay, idxCfg.RateLimitRPS, idxCfg.EffectiveTimeoutSeconds(), effectiveProxyURL, idxCfg.QueryHeader, idxCfg.GrabHeader, usageMgr)
 			if err != nil {
 				logger.Error("Failed to initialize Easynews from indexer list", "name", idxCfg.Name, "err", err)
 			} else {

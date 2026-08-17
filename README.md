@@ -113,14 +113,36 @@ Each provider card in **Settings → Providers** has a speed test (the gauge ico
 
 By default it downloads a fixed public test NZB, which keeps results comparable between providers; switching the source to **My library** uses your most recent stored release instead, for articles of realistic age. Providers are tested one at a time — they share one uplink — and the downloaded bytes count against your account's usage like any other download.
 
-Ceilings are deployment-level and env-only. The byte ceiling is shared fairly across the ramp, so a fast connection gets shorter — but still valid — measurement windows rather than four good steps and one starved one. Steps the ceiling ended early show their actual window length next to the speed; anything under 1.5 s is flagged and left out of the peak. On a gigabit line a full ramp wants roughly 2 GiB for full-length steps.
+Ceilings are deployment-level and env-only. The byte ceiling is shared across the ramp with half of it reserved for the final step — that step measures your configured connection count, and it is also the fastest, so an equal split would starve exactly the measurement the report is built on. Steps the ceiling ended early show their actual window length next to the speed; anything under 1.5 s is flagged and left out of the peak. The default 4 GiB covers a full-length ramp up to roughly 2 Gbit; past that, raise it (a run costs about your line rate × 30 s) or accept shorter windows on the top step.
 
 ```env
-STREAMNZB_SPEEDTEST_NZB_URL=https://sabnzbd.org/tests/test_download_1GB.nzb
-STREAMNZB_SPEEDTEST_MAX_BYTES=1073741824
+STREAMNZB_SPEEDTEST_NZB_URL=https://sabnzbd.org/tests/test_download_10GB.nzb
+STREAMNZB_SPEEDTEST_MAX_BYTES=4294967296
 STREAMNZB_SPEEDTEST_MAX_SECONDS=60
 STREAMNZB_SPEEDTEST_STEP_SECONDS=6
 ```
+
+### Easynews advanced search
+
+Easynews indexers search the `3.0` API (`/3.0/api/search`); NZB creation has no
+`3.0` equivalent and is the one call still made against `2.0`.
+
+Searches run in Easynews' advanced mode by default, which filters server-side
+so junk never reaches StreamNZB's own filters: `spamf` drops posts Easynews has
+flagged as spam, and `fex` limits results to the video containers StreamNZB
+would accept anyway. These are deployment-level and env-only — not in the
+settings UI.
+
+```env
+STREAMNZB_EASYNEWS_ADVANCED_SEARCH=false
+STREAMNZB_EASYNEWS_SPAM_FILTER=false
+STREAMNZB_EASYNEWS_FILE_EXTENSIONS=mkv,mp4,avi
+```
+
+Turning advanced search off disables all three. The spam filter follows advanced
+search unless set explicitly. The extension list is comma-separated without
+dots; leaving it unset sends StreamNZB's own accepted-container list, so the
+server-side and client-side filters cannot drift apart.
 
 
 ## Stream Model

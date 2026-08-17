@@ -57,7 +57,7 @@ func TestGetUsageRefreshesDailyCountersAfterRollover(t *testing.T) {
 	usageData.AllTimeAPIHitsUsed = 30
 	usageData.AllTimeDownloadsUsed = 12
 
-	client, err := NewClient("user", "pass", name, "", 8, 4, 0, 0, "", "", usageManager)
+	client, err := NewClient("user", "pass", name, "", 8, 4, 0, 0, "", "", "", usageManager)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLimitChecksRefreshDailyUsageAfterRollover(t *testing.T) {
 	usageData.APIHitsUsed = 8
 	usageData.DownloadsUsed = 4
 
-	client, err := NewClient("user", "pass", name, "", 8, 4, 0, 0, "", "", usageManager)
+	client, err := NewClient("user", "pass", name, "", 8, 4, 0, 0, "", "", "", usageManager)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

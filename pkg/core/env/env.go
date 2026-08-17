@@ -9,39 +9,45 @@ import (
 )
 
 const (
-	ADDONPort                      = "ADDON_PORT"
-	ADDONBaseURL                   = "ADDON_BASE_URL"
-	LOGLevel                       = "LOG_LEVEL"
-	LOGPath                        = "LOG_PATH"
-	StreamNZBLogPathEnv            = "STREAMNZB_LOG_PATH"
-	KeepLogFiles                   = "KEEP_LOG_FILES"
-	AvailNZBURL                    = "AVAILNZB_URL"
-	AvailNZBAPIKey                 = "AVAILNZB_API_KEY"
-	TMDBAPIKey                     = "TMDB_API_KEY"
-	TVDBAPIKey                     = "TVDB_API_KEY"
-	NNTPProxyPort                  = "NNTP_PROXY_PORT"
-	NNTPProxyHost                  = "NNTP_PROXY_HOST"
-	NNTPProxyEnabled               = "NNTP_PROXY_ENABLED"
-	NNTPProxyAuthUser              = "NNTP_PROXY_AUTH_USER"
-	NNTPProxyAuthPass              = "NNTP_PROXY_AUTH_PASS"
-	TZVar                          = "TZ"
-	ProviderPrefix                 = "PROVIDER_"
-	IndexerPrefix                  = "INDEXER_"
-	IndexerQueryHeaderEnv          = "INDEXER_QUERY_HEADER"
-	IndexerGrabHeaderEnv           = "INDEXER_GRAB_HEADER"
-	ProviderHeaderEnv              = "PROVIDER_HEADER"
-	StreamNZBIndexerQueryHeaderEnv = "STREAMNZB_INDEXER_QUERY_HEADER"
-	StreamNZBIndexerGrabHeaderEnv  = "STREAMNZB_INDEXER_GRAB_HEADER"
-	StreamNZBProviderHeaderEnv     = "STREAMNZB_PROVIDER_HEADER"
-	ConfigPath                     = "CONFIG_PATH"
-	DatabaseDriverEnv              = "DATABASE_DRIVER"
-	DatabaseURLEnv                 = "DATABASE_URL"
-	StreamNZBDatabaseDriverEnv     = "STREAMNZB_DATABASE_DRIVER"
-	StreamNZBDatabaseURLEnv        = "STREAMNZB_DATABASE_URL"
-	SpeedTestNZBURLEnv             = "STREAMNZB_SPEEDTEST_NZB_URL"
-	SpeedTestMaxBytesEnv           = "STREAMNZB_SPEEDTEST_MAX_BYTES"
-	SpeedTestMaxSecondsEnv         = "STREAMNZB_SPEEDTEST_MAX_SECONDS"
-	SpeedTestStepSecondsEnv        = "STREAMNZB_SPEEDTEST_STEP_SECONDS"
+	ADDONPort                          = "ADDON_PORT"
+	ADDONBaseURL                       = "ADDON_BASE_URL"
+	LOGLevel                           = "LOG_LEVEL"
+	LOGPath                            = "LOG_PATH"
+	StreamNZBLogPathEnv                = "STREAMNZB_LOG_PATH"
+	KeepLogFiles                       = "KEEP_LOG_FILES"
+	AvailNZBURL                        = "AVAILNZB_URL"
+	AvailNZBAPIKey                     = "AVAILNZB_API_KEY"
+	TMDBAPIKey                         = "TMDB_API_KEY"
+	TVDBAPIKey                         = "TVDB_API_KEY"
+	NNTPProxyPort                      = "NNTP_PROXY_PORT"
+	NNTPProxyHost                      = "NNTP_PROXY_HOST"
+	NNTPProxyEnabled                   = "NNTP_PROXY_ENABLED"
+	NNTPProxyAuthUser                  = "NNTP_PROXY_AUTH_USER"
+	NNTPProxyAuthPass                  = "NNTP_PROXY_AUTH_PASS"
+	TZVar                              = "TZ"
+	ProviderPrefix                     = "PROVIDER_"
+	IndexerPrefix                      = "INDEXER_"
+	IndexerQueryHeaderEnv              = "INDEXER_QUERY_HEADER"
+	IndexerGrabHeaderEnv               = "INDEXER_GRAB_HEADER"
+	ProviderHeaderEnv                  = "PROVIDER_HEADER"
+	StreamNZBIndexerQueryHeaderEnv     = "STREAMNZB_INDEXER_QUERY_HEADER"
+	StreamNZBIndexerGrabHeaderEnv      = "STREAMNZB_INDEXER_GRAB_HEADER"
+	StreamNZBProviderHeaderEnv         = "STREAMNZB_PROVIDER_HEADER"
+	ConfigPath                         = "CONFIG_PATH"
+	DatabaseDriverEnv                  = "DATABASE_DRIVER"
+	DatabaseURLEnv                     = "DATABASE_URL"
+	StreamNZBDatabaseDriverEnv         = "STREAMNZB_DATABASE_DRIVER"
+	StreamNZBDatabaseURLEnv            = "STREAMNZB_DATABASE_URL"
+	SpeedTestNZBURLEnv                 = "STREAMNZB_SPEEDTEST_NZB_URL"
+	SpeedTestMaxBytesEnv               = "STREAMNZB_SPEEDTEST_MAX_BYTES"
+	SpeedTestMaxSecondsEnv             = "STREAMNZB_SPEEDTEST_MAX_SECONDS"
+	SpeedTestStepSecondsEnv            = "STREAMNZB_SPEEDTEST_STEP_SECONDS"
+	EasynewsAdvancedSearchEnv          = "EASYNEWS_ADVANCED_SEARCH"
+	StreamNZBEasynewsAdvancedSearchEnv = "STREAMNZB_EASYNEWS_ADVANCED_SEARCH"
+	EasynewsSpamFilterEnv              = "EASYNEWS_SPAM_FILTER"
+	StreamNZBEasynewsSpamFilterEnv     = "STREAMNZB_EASYNEWS_SPAM_FILTER"
+	EasynewsFileExtensionsEnv          = "EASYNEWS_FILE_EXTENSIONS"
+	StreamNZBEasynewsFileExtensionsEnv = "STREAMNZB_EASYNEWS_FILE_EXTENSIONS"
 )
 
 const (
@@ -158,8 +164,17 @@ func LogPath() string {
 // is a deployment concern rather than a per-user setting, so they stay out of
 // Config and the settings UI.
 const (
-	DefaultSpeedTestNZBURL      = "https://sabnzbd.org/tests/test_download_1GB.nzb"
-	DefaultSpeedTestMaxBytes    = int64(1) << 30 // 1 GiB of provider quota
+	// The 10 GB reference post rather than the 1 GB one: a multi-gigabit line
+	// reads a gigabyte in under two seconds, and once the corpus wraps the run
+	// re-reads articles the provider has just served — likely still in its cache,
+	// so the numbers stop describing a cold fetch.
+	DefaultSpeedTestNZBURL = "https://sabnzbd.org/tests/test_download_10GB.nzb"
+	// DefaultSpeedTestMaxBytes only ever binds on a fast line: the run is capped
+	// at half a minute of stepping, which a line under ~1 Gbit cannot fill even
+	// in principle. It is set where a 2 Gbit line still completes a full ramp,
+	// because a ceiling that cuts the top step short reports the ceiling rather
+	// than the provider.
+	DefaultSpeedTestMaxBytes    = int64(4) << 30 // 4 GiB of provider quota
 	DefaultSpeedTestMaxSeconds  = 60
 	DefaultSpeedTestStepSeconds = 6
 )
@@ -173,10 +188,12 @@ func SpeedTestNZBURL() string {
 	return DefaultSpeedTestNZBURL
 }
 
-// SpeedTestMaxBytes caps the wire bytes one benchmark run may download.
+// SpeedTestMaxBytes caps the wire bytes one benchmark run may download. It is
+// parsed as a 64-bit value: the useful settings are several GiB, which does not
+// fit an int on a 32-bit build.
 func SpeedTestMaxBytes() int64 {
-	if v := positiveInt(SpeedTestMaxBytesEnv); v > 0 {
-		return int64(v)
+	if v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(SpeedTestMaxBytesEnv)), 10, 64); err == nil && v > 0 {
+		return v
 	}
 	return DefaultSpeedTestMaxBytes
 }
@@ -196,6 +213,47 @@ func SpeedTestStepSeconds() int {
 		return v
 	}
 	return DefaultSpeedTestStepSeconds
+}
+
+// EasynewsAdvancedSearch reports whether searches use Easynews' advanced mode,
+// which filters spam and non-video extensions server-side so fewer junk rows
+// ever reach our own filters. On by default — it is what the upstream Easynews
+// addons use. Like LogPath and the speed-test ceilings this is deliberately
+// env-only: a deployment-level escape hatch, not a per-user setting, so it
+// stays out of Config and the settings UI.
+func EasynewsAdvancedSearch() bool {
+	return envBool(StreamNZBEasynewsAdvancedSearchEnv, EasynewsAdvancedSearchEnv, true)
+}
+
+// EasynewsSpamFilter reports whether advanced searches ask Easynews to drop
+// posts it has flagged as spam. Follows EasynewsAdvancedSearch unless set.
+func EasynewsSpamFilter() bool {
+	return envBool(StreamNZBEasynewsSpamFilterEnv, EasynewsSpamFilterEnv, EasynewsAdvancedSearch())
+}
+
+// EasynewsFileExtensions overrides the container whitelist sent as fex, as a
+// comma-separated list without dots. Empty means the indexer sends its own
+// list, which is the same one it filters results by.
+func EasynewsFileExtensions() string {
+	v := strings.TrimSpace(os.Getenv(StreamNZBEasynewsFileExtensionsEnv))
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv(EasynewsFileExtensionsEnv))
+	}
+	return v
+}
+
+// envBool reads primary, then legacy, falling back to def. Junk values count as
+// unset so a typo cannot silently flip a default.
+func envBool(primary, legacy string, def bool) bool {
+	for _, name := range []string{primary, legacy} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return def
 }
 
 // positiveInt reads name as a positive integer, returning 0 when unset or junk.

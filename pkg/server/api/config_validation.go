@@ -235,6 +235,7 @@ func pingIndexerWithTimeout(indexerCfg config.IndexerConfig) error {
 				indexerCfg.RateLimitRPS,
 				indexerCfg.EffectiveTimeoutSeconds(),
 				indexerCfg.ProxyURL,
+				indexerCfg.QueryHeader,
 				indexerCfg.GrabHeader,
 				nil,
 			)
