@@ -1,5 +1,22 @@
 # Changelog
 
+## [5.0.0](https://github.com/Gaisberg/streamnzb/compare/v4.17.0...v5.0.0) (2026-08-17)
+
+
+### Features
+
+* **easynews:** search the 3.0 API with server-side filtering and pagination ([1dd514e](https://github.com/Gaisberg/streamnzb/commit/1dd514e590c26e4b0dd305d3b6e57e49f3f8a37e))
+* **metadata:** turn StreamNZB into a full Stremio metadata provider ([3921fe4](https://github.com/Gaisberg/streamnzb/commit/3921fe44cd2cdd821096feba373efb0ffe29d706))
+* **streams:** allow renaming stream and overriding the addon name ([7f81701](https://github.com/Gaisberg/streamnzb/commit/7f81701b4f2aa6b73476f4d5b0a5e19383674242))
+
+
+### Bug Fixes
+
+* **frontend:** make stream settings reordering work on touch devices via shared SortableList ([ca5c45a](https://github.com/Gaisberg/streamnzb/commit/ca5c45ae0a25fadd4bb2ac374cfc0e35fc15bc19))
+* **frontend:** use useWatch so React Compiler can memoize general settings ([78a0813](https://github.com/Gaisberg/streamnzb/commit/78a08138f75e8cf0572741905d92c88b67266f6d))
+* **providers:** stop the SSL switch overlapping its label and move the port with it ([2d2b870](https://github.com/Gaisberg/streamnzb/commit/2d2b870b0dd9eb60e5ec613398036703c574ba8d))
+* **speedtest:** sync the gauge, hide phantom suggestions, and measure gigabit lines ([a55c9d9](https://github.com/Gaisberg/streamnzb/commit/a55c9d91efcbb159d9f19af44c86a1191ee83a4a))
+
 ## [4.17.0](https://github.com/Gaisberg/streamnzb/compare/v4.16.0...v4.17.0) (2026-08-14)
 
 
