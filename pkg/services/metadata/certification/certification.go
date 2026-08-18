@@ -159,6 +159,42 @@ func Resolve(entries []Entry) (age int, known bool) {
 	return maxAge, found
 }
 
+// usMovieLadder is the MPAA ladder in ascending age order, for translating a
+// numeric cap into TMDB discover's certification.lte parameter.
+var usMovieLadder = []struct {
+	label string
+	age   int
+}{
+	{"G", 0},
+	{"PG", 7},
+	{"PG-13", 13},
+	{"R", 17},
+	{"NC-17", 18},
+}
+
+// USMovieCertLTE returns the highest US movie certification whose normalized
+// age fits within maxAge — the value TMDB discover's certification.lte
+// expects. maxAge below G's still returns "G" (the ladder's floor).
+func USMovieCertLTE(maxAge int) string {
+	out := usMovieLadder[0].label
+	for _, step := range usMovieLadder {
+		if step.age <= maxAge {
+			out = step.label
+		}
+	}
+	return out
+}
+
+// KitsuRatingsLTE returns the Kitsu ageRating filter set within maxAge, for
+// Kitsu's filter[ageRating] listing parameter ("G" or "G,PG"). Kitsu's R (17)
+// and R18 tiers are never kid content, so the set caps at PG.
+func KitsuRatingsLTE(maxAge int) string {
+	if maxAge >= 7 {
+		return "G,PG"
+	}
+	return "G"
+}
+
 // kitsuLabels maps Kitsu's ageRating enum.
 var kitsuLabels = map[string]int{
 	"G":   0,

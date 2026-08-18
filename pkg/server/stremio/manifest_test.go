@@ -150,8 +150,9 @@ func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
 }
 
 // TestDefaultCatalogsAreOneFlagshipPerType pins the suppressed default set: a
-// fresh install gets exactly one search-carrying trending row per media type;
-// everything else is opt-in from the Metadata page.
+// fresh install gets exactly one trending row per media type; everything else
+// is opt-in from the Metadata page. Search does not ride these — it rides the
+// hidden search carriers, so no browse catalog declares it.
 func TestDefaultCatalogsAreOneFlagshipPerType(t *testing.T) {
 	defs := enabledCatalogDefs(&config.MetadataProfileConfig{})
 	want := []string{"tmdb.trending.movie", "tmdb.trending.series", "kitsu.trending.anime"}
@@ -162,9 +163,43 @@ func TestDefaultCatalogsAreOneFlagshipPerType(t *testing.T) {
 		if defs[i].ID != id {
 			t.Fatalf("defaults[%d] = %s, want %s", i, defs[i].ID, id)
 		}
-		if !defs[i].SupportsSearch {
-			t.Fatalf("default %s must carry the search extra", id)
+	}
+	for _, def := range catalogRegistry {
+		if def.SupportsSearch {
+			t.Fatalf("browse catalog %s declares search; search must ride the hidden carriers only", def.ID)
 		}
+	}
+}
+
+// TestManifestCarriesHiddenSearchCatalogs pins the search decoupling: every
+// profile's manifest declares one required-search carrier per content type,
+// whatever browse rows it picked — required extras keep them off the board.
+func TestManifestCarriesHiddenSearchCatalogs(t *testing.T) {
+	for name, profile := range map[string]*config.MetadataProfileConfig{
+		"registry defaults": {},
+		"no browse rows":    {Catalogs: []config.CatalogToggle{}},
+		"kids rows only":    {Catalogs: []config.CatalogToggle{{ID: "tmdb.family.movie", Enabled: true}}},
+	} {
+		catalogs := enabledCatalogs(profile)
+		found := map[string]bool{}
+		for _, cat := range catalogs {
+			for _, extra := range cat.Extra {
+				if extra.Name == "search" {
+					if !extra.IsRequired {
+						t.Errorf("%s: %s declares optional search; must be required to stay off the board", name, cat.ID)
+					}
+					found[cat.Type] = true
+				}
+			}
+		}
+		for _, contentType := range []string{"movie", "series", "anime"} {
+			if !found[contentType] {
+				t.Errorf("%s: no search carrier for %s", name, contentType)
+			}
+		}
+	}
+	if catalogs := enabledCatalogs(nil); len(catalogs) != 0 {
+		t.Errorf("nil profile must carry no catalogs at all, got %d", len(catalogs))
 	}
 }
 
@@ -200,8 +235,16 @@ func TestPerStreamManifestDivergence(t *testing.T) {
 	if len(full.Catalogs) <= len(kids.Catalogs) {
 		t.Fatalf("default profile catalogs = %d, kids = %d; expected the default (registry defaults) to carry more", len(full.Catalogs), len(kids.Catalogs))
 	}
-	if len(kids.Catalogs) != 1 || kids.Catalogs[0].ID != "tmdb.trending.movie" {
-		t.Fatalf("kids catalogs = %+v", kids.Catalogs)
+	// Browse rows differ per profile; the hidden search carriers ride along
+	// everywhere and don't count as board rows.
+	var kidsBrowse []Catalog
+	for _, cat := range kids.Catalogs {
+		if len(cat.Extra) == 0 || cat.Extra[0].Name != "search" {
+			kidsBrowse = append(kidsBrowse, cat)
+		}
+	}
+	if len(kidsBrowse) != 1 || kidsBrowse[0].ID != "tmdb.trending.movie" {
+		t.Fatalf("kids browse catalogs = %+v", kidsBrowse)
 	}
 	if len(unbound.Resources) != 1 || unbound.Resources[0] != "stream" {
 		t.Fatalf("unbound stream resources = %v, want stream-only", unbound.Resources)

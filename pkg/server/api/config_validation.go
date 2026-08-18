@@ -483,9 +483,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	}
 
 	if plan.validateMetadataProfiles {
-		// The registry hard-codes exactly one search-carrying catalog per
-		// content type, so a profile can never over-declare search rows — no
-		// per-profile search-catalog validation is needed here.
+		// Search needs no per-profile validation: it rides hidden search-only
+		// catalogs appended to every manifest, never the browse rows a
+		// profile toggles here.
 		knownCatalogIDs := make(map[string]bool)
 		for _, def := range stremio.CatalogRegistry() {
 			knownCatalogIDs[def.ID] = true

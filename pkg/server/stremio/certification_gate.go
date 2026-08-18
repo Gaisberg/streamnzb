@@ -150,6 +150,23 @@ func (s *Server) filterPreviewsByCertification(ctx context.Context, cap certific
 	return filtered
 }
 
+// catalogCertCeilingAge resolves the effective certification ceiling for one
+// catalog under one profile: the tighter of the catalog's built-in ceiling
+// (what keeps "Family Movies" family-safe on an uncapped profile) and the
+// profile's cap. -1 means no ceiling.
+func catalogCertCeilingAge(def CatalogDef, profile *config.MetadataProfileConfig) int {
+	ceiling := -1
+	if def.CertCeiling != "" {
+		if c, ok := certification.CapForID(def.CertCeiling, false); ok {
+			ceiling = c.MaxAge
+		}
+	}
+	if cap, capped := capForProfile(profile); capped && (ceiling < 0 || cap.MaxAge < ceiling) {
+		ceiling = cap.MaxAge
+	}
+	return ceiling
+}
+
 // filterTMDBResults drops listing rows the cap disallows, resolving each
 // row's certification through the small cached lookups (bounded fan-out).
 // Runs before the external-id resolution so blocked rows never pay for it.

@@ -142,7 +142,6 @@ function CatalogBadges({ def }) {
     <span className="flex flex-wrap items-center gap-1">
       <Badge variant="outline" className="shrink-0 text-[10px]">{PROVIDER_LABELS[def.provider] || def.provider}</Badge>
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">{def.type}</Badge>
-      {def.supports_search && <Badge variant="outline" className="shrink-0 text-[10px]">search</Badge>}
     </span>
   )
 }
@@ -182,7 +181,10 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <CardTitle className="text-base font-semibold">Catalogs</CardTitle>
-              <CardDescription>Rows appear in the client in this order. Drag to reorder.</CardDescription>
+              <CardDescription>
+                Rows appear in the client in this order. Drag to reorder. Search is always available for every
+                content type, independent of these rows.
+              </CardDescription>
             </div>
             <Button size="sm" onClick={() => { setQuery(""); setAddOpen(true) }} disabled={available.length === 0}>
               <Plus className="mr-2 h-4 w-4" /> Add catalog

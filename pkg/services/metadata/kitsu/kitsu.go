@@ -384,6 +384,13 @@ func (c *Client) GetAnimeListing(ctx context.Context, kind string, offset int) (
 	return nil, fmt.Errorf("unknown kitsu listing kind %q", kind)
 }
 
+// GetAnimeKidsListing fetches the most popular anime within the given Kitsu
+// age ratings ("G" or "G,PG"), filtered server-side — a kids row that is
+// dense by construction instead of a thinned-out general listing.
+func (c *Client) GetAnimeKidsListing(ctx context.Context, offset int, ratings string) ([]AnimeListing, error) {
+	return c.getListing(ctx, fmt.Sprintf("/anime?filter[ageRating]=%s&sort=-userCount&page[limit]=20&page[offset]=%d", ratings, offset))
+}
+
 // SearchAnime searches anime by text with offset pagination.
 func (c *Client) SearchAnime(ctx context.Context, text string, offset int) ([]AnimeListing, error) {
 	text = strings.TrimSpace(text)

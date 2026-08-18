@@ -115,6 +115,41 @@ func TestNormalizeKitsu(t *testing.T) {
 	}
 }
 
+func TestUSMovieCertLTE(t *testing.T) {
+	cases := []struct {
+		maxAge int
+		want   string
+	}{
+		{0, "G"},
+		{6, "G"},
+		{7, "PG"},
+		{12, "PG"},
+		{13, "PG-13"},
+		{16, "PG-13"},
+		{17, "R"},
+		{18, "NC-17"},
+		{25, "NC-17"},
+	}
+	for _, c := range cases {
+		if got := USMovieCertLTE(c.maxAge); got != c.want {
+			t.Errorf("USMovieCertLTE(%d) = %q, want %q", c.maxAge, got, c.want)
+		}
+	}
+}
+
+func TestKitsuRatingsLTE(t *testing.T) {
+	if got := KitsuRatingsLTE(0); got != "G" {
+		t.Errorf("KitsuRatingsLTE(0) = %q, want G", got)
+	}
+	if got := KitsuRatingsLTE(7); got != "G,PG" {
+		t.Errorf("KitsuRatingsLTE(7) = %q, want G,PG", got)
+	}
+	// The kids set never opens past PG, whatever the cap says.
+	if got := KitsuRatingsLTE(18); got != "G,PG" {
+		t.Errorf("KitsuRatingsLTE(18) = %q, want G,PG", got)
+	}
+}
+
 func TestOptionsAscendingAndStable(t *testing.T) {
 	opts := Options()
 	if len(opts) == 0 {

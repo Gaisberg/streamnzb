@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"streamnzb/pkg/core/config"
@@ -91,6 +94,107 @@ func TestKitsuCatalogFiltersByCap(t *testing.T) {
 	}
 	if len(previews) != 3 {
 		t.Fatalf("previews = %d, want all rows without a cap", len(previews))
+	}
+}
+
+// TestFamilyMoviesDiscoverPushesCeilingUpstream pins the cap-aware discover
+// request shape: the family catalog's built-in PG ceiling on an uncapped
+// profile, tightened to G by an all-ages cap, and never widened by a looser
+// one.
+func TestFamilyMoviesDiscoverPushesCeilingUpstream(t *testing.T) {
+	var gotQuery atomic.Value
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/discover/movie") {
+			gotQuery.Store(r.URL.Query())
+			_, _ = w.Write([]byte(`{"page": 1, "results": []}`))
+			return
+		}
+		http.NotFound(w, r)
+	}, nil, nil)
+	def, ok := catalogDefByID("tmdb.family.movie")
+	if !ok {
+		t.Fatal("tmdb.family.movie missing from the registry")
+	}
+
+	cases := []struct {
+		name    string
+		profile *config.MetadataProfileConfig
+		want    string
+	}{
+		{"uncapped keeps the built-in PG ceiling", &config.MetadataProfileConfig{}, "PG"},
+		{"all-ages cap tightens to G", &config.MetadataProfileConfig{MaxCertification: "0"}, "G"},
+		{"looser cap never widens the built-in ceiling", &config.MetadataProfileConfig{MaxCertification: "18"}, "PG"},
+	}
+	for i, tc := range cases {
+		// Distinct pages keep each case out of the response cache, so the stub
+		// sees every request.
+		req := catalogRequest{Type: def.Type, ID: def.ID, Skip: i * catalogPageSize, Profile: tc.profile}
+		if _, err := srv.tmdbCatalog(context.Background(), def, req); err != nil {
+			t.Fatalf("%s: tmdbCatalog: %v", tc.name, err)
+		}
+		q := gotQuery.Load().(url.Values)
+		if got := q.Get("certification.lte"); got != tc.want {
+			t.Errorf("%s: certification.lte = %q, want %q", tc.name, got, tc.want)
+		}
+		if q.Get("certification_country") != "US" || q.Get("with_genres") != "10751" {
+			t.Errorf("%s: params = %v, want US certification country and the family genre", tc.name, q)
+		}
+	}
+}
+
+// Kids TV has no built-in ceiling and TV discover has no certification
+// filter — the request must carry the genre but never certification params.
+func TestKidsTVDiscoverCarriesGenreOnly(t *testing.T) {
+	var gotQuery atomic.Value
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/discover/tv") {
+			gotQuery.Store(r.URL.Query())
+			_, _ = w.Write([]byte(`{"page": 1, "results": []}`))
+			return
+		}
+		http.NotFound(w, r)
+	}, nil, nil)
+	def, _ := catalogDefByID("tmdb.kids.series")
+
+	profile := &config.MetadataProfileConfig{MaxCertification: "0"}
+	if _, err := srv.tmdbCatalog(context.Background(), def, catalogRequest{Type: def.Type, ID: def.ID, Profile: profile}); err != nil {
+		t.Fatalf("tmdbCatalog: %v", err)
+	}
+	q := gotQuery.Load().(url.Values)
+	if q.Get("with_genres") != "10762" {
+		t.Errorf("with_genres = %q, want the kids genre", q.Get("with_genres"))
+	}
+	if q.Get("certification.lte") != "" || q.Get("certification_country") != "" {
+		t.Errorf("TV discover must not carry certification params, got %v", q)
+	}
+}
+
+// TestKidsAnimeListingTightensWithCap pins the Kitsu server-side filter: G,PG
+// by default, G under an all-ages cap.
+func TestKidsAnimeListingTightensWithCap(t *testing.T) {
+	var gotPath atomic.Value
+	srv := metaTestServer(t, nil, nil, func(w http.ResponseWriter, r *http.Request) {
+		gotPath.Store(r.URL.RawQuery)
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	def, ok := catalogDefByID("kitsu.kids.anime")
+	if !ok {
+		t.Fatal("kitsu.kids.anime missing from the registry")
+	}
+
+	if _, err := srv.kitsuCatalog(context.Background(), def, catalogRequest{Type: def.Type, ID: def.ID, Profile: &config.MetadataProfileConfig{}}); err != nil {
+		t.Fatalf("kitsuCatalog: %v", err)
+	}
+	if q := gotPath.Load().(string); !strings.Contains(q, "ageRating]=G,PG") {
+		t.Errorf("uncapped kids listing query = %q, want the G,PG filter", q)
+	}
+
+	capped := &config.MetadataProfileConfig{MaxCertification: "0"}
+	if _, err := srv.kitsuCatalog(context.Background(), def, catalogRequest{Type: def.Type, ID: def.ID, Profile: capped}); err != nil {
+		t.Fatalf("kitsuCatalog capped: %v", err)
+	}
+	if q := gotPath.Load().(string); !strings.Contains(q, "ageRating]=G&") {
+		t.Errorf("capped kids listing query = %q, want the G-only filter", q)
 	}
 }
 

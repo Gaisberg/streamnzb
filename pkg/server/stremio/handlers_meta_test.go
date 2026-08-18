@@ -882,6 +882,45 @@ func TestCatalogCrossDeduplication(t *testing.T) {
 	}
 }
 
+// TestHandleCatalogSearchOnlyCarrier pins the hidden search carriers: they
+// answer search for every profile — even one whose browse rows carry no
+// search — and 404 a bare listing request (their search extra is required).
+func TestHandleCatalogSearchOnlyCarrier(t *testing.T) {
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/movie"):
+			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 603, "title": "The Matrix"}]}`))
+		case strings.Contains(r.URL.Path, "/external_ids"):
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}, nil, nil)
+	// A profile with only a family row — no browse catalog carries search.
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "tmdb.family.movie", Enabled: true}}
+
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.search.movie/search=matrix.json")
+	rec := httptest.NewRecorder()
+	srv.handleCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d", rec.Code)
+	}
+	var resp CatalogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Metas) != 1 || resp.Metas[0].Name != "The Matrix" {
+		t.Fatalf("metas = %+v", resp.Metas)
+	}
+
+	// Without a query the carrier does not exist as a listing.
+	rec = httptest.NewRecorder()
+	srv.handleCatalog(rec, streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.search.movie.json"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("bare listing status = %d, want 404", rec.Code)
+	}
+}
+
 func TestHandleCatalogUpstreamFailureServesEmptyPage(t *testing.T) {
 	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)

@@ -70,25 +70,36 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	req.StreamName = streamID(stream)
 	req.Profile = profile
-	def, ok := catalogDefByID(req.ID)
-	if !ok || def.Type != req.Type {
-		http.NotFound(w, r)
-		return
-	}
-	enabled := false
-	for _, d := range enabledCatalogDefs(profile) {
-		if d.ID == def.ID {
-			enabled = true
-			break
+	def, isSearchCatalog := searchCatalogDefByID(req.ID)
+	if isSearchCatalog {
+		// The hidden search carriers answer for every profile, but only with
+		// a query — their search extra is declared required, so a bare
+		// listing request is a client ignoring the manifest.
+		if def.Type != req.Type || req.Search == "" {
+			http.NotFound(w, r)
+			return
 		}
-	}
-	if !enabled {
-		http.NotFound(w, r)
-		return
-	}
-	if req.Search != "" && !def.SupportsSearch {
-		http.NotFound(w, r)
-		return
+	} else {
+		def, ok = catalogDefByID(req.ID)
+		if !ok || def.Type != req.Type {
+			http.NotFound(w, r)
+			return
+		}
+		enabled := false
+		for _, d := range enabledCatalogDefs(profile) {
+			if d.ID == def.ID {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			http.NotFound(w, r)
+			return
+		}
+		if req.Search != "" && !def.SupportsSearch {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), catalogRequestTimeout)
@@ -166,9 +177,19 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 
 	var resp *tmdb.ListingResponse
 	var err error
-	if req.Search != "" {
+	switch {
+	case req.Search != "":
 		resp, err = s.tmdbClient.SearchByType(mediaType, req.Search, page)
-	} else {
+	case def.Kind == "discover":
+		filters := tmdb.DiscoverFilters{Genres: def.DiscoverGenres}
+		// Movies push the ceiling upstream (certification.lte) so the row
+		// stays dense under a cap; TV discover has no certification filter,
+		// so series rows rely on the post-filter below.
+		if ceiling := catalogCertCeilingAge(def, req.Profile); ceiling >= 0 && mediaType == "movie" {
+			filters.MaxCert = certification.USMovieCertLTE(ceiling)
+		}
+		resp, err = s.tmdbClient.Discover(mediaType, filters, page, req.Profile.EffectiveLanguage())
+	default:
 		resp, err = s.tmdbClient.GetListing(mediaType, def.Kind, page, req.Profile.EffectiveLanguage())
 	}
 	if err != nil {
@@ -301,9 +322,14 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
 	var listings []kitsu.AnimeListing
 	var err error
-	if req.Search != "" {
+	switch {
+	case req.Search != "":
 		listings, err = s.kitsuClient.SearchAnime(ctx, req.Search, req.Skip)
-	} else {
+	case def.Kind == "kids":
+		// Kitsu filters age ratings server-side; the profile cap tightens the
+		// catalog's built-in G,PG ceiling to G when it caps below 7.
+		listings, err = s.kitsuClient.GetAnimeKidsListing(ctx, req.Skip, certification.KitsuRatingsLTE(catalogCertCeilingAge(def, req.Profile)))
+	default:
 		listings, err = s.kitsuClient.GetAnimeListing(ctx, def.Kind, req.Skip)
 	}
 	if err != nil {

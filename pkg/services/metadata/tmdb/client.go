@@ -238,7 +238,7 @@ func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, 
 // contents drift (trending, popular, search, ...) get a short TTL, everything
 // else the long default.
 func ttlForEndpoint(cacheKey string) time.Duration {
-	if strings.HasPrefix(cacheKey, "/trending/") || strings.HasPrefix(cacheKey, "/search/") {
+	if strings.HasPrefix(cacheKey, "/trending/") || strings.HasPrefix(cacheKey, "/search/") || strings.HasPrefix(cacheKey, "/discover/") {
 		return volatileCacheTTL
 	}
 	for _, listing := range []string{"/popular", "/top_rated", "/now_playing", "/upcoming", "/on_the_air"} {
@@ -325,6 +325,39 @@ func (c *Client) GetRecommendations(mediaType string, tmdbID, page int, lang str
 	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/recommendations", mediaType, tmdbID)
 	return getJSON[ListingResponse](c, endpoint, params, "recommendations")
+}
+
+// DiscoverFilters are the server-side filters a discover listing applies —
+// what makes purpose-built catalog rows (family, animated, kids) dense by
+// construction instead of thinned-out general rows.
+type DiscoverFilters struct {
+	// Genres is a comma-separated TMDB genre id list (with_genres).
+	Genres string
+	// MaxCert caps movie results at a US certification ("PG", "PG-13").
+	// Movies only — TMDB's TV discover has no certification filter.
+	MaxCert string
+}
+
+// Discover fetches one page of /discover/{movie|tv} sorted by popularity.
+// lang is the display language tag, "" for the parameter-free English
+// default. Filters ride the query string, so every (filters, page, lang)
+// combination caches under its own key.
+func (c *Client) Discover(mediaType string, filters DiscoverFilters, page int, lang string) (*ListingResponse, error) {
+	params := url.Values{}
+	params.Set("page", strconv.Itoa(max(page, 1)))
+	params.Set("sort_by", "popularity.desc")
+	if lang != "" {
+		params.Set("language", lang)
+	}
+	if filters.Genres != "" {
+		params.Set("with_genres", filters.Genres)
+	}
+	if filters.MaxCert != "" && mediaType == "movie" {
+		params.Set("certification_country", "US")
+		params.Set("certification.lte", filters.MaxCert)
+	}
+	endpoint := fmt.Sprintf(c.BaseURL+"/discover/%s", mediaType)
+	return getJSON[ListingResponse](c, endpoint, params, "discover")
 }
 
 // SearchByType searches one media type ("movie" or "tv") — unlike SearchMulti,
