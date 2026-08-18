@@ -1,5 +1,21 @@
 # Changelog
 
+## [5.1.0](https://github.com/Gaisberg/streamnzb/compare/v5.0.0...v5.1.0) (2026-08-18)
+
+
+### Features
+
+* **indexer:** per-indexer content scope for anime routing ([36c4318](https://github.com/Gaisberg/streamnzb/commit/36c431883334c5ffa094e86b26cacfb668a083db))
+* **metadata:** score-ranked artwork, source-native logos and cast photos ([f67b106](https://github.com/Gaisberg/streamnzb/commit/f67b106c4dc5b5f46b0cd5d2fb2e54489ace60fd))
+
+
+### Bug Fixes
+
+* **filters:** align Filters UI with the jhin engine and enforce profile invariants ([879d618](https://github.com/Gaisberg/streamnzb/commit/879d618e18f6715e4ed3b85eb41627fc8c68da26))
+* **proxy:** stop advertising unimplemented NNTP capabilities and greet with 201 ([287e047](https://github.com/Gaisberg/streamnzb/commit/287e047edda280daafea1c8eceb7008ad7c27567))
+* **search:** resolve anime films as movies and validate their results ([a4e4ecf](https://github.com/Gaisberg/streamnzb/commit/a4e4ecfb3cf2d1cb99dd4b2f42e20ebba071cd5c))
+* **stremio:** drop blank lines left by false conditionals in result templates ([1960eed](https://github.com/Gaisberg/streamnzb/commit/1960eedb6d22c26a5d6e5102bdd2fdc62d8134e0)), closes [#187](https://github.com/Gaisberg/streamnzb/issues/187)
+
 ## [5.0.0](https://github.com/Gaisberg/streamnzb/compare/v4.17.0...v5.0.0) (2026-08-17)
 
 
