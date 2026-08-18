@@ -47,6 +47,17 @@ type ResolvedSearchMetadata struct {
 	TVTranslations         *tmdb.TVTranslationsResponse
 	TVAlternativeTitles    *tmdb.TVAlternativeTitlesResponse
 	TVDBDetails            *tvdb.SeriesDetails
+	// Certification is the resolved age certification, populated only when
+	// the requesting stream's metadata profile carries a certification cap —
+	// it rides the cached raw search result so the gate outcome is inspectable.
+	Certification *ResolvedCertification
+}
+
+// ResolvedCertification is one title's normalized age certification. Known is
+// false when no provider reported a recognizable label.
+type ResolvedCertification struct {
+	Age   int
+	Known bool
 }
 
 // MovieLike reports whether a request is for a film. The Stremio content type

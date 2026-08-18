@@ -25,6 +25,8 @@ type AnimeDetails struct {
 	IMDbID         string   `json:"imdb_id,omitempty"`
 	TVDBID         string   `json:"tvdb_id,omitempty"`
 	TMDBID         string   `json:"tmdb_id,omitempty"`
+	AgeRating      string   `json:"age_rating,omitempty"` // Kitsu enum: G / PG / R / R18
+	Nsfw           bool     `json:"nsfw,omitempty"`
 }
 
 // detailsCacheTTL is the response TTL for anime detail lookups.
@@ -101,6 +103,8 @@ type apiResponse struct {
 			AbbreviatedTitles []string `json:"abbreviatedTitles"`
 			StartDate         string   `json:"startDate"`
 			ShowType          string   `json:"showType"`
+			AgeRating         string   `json:"ageRating"`
+			Nsfw              bool     `json:"nsfw"`
 		} `json:"attributes"`
 	} `json:"data"`
 	Included []struct {
@@ -136,6 +140,8 @@ func (c *Client) GetAnimeDetails(ctx context.Context, kitsuID string) (*AnimeDet
 		RomajiTitle:    strings.TrimSpace(attr.Titles.ENJP),
 		Synonyms:       cleanSynonyms(attr.AbbreviatedTitles),
 		ShowType:       strings.TrimSpace(attr.ShowType),
+		AgeRating:      strings.TrimSpace(attr.AgeRating),
+		Nsfw:           attr.Nsfw,
 	}
 
 	if len(attr.StartDate) >= 4 {
@@ -197,6 +203,8 @@ type AnimeMeta struct {
 	AverageRating  string
 	EpisodeCount   int
 	ShowType       string
+	AgeRating      string // Kitsu enum: G / PG / R / R18
+	Nsfw           bool
 }
 
 type metaAPIResponse struct {
@@ -212,6 +220,8 @@ type metaAPIResponse struct {
 			AverageRating string `json:"averageRating"`
 			EpisodeCount  int    `json:"episodeCount"`
 			ShowType      string `json:"showType"`
+			AgeRating     string `json:"ageRating"`
+			Nsfw          bool   `json:"nsfw"`
 			PosterImage   struct {
 				Medium   string `json:"medium"`
 				Original string `json:"original"`
@@ -253,6 +263,8 @@ func (c *Client) GetAnimeMeta(ctx context.Context, kitsuID string) (*AnimeMeta, 
 		AverageRating:  attr.AverageRating,
 		EpisodeCount:   attr.EpisodeCount,
 		ShowType:       strings.TrimSpace(attr.ShowType),
+		AgeRating:      strings.TrimSpace(attr.AgeRating),
+		Nsfw:           attr.Nsfw,
 	}, nil
 }
 
@@ -337,6 +349,8 @@ type AnimeListing struct {
 	CanonicalTitle string
 	Synopsis       string
 	PosterImage    string
+	AgeRating      string // Kitsu enum: G / PG / R / R18
+	Nsfw           bool
 }
 
 type listingAPIResponse struct {
@@ -345,6 +359,8 @@ type listingAPIResponse struct {
 		Attributes struct {
 			CanonicalTitle string `json:"canonicalTitle"`
 			Synopsis       string `json:"synopsis"`
+			AgeRating      string `json:"ageRating"`
+			Nsfw           bool   `json:"nsfw"`
 			PosterImage    struct {
 				Medium   string `json:"medium"`
 				Original string `json:"original"`
@@ -398,6 +414,8 @@ func (c *Client) getListing(ctx context.Context, path string) ([]AnimeListing, e
 			CanonicalTitle: strings.TrimSpace(item.Attributes.CanonicalTitle),
 			Synopsis:       strings.TrimSpace(item.Attributes.Synopsis),
 			PosterImage:    poster,
+			AgeRating:      strings.TrimSpace(item.Attributes.AgeRating),
+			Nsfw:           item.Attributes.Nsfw,
 		})
 	}
 	return listings, nil

@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/services/metadata/tmdb"
+	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/services/metadata/tvmaze"
 )
 
@@ -34,14 +37,13 @@ const (
 	tmdbLogoURL     = "https://image.tmdb.org/t/p/w500"
 )
 
-// handleMeta serves /meta/{type}/{id}.json. With the metadata master switch
-// off the resource does not exist — 404, matching a manifest that never
-// declared it.
+// handleMeta serves /meta/{type}/{id}.json. For a stream with no metadata
+// profile bound the resource does not exist — 404, matching a manifest that
+// never declared it.
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil || !cfg.EffectiveMetadataEnabled() {
+	stream, _ := auth.StreamFromContext(r)
+	profile := s.metadataProfileFor(stream)
+	if profile == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -58,7 +60,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), metaRequestTimeout)
 	defer cancel()
 
-	meta, err := s.buildMeta(ctx, contentType, id)
+	meta, err := s.buildMeta(ctx, profile, contentType, id)
 	if err != nil {
 		logger.Debug("Meta build failed", "type", contentType, "id", id, "err", err)
 		http.NotFound(w, r)
@@ -71,18 +73,18 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}, metaCacheMaxAge, metaStaleRevalidate)
 }
 
-func (s *Server) buildMeta(ctx context.Context, contentType, id string) (*MetaObject, error) {
+func (s *Server) buildMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType, id string) (*MetaObject, error) {
 	rid, err := s.resolveMetaID(ctx, contentType, id)
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case rid.kitsuID != "":
-		return s.buildAnimeMeta(ctx, contentType, rid)
+		return s.buildAnimeMeta(ctx, profile, contentType, rid)
 	case contentType == "movie":
-		return s.buildMovieMeta(ctx, rid)
+		return s.buildMovieMeta(ctx, profile, rid)
 	default:
-		return s.buildSeriesMeta(ctx, contentType, rid)
+		return s.buildSeriesMeta(ctx, profile, contentType, rid)
 	}
 }
 
@@ -185,18 +187,22 @@ func pickFindResult(find *tmdb.FindResponse, contentType string) (tmdb.Result, b
 const metahubLogoURL = "https://images.metahub.space/logo/medium/%s/img"
 
 // metaLogoLang is the ISO 639-1 code TMDB logo picks prefer, from the
-// configured metadata display language ("" for the English default).
-func (s *Server) metaLogoLang() string {
-	base, _, _ := strings.Cut(s.currentConfig().EffectiveMetadataLanguage(), "-")
+// profile's display language ("" for the English default).
+func metaLogoLang(profile *config.MetadataProfileConfig) string {
+	base, _, _ := strings.Cut(profile.EffectiveLanguage(), "-")
 	return base
 }
 
-func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*MetaObject, error) {
+func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
 	}
-	details, err := s.tmdbClient.GetMovieDetailsFull(rid.tmdbID)
+	details, err := s.tmdbClient.GetMovieDetailsFull(rid.tmdbID, profile.EffectiveLanguage())
 	if err != nil {
+		return nil, err
+	}
+	certAge, certKnown := certification.Resolve(tmdbMovieCertEntries(details.ReleaseDates))
+	if err := certGateMeta(profile, certAge, certKnown); err != nil {
 		return nil, err
 	}
 	if rid.imdbID == "" && details.IMDbID != "" {
@@ -216,7 +222,7 @@ func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*Meta
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
+	if logo := details.Images.BestLogo(metaLogoLang(profile)); logo != "" {
 		meta.Logo = tmdbLogoURL + logo
 	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
@@ -312,23 +318,23 @@ func (s *Server) currentConfig() *config.Config {
 	return s.config
 }
 
-// buildSeriesMeta applies the configured source policy: series metadata comes
+// buildSeriesMeta applies the profile's source policy: series metadata comes
 // from the primary source (TVDB by default), and the other source steps in
 // only when the primary cannot serve (no resolvable id, provider down) —
 // a fallback episode list beats none. Air dates are TVMaze's in both paths.
-func (s *Server) buildSeriesMeta(ctx context.Context, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+func (s *Server) buildSeriesMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	primary, fallback := s.buildSeriesMetaFromTVDB, s.buildSeriesMetaFromTMDB
-	if s.currentConfig().EffectiveSeriesMetaSource() == "tmdb" {
+	if profile.EffectiveSeriesMetaSource() == "tmdb" {
 		primary, fallback = fallback, primary
 	}
-	meta, err := primary(ctx, contentType, rid)
+	meta, err := primary(ctx, profile, contentType, rid)
 	if err == nil {
 		return meta, nil
 	}
 	logger.Debug("Primary series meta source unavailable; falling back",
-		"source", s.currentConfig().EffectiveSeriesMetaSource(),
+		"source", profile.EffectiveSeriesMetaSource(),
 		"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID, "err", err)
-	return fallback(ctx, contentType, rid)
+	return fallback(ctx, profile, contentType, rid)
 }
 
 // resolveTVDBIDForMeta fills rid.tvdbID from whichever id the request carried.
@@ -351,13 +357,18 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 	return ""
 }
 
-func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	tvdbID := s.resolveTVDBIDForMeta(rid)
 	if tvdbID == "" {
 		return nil, fmt.Errorf("no TVDB id resolved")
 	}
-	ext, err := s.tvdbClient.GetSeriesExtended(tvdbID)
+	lang3 := tvdb.LanguageToISO3(profile.EffectiveLanguage())
+	ext, err := s.tvdbClient.GetSeriesExtendedTranslated(tvdbID, lang3)
 	if err != nil {
+		return nil, err
+	}
+	certAge, certKnown := certification.Resolve(tvdbCertEntries(ext.ContentRatings))
+	if err := certGateMeta(profile, certAge, certKnown); err != nil {
 		return nil, err
 	}
 	meta := &MetaObject{
@@ -410,11 +421,11 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string
 		}
 	}
 
-	episodes, err := s.tvdbClient.GetSeriesEpisodes(tvdbID)
+	episodes, err := s.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
 	if err != nil {
 		logger.Debug("TVDB episodes fetch failed; serving series meta without videos", "tvdb_id", tvdbID, "err", err)
 	}
-	overlay := s.tvmazeEpisodeOverlay(ctx, rid.imdbID, tvdbID)
+	overlay := s.tvmazeEpisodeOverlay(ctx, profile, rid.imdbID, tvdbID)
 	for _, ep := range episodes {
 		// Season 0 is specials; out of scope for the videos array.
 		if ep.SeasonNumber < 1 || ep.Number < 1 {
@@ -437,12 +448,16 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string
 	return meta, nil
 }
 
-func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
 	}
-	details, _, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil)
+	details, _, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage())
 	if err != nil {
+		return nil, err
+	}
+	certAge, certKnown := certification.Resolve(tmdbTVCertEntries(details.ContentRatings))
+	if err := certGateMeta(profile, certAge, certKnown); err != nil {
 		return nil, err
 	}
 	if details.ExternalIDs != nil {
@@ -462,7 +477,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 			seasonNumbers = append(seasonNumbers, si.SeasonNumber)
 		}
 	}
-	_, seasons, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, seasonNumbers)
+	_, seasons, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, seasonNumbers, profile.EffectiveLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +495,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
+	if logo := details.Images.BestLogo(metaLogoLang(profile)); logo != "" {
 		meta.Logo = tmdbLogoURL + logo
 	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
@@ -503,7 +518,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 	applyTMDBCredits(meta, details.Credits)
 	meta.Trailers = tmdbTrailers(details.Videos)
 
-	overlay := s.tvmazeEpisodeOverlay(ctx, rid.imdbID, rid.tvdbID)
+	overlay := s.tvmazeEpisodeOverlay(ctx, profile, rid.imdbID, rid.tvdbID)
 	for _, n := range seasonNumbers {
 		sd := seasons[n]
 		if sd == nil {
@@ -583,7 +598,7 @@ func seriesMetaType(contentType string) string {
 // record also replaces Kitsu's synopsis, which only exists in English; the
 // Kitsu title stays — anime audiences expect the romaji/canonical name.
 // Purely best-effort: no mapping or a failed fetch leaves the Kitsu meta as-is.
-func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
+func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataProfileConfig, kitsuID string) {
 	if s.animeLists == nil {
 		return
 	}
@@ -607,7 +622,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		if meta.Poster == "" {
 			meta.Poster = ext.Image
 		}
-		if _, overview := s.tvdbClient.SeriesTranslation(mapping.TVDBID); overview != "" {
+		if _, overview := s.tvdbClient.SeriesTranslation(mapping.TVDBID, tvdb.LanguageToISO3(profile.EffectiveLanguage())); overview != "" {
 			meta.Description = overview
 		}
 	case mapping.TMDBID != "" && strings.EqualFold(mapping.Type, "movie"):
@@ -615,7 +630,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		if err != nil || tmdbID <= 0 {
 			return
 		}
-		details, err := s.tmdbClient.GetMovieDetailsFull(tmdbID)
+		details, err := s.tmdbClient.GetMovieDetailsFull(tmdbID, profile.EffectiveLanguage())
 		if err != nil {
 			logger.Debug("Anime TMDB artwork fetch failed", "kitsu_id", kitsuID, "tmdb_id", mapping.TMDBID, "err", err)
 			return
@@ -623,7 +638,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		if details.BackdropPath != "" {
 			meta.Background = tmdbBackdropURL + details.BackdropPath
 		}
-		if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
+		if logo := details.Images.BestLogo(metaLogoLang(profile)); logo != "" {
 			meta.Logo = tmdbLogoURL + logo
 		}
 		if meta.Poster == "" && details.PosterPath != "" {
@@ -631,15 +646,19 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		}
 		// With a language set, TMDB's overview arrives translated (empty when
 		// it has no translation, so this keeps Kitsu's text in that case).
-		if s.currentConfig().EffectiveMetadataLanguage() != "" && details.Overview != "" {
+		if profile.EffectiveLanguage() != "" && details.Overview != "" {
 			meta.Description = details.Overview
 		}
 	}
 }
 
-func (s *Server) buildAnimeMeta(ctx context.Context, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, rid.kitsuID)
 	if err != nil {
+		return nil, err
+	}
+	certAge, certKnown := certification.NormalizeKitsu(animeMeta.AgeRating, animeMeta.Nsfw)
+	if err := certGateMeta(profile, certAge, certKnown); err != nil {
 		return nil, err
 	}
 	name := animeMeta.CanonicalTitle
@@ -661,7 +680,7 @@ func (s *Server) buildAnimeMeta(ctx context.Context, contentType string, rid *re
 	if rating, err := strconv.ParseFloat(animeMeta.AverageRating, 64); err == nil && rating > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", rating/10)
 	}
-	s.applyAnimeArtwork(meta, rid.kitsuID)
+	s.applyAnimeArtwork(meta, profile, rid.kitsuID)
 
 	// Movies get no episode list; everything else does. Kitsu numbering is
 	// entry-relative, which is exactly what kitsu:<id>:<ep> stream ids carry.
@@ -717,9 +736,11 @@ func applyTVMazeOverlay(video *MetaVideo, overlay map[[2]int]tvmaze.Episode) {
 
 // tvmazeEpisodeOverlay resolves a show on TVMaze and indexes its episodes by
 // (season, episode). Best-effort: any failure returns nil and the source's
-// air dates stand. Returns nil when TVMaze air dates are disabled in config.
-func (s *Server) tvmazeEpisodeOverlay(ctx context.Context, imdbID, tvdbID string) map[[2]int]tvmaze.Episode {
-	if s.tvmazeClient == nil || !s.currentConfig().EffectiveTVMazeAirDates() {
+// air dates stand. Returns nil when the profile disables TVMaze air dates —
+// a nil profile keeps the default-on behavior, which is what the search-path
+// unaired gate wants for streams with no metadata profile bound.
+func (s *Server) tvmazeEpisodeOverlay(ctx context.Context, profile *config.MetadataProfileConfig, imdbID, tvdbID string) map[[2]int]tvmaze.Episode {
+	if s.tvmazeClient == nil || !profile.EffectiveTVMazeAirDates() {
 		return nil
 	}
 	var show *tvmaze.Show

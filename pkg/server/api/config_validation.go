@@ -13,10 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/text/language"
+
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/search/ranking"
+	"streamnzb/pkg/server/stremio"
+	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/usenet/nntp"
 )
 
@@ -42,6 +46,7 @@ type configValidationPlan struct {
 	validateTVDBAPIKey             bool
 	validateSpeculativePreProbing  bool
 	validateFilterProfiles         bool
+	validateMetadataProfiles       bool
 	validateDatabase               bool
 }
 
@@ -60,6 +65,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateTVDBAPIKey:             true,
 		validateSpeculativePreProbing:  true,
 		validateFilterProfiles:         true,
+		validateMetadataProfiles:       true,
 		validateDatabase:               true,
 	}
 }
@@ -108,6 +114,11 @@ var patchKeysNoCacheImpact = map[string]bool{
 // patchKeysPlaylistOnly are config fields that change how cached raw results
 // are filtered, sorted, or annotated — the playlists must be rebuilt but the
 // raw indexer results stay valid.
+//
+// metadata_profiles is deliberately NOT here: cached rawSearchResults embed
+// the per-stream certification-gate outcome, so a profile save must fall
+// through to the full search-cache clear or a tightened cap could keep
+// serving pre-cap results for the cache TTL.
 var patchKeysPlaylistOnly = map[string]bool{
 	"filter_profiles": true,
 	"availnzb_mode":   true,
@@ -180,6 +191,10 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["filter_profiles"]; ok {
 		plan.validateFilterProfiles = true
+		plan.validateDeviceAssignments = true
+	}
+	if _, ok := raw["metadata_profiles"]; ok {
+		plan.validateMetadataProfiles = true
 		plan.validateDeviceAssignments = true
 	}
 
@@ -467,10 +482,56 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		}
 	}
 
+	if plan.validateMetadataProfiles {
+		// The registry hard-codes exactly one search-carrying catalog per
+		// content type, so a profile can never over-declare search rows — no
+		// per-profile search-catalog validation is needed here.
+		knownCatalogIDs := make(map[string]bool)
+		for _, def := range stremio.CatalogRegistry() {
+			knownCatalogIDs[def.ID] = true
+		}
+		knownCertIDs := make(map[string]bool)
+		for _, opt := range certification.Options() {
+			knownCertIDs[opt.ID] = true
+		}
+		seen := make(map[string]bool)
+		for i, mp := range cfg.MetadataProfiles {
+			name := strings.TrimSpace(mp.Name)
+			if name == "" {
+				errors[fmt.Sprintf("metadata_profiles.%d.name", i)] = "Name is required"
+			} else {
+				key := strings.ToLower(name)
+				if seen[key] {
+					errors[fmt.Sprintf("metadata_profiles.%d.name", i)] = "Name must be unique"
+				}
+				seen[key] = true
+			}
+			if lang := strings.TrimSpace(mp.Language); lang != "" {
+				if _, err := language.Parse(lang); err != nil {
+					errors[fmt.Sprintf("metadata_profiles.%d.language", i)] = "Not a valid language tag"
+				}
+			}
+			switch mp.SeriesSource {
+			case "", "tvdb", "tmdb":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
+			}
+			for j, toggle := range mp.Catalogs {
+				if !knownCatalogIDs[toggle.ID] {
+					errors[fmt.Sprintf("metadata_profiles.%d.catalogs.%d", i, j)] = "Unknown catalog id"
+				}
+			}
+			if mp.MaxCertification != "" && !knownCertIDs[mp.MaxCertification] {
+				errors[fmt.Sprintf("metadata_profiles.%d.max_certification", i)] = "Unknown rating limit"
+			}
+		}
+	}
+
 	if plan.validateDeviceAssignments {
 		movieQueryNames := lowerNameSet(cfg.MovieSearchQueries, func(x config.SearchQueryConfig) string { return x.Name })
 		seriesQueryNames := lowerNameSet(cfg.SeriesSearchQueries, func(x config.SearchQueryConfig) string { return x.Name })
 		filterProfileNames := lowerNameSet(cfg.FilterProfiles, func(x config.FilterProfileConfig) string { return x.Name })
+		metadataProfileNames := lowerNameSet(cfg.MetadataProfiles, func(x config.MetadataProfileConfig) string { return x.Name })
 		for username, stream := range cfg.Streams {
 			if stream == nil {
 				continue
@@ -492,6 +553,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				if fpName := strings.ToLower(strings.TrimSpace(name)); fpName != "" && !filterProfileNames[fpName] {
 					errors[fmt.Sprintf("streams.%s.filter_profile_by_type.%s", username, kind)] = "Assigned filter profile does not exist"
 				}
+			}
+			if mpName := strings.ToLower(strings.TrimSpace(stream.MetadataProfileName)); mpName != "" && !metadataProfileNames[mpName] {
+				errors[fmt.Sprintf("streams.%s.metadata_profile_name", username)] = "Assigned metadata profile does not exist"
 			}
 		}
 	}

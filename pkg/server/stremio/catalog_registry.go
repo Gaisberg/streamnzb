@@ -67,16 +67,17 @@ func catalogDefByID(id string) (CatalogDef, bool) {
 	return CatalogDef{}, false
 }
 
-// enabledCatalogDefs resolves the config toggles against the registry: config
-// order wins and unknown ids are dropped. A nil toggle list means "never
-// configured" and gets the registry defaults, so flipping the master switch on
-// works without visiting the catalog list; an explicitly saved empty list
-// means none — a meta-only setup is legitimate.
-func enabledCatalogDefs(cfg *config.Config) []CatalogDef {
-	if cfg == nil || !cfg.EffectiveMetadataEnabled() {
+// enabledCatalogDefs resolves a profile's toggles against the registry:
+// profile order wins and unknown ids are dropped. A nil toggle list means
+// "never configured" and gets the registry defaults, so a fresh profile works
+// without visiting the catalog list; an explicitly saved empty list means
+// none — a meta-only profile is legitimate. A nil profile (stream with no
+// binding, or kill-switch down) has no catalogs at all.
+func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
+	if profile == nil {
 		return nil
 	}
-	toggles := cfg.Metadata.Catalogs
+	toggles := profile.Catalogs
 	if toggles == nil {
 		var defs []CatalogDef
 		for _, def := range catalogRegistry {
@@ -102,8 +103,8 @@ func enabledCatalogDefs(cfg *config.Config) []CatalogDef {
 
 // enabledCatalogs renders the enabled catalogs as manifest entries, declaring
 // the search/skip extras clients need to route search and pagination here.
-func enabledCatalogs(cfg *config.Config) []Catalog {
-	defs := enabledCatalogDefs(cfg)
+func enabledCatalogs(profile *config.MetadataProfileConfig) []Catalog {
+	defs := enabledCatalogDefs(profile)
 	catalogs := make([]Catalog, 0, len(defs))
 	for _, def := range defs {
 		cat := Catalog{Type: def.Type, ID: def.ID, Name: def.Name}

@@ -632,6 +632,11 @@ type Config struct {
 	MovieSearchQueries  []SearchQueryConfig   `json:"movie_search_queries,omitempty"`
 	SeriesSearchQueries []SearchQueryConfig   `json:"series_search_queries,omitempty"`
 	FilterProfiles      []FilterProfileConfig `json:"filter_profiles,omitempty"`
+	// MetadataProfiles are the named metadata profiles streams bind by name.
+	// Deliberately not omitempty: nil means "never migrated" (the one-shot
+	// legacy conversion runs), while a persisted [] means the user deleted
+	// every profile and must stay that way.
+	MetadataProfiles []MetadataProfileConfig `json:"metadata_profiles"`
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.
@@ -685,9 +690,11 @@ type Config struct {
 	// MuteErrorVideo controls whether the "Failed to start video" playback error stream is muted.
 	MuteErrorVideo *bool `json:"mute_error_video,omitempty"`
 
-	// Metadata controls the Stremio metadata-provider surface (meta resource +
-	// catalogs). On by default; with the master switch explicitly off the
-	// addon manifest stays stream-only, exactly as before the feature existed.
+	// Metadata is the legacy global metadata-provider section.
+	// Deprecated: superseded by MetadataProfiles + per-stream bindings; kept so
+	// old configs unmarshal and migrate on load (seedMetadataProfiles). Only
+	// the Enabled field is still live, as the METADATA_ENABLED env kill-switch
+	// target read by EffectiveMetadataEnabled.
 	Metadata MetadataConfig `json:"metadata,omitempty"`
 
 	LoadedPath string `json:"-"`
@@ -727,7 +734,10 @@ type MetadataConfig struct {
 }
 
 // EffectiveMetadataEnabled reports whether the metadata provider (meta +
-// catalog resources) is on. Default true.
+// catalog resources) may serve at all. Default true. Since the profile
+// migration this is a global kill-switch (METADATA_ENABLED env) layered above
+// the per-stream profile bindings, which are what actually enable metadata
+// for a stream; the migration reads the persisted value once, then clears it.
 func (c *Config) EffectiveMetadataEnabled() bool {
 	if c == nil || c.Metadata.Enabled == nil {
 		return true
@@ -809,7 +819,10 @@ type StreamEntry struct {
 	// FilterProfileName when a kind has no entry. Anime is matched first when
 	// the request resolved via Kitsu.
 	FilterProfileByType map[string]string `json:"filter_profile_by_type,omitempty"`
-	MuteErrorVideo      *bool             `json:"mute_error_video,omitempty"`
+	// MetadataProfileName binds a metadata profile by name. Empty means
+	// metadata off for this stream — the manifest stays stream-only.
+	MetadataProfileName string `json:"metadata_profile_name,omitempty"`
+	MuteErrorVideo      *bool  `json:"mute_error_video,omitempty"`
 	// ResultNameTemplate and ResultDescriptionTemplate customize how this
 	// stream's Stremio results render (Go text/template over the result's
 	// FormatContext). Empty uses the built-in format.
@@ -1139,6 +1152,16 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		needSave = true
 	}
 
+	// Metadata-profile migration, phase one: capture the persisted master
+	// switch and seed the profile list before env overrides can touch either.
+	// Phase two (stream binding) runs after applyStreamModelUpgradeDefaults so
+	// a fresh install's seeded default stream is bound too.
+	persistedMetadataEnabled := cfg.EffectiveMetadataEnabled()
+	migratedMetadataProfiles := cfg.seedMetadataProfiles()
+	if migratedMetadataProfiles {
+		needSave = true
+	}
+
 	overrides, keys := env.ReadConfigOverrides()
 	ApplyEnvOverrides(cfg, overrides, keys)
 
@@ -1154,6 +1177,10 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	}
 	if streamModelUpgrade && cfg.applyStreamModelUpgradeDefaults() {
 		needSave = true
+	}
+	// Metadata-profile migration, phase two: every stream exists by now.
+	if migratedMetadataProfiles && persistedMetadataEnabled {
+		cfg.bindDefaultMetadataProfile()
 	}
 
 	if cfg.AdminToken == "" {

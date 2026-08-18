@@ -24,9 +24,8 @@ func TestDisplayLanguageParams(t *testing.T) {
 
 	client := NewClient("test-key")
 	client.BaseURL = server.URL
-	client.SetLanguage("fi-FI")
 
-	if _, err := client.GetMovieDetailsFull(603); err != nil {
+	if _, err := client.GetMovieDetailsFull(603, "fi-FI"); err != nil {
 		t.Fatalf("GetMovieDetailsFull: %v", err)
 	}
 	q := gotQuery.Load().(url.Values)
@@ -40,7 +39,7 @@ func TestDisplayLanguageParams(t *testing.T) {
 	// The English default stays parameter-free apart from the image filter.
 	client2 := NewClient("test-key")
 	client2.BaseURL = server.URL
-	if _, err := client2.GetMovieDetailsFull(603); err != nil {
+	if _, err := client2.GetMovieDetailsFull(603, ""); err != nil {
 		t.Fatalf("default GetMovieDetailsFull: %v", err)
 	}
 	q = gotQuery.Load().(url.Values)

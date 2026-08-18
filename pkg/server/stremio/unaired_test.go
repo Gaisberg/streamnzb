@@ -55,7 +55,7 @@ func TestEpisodeAiredState(t *testing.T) {
 
 	t.Run("future airstamp gates", func(t *testing.T) {
 		srv := airedTestServer(t, tvmazeShowWithAirstamp(future), nil)
-		aired, airsAt, known := srv.episodeAiredState(context.Background(), "series", ids)
+		aired, airsAt, known := srv.episodeAiredState(context.Background(), nil, "series", ids)
 		if !known || aired {
 			t.Fatalf("known=%v aired=%v, want known unaired", known, aired)
 		}
@@ -66,7 +66,7 @@ func TestEpisodeAiredState(t *testing.T) {
 
 	t.Run("past airstamp searches", func(t *testing.T) {
 		srv := airedTestServer(t, tvmazeShowWithAirstamp(past), nil)
-		aired, _, known := srv.episodeAiredState(context.Background(), "series", ids)
+		aired, _, known := srv.episodeAiredState(context.Background(), nil, "series", ids)
 		if !known || !aired {
 			t.Fatalf("known=%v aired=%v, want known aired", known, aired)
 		}
@@ -76,7 +76,7 @@ func TestEpisodeAiredState(t *testing.T) {
 		srv := airedTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}, nil)
-		if _, _, known := srv.episodeAiredState(context.Background(), "series", ids); known {
+		if _, _, known := srv.episodeAiredState(context.Background(), nil, "series", ids); known {
 			t.Fatal("lookup failure must fail open (known=false)")
 		}
 	})
@@ -84,21 +84,21 @@ func TestEpisodeAiredState(t *testing.T) {
 	t.Run("episode missing from both sources fails open", func(t *testing.T) {
 		srv := airedTestServer(t, tvmazeShowWithAirstamp(future), nil)
 		other := &session.AvailReportMeta{ImdbID: "tt0944947", Season: 9, Episode: 9}
-		if _, _, known := srv.episodeAiredState(context.Background(), "series", other); known {
+		if _, _, known := srv.episodeAiredState(context.Background(), nil, "series", other); known {
 			t.Fatal("unknown episode must fail open")
 		}
 	})
 
 	t.Run("no ids fails open", func(t *testing.T) {
 		srv := airedTestServer(t, nil, nil)
-		if _, _, known := srv.episodeAiredState(context.Background(), "series", &session.AvailReportMeta{Season: 1, Episode: 1}); known {
+		if _, _, known := srv.episodeAiredState(context.Background(), nil, "series", &session.AvailReportMeta{Season: 1, Episode: 1}); known {
 			t.Fatal("no resolvable ids must fail open")
 		}
 	})
 
 	t.Run("movies never gate", func(t *testing.T) {
 		srv := airedTestServer(t, tvmazeShowWithAirstamp(future), nil)
-		if _, _, known := srv.episodeAiredState(context.Background(), "movie", ids); known {
+		if _, _, known := srv.episodeAiredState(context.Background(), nil, "movie", ids); known {
 			t.Fatal("movies must not be gated")
 		}
 	})
@@ -115,7 +115,7 @@ func TestEpisodeAiredState(t *testing.T) {
 			http.NotFound(w, r)
 		})
 		tmdbIDs := &session.AvailReportMeta{TmdbID: "1399", Season: 2, Episode: 5}
-		aired, _, known := srv.episodeAiredState(context.Background(), "series", tmdbIDs)
+		aired, _, known := srv.episodeAiredState(context.Background(), nil, "series", tmdbIDs)
 		if !known || aired {
 			t.Fatalf("known=%v aired=%v, want gated via TMDB fallback", known, aired)
 		}
@@ -129,7 +129,7 @@ func TestEpisodeAiredState(t *testing.T) {
 			]}`, today)))
 		})
 		tmdbIDs := &session.AvailReportMeta{TmdbID: "1399", Season: 2, Episode: 5}
-		aired, _, known := srv.episodeAiredState(context.Background(), "series", tmdbIDs)
+		aired, _, known := srv.episodeAiredState(context.Background(), nil, "series", tmdbIDs)
 		if !known || !aired {
 			t.Fatalf("known=%v aired=%v, want aired on its air date", known, aired)
 		}

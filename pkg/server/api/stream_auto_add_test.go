@@ -267,6 +267,36 @@ func TestRenameThenDropKeepsRenamedProfiles(t *testing.T) {
 	}
 }
 
+// A metadata-profile rename follows into stream bindings, and deletion clears
+// them — a stream left unbound serves the stream-only manifest.
+func TestMetadataProfileRenameAndDropPropagation(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default":     {MetadataProfileName: "Old Name"},
+		"living-room": {MetadataProfileName: "old name"}, // case-insensitive match
+		"bedroom":     {MetadataProfileName: "Untouched"},
+	}
+
+	applyMetadataProfileRenames(streams, map[string]string{"old name": "New Name"})
+	if got := streams["default"].MetadataProfileName; got != "New Name" {
+		t.Errorf("default binding = %q, want %q", got, "New Name")
+	}
+	if got := streams["living-room"].MetadataProfileName; got != "New Name" {
+		t.Errorf("case-insensitive binding = %q, want %q", got, "New Name")
+	}
+	if got := streams["bedroom"].MetadataProfileName; got != "Untouched" {
+		t.Errorf("unrelated binding changed to %q", got)
+	}
+
+	// Rename resolved first, so the renamed profile is never seen as deleted.
+	dropDeletedMetadataProfiles(streams, []config.MetadataProfileConfig{{Name: "New Name"}})
+	if got := streams["default"].MetadataProfileName; got != "New Name" {
+		t.Errorf("renamed binding dropped: %q", got)
+	}
+	if got := streams["bedroom"].MetadataProfileName; got != "" {
+		t.Errorf("dangling binding = %q, want cleared", got)
+	}
+}
+
 func TestDropDeletedProvidersClearsDanglingReferences(t *testing.T) {
 	streams := map[string]*config.StreamEntry{
 		"default": {

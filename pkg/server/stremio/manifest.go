@@ -71,19 +71,20 @@ func NewManifest(version string) *Manifest {
 	}
 }
 
-// ForConfig renders the manifest for the current config: with the metadata
-// master switch on, the addon declares the meta and catalog resources plus the
-// enabled catalogs; with it off, the result is identical to the stream-only
-// manifest this addon always served. Derived per request so config reloads
-// take effect without rebuilding the base manifest.
+// ForProfile renders the manifest for one stream's metadata profile: with a
+// profile bound, the addon declares the meta and catalog resources plus the
+// profile's enabled catalogs; with none (nil), the result is identical to the
+// stream-only manifest this addon always served. Derived per request so
+// config reloads and binding changes take effect without rebuilding the base
+// manifest.
 //
 // The value copy is shallow — fresh slices are assigned, never appended, so
 // the shared base manifest's backing arrays are never written.
-func (m *Manifest) ForConfig(cfg *config.Config) *Manifest {
+func (m *Manifest) ForProfile(profile *config.MetadataProfileConfig) *Manifest {
 	out := *m
-	if cfg != nil && cfg.EffectiveMetadataEnabled() {
+	if profile != nil {
 		out.Resources = []string{"stream", "catalog", "meta"}
-		out.Catalogs = enabledCatalogs(cfg)
+		out.Catalogs = enabledCatalogs(profile)
 	}
 	return &out
 }

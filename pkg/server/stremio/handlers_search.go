@@ -627,7 +627,7 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	// Air-date gate: a positively-unaired episode gets an instant empty result
 	// instead of a full indexer fan-out that cannot find anything. Strictly
 	// failure-open — only a trusted source saying "airs in the future" gates.
-	if aired, airsAt, known := s.episodeAiredState(ctx, contentType, params.ContentIDs); known && !aired {
+	if aired, airsAt, known := s.episodeAiredState(ctx, s.metadataProfileFor(stream), contentType, params.ContentIDs); known && !aired {
 		logger.Info("Episode has not aired yet; skipping search",
 			"stream", streamLabel,
 			"type", contentType,
@@ -645,6 +645,39 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 				UnavailableByDetailsURL: make(map[string]bool),
 			},
 		}, nil
+	}
+
+	// Certification gate: content over the stream profile's parental cap gets
+	// an instant empty result, same shape as the unaired gate. Deliberately
+	// fail-closed on unknown certifications (unless the profile allows
+	// unrated) — this is a parental control, unlike the failure-open checks
+	// around it. A stream with no metadata profile bound is uncapped.
+	if cap, capped := capForProfile(s.metadataProfileFor(stream)); capped {
+		certAge, certKnown := s.resolveSearchCertification(contentType, params)
+		if params.Metadata != nil {
+			params.Metadata.Certification = &query.ResolvedCertification{Age: certAge, Known: certKnown}
+		}
+		if !cap.Allows(certAge, certKnown) {
+			reason := fmt.Sprintf("age %d over cap %d", certAge, cap.MaxAge)
+			if !certKnown {
+				reason = "certification unknown (cap fails closed)"
+			}
+			logger.Info("Content blocked by certification cap; skipping search",
+				"stream", streamLabel,
+				"type", contentType,
+				"id", id,
+				"reason", reason,
+			)
+			diag.From(ctx).SetCertificationBlocked(reason)
+			return &rawSearchResult{
+				Params: params,
+				Avail: &AvailContext{
+					ByDetailsURL:            make(map[string]*availnzb.ReleaseWithStatus),
+					AvailableByDetailsURL:   make(map[string]bool),
+					UnavailableByDetailsURL: make(map[string]bool),
+				},
+			}, nil
+		}
 	}
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
 

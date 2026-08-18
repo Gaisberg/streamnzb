@@ -14,8 +14,10 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
+	"streamnzb/pkg/services/metadata/tvdb"
 )
 
 const (
@@ -37,24 +39,26 @@ const (
 
 // catalogRequest is one parsed /catalog/... request. StreamName comes from
 // the authenticated token, not the path: the local catalogs (Continue
-// Watching, Because You Watched) are per-stream.
+// Watching, Because You Watched) are per-stream. Profile is the requesting
+// stream's resolved metadata profile.
 type catalogRequest struct {
 	Type       string
 	ID         string
 	Search     string
 	Skip       int
 	StreamName string
+	Profile    *config.MetadataProfileConfig
 }
 
 // handleCatalog serves /catalog/{type}/{id}.json and
-// /catalog/{type}/{id}/{extra}.json. Unknown, disabled, or master-switch-off
-// catalogs are 404s; upstream failures degrade to an empty page so a flaky
-// provider never renders as a client error row.
+// /catalog/{type}/{id}/{extra}.json. Unknown or disabled catalogs — including
+// every catalog for a stream with no metadata profile bound — are 404s;
+// upstream failures degrade to an empty page so a flaky provider never
+// renders as a client error row.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil || !cfg.EffectiveMetadataEnabled() {
+	stream, _ := auth.StreamFromContext(r)
+	profile := s.metadataProfileFor(stream)
+	if profile == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -64,15 +68,15 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	stream, _ := auth.StreamFromContext(r)
 	req.StreamName = streamID(stream)
+	req.Profile = profile
 	def, ok := catalogDefByID(req.ID)
 	if !ok || def.Type != req.Type {
 		http.NotFound(w, r)
 		return
 	}
 	enabled := false
-	for _, d := range enabledCatalogDefs(cfg) {
+	for _, d := range enabledCatalogDefs(profile) {
 		if d.ID == def.ID {
 			enabled = true
 			break
@@ -97,7 +101,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		metas = nil
 	}
 	if req.Search == "" && len(metas) > 0 {
-		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, cfg, def))
+		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, profile, def))
 	}
 	if metas == nil {
 		metas = []MetaPreview{}
@@ -165,10 +169,13 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 	if req.Search != "" {
 		resp, err = s.tmdbClient.SearchByType(mediaType, req.Search, page)
 	} else {
-		resp, err = s.tmdbClient.GetListing(mediaType, def.Kind, page)
+		resp, err = s.tmdbClient.GetListing(mediaType, def.Kind, page, req.Profile.EffectiveLanguage())
 	}
 	if err != nil {
 		return nil, err
+	}
+	if cap, capped := capForProfile(req.Profile); capped {
+		resp.Results = s.filterTMDBResults(mediaType, resp.Results, cap)
 	}
 
 	previews := make([]MetaPreview, 0, len(resp.Results))
@@ -243,10 +250,15 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		listings = listings[:catalogPageSize]
 	}
 
+	// The extended fan-out already fetches the record certifications ride on,
+	// so a capped profile filters here for free.
+	cap, capped := capForProfile(req.Profile)
 	ids := make([]string, len(listings))
+	allowed := make([]bool, len(listings))
 	sem := make(chan struct{}, externalIDConcurrency)
 	var wg sync.WaitGroup
 	for i, listing := range listings {
+		allowed[i] = !capped || cap.AllowUnrated
 		if listing.ID <= 0 {
 			continue
 		}
@@ -257,6 +269,9 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 			defer func() { <-sem }()
 			if ext, err := s.tvdbClient.GetSeriesExtended(strconv.Itoa(tvdbID)); err == nil {
 				ids[i] = ext.IMDbID()
+				if capped {
+					allowed[i] = cap.Allows(certification.Resolve(tvdbCertEntries(ext.ContentRatings)))
+				}
 			}
 		}(i, listing.ID)
 	}
@@ -264,7 +279,7 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 
 	previews := make([]MetaPreview, 0, len(listings))
 	for i, listing := range listings {
-		if listing.Name == "" || listing.ID <= 0 {
+		if listing.Name == "" || listing.ID <= 0 || !allowed[i] {
 			continue
 		}
 		id := ids[i]
@@ -294,9 +309,15 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 	if err != nil {
 		return nil, err
 	}
+	// Kitsu listings carry ageRating inline, so a capped profile filters with
+	// zero extra fetches.
+	cap, capped := capForProfile(req.Profile)
 	previews := make([]MetaPreview, 0, len(listings))
 	for _, item := range listings {
 		if item.ID == "" || item.CanonicalTitle == "" {
+			continue
+		}
+		if capped && !cap.Allows(certification.NormalizeKitsu(item.AgeRating, item.Nsfw)) {
 			continue
 		}
 		previews = append(previews, MetaPreview{
@@ -374,11 +395,14 @@ func (s *Server) continueWatchingCatalog(ctx context.Context, def CatalogDef, re
 		previews := make([]MetaPreview, 0, len(played))
 		for _, stub := range played {
 			preview := stub
-			s.fillPreviewFromMetadata(ctx, &preview, def.Type)
+			s.fillPreviewFromMetadata(ctx, &preview, def.Type, req.Profile.EffectiveLanguage())
 			if preview.Name == "" {
 				continue
 			}
 			previews = append(previews, preview)
+		}
+		if cap, capped := capForProfile(req.Profile); capped {
+			previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
 		}
 		return previews, nil
 	}
@@ -407,7 +431,7 @@ func (s *Server) libraryCatalog(ctx context.Context, def CatalogDef, req catalog
 		}
 		seen[id] = true
 		preview := MetaPreview{ID: id, Type: def.Type}
-		s.fillPreviewFromMetadata(ctx, &preview, item.ContentType)
+		s.fillPreviewFromMetadata(ctx, &preview, item.ContentType, req.Profile.EffectiveLanguage())
 		if preview.Name == "" {
 			preview.Name = item.ReleaseTitle
 		}
@@ -415,6 +439,9 @@ func (s *Server) libraryCatalog(ctx context.Context, def CatalogDef, req catalog
 		if len(previews) >= catalogPageSize {
 			break
 		}
+	}
+	if cap, capped := capForProfile(req.Profile); capped {
+		previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
 	}
 	return previews, nil
 }
@@ -490,7 +517,7 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 	// mixes tastes instead of leading with 20 titles like the newest watch.
 	perSeed := make([][]tmdb.SearchMultiResult, 0, len(seedTMDBIDs))
 	for _, seedID := range seedTMDBIDs {
-		resp, err := s.tmdbClient.GetRecommendations(mediaType, seedID, 1)
+		resp, err := s.tmdbClient.GetRecommendations(mediaType, seedID, 1, req.Profile.EffectiveLanguage())
 		if err != nil {
 			logger.Debug("TMDB recommendations failed", "tmdb_id", seedID, "err", err)
 			continue
@@ -517,6 +544,10 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 		if !advanced {
 			break
 		}
+	}
+
+	if cap, capped := capForProfile(req.Profile); capped {
+		merged = s.filterTMDBResults(mediaType, merged, cap)
 	}
 
 	ids := s.resolveIMDbIDs(mediaType, merged)
@@ -575,16 +606,16 @@ func (s *Server) tmdbIDForPreviewID(previewID, contentType string) int {
 // catalog of the same type ranked above current, so a title appears only in
 // the highest-ranked row that carries it. Best-effort: a failing higher
 // catalog just contributes nothing.
-func (s *Server) higherRankedCatalogIDs(ctx context.Context, cfg *config.Config, current CatalogDef) map[string]bool {
+func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.MetadataProfileConfig, current CatalogDef) map[string]bool {
 	ids := make(map[string]bool)
-	for _, def := range enabledCatalogDefs(cfg) {
+	for _, def := range enabledCatalogDefs(profile) {
 		if def.ID == current.ID {
 			break
 		}
 		if def.Type != current.Type {
 			continue
 		}
-		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID})
+		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID, Profile: profile})
 		if err != nil {
 			continue
 		}
@@ -628,8 +659,9 @@ func libraryPreviewID(item *persistence.LibraryItem) string {
 
 // fillPreviewFromMetadata resolves display name and poster for a preview stub
 // through the cached metadata clients, keyed off the preview id. A stub whose
-// resolution fails keeps whatever name it already carries.
-func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPreview, contentType string) {
+// resolution fails keeps whatever name it already carries. lang is the
+// profile's display language tag ("" for the English default).
+func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPreview, contentType, lang string) {
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, kitsuID); err == nil && animeMeta.CanonicalTitle != "" {
 			preview.Name = animeMeta.CanonicalTitle
@@ -638,7 +670,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		return
 	}
 	if tvdbID, ok := strings.CutPrefix(preview.ID, "tvdb:"); ok {
-		if ext, err := s.tvdbClient.GetSeriesExtended(tvdbID); err == nil && ext.Name != "" {
+		if ext, err := s.tvdbClient.GetSeriesExtendedTranslated(tvdbID, tvdb.LanguageToISO3(lang)); err == nil && ext.Name != "" {
 			preview.Name = ext.Name
 			preview.Poster = ext.Image
 		}
@@ -658,7 +690,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		return
 	}
 	if contentType == "movie" {
-		if details, err := s.tmdbClient.GetMovieDetails(tmdbID); err == nil && details.Title != "" {
+		if details, err := s.tmdbClient.GetMovieDetailsWithLanguage(tmdbID, lang); err == nil && details.Title != "" {
 			preview.Name = details.Title
 			if details.PosterPath != "" {
 				preview.Poster = tmdbPosterURL + details.PosterPath
@@ -666,7 +698,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		}
 		return
 	}
-	if details, err := s.tmdbClient.GetTVDetails(tmdbID); err == nil && details.Name != "" {
+	if details, err := s.tmdbClient.GetTVDetailsWithLanguage(tmdbID, lang); err == nil && details.Name != "" {
 		preview.Name = details.Name
 		if details.PosterPath != "" {
 			preview.Poster = tmdbPosterURL + details.PosterPath

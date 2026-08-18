@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/session"
 )
@@ -27,7 +28,7 @@ const unairedMargin = 15 * time.Minute
 // fallbacks, mirroring the meta source policy). Kitsu numbering is
 // entry-relative and cannot be matched to the resolved season/episode safely,
 // so anime relies on the same sources via its mapped ids.
-func (s *Server) episodeAiredState(ctx context.Context, contentType string, ids *session.AvailReportMeta) (aired bool, airsAt time.Time, known bool) {
+func (s *Server) episodeAiredState(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, ids *session.AvailReportMeta) (aired bool, airsAt time.Time, known bool) {
 	if s == nil || ids == nil || ids.Season <= 0 || ids.Episode <= 0 {
 		return false, time.Time{}, false
 	}
@@ -37,7 +38,7 @@ func (s *Server) episodeAiredState(ctx context.Context, contentType string, ids 
 		return false, time.Time{}, false
 	}
 
-	if airsAt, ok := s.tvmazeAirTime(ctx, ids); ok {
+	if airsAt, ok := s.tvmazeAirTime(ctx, profile, ids); ok {
 		return airedByTime(airsAt), airsAt, true
 	}
 	if airsAt, ok := s.tvdbAirTime(ids); ok {
@@ -73,8 +74,8 @@ func airedByTime(airsAt time.Time) bool {
 	return !airsAt.After(time.Now().Add(unairedMargin))
 }
 
-func (s *Server) tvmazeAirTime(ctx context.Context, ids *session.AvailReportMeta) (time.Time, bool) {
-	overlay := s.tvmazeEpisodeOverlay(ctx, ids.ImdbID, ids.TvdbID)
+func (s *Server) tvmazeAirTime(ctx context.Context, profile *config.MetadataProfileConfig, ids *session.AvailReportMeta) (time.Time, bool) {
+	overlay := s.tvmazeEpisodeOverlay(ctx, profile, ids.ImdbID, ids.TvdbID)
 	ep, ok := overlay[[2]int{ids.Season, ids.Episode}]
 	if !ok {
 		return time.Time{}, false

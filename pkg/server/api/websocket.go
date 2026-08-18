@@ -315,7 +315,7 @@ func (s *Server) clearCachesForScope(scope cacheClearScope) string {
 	}
 }
 
-// clearPatchedFilterProfiles empties the filter profiles a save is about to
+// clearPatchedFilterProfiles empties the profile lists a save is about to
 // replace, so the patch lands on a clean slate.
 //
 // A save is applied by seeding the config from the current one and unmarshalling
@@ -324,6 +324,10 @@ func (s *Server) clearCachesForScope(scope cacheClearScope) string {
 // attribute overrides are such a map, so resetting a trait back to its default —
 // which drops its key — left the old override in place and the reset never
 // stuck. Nil-ing the slice first makes the patch authoritative.
+//
+// Metadata profiles get the same treatment, but only when the patch carries
+// the key: nil MetadataProfiles is the "never migrated" marker, and clearing
+// it on an unrelated save would re-run the legacy migration on next load.
 func clearPatchedFilterProfiles(body []byte, cfg *config.Config) {
 	if len(body) == 0 || cfg == nil {
 		return
@@ -334,5 +338,8 @@ func clearPatchedFilterProfiles(body []byte, cfg *config.Config) {
 	}
 	if _, ok := raw["filter_profiles"]; ok {
 		cfg.FilterProfiles = nil
+	}
+	if _, ok := raw["metadata_profiles"]; ok {
+		cfg.MetadataProfiles = nil
 	}
 }

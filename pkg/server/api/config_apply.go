@@ -52,11 +52,16 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 	filterProfileRenames := renamedNamesByIndex(currentCfg.FilterProfiles, newCfg.FilterProfiles, func(fp config.FilterProfileConfig) string {
 		return fp.Name
 	})
+	metadataProfileRenames := renamedNamesByIndex(currentCfg.MetadataProfiles, newCfg.MetadataProfiles, func(mp config.MetadataProfileConfig) string {
+		return mp.Name
+	})
 	applyStreamNameRenames(newCfg.Streams, providerRenames, indexerRenames)
 	applyFilterProfileRenames(newCfg.Streams, filterProfileRenames)
+	applyMetadataProfileRenames(newCfg.Streams, metadataProfileRenames)
 	dropDeletedProviders(newCfg.Streams, newCfg.Providers)
 	dropDeletedIndexers(newCfg.Streams, newCfg.Indexers)
 	dropDeletedFilterProfiles(newCfg.Streams, newCfg.FilterProfiles)
+	dropDeletedMetadataProfiles(newCfg.Streams, newCfg.MetadataProfiles)
 	newCfg.ApplyProviderDefaults()
 	applyStreamAutoSelections(&newCfg)
 	if newCfg.AdminUsername == "" {

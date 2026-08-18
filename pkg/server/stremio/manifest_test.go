@@ -71,36 +71,31 @@ func TestServiceNameFallsBackToTheDefault(t *testing.T) {
 	}
 }
 
-// TestForConfigDisabledIsByteIdentical pins the opt-out contract: with the
-// metadata master switch explicitly off (or no config at all), the manifest
-// must be exactly what the addon served before catalogs/meta existed.
-func TestForConfigDisabledIsByteIdentical(t *testing.T) {
+// TestForProfileUnboundIsByteIdentical pins the opt-out contract: a stream
+// with no metadata profile bound (nil profile) must get exactly the manifest
+// the addon served before catalogs/meta existed.
+func TestForProfileUnboundIsByteIdentical(t *testing.T) {
 	base := NewManifest("1.2.3")
 	baseline, err := base.ToJSONForDevice(false, "Living Room", "")
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	for name, cfg := range map[string]*config.Config{
-		"nil config": nil,
-		"master off": {Metadata: config.MetadataConfig{Enabled: boolPtr(false)}},
-	} {
-		got, err := base.ForConfig(cfg).ToJSONForDevice(false, "Living Room", "")
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if string(got) != string(baseline) {
-			t.Fatalf("%s: manifest differs from the pre-feature manifest", name)
-		}
+	got, err := base.ForProfile(nil).ToJSONForDevice(false, "Living Room", "")
+	if err != nil {
+		t.Fatalf("nil profile: %v", err)
+	}
+	if string(got) != string(baseline) {
+		t.Fatal("nil profile: manifest differs from the pre-feature manifest")
 	}
 }
 
-// The master switch defaults to on: an untouched config already declares the
-// metadata resources.
-func TestForConfigEnabledDeclaresResourcesAndCatalogs(t *testing.T) {
+// A bound profile declares the metadata resources; a fresh profile (nil
+// catalog list) carries the registry defaults.
+func TestForProfileDeclaresResourcesAndCatalogs(t *testing.T) {
 	base := NewManifest("1.2.3")
-	cfg := &config.Config{}
+	profile := &config.MetadataProfileConfig{Name: "Default"}
 
-	out := base.ForConfig(cfg)
+	out := base.ForProfile(profile)
 	if len(out.Resources) != 3 || out.Resources[0] != "stream" || out.Resources[1] != "catalog" || out.Resources[2] != "meta" {
 		t.Fatalf("Resources = %v", out.Resources)
 	}
@@ -130,7 +125,7 @@ func TestForConfigEnabledDeclaresResourcesAndCatalogs(t *testing.T) {
 }
 
 func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
-	cfg := &config.Config{Metadata: config.MetadataConfig{
+	profile := &config.MetadataProfileConfig{
 		Catalogs: []config.CatalogToggle{
 			{ID: "kitsu.trending.anime", Enabled: true},
 			{ID: "tmdb.trending.movie", Enabled: true},
@@ -138,20 +133,19 @@ func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
 			{ID: "not.a.real.catalog", Enabled: true},
 			{ID: "kitsu.trending.anime", Enabled: true}, // duplicate
 		},
-	}}
-	defs := enabledCatalogDefs(cfg)
+	}
+	defs := enabledCatalogDefs(profile)
 	if len(defs) != 2 {
 		t.Fatalf("defs = %d, want 2 (disabled, unknown, duplicate dropped)", len(defs))
 	}
-	// Config order wins over registry order.
+	// Profile order wins over registry order.
 	if defs[0].ID != "kitsu.trending.anime" || defs[1].ID != "tmdb.trending.movie" {
 		t.Fatalf("order = [%s, %s]", defs[0].ID, defs[1].ID)
 	}
 
-	// Master off: nothing, regardless of toggles.
-	cfg.Metadata.Enabled = boolPtr(false)
-	if defs := enabledCatalogDefs(cfg); len(defs) != 0 {
-		t.Fatalf("master off must disable all catalogs, got %d", len(defs))
+	// No profile: nothing, regardless of anything else.
+	if defs := enabledCatalogDefs(nil); len(defs) != 0 {
+		t.Fatalf("nil profile must disable all catalogs, got %d", len(defs))
 	}
 }
 
@@ -159,7 +153,7 @@ func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
 // fresh install gets exactly one search-carrying trending row per media type;
 // everything else is opt-in from the Metadata page.
 func TestDefaultCatalogsAreOneFlagshipPerType(t *testing.T) {
-	defs := enabledCatalogDefs(&config.Config{})
+	defs := enabledCatalogDefs(&config.MetadataProfileConfig{})
 	want := []string{"tmdb.trending.movie", "tmdb.trending.series", "kitsu.trending.anime"}
 	if len(defs) != len(want) {
 		t.Fatalf("defaults = %d catalogs, want %d", len(defs), len(want))
@@ -178,13 +172,71 @@ func TestDefaultCatalogsAreOneFlagshipPerType(t *testing.T) {
 // never-configured (nil) list gets the registry defaults, while an explicitly
 // saved empty list means none — a meta-only setup with every catalog removed.
 func TestEnabledCatalogDefsNilVersusEmpty(t *testing.T) {
-	nilCfg := &config.Config{}
-	if defs := enabledCatalogDefs(nilCfg); len(defs) == 0 {
+	nilList := &config.MetadataProfileConfig{}
+	if defs := enabledCatalogDefs(nilList); len(defs) == 0 {
 		t.Fatal("nil catalog list must yield the registry defaults")
 	}
-	emptyCfg := &config.Config{Metadata: config.MetadataConfig{Catalogs: []config.CatalogToggle{}}}
-	if defs := enabledCatalogDefs(emptyCfg); len(defs) != 0 {
+	emptyList := &config.MetadataProfileConfig{Catalogs: []config.CatalogToggle{}}
+	if defs := enabledCatalogDefs(emptyList); len(defs) != 0 {
 		t.Fatalf("explicit empty catalog list must yield none, got %d", len(defs))
+	}
+}
+
+// TestPerStreamManifestDivergence pins the whole point of metadata profiles:
+// two streams on one server get different manifests from their bindings.
+func TestPerStreamManifestDivergence(t *testing.T) {
+	srv := &Server{config: &config.Config{
+		MetadataProfiles: []config.MetadataProfileConfig{
+			{Name: "Default"},
+			{Name: "Kids", Catalogs: []config.CatalogToggle{{ID: "tmdb.trending.movie", Enabled: true}}},
+		},
+	}}
+	base := NewManifest("1.2.3")
+
+	full := base.ForProfile(srv.metadataProfileFor(&auth.Stream{Username: "livingroom", MetadataProfileName: "Default"}))
+	kids := base.ForProfile(srv.metadataProfileFor(&auth.Stream{Username: "kids", MetadataProfileName: "Kids"}))
+	unbound := base.ForProfile(srv.metadataProfileFor(&auth.Stream{Username: "guest"}))
+
+	if len(full.Catalogs) <= len(kids.Catalogs) {
+		t.Fatalf("default profile catalogs = %d, kids = %d; expected the default (registry defaults) to carry more", len(full.Catalogs), len(kids.Catalogs))
+	}
+	if len(kids.Catalogs) != 1 || kids.Catalogs[0].ID != "tmdb.trending.movie" {
+		t.Fatalf("kids catalogs = %+v", kids.Catalogs)
+	}
+	if len(unbound.Resources) != 1 || unbound.Resources[0] != "stream" {
+		t.Fatalf("unbound stream resources = %v, want stream-only", unbound.Resources)
+	}
+}
+
+// The env kill-switch blanks metadata for every stream regardless of binding.
+func TestMetadataProfileForKillSwitch(t *testing.T) {
+	off := false
+	srv := &Server{config: &config.Config{
+		Metadata:         config.MetadataConfig{Enabled: &off},
+		MetadataProfiles: []config.MetadataProfileConfig{{Name: "Default"}},
+	}}
+	if p := srv.metadataProfileFor(&auth.Stream{Username: "x", MetadataProfileName: "Default"}); p != nil {
+		t.Fatal("kill-switch off must resolve every stream to nil")
+	}
+}
+
+// The admin token's synthesized stream carries no binding; it falls back to
+// the Default profile (else the first) so the admin install keeps catalogs.
+func TestMetadataProfileForAdminFallback(t *testing.T) {
+	srv := &Server{config: &config.Config{
+		MetadataProfiles: []config.MetadataProfileConfig{{Name: "Something"}, {Name: "Default"}},
+	}}
+	adminStream := &auth.Stream{Username: "admin"}
+	if p := srv.metadataProfileFor(adminStream); p == nil || p.Name != "Default" {
+		t.Fatalf("admin fallback = %+v, want the Default profile", p)
+	}
+	srv.config.MetadataProfiles = []config.MetadataProfileConfig{{Name: "Only"}}
+	if p := srv.metadataProfileFor(adminStream); p == nil || p.Name != "Only" {
+		t.Fatalf("admin fallback without Default = %+v, want the first profile", p)
+	}
+	srv.config.MetadataProfiles = nil
+	if p := srv.metadataProfileFor(adminStream); p != nil {
+		t.Fatal("admin with no profiles must be metadata-off")
 	}
 }
 

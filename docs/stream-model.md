@@ -22,6 +22,7 @@ Each stream configuration defines:
 - **Search requests mode** — `Combine all` (parallel, merged) or `Stop after first hit` (sequential fallback) — see [Search requests](search-queries.md).
 - **Results Mode & Limit** — Resolution ordering and maximum release count returned to Stremio.
 - **Filter Profiles** — General and per-kind (Movies, Shows, Anime films, Anime shows) release filter bindings powered by `jhin` — see [Filters & ranking](filters.md).
+- **Metadata Profile** — Which catalogs, display language and rating limit the stream serves. None means the classic stream-only manifest — see [Metadata & Catalogs](metadata.md).
 - **Failover & AvailNZB** — Automatic stream fallback walking and community availability checking. See [AvailNZB](availnzb.md).
 
 This architecture allows running multiple distinct Stremio manifests from a single StreamNZB instance, each tailored with different search rules, filters, or provider selections.

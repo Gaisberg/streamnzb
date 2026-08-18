@@ -61,7 +61,11 @@ type Stream struct {
 	SeriesSearchQueries []string                              `json:"series_search_queries,omitempty"`
 	FilterProfileName   string                                `json:"filter_profile_name,omitempty"`
 	FilterProfileByType map[string]string                     `json:"filter_profile_by_type,omitempty"`
-	MuteErrorVideo      *bool                                 `json:"mute_error_video,omitempty"`
+	// MetadataProfileName binds a metadata profile by name; empty means
+	// metadata off for this stream. See config.StreamEntry; the two structs
+	// are converted into each other, so their fields must stay in step.
+	MetadataProfileName string `json:"metadata_profile_name,omitempty"`
+	MuteErrorVideo      *bool  `json:"mute_error_video,omitempty"`
 	// ResultNameTemplate and ResultDescriptionTemplate customize how this
 	// stream's Stremio results render. Empty uses the built-in format.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
@@ -678,6 +682,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.SeriesSearchQueries = append([]string(nil), streamConfig.SeriesSearchQueries...)
 	stream.FilterProfileName = strings.TrimSpace(streamConfig.FilterProfileName)
 	stream.FilterProfileByType = normalizeProfileBindings(streamConfig.FilterProfileByType)
+	stream.MetadataProfileName = strings.TrimSpace(streamConfig.MetadataProfileName)
 	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
 	stream.ResultNameTemplate = strings.TrimSpace(streamConfig.ResultNameTemplate)
 	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)

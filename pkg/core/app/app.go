@@ -141,10 +141,10 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 		}
 	}(availClient)
 	dataDir := resolveDataDir(opts.DataDir, cfg.LoadedPath)
+	// Display language is a per-call parameter on the shared clients, derived
+	// from each stream's metadata profile — never client state.
 	tmdbClient := tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
-	tmdbClient.SetLanguage(cfg.EffectiveMetadataLanguage())
-	tvdbClient.SetLanguage(cfg.EffectiveMetadataLanguage())
 
 	return &Components{
 		Config:               base.Config,
@@ -228,8 +228,6 @@ func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
 	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
 	comp.TMDBClient = tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
-	comp.TMDBClient.SetLanguage(newCfg.EffectiveMetadataLanguage())
-	comp.TVDBClient.SetLanguage(newCfg.EffectiveMetadataLanguage())
 }
 
 func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {

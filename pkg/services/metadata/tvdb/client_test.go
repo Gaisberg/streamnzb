@@ -113,11 +113,14 @@ func TestDisplayLanguageTranslations(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
-	client.SetLanguage("de-DE")
+	lang3 := LanguageToISO3("de-DE")
+	if lang3 != "deu" {
+		t.Fatalf("LanguageToISO3(de-DE) = %q, want deu", lang3)
+	}
 
-	ext, err := client.GetSeriesExtended("73739")
+	ext, err := client.GetSeriesExtendedTranslated("73739", lang3)
 	if err != nil {
-		t.Fatalf("GetSeriesExtended: %v", err)
+		t.Fatalf("GetSeriesExtendedTranslated: %v", err)
 	}
 	// Translated name wins; the empty translated overview keeps the default.
 	if ext.Name != "Lost (DE)" || ext.Overview != "Stranded on an island." {
@@ -125,13 +128,13 @@ func TestDisplayLanguageTranslations(t *testing.T) {
 	}
 	// The raw translation is exposed so callers can tell a real translation
 	// from the overlaid fallback (the anime description path needs this).
-	if name, overview := client.SeriesTranslation("73739"); name != "Lost (DE)" || overview != "" {
+	if name, overview := client.SeriesTranslation("73739", lang3); name != "Lost (DE)" || overview != "" {
 		t.Fatalf("SeriesTranslation = %q / %q", name, overview)
 	}
 
-	episodes, err := client.GetSeriesEpisodes("73739")
+	episodes, err := client.GetSeriesEpisodesTranslated("73739", lang3)
 	if err != nil {
-		t.Fatalf("GetSeriesEpisodes: %v", err)
+		t.Fatalf("GetSeriesEpisodesTranslated: %v", err)
 	}
 	if episodes[0].Name != "Pilot (1, DE)" || episodes[0].Overview != "Der Absturz." {
 		t.Fatalf("episode 1 = %+v, want the German overlay", episodes[0])
@@ -157,8 +160,8 @@ func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
 		}
 	})
 
-	client.SetLanguage("fi-FI")
-	ext, err := client.GetSeriesExtended("73739")
+	fin := LanguageToISO3("fi-FI")
+	ext, err := client.GetSeriesExtendedTranslated("73739", fin)
 	if err != nil || ext.Name != "Lost" {
 		t.Fatalf("ext = %+v, err = %v, want the default record", ext, err)
 	}
@@ -167,10 +170,10 @@ func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
 	}
 
 	// The 404 is a cached answer: repeat requests must not re-ask TVDB.
-	if _, err := client.GetSeriesExtended("73739"); err != nil {
-		t.Fatalf("second GetSeriesExtended: %v", err)
+	if _, err := client.GetSeriesExtendedTranslated("73739", fin); err != nil {
+		t.Fatalf("second GetSeriesExtendedTranslated: %v", err)
 	}
-	if name, overview := client.SeriesTranslation("73739"); name != "" || overview != "" {
+	if name, overview := client.SeriesTranslation("73739", fin); name != "" || overview != "" {
 		t.Fatalf("SeriesTranslation = %q / %q, want empty", name, overview)
 	}
 	if translationHits.Load() != 1 {
@@ -178,9 +181,11 @@ func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
 	}
 
 	// English (any region) turns translation lookups off entirely.
-	client.SetLanguage("en-GB")
-	if _, err := client.GetSeriesExtended("73739"); err != nil {
-		t.Fatalf("english GetSeriesExtended: %v", err)
+	if got := LanguageToISO3("en-GB"); got != "" {
+		t.Fatalf("LanguageToISO3(en-GB) = %q, want empty", got)
+	}
+	if _, err := client.GetSeriesExtendedTranslated("73739", LanguageToISO3("en-GB")); err != nil {
+		t.Fatalf("english GetSeriesExtendedTranslated: %v", err)
 	}
 	if translationHits.Load() != 1 {
 		t.Fatalf("translation hits after en-GB = %d, want still 1", translationHits.Load())

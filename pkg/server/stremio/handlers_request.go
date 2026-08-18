@@ -139,7 +139,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 		streamName = stream.Username
 		addonName = stream.AddonName
 	}
-	data, err := manifest.ForConfig(cfg).ToJSONForDevice(isAdmin, streamName, addonName)
+	data, err := manifest.ForProfile(s.metadataProfileFor(stream)).ToJSONForDevice(isAdmin, streamName, addonName)
 	if err != nil {
 		http.Error(w, "Failed to generate manifest", http.StatusInternalServerError)
 		return

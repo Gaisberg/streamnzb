@@ -66,11 +66,6 @@ type Client struct {
 	tokenMu    sync.Mutex
 	tokenCache string
 
-	// lang3 is the display language as the ISO 639-3 code TVDB's translation
-	// endpoints address ("deu", "fin"); empty means the default (English)
-	// record. See SetLanguage.
-	lang3 string
-
 	resolveCache sync.Map // remoteID -> string (TVDB id)
 	seriesCache  sync.Map // seriesID -> *SeriesDetails
 
@@ -119,24 +114,26 @@ func (c *Client) Ping() error {
 	return err
 }
 
-// SetLanguage sets the display language from a TMDB-style tag ("de-DE").
-// TVDB's v4 API addresses translations by ISO 639-3 code, which x/text
-// derives from the tag; an unparseable tag or English keeps translations off.
-func (c *Client) SetLanguage(tag string) {
-	c.lang3 = ""
+// LanguageToISO3 converts a TMDB-style display-language tag ("de-DE") to the
+// ISO 639-3 code TVDB's translation endpoints address ("deu"). An empty or
+// unparseable tag, or English, yields "" — translations off. The client is
+// shared by every stream, so language is always a per-call parameter derived
+// from the requesting stream's metadata profile, never client state.
+func LanguageToISO3(tag string) string {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
-		return
+		return ""
 	}
 	parsed, err := language.Parse(tag)
 	if err != nil {
 		logger.Debug("TVDB display language tag not parseable, staying English", "tag", tag, "err", err)
-		return
+		return ""
 	}
 	base, _ := parsed.Base()
 	if iso3 := base.ISO3(); iso3 != "" && iso3 != "eng" {
-		c.lang3 = iso3
+		return iso3
 	}
+	return ""
 }
 
 type loginResponse struct {
@@ -426,6 +423,14 @@ type SeriesExtended struct {
 	Trailers []struct {
 		URL string `json:"url"`
 	} `json:"trailers"`
+	// ContentRatings carries per-country age certifications (e.g. USA/TV-14).
+	ContentRatings []ContentRating `json:"contentRatings"`
+}
+
+// ContentRating is one country-labeled certification from a TVDB record.
+type ContentRating struct {
+	Name    string `json:"name"`    // e.g. "TV-14"
+	Country string `json:"country"` // TVDB uses 3-letter names, e.g. "usa"
 }
 
 // CastMember is one credited actor, with the character and headshot when TVDB
@@ -508,8 +513,19 @@ type seriesExtendedResponse struct {
 }
 
 // GetSeriesExtended fetches the extended series record (artwork, overview,
-// genres, status).
+// genres, status), untranslated. Use GetSeriesExtendedTranslated for display
+// paths; id-resolution fan-outs stay on this one so they never pay for
+// translation lookups they don't render.
 func (c *Client) GetSeriesExtended(seriesID string) (*SeriesExtended, error) {
+	return c.GetSeriesExtendedTranslated(seriesID, "")
+}
+
+// GetSeriesExtendedTranslated fetches the extended series record with the
+// display language's name and overview overlaid. lang3 is an ISO 639-3 code
+// (see LanguageToISO3); "" skips the overlay. The cached body is always the
+// untranslated record — translations live at their own cached paths — so
+// per-call languages never contaminate the cache.
+func (c *Client) GetSeriesExtendedTranslated(seriesID, lang3 string) (*SeriesExtended, error) {
 	if c == nil {
 		return nil, fmt.Errorf("TVDB client not configured")
 	}
@@ -527,7 +543,7 @@ func (c *Client) GetSeriesExtended(seriesID string) (*SeriesExtended, error) {
 	if out.Status != successVal {
 		return nil, fmt.Errorf("TVDB series extended failed: status=%s", out.Status)
 	}
-	c.applySeriesTranslation(seriesID, &out.Data)
+	c.applySeriesTranslation(seriesID, lang3, &out.Data)
 	return &out.Data, nil
 }
 
@@ -539,23 +555,23 @@ type seriesTranslationResponse struct {
 	} `json:"data"`
 }
 
-// SeriesTranslation returns the display language's name and overview for the
-// series, or empty strings when translations are off (English) or TVDB has
+// SeriesTranslation returns the given language's name and overview for the
+// series, or empty strings when translations are off (lang3 "") or TVDB has
 // none. Public because some callers need to know whether a real translation
 // exists — the anime path keeps Kitsu's English synopsis unless one does.
-func (c *Client) SeriesTranslation(seriesID string) (name, overview string) {
-	if c == nil || c.lang3 == "" {
+func (c *Client) SeriesTranslation(seriesID, lang3 string) (name, overview string) {
+	if c == nil || lang3 == "" {
 		return "", ""
 	}
-	body, ok, err := c.getBodyCachedOptional(fmt.Sprintf("/series/%s/translations/%s", seriesID, c.lang3), metadataCacheTTL, true)
+	body, ok, err := c.getBodyCachedOptional(fmt.Sprintf("/series/%s/translations/%s", seriesID, lang3), metadataCacheTTL, true)
 	if err != nil {
-		logger.Debug("TVDB series translation fetch failed", "series_id", seriesID, "lang", c.lang3, "err", err)
+		logger.Debug("TVDB series translation fetch failed", "series_id", seriesID, "lang", lang3, "err", err)
 		return "", ""
 	}
 	if !ok {
 		// No translation record exists — the expected case for niche
 		// languages, answered from the cached 404 after the first look.
-		logger.Trace("TVDB series translation absent", "series_id", seriesID, "lang", c.lang3)
+		logger.Trace("TVDB series translation absent", "series_id", seriesID, "lang", lang3)
 		return "", ""
 	}
 	var out seriesTranslationResponse
@@ -568,8 +584,8 @@ func (c *Client) SeriesTranslation(seriesID string) (name, overview string) {
 // applySeriesTranslation overlays the display language's name and overview
 // onto the extended record. Missing translations (404, empty fields) keep the
 // default-language record — localization never loses data.
-func (c *Client) applySeriesTranslation(seriesID string, ext *SeriesExtended) {
-	name, overview := c.SeriesTranslation(seriesID)
+func (c *Client) applySeriesTranslation(seriesID, lang3 string, ext *SeriesExtended) {
+	name, overview := c.SeriesTranslation(seriesID, lang3)
 	if name != "" {
 		ext.Name = name
 	}
@@ -603,9 +619,16 @@ type seriesEpisodesResponse struct {
 // only truncates extreme long-runners.
 const episodesMaxPages = 6
 
-// GetSeriesEpisodes fetches the full default-order episode list, with names
-// and overviews translated to the display language where TVDB has them.
+// GetSeriesEpisodes fetches the full default-order episode list,
+// untranslated — what id-resolution and air-date gating need.
 func (c *Client) GetSeriesEpisodes(seriesID string) ([]Episode, error) {
+	return c.GetSeriesEpisodesTranslated(seriesID, "")
+}
+
+// GetSeriesEpisodesTranslated fetches the episode list with names and
+// overviews translated to the given language where TVDB has them. lang3 is an
+// ISO 639-3 code (see LanguageToISO3); "" skips the overlay.
+func (c *Client) GetSeriesEpisodesTranslated(seriesID, lang3 string) ([]Episode, error) {
 	if c == nil {
 		return nil, fmt.Errorf("TVDB client not configured")
 	}
@@ -616,7 +639,7 @@ func (c *Client) GetSeriesEpisodes(seriesID string) ([]Episode, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.applyEpisodeTranslations(seriesID, episodes)
+	c.applyEpisodeTranslations(seriesID, lang3, episodes)
 	return episodes, nil
 }
 
@@ -660,13 +683,13 @@ func (c *Client) fetchEpisodePages(basePath string, optional bool) ([]Episode, e
 // default-language episodes. The translated endpoint serves the same episode
 // list; entries TVDB has no translation for carry empty text and keep their
 // default-language fields.
-func (c *Client) applyEpisodeTranslations(seriesID string, episodes []Episode) {
-	if c.lang3 == "" || len(episodes) == 0 {
+func (c *Client) applyEpisodeTranslations(seriesID, lang3 string, episodes []Episode) {
+	if lang3 == "" || len(episodes) == 0 {
 		return
 	}
-	translated, err := c.fetchEpisodePages(fmt.Sprintf("/series/%s/episodes/default/%s", seriesID, c.lang3), true)
+	translated, err := c.fetchEpisodePages(fmt.Sprintf("/series/%s/episodes/default/%s", seriesID, lang3), true)
 	if err != nil {
-		logger.Debug("TVDB episode translations fetch failed", "series_id", seriesID, "lang", c.lang3, "err", err)
+		logger.Debug("TVDB episode translations fetch failed", "series_id", seriesID, "lang", lang3, "err", err)
 		return
 	}
 	byNumber := make(map[[2]int]*Episode, len(episodes))

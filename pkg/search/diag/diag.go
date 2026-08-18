@@ -67,6 +67,11 @@ type Snapshot struct {
 	// indexer calls to report.
 	UnairedAirsAt string `json:"unaired_airs_at,omitempty"`
 
+	// CertificationBlocked is set when the search was short-circuited by the
+	// stream's metadata-profile certification cap (e.g. "R over cap 13", or
+	// "unrated" when the cap fails closed on unknown certifications).
+	CertificationBlocked string `json:"certification_blocked,omitempty"`
+
 	TotalMS int64 `json:"total_ms"`
 }
 
@@ -131,6 +136,15 @@ func (c *Collector) SetUnaired(airsAt string) {
 	}
 	c.mu.Lock()
 	c.snap.UnairedAirsAt = airsAt
+	c.mu.Unlock()
+}
+
+func (c *Collector) SetCertificationBlocked(reason string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.snap.CertificationBlocked = reason
 	c.mu.Unlock()
 }
 

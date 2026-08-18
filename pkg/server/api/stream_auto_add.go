@@ -131,6 +131,25 @@ func applyFilterProfileRenames(streams map[string]*config.StreamEntry, filterPro
 	}
 }
 
+// applyMetadataProfileRenames updates each stream's MetadataProfileName when
+// a metadata profile is renamed, so streams keep pointing at the same profile
+// under its new name.
+func applyMetadataProfileRenames(streams map[string]*config.StreamEntry, metadataProfileRenames map[string]string) {
+	if len(metadataProfileRenames) == 0 {
+		return
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if current := strings.TrimSpace(stream.MetadataProfileName); current != "" {
+			if renamed, ok := metadataProfileRenames[strings.ToLower(current)]; ok {
+				stream.MetadataProfileName = renamed
+			}
+		}
+	}
+}
+
 func renamedNamesByIndex[TCfg any](current, next []TCfg, nameOf func(TCfg) string) map[string]string {
 	limit := len(current)
 	if len(next) < limit {
@@ -363,6 +382,22 @@ func dropDeletedFilterProfiles(streams map[string]*config.StreamEntry, profiles 
 		}
 		if len(stream.FilterProfileByType) == 0 {
 			stream.FilterProfileByType = nil
+		}
+	}
+}
+
+// dropDeletedMetadataProfiles clears references to metadata profiles that no
+// longer exist. Renames are resolved first, so a renamed profile is never
+// seen as deleted. A stream left with no binding serves the stream-only
+// manifest — metadata off, the same as never having bound one.
+func dropDeletedMetadataProfiles(streams map[string]*config.StreamEntry, profiles []config.MetadataProfileConfig) {
+	known := lowerNameSet(profiles, func(x config.MetadataProfileConfig) string { return x.Name })
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(stream.MetadataProfileName)); name != "" && !known[name] {
+			stream.MetadataProfileName = ""
 		}
 	}
 }

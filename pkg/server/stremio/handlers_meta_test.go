@@ -19,11 +19,13 @@ import (
 	"streamnzb/pkg/services/metadata/tvmaze"
 )
 
-// metaTestServer wires a stremio Server against stub TMDB/TVMaze/Kitsu APIs.
+// metaTestServer wires a stremio Server against stub TMDB/TVMaze/Kitsu APIs,
+// with one Default metadata profile for streamTestRequest to bind.
 func metaTestServer(t *testing.T, tmdbHandler, tvmazeHandler, kitsuHandler http.HandlerFunc) *Server {
 	t.Helper()
-	// The master switch defaults to on; an empty config serves metadata.
-	srv := &Server{config: &config.Config{}}
+	srv := &Server{config: &config.Config{
+		MetadataProfiles: []config.MetadataProfileConfig{{Name: "Default"}},
+	}}
 	if tmdbHandler != nil {
 		ts := httptest.NewServer(tmdbHandler)
 		t.Cleanup(ts.Close)
@@ -43,6 +45,14 @@ func metaTestServer(t *testing.T, tmdbHandler, tvmazeHandler, kitsuHandler http.
 		srv.kitsuClient.BaseURL = ts.URL
 	}
 	return srv
+}
+
+// streamTestRequest builds a handler request carrying an authenticated stream
+// bound to the Default profile — what SetupRoutes' token auth normally does.
+func streamTestRequest(method, target string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	stream := &auth.Stream{Username: "test-stream", MetadataProfileName: "Default"}
+	return req.WithContext(auth.ContextWithStream(req.Context(), stream))
 }
 
 func TestResolveMetaID(t *testing.T) {
@@ -129,7 +139,7 @@ func TestBuildMovieMeta(t *testing.T) {
 		}
 	}, nil, nil)
 
-	meta, err := srv.buildMeta(context.Background(), "movie", "tt0133093")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "movie", "tt0133093")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -216,7 +226,7 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 	}
 	srv := metaTestServer(t, tmdbStub, tvmazeStub, nil)
 
-	meta, err := srv.buildMeta(context.Background(), "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -267,7 +277,7 @@ func TestBuildAnimeMeta(t *testing.T) {
 	}
 	srv := metaTestServer(t, nil, nil, kitsuStub)
 
-	meta, err := srv.buildMeta(context.Background(), "anime", "kitsu:1")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "anime", "kitsu:1")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -369,7 +379,7 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	srv := metaTestServer(t, tmdbStub, tvmazeStub, nil)
 	withTVDBStub(t, srv, tvdbStubHandler())
 
-	meta, err := srv.buildMeta(context.Background(), "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -434,9 +444,8 @@ func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 	}
 	srv := metaTestServer(t, tmdbStub, nil, nil)
 	withTVDBStub(t, srv, tvdbStubHandler())
-	srv.config.Metadata.SeriesSource = "tmdb"
 
-	meta, err := srv.buildMeta(context.Background(), "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSource: "tmdb"}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -460,9 +469,8 @@ func TestTVMazeAirDatesDisabled(t *testing.T) {
 	}, tvmazeStub, nil)
 	withTVDBStub(t, srv, tvdbStubHandler())
 	off := false
-	srv.config.Metadata.TVMazeAirDates = &off
 
-	meta, err := srv.buildMeta(context.Background(), "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{TVMazeAirDates: &off}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -471,14 +479,34 @@ func TestTVMazeAirDatesDisabled(t *testing.T) {
 	}
 }
 
-func TestHandleMetaMasterSwitchOff(t *testing.T) {
+// TestHandleMetaKillSwitchOff pins the env kill-switch: even a stream with a
+// bound profile serves no metadata when METADATA_ENABLED is off.
+func TestHandleMetaKillSwitchOff(t *testing.T) {
 	off := false
-	srv := &Server{config: &config.Config{Metadata: config.MetadataConfig{Enabled: &off}}}
-	req := httptest.NewRequest(http.MethodGet, "/meta/movie/tt0133093.json", nil)
+	srv := &Server{config: &config.Config{
+		Metadata:         config.MetadataConfig{Enabled: &off},
+		MetadataProfiles: []config.MetadataProfileConfig{{Name: "Default"}},
+	}}
+	req := streamTestRequest(http.MethodGet, "/meta/movie/tt0133093.json")
 	rec := httptest.NewRecorder()
 	srv.handleMeta(rec, req)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 with the master switch explicitly off", rec.Code)
+		t.Fatalf("status = %d, want 404 with the kill-switch off", rec.Code)
+	}
+}
+
+// TestHandleMetaUnboundStream pins the opt-in contract: a stream with no
+// metadata profile bound has no meta resource.
+func TestHandleMetaUnboundStream(t *testing.T) {
+	srv := &Server{config: &config.Config{
+		MetadataProfiles: []config.MetadataProfileConfig{{Name: "Default"}},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/meta/movie/tt0133093.json", nil)
+	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "unbound"}))
+	rec := httptest.NewRecorder()
+	srv.handleMeta(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a stream with no profile bound", rec.Code)
 	}
 }
 
@@ -492,7 +520,7 @@ func TestHandleMetaServesEnvelope(t *testing.T) {
 		}
 	}, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/meta/movie/tt0133093.json", nil)
+	req := streamTestRequest(http.MethodGet, "/meta/movie/tt0133093.json")
 	rec := httptest.NewRecorder()
 	srv.handleMeta(rec, req)
 	if rec.Code != http.StatusOK {
@@ -561,9 +589,12 @@ func TestParseCatalogPath(t *testing.T) {
 }
 
 func TestHandleCatalogUnknownAndDisabled(t *testing.T) {
-	srv := &Server{config: &config.Config{Metadata: config.MetadataConfig{
-		Catalogs: []config.CatalogToggle{{ID: "tmdb.trending.movie", Enabled: true}},
-	}}}
+	srv := &Server{config: &config.Config{
+		MetadataProfiles: []config.MetadataProfileConfig{{
+			Name:     "Default",
+			Catalogs: []config.CatalogToggle{{ID: "tmdb.trending.movie", Enabled: true}},
+		}},
+	}}
 
 	for _, tc := range []struct {
 		name, path string
@@ -572,7 +603,7 @@ func TestHandleCatalogUnknownAndDisabled(t *testing.T) {
 		{"type mismatch", "/catalog/series/tmdb.trending.movie.json"},
 		{"disabled catalog", "/catalog/series/tmdb.trending.series.json"},
 	} {
-		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req := streamTestRequest(http.MethodGet, tc.path)
 		rec := httptest.NewRecorder()
 		srv.handleCatalog(rec, req)
 		if rec.Code != http.StatusNotFound {
@@ -598,7 +629,7 @@ func TestHandleCatalogServesTMDBTrending(t *testing.T) {
 		}
 	}, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json", nil)
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json")
 	rec := httptest.NewRecorder()
 	srv.handleCatalog(rec, req)
 	if rec.Code != http.StatusOK {
@@ -660,9 +691,9 @@ func TestContinueWatchingCatalogFromLibrary(t *testing.T) {
 	}, nil, nil)
 	srv.attemptRecorder = mgr
 	// Continue Watching is opt-in since the defaults were suppressed.
-	srv.config.Metadata.Catalogs = []config.CatalogToggle{{ID: "streamnzb.continue-watching.movie", Enabled: true}}
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.continue-watching.movie", Enabled: true}}
 
-	req := httptest.NewRequest(http.MethodGet, "/catalog/movie/streamnzb.continue-watching.movie.json", nil)
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/streamnzb.continue-watching.movie.json")
 	rec := httptest.NewRecorder()
 	srv.handleCatalog(rec, req)
 	if rec.Code != http.StatusOK {
@@ -729,9 +760,9 @@ func TestBecauseYouWatchedCatalog(t *testing.T) {
 		}
 	}, nil, nil)
 	srv.attemptRecorder = mgr
-	srv.config.Metadata.Catalogs = []config.CatalogToggle{{ID: "streamnzb.because-you-watched.movie", Enabled: true}}
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.because-you-watched.movie", Enabled: true}}
 
-	req := httptest.NewRequest(http.MethodGet, "/catalog/movie/streamnzb.because-you-watched.movie.json", nil)
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/streamnzb.because-you-watched.movie.json")
 	rec := httptest.NewRecorder()
 	srv.handleCatalog(rec, req)
 	if rec.Code != http.StatusOK {
@@ -784,10 +815,10 @@ func TestContinueWatchingIsPerStream(t *testing.T) {
 		}
 	}, nil, nil)
 	srv.attemptRecorder = mgr
-	srv.config.Metadata.Catalogs = []config.CatalogToggle{{ID: "streamnzb.continue-watching.movie", Enabled: true}}
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.continue-watching.movie", Enabled: true}}
 
 	req := httptest.NewRequest(http.MethodGet, "/catalog/movie/streamnzb.continue-watching.movie.json", nil)
-	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "livingroom"}))
+	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "livingroom", MetadataProfileName: "Default"}))
 	rec := httptest.NewRecorder()
 	srv.handleCatalog(rec, req)
 	if rec.Code != http.StatusOK {
@@ -823,14 +854,14 @@ func TestCatalogCrossDeduplication(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}, nil, nil)
-	srv.config.Metadata.Catalogs = []config.CatalogToggle{
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{
 		{ID: "tmdb.trending.movie", Enabled: true},
 		{ID: "tmdb.popular.movie", Enabled: true},
 	}
 
 	// The higher-ranked catalog keeps the shared title...
 	rec := httptest.NewRecorder()
-	srv.handleCatalog(rec, httptest.NewRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json", nil))
+	srv.handleCatalog(rec, streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json"))
 	var trending CatalogResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &trending); err != nil {
 		t.Fatalf("decode trending: %v", err)
@@ -841,7 +872,7 @@ func TestCatalogCrossDeduplication(t *testing.T) {
 
 	// ...and the lower-ranked one drops it.
 	rec = httptest.NewRecorder()
-	srv.handleCatalog(rec, httptest.NewRequest(http.MethodGet, "/catalog/movie/tmdb.popular.movie.json", nil))
+	srv.handleCatalog(rec, streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.popular.movie.json"))
 	var popular CatalogResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &popular); err != nil {
 		t.Fatalf("decode popular: %v", err)
@@ -856,7 +887,7 @@ func TestHandleCatalogUpstreamFailureServesEmptyPage(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json", nil)
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/tmdb.trending.movie.json")
 	rec := httptest.NewRecorder()
 	srv.handleCatalog(rec, req)
 	if rec.Code != http.StatusOK {

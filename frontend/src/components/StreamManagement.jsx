@@ -13,7 +13,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { ResultFormatEditor } from "@/components/ResultFormatEditor"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { apiFetch } from "@/api"
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2 } from "lucide-react"
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2, Type } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
@@ -101,6 +101,7 @@ function normalizeStreamDraft(draft) {
     series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
     filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
+    metadata_profile_name: draft?.metadata_profile_name || '',
     result_name_template: draft?.result_name_template || '',
     result_description_template: draft?.result_description_template || '',
     addon_name: (draft?.addon_name || '').trim(),
@@ -127,6 +128,7 @@ function buildStreamDraft(stream) {
     series_search_queries: stream?.series_search_queries || [],
     filter_profile_name: stream?.filter_profile_name || '',
     filter_profile_by_type: stream?.filter_profile_by_type || {},
+    metadata_profile_name: stream?.metadata_profile_name || '',
     result_name_template: stream?.result_name_template || '',
     result_description_template: stream?.result_description_template || '',
     addon_name: stream?.addon_name || '',
@@ -161,6 +163,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     series_search_queries: draft.series_search_queries || [],
     filter_profile_name: draft.filter_profile_name || '',
     filter_profile_by_type: draft.filter_profile_by_type || {},
+    metadata_profile_name: draft.metadata_profile_name || '',
     result_name_template: draft.result_name_template || '',
     result_description_template: draft.result_description_template || '',
     addon_name: draft.addon_name || '',
@@ -200,6 +203,14 @@ function filterSortingLabel(draft) {
     return draft.filter_profile_name
   }
   return 'None'
+}
+
+function metadataSummaryValues(stream) {
+  return [stream?.metadata_profile_name || 'Off']
+}
+
+function formattingSummaryValues(stream) {
+  return [stream?.result_name_template || stream?.result_description_template ? 'Custom' : 'Default']
 }
 
 function searchRequestsLabel(combineResults) {
@@ -386,6 +397,7 @@ function StreamDialog({
   movieQueryNames,
   seriesQueryNames,
   filterProfiles = [],
+  metadataProfiles = [],
   globalConfig,
   onSave,
   saving,
@@ -663,6 +675,37 @@ function StreamDialog({
                     </div>
                   </div>
                 )}
+              </div>
+
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Metadata profile</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-48 justify-between">
+                        <span className="truncate">{draft.metadata_profile_name || 'None'}</span>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48 max-h-60 overflow-y-auto">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, metadata_profile_name: '' }))}>
+                        None (metadata off)
+                      </DropdownMenuItem>
+                      {(metadataProfiles || []).map((mp) => (
+                        <DropdownMenuItem
+                          key={mp.name}
+                          onClick={() => setDraft((current) => ({ ...current, metadata_profile_name: mp.name }))}
+                        >
+                          {mp.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  The catalogs, display language and rating limit this stream serves, from the Metadata page.
+                  None keeps the classic stream-only addon — no catalogs, no title pages, no rating cap.
+                </p>
               </div>
 
               <div className="rounded-md border border-border/60 p-3">
@@ -1098,6 +1141,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         series_search_queries: draft.series_search_queries || [],
         filter_profile_name: draft.filter_profile_name || '',
         filter_profile_by_type: draft.filter_profile_by_type || {},
+        metadata_profile_name: draft.metadata_profile_name || '',
         result_name_template: draft.result_name_template || '',
         result_description_template: draft.result_description_template || '',
         addon_name: draft.addon_name || '',
@@ -1383,16 +1427,18 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
 
                       <div className="relative rounded-md border border-border/70 bg-muted/10 px-3 py-3 pb-6">
                         {expandedStreams[stream.username] ? (
-                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                             <SummaryRow label="General" icon={Settings} values={generalDetailValues(stream)} />
                             <SummaryRow label="Providers" icon={Globe} values={activeProviderNames(stream)} />
                             <SummaryRow label="Indexers" icon={Server} values={stream.indexer_selections || Object.keys(stream.indexer_overrides || {})} />
                             <SummaryRow label="Movie" icon={Search} values={stream.movie_search_queries || []} />
                             <SummaryRow label="TV" icon={Search} values={stream.series_search_queries || []} />
                             <SummaryRow label="Filter/Sorting" icon={ArrowUpDown} values={filterSortingSummaryValues(stream)} />
+                            <SummaryRow label="Metadata" icon={Clapperboard} values={metadataSummaryValues(stream)} />
+                            <SummaryRow label="Formatting" icon={Type} values={formattingSummaryValues(stream)} />
                           </div>
                         ) : (
-                          <div className="grid grid-cols-3 gap-3 md:grid-cols-2 xl:grid-cols-6">
+                          <div className="grid grid-cols-4 gap-3 md:grid-cols-4 xl:grid-cols-8">
                             <div className="space-y-1 text-center sm:text-left">
                               <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
                                 <Settings className="h-3.5 w-3.5" />
@@ -1447,6 +1493,32 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                                 ))}
                               </div>
                             </div>
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
+                                <Clapperboard className="h-3.5 w-3.5" />
+                                <span className="hidden sm:inline">Metadata</span>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                                {metadataSummaryValues(stream).map((value) => (
+                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
+                                    {value}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="space-y-1 text-center sm:text-left">
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
+                                <Type className="h-3.5 w-3.5" />
+                                <span className="hidden sm:inline">Formatting</span>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                                {formattingSummaryValues(stream).map((value) => (
+                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
+                                    {value}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
                           </div>
                         )}
 
@@ -1491,6 +1563,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
+            metadataProfiles={globalConfig?.metadata_profiles || []}
             globalConfig={globalConfig}
             onSave={handleCreateStream}
             saving={dialogSaving}
@@ -1512,6 +1585,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             movieQueryNames={movieQueryNames}
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
+            metadataProfiles={globalConfig?.metadata_profiles || []}
             globalConfig={globalConfig}
             onSave={handleSaveStream}
             saving={dialogSaving}

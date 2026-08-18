@@ -68,6 +68,10 @@ func formatSearchDebugDescription(snap *diag.Snapshot) string {
 		lines = append(lines, "⏳ Not aired yet — airs "+when)
 	}
 
+	if snap.CertificationBlocked != "" {
+		lines = append(lines, "🔞 Blocked by rating limit — "+snap.CertificationBlocked)
+	}
+
 	rawTotal, keptTotal := 0, 0
 	for _, v := range snap.Validation {
 		rawTotal += v.Raw

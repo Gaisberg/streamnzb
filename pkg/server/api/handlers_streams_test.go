@@ -45,6 +45,10 @@ func newStreamsTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("NewStreamManagerFromConfig failed: %v", err)
 	}
+	// The stream manager is a process-wide singleton: a second test would get
+	// the first test's instance still bound to a torn-down temp config. Rebind
+	// it to this test's config explicitly.
+	streamManager.SetConfig(cfg, func() error { return nil })
 
 	return &Server{
 		config:        cfg,
@@ -56,6 +60,61 @@ func adminStreamRequest(method, target string, body []byte) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	ctx := auth.ContextWithStream(req.Context(), &auth.Stream{Username: "admin", Token: "admin-token"})
 	return req.WithContext(ctx)
+}
+
+// TestHandleStreamConfigsMetadataProfileNameRoundTrip verifies the
+// metadata-profile binding persists through PUT /api/streams/configs into the
+// stream manager, the config's stream entries (what the Metadata page's
+// "In use" hints read), and the GET responses.
+func TestHandleStreamConfigsMetadataProfileNameRoundTrip(t *testing.T) {
+	srv := newStreamsTestServer(t)
+
+	payload := map[string]map[string]interface{}{
+		"stream1": {
+			"filter_sorting_mode":   "none",
+			"indexer_mode":          "combine",
+			"provider_selections":   []string{"ProviderA"},
+			"indexer_selections":    []string{"IndexerA"},
+			"movie_search_queries":  []string{"MovieQueryA"},
+			"series_search_queries": []string{"SeriesQueryA"},
+			"metadata_profile_name": "Kids",
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	req := adminStreamRequest(http.MethodPut, "/api/streams/configs", body)
+	rr := httptest.NewRecorder()
+	srv.handlePutStreamConfigs(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	stream, err := srv.streamManager.GetStream("stream1", "admin")
+	if err != nil {
+		t.Fatalf("GetStream failed: %v", err)
+	}
+	if stream.MetadataProfileName != "Kids" {
+		t.Fatalf("stream manager binding = %q, want Kids", stream.MetadataProfileName)
+	}
+	// The binding must land in the config's stream entries too — the frontend
+	// usage hints and the stremio resolver both read from the config.
+	if got := srv.config.Streams["stream1"].MetadataProfileName; got != "Kids" {
+		t.Fatalf("config entry binding = %q, want Kids", got)
+	}
+
+	listReq := adminStreamRequest(http.MethodGet, "/api/streams", nil)
+	listRR := httptest.NewRecorder()
+	srv.handleStreamsList(listRR, listReq)
+	var list []map[string]interface{}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list json.Unmarshal failed: %v", err)
+	}
+	if got := list[0]["metadata_profile_name"]; got != "Kids" {
+		t.Fatalf("list response binding = %v, want Kids", got)
+	}
 }
 
 // TestHandleStreamConfigsFilterProfileNameRoundTrip verifies that filter_profile_name

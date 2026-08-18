@@ -24,14 +24,13 @@ const responseCacheTTL = 24 * time.Hour
 // between visits (trending, popular, search listings).
 const volatileCacheTTL = 3 * time.Hour
 
+// Client is shared by every stream; display language is a per-call parameter
+// on the meta-path methods (metadata profiles differ per stream), never
+// client state — a mutable language field here would be a data race.
 type Client struct {
 	apiKey  string
 	client  *http.Client
 	BaseURL string
-
-	// language is the display language tag for details/listings/search; see
-	// SetLanguage.
-	language string
 
 	cache *metacache.Cache // request path -> body; L1 + persistent L2
 }
@@ -282,9 +281,6 @@ func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("page", "1")
-	if c.language != "" {
-		params.Set("language", c.language)
-	}
 	return getJSON[SearchMultiResponse](c, c.BaseURL+"/search/multi", params, "search")
 }
 
@@ -298,12 +294,13 @@ type ListingResponse struct {
 
 // GetListing fetches one paged listing. mediaType is "movie" or "tv"; kind is
 // "trending" (the weekly window) or one of TMDB's list endpoints (popular,
-// top_rated, now_playing, upcoming, on_the_air).
-func (c *Client) GetListing(mediaType, kind string, page int) (*ListingResponse, error) {
+// top_rated, now_playing, upcoming, on_the_air). lang is the display language
+// tag; "" keeps the request parameter-free (English, stable cache keys).
+func (c *Client) GetListing(mediaType, kind string, page int, lang string) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("page", strconv.Itoa(max(page, 1)))
-	if c.language != "" {
-		params.Set("language", c.language)
+	if lang != "" {
+		params.Set("language", lang)
 	}
 	var endpoint string
 	switch kind {
@@ -318,12 +315,13 @@ func (c *Client) GetListing(mediaType, kind string, page int) (*ListingResponse,
 }
 
 // GetRecommendations fetches TMDB's recommendations for one title — the seed
-// of "Because You Watched" catalog rows. mediaType is "movie" or "tv".
-func (c *Client) GetRecommendations(mediaType string, tmdbID, page int) (*ListingResponse, error) {
+// of "Because You Watched" catalog rows. mediaType is "movie" or "tv"; lang
+// is the display language tag, "" for the parameter-free English default.
+func (c *Client) GetRecommendations(mediaType string, tmdbID, page int, lang string) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("page", strconv.Itoa(max(page, 1)))
-	if c.language != "" {
-		params.Set("language", c.language)
+	if lang != "" {
+		params.Set("language", lang)
 	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/recommendations", mediaType, tmdbID)
 	return getJSON[ListingResponse](c, endpoint, params, "recommendations")
@@ -365,11 +363,64 @@ type MovieDetails struct {
 	VoteAverage  float64 `json:"vote_average"`
 	IMDbID       string  `json:"imdb_id"`
 	Tagline      string  `json:"tagline"`
-	// Credits, Videos and Images are populated only when the details request
-	// appended them (GetMovieDetailsFull).
-	Credits *Credits `json:"credits"`
-	Videos  *Videos  `json:"videos"`
-	Images  *Images  `json:"images"`
+	// Credits, Videos, Images and ReleaseDates are populated only when the
+	// details request appended them (GetMovieDetailsFull).
+	Credits      *Credits              `json:"credits"`
+	Videos       *Videos               `json:"videos"`
+	Images       *Images               `json:"images"`
+	ReleaseDates *ReleaseDatesResponse `json:"release_dates"`
+}
+
+// ReleaseDatesResponse carries per-country movie certifications from
+// /movie/{id}/release_dates (standalone or appended).
+type ReleaseDatesResponse struct {
+	Results []struct {
+		ISO3166_1    string `json:"iso_3166_1"`
+		ReleaseDates []struct {
+			Certification string `json:"certification"`
+		} `json:"release_dates"`
+	} `json:"results"`
+}
+
+// Certifications flattens the response into (country, label) pairs, skipping
+// empty labels.
+func (r *ReleaseDatesResponse) Certifications() [][2]string {
+	if r == nil {
+		return nil
+	}
+	var out [][2]string
+	for _, res := range r.Results {
+		for _, rd := range res.ReleaseDates {
+			if rd.Certification != "" {
+				out = append(out, [2]string{res.ISO3166_1, rd.Certification})
+			}
+		}
+	}
+	return out
+}
+
+// ContentRatingsResponse carries per-country TV certifications from
+// /tv/{id}/content_ratings (standalone or appended).
+type ContentRatingsResponse struct {
+	Results []struct {
+		ISO3166_1 string `json:"iso_3166_1"`
+		Rating    string `json:"rating"`
+	} `json:"results"`
+}
+
+// Certifications flattens the response into (country, label) pairs, skipping
+// empty labels.
+func (r *ContentRatingsResponse) Certifications() [][2]string {
+	if r == nil {
+		return nil
+	}
+	var out [][2]string
+	for _, res := range r.Results {
+		if res.Rating != "" {
+			out = append(out, [2]string{res.ISO3166_1, res.Rating})
+		}
+	}
+	return out
 }
 
 // Credits is the appended credits payload shared by movie and TV details.
@@ -386,40 +437,27 @@ type Credits struct {
 	} `json:"crew"`
 }
 
-// SetLanguage sets the display language (a TMDB-style tag like "de-DE") that
-// details, listings and search responses localize to. Empty keeps TMDB's
-// English default. Explicit-language methods (GetMovieDetailsWithLanguage,
-// translations) are unaffected — they serve the search-title path, which has
-// its own language setting.
-func (c *Client) SetLanguage(tag string) {
-	c.language = strings.TrimSpace(tag)
-}
-
-// languageBase returns the bare ISO 639-1 code of the display language, or "".
-func (c *Client) languageBase() string {
-	base, _, _ := strings.Cut(c.language, "-")
-	return base
-}
-
 // appendedLanguages lists the languages appended images and videos are
 // filtered to: the display language plus the English and textless/undubbed
-// entries the pickers fall back to.
-func (c *Client) appendedLanguages() string {
-	if base := c.languageBase(); base != "" && base != "en" {
+// entries the pickers fall back to. lang is a TMDB-style tag ("de-DE").
+func appendedLanguages(lang string) string {
+	base, _, _ := strings.Cut(lang, "-")
+	if base != "" && base != "en" {
 		return base + ",en,null"
 	}
 	return "en,null"
 }
 
-// applyLanguage adds the display-language parameters to a details request.
-// include_video_language exists because a bare language param makes TMDB
-// return only trailers dubbed in that language — usually none.
-func (c *Client) applyLanguage(params url.Values) {
-	if c.language == "" {
+// applyLanguage adds the display-language parameters to a details request;
+// "" adds nothing, keeping the default path parameter-free (stable cache
+// keys). include_video_language exists because a bare language param makes
+// TMDB return only trailers dubbed in that language — usually none.
+func applyLanguage(params url.Values, lang string) {
+	if lang == "" {
 		return
 	}
-	params.Set("language", c.language)
-	params.Set("include_video_language", c.appendedLanguages())
+	params.Set("language", lang)
+	params.Set("include_video_language", appendedLanguages(lang))
 }
 
 // Images is the appended images payload; only logos are consumed (posters and
@@ -466,13 +504,14 @@ type Videos struct {
 	} `json:"results"`
 }
 
-// GetMovieDetailsFull fetches movie details with credits, videos and images
-// appended — one request, everything the meta resource renders.
-func (c *Client) GetMovieDetailsFull(tmdbID int) (*MovieDetails, error) {
+// GetMovieDetailsFull fetches movie details with credits, videos, images and
+// release dates appended — one request, everything the meta resource renders.
+// lang is the display language tag; "" keeps the English default.
+func (c *Client) GetMovieDetailsFull(tmdbID int, lang string) (*MovieDetails, error) {
 	params := url.Values{}
-	params.Set("append_to_response", "credits,videos,images")
-	params.Set("include_image_language", c.appendedLanguages())
-	c.applyLanguage(params)
+	params.Set("append_to_response", "credits,videos,images,release_dates")
+	params.Set("include_image_language", appendedLanguages(lang))
+	applyLanguage(params, lang)
 	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
 }
 
@@ -493,12 +532,13 @@ type TVDetails struct {
 	EpisodeRunTime []int   `json:"episode_run_time"`
 	Status         string  `json:"status"`
 	LastAirDate    string  `json:"last_air_date"`
-	// ExternalIDs, Credits, Videos and Images are populated only when the
-	// details request appended them (see GetTVDetailsWithSeasons).
-	ExternalIDs *ExternalIDsResponse `json:"external_ids"`
-	Credits     *Credits             `json:"credits"`
-	Videos      *Videos              `json:"videos"`
-	Images      *Images              `json:"images"`
+	// ExternalIDs, Credits, Videos, Images and ContentRatings are populated
+	// only when the details request appended them (see GetTVDetailsWithSeasons).
+	ExternalIDs    *ExternalIDsResponse    `json:"external_ids"`
+	Credits        *Credits                `json:"credits"`
+	Videos         *Videos                 `json:"videos"`
+	Images         *Images                 `json:"images"`
+	ContentRatings *ContentRatingsResponse `json:"content_ratings"`
 }
 
 type TVSeasonInfo struct {
@@ -595,6 +635,20 @@ func (c *Client) GetMovieDetailsWithLanguage(tmdbID int, language string) (*Movi
 		params.Set("language", language)
 	}
 	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
+}
+
+// GetMovieReleaseDates fetches just the certification payload for one movie —
+// the small cached lookup catalog filtering and the playback gate use.
+func (c *Client) GetMovieReleaseDates(movieID int) (*ReleaseDatesResponse, error) {
+	endpoint := fmt.Sprintf(c.BaseURL+"/movie/%d/release_dates", movieID)
+	return getJSON[ReleaseDatesResponse](c, endpoint, url.Values{}, "movie release dates")
+}
+
+// GetTVContentRatings fetches just the certification payload for one series —
+// the small cached lookup catalog filtering and the playback gate use.
+func (c *Client) GetTVContentRatings(tmdbID int) (*ContentRatingsResponse, error) {
+	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/content_ratings", tmdbID)
+	return getJSON[ContentRatingsResponse](c, endpoint, url.Values{}, "TV content ratings")
 }
 
 func (c *Client) GetMovieTranslations(movieID int) (*MovieTranslationsResponse, error) {
@@ -742,8 +796,9 @@ const maxAppendedSeasons = 17
 // instead of one per season. The first batch also appends external_ids into
 // TVDetails.ExternalIDs. Appended seasons arrive as top-level "season/N" keys,
 // which is why the body is decoded twice: once into TVDetails, once into a raw
-// map the season payloads are picked from.
-func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDetails, map[int]*TVSeasonDetails, error) {
+// map the season payloads are picked from. lang is the display language tag;
+// "" keeps the English default.
+func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int, lang string) (*TVDetails, map[int]*TVSeasonDetails, error) {
 	if c.apiKey == "" {
 		return nil, nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
@@ -754,8 +809,8 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDe
 		appends := make([]string, 0, len(batch)+4)
 		params := url.Values{}
 		if start == 0 {
-			appends = append(appends, "external_ids", "credits", "videos", "images")
-			params.Set("include_image_language", c.appendedLanguages())
+			appends = append(appends, "external_ids", "credits", "videos", "images", "content_ratings")
+			params.Set("include_image_language", appendedLanguages(lang))
 		}
 		for _, n := range batch {
 			appends = append(appends, fmt.Sprintf("season/%d", n))
@@ -763,7 +818,7 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDe
 		params.Set("append_to_response", strings.Join(appends, ","))
 		// Every batch localizes: appended season episode names follow the
 		// language param of their own request.
-		c.applyLanguage(params)
+		applyLanguage(params, lang)
 
 		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params)
 		if err != nil {
