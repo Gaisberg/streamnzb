@@ -64,6 +64,42 @@ func TestFormatTemplateHelpersAcceptAnyValue(t *testing.T) {
 	}
 }
 
+func TestRenderResultTemplateDropsBlankLines(t *testing.T) {
+	// Conditionals on their own lines (issue #187): a false conditional must
+	// not leave an empty line behind, and trailing spaces from end-of-line
+	// conditionals must not survive.
+	cases := []struct {
+		text string
+		ctx  FormatContext
+		want string
+	}{
+		{
+			text: "{{.ReleaseTitle}}\n{{if .HDR}}▶︎ ({{join .HDR \"/\"}}){{end}}\n{{if .Audio}}♫ {{join .Audio \" · \"}}{{end}}\n{{.Indexer}}",
+			ctx:  FormatContext{ReleaseTitle: "Some.Release", Indexer: "Indexer"},
+			want: "Some.Release\nIndexer",
+		},
+		{
+			text: "{{.ReleaseTitle}}\n{{if .HDR}}▶︎ ({{join .HDR \"/\"}}){{end}}\n{{if .Audio}}♫ {{join .Audio \" · \"}}{{end}}",
+			ctx:  FormatContext{ReleaseTitle: "Some.Release", HDR: stringList{"DV", "HDR10"}, Audio: stringList{"DDP", "Atmos"}},
+			want: "Some.Release\n▶︎ (DV/HDR10)\n♫ DDP · Atmos",
+		},
+		{
+			text: "{{if .Quality}}📡 {{.Quality}} {{end}}\n{{.Indexer}}",
+			ctx:  FormatContext{Quality: "WEB-DL", Indexer: "Indexer"},
+			want: "📡 WEB-DL\nIndexer",
+		},
+	}
+	for _, c := range cases {
+		tpl, err := template.New("test").Funcs(formatTemplateFuncs).Parse(c.text)
+		if err != nil {
+			t.Fatalf("parse %q: %v", c.text, err)
+		}
+		if got := renderResultTemplate(tpl, c.ctx, "fallback"); got != c.want {
+			t.Errorf("renderResultTemplate(%q) = %q, want %q", c.text, got, c.want)
+		}
+	}
+}
+
 func TestFormatTemplateConditionals(t *testing.T) {
 	cases := []struct {
 		text string

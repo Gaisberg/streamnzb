@@ -142,6 +142,7 @@ export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameCh
         <p className="mt-2 text-[11px] text-muted-foreground">
           Conditionals: {'{{if .HDR}}…{{end}}'}, {'{{if .Avail}}…{{else}}…{{end}}'}, {'{{if not .Avail}}…{{end}}'}.
           Lists ({'{{.HDR}}'}, {'{{.Languages}}'}) render comma-separated; use {'{{join .HDR "|"}}'} for a custom separator.
+          Lines that render empty are removed, so a false conditional on its own line never leaves a blank line.
           Caps is the ffprobe-verified summary, present on library releases only.
         </p>
       </div>

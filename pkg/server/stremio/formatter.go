@@ -325,6 +325,21 @@ func resultFormatForStream(stream *auth.Stream) *resultFormat {
 // bloat stream responses.
 const maxFormattedResultRunes = 1000
 
+// collapseBlankLines drops whitespace-only lines and trailing per-line spaces
+// from rendered output, so a conditional that renders nothing doesn't leave an
+// empty line behind ({{if .HDR}}…{{end}} on its own line with no HDR).
+func collapseBlankLines(s string) string {
+	lines := strings.Split(s, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		line = strings.TrimRight(line, " \t")
+		if line != "" {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 // renderResultTemplate executes tpl over ctx. Any failure — nil template,
 // execution error, empty output — falls back to the built-in string so a bad
 // template can never break stream responses.
@@ -337,7 +352,7 @@ func renderResultTemplate(tpl *template.Template, ctx FormatContext, fallback st
 		logger.Debug("Result template execution failed, using built-in format", "err", err)
 		return fallback
 	}
-	out := strings.TrimSpace(b.String())
+	out := strings.TrimSpace(collapseBlankLines(b.String()))
 	if out == "" {
 		return fallback
 	}
