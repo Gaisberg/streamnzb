@@ -1,18 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import React, { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { Copy, Import, Plus, Share2, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react"
+import { Copy, Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
+import { ProfileManager } from "@/components/ProfileManager"
 import { ProfileEditor } from "@/components/ProfileEditor"
 import { ExplainBench } from "@/components/ExplainBench"
 import {
   CONTENT_KINDS, decodeProfileShareCode, defaultProfile, encodeProfileShareCode, withoutLegacyFields,
 } from "@/lib/profiles"
-import { cn } from "@/lib/utils"
 
 // summarize gives each profile card a one-line read of what it does.
 function summarize(profile) {
@@ -26,7 +21,7 @@ function summarize(profile) {
   const blocked = Object.values(ranking.attributes || {}).filter((p) => p && p.fetch === false).length
   if (blocked) bits.push(`${blocked} blocked`)
   if (ranking.languages?.required?.length) bits.push(ranking.languages.required.join(", "))
-  return bits.join(" \u00b7 ") || "No restrictions"
+  return bits.join(" · ") || "No restrictions"
 }
 
 // profileUsage maps a profile name to where it is actually applied. A profile
@@ -52,105 +47,40 @@ function profileUsage(streams = {}) {
   return usage
 }
 
-// deleteDescription spells out the knock-on effect, since deleting a profile
+// describeDelete spells out the knock-on effect, since deleting a profile
 // also clears it from any stream using it.
-function deleteDescription(profile, usage) {
+function describeDelete(profile, usage) {
   const name = profile?.name || ""
   const used = usage[name.trim().toLowerCase()]
   if (!used?.length) {
-    return `Delete \u201c${name}\u201d? It is not in use, so nothing else changes.`
+    return `Delete “${name}”? It is not in use, so nothing else changes.`
   }
-  return `Delete \u201c${name}\u201d? It will be cleared from ${used.join(", ")}, which will fall back to returning everything unfiltered.`
+  return `Delete “${name}”? It will be cleared from ${used.join(", ")}, which will fall back to returning everything unfiltered.`
 }
 
-function uniqueName(profiles, base) {
-  const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
-  if (!taken.has(base.trim().toLowerCase())) return base
-  let n = 2
-  while (taken.has(`${base} ${n}`.toLowerCase())) n += 1
-  return `${base} ${n}`
+// The saved profile mirrors its name into the compiled ranking profile, so
+// jhin's diagnostics label rejections with the profile the user sees.
+function normalizeOnSave(profile) {
+  const name = (profile.name || "").trim()
+  return { ...profile, name, ranking: { ...(profile.ranking || {}), name } }
 }
 
 export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
   const anyInUse = Object.keys(usage).length > 0
-  const [selected, setSelected] = useState(0)
-  const [draft, setDraft] = useState(null)
-  const [confirmDelete, setConfirmDelete] = useState(null)
-  const [pendingSelect, setPendingSelect] = useState(null)
-  const [nameError, setNameError] = useState("")
   const [exportCode, setExportCode] = useState(null)
+  const [exportName, setExportName] = useState("")
   const [exportCopied, setExportCopied] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importCode, setImportCode] = useState("")
   const [importError, setImportError] = useState("")
 
-  const dirty = useMemo(() => {
-    const current = profiles[selected]
-    if (!current || !draft) return false
-    return JSON.stringify(current) !== JSON.stringify(draft)
-  }, [profiles, selected, draft])
-
-  // adoptedRef holds the saved profile the draft was taken from, so the effect
-  // below can tell a real change from an unrelated config broadcast.
-  const adoptedRef = useRef(null)
-  const dirtyRef = useRef(false)
-  // Declared before the adoption effect so the ref is current when it runs.
-  useEffect(() => { dirtyRef.current = dirty }, [dirty])
-
-  // Adopt the saved profile when the selection changes, or when the profile
-  // itself changed underneath us. An in-progress edit is kept when neither
-  // happened: any config change re-creates this array, and a save on another
-  // page would otherwise silently discard the edit.
-  useEffect(() => {
-    const current = profiles[selected]
-    const serialized = current ? JSON.stringify(current) : null
-    if (dirtyRef.current && serialized === adoptedRef.current) return
-    adoptedRef.current = serialized
-    setDraft(current ? structuredClone(current) : null)
-    setNameError("")
-  }, [profiles, selected])
-
-  // Switching profiles replaces the draft, so an unsaved edit is confirmed
-  // first rather than vanishing on a stray click.
-  const selectProfile = (index) => {
-    if (index === selected) return
-    if (dirty) {
-      setPendingSelect(index)
-      return
-    }
-    setSelected(index)
-  }
-
-  const commit = (next, nextIndex) => {
-    onSave(next)
-    if (typeof nextIndex === "number") setSelected(nextIndex)
-  }
-
-  const addProfile = () => {
-    const name = uniqueName(profiles, "New Profile")
-    commit([...profiles, defaultProfile(name)], profiles.length)
-  }
-
-  const duplicateProfile = (index) => {
-    const source = profiles[index]
-    const copy = withoutLegacyFields(structuredClone(source))
-    copy.name = uniqueName(profiles, `${source.name} copy`)
-    if (copy.ranking) copy.ranking.name = copy.name
-    commit([...profiles, copy], profiles.length)
-  }
-
-  const deleteProfile = (index) => {
-    const next = profiles.filter((_, i) => i !== index)
-    commit(next, Math.max(0, Math.min(selected, next.length - 1)))
-    setConfirmDelete(null)
-  }
-
-  const exportProfile = async () => {
+  const exportProfile = async (draft) => {
     if (!draft) return
     try {
       setExportCopied(false)
+      setExportName(draft.name || "")
       const code = await encodeProfileShareCode(draft)
       setExportCode(code)
       try {
@@ -167,26 +97,22 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const importProfile = async () => {
     try {
       const profile = await decodeProfileShareCode(importCode)
-      profile.name = uniqueName(profiles, profile.name.trim() || "Imported Profile")
-      if (profile.ranking) profile.ranking.name = profile.name
-      commit([...profiles, profile], profiles.length)
+      const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
+      let name = profile.name.trim() || "Imported Profile"
+      if (taken.has(name.toLowerCase())) {
+        let n = 2
+        while (taken.has(`${name} ${n}`.toLowerCase())) n += 1
+        name = `${name} ${n}`
+      }
+      profile.name = name
+      if (profile.ranking) profile.ranking.name = name
+      onSave([...profiles, profile])
       setImportOpen(false)
       setImportCode("")
       setImportError("")
     } catch (err) {
       setImportError(err?.message || "Could not read the profile code.")
     }
-  }
-
-  const saveDraft = () => {
-    const name = (draft.name || "").trim()
-    if (!name) { setNameError("Name is required."); return }
-    const clash = profiles.some((p, i) => i !== selected && p.name.trim().toLowerCase() === name.toLowerCase())
-    if (clash) { setNameError("Another profile already uses this name."); return }
-
-    const next = profiles.map((p, i) => (i === selected ? { ...draft, name, ranking: { ...(draft.ranking || {}), name } } : p))
-    setNameError("")
-    commit(next)
   }
 
   return (
@@ -201,18 +127,13 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
             Assign one to a stream from the Streams page.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => { setImportCode(""); setImportError(""); setImportOpen(true) }}
-          >
-            <Import className="mr-2 h-4 w-4" /> Import
-          </Button>
-          <Button onClick={addProfile} size="sm">
-            <Plus className="mr-2 h-4 w-4" /> New profile
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { setImportCode(""); setImportError(""); setImportOpen(true) }}
+        >
+          <Import className="mr-2 h-4 w-4" /> Import
+        </Button>
       </div>
 
       {profiles.length > 0 && !anyInUse && (
@@ -225,134 +146,30 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
         </div>
       )}
 
-      {profiles.length === 0 ? (
-        <Card className="border border-dashed border-border bg-card">
-          <CardContent className="py-10 text-center">
-            <p className="text-sm text-muted-foreground">No filter profiles yet.</p>
-            <Button onClick={addProfile} size="sm" className="mt-3">
-              <Plus className="mr-2 h-4 w-4" /> Create one
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <div className="space-y-2">
-            {profiles.map((profile, index) => (
-              <button
-                key={`${profile.name}-${index}`}
-                type="button"
-                onClick={() => selectProfile(index)}
-                className={cn(
-                  "w-full rounded-md border px-3 py-2.5 text-left transition-colors",
-                  index === selected
-                    ? "border-primary/50 bg-primary/5"
-                    : "border-border hover:border-muted-foreground/40"
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{profile.name}</span>
-                  {index === selected && dirty && (
-                    <Badge variant="outline" className="shrink-0 text-[10px]">unsaved</Badge>
-                  )}
-                </div>
-                <div className="mt-0.5 truncate text-xs text-muted-foreground">{summarize(profile)}</div>
-                <div className="mt-1 truncate text-[11px]">
-                  {usage[profile.name.trim().toLowerCase()]
-                    ? <span className="text-emerald-600 dark:text-emerald-500">
-                        In use · {usage[profile.name.trim().toLowerCase()].join(", ")}
-                      </span>
-                    : <span className="text-muted-foreground/70">Not in use</span>}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {draft && (
-            <div className="min-w-0 space-y-4">
-              <Card className="border border-border bg-card">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base font-semibold">Profile</CardTitle>
-                  <CardDescription>Give it a name, then assign it to a stream from the Streams page.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="profile-name">Name</Label>
-                    <Input
-                      id="profile-name"
-                      value={draft.name || ""}
-                      onChange={(e) => { setDraft({ ...draft, name: e.target.value }); setNameError("") }}
-                    />
-                    {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <Button onClick={saveDraft} disabled={!dirty || isSaving} size="sm">
-                      {isSaving ? "Saving\u2026" : "Save changes"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDraft(structuredClone(profiles[selected]))}
-                      disabled={!dirty}
-                    >
-                      Discard
-                    </Button>
-                    <div className="flex-1" />
-                    <Button variant="ghost" size="sm" onClick={exportProfile}>
-                      <Share2 className="mr-2 h-3.5 w-3.5" /> Export
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => duplicateProfile(selected)}>
-                      <Copy className="mr-2 h-3.5 w-3.5" /> Duplicate
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => setConfirmDelete(selected)}
-                    >
-                      <Trash2 className="mr-2 h-3.5 w-3.5" /> Delete
-                    </Button>
-                  </div>
-                  {saveStatus?.msg && (
-                    <p className={cn("text-xs", saveStatus.type === "error" ? "text-destructive" : "text-muted-foreground")}>
-                      {saveStatus.msg}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-
-              <ProfileEditor profile={draft} onChange={setDraft} />
-
-              <ExplainBench profile={draft} />
-            </div>
-          )}
-        </div>
-      )}
-
-      <ConfirmDialog
-        open={pendingSelect !== null}
-        onOpenChange={(open) => { if (!open) setPendingSelect(null) }}
-        title="Discard unsaved changes"
-        description={`\u201c${draft?.name || ""}\u201d has changes that have not been saved. Switching profiles will discard them.`}
-        confirmLabel="Discard"
-        onConfirm={() => {
-          setDraft(structuredClone(profiles[selected]))
-          setSelected(pendingSelect)
-          setPendingSelect(null)
-        }}
-      />
-
-      <ConfirmDialog
-        open={confirmDelete !== null}
-        onOpenChange={(open) => { if (!open) setConfirmDelete(null) }}
-        title="Delete filter profile"
-        description={
-          confirmDelete !== null
-            ? deleteDescription(profiles[confirmDelete], usage)
-            : ""
-        }
-        confirmLabel="Delete"
-        onConfirm={() => deleteProfile(confirmDelete)}
+      <ProfileManager
+        profiles={profiles}
+        onSave={onSave}
+        usage={usage}
+        summarize={summarize}
+        newProfile={defaultProfile}
+        describeDelete={describeDelete}
+        entityLabel="filter profile"
+        emptyText="No filter profiles yet."
+        isSaving={isSaving}
+        saveStatus={saveStatus}
+        normalizeOnSave={normalizeOnSave}
+        normalizeOnDuplicate={withoutLegacyFields}
+        renderActions={(draft) => (
+          <Button variant="ghost" size="sm" onClick={() => exportProfile(draft)}>
+            <Share2 className="mr-2 h-3.5 w-3.5" /> Export
+          </Button>
+        )}
+        renderEditor={(draft, setDraft) => (
+          <>
+            <ProfileEditor profile={draft} onChange={setDraft} />
+            <ExplainBench profile={draft} />
+          </>
+        )}
       />
 
       <Dialog open={exportCode !== null} onOpenChange={(open) => { if (!open) setExportCode(null) }}>
@@ -362,7 +179,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
             <DialogDescription>
               {exportCode === ""
                 ? "This browser cannot generate share codes."
-                : `Share this code to hand “${draft?.name || ""}” to another StreamNZB instance.`}
+                : `Share this code to hand “${exportName}” to another StreamNZB instance.`}
             </DialogDescription>
           </DialogHeader>
           {exportCode !== "" && (

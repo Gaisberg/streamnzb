@@ -297,6 +297,26 @@ func TestMetadataProfileRenameAndDropPropagation(t *testing.T) {
 	}
 }
 
+// Format-profile renames follow into stream bindings and deletion clears
+// them — the stream falls back to the built-in format.
+func TestFormatProfileRenameAndDropPropagation(t *testing.T) {
+	streams := map[string]*config.StreamEntry{
+		"default": {FormatProfileName: "old style"},
+		"bedroom": {FormatProfileName: "Kept"},
+	}
+	applyFormatProfileRenames(streams, map[string]string{"old style": "New Style"})
+	if got := streams["default"].FormatProfileName; got != "New Style" {
+		t.Errorf("renamed binding = %q, want New Style", got)
+	}
+	dropDeletedFormatProfiles(streams, []config.FormatProfileConfig{{Name: "New Style"}})
+	if got := streams["default"].FormatProfileName; got != "New Style" {
+		t.Errorf("renamed binding dropped: %q", got)
+	}
+	if got := streams["bedroom"].FormatProfileName; got != "" {
+		t.Errorf("dangling binding = %q, want cleared", got)
+	}
+}
+
 func TestDropDeletedProvidersClearsDanglingReferences(t *testing.T) {
 	streams := map[string]*config.StreamEntry{
 		"default": {

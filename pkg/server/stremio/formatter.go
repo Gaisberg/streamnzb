@@ -510,15 +510,25 @@ func compileFormatTemplate(text string) (*template.Template, error) {
 	return tpl, err
 }
 
-// resultFormatForStream resolves the custom templates configured on one stream
-// config, or nil when none are set (or none compile) so callers keep the
-// built-in format.
-func resultFormatForStream(stream *auth.Stream) *resultFormat {
+// resultFormatForStream resolves the custom templates for one stream — its
+// bound format profile first, the legacy inline templates as the fallback —
+// or nil when none are set (or none compile) so callers keep the built-in
+// format. A binding to a since-deleted profile also renders built-in: the
+// stale name must not resurrect whatever inline templates the migration
+// cleared.
+func (s *Server) resultFormatForStream(stream *auth.Stream) *resultFormat {
 	if stream == nil {
 		return nil
 	}
 	nameText := strings.TrimSpace(stream.ResultNameTemplate)
 	descText := strings.TrimSpace(stream.ResultDescriptionTemplate)
+	if profileName := strings.TrimSpace(stream.FormatProfileName); profileName != "" {
+		nameText, descText = "", ""
+		if fp := s.currentConfig().FormatProfileByName(profileName); fp != nil {
+			nameText = strings.TrimSpace(fp.ResultNameTemplate)
+			descText = strings.TrimSpace(fp.ResultDescriptionTemplate)
+		}
+	}
 	if nameText == "" && descText == "" {
 		return nil
 	}

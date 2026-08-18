@@ -319,7 +319,7 @@ func (s *Server) buildStreamsForKey(ctx context.Context, key StreamSlotKey, stre
 	// re-parses descriptions on its side, so its format stays fixed.
 	var format *resultFormat
 	if list != nil && !list.IsAIOStreams {
-		format = resultFormatForStream(stream)
+		format = s.resultFormatForStream(stream)
 	}
 	return buildStreamsFromPlaylist(list, key, streamDisplayName(stream), ServiceName(stream), baseURL, showAll, format), list, nil
 }

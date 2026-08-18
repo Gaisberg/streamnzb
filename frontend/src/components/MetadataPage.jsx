@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -7,10 +7,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { PasswordInput } from "@/components/ui/password-input"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
+import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
-import { ChevronRight, Clapperboard, Copy, Info, KeyRound, Plus, Search, ShieldCheck, Trash2, TriangleAlert, X } from "lucide-react"
+import { ChevronRight, Clapperboard, Info, KeyRound, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { cn } from "@/lib/utils"
 
@@ -118,23 +118,15 @@ function profileUsage(streams = {}) {
   return usage
 }
 
-// deleteDescription spells out the knock-on effect, since deleting a profile
+// describeDelete spells out the knock-on effect, since deleting a profile
 // also clears it from any stream bound to it.
-function deleteDescription(profile, usage) {
+function describeDelete(profile, usage) {
   const name = profile?.name || ""
   const used = usage[name.trim().toLowerCase()]
   if (!used?.length) {
     return `Delete “${name}”? It is not in use, so nothing else changes.`
   }
   return `Delete “${name}”? It will be cleared from ${used.join(", ")}, which will fall back to the stream-only manifest (no catalogs or metadata).`
-}
-
-function uniqueName(profiles, base) {
-  const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
-  if (!taken.has(base.trim().toLowerCase())) return base
-  let n = 2
-  while (taken.has(`${base} ${n}`.toLowerCase())) n += 1
-  return `${base} ${n}`
 }
 
 function CatalogBadges({ def }) {
@@ -198,8 +190,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
             <div className="rounded-md border border-dashed border-border/70 px-3 py-6 text-center">
               <p className="text-sm text-muted-foreground">No catalogs added.</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Streams on this profile still get posters and episode metadata for items they open, but no browse
-                rows and no search.
+                Streams on this profile still get posters, episode metadata and search, but no browse rows.
               </p>
               <Button size="sm" className="mt-3" onClick={() => { setQuery(""); setAddOpen(true) }}>
                 <Plus className="mr-2 h-4 w-4" /> Add catalog
@@ -428,11 +419,6 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const [registry, setRegistry] = useState([])
   const [registryError, setRegistryError] = useState(false)
   const [certOptions, setCertOptions] = useState([])
-  const [selected, setSelected] = useState(0)
-  const [draft, setDraft] = useState(null)
-  const [confirmDelete, setConfirmDelete] = useState(null)
-  const [pendingSelect, setPendingSelect] = useState(null)
-  const [nameError, setNameError] = useState("")
   const [keysOpen, setKeysOpen] = useState(false)
   const [tmdbKey, setTmdbKey] = useState("")
   const [tvdbKey, setTvdbKey] = useState("")
@@ -448,70 +434,6 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
     return () => { cancelled = true }
   }, [])
 
-  const dirty = useMemo(() => {
-    const current = profiles[selected]
-    if (!current || !draft) return false
-    return JSON.stringify(current) !== JSON.stringify(draft)
-  }, [profiles, selected, draft])
-
-  // adoptedRef holds the saved profile the draft was taken from, so the effect
-  // below can tell a real change from an unrelated config broadcast.
-  const adoptedRef = useRef(null)
-  const dirtyRef = useRef(false)
-  useEffect(() => { dirtyRef.current = dirty }, [dirty])
-
-  // Adopt the saved profile when the selection changes, or when the profile
-  // itself changed underneath us. An in-progress edit is kept when neither
-  // happened.
-  useEffect(() => {
-    const current = profiles[selected]
-    const serialized = current ? JSON.stringify(current) : null
-    if (dirtyRef.current && serialized === adoptedRef.current) return
-    adoptedRef.current = serialized
-    setDraft(current ? structuredClone(current) : null)
-    setNameError("")
-  }, [profiles, selected])
-
-  const selectProfile = (index) => {
-    if (index === selected) return
-    if (dirty) {
-      setPendingSelect(index)
-      return
-    }
-    setSelected(index)
-  }
-
-  const commit = (next, nextIndex) => {
-    onPersist({ metadata_profiles: next })
-    if (typeof nextIndex === "number") setSelected(nextIndex)
-  }
-
-  const addProfile = () => {
-    const name = uniqueName(profiles, "New Profile")
-    commit([...profiles, defaultMetadataProfile(name)], profiles.length)
-  }
-
-  const duplicateProfile = (index) => {
-    const copy = structuredClone(profiles[index])
-    copy.name = uniqueName(profiles, `${copy.name} copy`)
-    commit([...profiles, copy], profiles.length)
-  }
-
-  const deleteProfile = (index) => {
-    const next = profiles.filter((_, i) => i !== index)
-    commit(next, Math.max(0, Math.min(selected, next.length - 1)))
-    setConfirmDelete(null)
-  }
-
-  const saveDraft = () => {
-    const name = (draft.name || "").trim()
-    if (!name) { setNameError("Name is required."); return }
-    const clash = profiles.some((p, i) => i !== selected && p.name.trim().toLowerCase() === name.toLowerCase())
-    if (clash) { setNameError("Another profile already uses this name."); return }
-    setNameError("")
-    commit(profiles.map((p, i) => (i === selected ? { ...draft, name } : p)))
-  }
-
   // API keys save on blur, one field per patch — the backend keeps a key the
   // patch does not mention, and returns keys redacted, so the inputs start
   // blank even when a key is stored.
@@ -523,20 +445,15 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
-            <Clapperboard className="h-4 w-4" /> Metadata
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            A metadata profile decides which catalogs a stream serves, in which language, and what content its
-            rating limit allows. Bind one to a stream from the Streams page — a stream without one serves
-            streams only, exactly as before this feature existed.
-          </p>
-        </div>
-        <Button onClick={addProfile} size="sm">
-          <Plus className="mr-2 h-4 w-4" /> New profile
-        </Button>
+      <div>
+        <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+          <Clapperboard className="h-4 w-4" /> Metadata
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          A metadata profile decides which catalogs a stream serves, in which language, and what content its
+          rating limit allows. Bind one to a stream from the Streams page — a stream without one serves
+          streams only, exactly as before this feature existed.
+        </p>
       </div>
 
       {profiles.length > 0 && !anyInUse && (
@@ -549,119 +466,35 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
         </div>
       )}
 
-      {profiles.length === 0 ? (
-        <Card className="border border-dashed border-border bg-card">
-          <CardContent className="py-10 text-center">
-            <p className="text-sm text-muted-foreground">No metadata profiles yet. Without one, every stream serves streams only.</p>
-            <Button onClick={addProfile} size="sm" className="mt-3">
-              <Plus className="mr-2 h-4 w-4" /> Create one
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <div className="space-y-2">
-            {profiles.map((profile, index) => (
-              <button
-                key={`${profile.name}-${index}`}
-                type="button"
-                onClick={() => selectProfile(index)}
-                className={cn(
-                  "w-full rounded-md border px-3 py-2.5 text-left transition-colors",
-                  index === selected
-                    ? "border-primary/50 bg-primary/5"
-                    : "border-border hover:border-muted-foreground/40"
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{profile.name}</span>
-                  {index === selected && dirty && (
-                    <Badge variant="outline" className="shrink-0 text-[10px]">unsaved</Badge>
-                  )}
-                </div>
-                <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {summarize(profile, registry, certOptions)}
-                </div>
-                <div className="mt-1 truncate text-[11px]">
-                  {usage[profile.name.trim().toLowerCase()]
-                    ? <span className="text-emerald-600 dark:text-emerald-500">
-                        In use · {usage[profile.name.trim().toLowerCase()].join(", ")}
-                      </span>
-                    : <span className="text-muted-foreground/70">Not in use</span>}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {draft && (
-            <div className="min-w-0 space-y-4">
-              <Card className="border border-border bg-card">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base font-semibold">Profile</CardTitle>
-                  <CardDescription>Give it a name, then bind it to a stream from the Streams page.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="metadata-profile-name">Name</Label>
-                    <Input
-                      id="metadata-profile-name"
-                      value={draft.name || ""}
-                      onChange={(e) => { setDraft({ ...draft, name: e.target.value }); setNameError("") }}
-                    />
-                    {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <Button onClick={saveDraft} disabled={!dirty || isSaving} size="sm">
-                      {isSaving ? "Saving…" : "Save changes"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDraft(structuredClone(profiles[selected]))}
-                      disabled={!dirty}
-                    >
-                      Discard
-                    </Button>
-                    <div className="flex-1" />
-                    <Button variant="ghost" size="sm" onClick={() => duplicateProfile(selected)}>
-                      <Copy className="mr-2 h-3.5 w-3.5" /> Duplicate
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => setConfirmDelete(selected)}
-                    >
-                      <Trash2 className="mr-2 h-3.5 w-3.5" /> Delete
-                    </Button>
-                  </div>
-                  {saveStatus?.msg && (
-                    <p className={cn("text-xs", saveStatus.type === "error" ? "text-destructive" : "text-muted-foreground")}>
-                      {saveStatus.msg}
-                    </p>
-                  )}
-                  <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3.5 py-2.5">
-                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">
-                      Clients cache the addon manifest — after changing a profile&apos;s catalogs, refresh or
-                      reinstall the addon in the client for the change to show up.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <MetadataProfileEditor
-                draft={draft}
-                onChange={setDraft}
-                registry={registry}
-                registryError={registryError}
-                certOptions={certOptions}
-              />
-            </div>
-          )}
+      <ProfileManager
+        profiles={profiles}
+        onSave={(next) => onPersist({ metadata_profiles: next })}
+        usage={usage}
+        summarize={(profile) => summarize(profile, registry, certOptions)}
+        newProfile={defaultMetadataProfile}
+        describeDelete={describeDelete}
+        entityLabel="metadata profile"
+        emptyText="No metadata profiles yet. Without one, every stream serves streams only."
+        isSaving={isSaving}
+        saveStatus={saveStatus}
+        renderEditor={(draft, setDraft) => (
+          <MetadataProfileEditor
+            draft={draft}
+            onChange={setDraft}
+            registry={registry}
+            registryError={registryError}
+            certOptions={certOptions}
+          />
+        )}
+      >
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3.5 py-2.5">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">
+            Clients cache the addon manifest — after changing a profile&apos;s catalogs, refresh or
+            reinstall the addon in the client for the change to show up.
+          </p>
         </div>
-      )}
+      </ProfileManager>
 
       <Card className="border border-border bg-card">
         <button
@@ -722,32 +555,6 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
           </CardContent>
         )}
       </Card>
-
-      <ConfirmDialog
-        open={pendingSelect !== null}
-        onOpenChange={(open) => { if (!open) setPendingSelect(null) }}
-        title="Discard unsaved changes"
-        description={`“${draft?.name || ""}” has changes that have not been saved. Switching profiles will discard them.`}
-        confirmLabel="Discard"
-        onConfirm={() => {
-          setDraft(structuredClone(profiles[selected]))
-          setSelected(pendingSelect)
-          setPendingSelect(null)
-        }}
-      />
-
-      <ConfirmDialog
-        open={confirmDelete !== null}
-        onOpenChange={(open) => { if (!open) setConfirmDelete(null) }}
-        title="Delete metadata profile"
-        description={
-          confirmDelete !== null
-            ? deleteDescription(profiles[confirmDelete], usage)
-            : ""
-        }
-        confirmLabel="Delete"
-        onConfirm={() => deleteProfile(confirmDelete)}
-      />
     </div>
   )
 }

@@ -637,6 +637,9 @@ type Config struct {
 	// legacy conversion runs), while a persisted [] means the user deleted
 	// every profile and must stay that way.
 	MetadataProfiles []MetadataProfileConfig `json:"metadata_profiles"`
+	// FormatProfiles are the named result-format profiles streams bind by
+	// name. Same nil-vs-empty marker semantics as MetadataProfiles.
+	FormatProfiles []FormatProfileConfig `json:"format_profiles"`
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.
@@ -823,9 +826,14 @@ type StreamEntry struct {
 	// metadata off for this stream — the manifest stays stream-only.
 	MetadataProfileName string `json:"metadata_profile_name,omitempty"`
 	MuteErrorVideo      *bool  `json:"mute_error_video,omitempty"`
-	// ResultNameTemplate and ResultDescriptionTemplate customize how this
-	// stream's Stremio results render (Go text/template over the result's
-	// FormatContext). Empty uses the built-in format.
+	// FormatProfileName binds a result-format profile by name. Empty means
+	// the built-in format.
+	FormatProfileName string `json:"format_profile_name,omitempty"`
+	// ResultNameTemplate and ResultDescriptionTemplate are the legacy inline
+	// result templates.
+	// Deprecated: superseded by FormatProfileName; kept so old configs
+	// unmarshal and migrate on load (migrateFormatProfiles), and as a
+	// fallback for entries written by external tooling.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
 	// AddonName replaces the manifest name this stream reports to clients.
@@ -1181,6 +1189,9 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	// Metadata-profile migration, phase two: every stream exists by now.
 	if migratedMetadataProfiles && persistedMetadataEnabled {
 		cfg.bindDefaultMetadataProfile()
+	}
+	if cfg.migrateFormatProfiles() {
+		needSave = true
 	}
 
 	if cfg.AdminToken == "" {

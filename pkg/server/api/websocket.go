@@ -233,7 +233,14 @@ func (s *Server) reloadConfig(newCfg *config.Config) {
 			return
 		}
 		s.ReloadFromComponents(comp, scope)
-		logger.Info("Reload: configuration reloaded successfully",
+		// Same Debug demotion as the scope log above: config-only reloads run
+		// on every debounced settings save; only reloads that restarted a
+		// subsystem are worth an INFO line.
+		reloadLog := logger.Debug
+		if scope.Any() {
+			reloadLog = logger.Info
+		}
+		reloadLog("Reload: configuration reloaded successfully",
 			"indexers", scope.Indexers, "providers", scope.Providers, "proxy", scope.Proxy,
 			"database", scope.Database, "addon_port", scope.AddonPort)
 		return
@@ -341,5 +348,8 @@ func clearPatchedFilterProfiles(body []byte, cfg *config.Config) {
 	}
 	if _, ok := raw["metadata_profiles"]; ok {
 		cfg.MetadataProfiles = nil
+	}
+	if _, ok := raw["format_profiles"]; ok {
+		cfg.FormatProfiles = nil
 	}
 }

@@ -161,8 +161,8 @@ export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameCh
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
-        Customize how this stream's results render in Stremio using Go template syntax over each release's
-        parsed data. Leave a template empty to keep the built-in format. AIOStreams responses keep their fixed format.
+        Customize how results render in Stremio using Go template syntax over each release's parsed data.
+        Leave a template empty to keep the built-in format. AIOStreams responses keep their fixed format.
       </p>
 
       <div className="space-y-1.5">

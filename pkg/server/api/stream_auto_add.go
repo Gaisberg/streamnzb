@@ -150,6 +150,25 @@ func applyMetadataProfileRenames(streams map[string]*config.StreamEntry, metadat
 	}
 }
 
+// applyFormatProfileRenames updates each stream's FormatProfileName when a
+// format profile is renamed, so streams keep pointing at the same profile
+// under its new name.
+func applyFormatProfileRenames(streams map[string]*config.StreamEntry, formatProfileRenames map[string]string) {
+	if len(formatProfileRenames) == 0 {
+		return
+	}
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if current := strings.TrimSpace(stream.FormatProfileName); current != "" {
+			if renamed, ok := formatProfileRenames[strings.ToLower(current)]; ok {
+				stream.FormatProfileName = renamed
+			}
+		}
+	}
+}
+
 func renamedNamesByIndex[TCfg any](current, next []TCfg, nameOf func(TCfg) string) map[string]string {
 	limit := len(current)
 	if len(next) < limit {
@@ -398,6 +417,21 @@ func dropDeletedMetadataProfiles(streams map[string]*config.StreamEntry, profile
 		}
 		if name := strings.ToLower(strings.TrimSpace(stream.MetadataProfileName)); name != "" && !known[name] {
 			stream.MetadataProfileName = ""
+		}
+	}
+}
+
+// dropDeletedFormatProfiles clears references to format profiles that no
+// longer exist. Renames are resolved first, so a renamed profile is never
+// seen as deleted. A stream left with no binding renders the built-in format.
+func dropDeletedFormatProfiles(streams map[string]*config.StreamEntry, profiles []config.FormatProfileConfig) {
+	known := lowerNameSet(profiles, func(x config.FormatProfileConfig) string { return x.Name })
+	for _, stream := range streams {
+		if stream == nil {
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(stream.FormatProfileName)); name != "" && !known[name] {
+			stream.FormatProfileName = ""
 		}
 	}
 }

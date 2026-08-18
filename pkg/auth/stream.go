@@ -66,8 +66,13 @@ type Stream struct {
 	// are converted into each other, so their fields must stay in step.
 	MetadataProfileName string `json:"metadata_profile_name,omitempty"`
 	MuteErrorVideo      *bool  `json:"mute_error_video,omitempty"`
-	// ResultNameTemplate and ResultDescriptionTemplate customize how this
-	// stream's Stremio results render. Empty uses the built-in format.
+	// FormatProfileName binds a result-format profile by name; empty means
+	// the built-in format. See config.StreamEntry; the two structs are
+	// converted into each other, so their fields must stay in step.
+	FormatProfileName string `json:"format_profile_name,omitempty"`
+	// ResultNameTemplate and ResultDescriptionTemplate are the legacy inline
+	// templates, kept in step with config.StreamEntry; the profile binding
+	// wins when set.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
 	// AddonName replaces the manifest name reported to clients. See
@@ -684,6 +689,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.FilterProfileByType = normalizeProfileBindings(streamConfig.FilterProfileByType)
 	stream.MetadataProfileName = strings.TrimSpace(streamConfig.MetadataProfileName)
 	stream.MuteErrorVideo = streamConfig.MuteErrorVideo
+	stream.FormatProfileName = strings.TrimSpace(streamConfig.FormatProfileName)
 	stream.ResultNameTemplate = strings.TrimSpace(streamConfig.ResultNameTemplate)
 	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)
 	stream.AddonName = strings.TrimSpace(streamConfig.AddonName)

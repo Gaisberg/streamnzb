@@ -68,6 +68,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"filter_profile_name":         d.FilterProfileName,
 		"filter_profile_by_type":      d.FilterProfileByType,
 		"metadata_profile_name":       d.MetadataProfileName,
+		"format_profile_name":         d.FormatProfileName,
 		"mute_error_video":            d.MuteErrorVideo,
 		"result_name_template":        d.ResultNameTemplate,
 		"result_description_template": d.ResultDescriptionTemplate,
@@ -239,6 +240,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		FilterProfileName         string                                `json:"filter_profile_name"`
 		FilterProfileByType       map[string]string                     `json:"filter_profile_by_type"`
 		MetadataProfileName       string                                `json:"metadata_profile_name"`
+		FormatProfileName         string                                `json:"format_profile_name"`
 		MuteErrorVideo            *bool                                 `json:"mute_error_video"`
 		ResultNameTemplate        string                                `json:"result_name_template"`
 		ResultDescriptionTemplate string                                `json:"result_description_template"`
@@ -300,6 +302,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			FilterProfileName:         dc.FilterProfileName,
 			FilterProfileByType:       dc.FilterProfileByType,
 			MetadataProfileName:       dc.MetadataProfileName,
+			FormatProfileName:         dc.FormatProfileName,
 			MuteErrorVideo:            dc.MuteErrorVideo,
 			ResultNameTemplate:        dc.ResultNameTemplate,
 			ResultDescriptionTemplate: dc.ResultDescriptionTemplate,

@@ -197,22 +197,29 @@ func (s *Server) SetAPIHandler(h http.Handler) {
 	s.apiHandler = h
 }
 
-// clearSyncMap removes every entry from m.
-func clearSyncMap(m *sync.Map) {
+// clearSyncMap removes every entry from m and reports how many there were.
+func clearSyncMap(m *sync.Map) int {
+	cleared := 0
 	m.Range(func(key, _ interface{}) bool {
 		m.Delete(key)
+		cleared++
 		return true
 	})
+	return cleared
 }
 
 func (s *Server) ClearSearchCaches() {
-	clearSyncMap(&s.playlistCache)
-	clearSyncMap(&s.rawSearchCache)
+	playlists := clearSyncMap(&s.playlistCache)
+	raw := clearSyncMap(&s.rawSearchCache)
 	clearSyncMap(&s.nextReleaseIndex)
 	if s.queryCache != nil {
 		s.queryCache.Clear()
 	}
-	logger.Info("Search caches cleared")
+	// Empty caches clear silently — debounced profile auto-saves would
+	// otherwise log this on every keystroke pause.
+	if playlists+raw > 0 {
+		logger.Info("Search caches cleared", "raw", raw, "playlists", playlists)
+	}
 }
 
 // ClearPlaylistCaches clears only the playlist (filtered/sorted) cache while
@@ -221,9 +228,11 @@ func (s *Server) ClearSearchCaches() {
 // filter_sorting_mode) so subsequent requests reuse the cached indexer results
 // and only re-run the cheap filter/sort step.
 func (s *Server) ClearPlaylistCaches() {
-	clearSyncMap(&s.playlistCache)
+	playlists := clearSyncMap(&s.playlistCache)
 	clearSyncMap(&s.nextReleaseIndex)
-	logger.Info("Playlist caches cleared (raw search cache preserved)")
+	if playlists > 0 {
+		logger.Info("Playlist caches cleared (raw search cache preserved)", "playlists", playlists)
+	}
 }
 
 // SetOnAttemptRecorded sets a callback invoked after each NZB attempt is recorded (e.g. to broadcast to WS clients).
@@ -326,13 +335,20 @@ func (s *Server) Reload(opts *ServerOptions) {
 		s.availClient = nil
 		s.availReporter = nil
 	} else if opts.AvailClient != nil {
+		// The backbones map lives on the client and only needs refreshing when
+		// the client instance was rebuilt (heavy reload, new URL/key) — the
+		// config-only reloads every profile auto-save triggers reuse the same
+		// client and must not hit the AvailNZB API each time.
+		refreshBackbones := s.availClient != opts.AvailClient
 		s.availClient = opts.AvailClient
 		s.availReporter = availnzb.NewReporter(opts.AvailClient, opts.Validator)
-		go func(client *availnzb.Client) {
-			if err := client.RefreshBackbones(); err != nil {
-				logger.Debug("AvailNZB backbones refresh", "source", "stremio_reload", "err", err)
-			}
-		}(opts.AvailClient)
+		if refreshBackbones {
+			go func(client *availnzb.Client) {
+				if err := client.RefreshBackbones(); err != nil {
+					logger.Debug("AvailNZB backbones refresh", "source", "stremio_reload", "err", err)
+				}
+			}(opts.AvailClient)
+		}
 	} else {
 		s.availClient = nil
 		s.availReporter = nil

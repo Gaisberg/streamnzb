@@ -11,6 +11,7 @@ const pageTitles = {
   "settings-providers": "Providers",
   filters: "Filters",
   metadata: "Metadata",
+  formatting: "Formatting",
   "settings-search": "Search Settings",
   install: "Streams",
   streams: "Streams",

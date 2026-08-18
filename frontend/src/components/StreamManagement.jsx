@@ -10,7 +10,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { ResultFormatEditor } from "@/components/ResultFormatEditor"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { apiFetch } from "@/api"
 import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2, Type } from "lucide-react"
@@ -102,6 +101,7 @@ function normalizeStreamDraft(draft) {
     filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
     filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
     metadata_profile_name: draft?.metadata_profile_name || '',
+    format_profile_name: draft?.format_profile_name || '',
     result_name_template: draft?.result_name_template || '',
     result_description_template: draft?.result_description_template || '',
     addon_name: (draft?.addon_name || '').trim(),
@@ -129,6 +129,7 @@ function buildStreamDraft(stream) {
     filter_profile_name: stream?.filter_profile_name || '',
     filter_profile_by_type: stream?.filter_profile_by_type || {},
     metadata_profile_name: stream?.metadata_profile_name || '',
+    format_profile_name: stream?.format_profile_name || '',
     result_name_template: stream?.result_name_template || '',
     result_description_template: stream?.result_description_template || '',
     addon_name: stream?.addon_name || '',
@@ -164,6 +165,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     filter_profile_name: draft.filter_profile_name || '',
     filter_profile_by_type: draft.filter_profile_by_type || {},
     metadata_profile_name: draft.metadata_profile_name || '',
+    format_profile_name: draft.format_profile_name || '',
     result_name_template: draft.result_name_template || '',
     result_description_template: draft.result_description_template || '',
     addon_name: draft.addon_name || '',
@@ -210,6 +212,8 @@ function metadataSummaryValues(stream) {
 }
 
 function formattingSummaryValues(stream) {
+  if (stream?.format_profile_name) return [stream.format_profile_name]
+  // Legacy inline templates survive until the migration has run.
   return [stream?.result_name_template || stream?.result_description_template ? 'Custom' : 'Default']
 }
 
@@ -352,10 +356,21 @@ const STREAM_DIALOG_TABS = [
   { id: 'general', label: 'General' },
   { id: 'providers', label: 'Providers' },
   { id: 'indexers', label: 'Indexers' },
-  { id: 'movie', label: 'Movie' },
-  { id: 'tv', label: 'TV' },
-  { id: 'formatting', label: 'Formatting' },
+  { id: 'search', label: 'Search' },
+  { id: 'advanced', label: 'Advanced' },
 ]
+
+// tabFieldErrorKeys maps a dialog tab to the field errors it hosts, so the
+// tab strip can flag where a failed save needs attention.
+const tabFieldErrorKeys = {
+  providers: ['providers'],
+  indexers: ['indexers'],
+  search: ['movie_search_queries', 'series_search_queries'],
+}
+
+function tabHasError(tabId, fieldErrors) {
+  return (tabFieldErrorKeys[tabId] || []).some((key) => fieldErrors[key])
+}
 
 function defaultStreamName(index) {
   return `Stream${String(index + 1).padStart(2, '0')}`
@@ -398,6 +413,7 @@ function StreamDialog({
   seriesQueryNames,
   filterProfiles = [],
   metadataProfiles = [],
+  formatProfiles = [],
   globalConfig,
   onSave,
   saving,
@@ -407,7 +423,6 @@ function StreamDialog({
   const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
   const [saveError, setSaveError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
-  const [formatErrors, setFormatErrors] = useState(null)
   const [activeTab, setActiveTab] = useState('general')
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [wasOpen, setWasOpen] = useState(open)
@@ -419,7 +434,6 @@ function StreamDialog({
       setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
       setSaveError('')
       setFieldErrors({})
-      setFormatErrors(null)
       setActiveTab('general')
       setLastDialogIdentity(dialogIdentity)
     }
@@ -508,9 +522,6 @@ function StreamDialog({
     if (next.series_search_queries.length === 0) {
       nextFieldErrors.series_search_queries = 'Add at least one TV search request.'
     }
-    if (formatErrors && (formatErrors.name || formatErrors.description)) {
-      nextFieldErrors.formatting = 'Fix the result template syntax errors in the Formatting tab.'
-    }
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors)
       setSaveError(
@@ -519,7 +530,6 @@ function StreamDialog({
           nextFieldErrors.indexers ||
           nextFieldErrors.movie_search_queries ||
           nextFieldErrors.series_search_queries ||
-          nextFieldErrors.formatting ||
           'Please review the highlighted fields.'
       )
       return
@@ -567,10 +577,10 @@ function StreamDialog({
                 onClick={() => setActiveTab(tab.id)}
                 className={`relative whitespace-nowrap px-3 py-2 text-sm font-medium transition-colors ${
                   activeTab === tab.id
-                    ? fieldErrors[tab.id === 'movie' ? 'movie_search_queries' : tab.id === 'tv' ? 'series_search_queries' : tab.id]
+                    ? tabHasError(tab.id, fieldErrors)
                       ? 'text-destructive after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-destructive'
                       : 'text-foreground after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-primary'
-                    : fieldErrors[tab.id === 'movie' ? 'movie_search_queries' : tab.id === 'tv' ? 'series_search_queries' : tab.id]
+                    : tabHasError(tab.id, fieldErrors)
                       ? 'text-destructive hover:text-destructive'
                       : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -710,110 +720,58 @@ function StreamDialog({
 
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">Failover</div>
-                  <Switch
-                    checked={draft.enable_failover}
-                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, enable_failover: checked === true }))}
-                  />
+                  <div className="text-sm font-medium">Format profile</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-48 justify-between">
+                        <span className="truncate">{draft.format_profile_name || 'Default'}</span>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48 max-h-60 overflow-y-auto">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, format_profile_name: '' }))}>
+                        Default (built-in)
+                      </DropdownMenuItem>
+                      {(formatProfiles || []).map((fp) => (
+                        <DropdownMenuItem
+                          key={fp.name}
+                          onClick={() => setDraft((current) => ({ ...current, format_profile_name: fp.name }))}
+                        >
+                          {fp.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  If enabled, StreamNZB automatically tries the next release in order when the current NZB fails during playback.
+                  How this stream&apos;s results render in Stremio, from the Formatting page. Default keeps the
+                  built-in format; AIOStreams responses keep their fixed format either way.
                 </p>
               </div>
 
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">Filter AvailNZB unavailable</div>
-                  <Switch
-                    checked={availNZBEnabled && draft.filter_availnzb === true}
-                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, filter_availnzb: checked === true }))}
-                    disabled={!availNZBEnabled}
-                  />
+                  <div className="text-sm font-medium">Results</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-40 justify-between" disabled={aiostreamsMode}>
+                        <span>{resultsModeLabel(draft.results_mode)}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, results_mode: 'combined_stream' }))}>
+                        Combined stream
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, results_mode: 'display_all' }))}>
+                        Display all
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  {availNZBEnabled
-                    ? 'If enabled, releases reported as bad by AvailNZB are removed from returned streams.'
-                    : 'Disabled because AvailNZB is globally disabled.'}
+                  Choose whether StreamNZB returns one combined stream or shows every matching result as a separate stream entry. AIOStreams always uses Display all.
                 </p>
-              </div>
-
-              <div className="relative rounded-md border border-border/60">
-                <div className="p-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-sm font-medium">Indexers</div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button type="button" variant="outline" className="h-9 w-40 justify-between">
-                          <span>{indexerModeLabel(draft.indexer_mode)}</span>
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, indexer_mode: 'combine' }))}>
-                          Combine
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, indexer_mode: 'failover' }))}>
-                          Failover
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    Search all selected indexers together or use them in stream order as fallback chain.
-                  </p>
-                </div>
-
-                <div className="relative p-3">
-                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-sm font-medium">Search requests</div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button type="button" variant="outline" className="h-9 w-40 justify-between">
-                          <span>{searchRequestsLabel(draft.combine_results)}</span>
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-48">
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: true }))}>
-                          Combine all
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: false }))}>
-                          Stop after first hit
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    If enabled, results from all search requests are combined. If disabled, requests run in order and stop after the first one that returns results.
-                  </p>
-                </div>
-
-                <div className="relative p-3">
-                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-sm font-medium">Results</div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button type="button" variant="outline" className="h-9 w-40 justify-between" disabled={aiostreamsMode}>
-                          <span>{resultsModeLabel(draft.results_mode)}</span>
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, results_mode: 'combined_stream' }))}>
-                          Combined stream
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, results_mode: 'display_all' }))}>
-                          Display all
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    Choose whether StreamNZB returns one combined stream or shows every matching result as a separate stream entry. AIOStreams always uses Display all.
-                  </p>
-                </div>
               </div>
             </div>
           )}
@@ -889,6 +847,30 @@ function StreamDialog({
             <div className="space-y-4">
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Indexer mode</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-40 justify-between">
+                        <span>{indexerModeLabel(draft.indexer_mode)}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, indexer_mode: 'combine' }))}>
+                        Combine
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, indexer_mode: 'failover' }))}>
+                        Failover
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Search all selected indexers together or use them in stream order as fallback chain.
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-medium">Automatic sync</div>
                   <Switch
                     checked={draft.auto_add_indexers === true}
@@ -919,36 +901,81 @@ function StreamDialog({
             </div>
           )}
 
-          {activeTab === 'movie' && (
-            <SelectionSection
-              title="Movie Search Requests"
-              values={movieQueryNames}
-              selected={draft.movie_search_queries || []}
-              onToggle={(value, checked) => toggleListValue('movie_search_queries', value, checked)}
-              onMove={(fromIndex, toIndex) => moveListValue('movie_search_queries', fromIndex, toIndex)}
-              error={fieldErrors.movie_search_queries}
-            />
+          {activeTab === 'search' && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Search requests</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-40 justify-between">
+                        <span>{searchRequestsLabel(draft.combine_results)}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: true }))}>
+                        Combine all
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: false }))}>
+                        Stop after first hit
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  If enabled, results from all search requests are combined. If disabled, requests run in order and stop after the first one that returns results.
+                </p>
+              </div>
+              <SelectionSection
+                title="Movie Search Requests"
+                values={movieQueryNames}
+                selected={draft.movie_search_queries || []}
+                onToggle={(value, checked) => toggleListValue('movie_search_queries', value, checked)}
+                onMove={(fromIndex, toIndex) => moveListValue('movie_search_queries', fromIndex, toIndex)}
+                error={fieldErrors.movie_search_queries}
+              />
+              <SelectionSection
+                title="TV Search Requests"
+                values={seriesQueryNames}
+                selected={draft.series_search_queries || []}
+                onToggle={(value, checked) => toggleListValue('series_search_queries', value, checked)}
+                onMove={(fromIndex, toIndex) => moveListValue('series_search_queries', fromIndex, toIndex)}
+                error={fieldErrors.series_search_queries}
+              />
+            </div>
           )}
 
-          {activeTab === 'tv' && (
-            <SelectionSection
-              title="TV Search Requests"
-              values={seriesQueryNames}
-              selected={draft.series_search_queries || []}
-              onToggle={(value, checked) => toggleListValue('series_search_queries', value, checked)}
-              onMove={(fromIndex, toIndex) => moveListValue('series_search_queries', fromIndex, toIndex)}
-              error={fieldErrors.series_search_queries}
-            />
-          )}
-
-          {activeTab === 'formatting' && (
-            <ResultFormatEditor
-              nameTemplate={draft.result_name_template}
-              descriptionTemplate={draft.result_description_template}
-              onNameChange={(value) => setDraft((current) => ({ ...current, result_name_template: value }))}
-              onDescriptionChange={(value) => setDraft((current) => ({ ...current, result_description_template: value }))}
-              onErrorsChange={setFormatErrors}
-            />
+          {activeTab === 'advanced' && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Failover</div>
+                  <Switch
+                    checked={draft.enable_failover}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, enable_failover: checked === true }))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  If enabled, StreamNZB automatically tries the next release in order when the current NZB fails during playback.
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Filter AvailNZB unavailable</div>
+                  <Switch
+                    checked={availNZBEnabled && draft.filter_availnzb === true}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, filter_availnzb: checked === true }))}
+                    disabled={!availNZBEnabled}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {availNZBEnabled
+                    ? 'If enabled, releases reported as bad by AvailNZB are removed from returned streams.'
+                    : 'Disabled because AvailNZB is globally disabled.'}
+                </p>
+              </div>
+            </div>
           )}
 
         </div>
@@ -1142,6 +1169,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         filter_profile_name: draft.filter_profile_name || '',
         filter_profile_by_type: draft.filter_profile_by_type || {},
         metadata_profile_name: draft.metadata_profile_name || '',
+        format_profile_name: draft.format_profile_name || '',
         result_name_template: draft.result_name_template || '',
         result_description_template: draft.result_description_template || '',
         addon_name: draft.addon_name || '',
@@ -1564,6 +1592,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
             metadataProfiles={globalConfig?.metadata_profiles || []}
+            formatProfiles={globalConfig?.format_profiles || []}
             globalConfig={globalConfig}
             onSave={handleCreateStream}
             saving={dialogSaving}
@@ -1586,6 +1615,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             seriesQueryNames={seriesQueryNames}
             filterProfiles={globalConfig?.filter_profiles || []}
             metadataProfiles={globalConfig?.metadata_profiles || []}
+            formatProfiles={globalConfig?.format_profiles || []}
             globalConfig={globalConfig}
             onSave={handleSaveStream}
             saving={dialogSaving}

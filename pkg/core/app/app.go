@@ -275,8 +275,10 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	if scope.Proxy {
 		logger.Info("Reload: proxy config changed - restarting proxy listener only")
 	}
+	// Config-only reloads happen on every debounced settings save — Debug, or
+	// profile editing floods the log.
 	if !scope.Any() {
-		logger.Info("Reload: config-only - no NNTP/indexer restart")
+		logger.Debug("Reload: config-only - no NNTP/indexer restart")
 	}
 
 	a.components = &comp

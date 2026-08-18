@@ -47,6 +47,7 @@ type configValidationPlan struct {
 	validateSpeculativePreProbing  bool
 	validateFilterProfiles         bool
 	validateMetadataProfiles       bool
+	validateFormatProfiles         bool
 	validateDatabase               bool
 }
 
@@ -66,6 +67,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateSpeculativePreProbing:  true,
 		validateFilterProfiles:         true,
 		validateMetadataProfiles:       true,
+		validateFormatProfiles:         true,
 		validateDatabase:               true,
 	}
 }
@@ -109,6 +111,9 @@ var patchKeysNoCacheImpact = map[string]bool{
 	"ffprobe_path":                        true,
 	"database_driver":                     true,
 	"database_url":                        true,
+	// Result formatting is applied when a response is rendered from the
+	// cached playlist, so profile edits need no cache invalidation.
+	"format_profiles": true,
 }
 
 // patchKeysPlaylistOnly are config fields that change how cached raw results
@@ -195,6 +200,10 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["metadata_profiles"]; ok {
 		plan.validateMetadataProfiles = true
+		plan.validateDeviceAssignments = true
+	}
+	if _, ok := raw["format_profiles"]; ok {
+		plan.validateFormatProfiles = true
 		plan.validateDeviceAssignments = true
 	}
 
@@ -527,11 +536,33 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		}
 	}
 
+	if plan.validateFormatProfiles {
+		seen := make(map[string]bool)
+		for i, fp := range cfg.FormatProfiles {
+			name := strings.TrimSpace(fp.Name)
+			if name == "" {
+				errors[fmt.Sprintf("format_profiles.%d.name", i)] = "Name is required"
+			} else {
+				key := strings.ToLower(name)
+				if seen[key] {
+					errors[fmt.Sprintf("format_profiles.%d.name", i)] = "Name must be unique"
+				}
+				seen[key] = true
+			}
+			// A template that fails to parse would silently render the
+			// built-in format — reject the save instead.
+			if err := stremio.ValidateResultTemplates(fp.ResultNameTemplate, fp.ResultDescriptionTemplate); err != nil {
+				errors[fmt.Sprintf("format_profiles.%d.templates", i)] = err.Error()
+			}
+		}
+	}
+
 	if plan.validateDeviceAssignments {
 		movieQueryNames := lowerNameSet(cfg.MovieSearchQueries, func(x config.SearchQueryConfig) string { return x.Name })
 		seriesQueryNames := lowerNameSet(cfg.SeriesSearchQueries, func(x config.SearchQueryConfig) string { return x.Name })
 		filterProfileNames := lowerNameSet(cfg.FilterProfiles, func(x config.FilterProfileConfig) string { return x.Name })
 		metadataProfileNames := lowerNameSet(cfg.MetadataProfiles, func(x config.MetadataProfileConfig) string { return x.Name })
+		formatProfileNames := lowerNameSet(cfg.FormatProfiles, func(x config.FormatProfileConfig) string { return x.Name })
 		for username, stream := range cfg.Streams {
 			if stream == nil {
 				continue
@@ -556,6 +587,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			}
 			if mpName := strings.ToLower(strings.TrimSpace(stream.MetadataProfileName)); mpName != "" && !metadataProfileNames[mpName] {
 				errors[fmt.Sprintf("streams.%s.metadata_profile_name", username)] = "Assigned metadata profile does not exist"
+			}
+			if fpName := strings.ToLower(strings.TrimSpace(stream.FormatProfileName)); fpName != "" && !formatProfileNames[fpName] {
+				errors[fmt.Sprintf("streams.%s.format_profile_name", username)] = "Assigned format profile does not exist"
 			}
 		}
 	}

@@ -1,11 +1,20 @@
 # Custom result formats
 
-Each stream config can override how its results render in Stremio: the **name
+Result formats are **profiles**: a named pair of templates — the **name
 template** (the short label on the left of each result) and the **description
-template** (the multi-line detail text). Both are edited under the stream's
-settings, with a live preview rendered by the backend. Empty templates keep the
-built-in format, and a template that fails to compile can never break stream
-responses — the built-in format is the fallback at render time.
+template** (the multi-line detail text) — created on the **Formatting** page
+(under Settings) and bound to streams from the Streams page, so one format can
+be reused across streams. A stream with no profile bound renders the built-in
+format. The editor auto-saves and shows a live preview rendered by the
+backend; a template that fails to compile is rejected at save time and can
+never break stream responses — the built-in format is the fallback at render
+time.
+
+Upgrading from per-stream inline templates converts them automatically:
+streams sharing identical templates collapse onto one shared profile
+("Custom", "Custom 2", …) and are bound to it, so nothing changes visually.
+Renaming a profile follows into every stream bound to it; deleting one
+unbinds its streams, which fall back to the built-in format.
 
 Templates use [Go template syntax](https://pkg.go.dev/text/template) over each
 release's parsed data.

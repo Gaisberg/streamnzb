@@ -15,7 +15,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Metadata & catalogs](metadata.md) — StreamNZB as a full Stremio metadata provider
 - [Stream model](stream-model.md) — global configuration vs. per-stream behavior
 - [Filters & ranking](filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
-- [Custom result formats](result-formatting.md) — per-stream result templates, helper reference, and the AIOStreams formatter import
+- [Custom result formats](result-formatting.md) — reusable format profiles, helper reference, and the AIOStreams formatter import
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [AvailNZB](availnzb.md) — community availability database integration

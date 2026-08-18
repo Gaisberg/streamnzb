@@ -58,6 +58,7 @@ export function fieldToTab(fieldName) {
   if (fieldName.startsWith('providers')) return 'providers'
   if (fieldName.startsWith('filter_profiles')) return 'filters'
   if (fieldName.startsWith('metadata_profiles')) return 'metadata'
+  if (fieldName.startsWith('format_profiles')) return 'formatting'
   if (fieldName.startsWith('movie_search_queries') || fieldName.startsWith('series_search_queries')) return 'search_query'
   if (GENERAL_TAB_FIELDS.includes(fieldName)) return 'general'
   if (ADVANCED_TAB_FIELDS.includes(fieldName)) return 'advanced'
@@ -118,6 +119,9 @@ function summarizeConfigErrors(errors, sourceTab, values) {
   }
   if (sourceTab === 'metadata') {
     return buildNamedValidationSummary(errors, 'metadata_profiles', values?.metadata_profiles, 'Metadata Profile')
+  }
+  if (sourceTab === 'formatting') {
+    return buildNamedValidationSummary(errors, 'format_profiles', values?.format_profiles, 'Format Profile')
   }
   return ''
 }
