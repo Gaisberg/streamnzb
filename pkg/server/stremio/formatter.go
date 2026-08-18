@@ -2,10 +2,14 @@ package stremio
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
@@ -33,6 +37,7 @@ type FormatContext struct {
 	Indexer      string     // indexer display name
 	Grabs        int        // indexer-reported grab count
 	Age          string     // humanized age from pub date, e.g. "2y", "37d"
+	Duration     string     // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
 	Languages    stringList // parsed language codes
 	Caps         string     // ffprobe-verified caps summary (library releases only)
 
@@ -115,6 +120,147 @@ func templateText(v any) string {
 	}
 }
 
+// sortedStrings and sortedInts return sorted copies so templates can never
+// mutate the FormatContext slices they render.
+func sortedStrings(src []string, desc bool) stringList {
+	out := slices.Clone(src)
+	slices.SortStableFunc(out, func(a, b string) int {
+		c := strings.Compare(strings.ToLower(a), strings.ToLower(b))
+		if c == 0 {
+			c = strings.Compare(a, b)
+		}
+		if desc {
+			c = -c
+		}
+		return c
+	})
+	return stringList(out)
+}
+
+func sortedInts(src []int, desc bool) intList {
+	out := slices.Clone(src)
+	slices.Sort(out)
+	if desc {
+		slices.Reverse(out)
+	}
+	return intList(out)
+}
+
+// sortedCopy sorts list values (case-insensitively for strings, numerically
+// for ints) and passes everything else through untouched, so {{sortAsc .HDR}}
+// composes with join/range/index without special cases.
+func sortedCopy(v any, desc bool) any {
+	switch t := v.(type) {
+	case stringList:
+		return sortedStrings(t, desc)
+	case []string:
+		return sortedStrings(t, desc)
+	case intList:
+		return sortedInts(t, desc)
+	case []int:
+		return sortedInts(t, desc)
+	}
+	return v
+}
+
+// templateExists reports whether a value would render as something visible:
+// non-empty lists, non-blank strings, non-zero numbers, true booleans.
+func templateExists(v any) bool {
+	switch t := v.(type) {
+	case stringList:
+		return len(t) > 0
+	case []string:
+		return len(t) > 0
+	case intList:
+		return len(t) > 0
+	case []int:
+		return len(t) > 0
+	case bool:
+		return t
+	case int:
+		return t != 0
+	case int64:
+		return t != 0
+	}
+	return strings.TrimSpace(templateText(v)) != ""
+}
+
+// templateLength returns element count for lists and rune count for
+// everything else (unlike the built-in len, which counts bytes on strings).
+func templateLength(v any) int {
+	switch t := v.(type) {
+	case stringList:
+		return len(t)
+	case []string:
+		return len(t)
+	case intList:
+		return len(t)
+	case []int:
+		return len(t)
+	}
+	return len([]rune(templateText(v)))
+}
+
+// firstElem/lastElem pick a list edge element; non-list values pass through.
+func firstElem(v any) any {
+	switch t := v.(type) {
+	case stringList:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[0]
+	case []string:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[0]
+	case intList:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[0]
+	case []int:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[0]
+	}
+	return v
+}
+
+func lastElem(v any) any {
+	switch t := v.(type) {
+	case stringList:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[len(t)-1]
+	case []string:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[len(t)-1]
+	case intList:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[len(t)-1]
+	case []int:
+		if len(t) == 0 {
+			return ""
+		}
+		return t[len(t)-1]
+	}
+	return v
+}
+
+// smallcapsLetters maps a-z to their Unicode small-caps forms (q and x have no
+// dedicated small-caps codepoint; ǫ and x are the conventional stand-ins).
+var smallcapsLetters = []rune("ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ")
+
+// New multi-argument helpers take the value LAST (like default) so they chain
+// in pipelines: {{.ParsedTitle | title | truncate 24}}. replace and join keep
+// their original value-first signatures for backwards compatibility.
 var formatTemplateFuncs = template.FuncMap{
 	"size":  humanSize,
 	"score": formatScoreSigned,
@@ -133,6 +279,73 @@ var formatTemplateFuncs = template.FuncMap{
 		}
 		return def
 	},
+	"exists":   templateExists,
+	"length":   templateLength,
+	"sort":     func(v any) any { return sortedCopy(v, false) },
+	"sortAsc":  func(v any) any { return sortedCopy(v, false) },
+	"sortDesc": func(v any) any { return sortedCopy(v, true) },
+	"first":    firstElem,
+	"last":     lastElem,
+	"title":    func(v any) string { return cases.Title(language.Und).String(templateText(v)) },
+	// truncate cuts to n runes and marks the cut with an ellipsis, matching
+	// what stream titles need most: {{.ParsedTitle | truncate 24}}.
+	"truncate": func(n int, v any) string {
+		if n <= 0 {
+			return ""
+		}
+		runes := []rune(templateText(v))
+		if len(runes) <= n {
+			return string(runes)
+		}
+		return string(runes[:n]) + "…"
+	},
+	// translate maps runes by position, "0123456789" → "₀₁₂₃₄₅₆₇₈₉"; runes in
+	// from with no counterpart in to are removed.
+	"translate": func(from, to string, v any) string {
+		fromRunes, toRunes := []rune(from), []rune(to)
+		mapped := make(map[rune]rune, len(fromRunes))
+		deleted := make(map[rune]bool)
+		for i, r := range fromRunes {
+			if i < len(toRunes) {
+				mapped[r] = toRunes[i]
+			} else {
+				deleted[r] = true
+			}
+		}
+		var b strings.Builder
+		for _, r := range templateText(v) {
+			if deleted[r] {
+				continue
+			}
+			if m, ok := mapped[r]; ok {
+				r = m
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	},
+	"remove": func(sub string, v any) string {
+		return strings.ReplaceAll(templateText(v), sub, "")
+	},
+	"smallcaps": func(v any) string {
+		var b strings.Builder
+		for _, r := range strings.ToLower(templateText(v)) {
+			if r >= 'a' && r <= 'z' {
+				r = smallcapsLetters[r-'a']
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	},
+	"contains": func(sub string, v any) bool {
+		return strings.Contains(templateText(v), sub)
+	},
+	"hasPrefix": func(prefix string, v any) bool {
+		return strings.HasPrefix(templateText(v), prefix)
+	},
+	"hasSuffix": func(suffix string, v any) bool {
+		return strings.HasSuffix(templateText(v), suffix)
+	},
 }
 
 func humanSize(size int64) string {
@@ -150,6 +363,24 @@ func formatScoreSigned(score int) string {
 		return fmt.Sprintf("+%d", score)
 	}
 	return fmt.Sprintf("%d", score)
+}
+
+// humanDuration renders an indexer-reported runtime in seconds as "1h 52m",
+// "52m" or "45s", or "" when unknown.
+func humanDuration(seconds float64) string {
+	if seconds <= 0 {
+		return ""
+	}
+	total := int(seconds + 0.5)
+	hours, minutes := total/3600, (total%3600)/60
+	switch {
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	case minutes > 0:
+		return fmt.Sprintf("%dm", minutes)
+	default:
+		return fmt.Sprintf("%ds", total)
+	}
 }
 
 // humanAge renders how long ago a newznab pubDate was, or "" when unparseable.
@@ -193,6 +424,7 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		ctx.Indexer = indexerNameFromRelease(rel)
 		ctx.Grabs = rel.Grabs
 		ctx.Age = humanAge(rel.PubDate)
+		ctx.Duration = humanDuration(rel.Duration)
 		ctx.Languages = rel.Languages
 	}
 	meta := cand.Metadata
@@ -385,30 +617,32 @@ type FormatPreviewResult struct {
 }
 
 type formatPreviewFixture struct {
-	label   string
-	content string
-	title   string
-	indexer string
-	size    int64
-	grabs   int
-	pubDate string
-	score   int
-	avail   bool
-	library bool
-	caps    string
+	label    string
+	content  string
+	title    string
+	indexer  string
+	size     int64
+	grabs    int
+	pubDate  string
+	score    int
+	avail    bool
+	library  bool
+	caps     string
+	duration float64
 }
 
 func formatPreviewFixtures() []formatPreviewFixture {
 	return []formatPreviewFixture{
 		{
-			label:   "4K movie · fresh indexer hit",
-			content: "Dune: Part Two",
-			title:   "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR10.HEVC.DDP5.1.Atmos-FLUX",
-			indexer: "DrunkenSlug",
-			size:    24_800_000_000,
-			grabs:   154,
-			pubDate: time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
-			score:   4200,
+			label:    "4K movie · fresh indexer hit",
+			content:  "Dune: Part Two",
+			title:    "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR10.HEVC.DDP5.1.Atmos-FLUX",
+			indexer:  "DrunkenSlug",
+			size:     24_800_000_000,
+			grabs:    154,
+			pubDate:  time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:    4200,
+			duration: 165 * 60,
 		},
 		{
 			label:   "1080p episode · AvailNZB verified",
@@ -470,6 +704,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			IsLibrary: fx.library,
 			PubDate:   fx.pubDate,
 			Grabs:     fx.grabs,
+			Duration:  fx.duration,
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
 		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail)

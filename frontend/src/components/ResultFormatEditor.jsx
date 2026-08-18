@@ -17,11 +17,13 @@ const EXAMPLE_DESCRIPTION_TEMPLATE = `{{.ReleaseTitle}}
 // these are exactly the FormatContext fields the backend exposes.
 const FORMAT_FIELDS = [
   { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count'] },
-  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Grabs', '.Age', '.Score', '.Avail', '.Library', '.Caps'] },
+  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
   { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages'] },
   { group: 'Episode', fields: ['.Season', '.Episode', '.Seasons', '.Episodes', '.EpisodeCode', '.Volumes'] },
   { group: 'Flags', fields: ['.Proper', '.Repack', '.Remastered', '.Upscaled', '.ThreeD', '.Scene', '.Retail', '.Hardcoded', '.Dubbed', '.Subbed', '.Commentary', '.Complete', '.Documentary', '.Unrated', '.Uncensored', '.PPV'] },
-  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group'] },
+  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network'] },
+  { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "'] },
+  { group: 'Checks', fields: ['if exists .HDR', 'if gt (length .Audio) 1', 'if eq .Resolution "2160p"', 'if contains "DV" .HDR', 'if hasPrefix "2160" .Resolution', 'if hasSuffix "p" .Resolution'] },
 ]
 
 const templateBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -75,6 +77,80 @@ function FormatPreview({ nameTemplate, descriptionTemplate, onErrorsChange }) {
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// AIOStreamsImport converts pasted AIOStreams formatter templates into Go
+// templates via the backend and fills the editors with the result. Anything
+// that has no StreamNZB equivalent stays in the output verbatim and is listed
+// as a warning for hand-editing.
+function AIOStreamsImport({ onNameChange, onDescriptionChange }) {
+  const [open, setOpen] = useState(false)
+  const [aioName, setAioName] = useState('')
+  const [aioDescription, setAioDescription] = useState('')
+  const [warnings, setWarnings] = useState([])
+  const [error, setError] = useState('')
+  const [converting, setConverting] = useState(false)
+
+  const convert = () => {
+    setConverting(true)
+    setError('')
+    apiFetch('/api/format/convert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name_template: aioName || '', description_template: aioDescription || '' }),
+    })
+      .then((res) => {
+        if (aioName.trim()) onNameChange(res.name_template || '')
+        if (aioDescription.trim()) onDescriptionChange(res.description_template || '')
+        setWarnings([...(res.name_warnings || []), ...(res.description_warnings || [])])
+      })
+      .catch(() => setError('Conversion failed — is the backend up to date?'))
+      .finally(() => setConverting(false))
+  }
+
+  return (
+    <div className="rounded-md border border-border/60 p-3">
+      <button type="button" className="w-full text-left text-xs font-medium uppercase tracking-wider text-muted-foreground"
+        onClick={() => setOpen(!open)}>
+        {open ? '▾' : '▸'} Import from AIOStreams
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Paste your AIOStreams custom formatter below and convert it into the Go templates above.
+            The conversion is best-effort: fields without a StreamNZB equivalent are dropped (conditionals fall back to their false branch)
+            and listed below, so nothing unconvertible leaks into your results.
+          </p>
+          <textarea
+            value={aioName}
+            onChange={(event) => setAioName(event.target.value)}
+            rows={2}
+            spellCheck={false}
+            placeholder={'AIOStreams name template, e.g. {stream.resolution::exists["{stream.resolution}"||"N/A"]}'}
+            className={templateBoxClass}
+          />
+          <textarea
+            value={aioDescription}
+            onChange={(event) => setAioDescription(event.target.value)}
+            rows={4}
+            spellCheck={false}
+            placeholder={"AIOStreams description template, e.g. {stream.audioTags::lsort::join(' · ')}"}
+            className={templateBoxClass}
+          />
+          <Button type="button" variant="secondary" size="sm" className="h-7 px-3 text-xs"
+            disabled={converting || (!aioName.trim() && !aioDescription.trim())} onClick={convert}>
+            {converting ? 'Converting…' : 'Convert'}
+          </Button>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          {warnings.length > 0 && (
+            <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-muted-foreground">
+              {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -141,11 +217,15 @@ export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameCh
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
           Conditionals: {'{{if .HDR}}…{{end}}'}, {'{{if .Avail}}…{{else}}…{{end}}'}, {'{{if not .Avail}}…{{end}}'}.
+          Comparisons and boolean logic are built in: {'{{if gt (length .Audio) 1}}'}, {'{{if and .Avail .Library}}'}, plus eq/ne/lt/le/gt/ge.
+          Helpers compose by nesting ({'{{join (sortAsc .Audio) " · "}}'}) or piping ({'{{.ParsedTitle | title | truncate 24}}'}).
           Lists ({'{{.HDR}}'}, {'{{.Languages}}'}) render comma-separated; use {'{{join .HDR "|"}}'} for a custom separator.
           Lines that render empty are removed, so a false conditional on its own line never leaves a blank line.
           Caps is the ffprobe-verified summary, present on library releases only.
         </p>
       </div>
+
+      <AIOStreamsImport onNameChange={onNameChange} onDescriptionChange={onDescriptionChange} />
 
       <FormatPreview nameTemplate={nameTemplate} descriptionTemplate={descriptionTemplate} onErrorsChange={onErrorsChange} />
     </div>
