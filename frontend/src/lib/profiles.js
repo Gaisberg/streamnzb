@@ -250,6 +250,18 @@ export const CONTENT_KINDS = [
   { key: "anime_show", label: "Anime shows" },
 ]
 
+// NZB limit columns for the profile's Limits grid. Keys match LimitsConfig in
+// pkg/core/config/filterprofile.go; zero/absent leaves a bound unenforced.
+export const LIMIT_FIELDS = [
+  { key: "min_size_gb", label: "Min size (GB)", step: 0.5 },
+  { key: "max_size_gb", label: "Max size (GB)", step: 0.5 },
+  { key: "max_age_days", label: "Max age (days)", step: 1 },
+  { key: "min_grabs", label: "Min grabs", step: 1 },
+]
+
+// Limit rows: the default every kind inherits from, then per-kind overrides.
+export const LIMIT_KINDS = [{ key: "default", label: "All content" }, ...CONTENT_KINDS]
+
 // The traits a new profile rejects, matching defaultBlockedAttrs in
 // pkg/core/config/filterprofile.go: the CAM-class rips, the fake audio dubbed
 // over them, and satellite rips. Everything else jhin demotes is opened up and

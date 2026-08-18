@@ -918,7 +918,7 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 		return candidates
 	}
 
-	results, rejected := profile.ApplyWithRejected(candidates, rank.RankOptions{})
+	results, rejected := profile.ApplyWithRejected(kind, candidates, rank.RankOptions{})
 	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
 	diag.From(ctx).SetProfile(profile.Name, inputResults, len(results), rejectedForDiag(rejected))
 

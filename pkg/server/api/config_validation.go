@@ -443,6 +443,27 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			if _, err := ranking.Compile(fp); err != nil {
 				errors[fmt.Sprintf("filter_profiles.%d.ranking", i)] = err.Error()
 			}
+			for key, lim := range fp.Limits {
+				if lim == nil {
+					continue
+				}
+				path := fmt.Sprintf("filter_profiles.%d.limits.%s", i, key)
+				if lim.MinSizeGB < 0 || lim.MaxSizeGB < 0 {
+					errors[path] = "Size limits cannot be negative"
+				} else if lim.MaxAgeDays < 0 {
+					errors[path] = "Max age cannot be negative"
+				} else if lim.MinGrabs < 0 {
+					errors[path] = "Min grabs cannot be negative"
+				}
+			}
+			// Bounds merge default-then-kind, so a contradiction can span two
+			// entries — check what each kind actually resolves to.
+			for _, kind := range config.LimitKinds {
+				resolved := fp.LimitsForKind(kind)
+				if resolved.MinSizeGB > 0 && resolved.MaxSizeGB > 0 && resolved.MinSizeGB > resolved.MaxSizeGB {
+					errors[fmt.Sprintf("filter_profiles.%d.limits.%s", i, kind)] = "Min size cannot exceed max size"
+				}
+			}
 		}
 	}
 

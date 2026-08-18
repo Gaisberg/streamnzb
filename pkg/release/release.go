@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -41,9 +42,39 @@ type Release struct {
 	QuerySource string
 	Grabs       int
 	Languages   []string
+	// Password reports the indexer flagged the release as password protected.
+	// False also covers indexers that never report the attribute.
+	Password bool
 
 	Available *bool
 	Duration  float64
+}
+
+// releaseDateLayouts are the formats indexers use for pubDate/usenetdate values.
+var releaseDateLayouts = []string{time.RFC1123Z, time.RFC1123, time.RFC3339, time.RFC822Z, time.RFC822}
+
+// ParseDate parses a newznab pubDate/usenetdate string; ok is false when the
+// value is empty or in none of the known layouts.
+func ParseDate(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range releaseDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// PublishedAt parses the release's PubDate; ok is false when the release
+// carries no parseable date (library results, indexers without dates).
+func (r *Release) PublishedAt() (time.Time, bool) {
+	if r == nil {
+		return time.Time{}, false
+	}
+	return ParseDate(r.PubDate)
 }
 
 func (r *Release) IsLibraryResult() bool {

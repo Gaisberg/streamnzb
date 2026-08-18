@@ -61,6 +61,13 @@ type Profile struct {
 	// ranker's score. Resolved from the profile config (default 500, 0 when
 	// disabled there).
 	LibraryScoreBonus int
+
+	// limits bounds releases by NZB attributes (size, age, grabs), keyed by
+	// content kind; resolved per request in applyLimits since the kind is not
+	// known at compile time.
+	limits map[string]*config.LimitsConfig
+	// blockPassworded rejects releases the indexer flags as password protected.
+	blockPassworded bool
 }
 
 func NewService() *Service {
@@ -114,6 +121,8 @@ func Compile(fp config.FilterProfileConfig) (*Profile, error) {
 		Ranker:            ranker,
 		Spec:              spec,
 		LibraryScoreBonus: fp.EffectiveLibraryScoreBonus(),
+		limits:            fp.Limits,
+		blockPassworded:   fp.EffectiveBlockPassworded(),
 	}, nil
 }
 
@@ -155,9 +164,11 @@ type Result struct {
 
 // Apply runs every candidate through the profile's ranker, drops the ones jhin
 // rejects, and returns them in the profile's sort order. Candidates are always
-// evaluated so that rejected releases can still be explained in the UI.
-func (p *Profile) Apply(candidates []triage.Candidate, opts rank.RankOptions) []Result {
-	kept, _ := p.ApplyWithRejected(candidates, opts)
+// evaluated so that rejected releases can still be explained in the UI. kind
+// selects which of the profile's NZB attribute limits apply; empty applies the
+// default limits only.
+func (p *Profile) Apply(kind string, candidates []triage.Candidate, opts rank.RankOptions) []Result {
+	kept, _ := p.ApplyWithRejected(kind, candidates, opts)
 	return kept
 }
 
@@ -165,8 +176,9 @@ func (p *Profile) Apply(candidates []triage.Candidate, opts rank.RankOptions) []
 // still carrying the reasons jhin refused it. A profile that filters a result
 // set down to nothing looks identical to an indexer that found nothing unless
 // the rejections survive this call, so diagnostics use this form.
-func (p *Profile) ApplyWithRejected(candidates []triage.Candidate, opts rank.RankOptions) (kept, rejected []Result) {
+func (p *Profile) ApplyWithRejected(kind string, candidates []triage.Candidate, opts rank.RankOptions) (kept, rejected []Result) {
 	results := p.Evaluate(candidates, opts)
+	p.applyLimits(kind, results)
 
 	kept = results[:0]
 	for _, r := range results {

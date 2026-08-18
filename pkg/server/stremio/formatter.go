@@ -154,18 +154,8 @@ func formatScoreSigned(score int) string {
 
 // humanAge renders how long ago a newznab pubDate was, or "" when unparseable.
 func humanAge(pubDate string) string {
-	pubDate = strings.TrimSpace(pubDate)
-	if pubDate == "" {
-		return ""
-	}
-	var parsed time.Time
-	for _, layout := range []string{time.RFC1123Z, time.RFC1123, time.RFC3339, time.RFC822Z, time.RFC822} {
-		if t, err := time.Parse(layout, pubDate); err == nil {
-			parsed = t
-			break
-		}
-	}
-	if parsed.IsZero() {
+	parsed, ok := release.ParseDate(pubDate)
+	if !ok {
 		return ""
 	}
 	age := time.Since(parsed)

@@ -152,6 +152,20 @@ func (i *Item) ToRelease() *release.Release {
 	if indexerName == "" && i.SourceIndexer != nil {
 		indexerName = i.SourceIndexer.Name()
 	}
+	// usenetdate is when the release hit usenet; pubDate is when the indexer
+	// listed it. Retention and age both care about the former.
+	pubDate := i.PubDate
+	if s := i.GetAttribute("usenetdate"); s != "" {
+		if _, ok := release.ParseDate(s); ok {
+			pubDate = s
+		}
+	}
+	// Newznab reports password as 0 (none), 1 (passworded) or 2 (passworded
+	// inner archive); anything but an explicit 0 counts as protected.
+	password := false
+	if s := strings.TrimSpace(i.GetAttribute("password")); s != "" && s != "0" {
+		password = true
+	}
 	return &release.Release{
 		Title:         i.Title,
 		Link:          i.Link,
@@ -159,11 +173,12 @@ func (i *Item) ToRelease() *release.Release {
 		Size:          i.Size,
 		Indexer:       indexerName,
 		SourceIndexer: i.SourceIndexer,
-		PubDate:       i.PubDate,
+		PubDate:       pubDate,
 		GUID:          i.GUID,
 		QuerySource:   i.QuerySource,
 		Grabs:         grabs,
 		Languages:     languages,
+		Password:      password,
 		Duration:      i.Duration,
 	}
 }

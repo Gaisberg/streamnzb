@@ -147,6 +147,17 @@ type FilterProfileConfig struct {
 	// for this profile. Nil uses the default (500); negative disables the bonus.
 	LibraryScoreBonus *int `json:"library_score_bonus,omitempty"`
 
+	// Limits bounds releases by NZB attributes (size, age, grabs), keyed by
+	// content kind. The "default" entry applies to every kind; entries for
+	// "movie", "series", "anime_movie" and "anime_show" override it field by
+	// field, non-zero fields winning.
+	Limits map[string]*LimitsConfig `json:"limits,omitempty"`
+
+	// BlockPassworded rejects releases the indexer flags as password
+	// protected. Nil defaults to true; indexers that never report the flag
+	// are unaffected.
+	BlockPassworded *bool `json:"block_passworded,omitempty"`
+
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
 	AllowedQualities   []string `json:"allowed_qualities,omitempty"`

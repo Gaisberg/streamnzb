@@ -96,7 +96,7 @@ func TestProfileSortOrder(t *testing.T) {
 		"Movie 2020 1080p BluRay REMUX-GRP",
 	)
 
-	got := keptTitles(profile.Apply(cands, rank.RankOptions{}))
+	got := keptTitles(profile.Apply(ranking.KindMovie, cands, rank.RankOptions{}))
 	if len(got) == 0 {
 		t.Fatal("expected results")
 	}

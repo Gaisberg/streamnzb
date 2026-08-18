@@ -31,6 +31,62 @@ func TestValidateConfigRejectsUncompilableFilterProfile(t *testing.T) {
 	}
 }
 
+// NZB limits must be non-negative, and min size must not exceed max size —
+// including when the contradiction only appears after a kind entry merges
+// over the default entry.
+func TestValidateConfigRejectsBadProfileLimits(t *testing.T) {
+	s := &Server{}
+
+	tests := []struct {
+		name    string
+		limits  map[string]*config.LimitsConfig
+		errPath string
+	}{
+		{
+			"negative size",
+			map[string]*config.LimitsConfig{"default": {MaxSizeGB: -1}},
+			"filter_profiles.0.limits.default",
+		},
+		{
+			"negative age",
+			map[string]*config.LimitsConfig{"movie": {MaxAgeDays: -1}},
+			"filter_profiles.0.limits.movie",
+		},
+		{
+			"min above max in one entry",
+			map[string]*config.LimitsConfig{"default": {MinSizeGB: 10, MaxSizeGB: 5}},
+			"filter_profiles.0.limits.default",
+		},
+		{
+			"min above max across the merge",
+			map[string]*config.LimitsConfig{"default": {MinSizeGB: 10}, "series": {MaxSizeGB: 5}},
+			"filter_profiles.0.limits.series",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				FilterProfiles: []config.FilterProfileConfig{{Name: "Limits", Limits: tt.limits}},
+			}
+			errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateFilterProfiles: true})
+			if got := errs[tt.errPath]; got == "" {
+				t.Fatalf("expected an error at %s, got %#v", tt.errPath, errs)
+			}
+		})
+	}
+
+	// A valid spread passes.
+	cfg := &config.Config{
+		FilterProfiles: []config.FilterProfileConfig{{Name: "Limits", Limits: map[string]*config.LimitsConfig{
+			"default": {MinSizeGB: 1, MaxSizeGB: 30, MaxAgeDays: 1200, MinGrabs: 3},
+			"series":  {MaxSizeGB: 5},
+		}}},
+	}
+	if errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateFilterProfiles: true}); len(errs) > 0 {
+		t.Fatalf("expected no errors for valid limits, got %#v", errs)
+	}
+}
+
 func TestValidateConfigRejectsUnresolvedProwlarrIndexerPlaceholder(t *testing.T) {
 	enabled := true
 	s := &Server{}

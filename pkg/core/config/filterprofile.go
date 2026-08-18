@@ -5,6 +5,86 @@ import "github.com/dreulavelle/jhin/rank"
 // DefaultFilterProfileName is the profile seeded into a fresh config.
 const DefaultFilterProfileName = "Default Profile"
 
+// LimitKindDefault is the limits entry every content kind inherits from; the
+// four ranking kinds ("movie", "series", "anime_movie", "anime_show") override
+// it field by field.
+const LimitKindDefault = "default"
+
+// LimitKinds are the per-kind limit entries a profile may carry, the default
+// first. The kind keys match the ranking package's content kinds.
+var LimitKinds = []string{LimitKindDefault, "movie", "series", "anime_movie", "anime_show"}
+
+// LimitsConfig bounds releases by NZB attributes rather than parsed quality.
+// A zero value leaves that bound unenforced.
+type LimitsConfig struct {
+	// MinSizeGB and MaxSizeGB bound the release size in decimal gigabytes,
+	// matching the sizes stream descriptions show. Multi-episode releases are
+	// judged per episode; a season pack whose episode count cannot be parsed
+	// is not judged at all.
+	MinSizeGB float64 `json:"min_size_gb,omitempty"`
+	MaxSizeGB float64 `json:"max_size_gb,omitempty"`
+	// MaxAgeDays rejects releases posted longer ago than this. Releases with
+	// no parseable date (library results) are kept.
+	MaxAgeDays int `json:"max_age_days,omitempty"`
+	// MinGrabs rejects releases with fewer recorded grabs. Releases that
+	// report no grabs at all are kept.
+	MinGrabs int `json:"min_grabs,omitempty"`
+}
+
+// Enabled reports whether any bound is set.
+func (l LimitsConfig) Enabled() bool {
+	return l.MinSizeGB > 0 || l.MaxSizeGB > 0 || l.MaxAgeDays > 0 || l.MinGrabs > 0
+}
+
+// ResolveLimits merges a profile's limits map down to the bounds that apply to
+// one content kind: the default entry, overridden field by field by the kind's
+// own entry.
+func ResolveLimits(limits map[string]*LimitsConfig, kind string) LimitsConfig {
+	out := LimitsConfig{}
+	if len(limits) == 0 {
+		return out
+	}
+	merge := func(l *LimitsConfig) {
+		if l == nil {
+			return
+		}
+		if l.MinSizeGB > 0 {
+			out.MinSizeGB = l.MinSizeGB
+		}
+		if l.MaxSizeGB > 0 {
+			out.MaxSizeGB = l.MaxSizeGB
+		}
+		if l.MaxAgeDays > 0 {
+			out.MaxAgeDays = l.MaxAgeDays
+		}
+		if l.MinGrabs > 0 {
+			out.MinGrabs = l.MinGrabs
+		}
+	}
+	merge(limits[LimitKindDefault])
+	if kind != "" && kind != LimitKindDefault {
+		merge(limits[kind])
+	}
+	return out
+}
+
+// LimitsForKind resolves this profile's limits for one content kind.
+func (fp *FilterProfileConfig) LimitsForKind(kind string) LimitsConfig {
+	if fp == nil {
+		return LimitsConfig{}
+	}
+	return ResolveLimits(fp.Limits, kind)
+}
+
+// EffectiveBlockPassworded reports whether the profile rejects releases the
+// indexer flags as password protected. Nil (unset) defaults to true.
+func (fp *FilterProfileConfig) EffectiveBlockPassworded() bool {
+	if fp == nil || fp.BlockPassworded == nil {
+		return true
+	}
+	return *fp.BlockPassworded
+}
+
 // defaultBlockedAttrs are the traits the shipped profile rejects outright: the
 // CAM-class rips, the fake audio track dubbed over them, and satellite rips.
 // Everything else jhin demotes is opened up and left to sort last instead.

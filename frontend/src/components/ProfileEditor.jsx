@@ -10,8 +10,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { CircleHelp, RotateCcw, Search, Sparkles, X } from "lucide-react"
 import {
-  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, LANGUAGE_OPTIONS, PATTERN_PRESETS,
-  RESOLUTIONS, effectivePolicy, formatScore,
+  ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, LANGUAGE_OPTIONS, LIMIT_FIELDS,
+  LIMIT_KINDS, PATTERN_PRESETS, RESOLUTIONS, effectivePolicy, formatScore,
 } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
 
@@ -439,6 +439,57 @@ function AttributeGroup({ group, ranking, onChange, query, modifiedOnly }) {
   )
 }
 
+// LimitsGrid edits the per-kind NZB attribute bounds. The "All content" row is
+// the default every kind inherits; a kind's own value overrides it field by
+// field, shown as the placeholder while the kind leaves the field unset.
+function LimitsGrid({ limits, onChange }) {
+  const setLimit = (kindKey, field, value) => {
+    const entry = { ...(limits[kindKey] || {}) }
+    if (value > 0) entry[field] = value
+    else delete entry[field]
+    const next = { ...limits, [kindKey]: entry }
+    if (Object.keys(entry).length === 0) delete next[kindKey]
+    onChange(next)
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/60 bg-card/40">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border/60 text-xs text-muted-foreground">
+            <th className="px-3.5 py-2 text-left font-normal">Content</th>
+            {LIMIT_FIELDS.map((field) => (
+              <th key={field.key} className="px-2 py-2 text-left font-normal">{field.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {LIMIT_KINDS.map((kind) => (
+            <tr key={kind.key} className="border-b border-border/40 last:border-b-0">
+              <td className="whitespace-nowrap px-3.5 py-1.5">{kind.label}</td>
+              {LIMIT_FIELDS.map((field) => {
+                const inherited = kind.key === "default" ? 0 : limits.default?.[field.key]
+                return (
+                  <td key={field.key} className="px-2 py-1.5">
+                    <NumberField
+                      value={limits[kind.key]?.[field.key] ?? ""}
+                      onCommit={(value) => setLimit(kind.key, field.key, value)}
+                      min={0}
+                      step={field.step}
+                      placeholder={inherited ? String(inherited) : "off"}
+                      className="h-8 w-24 font-mono text-xs"
+                    />
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function ProfileEditor({ profile, onChange }) {
   const ranking = profile.ranking || {}
   const options = ranking.options || {}
@@ -548,6 +599,28 @@ export function ProfileEditor({ profile, onChange }) {
               className="h-8 w-32 font-mono text-xs"
             />
           </FieldRow>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5">
+            <Label className="text-sm">NZB limits</Label>
+            <Hint>
+              Bounds on the NZB itself rather than the parsed title. Empty fields are off; the All content
+              row applies everywhere, and a kind&apos;s own value overrides it. Sizes are decimal GB, matching
+              stream descriptions. Season packs are judged per episode when the episode count is parseable,
+              and a release that does not report an attribute (age, grabs) is never rejected for it.
+            </Hint>
+          </div>
+          <FieldRow
+            label="Block password-protected releases"
+            hint="Rejects releases the indexer flags as password protected. Indexers that never report the flag are unaffected."
+          >
+            <Switch
+              checked={profile.block_passworded !== false}
+              onCheckedChange={(v) => onChange({ ...profile, block_passworded: v })}
+            />
+          </FieldRow>
+          <LimitsGrid limits={profile.limits || {}} onChange={(limits) => onChange({ ...profile, limits })} />
         </div>
       </TabsContent>
 
