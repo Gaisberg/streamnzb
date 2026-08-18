@@ -42,6 +42,12 @@ const animeListsFixture = `[
 		"imdb_id": ["tt0168366"],
 		"tvdb_id": 76703,
 		"themoviedb_id": {"tv": 60572}
+	},
+	{
+		"type": "Movie",
+		"kitsu_id": 176,
+		"imdb_id": ["tt0245429"],
+		"themoviedb_id": {"movie": [129]}
 	}
 ]`
 
@@ -210,6 +216,89 @@ func TestKitsuRequestFallsBackWhenUnmapped(t *testing.T) {
 	}
 	if len(params.SeriesTitleQueries) == 0 {
 		t.Fatal("expected the Kitsu fallback to supply title queries")
+	}
+}
+
+// kitsuFilmStub answers as Kitsu does for a film entry: showType "movie" is
+// the only signal that distinguishes it from episodic anime.
+func kitsuFilmStub(t *testing.T) *kitsu.Client {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": {
+				"id": "176",
+				"type": "anime",
+				"attributes": {
+					"canonicalTitle": "Spirited Away",
+					"titles": {"en": "Spirited Away", "en_jp": "Sen to Chihiro no Kamikakushi"},
+					"abbreviatedTitles": [],
+					"startDate": "2001-07-20",
+					"showType": "movie"
+				}
+			},
+			"included": [
+				{"type": "mappings", "attributes": {"externalSite": "anilist/anime", "externalId": "199"}}
+			]
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+	c := kitsu.NewClient(ts.Client())
+	c.BaseURL = ts.URL
+	return c
+}
+
+// kitsu:176 is Spirited Away — a film browsed through the "anime" catalogue
+// type. Its mapped ids are movie ids; treating the request as series-like read
+// TMDB 129 and TVDB 276 in the TV id namespaces, which are unrelated shows
+// ("Soccer Aid"). The Kitsu subtype is what says "film", so it is fetched even
+// for mapped entries and steers the request onto the movie path.
+func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
+	srv := &Server{kitsuClient: kitsuFilmStub(t), animeLists: animeListsStore(t), config: &config.Config{}}
+
+	params, err := srv.buildSearchParamsBase("anime", "kitsu:176", nil)
+	if err != nil {
+		t.Fatalf("buildSearchParamsBase: %v", err)
+	}
+	if params.Req.IMDbID != "tt0245429" || params.Req.TMDBID != "129" {
+		t.Fatalf("ids = %q/%q, want tt0245429/129", params.Req.IMDbID, params.Req.TMDBID)
+	}
+	if params.Req.TVDBID != "" {
+		t.Fatalf("tvdb id = %q, want none — a film must not resolve a series id", params.Req.TVDBID)
+	}
+	if params.Metadata.KitsuDetails == nil || params.Metadata.KitsuDetails.ShowType != "movie" {
+		t.Fatalf("kitsu details = %+v, want the film subtype attached despite the mapping", params.Metadata.KitsuDetails)
+	}
+	if !query.MovieLike(params.Metadata, "anime") {
+		t.Fatal("expected the request to classify as movie-like")
+	}
+	// The validator skips the "anime" type entirely; a film must reach it as
+	// a movie or episode-titled series releases pass title validation.
+	if got := validationContentType(params, "anime"); got != "movie" {
+		t.Fatalf("validation content type = %q, want movie", got)
+	}
+
+	full, err := srv.buildSearchParamsFromBase(params, nil)
+	if err != nil {
+		t.Fatalf("buildSearchParamsFromBase: %v", err)
+	}
+	if len(full.PreparedQueries) == 0 || !strings.HasPrefix(full.PreparedQueries[0], "Spirited Away") {
+		t.Fatalf("prepared queries = %v, want a Spirited Away movie query", full.PreparedQueries)
+	}
+	if len(full.MovieTitleQueries) == 0 {
+		t.Fatalf("expected movie title queries, got series: %v", full.SeriesTitleQueries)
+	}
+
+	profiles := query.ValidationQueryProfilesFromMetadata(full.Metadata, "anime", []string{"en-US"}, false)
+	found := false
+	for _, prof := range profiles {
+		if prof.Query == "Spirited Away" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("validation profiles = %v, want Spirited Away", profiles)
 	}
 }
 

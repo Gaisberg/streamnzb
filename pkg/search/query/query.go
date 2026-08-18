@@ -49,6 +49,20 @@ type ResolvedSearchMetadata struct {
 	TVDBDetails            *tvdb.SeriesDetails
 }
 
+// MovieLike reports whether a request is for a film. The Stremio content type
+// says so directly for "movie" catalogues; Kitsu catalogues expose films and
+// episodic anime alike under the "anime" type, so there the entry's own
+// subtype decides. Everything split on movie-versus-series — metadata
+// selection, id resolution, query building — must agree on this, or movie ids
+// get read in TV id namespaces and land on unrelated shows.
+func MovieLike(metadata *ResolvedSearchMetadata, contentType string) bool {
+	if strings.EqualFold(strings.TrimSpace(contentType), "movie") {
+		return true
+	}
+	return metadata != nil && metadata.KitsuDetails != nil &&
+		strings.EqualFold(strings.TrimSpace(metadata.KitsuDetails.ShowType), "movie")
+}
+
 func MetadataDisplayTitle(metadata *ResolvedSearchMetadata, contentType string) string {
 	if metadata == nil {
 		return ""
@@ -62,7 +76,7 @@ func MetadataDisplayTitle(metadata *ResolvedSearchMetadata, contentType string) 
 		}
 		return strings.TrimSpace(metadata.KitsuDetails.RomajiTitle)
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieDetails != nil {
 			if title := strings.TrimSpace(metadata.MovieDetails.Title); title != "" {
 				return title
@@ -90,7 +104,7 @@ func MetadataOriginalTitle(metadata *ResolvedSearchMetadata, contentType string)
 	if metadata == nil {
 		return ""
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieDetails != nil {
 			if title := strings.TrimSpace(metadata.MovieDetails.OriginalTitle); title != "" {
 				return title
@@ -119,7 +133,7 @@ func MetadataAlternativeTitle(metadata *ResolvedSearchMetadata, contentType stri
 	if metadata == nil || original == "" {
 		return ""
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieDetails == nil || metadata.MovieAlternativeTitles == nil || !strings.EqualFold(strings.TrimSpace(metadata.MovieDetails.OriginalLanguage), "ja") {
 			return ""
 		}
@@ -148,7 +162,7 @@ func MetadataFallbackTitle(metadata *ResolvedSearchMetadata, contentType string)
 	if !strings.EqualFold(strings.TrimSpace(MetadataOriginalLanguage(metadata, contentType)), "ja") {
 		return ""
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if fallback := strings.TrimSpace(PreferredMovieEnglishTitle(metadata)); fallback != "" && !strings.EqualFold(fallback, original) {
 			return fallback
 		}
@@ -164,7 +178,7 @@ func MetadataDisplayYear(metadata *ResolvedSearchMetadata, contentType string) s
 	if metadata == nil {
 		return ""
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieDetails != nil && len(metadata.MovieDetails.ReleaseDate) >= 4 {
 			return metadata.MovieDetails.ReleaseDate[:4]
 		}
@@ -183,7 +197,7 @@ func MetadataLanguageCount(metadata *ResolvedSearchMetadata, contentType string)
 	if metadata == nil {
 		return 0
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieTranslations != nil {
 			return len(metadata.MovieTranslations.Translations)
 		}
@@ -434,7 +448,7 @@ func MetadataOriginalLanguage(metadata *ResolvedSearchMetadata, contentType stri
 	if metadata == nil {
 		return ""
 	}
-	if contentType == "movie" {
+	if MovieLike(metadata, contentType) {
 		if metadata.MovieDetails != nil {
 			return strings.TrimSpace(metadata.MovieDetails.OriginalLanguage)
 		}
@@ -626,7 +640,7 @@ func SearchRequestNormalisationLogEntries(metadata *ResolvedSearchMetadata, cont
 	changed := false
 	for _, language := range languages {
 		var selectedTitle string
-		if contentType == "movie" {
+		if MovieLike(metadata, contentType) {
 			selectedTitle = BuildMovieSearchQueryFromMetadata(metadata, language)
 		} else {
 			selectedTitle = BuildSeriesSearchTitleFromMetadata(metadata, language)
@@ -759,7 +773,7 @@ func ValidationQueryProfilesFromMetadata(metadata *ResolvedSearchMetadata, conte
 
 	for _, language := range languages {
 		var query string
-		if contentType == "movie" {
+		if MovieLike(metadata, contentType) {
 			query = strings.TrimSpace(BuildMovieValidationQueryFromMetadata(metadata, language, includeYear))
 		} else {
 			query = strings.TrimSpace(BuildSeriesValidationQueryFromMetadata(metadata, language, includeYear))
@@ -818,7 +832,7 @@ func ValidationQueriesFromProfiles(profiles []indexer.ValidationQueryProfile) []
 }
 
 func BuildMovieQueriesFromMetadata(metadata *ResolvedSearchMetadata, language string, includeYear bool) []string {
-	if metadata == nil || metadata.MovieDetails == nil {
+	if metadata == nil || (metadata.MovieDetails == nil && metadata.KitsuDetails == nil) {
 		return nil
 	}
 	primary := strings.TrimSpace(release.NormalizeTitleForSearchQuery(BuildMovieSearchQueryFromMetadata(metadata, language)))
@@ -954,7 +968,7 @@ func MetadataLooksLikeAnime(meta *ResolvedSearchMetadata, contentType string) bo
 	}
 	var genres []tmdb.Genre
 	var originalLanguage string
-	if strings.EqualFold(strings.TrimSpace(contentType), "movie") {
+	if MovieLike(meta, contentType) {
 		if meta.MovieDetails == nil {
 			return false
 		}

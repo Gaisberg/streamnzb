@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/dreulavelle/jhin/rank"
+
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
@@ -250,7 +252,42 @@ func titleMatchesAnyExpectation(expectations []validationExpectation, gotTitle s
 			return true
 		}
 	}
+	// jhin's indel-ratio similarity is the tolerant fallback: release naming
+	// rewrites punctuation and spacing in ways the word-block matcher cannot
+	// line up ("Evangelion: 3.0+1.0" vs "Evangelion 3 0 1 0"), anime titles
+	// especially. The strict matcher stays primary; this only rescues
+	// near-misses.
+	for _, expectation := range expectations {
+		if expectation.Title != "" && similarTitleMatches(expectation.Title, gotTitle) {
+			return true
+		}
+	}
 	return false
+}
+
+// similarTitleMatches applies jhin's similarity at its default threshold,
+// guarded so fuzziness never bridges numbering: "Mockingjay Part 1" and
+// "Part 2" are one edit apart yet different films, so the digits on both
+// sides must agree, in order, before the ratio counts. The digits are
+// compared as one sequence rather than per run because normalization
+// collapses punctuation between them ("3.0+1.0" and "3.0 + 1.0" split into
+// different runs but carry the same numbering).
+func similarTitleMatches(expect, gotTitle string) bool {
+	expectNorm, gotNorm := rank.Normalize(expect), rank.Normalize(gotTitle)
+	if digitSequence(expectNorm) != digitSequence(gotNorm) {
+		return false
+	}
+	return rank.TitleMatch(expectNorm, gotNorm, 0)
+}
+
+func digitSequence(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func anyExpectationHasYear(expectations []validationExpectation) bool {

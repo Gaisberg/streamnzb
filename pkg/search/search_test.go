@@ -156,6 +156,53 @@ func TestValidateSearchResultsWithStatsCountsSeriesEpisodeMatches(t *testing.T) 
 // Anime absolute numbering: with an absolute episode set, releases named with
 // the absolute number (dash style, S01Exxx style, or bare) must be accepted
 // even though their parsed season/episode do not match the TVDB-style request.
+// A text query can match an episode *title* — searching the film "Spirited
+// Away" returns "Avatar The Last Airbender S01E05 Spirited Away". Movie
+// validation must drop those: the parsed release title is the series name.
+func TestValidateSearchResultsDropsEpisodeTitleMatches(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Spirited.Away.2001.JP.Hybrid.BD.Remux.1080p.AVC.DTS-HD.MA.2.0-RedDeadProject"},
+		{Title: "Avatar.The.Last.Airbender.2024.S01E05.Spirited.Away.2160p.NF.WEB-DL.DDP5.1.Atmos.H.265-Kitsune"},
+		{Title: "Avatar The Last Airbender 2024 S01E05 Spirited Away 2160p NF WEB-DL DDP5 1 Atmos H 265-FLUX"},
+	}
+
+	queries := []string{"Spirited Away 2001", "Spirited Away", "Sen to Chihiro no Kamikakushi"}
+	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "movie", queries, "", "", "", true, true)
+
+	if len(filtered) != 1 || filtered[0] != releases[0] {
+		t.Fatalf("expected only the film to survive, got %d: %+v", len(filtered), stats)
+	}
+	if stats.DroppedTitle != 2 {
+		t.Fatalf("expected 2 title rejections, got %+v", stats)
+	}
+}
+
+// jhin's similarity fallback rescues titles the word-block matcher cannot
+// line up, while staying strict enough to keep rejecting different titles.
+func TestTitleValidationSimilarityFallback(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Spirited.Awey.2001.1080p.BluRay.x264-GROUP"},  // near-miss spelling
+		{Title: "Spirit.Untamed.2021.1080p.BluRay.x264-GROUP"}, // different film
+	}
+
+	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "movie", []string{"Spirited Away 2001"}, "", "", "", true, false)
+
+	if len(filtered) != 1 || filtered[0] != releases[0] {
+		t.Fatalf("expected the near-miss kept and the different film dropped, got %d: %+v", len(filtered), stats)
+	}
+}
+
+// The similarity fallback must never bridge numbering: numbered sequels are
+// one edit apart yet different films, so digit runs gate the ratio.
+func TestSimilarTitleMatchesGuardsNumbering(t *testing.T) {
+	if similarTitleMatches("The Hunger Games Mockingjay Part 1", "The Hunger Games Mockingjay Part 2") {
+		t.Fatal("numbered sequel must not match via similarity")
+	}
+	if !similarTitleMatches("Evangelion: 3.0+1.0 Thrice Upon a Time", "Evangelion 3.0 + 1.0 Thrice Upon A Time") {
+		t.Fatal("punctuation variant with agreeing numbers must match")
+	}
+}
+
 func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "One.Piece.S02E02.1080p.WEB-DL.x264-GROUP"},     // standard match

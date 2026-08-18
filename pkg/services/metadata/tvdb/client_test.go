@@ -274,3 +274,43 @@ func TestExtendedErrorsWithoutAPIKey(t *testing.T) {
 		t.Fatal("nil client must error, not panic")
 	}
 }
+
+// A remote id that TVDB matches only as a movie must not resolve. Movie ids
+// share numbers with unrelated series (movie 276 is Spirited Away, series 276
+// is Soccer Aid), and every caller reads the result as a series id.
+func TestResolveTVDBIDIgnoresMovieOnlyMatches(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/search/remoteid/") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status": "success", "data": [
+			{"movie": {"id": 276, "name": "Spirited Away"}}
+		]}`))
+	})
+
+	if id, err := client.ResolveTVDBID("tt0245429"); err == nil {
+		t.Fatalf("ResolveTVDBID = %q, want an error for a movie-only match", id)
+	}
+}
+
+func TestResolveTVDBIDPicksSeriesOverMovie(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/search/remoteid/") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status": "success", "data": [
+			{"movie": {"id": 900}},
+			{"series": {"id": 355480}}
+		]}`))
+	})
+
+	id, err := client.ResolveTVDBID("tt9307686")
+	if err != nil {
+		t.Fatalf("ResolveTVDBID: %v", err)
+	}
+	if id != "355480" {
+		t.Fatalf("ResolveTVDBID = %q, want the series id 355480", id)
+	}
+}

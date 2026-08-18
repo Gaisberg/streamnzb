@@ -152,9 +152,6 @@ type searchRemoteIDResponse struct {
 		Episode *struct {
 			SeriesID int `json:"seriesId"`
 		} `json:"episode"`
-		Movie *struct {
-			ID int `json:"id"`
-		} `json:"movie"`
 		Series *struct {
 			ID int `json:"id"`
 		} `json:"series"`
@@ -292,6 +289,11 @@ func (c *Client) doRequest(method, path string, body []byte) (*http.Response, er
 	}
 }
 
+// ResolveTVDBID resolves a remote id (IMDb, usually) to a TVDB series id.
+// Movie matches are deliberately not decoded: TVDB movie ids live in a
+// namespace separate from series ids, and every caller reads the result as a
+// series id — returning a movie id would address whatever unrelated series
+// happens to share the number.
 func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 	if c.apiKey == "" {
 		return "", fmt.Errorf("TVDB API key not configured")
@@ -333,14 +335,8 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 			cachePut(&c.resolveCache, remoteID, id)
 			return id, nil
 		}
-		if item.Movie != nil && item.Movie.ID != 0 {
-			logger.Debug("Resolved TVDB ID from remote ID (movie)", "remote", remoteID, "tvdb", item.Movie.ID)
-			id := strconv.Itoa(item.Movie.ID)
-			cachePut(&c.resolveCache, remoteID, id)
-			return id, nil
-		}
 	}
-	return "", fmt.Errorf("no TVDB ID found for remote ID: %s", remoteID)
+	return "", fmt.Errorf("no TVDB series ID found for remote ID: %s", remoteID)
 }
 
 // episodesCacheTTL bounds the episode-list cache: air dates and late episode

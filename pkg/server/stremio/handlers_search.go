@@ -378,7 +378,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				reqVariant.EffectiveByIndexer = absoluteEffective
 			}
 			executedRequests++
-			releases, runErr := search.RunIndexerSearches(ctx, s.indexer, reqVariant, contentType)
+			releases, runErr := search.RunIndexerSearches(ctx, s.indexer, reqVariant, validationContentType(profileParams, contentType))
 			if runErr != nil {
 				return nil, executedRequests, runErr
 			}
@@ -786,6 +786,20 @@ func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release
 	}
 }
 
+// validationContentType maps a request's catalog type onto the validator's
+// movie/series split. The validator skips types it does not know, and "anime"
+// covers films and episodic entries alike — a film must validate as a movie,
+// or episode-titled series releases pass ("Avatar ... S01E05 Spirited Away"
+// matches a "Spirited Away" text query). Episodic anime deliberately keeps
+// its unvalidated behaviour: fansub naming (romaji titles, absolute
+// numbering) does not reliably match the resolved metadata titles.
+func validationContentType(params *query.SearchParams, contentType string) string {
+	if params != nil && query.MovieLike(params.Metadata, contentType) {
+		return "movie"
+	}
+	return contentType
+}
+
 func logMetadataResolutionState(contentType, requestID, resolver string, attrs ...any) {
 	base := []any{
 		"type", contentType,
@@ -915,73 +929,89 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		req.Cat = "5000"
 	}
 
-	// Only when anime-lists could not place the entry: Kitsu's own titles and
-	// ids are the last resort, and its per-entry titles ("Fire Force Season 3
-	// Part 2") match release names far less often than the series title does.
-	if kitsuID != "" && !kitsuMapped && s.kitsuClient != nil {
+	// Every Kitsu request fetches the entry details: the entry's subtype is the
+	// only signal that tells a film apart from episodic anime — the Stremio
+	// type is "anime" for both — and the movie/series split below depends on
+	// it. The response is cached, so mapped requests pay one lookup at most.
+	if kitsuID != "" && s.kitsuClient != nil {
 		if details, err := s.kitsuClient.GetAnimeDetails(context.Background(), kitsuID); err == nil && details != nil {
-			params.Metadata.KitsuDetails = details
-			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "success", "title", details.CanonicalTitle)
-
-			if req.TVDBID == "" && details.TVDBID != "" {
-				req.TVDBID = details.TVDBID
+			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "success", "title", details.CanonicalTitle, "show_type", details.ShowType)
+			// A film's Kitsu titles are the film's actual titles, so they may
+			// drive queries and validation. Mapped episodic entries keep Kitsu
+			// titles out of the metadata: per-entry titles ("Fire Force Season
+			// 3 Part 2") match release names far less often than the series
+			// title does, so those are only the last resort when anime-lists
+			// could not place the entry.
+			if strings.EqualFold(details.ShowType, "movie") || !kitsuMapped {
+				params.Metadata.KitsuDetails = details
 			}
-			if req.IMDbID == "" && details.IMDbID != "" {
-				req.IMDbID = details.IMDbID
-			}
-			if req.TMDBID == "" && details.TMDBID != "" {
-				req.TMDBID = details.TMDBID
-			}
-
-			primaryTitle := details.EnglishTitle
-			if primaryTitle == "" {
-				primaryTitle = details.CanonicalTitle
-			}
-			if primaryTitle == "" {
-				primaryTitle = details.RomajiTitle
-			}
-			asciiTitle := strings.Map(func(r rune) rune {
-				switch r {
-				case 'é', 'è', 'ê', 'ë':
-					return 'e'
-				case 'á', 'à', 'â', 'ä':
-					return 'a'
-				case 'ó', 'ò', 'ô', 'ö':
-					return 'o'
-				case 'ú', 'ù', 'û', 'ü':
-					return 'u'
-				case 'í', 'ì', 'î', 'ï':
-					return 'i'
-				default:
-					return r
+			if !kitsuMapped {
+				if req.TVDBID == "" && details.TVDBID != "" {
+					req.TVDBID = details.TVDBID
 				}
-			}, primaryTitle)
+				if req.IMDbID == "" && details.IMDbID != "" {
+					req.IMDbID = details.IMDbID
+				}
+				if req.TMDBID == "" && details.TMDBID != "" {
+					req.TMDBID = details.TMDBID
+				}
 
-			searchTitle := asciiTitle
-			if searchTitle == "" {
-				searchTitle = primaryTitle
-			}
-
-			if kitsuEpisode != "" {
-				epNum, _ := strconv.Atoi(kitsuEpisode)
-				var epQueries []string
-				if epNum > 0 {
-					epQueries = append(epQueries, fmt.Sprintf("%s S01E%02d", searchTitle, epNum))
-					epQueries = append(epQueries, fmt.Sprintf("%s %02d", searchTitle, epNum))
-					if epNum >= 100 {
-						epQueries = append(epQueries, fmt.Sprintf("%s %d", searchTitle, epNum))
+				primaryTitle := details.EnglishTitle
+				if primaryTitle == "" {
+					primaryTitle = details.CanonicalTitle
+				}
+				if primaryTitle == "" {
+					primaryTitle = details.RomajiTitle
+				}
+				asciiTitle := strings.Map(func(r rune) rune {
+					switch r {
+					case 'é', 'è', 'ê', 'ë':
+						return 'e'
+					case 'á', 'à', 'â', 'ä':
+						return 'a'
+					case 'ó', 'ò', 'ô', 'ö':
+						return 'o'
+					case 'ú', 'ù', 'û', 'ü':
+						return 'u'
+					case 'í', 'ì', 'î', 'ï':
+						return 'i'
+					default:
+						return r
 					}
-				} else {
-					epQueries = append(epQueries, fmt.Sprintf("%s %s", searchTitle, kitsuEpisode))
+				}, primaryTitle)
+
+				searchTitle := asciiTitle
+				if searchTitle == "" {
+					searchTitle = primaryTitle
 				}
-				params.SeriesTitleQueries[searchTitle] = epQueries
-			} else {
-				params.MovieTitleQueries[searchTitle] = []string{searchTitle}
+
+				if kitsuEpisode != "" {
+					epNum, _ := strconv.Atoi(kitsuEpisode)
+					var epQueries []string
+					if epNum > 0 {
+						epQueries = append(epQueries, fmt.Sprintf("%s S01E%02d", searchTitle, epNum))
+						epQueries = append(epQueries, fmt.Sprintf("%s %02d", searchTitle, epNum))
+						if epNum >= 100 {
+							epQueries = append(epQueries, fmt.Sprintf("%s %d", searchTitle, epNum))
+						}
+					} else {
+						epQueries = append(epQueries, fmt.Sprintf("%s %s", searchTitle, kitsuEpisode))
+					}
+					params.SeriesTitleQueries[searchTitle] = epQueries
+				} else {
+					params.MovieTitleQueries[searchTitle] = []string{searchTitle}
+				}
 			}
 		} else if err != nil {
 			logMetadataResolutionState(contentType, id, "kitsu_details", "kitsu_id", kitsuID, "status", "failed", "err", err)
 		}
 	}
+
+	// movieLike folds the Kitsu subtype into the movie/series split, and must
+	// gate every id resolution below: TMDB and TVDB movie ids live in
+	// namespaces separate from their TV ids, so resolving a film through the
+	// series endpoints lands on whatever unrelated show shares the number.
+	movieLike := query.MovieLike(params.Metadata, contentType)
 
 	if req.TMDBID == "" && req.IMDbID != "" {
 		if s.tmdbClient == nil {
@@ -992,10 +1022,10 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 				logMetadataResolutionState(contentType, id, "tmdb_find", "imdb_id", req.IMDbID, "status", "failed", "err", findErr)
 			} else {
 				resolved := ""
-				if contentType == "movie" && len(findResp.MovieResults) > 0 {
+				if movieLike && len(findResp.MovieResults) > 0 {
 					resolved = strconv.Itoa(findResp.MovieResults[0].ID)
 				}
-				if (contentType == "series" || contentType == "anime" || contentType == "tv" || contentType == "documentary" || contentType == "other") && len(findResp.TVResults) > 0 {
+				if !movieLike && (contentType == "series" || contentType == "anime" || contentType == "tv" || contentType == "documentary" || contentType == "other") && len(findResp.TVResults) > 0 {
 					resolved = strconv.Itoa(findResp.TVResults[0].ID)
 				}
 				if resolved == "" && len(findResp.MovieResults) > 0 {
@@ -1035,7 +1065,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		}
 	}
 
-	isSeriesLike := contentType == "series" || contentType == "anime" || contentType == "tv" || (req.Season != "" && req.Episode != "")
+	isSeriesLike := !movieLike && (contentType == "series" || contentType == "anime" || contentType == "tv" || (req.Season != "" && req.Episode != ""))
 	if isSeriesLike {
 		if req.TMDBID != "" {
 			if s.tmdbClient == nil {
@@ -1133,7 +1163,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
 	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.AbsoluteEpisode, params.Metadata, req.Season, req.Episode)
-	if contentType == "movie" && req.TMDBID != "" && s.tmdbClient != nil {
+	if movieLike && req.TMDBID != "" && s.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var movieDetails *tmdb.MovieDetails
 			var movieTranslations *tmdb.MovieTranslationsResponse
@@ -1295,7 +1325,7 @@ func (s *Server) buildSearchParamsFromBase(base *query.SearchParams, searchQuery
 	if searchMode != "id" {
 		var queries []string
 		cacheKey := fmt.Sprintf("%s|%t|%s", searchTitleLanguage, includeYear, scope)
-		if contentType == "movie" {
+		if query.MovieLike(params.Metadata, contentType) {
 			if cached, ok := params.MovieTitleQueries[cacheKey]; ok {
 				queries = cached
 			} else {
