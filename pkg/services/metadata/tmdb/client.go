@@ -29,6 +29,10 @@ type Client struct {
 	client  *http.Client
 	BaseURL string
 
+	// language is the display language tag for details/listings/search; see
+	// SetLanguage.
+	language string
+
 	cache *metacache.Cache // request path -> body; L1 + persistent L2
 }
 
@@ -278,6 +282,9 @@ func (c *Client) SearchMulti(query string) (*SearchMultiResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("page", "1")
+	if c.language != "" {
+		params.Set("language", c.language)
+	}
 	return getJSON[SearchMultiResponse](c, c.BaseURL+"/search/multi", params, "search")
 }
 
@@ -295,6 +302,9 @@ type ListingResponse struct {
 func (c *Client) GetListing(mediaType, kind string, page int) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("page", strconv.Itoa(max(page, 1)))
+	if c.language != "" {
+		params.Set("language", c.language)
+	}
 	var endpoint string
 	switch kind {
 	case "trending":
@@ -312,6 +322,9 @@ func (c *Client) GetListing(mediaType, kind string, page int) (*ListingResponse,
 func (c *Client) GetRecommendations(mediaType string, tmdbID, page int) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("page", strconv.Itoa(max(page, 1)))
+	if c.language != "" {
+		params.Set("language", c.language)
+	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/recommendations", mediaType, tmdbID)
 	return getJSON[ListingResponse](c, endpoint, params, "recommendations")
 }
@@ -373,10 +386,41 @@ type Credits struct {
 	} `json:"crew"`
 }
 
-// appendedImageLanguages filters appended images to English and textless
-// entries — the two kinds the logo picker considers — so the payload stays
-// small.
-const appendedImageLanguages = "en,null"
+// SetLanguage sets the display language (a TMDB-style tag like "de-DE") that
+// details, listings and search responses localize to. Empty keeps TMDB's
+// English default. Explicit-language methods (GetMovieDetailsWithLanguage,
+// translations) are unaffected — they serve the search-title path, which has
+// its own language setting.
+func (c *Client) SetLanguage(tag string) {
+	c.language = strings.TrimSpace(tag)
+}
+
+// languageBase returns the bare ISO 639-1 code of the display language, or "".
+func (c *Client) languageBase() string {
+	base, _, _ := strings.Cut(c.language, "-")
+	return base
+}
+
+// appendedLanguages lists the languages appended images and videos are
+// filtered to: the display language plus the English and textless/undubbed
+// entries the pickers fall back to.
+func (c *Client) appendedLanguages() string {
+	if base := c.languageBase(); base != "" && base != "en" {
+		return base + ",en,null"
+	}
+	return "en,null"
+}
+
+// applyLanguage adds the display-language parameters to a details request.
+// include_video_language exists because a bare language param makes TMDB
+// return only trailers dubbed in that language — usually none.
+func (c *Client) applyLanguage(params url.Values) {
+	if c.language == "" {
+		return
+	}
+	params.Set("language", c.language)
+	params.Set("include_video_language", c.appendedLanguages())
+}
 
 // Images is the appended images payload; only logos are consumed (posters and
 // backdrops already arrive as poster_path/backdrop_path on the details).
@@ -388,13 +432,17 @@ type Images struct {
 	} `json:"logos"`
 }
 
-// BestLogo returns the file path of the highest-voted logo, preferring English
-// over textless entries, or "".
-func (im *Images) BestLogo() string {
+// BestLogo returns the file path of the highest-voted logo, preferring the
+// given ISO 639-1 language, then English, then textless entries, or "".
+func (im *Images) BestLogo(preferred string) string {
 	if im == nil {
 		return ""
 	}
-	for _, lang := range []string{"en", ""} {
+	langs := []string{"en", ""}
+	if preferred != "" && preferred != "en" {
+		langs = []string{preferred, "en", ""}
+	}
+	for _, lang := range langs {
 		best, bestVotes := "", -1.0
 		for _, logo := range im.Logos {
 			if logo.ISO639_1 == lang && logo.FilePath != "" && logo.VoteAverage > bestVotes {
@@ -423,7 +471,8 @@ type Videos struct {
 func (c *Client) GetMovieDetailsFull(tmdbID int) (*MovieDetails, error) {
 	params := url.Values{}
 	params.Set("append_to_response", "credits,videos,images")
-	params.Set("include_image_language", appendedImageLanguages)
+	params.Set("include_image_language", c.appendedLanguages())
+	c.applyLanguage(params)
 	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
 }
 
@@ -706,12 +755,15 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDe
 		params := url.Values{}
 		if start == 0 {
 			appends = append(appends, "external_ids", "credits", "videos", "images")
-			params.Set("include_image_language", appendedImageLanguages)
+			params.Set("include_image_language", c.appendedLanguages())
 		}
 		for _, n := range batch {
 			appends = append(appends, fmt.Sprintf("season/%d", n))
 		}
 		params.Set("append_to_response", strings.Join(appends, ","))
+		// Every batch localizes: appended season episode names follow the
+		// language param of their own request.
+		c.applyLanguage(params)
 
 		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params)
 		if err != nil {

@@ -28,8 +28,8 @@ const INDEXER_PRESETS = [
   { name: 'Prowlarr', url: 'http://localhost:9696', api_path: '{indexer_id}/api', type: 'aggregator', api_hits_day: 0, downloads_day: 0 },
   { name: 'abNZB', url: 'https://abnzb.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'altHUB', url: 'https://api.althub.co.za', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
-  { name: 'aniNZB', url: 'https://aninzb.moe', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, optional_api_key: true },
-  { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
+  { name: 'aniNZB', url: 'https://aninzb.moe', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, optional_api_key: true, content_scope: 'anime' },
+  { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, content_scope: 'anime' },
   { name: 'DOGnzb', url: 'https://api.dognzb.cr', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'DrunkenSlug', url: 'https://drunkenslug.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'GingaDADDY', url: 'https://www.gingadaddy.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
@@ -54,6 +54,10 @@ const PROWLARR_INDEXER_ID_PLACEHOLDER = '{indexer_id}'
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 const EASYNEWS_TIMEOUT_HINT = 'Applies to Easynews searches. NZB downloads use double this timeout.'
 
+function normalizeContentScope(value) {
+  return value === 'anime' || value === 'non_anime' ? value : ''
+}
+
 function normalizeIndexerDraft(draft) {
   const value = draft || {}
   return {
@@ -73,6 +77,7 @@ function normalizeIndexerDraft(draft) {
     proxy_url: (value.proxy_url || '').trim(),
     query_header: value.type === 'easynews' ? '' : (value.query_header || '').trim(),
     grab_header: (value.grab_header || '').trim(),
+    content_scope: normalizeContentScope(value.content_scope),
   }
 }
 
@@ -93,6 +98,7 @@ function getPresetDefaults(preset) {
     rate_limit_rps: Number(preset.rate_limit_rps || 0),
     query_header: preset.query_header || '',
     grab_header: preset.grab_header || '',
+    content_scope: normalizeContentScope(preset.content_scope),
   }
 }
 
@@ -109,6 +115,8 @@ function summarizeIndexer(indexer, defaultProxyURL = '') {
   parts.push(`Hits/day: ${formatLimitValue(indexer.api_hits_day)}`)
   parts.push(`DLs/day: ${formatLimitValue(indexer.downloads_day)}`)
   parts.push(`RPS: ${formatLimitValue(indexer.rate_limit_rps)}`)
+  if (indexer.content_scope === 'anime') parts.push('Content: anime only')
+  else if (indexer.content_scope === 'non_anime') parts.push('Content: no anime')
   if (indexer.proxy_url) parts.push('Proxy: override')
   else if (defaultProxyURL) parts.push('Proxy: default')
   if (indexer.grab_header) parts.push(`Grab UA: ${indexer.grab_header}`)
@@ -325,6 +333,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                                     rate_limit_rps: presetDefaults.rate_limit_rps,
                                     query_header: presetDefaults.query_header,
                                     grab_header: presetDefaults.grab_header,
+                                    content_scope: presetDefaults.content_scope,
                                   }))
                                   requestAnimationFrame(() => {
                                     nameInputRef.current?.focus()
@@ -413,6 +422,26 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                 </div>
               </div>
             )}
+
+            <div className="rounded-md border border-border/60 p-3">
+              <div className={rowClass}>
+                <div className={labelClass}>
+                  <Label className="text-sm font-medium">Content</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">Which searches this indexer participates in. Anime detection uses Kitsu and TMDB metadata.</p>
+                </div>
+                <div className={controlWideClass}>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    value={draft.content_scope || 'all'}
+                    onChange={(event) => update('content_scope', event.target.value === 'all' ? '' : event.target.value)}
+                  >
+                    <option value="all">All content</option>
+                    <option value="anime">Anime only</option>
+                    <option value="non_anime">Everything except anime</option>
+                  </select>
+                </div>
+              </div>
+            </div>
 
             <div className="rounded-md border border-border/60 p-3">
               <div className={rowClass}>

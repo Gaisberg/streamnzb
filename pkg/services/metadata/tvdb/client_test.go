@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -80,6 +81,109 @@ func TestGetSeriesExtended(t *testing.T) {
 	}
 	if ext.AverageRuntime != 45 || ext.Year != "2004" {
 		t.Fatalf("runtime/year = %d/%q", ext.AverageRuntime, ext.Year)
+	}
+}
+
+// TestDisplayLanguageTranslations covers the whole localization path: the
+// TMDB-style tag converts to TVDB's ISO 639-3 code, series name/overview and
+// episode text overlay from the translation endpoints, and untranslated
+// fields keep the default-language record.
+func TestDisplayLanguageTranslations(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/series/73739/extended":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"id": 73739, "name": "Lost", "overview": "Stranded on an island."
+			}}`))
+		case "/series/73739/translations/deu":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"name": "Lost (DE)", "overview": ""
+			}}`))
+		case "/series/73739/episodes/default":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+				{"seasonNumber": 1, "number": 1, "name": "Pilot (1)", "overview": "The crash."},
+				{"seasonNumber": 1, "number": 2, "name": "Pilot (2)"}
+			]}, "links": {"next": null}}`))
+		case "/series/73739/episodes/default/deu":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+				{"seasonNumber": 1, "number": 1, "name": "Pilot (1, DE)", "overview": "Der Absturz."},
+				{"seasonNumber": 1, "number": 2, "name": ""}
+			]}, "links": {"next": null}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	client.SetLanguage("de-DE")
+
+	ext, err := client.GetSeriesExtended("73739")
+	if err != nil {
+		t.Fatalf("GetSeriesExtended: %v", err)
+	}
+	// Translated name wins; the empty translated overview keeps the default.
+	if ext.Name != "Lost (DE)" || ext.Overview != "Stranded on an island." {
+		t.Fatalf("translated ext = %q / %q", ext.Name, ext.Overview)
+	}
+	// The raw translation is exposed so callers can tell a real translation
+	// from the overlaid fallback (the anime description path needs this).
+	if name, overview := client.SeriesTranslation("73739"); name != "Lost (DE)" || overview != "" {
+		t.Fatalf("SeriesTranslation = %q / %q", name, overview)
+	}
+
+	episodes, err := client.GetSeriesEpisodes("73739")
+	if err != nil {
+		t.Fatalf("GetSeriesEpisodes: %v", err)
+	}
+	if episodes[0].Name != "Pilot (1, DE)" || episodes[0].Overview != "Der Absturz." {
+		t.Fatalf("episode 1 = %+v, want the German overlay", episodes[0])
+	}
+	if episodes[1].Name != "Pilot (2)" {
+		t.Fatalf("episode 2 = %+v, want the default name kept", episodes[1])
+	}
+}
+
+// TestDisplayLanguageMissingTranslationFallsBack pins fail-open behavior: a
+// 404 translation keeps the default record, and English disables the lookups.
+func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
+	var translationHits atomic.Int64
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/series/73739/extended":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"id": 73739, "name": "Lost"}}`))
+		case strings.HasPrefix(r.URL.Path, "/series/73739/translations/"):
+			translationHits.Add(1)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	client.SetLanguage("fi-FI")
+	ext, err := client.GetSeriesExtended("73739")
+	if err != nil || ext.Name != "Lost" {
+		t.Fatalf("ext = %+v, err = %v, want the default record", ext, err)
+	}
+	if translationHits.Load() != 1 {
+		t.Fatalf("translation hits = %d, want 1", translationHits.Load())
+	}
+
+	// The 404 is a cached answer: repeat requests must not re-ask TVDB.
+	if _, err := client.GetSeriesExtended("73739"); err != nil {
+		t.Fatalf("second GetSeriesExtended: %v", err)
+	}
+	if name, overview := client.SeriesTranslation("73739"); name != "" || overview != "" {
+		t.Fatalf("SeriesTranslation = %q / %q, want empty", name, overview)
+	}
+	if translationHits.Load() != 1 {
+		t.Fatalf("translation hits after repeat = %d, want still 1 (404 cached)", translationHits.Load())
+	}
+
+	// English (any region) turns translation lookups off entirely.
+	client.SetLanguage("en-GB")
+	if _, err := client.GetSeriesExtended("73739"); err != nil {
+		t.Fatalf("english GetSeriesExtended: %v", err)
+	}
+	if translationHits.Load() != 1 {
+		t.Fatalf("translation hits after en-GB = %d, want still 1", translationHits.Load())
 	}
 }
 

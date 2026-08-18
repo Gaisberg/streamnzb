@@ -60,6 +60,42 @@ func TestMergeIndexerSearchExplicitSeriesSearchOverridesWin(t *testing.T) {
 	}
 }
 
+func TestMergeIndexerSearchCarriesContentScope(t *testing.T) {
+	merged := MergeIndexerSearch(&IndexerConfig{ContentScope: "anime"}, nil, &Config{})
+	if merged.ContentScope == nil || *merged.ContentScope != IndexerContentScopeAnime {
+		t.Fatalf("expected merged content scope %q, got %#v", IndexerContentScopeAnime, merged.ContentScope)
+	}
+
+	override := IndexerContentScopeNonAnime
+	merged = MergeIndexerSearch(&IndexerConfig{ContentScope: "anime"}, &IndexerSearchConfig{ContentScope: &override}, &Config{})
+	if merged.ContentScope == nil || *merged.ContentScope != IndexerContentScopeNonAnime {
+		t.Fatalf("expected override content scope to win, got %#v", merged.ContentScope)
+	}
+
+	merged = MergeIndexerSearch(&IndexerConfig{ContentScope: "garbage"}, nil, &Config{})
+	if merged.ContentScope != nil {
+		t.Fatalf("expected unknown content scope to normalize to all content, got %#v", merged.ContentScope)
+	}
+}
+
+func TestNormalizeIndexerContentScope(t *testing.T) {
+	cases := map[string]string{
+		"":           IndexerContentScopeAll,
+		"all":        IndexerContentScopeAll,
+		"anime":      IndexerContentScopeAnime,
+		" Anime ":    IndexerContentScopeAnime,
+		"non_anime":  IndexerContentScopeNonAnime,
+		"NON_ANIME":  IndexerContentScopeNonAnime,
+		"whatever":   IndexerContentScopeAll,
+		"anime_only": IndexerContentScopeAll,
+	}
+	for raw, want := range cases {
+		if got := NormalizeIndexerContentScope(raw); got != want {
+			t.Fatalf("NormalizeIndexerContentScope(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestNormalizeSeriesSearchScopeDefaultsToSeasonEpisode(t *testing.T) {
 	if got := NormalizeSeriesSearchScope(""); got != SeriesSearchScopeSeasonEpisode {
 		t.Fatalf("NormalizeSeriesSearchScope() = %q, want %q", got, SeriesSearchScopeSeasonEpisode)

@@ -87,6 +87,26 @@ type IndexerSearchConfig struct {
 	TVCategories               *string `json:"tv_categories,omitempty"`
 	DisableIdSearch            *bool   `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool   `json:"disable_string_search,omitempty"`
+	ContentScope               *string `json:"content_scope,omitempty"`
+}
+
+// Indexer content scopes: which requests an indexer participates in.
+const (
+	IndexerContentScopeAll      = ""
+	IndexerContentScopeAnime    = "anime"
+	IndexerContentScopeNonAnime = "non_anime"
+)
+
+// NormalizeIndexerContentScope maps a raw content scope to "", "anime" or
+// "non_anime"; unknown values fall back to all content.
+func NormalizeIndexerContentScope(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case IndexerContentScopeAnime:
+		return IndexerContentScopeAnime
+	case IndexerContentScopeNonAnime:
+		return IndexerContentScopeNonAnime
+	}
+	return IndexerContentScopeAll
 }
 
 type SearchQueryConfig struct {
@@ -174,6 +194,13 @@ type IndexerConfig struct {
 	SearchTitleLanguage        string `json:"search_title_language,omitempty"`
 	DisableIdSearch            *bool  `json:"disable_id_search,omitempty"`
 	DisableStringSearch        *bool  `json:"disable_string_search,omitempty"`
+
+	// ContentScope restricts which requests this indexer participates in:
+	// "anime" queries it only for anime content, "non_anime" for everything
+	// except anime, ""/"all" for everything. Anime detection: Kitsu-addressed
+	// requests are anime by definition, otherwise TMDB metadata decides
+	// (animation not originally in English).
+	ContentScope string `json:"content_scope,omitempty"`
 
 	// VerifyTLS enables TLS certificate verification for this indexer.
 	// Defaults to false (certificates NOT verified) to keep the historical
@@ -680,6 +707,12 @@ type MetadataConfig struct {
 	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
 	// unaired-episode gate). nil means enabled.
 	TVMazeAirDates *bool `json:"tvmaze_air_dates,omitempty"`
+
+	// Language is the display language for meta responses and catalog rows,
+	// as a TMDB-style tag ("de-DE"). Empty means English. TMDB content
+	// localizes fully; TVDB series overlay translated names and overviews
+	// where TheTVDB has them, falling back to the default record.
+	Language string `json:"language,omitempty"`
 }
 
 // EffectiveMetadataEnabled reports whether the metadata provider (meta +
@@ -698,6 +731,21 @@ func (c *Config) EffectiveSeriesMetaSource() string {
 		return "tmdb"
 	}
 	return "tvdb"
+}
+
+// EffectiveMetadataLanguage returns the configured metadata display language
+// tag, or "" for the English default. en-US normalizes to "" — it is what the
+// sources serve without a language anyway, so the default path stays
+// parameter-free (and cache keys stay stable).
+func (c *Config) EffectiveMetadataLanguage() string {
+	if c == nil {
+		return ""
+	}
+	lang := strings.TrimSpace(c.Metadata.Language)
+	if strings.EqualFold(lang, "en-US") || strings.EqualFold(lang, "en") {
+		return ""
+	}
+	return lang
 }
 
 // EffectiveTVMazeAirDates reports whether TVMaze air-date overlays and gating
@@ -933,6 +981,17 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		disableString = *override.DisableStringSearch
 	}
 	out.DisableStringSearch = &disableString
+
+	scope := IndexerContentScopeAll
+	if ic != nil {
+		scope = NormalizeIndexerContentScope(ic.ContentScope)
+	}
+	if override != nil && override.ContentScope != nil {
+		scope = NormalizeIndexerContentScope(*override.ContentScope)
+	}
+	if scope != IndexerContentScopeAll {
+		out.ContentScope = &scope
+	}
 
 	return out
 }

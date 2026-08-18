@@ -105,19 +105,36 @@ func isTextSearch(req SearchRequest) bool {
 	return strings.EqualFold(strings.TrimSpace(req.SearchMode), "text") && req.Query != ""
 }
 
-// shouldSkipIndexer checks the per-indexer DisableIdSearch / DisableStringSearch
-// flags and returns true if this indexer should be skipped for the given request.
-func shouldSkipIndexer(req SearchRequest, overrides *config.IndexerSearchConfig) bool {
+// skipIndexerReason checks the per-indexer DisableIdSearch / DisableStringSearch
+// flags and the content scope, and returns a log-ready reason to skip this
+// indexer for the given request, or "" to proceed.
+func skipIndexerReason(req SearchRequest, overrides *config.IndexerSearchConfig) string {
 	if overrides == nil {
-		return false
+		return ""
 	}
 	if isIDOnlySearch(req) && overrides.DisableIdSearch != nil && *overrides.DisableIdSearch {
-		return true
+		return "id search disabled for this request"
 	}
 	if isTextSearch(req) && overrides.DisableStringSearch != nil && *overrides.DisableStringSearch {
-		return true
+		return "text search disabled for this request"
 	}
-	return false
+	if overrides.ContentScope != nil {
+		switch config.NormalizeIndexerContentScope(*overrides.ContentScope) {
+		case config.IndexerContentScopeAnime:
+			if !req.ContentIsAnime {
+				return "anime-only indexer, content is not anime"
+			}
+		case config.IndexerContentScopeNonAnime:
+			if req.ContentIsAnime {
+				return "indexer excludes anime content"
+			}
+		}
+	}
+	return ""
+}
+
+func shouldSkipIndexer(req SearchRequest, overrides *config.IndexerSearchConfig) bool {
+	return skipIndexerReason(req, overrides) != ""
 }
 
 func ShouldSkipIndexerForRequest(req SearchRequest, overrides *config.IndexerSearchConfig) bool {
@@ -277,13 +294,7 @@ func searchItemsForIndexer(ctx context.Context, idx Indexer, req SearchRequest) 
 	reqCopy := req
 	reqCopy.EffectiveByIndexer = nil
 	reqCopy.OptionalOverrides = indexerOverrides
-	if shouldSkipIndexer(reqCopy, indexerOverrides) {
-		skipReason := "request mode disabled"
-		if isIDOnlySearch(reqCopy) {
-			skipReason = "id search disabled for this request"
-		} else if isTextSearch(reqCopy) {
-			skipReason = "text search disabled for this request"
-		}
+	if skipReason := skipIndexerReason(reqCopy, indexerOverrides); skipReason != "" {
 		logger.Debug("Indexer skipped for request",
 			"stream", reqCopy.StreamLabel,
 			"request", reqCopy.RequestLabel,

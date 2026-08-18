@@ -32,6 +32,18 @@ Notes on execution:
 - Easynews is text-only: it participates in text-mode requests (and the anime absolute supplements) but never ID searches.
 - Episodes that haven't aired yet are answered with no results without touching indexers.
 
+## Per-indexer content scope
+
+Each indexer (Settings → Indexers) carries a **Content** setting that decides which searches it participates in:
+
+- **All content** (default) — the indexer is queried for everything.
+- **Anime only** — the indexer is only queried for anime.
+- **Everything except anime** — the indexer sits out anime requests.
+
+A request counts as anime when it arrives through a Kitsu catalog, or when TMDB metadata classifies it as animation not originally in English — the same detection the Anime Absolute supplement and the per-kind filter profiles use (TMDB must be configured for the metadata path). The scope applies wherever the indexer is used, streams and standalone add-ons alike; skipped indexers appear in Debug logs as *Indexer skipped for request*. The AnimeTosho and aniNZB presets default to **Anime only**.
+
+Behind NZBHydra2, this pairs with Hydra's `indexers` API parameter: add the same Hydra twice — for example `http://hydra:5076/api?indexers=General1,General2` scoped to *Everything except anime* and `http://hydra:5076/api?indexers=AnimeIndexer` scoped to *Anime only* — and each request only hits the Hydra indexers that make sense for it. Query parameters on the configured URL or API path ride along on every search.
+
 ## Season packs
 
 There is no separate "pack search" — one search's results are validated and packs are accepted alongside single episodes. For an episode request, releases are kept in preference order: exact episode, multi-episode release containing it, season pack for that season, complete-series pack. The History page's search panel shows these acceptance counts per request.

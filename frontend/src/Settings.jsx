@@ -147,7 +147,8 @@ function Settings({
           username: idx.username || '',
           password: idx.password || '',
           disable_id_search: idx.disable_id_search === true,
-          disable_string_search: idx.disable_string_search === true
+          disable_string_search: idx.disable_string_search === true,
+          content_scope: idx.content_scope === 'anime' || idx.content_scope === 'non_anime' ? idx.content_scope : ''
         })) || [],
         movie_search_queries: initialConfig.movie_search_queries?.map((query) => ({
           name: query.name || '',

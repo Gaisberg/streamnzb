@@ -44,7 +44,11 @@ type SearchRequest struct {
 	// AbsoluteEpisode is the anime absolute episode number for the requested
 	// season/episode (e.g. S02E02 of One Piece = 63). When set, validation
 	// also accepts absolute-numbered releases ("Show - 63", "Show S01E63").
-	AbsoluteEpisode         string
+	AbsoluteEpisode string
+	// ContentIsAnime marks the request as anime content (Kitsu-addressed, or
+	// TMDB metadata: animation not originally in English). Per-indexer
+	// content_scope decides participation from it.
+	ContentIsAnime          bool
 	SeriesSearchScope       string
 	SearchMode              string
 	DisableResultFiltering  bool

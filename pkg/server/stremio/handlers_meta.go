@@ -184,6 +184,13 @@ func pickFindResult(find *tmdb.FindResponse, contentType string) (tmdb.Result, b
 // points clients at, so coverage matches what users are used to.
 const metahubLogoURL = "https://images.metahub.space/logo/medium/%s/img"
 
+// metaLogoLang is the ISO 639-1 code TMDB logo picks prefer, from the
+// configured metadata display language ("" for the English default).
+func (s *Server) metaLogoLang() string {
+	base, _, _ := strings.Cut(s.currentConfig().EffectiveMetadataLanguage(), "-")
+	return base
+}
+
 func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*MetaObject, error) {
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
@@ -209,7 +216,7 @@ func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*Meta
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if logo := details.Images.BestLogo(); logo != "" {
+	if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
 		meta.Logo = tmdbLogoURL + logo
 	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
@@ -473,7 +480,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if logo := details.Images.BestLogo(); logo != "" {
+	if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
 		meta.Logo = tmdbLogoURL + logo
 	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
@@ -571,8 +578,11 @@ func seriesMetaType(contentType string) string {
 // applyAnimeArtwork upgrades a Kitsu-built meta with TVDB/TMDB artwork via the
 // anime-lists mapping. Kitsu cover images are low-resolution banner crops (and
 // often missing), while the mapped series carries proper 1920x1080 fanart and
-// a title logo; Kitsu's poster is kept — it is the better of the two. Purely
-// best-effort: no mapping or a failed fetch leaves the Kitsu artwork as-is.
+// a title logo; Kitsu's poster is kept — it is the better of the two. With a
+// display language configured, a real translated overview from the mapped
+// record also replaces Kitsu's synopsis, which only exists in English; the
+// Kitsu title stays — anime audiences expect the romaji/canonical name.
+// Purely best-effort: no mapping or a failed fetch leaves the Kitsu meta as-is.
 func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 	if s.animeLists == nil {
 		return
@@ -597,6 +607,9 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		if meta.Poster == "" {
 			meta.Poster = ext.Image
 		}
+		if _, overview := s.tvdbClient.SeriesTranslation(mapping.TVDBID); overview != "" {
+			meta.Description = overview
+		}
 	case mapping.TMDBID != "" && strings.EqualFold(mapping.Type, "movie"):
 		tmdbID, err := strconv.Atoi(mapping.TMDBID)
 		if err != nil || tmdbID <= 0 {
@@ -610,11 +623,16 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
 		if details.BackdropPath != "" {
 			meta.Background = tmdbBackdropURL + details.BackdropPath
 		}
-		if logo := details.Images.BestLogo(); logo != "" {
+		if logo := details.Images.BestLogo(s.metaLogoLang()); logo != "" {
 			meta.Logo = tmdbLogoURL + logo
 		}
 		if meta.Poster == "" && details.PosterPath != "" {
 			meta.Poster = tmdbPosterURL + details.PosterPath
+		}
+		// With a language set, TMDB's overview arrives translated (empty when
+		// it has no translation, so this keeps Kitsu's text in that case).
+		if s.currentConfig().EffectiveMetadataLanguage() != "" && details.Overview != "" {
+			meta.Description = details.Overview
 		}
 	}
 }

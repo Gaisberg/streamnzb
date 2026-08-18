@@ -22,6 +22,39 @@ const PROVIDER_LABELS = {
 
 const sourceSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-60"
 
+// Display languages for meta responses and catalog rows, as TMDB-style tags.
+// TMDB localizes fully; TVDB series pick up translated names/overviews where
+// TheTVDB has them, with English as the fallback everywhere.
+const METADATA_LANGUAGES = [
+  { tag: "en-US", label: "English (default)" },
+  { tag: "cs-CZ", label: "Čeština" },
+  { tag: "da-DK", label: "Dansk" },
+  { tag: "de-DE", label: "Deutsch" },
+  { tag: "el-GR", label: "Ελληνικά" },
+  { tag: "es-ES", label: "Español (España)" },
+  { tag: "es-MX", label: "Español (México)" },
+  { tag: "fi-FI", label: "Suomi" },
+  { tag: "fr-FR", label: "Français" },
+  { tag: "he-IL", label: "עברית" },
+  { tag: "hu-HU", label: "Magyar" },
+  { tag: "it-IT", label: "Italiano" },
+  { tag: "ja-JP", label: "日本語" },
+  { tag: "ko-KR", label: "한국어" },
+  { tag: "nb-NO", label: "Norsk" },
+  { tag: "nl-NL", label: "Nederlands" },
+  { tag: "pl-PL", label: "Polski" },
+  { tag: "pt-BR", label: "Português (Brasil)" },
+  { tag: "pt-PT", label: "Português (Portugal)" },
+  { tag: "ro-RO", label: "Română" },
+  { tag: "ru-RU", label: "Русский" },
+  { tag: "sv-SE", label: "Svenska" },
+  { tag: "th-TH", label: "ไทย" },
+  { tag: "tr-TR", label: "Türkçe" },
+  { tag: "uk-UA", label: "Українська" },
+  { tag: "zh-CN", label: "中文 (简体)" },
+  { tag: "zh-TW", label: "中文 (繁體)" },
+]
+
 // arrayMove without pulling in another helper: returns a copy with the item
 // moved from -> to.
 function moveItem(list, from, to) {
@@ -70,6 +103,7 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const [query, setQuery] = useState("")
   const [configOpen, setConfigOpen] = useState(false)
   const [seriesSource, setSeriesSource] = useState("tvdb")
+  const [metaLanguage, setMetaLanguage] = useState("en-US")
   const [tvmazeAirDates, setTvmazeAirDates] = useState(true)
   const [tmdbKey, setTmdbKey] = useState("")
   const [tvdbKey, setTvdbKey] = useState("")
@@ -127,6 +161,7 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
     setEnabled(saved.enabled)
     setRows(savedRows)
     setSeriesSource(config?.metadata?.series_source === "tmdb" ? "tmdb" : "tvdb")
+    setMetaLanguage(config?.metadata?.language || "en-US")
     setTvmazeAirDates(config?.metadata?.tvmaze_air_dates !== false)
     setSeeded(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -328,6 +363,27 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
                 The source a media type&apos;s name, artwork and episode list come from. When the primary source
                 cannot serve a title, the other one steps in. Movies and anime have a single source today.
               </p>
+              <div className="space-y-1.5">
+                <Label htmlFor="metadata-language" className="text-sm">Language</Label>
+                <select
+                  id="metadata-language"
+                  className={sourceSelectClass}
+                  value={metaLanguage}
+                  onChange={(e) => {
+                    setMetaLanguage(e.target.value)
+                    onPersist({ metadata: { language: e.target.value } })
+                  }}
+                >
+                  {METADATA_LANGUAGES.map((lang) => (
+                    <option key={lang.tag} value={lang.tag}>{lang.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Titles, overviews, episode names and catalog rows display in this language where the sources
+                  have a translation, falling back to English where they don&apos;t. Clients cache title pages for a
+                  few hours, so a change shows up on already-visited titles after the cache expires.
+                </p>
+              </div>
               <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5">
                 <div className="min-w-0">
                   <Label htmlFor="metadata-tvmaze-airdates" className="text-sm">TVMaze air dates</Label>

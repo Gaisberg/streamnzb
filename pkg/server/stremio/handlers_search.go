@@ -240,11 +240,14 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 		}
 		profileParams.Req.StreamLabel = streamLabel
 		profileParams.Req.RequestLabel = searchQuery.Name
+		// Per-indexer content_scope routes on this flag; stamped here so every
+		// query variant of the request carries it.
+		profileParams.Req.ContentIsAnime = query.RequestLooksLikeAnime(profileParams)
 		applyStreamIndexerSelection(&profileParams.Req, stream)
 		profileParams.Req.DisableResultFiltering = stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" || strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "none") || streamUsesAIOStreamsProfile(stream)
 		searchMode := strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
 		if contentType == "series" && searchQuery.TryAbsoluteEpisodeEnabled() {
-			if query.RequestLooksLikeAnime(profileParams) {
+			if profileParams.Req.ContentIsAnime {
 				// Widen every variant of this anime request to also match the
 				// anime subcategory on indexers that don't expand the 5000
 				// parent. Kitsu requests are anime even though they skip the

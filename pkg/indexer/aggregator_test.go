@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"streamnzb/pkg/core/config"
 )
 
 type testIndexer struct {
@@ -20,6 +22,34 @@ func (t *testIndexer) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, e
 func (t *testIndexer) Ping(context.Context) error { return nil }
 func (t *testIndexer) Name() string               { return t.name }
 func (t *testIndexer) GetUsage() Usage            { return Usage{} }
+
+func TestSkipIndexerReasonContentScope(t *testing.T) {
+	scope := func(s string) *config.IndexerSearchConfig {
+		return &config.IndexerSearchConfig{ContentScope: &s}
+	}
+	cases := []struct {
+		name      string
+		req       SearchRequest
+		overrides *config.IndexerSearchConfig
+		wantSkip  bool
+	}{
+		{name: "anime-only indexer skips non-anime", req: SearchRequest{}, overrides: scope("anime"), wantSkip: true},
+		{name: "anime-only indexer runs anime", req: SearchRequest{ContentIsAnime: true}, overrides: scope("anime")},
+		{name: "non-anime indexer skips anime", req: SearchRequest{ContentIsAnime: true}, overrides: scope("non_anime"), wantSkip: true},
+		{name: "non-anime indexer runs non-anime", req: SearchRequest{}, overrides: scope("non_anime")},
+		{name: "unset scope runs everything", req: SearchRequest{ContentIsAnime: true}, overrides: &config.IndexerSearchConfig{}},
+		{name: "unknown scope runs everything", req: SearchRequest{}, overrides: scope("garbage")},
+		{name: "nil overrides run everything", req: SearchRequest{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := skipIndexerReason(tc.req, tc.overrides)
+			if gotSkip := reason != ""; gotSkip != tc.wantSkip {
+				t.Fatalf("skipIndexerReason() = %q, want skip=%v", reason, tc.wantSkip)
+			}
+		})
+	}
+}
 
 func TestAggregatorFailoverStartsInParallelButKeepsPriority(t *testing.T) {
 	started := make(chan string, 2)
