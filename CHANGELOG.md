@@ -1,5 +1,23 @@
 # Changelog
 
+## [5.2.0](https://github.com/Gaisberg/streamnzb/compare/v5.1.0...v5.2.0) (2026-08-18)
+
+
+### Features
+
+* **filters:** per-kind NZB limits on filter profiles ([2ffc956](https://github.com/Gaisberg/streamnzb/commit/2ffc9566b88b7780e206a5ee43beaca7bb9bd452)), closes [#189](https://github.com/Gaisberg/streamnzb/issues/189)
+* **formatting:** reusable format profiles with a shared auto-saving profile manager ([fa97136](https://github.com/Gaisberg/streamnzb/commit/fa97136b99eeac3348347ea62eef430d379a659e))
+* **metadata:** per-stream metadata profiles with age-rating limits ([0c5c20d](https://github.com/Gaisberg/streamnzb/commit/0c5c20df3b06ee9e9bd68705ecd6546fba8df78e))
+* **metadata:** per-stream metadata profiles with rating limits and kids catalogs ([2ffe552](https://github.com/Gaisberg/streamnzb/commit/2ffe5524f0954b1dbeaa442a812919425c76c864))
+* **streams:** reorganize the stream dialog into General, Providers, Indexers, Search and Advanced tabs ([fa97136](https://github.com/Gaisberg/streamnzb/commit/fa97136b99eeac3348347ea62eef430d379a659e))
+* **stremio:** expand result template helpers and add AIOStreams format import ([abdcd71](https://github.com/Gaisberg/streamnzb/commit/abdcd71ceff9877297b10a4487b4af1c7da1b6c2)), closes [#188](https://github.com/Gaisberg/streamnzb/issues/188)
+
+
+### Bug Fixes
+
+* **availnzb:** refresh backbones only when the client is rebuilt, not on every config reload ([fa97136](https://github.com/Gaisberg/streamnzb/commit/fa97136b99eeac3348347ea62eef430d379a659e))
+* **ui:** clear the profile saving spinner after renames by comparing the normalized draft ([fa97136](https://github.com/Gaisberg/streamnzb/commit/fa97136b99eeac3348347ea62eef430d379a659e))
+
 ## [5.1.0](https://github.com/Gaisberg/streamnzb/compare/v5.0.0...v5.1.0) (2026-08-18)
 
 
