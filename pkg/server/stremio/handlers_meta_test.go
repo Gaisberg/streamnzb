@@ -103,13 +103,21 @@ func TestBuildMovieMeta(t *testing.T) {
 				"backdrop_path": "/b.jpg", "runtime": 136, "vote_average": 8.2,
 				"imdb_id": "tt0133093", "genres": [{"id": 878, "name": "Science Fiction"}],
 				"credits": {
-					"cast": [{"name": "Keanu Reeves", "order": 0}, {"name": "Carrie-Anne Moss", "order": 1}],
+					"cast": [
+						{"name": "Keanu Reeves", "character": "Neo", "profile_path": "/keanu.jpg", "order": 0},
+						{"name": "Carrie-Anne Moss", "order": 1}
+					],
 					"crew": [
 						{"name": "Lana Wachowski", "job": "Director"},
 						{"name": "Lilly Wachowski", "job": "Director"},
 						{"name": "Lana Wachowski", "job": "Writer"}
 					]
 				},
+				"images": {"logos": [
+					{"file_path": "/logo-de.png", "iso_639_1": "de", "vote_average": 9.9},
+					{"file_path": "/logo-en-low.png", "iso_639_1": "en", "vote_average": 1.2},
+					{"file_path": "/logo-en.png", "iso_639_1": "en", "vote_average": 5.8}
+				]},
 				"videos": {"results": [
 					{"key": "fan123", "site": "YouTube", "type": "Trailer", "official": false},
 					{"key": "vKQi3bBA1y8", "site": "YouTube", "type": "Trailer", "official": true},
@@ -141,6 +149,16 @@ func TestBuildMovieMeta(t *testing.T) {
 	if len(meta.Cast) != 2 || meta.Cast[0] != "Keanu Reeves" {
 		t.Fatalf("cast = %v", meta.Cast)
 	}
+	// app_extras carries the cast photos clients render as avatars.
+	if meta.AppExtras == nil || len(meta.AppExtras.Cast) != 2 {
+		t.Fatalf("app_extras = %+v", meta.AppExtras)
+	}
+	if m := meta.AppExtras.Cast[0]; m.Character != "Neo" || m.Photo != tmdbProfileURL+"/keanu.jpg" {
+		t.Fatalf("app_extras cast[0] = %+v", m)
+	}
+	if m := meta.AppExtras.Cast[1]; m.Photo != "" {
+		t.Fatalf("app_extras cast[1] = %+v, want no photo", m)
+	}
 	if len(meta.Director) != 2 || len(meta.Writer) != 1 {
 		t.Fatalf("director/writer = %v / %v", meta.Director, meta.Writer)
 	}
@@ -151,7 +169,8 @@ func TestBuildMovieMeta(t *testing.T) {
 	if meta.Released != "1999-03-30T00:00:00.000Z" {
 		t.Fatalf("released = %q", meta.Released)
 	}
-	if meta.Logo != "https://images.metahub.space/logo/medium/tt0133093/img" {
+	// The highest-voted English TMDB logo wins over the metahub fallback.
+	if meta.Logo != tmdbLogoURL+"/logo-en.png" {
 		t.Fatalf("logo = %q", meta.Logo)
 	}
 }
@@ -285,9 +304,13 @@ func tvdbStubHandler() http.HandlerFunc {
 				"image": "https://artworks.thetvdb.com/got.jpg", "year": "2011",
 				"lastAired": "2019-05-19", "status": {"name": "Ended"},
 				"averageRuntime": 55, "genres": [{"name": "Fantasy"}],
-				"artworks": [{"image": "https://artworks.thetvdb.com/got-fanart.jpg", "type": 3}],
+				"artworks": [
+					{"image": "https://artworks.thetvdb.com/got-fanart-bad.jpg", "type": 3, "score": 3},
+					{"image": "https://artworks.thetvdb.com/got-fanart.jpg", "type": 3, "score": 87},
+					{"image": "https://artworks.thetvdb.com/got-logo.png", "type": 23, "score": 12}
+				],
 				"characters": [
-					{"personName": "Emilia Clarke", "peopleType": "Actor"},
+					{"name": "Daenerys Targaryen", "personName": "Emilia Clarke", "peopleType": "Actor", "personImgURL": "https://artworks.thetvdb.com/clarke.jpg"},
 					{"personName": "Ramin Djawadi", "peopleType": "Musician"},
 					{"personName": "Kit Harington", "peopleType": "Actor"}
 				],
@@ -374,13 +397,20 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	if len(meta.Cast) != 2 || meta.Cast[0] != "Emilia Clarke" || meta.Cast[1] != "Kit Harington" {
 		t.Fatalf("cast = %v", meta.Cast)
 	}
+	if meta.AppExtras == nil || len(meta.AppExtras.Cast) != 2 {
+		t.Fatalf("app_extras = %+v", meta.AppExtras)
+	}
+	if m := meta.AppExtras.Cast[0]; m.Character != "Daenerys Targaryen" || m.Photo != "https://artworks.thetvdb.com/clarke.jpg" {
+		t.Fatalf("app_extras cast[0] = %+v", m)
+	}
 	if meta.ReleaseInfo != "2011-2019" {
 		t.Fatalf("releaseInfo = %q, want the ended-run year range", meta.ReleaseInfo)
 	}
 	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "KPLWWIOCOOQ" {
 		t.Fatalf("trailers = %v", meta.Trailers)
 	}
-	if meta.Logo != "https://images.metahub.space/logo/medium/tt0944947/img" {
+	// TVDB's own clearlogo beats the metahub fallback.
+	if meta.Logo != "https://artworks.thetvdb.com/got-logo.png" {
 		t.Fatalf("logo = %q", meta.Logo)
 	}
 }

@@ -362,6 +362,7 @@ type SeriesExtended struct {
 	Artworks []struct {
 		Image string `json:"image"`
 		Type  int    `json:"type"`
+		Score int64  `json:"score"`
 	} `json:"artworks"`
 	RemoteIDs []struct {
 		ID         string `json:"id"`
@@ -369,29 +370,49 @@ type SeriesExtended struct {
 	} `json:"remoteIds"`
 	// Characters carries the cast (and other people) in TVDB's sort order.
 	Characters []struct {
-		PersonName string `json:"personName"`
-		PeopleType string `json:"peopleType"`
+		Name         string `json:"name"` // character name
+		PersonName   string `json:"personName"`
+		PeopleType   string `json:"peopleType"`
+		PersonImgURL string `json:"personImgURL"` // actor headshot
 	} `json:"characters"`
 	Trailers []struct {
 		URL string `json:"url"`
 	} `json:"trailers"`
 }
 
-// Cast returns the actor names in TVDB's order, capped at limit.
-func (s *SeriesExtended) Cast(limit int) []string {
-	var cast []string
+// CastMember is one credited actor, with the character and headshot when TVDB
+// publishes them.
+type CastMember struct {
+	Name      string
+	Character string
+	Photo     string
+}
+
+// CastMembers returns the actors in TVDB's order, capped at limit.
+func (s *SeriesExtended) CastMembers(limit int) []CastMember {
+	var cast []CastMember
 	seen := make(map[string]bool)
 	for _, ch := range s.Characters {
 		if !strings.EqualFold(ch.PeopleType, "Actor") || ch.PersonName == "" || seen[ch.PersonName] {
 			continue
 		}
 		seen[ch.PersonName] = true
-		cast = append(cast, ch.PersonName)
+		cast = append(cast, CastMember{Name: ch.PersonName, Character: ch.Name, Photo: ch.PersonImgURL})
 		if len(cast) >= limit {
 			break
 		}
 	}
 	return cast
+}
+
+// Cast returns the actor names in TVDB's order, capped at limit.
+func (s *SeriesExtended) Cast(limit int) []string {
+	members := s.CastMembers(limit)
+	names := make([]string, len(members))
+	for i, m := range members {
+		names[i] = m.Name
+	}
+	return names
 }
 
 // IMDbID returns the IMDb remote id ("tt..."), or "".
@@ -404,17 +425,33 @@ func (s *SeriesExtended) IMDbID() string {
 	return ""
 }
 
-// artworkTypeSeriesBackground is TVDB's artwork type id for series fanart.
-const artworkTypeSeriesBackground = 3
+// TVDB artwork type ids for series records.
+const (
+	artworkTypeSeriesBackground = 3  // 1920x1080 fanart
+	artworkTypeSeriesClearLogo  = 23 // transparent PNG title logo
+)
 
-// Background returns the first background artwork, or "".
-func (s *SeriesExtended) Background() string {
+// bestArtwork returns the highest-scored artwork of the given type, or "".
+// Artworks arrive in no useful order, and the first one is frequently a bad
+// one; score is TVDB's community ranking.
+func (s *SeriesExtended) bestArtwork(artworkType int) string {
+	best, bestScore := "", int64(-1)
 	for _, art := range s.Artworks {
-		if art.Type == artworkTypeSeriesBackground && art.Image != "" {
-			return art.Image
+		if art.Type == artworkType && art.Image != "" && art.Score > bestScore {
+			best, bestScore = art.Image, art.Score
 		}
 	}
-	return ""
+	return best
+}
+
+// Background returns the highest-scored background artwork, or "".
+func (s *SeriesExtended) Background() string {
+	return s.bestArtwork(artworkTypeSeriesBackground)
+}
+
+// ClearLogo returns the highest-scored transparent title logo, or "".
+func (s *SeriesExtended) ClearLogo() string {
+	return s.bestArtwork(artworkTypeSeriesClearLogo)
 }
 
 type seriesExtendedResponse struct {

@@ -352,22 +352,60 @@ type MovieDetails struct {
 	VoteAverage  float64 `json:"vote_average"`
 	IMDbID       string  `json:"imdb_id"`
 	Tagline      string  `json:"tagline"`
-	// Credits and Videos are populated only when the details request appended
-	// them (GetMovieDetailsFull).
+	// Credits, Videos and Images are populated only when the details request
+	// appended them (GetMovieDetailsFull).
 	Credits *Credits `json:"credits"`
 	Videos  *Videos  `json:"videos"`
+	Images  *Images  `json:"images"`
 }
 
 // Credits is the appended credits payload shared by movie and TV details.
 type Credits struct {
 	Cast []struct {
-		Name  string `json:"name"`
-		Order int    `json:"order"`
+		Name        string `json:"name"`
+		Character   string `json:"character"`
+		ProfilePath string `json:"profile_path"`
+		Order       int    `json:"order"`
 	} `json:"cast"`
 	Crew []struct {
 		Name string `json:"name"`
 		Job  string `json:"job"`
 	} `json:"crew"`
+}
+
+// appendedImageLanguages filters appended images to English and textless
+// entries — the two kinds the logo picker considers — so the payload stays
+// small.
+const appendedImageLanguages = "en,null"
+
+// Images is the appended images payload; only logos are consumed (posters and
+// backdrops already arrive as poster_path/backdrop_path on the details).
+type Images struct {
+	Logos []struct {
+		FilePath    string  `json:"file_path"`
+		ISO639_1    string  `json:"iso_639_1"`
+		VoteAverage float64 `json:"vote_average"`
+	} `json:"logos"`
+}
+
+// BestLogo returns the file path of the highest-voted logo, preferring English
+// over textless entries, or "".
+func (im *Images) BestLogo() string {
+	if im == nil {
+		return ""
+	}
+	for _, lang := range []string{"en", ""} {
+		best, bestVotes := "", -1.0
+		for _, logo := range im.Logos {
+			if logo.ISO639_1 == lang && logo.FilePath != "" && logo.VoteAverage > bestVotes {
+				best, bestVotes = logo.FilePath, logo.VoteAverage
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+	return ""
 }
 
 // Videos is the appended videos payload; Key is a YouTube id for Site YouTube.
@@ -380,11 +418,12 @@ type Videos struct {
 	} `json:"results"`
 }
 
-// GetMovieDetailsFull fetches movie details with credits and videos appended —
-// one request, everything the meta resource renders.
+// GetMovieDetailsFull fetches movie details with credits, videos and images
+// appended — one request, everything the meta resource renders.
 func (c *Client) GetMovieDetailsFull(tmdbID int) (*MovieDetails, error) {
 	params := url.Values{}
-	params.Set("append_to_response", "credits,videos")
+	params.Set("append_to_response", "credits,videos,images")
+	params.Set("include_image_language", appendedImageLanguages)
 	return getJSON[MovieDetails](c, fmt.Sprintf(c.BaseURL+"/movie/%d", tmdbID), params, "movie details")
 }
 
@@ -405,11 +444,12 @@ type TVDetails struct {
 	EpisodeRunTime []int   `json:"episode_run_time"`
 	Status         string  `json:"status"`
 	LastAirDate    string  `json:"last_air_date"`
-	// ExternalIDs, Credits and Videos are populated only when the details
-	// request appended them (see GetTVDetailsWithSeasons).
+	// ExternalIDs, Credits, Videos and Images are populated only when the
+	// details request appended them (see GetTVDetailsWithSeasons).
 	ExternalIDs *ExternalIDsResponse `json:"external_ids"`
 	Credits     *Credits             `json:"credits"`
 	Videos      *Videos              `json:"videos"`
+	Images      *Images              `json:"images"`
 }
 
 type TVSeasonInfo struct {
@@ -662,14 +702,15 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int) (*TVDe
 	seasons := make(map[int]*TVSeasonDetails, len(seasonNumbers))
 	for start := 0; start == 0 || start < len(seasonNumbers); start += maxAppendedSeasons {
 		batch := seasonNumbers[min(start, len(seasonNumbers)):min(start+maxAppendedSeasons, len(seasonNumbers))]
-		appends := make([]string, 0, len(batch)+3)
+		appends := make([]string, 0, len(batch)+4)
+		params := url.Values{}
 		if start == 0 {
-			appends = append(appends, "external_ids", "credits", "videos")
+			appends = append(appends, "external_ids", "credits", "videos", "images")
+			params.Set("include_image_language", appendedImageLanguages)
 		}
 		for _, n := range batch {
 			appends = append(appends, fmt.Sprintf("season/%d", n))
 		}
-		params := url.Values{}
 		params.Set("append_to_response", strings.Join(appends, ","))
 
 		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params)

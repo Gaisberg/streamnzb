@@ -30,6 +30,8 @@ const (
 	tmdbPosterURL   = "https://image.tmdb.org/t/p/w500"
 	tmdbBackdropURL = "https://image.tmdb.org/t/p/w1280"
 	tmdbStillURL    = "https://image.tmdb.org/t/p/w300"
+	tmdbProfileURL  = "https://image.tmdb.org/t/p/w276_and_h350_face"
+	tmdbLogoURL     = "https://image.tmdb.org/t/p/w500"
 )
 
 // handleMeta serves /meta/{type}/{id}.json. With the metadata master switch
@@ -207,7 +209,9 @@ func (s *Server) buildMovieMeta(ctx context.Context, rid *resolvedMetaID) (*Meta
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if rid.imdbID != "" {
+	if logo := details.Images.BestLogo(); logo != "" {
+		meta.Logo = tmdbLogoURL + logo
+	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
 	}
 	if len(details.ReleaseDate) >= 4 {
@@ -237,6 +241,11 @@ func applyTMDBCredits(meta *MetaObject, credits *tmdb.Credits) {
 			continue
 		}
 		meta.Cast = append(meta.Cast, member.Name)
+		photo := ""
+		if member.ProfilePath != "" {
+			photo = tmdbProfileURL + member.ProfilePath
+		}
+		appendCastMember(meta, MetaCastMember{Name: member.Name, Character: member.Character, Photo: photo})
 		if len(meta.Cast) >= metaCastLimit {
 			break
 		}
@@ -254,6 +263,14 @@ func applyTMDBCredits(meta *MetaObject, credits *tmdb.Credits) {
 			meta.Writer = append(meta.Writer, member.Name)
 		}
 	}
+}
+
+// appendCastMember adds one app_extras cast entry, allocating on first use.
+func appendCastMember(meta *MetaObject, member MetaCastMember) {
+	if meta.AppExtras == nil {
+		meta.AppExtras = &MetaAppExtras{}
+	}
+	meta.AppExtras.Cast = append(meta.AppExtras.Cast, member)
 }
 
 // tmdbTrailers extracts YouTube trailers from an appended videos payload,
@@ -343,7 +360,10 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string
 		Description: ext.Overview,
 		Poster:      ext.Image,
 		Background:  ext.Background(),
-		Cast:        ext.Cast(metaCastLimit),
+	}
+	for _, member := range ext.CastMembers(metaCastLimit) {
+		meta.Cast = append(meta.Cast, member.Name)
+		appendCastMember(meta, MetaCastMember{Name: member.Name, Character: member.Character, Photo: member.Photo})
 	}
 	for _, g := range ext.Genres {
 		if g.Name != "" {
@@ -365,11 +385,13 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, contentType string
 	if ext.AverageRuntime > 0 {
 		meta.Runtime = fmt.Sprintf("%d min", ext.AverageRuntime)
 	}
-	// The canonical id stays as requested; the logo CDN just needs imdb.
+	// The canonical id stays as requested; the fallback logo CDN needs imdb.
 	if rid.imdbID == "" {
 		rid.imdbID = ext.IMDbID()
 	}
-	if rid.imdbID != "" {
+	if logo := ext.ClearLogo(); logo != "" {
+		meta.Logo = logo
+	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
 	}
 	for _, trailer := range ext.Trailers {
@@ -451,7 +473,9 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, contentType string
 	if details.BackdropPath != "" {
 		meta.Background = tmdbBackdropURL + details.BackdropPath
 	}
-	if rid.imdbID != "" {
+	if logo := details.Images.BestLogo(); logo != "" {
+		meta.Logo = tmdbLogoURL + logo
+	} else if rid.imdbID != "" {
 		meta.Logo = fmt.Sprintf(metahubLogoURL, rid.imdbID)
 	}
 	firstYear, lastYear := "", ""
@@ -544,6 +568,57 @@ func seriesMetaType(contentType string) string {
 	return "series"
 }
 
+// applyAnimeArtwork upgrades a Kitsu-built meta with TVDB/TMDB artwork via the
+// anime-lists mapping. Kitsu cover images are low-resolution banner crops (and
+// often missing), while the mapped series carries proper 1920x1080 fanart and
+// a title logo; Kitsu's poster is kept — it is the better of the two. Purely
+// best-effort: no mapping or a failed fetch leaves the Kitsu artwork as-is.
+func (s *Server) applyAnimeArtwork(meta *MetaObject, kitsuID string) {
+	if s.animeLists == nil {
+		return
+	}
+	mapping, ok := s.animeLists.LookupKitsu(kitsuID)
+	if !ok {
+		return
+	}
+	switch {
+	case mapping.TVDBID != "":
+		ext, err := s.tvdbClient.GetSeriesExtended(mapping.TVDBID)
+		if err != nil {
+			logger.Debug("Anime TVDB artwork fetch failed", "kitsu_id", kitsuID, "tvdb_id", mapping.TVDBID, "err", err)
+			return
+		}
+		if bg := ext.Background(); bg != "" {
+			meta.Background = bg
+		}
+		if logo := ext.ClearLogo(); logo != "" {
+			meta.Logo = logo
+		}
+		if meta.Poster == "" {
+			meta.Poster = ext.Image
+		}
+	case mapping.TMDBID != "" && strings.EqualFold(mapping.Type, "movie"):
+		tmdbID, err := strconv.Atoi(mapping.TMDBID)
+		if err != nil || tmdbID <= 0 {
+			return
+		}
+		details, err := s.tmdbClient.GetMovieDetailsFull(tmdbID)
+		if err != nil {
+			logger.Debug("Anime TMDB artwork fetch failed", "kitsu_id", kitsuID, "tmdb_id", mapping.TMDBID, "err", err)
+			return
+		}
+		if details.BackdropPath != "" {
+			meta.Background = tmdbBackdropURL + details.BackdropPath
+		}
+		if logo := details.Images.BestLogo(); logo != "" {
+			meta.Logo = tmdbLogoURL + logo
+		}
+		if meta.Poster == "" && details.PosterPath != "" {
+			meta.Poster = tmdbPosterURL + details.PosterPath
+		}
+	}
+}
+
 func (s *Server) buildAnimeMeta(ctx context.Context, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, rid.kitsuID)
 	if err != nil {
@@ -568,6 +643,7 @@ func (s *Server) buildAnimeMeta(ctx context.Context, contentType string, rid *re
 	if rating, err := strconv.ParseFloat(animeMeta.AverageRating, 64); err == nil && rating > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", rating/10)
 	}
+	s.applyAnimeArtwork(meta, rid.kitsuID)
 
 	// Movies get no episode list; everything else does. Kitsu numbering is
 	// entry-relative, which is exactly what kitsu:<id>:<ep> stream ids carry.

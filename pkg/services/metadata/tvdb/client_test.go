@@ -50,8 +50,15 @@ func TestGetSeriesExtended(t *testing.T) {
 			"status": {"name": "Ended"}, "averageRuntime": 45,
 			"genres": [{"name": "Drama"}],
 			"artworks": [
-				{"image": "https://artworks.thetvdb.com/banner.jpg", "type": 1},
-				{"image": "https://artworks.thetvdb.com/fanart.jpg", "type": 3}
+				{"image": "https://artworks.thetvdb.com/banner.jpg", "type": 1, "score": 900},
+				{"image": "https://artworks.thetvdb.com/fanart-bad.jpg", "type": 3, "score": 5},
+				{"image": "https://artworks.thetvdb.com/fanart.jpg", "type": 3, "score": 100},
+				{"image": "https://artworks.thetvdb.com/fanart-unscored.jpg", "type": 3}
+			],
+			"characters": [
+				{"name": "Jack Shephard", "personName": "Matthew Fox", "peopleType": "Actor", "personImgURL": "https://artworks.thetvdb.com/fox.jpg"},
+				{"name": "Kate Austen", "personName": "Evangeline Lilly", "peopleType": "Actor"},
+				{"name": "", "personName": "J.J. Abrams", "peopleType": "Creator"}
 			]
 		}}`))
 	})
@@ -64,7 +71,12 @@ func TestGetSeriesExtended(t *testing.T) {
 		t.Fatalf("ext = %+v", ext)
 	}
 	if ext.Background() != "https://artworks.thetvdb.com/fanart.jpg" {
-		t.Fatalf("Background() = %q, want the type-3 artwork", ext.Background())
+		t.Fatalf("Background() = %q, want the highest-scored type-3 artwork", ext.Background())
+	}
+	members := ext.CastMembers(10)
+	if len(members) != 2 || members[0].Name != "Matthew Fox" || members[0].Character != "Jack Shephard" ||
+		members[0].Photo != "https://artworks.thetvdb.com/fox.jpg" || members[1].Photo != "" {
+		t.Fatalf("CastMembers() = %+v", members)
 	}
 	if ext.AverageRuntime != 45 || ext.Year != "2004" {
 		t.Fatalf("runtime/year = %d/%q", ext.AverageRuntime, ext.Year)
