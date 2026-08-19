@@ -1,5 +1,30 @@
 # Changelog
 
+## [5.3.0](https://github.com/Gaisberg/streamnzb/compare/v5.2.0...v5.3.0) (2026-08-19)
+
+
+### Features
+
+* **filters:** score releases by NZB size, age and grabs ([f65ff3f](https://github.com/Gaisberg/streamnzb/commit/f65ff3fbd935c0ee6908c53dc79a261b478fd02a))
+* **metadata:** full-quality landscape backgrounds on catalogs and metas ([a379767](https://github.com/Gaisberg/streamnzb/commit/a379767e08774be15d84fa61586a7fffc78620ac))
+* **stremio:** smarter Because You Watched seeding, paging, and dedup ([7718df3](https://github.com/Gaisberg/streamnzb/commit/7718df33cd99f256c38863bc817fcda00edf0bd5))
+* **unpack:** play obfuscated releases by recovering names from PAR2, yEnc and content signatures ([da40796](https://github.com/Gaisberg/streamnzb/commit/da40796adbc788fe53a3029b85d0a114b666fd37))
+
+
+### Bug Fixes
+
+* **history:** report short-circuited searches instead of a bare no-results ([f65ff3f](https://github.com/Gaisberg/streamnzb/commit/f65ff3fbd935c0ee6908c53dc79a261b478fd02a))
+* **indexer:** apply global indexer proxy changes without a restart ([f65ff3f](https://github.com/Gaisberg/streamnzb/commit/f65ff3fbd935c0ee6908c53dc79a261b478fd02a))
+* **playback:** tier missing articles instead of stalling a full-length 206 ([64284ba](https://github.com/Gaisberg/streamnzb/commit/64284ba3a9fcca9b9389da9b6c75d41d2315c568))
+* **search:** gate unaired episodes on real air times, per stream ([f65ff3f](https://github.com/Gaisberg/streamnzb/commit/f65ff3fbd935c0ee6908c53dc79a261b478fd02a))
+* **unpack:** treat a compressed archive as a definitive bad-release verdict ([e63f7e5](https://github.com/Gaisberg/streamnzb/commit/e63f7e545d345b6e7484b272f2ae9d3b11e16e0e))
+
+
+### Performance Improvements
+
+* **loader:** give direct playback the deep read-ahead window ([eff9c45](https://github.com/Gaisberg/streamnzb/commit/eff9c45d5f6073a033929741804b937dcf9d8931))
+* **usenet:** fetch articles in one round trip and decode in one pass ([42792ce](https://github.com/Gaisberg/streamnzb/commit/42792ce2c53e81fe683a84160bdd35d67e154701))
+
 ## [5.2.0](https://github.com/Gaisberg/streamnzb/compare/v5.1.0...v5.2.0) (2026-08-18)
 
 
