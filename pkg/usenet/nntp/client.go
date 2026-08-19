@@ -33,6 +33,10 @@ type Client struct {
 	user    string
 	pass    string
 
+	// group is the newsgroup currently selected on this connection, so a
+	// repeat GROUP for the same group can be skipped.
+	group string
+
 	LastUsed time.Time
 	pool     *ClientPool
 }
@@ -118,8 +122,20 @@ func (c *Client) Authenticate(user, pass string) error {
 	return err
 }
 
+// Group selects a newsgroup, unless this connection already has it selected.
+//
+// Every segment fetch used to send GROUP before BODY, so each article cost two
+// command round trips instead of one — on a leased connection that, in the
+// overwhelming majority of cases, had that exact group selected already. The
+// selection is per-connection state that only Reconnect can invalidate, so
+// caching it is safe: a connection that has silently died fails on the next
+// BODY exactly as it would have failed on the redundant GROUP.
 func (c *Client) Group(group string) error {
 	const maxRetries = 2
+
+	if c.group == group {
+		return nil
+	}
 
 	for i := 0; i <= maxRetries; i++ {
 		c.setDeadline()
@@ -138,6 +154,7 @@ func (c *Client) Group(group string) error {
 		c.conn.EndResponse(id)
 
 		if err == nil {
+			c.group = group
 			return nil
 		}
 
@@ -222,7 +239,10 @@ func (c *Client) Body(messageID string) (io.ReadCloser, error) {
 
 		// Body reads use the rolling idle deadline set by metricReader; the
 		// fetch context's overall timeout bounds the total transfer.
-		metricR := &metricReader{r: c.conn.DotReader(), client: c}
+		// articleReader, not DotReader: the body is handed to the caller in
+		// canonical wire form (CRLF, still dot-stuffed) in a single pass. See
+		// articlereader.go for why un-stuffing here would corrupt yEnc data.
+		metricR := &metricReader{r: newArticleReader(c.conn.R), client: c}
 
 		return &bodyReader{
 			Reader:      metricR,
@@ -264,6 +284,8 @@ func (c *Client) Reconnect() error {
 	if c.conn != nil {
 		c.conn.Close()
 	}
+	// A fresh connection has no group selected.
+	c.group = ""
 
 	fullAddr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 	var conn net.Conn

@@ -12,68 +12,6 @@ import (
 
 var sizeMismatchRE = regexp.MustCompile(`expected size (\d+) but got (\d+)`)
 
-// yencInputReader prepares a textproto.DotReader article body for rapidyenc.
-//
-// It does two things:
-//  1. Converts bare-LF line endings to CRLF, which rapidyenc requires to detect
-//     line boundaries, the "=y" control, and the "=yend" trailer.
-//  2. Rewrites a '.' that begins a line into the yEnc escape "=n". A literal '.'
-//     and the escape "=n" both decode to byte 0x04, but rapidyenc performs its
-//     own NNTP dot-unstuffing on a line-leading '.' (it expects the raw,
-//     still-stuffed article). Our input has ALREADY been dot-unstuffed by
-//     textproto.DotReader, so a line-leading '.' here is genuine data; without
-//     this rewrite rapidyenc would strip it and silently drop one byte per such
-//     line, corrupting the decoded stream.
-type yencInputReader struct {
-	r    io.Reader
-	in   [8192]byte
-	out  []byte
-	last byte
-	err  error
-}
-
-func (y *yencInputReader) Read(p []byte) (int, error) {
-	for len(y.out) == 0 {
-		if y.err != nil {
-			return 0, y.err
-		}
-		n, err := y.r.Read(y.in[:])
-		if n > 0 {
-			y.out = y.transform(y.in[:n])
-		}
-		if err != nil {
-			y.err = err
-			if len(y.out) == 0 {
-				return 0, err
-			}
-		}
-	}
-	n := copy(p, y.out)
-	y.out = y.out[n:]
-	return n, nil
-}
-
-func (y *yencInputReader) transform(src []byte) []byte {
-	dst := make([]byte, 0, len(src)+len(src)/16+8)
-	for _, b := range src {
-		switch {
-		case b == '\n' && y.last != '\r':
-			dst = append(dst, '\r', '\n')
-			y.last = '\n'
-		case b == '.' && y.last == '\n':
-			// Line-leading data dot -> escaped form so rapidyenc won't unstuff it.
-			dst = append(dst, '=', 'n')
-			y.last = 'n'
-		default:
-			dst = append(dst, b)
-			y.last = b
-		}
-	}
-	return dst
-}
-
-func normalizeCRLF(r io.Reader) io.Reader { return &yencInputReader{r: r} }
-
 type Frame struct {
 	Data     []byte
 	FileName string
@@ -81,8 +19,16 @@ type Frame struct {
 
 const maxDecodeSizeTolerance = 256
 
+// DecodeToBytes decodes one yEnc article body.
+//
+// r must yield the article in canonical NNTP wire form: CRLF line endings, dot
+// stuffing still in place, no terminator. That is exactly what
+// nntp.Client.Body returns, and it is what rapidyenc expects — it does its own
+// dot-unstuffing and needs CRLF to find line boundaries, the "=y" control and
+// the "=yend" trailer. Un-stuffing before this point drops one real byte per
+// line that legitimately begins with '.' (yEnc encodes data byte 0x04 to '.').
 func DecodeToBytes(r io.Reader) (*Frame, error) {
-	dec := rapidyenc.NewDecoder(normalizeCRLF(r))
+	dec := rapidyenc.NewDecoder(r)
 	buf := new(bytes.Buffer)
 	_, err := io.Copy(buf, dec)
 	if err == nil || errors.Is(err, io.EOF) {
