@@ -60,6 +60,18 @@ func TestConfigChangedScopesAreIndependent(t *testing.T) {
 		t.Fatalf("proxy edit scope = %+v, want proxy only", scope)
 	}
 
+	globalProxyChanged := base()
+	globalProxyChanged.IndexerProxyURL = "http://proxy:8888"
+	if scope := ConfigChanged(base(), globalProxyChanged); !scope.Indexers || scope.Providers || scope.Proxy {
+		t.Fatalf("global indexer proxy edit scope = %+v, want indexers only", scope)
+	}
+
+	globalProxyCleared := base()
+	globalProxyCleared.IndexerProxyURL = "http://proxy:8888"
+	if scope := ConfigChanged(globalProxyCleared, base()); !scope.Indexers {
+		t.Fatalf("clearing the global indexer proxy scope = %+v, want indexers rebuilt", scope)
+	}
+
 	if scope := ConfigChanged(nil, base()); !scope.Indexers || !scope.Providers || !scope.Proxy {
 		t.Fatalf("nil old config scope = %+v, want full", scope)
 	}

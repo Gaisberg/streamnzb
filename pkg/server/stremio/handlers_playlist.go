@@ -88,10 +88,21 @@ type rawSearchResult struct {
 	Avail           *AvailContext
 	// Unaired marks an empty result produced by the air-date gate rather than
 	// by a search: the episode positively airs at AirsAt, so no indexer was
-	// asked. The cache entry expires at air time instead of the normal TTL.
+	// asked. The cache entry expires when the gate opens instead of running
+	// the normal TTL.
 	Unaired bool
 	AirsAt  time.Time
 }
+
+// emptyRawSearchTTL is how long a search that found nothing is cached. The
+// normal TTL is tied to the session TTLs and refreshed on access, which is
+// right for a result set that exists but wrong for an empty one: an episode
+// that has just aired, or a title nobody had posted yet, would keep serving
+// the same zero results for hours because every check pushed the deadline out
+// again. Empty entries get a short, non-sliding window instead, so a retry a
+// few minutes later actually reaches the indexers — bounded so that a title
+// with genuinely nothing behind it still costs at most one fan-out per window.
+const emptyRawSearchTTL = 15 * time.Minute
 
 type playlistSource struct {
 	Params                 *query.SearchParams
@@ -290,7 +301,9 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 			logger.Debug("Playback candidate cache hit", "key", rawKey, "releases", releaseCount)
 			// Sliding expiry: keep the entry alive while it is being used.
 			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
-			s.rawSearchCache.CompareAndSwap(rawKey, v, &rawSearchCacheEntry{raw: ent.raw, until: s.rawSearchCacheUntil(ent.raw)})
+			if rawSearchCacheSlides(ent.raw) {
+				s.rawSearchCache.CompareAndSwap(rawKey, v, &rawSearchCacheEntry{raw: ent.raw, until: s.rawSearchCacheUntil(ent.raw)})
+			}
 			return cloneRawSearchResult(ent.raw), nil
 		}
 	}
@@ -304,14 +317,37 @@ func (s *Server) getOrBuildRawSearchResult(ctx context.Context, contentType, id 
 }
 
 // rawSearchCacheUntil picks a cache deadline for one raw result: the normal
-// sliding TTL, clamped to air time for an unaired short-circuit so the empty
-// result stops being served the moment the episode is out.
+// sliding TTL for a result set, the short non-sliding window for an empty one,
+// and for an unaired short-circuit the moment the gate opens, so the empty
+// result stops being served exactly when a search could start finding things.
 func (s *Server) rawSearchCacheUntil(raw *rawSearchResult) time.Time {
 	until := time.Now().Add(s.playlistCacheTTL())
-	if raw != nil && raw.Unaired && !raw.AirsAt.IsZero() && raw.AirsAt.Before(until) {
-		return raw.AirsAt
+	if raw == nil {
+		return until
+	}
+	if raw.Unaired && !raw.AirsAt.IsZero() {
+		// Match airedByTime: it opens the gate a margin early, so holding the
+		// cached answer to the air time itself would keep serving "unaired"
+		// for a quarter hour after searching became worthwhile.
+		if opens := raw.AirsAt.Add(-unairedMargin); opens.Before(until) {
+			return opens
+		}
+		return until
+	}
+	if len(raw.IndexerReleases) == 0 {
+		if empty := time.Now().Add(emptyRawSearchTTL); empty.Before(until) {
+			return empty
+		}
 	}
 	return until
+}
+
+// rawSearchCacheSlides reports whether a cache hit may push the entry's
+// deadline out. Only a result set earns that: refreshing an empty or unaired
+// entry on access would let a client that keeps asking hold the stale answer
+// open indefinitely, which is the one thing the short window exists to stop.
+func rawSearchCacheSlides(raw *rawSearchResult) bool {
+	return raw != nil && !raw.Unaired && len(raw.IndexerReleases) > 0
 }
 
 func (s *Server) GetSearchReleases(ctx context.Context, contentType, id string) (*SearchReleasesResponse, error) {

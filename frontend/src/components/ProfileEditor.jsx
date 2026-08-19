@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { CircleHelp, RotateCcw, Search, Sparkles, X } from "lucide-react"
 import {
   ATTRIBUTE_GROUPS, LANGUAGE_CODES, LANGUAGE_GROUPS, LANGUAGE_OPTIONS, LIMIT_FIELDS,
-  LIMIT_KINDS, PATTERN_PRESETS, RESOLUTIONS, effectivePolicy, formatScore,
+  LIMIT_KINDS, PATTERN_PRESETS, RESOLUTIONS, SCORING_FIELDS, effectivePolicy, formatScore,
 } from "@/lib/profiles"
 import { cn } from "@/lib/utils"
 
@@ -439,15 +439,21 @@ function AttributeGroup({ group, ranking, onChange, query, modifiedOnly }) {
   )
 }
 
-// LimitsGrid edits the per-kind NZB attribute bounds. The "All content" row is
+// AttributeGrid edits a per-kind map of NZB attribute numbers — the limits and
+// the scoring share the shape, so they share the grid. The "All content" row is
 // the default every kind inherits; a kind's own value overrides it field by
 // field, shown as the placeholder while the kind leaves the field unset.
-function LimitsGrid({ limits, onChange }) {
-  const setLimit = (kindKey, field, value) => {
-    const entry = { ...(limits[kindKey] || {}) }
-    if (value > 0) entry[field] = value
-    else delete entry[field]
-    const next = { ...limits, [kindKey]: entry }
+//
+// A field marked `signed` keeps negative values (a scoring weight can invert a
+// preference); every other field is a bound and only keeps positives. Either
+// way zero means unset and drops the key, which is what the Go side reads as
+// "inherit" — see ResolveLimits and ResolveScoring.
+function AttributeGrid({ fields, values, onChange }) {
+  const setValue = (kindKey, field, value) => {
+    const entry = { ...(values[kindKey] || {}) }
+    if (field.signed ? value !== 0 : value > 0) entry[field.key] = value
+    else delete entry[field.key]
+    const next = { ...values, [kindKey]: entry }
     if (Object.keys(entry).length === 0) delete next[kindKey]
     onChange(next)
   }
@@ -458,8 +464,8 @@ function LimitsGrid({ limits, onChange }) {
         <thead>
           <tr className="border-b border-border/60 text-xs text-muted-foreground">
             <th className="px-3.5 py-2 text-left font-normal">Content</th>
-            {LIMIT_FIELDS.map((field) => (
-              <th key={field.key} className="px-2 py-2 text-left font-normal">{field.label}</th>
+            {fields.map((field) => (
+              <th key={field.key} className="whitespace-nowrap px-2 py-2 text-left font-normal">{field.label}</th>
             ))}
           </tr>
         </thead>
@@ -467,14 +473,14 @@ function LimitsGrid({ limits, onChange }) {
           {LIMIT_KINDS.map((kind) => (
             <tr key={kind.key} className="border-b border-border/40 last:border-b-0">
               <td className="whitespace-nowrap px-3.5 py-1.5">{kind.label}</td>
-              {LIMIT_FIELDS.map((field) => {
-                const inherited = kind.key === "default" ? 0 : limits.default?.[field.key]
+              {fields.map((field) => {
+                const inherited = kind.key === "default" ? 0 : values.default?.[field.key]
                 return (
                   <td key={field.key} className="px-2 py-1.5">
                     <NumberField
-                      value={limits[kind.key]?.[field.key] ?? ""}
-                      onCommit={(value) => setLimit(kind.key, field.key, value)}
-                      min={0}
+                      value={values[kind.key]?.[field.key] ?? ""}
+                      onCommit={(value) => setValue(kind.key, field, value)}
+                      min={field.signed ? undefined : 0}
                       step={field.step}
                       placeholder={inherited ? String(inherited) : "off"}
                       className="h-8 w-24 font-mono text-xs"
@@ -620,7 +626,30 @@ export function ProfileEditor({ profile, onChange }) {
               onCheckedChange={(v) => onChange({ ...profile, block_passworded: v })}
             />
           </FieldRow>
-          <LimitsGrid limits={profile.limits || {}} onChange={(limits) => onChange({ ...profile, limits })} />
+          <AttributeGrid
+            fields={LIMIT_FIELDS}
+            values={profile.limits || {}}
+            onChange={(limits) => onChange({ ...profile, limits })}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5">
+            <Label className="text-sm">NZB scoring</Label>
+            <Hint>
+              Points added to a release&apos;s score for the NZB itself, alongside the points its title earns.
+              Each attribute pairs a target with what a perfect match is worth: a release scores the full
+              points at the target and less the further off it is. Size peaks at its target and reaches zero
+              at twice it, age counts down to zero over the fresh window, and grabs scale logarithmically up
+              to their target. Points may be negative to invert a preference, empty fields are off, and a
+              release that does not report an attribute is never docked for it.
+            </Hint>
+          </div>
+          <AttributeGrid
+            fields={SCORING_FIELDS}
+            values={profile.scoring || {}}
+            onChange={(scoring) => onChange({ ...profile, scoring })}
+          />
         </div>
       </TabsContent>
 

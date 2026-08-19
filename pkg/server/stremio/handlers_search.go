@@ -627,7 +627,7 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	// Air-date gate: a positively-unaired episode gets an instant empty result
 	// instead of a full indexer fan-out that cannot find anything. Strictly
 	// failure-open — only a trusted source saying "airs in the future" gates.
-	if aired, airsAt, known := s.episodeAiredState(ctx, s.metadataProfileFor(stream), contentType, params.ContentIDs); known && !aired {
+	if aired, airsAt, known := s.episodeAiredState(ctx, stream, contentType, params.ContentIDs); known && !aired {
 		logger.Info("Episode has not aired yet; skipping search",
 			"stream", streamLabel,
 			"type", contentType,

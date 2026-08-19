@@ -153,6 +153,11 @@ type FilterProfileConfig struct {
 	// field, non-zero fields winning.
 	Limits map[string]*LimitsConfig `json:"limits,omitempty"`
 
+	// Scoring adds points for NZB attributes (size, age, grabs) on top of the
+	// score the title earned, keyed by content kind exactly like Limits. Where
+	// Limits decides eligibility, this decides order among the eligible.
+	Scoring map[string]*ScoringConfig `json:"scoring,omitempty"`
+
 	// BlockPassworded rejects releases the indexer flags as password
 	// protected. Nil defaults to true; indexers that never report the flag
 	// are unaffected.
@@ -788,18 +793,23 @@ type CatalogToggle struct {
 }
 
 type StreamEntry struct {
-	Username           string   `json:"username"`
-	Token              string   `json:"token"`
-	Order              int      `json:"order,omitempty"`
-	FilterSortingMode  string   `json:"filter_sorting_mode,omitempty"`
-	IndexerMode        string   `json:"indexer_mode,omitempty"`
-	UseAvailNZB        *bool    `json:"use_availnzb,omitempty"`
-	FilterAvailNZB     *bool    `json:"filter_availnzb,omitempty"`
-	CombineResults     *bool    `json:"combine_results,omitempty"`
-	EnableFailover     *bool    `json:"enable_failover,omitempty"`
-	ResultsMode        string   `json:"results_mode,omitempty"`
-	AutoAddProviders   *bool    `json:"auto_add_providers,omitempty"`
-	AutoAddIndexers    *bool    `json:"auto_add_indexers,omitempty"`
+	Username          string `json:"username"`
+	Token             string `json:"token"`
+	Order             int    `json:"order,omitempty"`
+	FilterSortingMode string `json:"filter_sorting_mode,omitempty"`
+	IndexerMode       string `json:"indexer_mode,omitempty"`
+	UseAvailNZB       *bool  `json:"use_availnzb,omitempty"`
+	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
+	CombineResults    *bool  `json:"combine_results,omitempty"`
+	EnableFailover    *bool  `json:"enable_failover,omitempty"`
+	ResultsMode       string `json:"results_mode,omitempty"`
+	AutoAddProviders  *bool  `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers   *bool  `json:"auto_add_indexers,omitempty"`
+	// UnairedSearchGate skips this stream's indexer fan-out for an episode a
+	// trusted source says has not aired yet. nil means enabled. It is per
+	// stream rather than global because what counts as too early depends on
+	// which indexers the stream asks and how fast their scene posts.
+	UnairedSearchGate  *bool    `json:"unaired_search_gate,omitempty"`
 	ProviderSelections []string `json:"provider_selections,omitempty"`
 	// ProviderConnectionLimits caps how many of a provider's connections this
 	// stream may hold at once during playback, by provider name. A missing or

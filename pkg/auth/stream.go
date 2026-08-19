@@ -34,18 +34,22 @@ func parseTrailingNumber(value string) (int, bool) {
 }
 
 type Stream struct {
-	Username           string   `json:"username"`
-	Token              string   `json:"token"`
-	Order              int      `json:"order,omitempty"`
-	FilterSortingMode  string   `json:"filter_sorting_mode,omitempty"`
-	IndexerMode        string   `json:"indexer_mode,omitempty"`
-	UseAvailNZB        *bool    `json:"use_availnzb,omitempty"`
-	FilterAvailNZB     *bool    `json:"filter_availnzb,omitempty"`
-	CombineResults     *bool    `json:"combine_results,omitempty"`
-	EnableFailover     *bool    `json:"enable_failover,omitempty"`
-	ResultsMode        string   `json:"results_mode,omitempty"`
-	AutoAddProviders   *bool    `json:"auto_add_providers,omitempty"`
-	AutoAddIndexers    *bool    `json:"auto_add_indexers,omitempty"`
+	Username          string `json:"username"`
+	Token             string `json:"token"`
+	Order             int    `json:"order,omitempty"`
+	FilterSortingMode string `json:"filter_sorting_mode,omitempty"`
+	IndexerMode       string `json:"indexer_mode,omitempty"`
+	UseAvailNZB       *bool  `json:"use_availnzb,omitempty"`
+	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
+	CombineResults    *bool  `json:"combine_results,omitempty"`
+	EnableFailover    *bool  `json:"enable_failover,omitempty"`
+	ResultsMode       string `json:"results_mode,omitempty"`
+	AutoAddProviders  *bool  `json:"auto_add_providers,omitempty"`
+	AutoAddIndexers   *bool  `json:"auto_add_indexers,omitempty"`
+	// UnairedSearchGate skips this stream's search for an episode that has not
+	// aired. See config.StreamEntry; the two structs are converted into each
+	// other, so their fields must stay in step.
+	UnairedSearchGate  *bool    `json:"unaired_search_gate,omitempty"`
 	ProviderSelections []string `json:"provider_selections,omitempty"`
 	// ProviderConnectionLimits caps this stream's concurrent connections per
 	// provider during playback. See config.StreamEntry; the two structs are
@@ -115,6 +119,16 @@ func (s *Stream) EffectiveFilterAvailNZB(cfg *config.Config) bool {
 		return false
 	}
 	return *s.FilterAvailNZB
+}
+
+// EffectiveUnairedSearchGate reports whether this stream skips searching for
+// episodes that have not aired yet. Default true: the gate is an opt-out, so a
+// stream that has never been configured still avoids the pointless fan-out.
+func (s *Stream) EffectiveUnairedSearchGate() bool {
+	if s == nil || s.UnairedSearchGate == nil {
+		return true
+	}
+	return *s.UnairedSearchGate
 }
 
 func (s *Stream) IsErrorVideoMuted(cfg *config.Config) bool {
@@ -674,6 +688,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.ResultsMode = strings.TrimSpace(streamConfig.ResultsMode)
 	stream.AutoAddProviders = streamConfig.AutoAddProviders
 	stream.AutoAddIndexers = streamConfig.AutoAddIndexers
+	stream.UnairedSearchGate = streamConfig.UnairedSearchGate
 	if streamConfig.IndexerOverrides == nil {
 		stream.IndexerOverrides = make(map[string]config.IndexerSearchConfig)
 	} else {

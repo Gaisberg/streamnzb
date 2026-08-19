@@ -11,7 +11,12 @@ import (
 	"streamnzb/pkg/usenet/pool"
 )
 
-const poolGetTimeout = 60 * time.Second
+// poolGetTimeout bounds how long one article command waits for a free backend
+// connection. A downloader pointed at the proxy usually asks for more
+// connections than the providers allow, so waiting is normal — but it has to
+// end well inside the client's own article timeout (SABnzbd defaults to 60s),
+// or the client hangs up mid-command and the wait was wasted on both ends.
+const poolGetTimeout = 30 * time.Second
 
 func isClientWriteError(err error) bool {
 	if err == nil {
@@ -146,12 +151,24 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 	defer cancel()
 
 	var exclude []string
+	reached := false
 	for s.usenet != nil {
 		client, release, discard, pid, err := s.usenet.GetConnection(ctx, exclude, 999, false)
 		if err != nil {
 			logger.Debug("NNTP proxy: GetConnection failed", "err", err)
+			if !reached {
+				// No provider was ever reached — the pool is saturated or every
+				// provider is down. That is inconclusive about the article, and
+				// a 430 here would have the downloader record it as missing and
+				// start a needless repair. 400 closes the connection per RFC
+				// 3977 §3.1, which every client retries.
+				logger.Warn("NNTP proxy: no backend connection available", "verb", verb, "messageID", messageID, "err", err)
+				s.shouldQuit = true
+				return s.WriteLine("400 No provider connection available, try again")
+			}
 			break
 		}
+		reached = true
 		if !s.ensureGroup(client) {
 			release()
 			exclude = append(exclude, pid) // don't retry the same broken provider
@@ -247,7 +264,7 @@ func (s *Session) handleBody(args []string) error {
 	messageID := normalizeMessageID(args[0])
 
 	return s.forEachProvider("BODY", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
-		written, err := client.StreamBody(messageID, s.conn)
+		written, err := client.StreamBody(messageID, s.bw)
 		if err != nil {
 			if isClientWriteError(err) {
 				discard()
@@ -256,14 +273,17 @@ func (s *Session) handleBody(args []string) error {
 			s.recordArticleOutcome(pid, err, false)
 			logger.Debug("NNTP proxy: StreamBody failed", "messageID", messageID, "err", err)
 			discard()
-			if written > 0 {
-				// Part of the 222 response already reached the client; retrying
-				// on another provider would emit a second status line mid-body.
-				// The only safe recovery is dropping the proxy connection so
-				// the downstream client re-requests cleanly.
+			// Only bytes past the write buffer actually reached the client.
+			// While the whole partial 222 is still buffered we can drop it and
+			// let the next provider write a clean response; once any of it has
+			// gone out, a second status line would land inside the first body
+			// and the only safe recovery is dropping the proxy connection so
+			// the downstream client re-requests.
+			if sent := written - int64(s.buffered()); sent > 0 {
 				s.shouldQuit = true
-				return false, fmt.Errorf("BODY %s aborted after %d bytes already written to client: %w", messageID, written, err)
+				return false, fmt.Errorf("BODY %s aborted after %d bytes already written to client: %w", messageID, sent, err)
 			}
+			s.discardBuffered()
 			return false, nil
 		}
 		release()

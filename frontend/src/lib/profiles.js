@@ -259,6 +259,19 @@ export const LIMIT_FIELDS = [
   { key: "min_grabs", label: "Min grabs", step: 1 },
 ]
 
+// NZB scoring columns for the profile's Scoring grid. Keys match ScoringConfig
+// in pkg/core/config/filterprofile.go. Each attribute is a target paired with
+// what a perfect match is worth; one without the other is inert. Point columns
+// are `signed` because a negative weight inverts the preference.
+export const SCORING_FIELDS = [
+  { key: "size_target_gb", label: "Size target (GB)", step: 0.5 },
+  { key: "size_weight", label: "Size points", step: 50, signed: true },
+  { key: "age_fresh_days", label: "Fresh for (days)", step: 1 },
+  { key: "age_weight", label: "Age points", step: 50, signed: true },
+  { key: "grabs_target", label: "Grabs target", step: 10 },
+  { key: "grabs_weight", label: "Grabs points", step: 50, signed: true },
+]
+
 // Limit rows: the default every kind inherits from, then per-kind overrides.
 export const LIMIT_KINDS = [{ key: "default", label: "All content" }, ...CONTENT_KINDS]
 

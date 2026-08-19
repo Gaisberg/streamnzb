@@ -211,3 +211,55 @@ func TestHandleStreamConfigsFilterProfileNameRoundTrip(t *testing.T) {
 		t.Fatalf("expected the movie binding in single stream response, got %v", single["filter_profile_by_type"])
 	}
 }
+
+// TestHandleStreamConfigsUnairedSearchGateRoundTrip covers the whole path the
+// stream editor's "Skip unaired episodes" switch takes: the PUT decode struct,
+// the config entry the addon reads, and the list response the editor restores
+// from. Each of those names its fields explicitly, so a new one that reaches
+// only some of them is dropped in silence rather than failing.
+func TestHandleStreamConfigsUnairedSearchGateRoundTrip(t *testing.T) {
+	srv := newStreamsTestServer(t)
+
+	payload := map[string]map[string]interface{}{
+		"stream1": {
+			"filter_sorting_mode": "none",
+			"indexer_mode":        "combine",
+			"provider_selections": []string{"ProviderA"},
+			"indexer_selections":  []string{"IndexerA"},
+			"unaired_search_gate": false,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	req := adminStreamRequest(http.MethodPut, "/api/streams/configs", body)
+	rr := httptest.NewRecorder()
+	srv.handlePutStreamConfigs(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	stream, err := srv.streamManager.GetStream("stream1", "admin")
+	if err != nil {
+		t.Fatalf("GetStream failed: %v", err)
+	}
+	if stream.EffectiveUnairedSearchGate() {
+		t.Fatal("stream manager kept the gate on after opting out")
+	}
+	if entry := srv.config.Streams["stream1"]; entry.UnairedSearchGate == nil || *entry.UnairedSearchGate {
+		t.Fatalf("config entry gate = %v, want an explicit false", entry.UnairedSearchGate)
+	}
+
+	listReq := adminStreamRequest(http.MethodGet, "/api/streams", nil)
+	listRR := httptest.NewRecorder()
+	srv.handleStreamsList(listRR, listReq)
+	var list []map[string]interface{}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list json.Unmarshal failed: %v", err)
+	}
+	if got := list[0]["unaired_search_gate"]; got != false {
+		t.Fatalf("list response gate = %v, want false", got)
+	}
+}

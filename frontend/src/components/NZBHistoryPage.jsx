@@ -261,6 +261,21 @@ function buildRequestGroups(attempts) {
 
 const historyWindowMs = 15 * 60 * 1000
 
+// searchShortCircuit reports why a search returned nothing without asking any
+// indexer. Both reasons are deliberate — the episode is not out, or a rating
+// cap refused the title — and a bare "No results" reads as though the indexers
+// were asked and came back empty, which is the opposite of what happened.
+function searchShortCircuit(snap) {
+  if (!snap) return null
+  if (snap.unaired_airs_at) {
+    return { label: 'Not aired yet', detail: formatDateTime(snap.unaired_airs_at) }
+  }
+  if (snap.certification_blocked) {
+    return { label: 'Rating blocked', detail: snap.certification_blocked }
+  }
+  return null
+}
+
 function diagnosticContentKey(d) {
   return [d.stream_name || 'default', d.content_type || '', d.content_id || ''].join('::')
 }
@@ -335,6 +350,7 @@ function buildHistoryTimeline(attemptGroups, diagnostics, includeSearchOnly) {
           preloadCount: 0,
           diagnostic: newest,
           streamCount: diagnosticStreamCount(newest),
+          shortCircuit: searchShortCircuit(parseDiagnosticPayload(newest)),
         })
         cluster = []
       }
@@ -382,6 +398,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
   const snap = useMemo(() => parseDiagnosticPayload(diagnostic), [diagnostic])
   if (!snap) return null
 
+  const shortCircuit = searchShortCircuit(snap)
   const validation = Array.isArray(snap.validation) ? snap.validation : []
   const calls = Array.isArray(snap.indexer_calls) ? snap.indexer_calls : []
   const rejected = Array.isArray(snap.rejected) ? snap.rejected : []
@@ -407,8 +424,21 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         {droppedYear > 0 && <FunnelChip label="Year mismatch" value={`−${droppedYear}`} />}
         {snap.dedup_input > 0 && <FunnelChip label="Deduped" value={snap.dedup_output} />}
         {snap.bad_filtered > 0 && <FunnelChip label="Known bad" value={`−${snap.bad_filtered}`} />}
-        {snap.profile_name && <FunnelChip label={`Profile (${snap.profile_name})`} value={`${snap.profile_input} → ${snap.profile_kept}`} />}
+        {shortCircuit && <FunnelChip label={shortCircuit.label} value={shortCircuit.detail} />}
+        {/* A short-circuited search never reached the profile, so reporting
+            "0 → 0" for it would read as the profile having dropped everything. */}
+        {!shortCircuit && snap.profile_name && (
+          <FunnelChip label={`Profile (${snap.profile_name})`} value={`${snap.profile_input || 0} → ${snap.profile_kept || 0}`} />
+        )}
       </div>
+
+      {shortCircuit && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {snap.unaired_airs_at
+            ? 'No indexer was asked: a trusted source puts this episode’s air time in the future. Turn off "Skip unaired episodes" in the stream’s indexer settings to search anyway.'
+            : 'No indexer was asked: the stream’s metadata profile caps this title by age rating.'}
+        </p>
+      )}
 
       {calls.length > 0 && (
         <div className="mt-3 overflow-x-auto">
@@ -476,6 +506,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
 
 function formatGroupStatus(group) {
   if (group.kind === 'search') {
+    if (group.shortCircuit) return group.shortCircuit.label
     if (group.streamCount === 0) return 'No results'
     return 'Searched'
   }
@@ -493,6 +524,9 @@ function formatAvailStatus(value) {
 
 function statusTone(group) {
   if (group.kind === 'search') {
+    // A short-circuit is expected behaviour, not a warning: nothing went wrong
+    // and there is nothing for the user to fix.
+    if (group.shortCircuit) return 'secondary'
     return group.streamCount === 0 ? 'warning' : 'secondary'
   }
   if (group.okCount > 0) return 'success'

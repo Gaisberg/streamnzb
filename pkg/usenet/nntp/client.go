@@ -426,6 +426,9 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 		return written, err
 	}
 
+	// One reusable line buffer: a body is thousands of ~128-byte yEnc lines, and
+	// the concat-then-convert form allocated twice per line.
+	buf := make([]byte, 0, 512)
 	for {
 		line, err := c.conn.ReadLine()
 		if err != nil {
@@ -434,8 +437,8 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 		if line == "." {
 			break
 		}
-		line = line + "\r\n"
-		n, err = w.Write([]byte(line))
+		buf = append(append(buf[:0], line...), '\r', '\n')
+		n, err = w.Write(buf)
 		written += int64(n)
 		if err != nil {
 			return written, err

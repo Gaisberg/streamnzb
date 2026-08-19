@@ -68,6 +68,91 @@ func ResolveLimits(limits map[string]*LimitsConfig, kind string) LimitsConfig {
 	return out
 }
 
+// ScoringConfig scores releases by NZB attributes rather than parsed quality,
+// as points added to the rank the title earned. It is the counterpart to
+// LimitsConfig: limits decide what is eligible, scoring decides what sorts
+// first among the eligible.
+//
+// Each attribute pairs a target with a weight. The target normalizes the
+// attribute to a 0-1 factor and the weight says what a perfect score is worth,
+// so a release contributes weight x factor points. A weight with no target (or
+// a target with no weight) is inert. Weights may be negative to invert the
+// preference — a negative grabs weight prefers the obscure release.
+//
+// Attributes fail open, like the limits do: a release that does not carry the
+// attribute an entry needs scores zero for it rather than being penalized.
+type ScoringConfig struct {
+	// SizeTargetGB is the release size that scores best, in decimal gigabytes.
+	// The factor falls off linearly either side of it, reaching zero at nothing
+	// and at twice the target. Multi-episode releases are judged per episode
+	// and unparseable packs are not judged, matching LimitsConfig.
+	SizeTargetGB float64 `json:"size_target_gb,omitempty"`
+	SizeWeight   int     `json:"size_weight,omitempty"`
+	// AgeFreshDays is the age at which a release stops earning anything. A
+	// release posted just now scores the full weight, one this many days old
+	// scores nothing, and the factor falls linearly between.
+	AgeFreshDays int `json:"age_fresh_days,omitempty"`
+	AgeWeight    int `json:"age_weight,omitempty"`
+	// GrabsTarget is the grab count that earns the full weight. The factor is
+	// logarithmic: the step from 1 to 10 grabs is worth as much as the step
+	// from 10 to 100, because that is how the difference actually reads.
+	GrabsTarget int `json:"grabs_target,omitempty"`
+	GrabsWeight int `json:"grabs_weight,omitempty"`
+}
+
+// Enabled reports whether any attribute would contribute points.
+func (s ScoringConfig) Enabled() bool {
+	return (s.SizeTargetGB > 0 && s.SizeWeight != 0) ||
+		(s.AgeFreshDays > 0 && s.AgeWeight != 0) ||
+		(s.GrabsTarget > 0 && s.GrabsWeight != 0)
+}
+
+// ResolveScoring merges a profile's scoring map down to the entry that applies
+// to one content kind: the default entry, overridden field by field by the
+// kind's own entry. Same shape and same precedence as ResolveLimits.
+func ResolveScoring(scoring map[string]*ScoringConfig, kind string) ScoringConfig {
+	out := ScoringConfig{}
+	if len(scoring) == 0 {
+		return out
+	}
+	merge := func(s *ScoringConfig) {
+		if s == nil {
+			return
+		}
+		if s.SizeTargetGB > 0 {
+			out.SizeTargetGB = s.SizeTargetGB
+		}
+		if s.SizeWeight != 0 {
+			out.SizeWeight = s.SizeWeight
+		}
+		if s.AgeFreshDays > 0 {
+			out.AgeFreshDays = s.AgeFreshDays
+		}
+		if s.AgeWeight != 0 {
+			out.AgeWeight = s.AgeWeight
+		}
+		if s.GrabsTarget > 0 {
+			out.GrabsTarget = s.GrabsTarget
+		}
+		if s.GrabsWeight != 0 {
+			out.GrabsWeight = s.GrabsWeight
+		}
+	}
+	merge(scoring[LimitKindDefault])
+	if kind != "" && kind != LimitKindDefault {
+		merge(scoring[kind])
+	}
+	return out
+}
+
+// ScoringForKind resolves this profile's attribute scoring for one content kind.
+func (fp *FilterProfileConfig) ScoringForKind(kind string) ScoringConfig {
+	if fp == nil {
+		return ScoringConfig{}
+	}
+	return ResolveScoring(fp.Scoring, kind)
+}
+
 // LimitsForKind resolves this profile's limits for one content kind.
 func (fp *FilterProfileConfig) LimitsForKind(kind string) LimitsConfig {
 	if fp == nil {

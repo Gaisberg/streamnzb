@@ -57,9 +57,13 @@ type Snapshot struct {
 	DedupOutput int `json:"dedup_output,omitempty"`
 	BadFiltered int `json:"bad_filtered,omitempty"`
 
-	ProfileName  string            `json:"profile_name,omitempty"`
-	ProfileInput int               `json:"profile_input,omitempty"`
-	ProfileKept  int               `json:"profile_kept,omitempty"`
+	ProfileName string `json:"profile_name,omitempty"`
+	// ProfileInput and ProfileKept are not omitempty: a profile that saw
+	// nothing, or kept nothing, reports a real zero, and omitting it left the
+	// history panel rendering "undefined → undefined" for exactly the searches
+	// worth explaining. ProfileName stays the flag for whether a profile ran.
+	ProfileInput int               `json:"profile_input"`
+	ProfileKept  int               `json:"profile_kept"`
 	Rejected     []RejectedRelease `json:"rejected,omitempty"`
 
 	// UnairedAirsAt (RFC 3339) is set when the search was short-circuited

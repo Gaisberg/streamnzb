@@ -742,8 +742,22 @@ func applyTVMazeOverlay(video *MetaVideo, overlay map[[2]int]tvmaze.Episode) {
 // air dates stand. Returns nil when the profile disables TVMaze air dates —
 // a nil profile keeps the default-on behavior, which is what the search-path
 // unaired gate wants for streams with no metadata profile bound.
+// tvmazeEpisodeOverlay is the display-side overlay: it fills the air dates a
+// meta response shows, so the profile's TVMaze toggle governs it.
 func (s *Server) tvmazeEpisodeOverlay(ctx context.Context, profile *config.MetadataProfileConfig, imdbID, tvdbID string) map[[2]int]tvmaze.Episode {
-	if s.tvmazeClient == nil || !profile.EffectiveTVMazeAirDates() {
+	if !profile.EffectiveTVMazeAirDates() {
+		return nil
+	}
+	return s.tvmazeEpisodes(ctx, imdbID, tvdbID)
+}
+
+// tvmazeEpisodes fetches a show's episodes with no profile in the way. The
+// air-date gate uses this rather than the overlay above: the gate decides
+// whether indexers are asked at all, which is not a metadata profile's call —
+// a stream with no profile bound is gated the same as one with a profile that
+// happens to display TVDB's air dates.
+func (s *Server) tvmazeEpisodes(ctx context.Context, imdbID, tvdbID string) map[[2]int]tvmaze.Episode {
+	if s.tvmazeClient == nil {
 		return nil
 	}
 	var show *tvmaze.Show

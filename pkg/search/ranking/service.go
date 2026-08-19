@@ -66,6 +66,9 @@ type Profile struct {
 	// content kind; resolved per request in applyLimits since the kind is not
 	// known at compile time.
 	limits map[string]*config.LimitsConfig
+	// scoring adds points for those same attributes, keyed the same way and
+	// resolved per request for the same reason.
+	scoring map[string]*config.ScoringConfig
 	// blockPassworded rejects releases the indexer flags as password protected.
 	blockPassworded bool
 }
@@ -122,6 +125,7 @@ func Compile(fp config.FilterProfileConfig) (*Profile, error) {
 		Spec:              spec,
 		LibraryScoreBonus: fp.EffectiveLibraryScoreBonus(),
 		limits:            fp.Limits,
+		scoring:           fp.Scoring,
 		blockPassworded:   fp.EffectiveBlockPassworded(),
 	}, nil
 }
@@ -165,8 +169,8 @@ type Result struct {
 // Apply runs every candidate through the profile's ranker, drops the ones jhin
 // rejects, and returns them in the profile's sort order. Candidates are always
 // evaluated so that rejected releases can still be explained in the UI. kind
-// selects which of the profile's NZB attribute limits apply; empty applies the
-// default limits only.
+// selects which of the profile's NZB attribute limits and scoring apply; empty
+// applies the default entries only.
 func (p *Profile) Apply(kind string, candidates []triage.Candidate, opts rank.RankOptions) []Result {
 	kept, _ := p.ApplyWithRejected(kind, candidates, opts)
 	return kept
@@ -176,9 +180,14 @@ func (p *Profile) Apply(kind string, candidates []triage.Candidate, opts rank.Ra
 // still carrying the reasons jhin refused it. A profile that filters a result
 // set down to nothing looks identical to an indexer that found nothing unless
 // the rejections survive this call, so diagnostics use this form.
+//
+// Between judging and sorting, the profile's NZB attribute limits reject and
+// its attribute scoring re-ranks — neither is anything jhin can see, since both
+// read the NZB rather than the title.
 func (p *Profile) ApplyWithRejected(kind string, candidates []triage.Candidate, opts rank.RankOptions) (kept, rejected []Result) {
 	results := p.Evaluate(candidates, opts)
 	p.applyLimits(kind, results)
+	p.applyScoring(kind, results)
 
 	kept = results[:0]
 	for _, r := range results {

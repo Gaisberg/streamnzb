@@ -216,3 +216,42 @@ func TestRenameStreamToSameNameIsANoop(t *testing.T) {
 		t.Fatal("the stream should still be there")
 	}
 }
+
+func TestUnairedSearchGateRoundTrips(t *testing.T) {
+	cfg := &config.Config{
+		LoadedPath: filepath.Join(t.TempDir(), "config.json"),
+		Streams: map[string]*config.StreamEntry{
+			"default": {Username: "default", Token: "token-default"},
+		},
+	}
+	dm := &StreamManager{cfg: cfg, saveFn: func() error { return nil }}
+	if err := dm.load(); err != nil {
+		t.Fatalf("load returned error: %v", err)
+	}
+
+	// Unset is the default, and the default is on.
+	if !(&Stream{}).EffectiveUnairedSearchGate() {
+		t.Error("an unconfigured stream should keep the gate")
+	}
+	if (*Stream)(nil).EffectiveUnairedSearchGate() != true {
+		t.Error("a nil stream should keep the gate")
+	}
+
+	off := false
+	if err := dm.UpdateStreamConfig("default", &Stream{UnairedSearchGate: &off}); err != nil {
+		t.Fatalf("UpdateStreamConfig returned error: %v", err)
+	}
+
+	stream, err := dm.GetStream("default", "admin")
+	if err != nil {
+		t.Fatalf("GetStream returned error: %v", err)
+	}
+	if stream.EffectiveUnairedSearchGate() {
+		t.Error("the gate should be off after opting out")
+	}
+	// Stream and StreamEntry are converted into each other by type conversion,
+	// so a field that reaches one but not the other silently disappears on save.
+	if entry := cfg.Streams["default"]; entry.UnairedSearchGate == nil || *entry.UnairedSearchGate {
+		t.Errorf("config entry gate = %v, want an explicit false", entry.UnairedSearchGate)
+	}
+}

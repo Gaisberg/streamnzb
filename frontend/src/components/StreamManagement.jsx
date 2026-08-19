@@ -90,6 +90,7 @@ function normalizeStreamDraft(draft) {
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
     auto_add_providers: draft?.auto_add_providers === true,
     auto_add_indexers: draft?.auto_add_indexers === true,
+    unaired_search_gate: draft?.unaired_search_gate !== false,
     filter_availnzb: draft?.filter_availnzb === true,
     providers,
     provider_connection_limits: pickConnectionLimits(draft?.provider_connection_limits, providers),
@@ -118,6 +119,7 @@ function buildStreamDraft(stream) {
     results_mode: stream?.results_mode,
     auto_add_providers: stream?.auto_add_providers,
     auto_add_indexers: stream?.auto_add_indexers,
+    unaired_search_gate: stream?.unaired_search_gate,
     filter_availnzb: stream?.filter_availnzb,
     providers: stream?.provider_selections || stream?.providers || [],
     provider_connection_limits: stream?.provider_connection_limits || {},
@@ -154,6 +156,7 @@ function buildStreamStateFromDraft(username, token, draft, existingOverrides = {
     results_mode: draft.results_mode,
     auto_add_providers: draft.auto_add_providers,
     auto_add_indexers: draft.auto_add_indexers,
+    unaired_search_gate: draft.unaired_search_gate,
     filter_availnzb: draft.filter_availnzb,
     provider_selections: draft.providers || [],
     provider_connection_limits: draft.provider_connection_limits || {},
@@ -888,6 +891,23 @@ function StreamDialog({
                   Disable automatic sync to manage indexers manually.
                 </p>
               </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Skip unaired episodes</div>
+                  <Switch
+                    checked={draft.unaired_search_gate !== false}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, unaired_search_gate: checked === true }))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Answer with no results instead of asking these indexers for an episode that has not aired
+                  yet. Uses the exact air time where a source knows one, and the whole of the air date where
+                  it only knows a date; a lookup that fails always searches.
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Turn it off if this stream&apos;s indexers carry releases before the listed air date.
+                </p>
+              </div>
               <SelectionSection
                 title="Indexers"
                 values={indexerNames}
@@ -1158,6 +1178,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         results_mode: draft.results_mode,
         auto_add_providers: draft.auto_add_providers,
         auto_add_indexers: draft.auto_add_indexers,
+        unaired_search_gate: draft.unaired_search_gate,
         filter_availnzb: draft.filter_availnzb,
         provider_selections: draft.providers || [],
         provider_connection_limits: draft.provider_connection_limits || {},

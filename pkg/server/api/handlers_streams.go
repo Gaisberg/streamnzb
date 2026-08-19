@@ -58,6 +58,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"results_mode":                d.ResultsMode,
 		"auto_add_providers":          d.AutoAddProviders,
 		"auto_add_indexers":           d.AutoAddIndexers,
+		"unaired_search_gate":         d.UnairedSearchGate,
 		"indexer_overrides":           d.IndexerOverrides,
 		"provider_selections":         d.ProviderSelections,
 		"provider_connection_limits":  d.ProviderConnectionLimits,
@@ -230,6 +231,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		ResultsMode               string                                `json:"results_mode"`
 		AutoAddProviders          *bool                                 `json:"auto_add_providers"`
 		AutoAddIndexers           *bool                                 `json:"auto_add_indexers"`
+		UnairedSearchGate         *bool                                 `json:"unaired_search_gate"`
 		IndexerOverrides          map[string]config.IndexerSearchConfig `json:"indexer_overrides"`
 		ProviderSelections        []string                              `json:"provider_selections"`
 		ProviderConnectionLimits  map[string]int                        `json:"provider_connection_limits"`
@@ -292,6 +294,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			ResultsMode:               dc.ResultsMode,
 			AutoAddProviders:          dc.AutoAddProviders,
 			AutoAddIndexers:           dc.AutoAddIndexers,
+			UnairedSearchGate:         dc.UnairedSearchGate,
 			IndexerOverrides:          indexerOverrides,
 			ProviderSelections:        providerSelections,
 			ProviderConnectionLimits:  connectionLimits,

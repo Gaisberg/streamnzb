@@ -346,8 +346,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
             <div className="min-w-0">
               <Label htmlFor="metadata-tvmaze-airdates" className="text-sm">TVMaze air dates</Label>
               <p className="text-xs text-muted-foreground">
-                Override episode air dates with TVMaze&apos;s exact air times, and skip searching episodes
-                that have not aired yet.
+                Show TVMaze&apos;s exact air times on title pages instead of the source&apos;s own dates;
+                TVMaze keeps them more closely for running shows. Display only — skipping unaired
+                episodes is an indexer setting and always uses the best air time it can find.
               </p>
             </div>
             <Switch

@@ -193,7 +193,13 @@ func ConfigChanged(old, new_ *config.Config) ReloadScope {
 	}
 
 	return ReloadScope{
-		Indexers:  !reflect.DeepEqual(old.Indexers, new_.Indexers),
+		// The global indexer proxy is a top-level field, but it is resolved
+		// into every indexer client at build time (bootstrap falls back to it
+		// when an indexer sets no proxy of its own). Diffing only the indexer
+		// list would leave the running clients on their old transports until
+		// a restart, so changing it counts as an indexer change.
+		Indexers: !reflect.DeepEqual(old.Indexers, new_.Indexers) ||
+			old.IndexerProxyURL != new_.IndexerProxyURL,
 		Providers: !reflect.DeepEqual(old.Providers, new_.Providers),
 		Proxy: old.ProxyHost != new_.ProxyHost ||
 			old.ProxyPort != new_.ProxyPort ||

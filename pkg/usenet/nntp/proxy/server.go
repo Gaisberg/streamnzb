@@ -100,6 +100,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	session.WriteLine("201 StreamNZB NNTP Proxy ready (posting prohibited)")
+	if err := session.Flush(); err != nil {
+		return
+	}
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
@@ -127,6 +130,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if !session.ShouldQuit() {
 				_ = session.WriteLine(fmt.Sprintf("500 %v", err))
 			}
+		}
+
+		// Responses are batched in the session write buffer; nothing reaches
+		// the client until this flush, so it must happen before the session
+		// blocks on the next command (and before a QUIT closes the socket).
+		if err := session.Flush(); err != nil {
+			logger.Debug("NNTP proxy: flush to client failed", "remote", conn.RemoteAddr(), "cmd", cmd, "err", err)
+			return
 		}
 
 		if session.ShouldQuit() {
