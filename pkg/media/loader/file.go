@@ -52,6 +52,10 @@ func decodeAndCloseBody(body io.ReadCloser, decodeFn func(io.Reader) (*decode.Fr
 	return decodeFn(body)
 }
 
+// MaxZeroFills is how many DISTINCT segments of one file may be zero-filled
+// before the file is declared unplayable. Counting distinct indices (rather
+// than fetch attempts) is what makes the cap mean "this release has N holes":
+// seeking back and forth across one damaged segment must not burn the budget.
 const MaxZeroFills = 10
 
 // slowSegmentFetchThreshold flags segment downloads that took long enough to
@@ -66,9 +70,36 @@ func isArticleNotFound(err error) bool {
 }
 
 func (f *File) IsFailed() bool {
+	return f.ZeroFilledSegments() >= MaxZeroFills
+}
+
+// ZeroFilledSegments reports how many distinct segments of this file have been
+// zero-filled so far.
+func (f *File) ZeroFilledSegments() int {
 	f.zeroFillMu.Lock()
 	defer f.zeroFillMu.Unlock()
-	return f.zeroFillCount >= MaxZeroFills
+	return len(f.zeroFilled)
+}
+
+// isZeroFilled reports whether index was already zero-filled, so repeat reads
+// of a known hole return zeros straight away instead of re-fetching an article
+// that all providers have already refused.
+func (f *File) isZeroFilled(index int) bool {
+	f.zeroFillMu.Lock()
+	defer f.zeroFillMu.Unlock()
+	_, ok := f.zeroFilled[index]
+	return ok
+}
+
+// zeroSegment builds the filler for a segment index using the segment map as it
+// stands now, so a hole discovered before size detection still reads back at the
+// mapped length afterwards.
+func (f *File) zeroSegment(index int) []byte {
+	size := f.segmentDecodedLen(index)
+	if size < 0 {
+		size = 0
+	}
+	return make([]byte, size)
 }
 
 type Segment struct {
@@ -91,8 +122,8 @@ type File struct {
 	downloadMu        sync.Mutex
 	inflightDownloads map[int]*inflightSegmentDownload
 
-	zeroFillMu    sync.Mutex
-	zeroFillCount int
+	zeroFillMu sync.Mutex
+	zeroFilled map[int]struct{}
 
 	segmentDetectMu sync.Mutex
 
@@ -139,6 +170,7 @@ func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, 
 		totalSize:         offset,
 		ctx:               ctx,
 		inflightDownloads: make(map[int]*inflightSegmentDownload),
+		zeroFilled:        make(map[int]struct{}),
 	}
 }
 
@@ -550,6 +582,12 @@ func (f *File) ReadAheadSegment(ctx context.Context, index int) {
 }
 
 func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures bool) ([]byte, error) {
+	// A segment already ruled a hole stays a hole: every provider refused it
+	// once, so re-fetching on each pass over the same offset only adds latency
+	// and would double-count the same damage against MaxZeroFills.
+	if index >= 0 && index < len(f.segments) && f.isZeroFilled(index) {
+		return f.zeroSegment(index), nil
+	}
 
 	// Callers wait on a shared in-flight fetch keyed by segment index, but they do
 	// not own the underlying request lifecycle. That shared fetch runs on the file
@@ -656,22 +694,20 @@ func (f *File) finalizeSegmentDownload(index int, data []byte, err error, countF
 	}
 
 	f.zeroFillMu.Lock()
-	count := f.zeroFillCount
-	if count >= MaxZeroFills {
-		f.zeroFillMu.Unlock()
-		return nil, fmt.Errorf("too many failed segments (%d/%d): %w", count+1, MaxZeroFills, errors.Join(ErrTooManyZeroFills, eligible.cause))
+	_, known := f.zeroFilled[index]
+	count := len(f.zeroFilled)
+	if !known {
+		if count >= MaxZeroFills {
+			f.zeroFillMu.Unlock()
+			return nil, fmt.Errorf("too many failed segments (%d/%d): %w", count+1, MaxZeroFills, errors.Join(ErrTooManyZeroFills, eligible.cause))
+		}
+		f.zeroFilled[index] = struct{}{}
+		count++
 	}
-	f.zeroFillCount++
 	f.zeroFillMu.Unlock()
 
-	seg := f.segments[index]
-	size := int(seg.EndOffset - seg.StartOffset)
-	if size < 0 {
-		size = 0
-	}
-	zeroData := make([]byte, size)
-	logger.Trace("Segment download failed, zero-filling", "index", index, "count", count+1, "max", MaxZeroFills, "err", eligible.cause)
-	return zeroData, nil
+	logger.Debug("Segment unavailable, zero-filling gap", "file", f.Name(), "index", index, "holes", count, "max", MaxZeroFills, "err", eligible.cause)
+	return f.zeroSegment(index), nil
 }
 
 func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]byte, error) {
@@ -691,11 +727,22 @@ func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]by
 		data, err = f.fetcher.FetchSegment(downloadCtx, &seg.Segment, f.nzbFile.Groups)
 	}
 	if err != nil {
-		if isArticleNotFound(err) {
-			return nil, fmt.Errorf("segment unavailable: %w", err)
-		}
 		if index == 0 {
+			// The first segment carries the container/volume header: nothing
+			// downstream can make sense of a zero-filled one, so a miss here
+			// stays a fast, definitive verdict about the release.
+			if isArticleNotFound(err) {
+				return nil, fmt.Errorf("segment unavailable: %w", err)
+			}
 			return nil, fmt.Errorf("first segment fetch failed: %w", err)
+		}
+		if isArticleNotFound(err) {
+			// An isolated missing article past the header is a hole, not a dead
+			// release. Hand it to the zero-fill policy, which decides between a
+			// glitch the player rides out and ErrTooManyZeroFills once the file
+			// has accumulated more holes than MaxZeroFills allows. The cause is
+			// preserved either way, so the fatal error still reads as a 430.
+			return nil, &zeroFillEligibleError{cause: fmt.Errorf("segment unavailable: %w", err)}
 		}
 		if isContextErr(err) || !shouldPersistDownloadedSegment(downloadCtx) {
 			if ctxErr := downloadCtx.Err(); ctxErr != nil {

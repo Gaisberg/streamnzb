@@ -231,8 +231,8 @@ func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
 			t.Fatalf("expected zero-filled segment of length 4, got %d", len(got))
 		}
 	}
-	if f.zeroFillCount != 1 {
-		t.Fatalf("expected one shared zero-fill count, got %d", f.zeroFillCount)
+	if got := f.ZeroFilledSegments(); got != 1 {
+		t.Fatalf("expected one shared zero-fill count, got %d", got)
 	}
 }
 

@@ -1071,6 +1071,64 @@ func isDataCorruptErr(err error) bool {
 	return false
 }
 
+// isFatalStreamErr reports whether a playback read error means this release
+// will never deliver the bytes that were asked for: the article is gone from
+// every provider, the data that came back was corrupt, or the file has more
+// holes than the zero-fill policy tolerates. Isolated holes never reach here —
+// the loader fills those and keeps the stream running.
+func isFatalStreamErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isSegmentUnavailableErr(err) || isDataCorruptErr(err) || errors.Is(err, unpack.ErrTooManyZeroFills)
+}
+
+// primeRangeStart pulls the first byte of the range the client asked for before
+// any status line is committed.
+//
+// http.ServeContent writes the 206 and its Content-Length up front and only then
+// starts reading, so a release that cannot deliver the range answers with a
+// full-length response that never produces a byte — the client sits on a promise
+// nobody intends to keep. Reading first turns that into a verdict the handler can
+// still act on, so a fatally damaged release fails over (or ends) promptly
+// instead of stalling behind an honest-looking header.
+//
+// The byte comes from the same stream and the same segment ServeContent would
+// fetch first, and the pool caches both hits and unanimous 430s, so a healthy
+// stream pays a cache lookup rather than a second download.
+func primeRangeStart(stream io.ReadSeeker, rangeHeader string, size int64) error {
+	if stream == nil || size <= 0 {
+		return nil
+	}
+	start := int64(0)
+	if strings.TrimSpace(rangeHeader) != "" {
+		parsed, ok := parseRangeStart(rangeHeader)
+		if !ok {
+			// Suffix, multi-range or malformed: which byte ServeContent sends
+			// first is not knowable here, and priming the wrong one would be a
+			// verdict about an offset nobody asked for.
+			return nil
+		}
+		start = parsed
+	}
+	if start < 0 || start >= size {
+		// Past EOF: ServeContent answers from the size alone, without reading.
+		return nil
+	}
+	if _, err := stream.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	var probe [1]byte
+	_, err := stream.Read(probe[:])
+	if _, seekErr := stream.Seek(0, io.SeekStart); err == nil {
+		err = seekErr
+	}
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
 func isPlayPrepareCancellation(err error) bool {
 	if err == nil || errors.Is(err, ErrPlaybackStartupTimeout) {
 		return false
@@ -1316,13 +1374,16 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 	serveFailureRecorded := false
 	onReadError := func(playbackSessionID string, readErr error) {
 		// Trigger slot failover for any permanent mid-stream error:
-		//   - 430 No Such Article (segment missing across all selected providers)
+		//   - a missing article the loader could not treat as a fillable hole
+		//     (the file's first segment, or a hole past MaxZeroFills)
 		//   - yEnc decode failure (data corruption)
-		//   - ErrTooManyZeroFills (too many segments failed across all providers)
-		// All three mean the slot is unrecoverable. SetSlotFailedDuringPlayback marks it so the
+		//   - ErrTooManyZeroFills (the file accumulated more holes than allowed)
+		// All of them mean the slot is unrecoverable; isolated missing articles do not
+		// reach here, because the loader zero-fills those and playback continues.
+		// SetSlotFailedDuringPlayback marks it so the
 		// existing redirect logic at the top of handlePlay redirects the player to the next slot
 		// on reconnect, without requiring the user to manually switch in Stremio.
-		if !isSegmentUnavailableErr(readErr) && !isDataCorruptErr(readErr) && !errors.Is(readErr, unpack.ErrTooManyZeroFills) {
+		if !isFatalStreamErr(readErr) {
 			return
 		}
 		s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
@@ -1343,6 +1404,34 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 			}
 		}
 	}
+	effectiveRange := r.Header.Get("Range")
+	// Everything past this point belongs to ServeContent: it commits the status
+	// line and Content-Length before its first read, so a failure after it starts
+	// can only truncate a response the client already believes. HEAD carries no
+	// body, so there is nothing to promise and nothing to prove.
+	if r.Method != http.MethodHead {
+		primeErr := primeRangeStart(stream, effectiveRange, size)
+		switch {
+		case isFatalStreamErr(primeErr):
+			logger.Warn("Refusing to advertise a range this release cannot deliver",
+				"session", sessionID, "range", effectiveRange, "size", size, "err", primeErr)
+			onReadError(sessionID, primeErr)
+			closeStream("range unavailable")
+			if streamFailoverEnabled(streamConfig) {
+				s.redirectToNextSlotOrFail(w, r, sessionID, streamConfig,
+					"Redirecting to next fallback (requested range unavailable)")
+			} else {
+				forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+			}
+			return
+		case primeErr != nil:
+			// Timeouts, cancellations and other inconclusive failures are not a
+			// verdict about the release; serve and let the read surface a real one.
+			logger.Debug("Range prime read inconclusive, serving anyway",
+				"session", sessionID, "range", effectiveRange, "err", primeErr)
+		}
+	}
+
 	monitoredStream := &StreamMonitor{
 		ReadSeekCloser: stream,
 		sessionID:      sessionID,
@@ -1404,7 +1493,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 		windowReadBlocked = streamStats.ReadBlocked
 		windowWriteBlocked = writeBlocked
 	}
-	effectiveRange := r.Header.Get("Range")
 	probeLikeServe := false
 	probeLikeServeReason := ""
 
