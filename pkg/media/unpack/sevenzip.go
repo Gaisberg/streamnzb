@@ -67,9 +67,18 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	}
 
 	bestIdx, bestSize := -1, int64(0)
+	compressedMedia := ""
 	candidates := make([]namedEpisodeCandidate, 0, len(fileInfos))
 	for i, fi := range fileInfos {
-		if !IsVideoFile(fi.Name) || fi.Compressed || IsSampleFile(fi.Name) {
+		if !IsVideoFile(fi.Name) || IsSampleFile(fi.Name) {
+			continue
+		}
+		if fi.Compressed {
+			// Remembered so an archive whose media is merely compressed can be
+			// told apart from one where nothing looked like media at all.
+			if compressedMedia == "" {
+				compressedMedia = filepath.Base(fi.Name)
+			}
 			continue
 		}
 		candidates = append(candidates, namedEpisodeCandidate{
@@ -90,7 +99,7 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	}
 
 	if bestIdx == -1 {
-		return nil, errors.New("no uncompressed media found in 7z")
+		return nil, sevenZipNoMediaErr(compressedMedia)
 	}
 
 	fi := fileInfos[bestIdx]
@@ -109,6 +118,17 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	logger.Debug("Created 7z blueprint", "name", bp.MainFileName, "offset", bp.FileOffset, "size", bp.TotalSize, "packed", bp.PackedSize, "encrypted", bp.Encrypted)
 
 	return bp, nil
+}
+
+// sevenZipNoMediaErr separates "every media file in here is compressed" — a
+// structural verdict the release can never recover from — from "nothing in here
+// looked like media", which only says our name matching came up empty and must
+// stay inconclusive.
+func sevenZipNoMediaErr(compressedMedia string) error {
+	if compressedMedia != "" {
+		return fmt.Errorf("compressed 7z archive (file: %s): %w", compressedMedia, ErrCompressedArchive)
+	}
+	return errors.New("no uncompressed media found in 7z")
 }
 
 func TrySevenZipNestedArchive(ctx context.Context, files []UnpackableFile, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, Blueprint, error) {

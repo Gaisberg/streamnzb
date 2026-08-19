@@ -3,6 +3,7 @@ package unpack
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -207,5 +208,22 @@ func TestGetMediaStreamForEpisodeSkipsCachedSevenZipBlueprintForDifferentTarget(
 	}
 	if bp == cachedBP {
 		t.Fatal("expected cached 7z blueprint to be replaced")
+	}
+}
+
+// "Nothing here looked like media" and "the media here is compressed" arrive at
+// the same dead end, but only the second one proves the release will never play.
+func TestSevenZipNoMediaErrOnlyBlamesCompressionWhenCompressedMediaWasSeen(t *testing.T) {
+	compressed := sevenZipNoMediaErr("Show.S01E01.mkv")
+	if !errors.Is(compressed, ErrCompressedArchive) {
+		t.Fatalf("expected ErrCompressedArchive, got %v", compressed)
+	}
+	if !strings.Contains(compressed.Error(), "Show.S01E01.mkv") {
+		t.Fatalf("expected the offending file name in %q", compressed.Error())
+	}
+
+	unrecognized := sevenZipNoMediaErr("")
+	if errors.Is(unrecognized, ErrCompressedArchive) {
+		t.Fatal("an archive with no recognizable media was blamed on compression")
 	}
 }

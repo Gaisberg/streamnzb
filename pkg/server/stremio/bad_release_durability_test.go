@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,13 @@ func TestConclusiveBadRelease(t *testing.T) {
 		{"deadline exceeded", context.DeadlineExceeded, false},
 		{"canceled", context.Canceled, false},
 		{"fast probe heuristic", unpack.ErrArchiveFastProbe, false},
+		// Structural, not circumstantial: a compressed archive cannot be streamed
+		// on any provider or any retry, so the release has to stay marked bad
+		// instead of being re-offered at the top of every search.
+		{"compressed archive", fmt.Errorf("no suitable media stream: RAR scan failed: %w",
+			unpack.ErrCompressedArchive), true},
+		{"compressed archive from a cached blueprint", fmt.Errorf("compressed RAR archive (file: %s): %w",
+			"tjrtajrykjrwji5rikr5.mkv", unpack.ErrCompressedArchive), true},
 		// Both from the field logs: an indexer throttling our grab, and our own
 		// matcher failing to find the episode inside an archive that holds it.
 		// Neither says anything about the release, yet both used to ban it.
@@ -108,5 +116,26 @@ func TestConclusiveBadRelease(t *testing.T) {
 				t.Fatalf("conclusiveBadRelease(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// A compressed release is fully available: every article is on every provider,
+// the bytes are simply packed in a form we cannot stream. Telling AvailNZB the
+// release is unavailable would put a false availability claim in a shared
+// database, so the verdict stays local.
+func TestCompressedArchiveIsNotReportedToAvailNZB(t *testing.T) {
+	server, _ := newBadReleaseTestServer(t)
+	streamErr := fmt.Errorf("no suitable media stream: RAR scan failed: %w", unpack.ErrCompressedArchive)
+
+	if server.shouldReportBadReleaseToAvailNZB(streamErr) {
+		t.Fatal("a compressed archive was reported to AvailNZB as an availability failure")
+	}
+
+	outcome := availOutcomeForFailure(streamErr)
+	if outcome.Status != "skipped" {
+		t.Fatalf("expected a skipped outcome explaining why, got %+v", outcome)
+	}
+	if !strings.Contains(strings.ToLower(outcome.Reason), "compressed") {
+		t.Fatalf("skip reason does not say the release is compressed: %q", outcome.Reason)
 	}
 }

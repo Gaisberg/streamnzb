@@ -17,6 +17,13 @@ import (
 
 var ErrPAR2RepairRequired = errors.New("likely PAR2 repair required")
 
+// ErrCompressedArchive means the release packs its media with real compression
+// instead of STORE mode. Streaming maps byte ranges straight onto the packed
+// volume bytes, so such a release can never play — not on another provider, not
+// on a retry, not after a repair. It is definitive evidence about the release
+// itself, so it must never be softened into an inconclusive fast-probe result.
+var ErrCompressedArchive = errors.New("compressed archive -- STORE mode required for streaming")
+
 // ErrNestedSetIncomplete means an inner archive set was enumerated from an
 // outer scan that could not read every outer volume, so the inner volumes we
 // know about are a subset of what the release actually contains. This is a
@@ -44,7 +51,7 @@ type VirtualPartDef struct {
 
 func StreamFromBlueprint(ctx context.Context, bp *ArchiveBlueprint, password string) (io.ReadSeekCloser, string, int64, error) {
 	if bp.IsCompressed {
-		return nil, "", 0, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", bp.MainFileName)
+		return nil, "", 0, fmt.Errorf("compressed RAR archive (file: %s): %w", bp.MainFileName, ErrCompressedArchive)
 	}
 
 	// Password-protected RAR5 releases sometimes list volumes without
@@ -328,7 +335,7 @@ func ScanArchive(ctx context.Context, files []UnpackableFile, password string, t
 
 		for _, p := range parts {
 			if p.isCompressed {
-				return nil, fmt.Errorf("compressed RAR archive (file: %s) -- STORE mode required for streaming", p.name)
+				return nil, fmt.Errorf("compressed RAR archive (file: %s): %w", p.name, ErrCompressedArchive)
 			}
 		}
 
@@ -1255,7 +1262,7 @@ func tryNestedArchive(ctx context.Context, parts []filePart, allRarFiles []Unpac
 		}
 
 		if compressed {
-			return nil, fmt.Errorf("nested archive %s is compressed", name)
+			return nil, fmt.Errorf("nested archive %s is compressed: %w", name, ErrCompressedArchive)
 		}
 
 		totalSize := fps[0].unpackedSize

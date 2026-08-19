@@ -2002,6 +2002,11 @@ func availOutcomeForFailure(err error) availnzb.ReportOutcome {
 	}
 	errMsg := strings.TrimSpace(err.Error())
 	switch {
+	// AvailNZB tracks article availability, and a compressed release's articles
+	// are all present — it is simply packed in a form we can never stream. The
+	// local bad-release verdict is durable; the shared database is left alone.
+	case errors.Is(err, unpack.ErrCompressedArchive):
+		return availnzb.SkippedOutcome("Not reported to AvailNZB because the release is compressed rather than unavailable; its articles are fine, it just cannot be streamed.")
 	case errors.Is(err, unpack.ErrArchiveFastProbe):
 		return availnzb.SkippedOutcome("Not reported to AvailNZB because fast mode used heuristic archive probing.")
 	case strings.Contains(strings.ToLower(errMsg), "playback startup timeout"):

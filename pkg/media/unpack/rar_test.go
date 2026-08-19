@@ -654,3 +654,19 @@ func TestTryNestedArchiveCapsTheOuterRescan(t *testing.T) {
 		t.Fatal("expected the rescan to try at least some outer volumes")
 	}
 }
+
+func TestStreamFromBlueprintCompressedIsDefinitive(t *testing.T) {
+	bp := &ArchiveBlueprint{
+		MainFileName: "tjrtajrykjrwji5rikr5.mkv",
+		TotalSize:    1000,
+		IsCompressed: true,
+	}
+
+	_, _, _, err := StreamFromBlueprint(context.Background(), bp, "")
+	if !errors.Is(err, ErrCompressedArchive) {
+		t.Fatalf("expected ErrCompressedArchive, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tjrtajrykjrwji5rikr5.mkv") {
+		t.Fatalf("expected the offending file name in %q", err.Error())
+	}
+}

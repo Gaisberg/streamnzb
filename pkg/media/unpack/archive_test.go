@@ -3,6 +3,7 @@ package unpack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -268,5 +269,34 @@ func TestGetMediaStreamForEpisodeSelectsUnknownNameByContentProbe(t *testing.T) 
 func TestPlausibleLargestDirectFallbackAllowsCommonReleasePunctuation(t *testing.T) {
 	if !isPlausibleLargestDirectFallbackName("Movie, Title '11 [1080p]") {
 		t.Fatal("expected common release punctuation to remain plausible")
+	}
+}
+
+// A compressed archive is a permanent property of the release, so the fast-probe
+// caveat — which exists for scans that may simply not have looked hard enough —
+// must not be stamped onto it. Marking it makes the caller fail open and the
+// release comes back on every search forever.
+func TestMaybeMarkArchiveFastProbeLeavesDefinitiveVerdictsUnmarked(t *testing.T) {
+	compressed := fmt.Errorf("compressed RAR archive (file: %s): %w", "obfuscated.mkv", ErrCompressedArchive)
+
+	got := maybeMarkArchiveFastProbe(context.Background(), compressed)
+	if errors.Is(got, ErrArchiveFastProbe) {
+		t.Fatalf("compressed-archive verdict was softened into a fast-probe result: %v", got)
+	}
+	if !errors.Is(got, ErrCompressedArchive) {
+		t.Fatalf("expected ErrCompressedArchive to survive, got %v", got)
+	}
+}
+
+func TestMaybeMarkArchiveFastProbeStillMarksInconclusiveScanFailures(t *testing.T) {
+	got := maybeMarkArchiveFastProbe(context.Background(), errors.New("RAR header scan failed on 2 volume(s)"))
+	if !errors.Is(got, ErrArchiveFastProbe) {
+		t.Fatalf("expected ErrArchiveFastProbe on an inconclusive scan failure, got %v", got)
+	}
+}
+
+func TestMaybeMarkArchiveFastProbePassesNilThrough(t *testing.T) {
+	if err := maybeMarkArchiveFastProbe(context.Background(), nil); err != nil {
+		t.Fatalf("expected nil, got %v", err)
 	}
 }

@@ -56,12 +56,34 @@ func markArchiveFastProbe(err error) error {
 	return fmt.Errorf("%w: %v", ErrArchiveFastProbe, err)
 }
 
+// definitiveArchiveErrs are structural verdicts about the release itself:
+// reproducible from the same bytes on every provider, every retry, forever.
+// The fast-probe caveat exists for scans that may simply not have looked hard
+// enough, which is not what these say.
+var definitiveArchiveErrs = []error{ErrCompressedArchive}
+
+func isDefinitiveArchiveErr(err error) bool {
+	for _, sentinel := range definitiveArchiveErrs {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
+}
+
 // maybeMarkArchiveFastProbe wraps non-nil errors with ErrArchiveFastProbe.
-// Fast failover mode is always enabled, so archive scan errors are always
-// marked as fast-probe incomplete so callers can avoid reporting them to
-// AvailNZB as definitive bad-release signals.
+// Fast failover mode is always enabled, so archive scan errors are marked as
+// fast-probe incomplete so callers can avoid reporting them to AvailNZB as
+// definitive bad-release signals.
+//
+// Errors that already carry a definitive sentinel are passed through untouched:
+// marking them tells callers to fail open, which leaves a permanently
+// unstreamable release unmarked and re-offered on every single search.
 func maybeMarkArchiveFastProbe(_ context.Context, err error) error {
 	if err == nil {
+		return err
+	}
+	if isDefinitiveArchiveErr(err) {
 		return err
 	}
 	return markArchiveFastProbe(err)
