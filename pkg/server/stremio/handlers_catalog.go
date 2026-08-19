@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -472,20 +473,41 @@ func (s *Server) libraryCatalog(ctx context.Context, def CatalogDef, req catalog
 	return previews, nil
 }
 
-// becauseYouWatchedSeeds caps how many recent titles seed the recommendation
-// row; each costs one (cached) TMDB recommendations request.
+// becauseYouWatchedSeeds caps how many titles seed the recommendation row;
+// each costs one (cached) TMDB recommendations request per page fetched.
 const becauseYouWatchedSeeds = 3
+
+// becauseYouWatchedWindow is how many recent distinct titles compete for the
+// seed slots. Seeds are picked by play count blended with recency inside this
+// window, so an ongoing binge keeps its slot instead of being evicted by
+// every one-off play.
+const becauseYouWatchedWindow = 10
+
+// becauseYouWatchedMaxPages bounds how many recommendation pages per seed a
+// deep scroll may pull; pages beyond the first are fetched only while the
+// requested skip window still needs previews.
+const becauseYouWatchedMaxPages = 3
 
 // watchHistory returns the requesting stream's watched preview ids in recency
 // order (per-stream playback history first, shared library as the fallback
-// ordering), plus a membership set that always folds the library in — a
-// recommendation row must not re-offer what is already at hand.
-func (s *Server) watchHistory(streamName, contentType string) (ordered []string, watched map[string]bool) {
+// ordering), each id's play count (library-only entries stay at zero), plus a
+// membership set that always folds the library in — a recommendation row must
+// not re-offer what is already at hand.
+func (s *Server) watchHistory(streamName, contentType string) (ordered []string, plays map[string]int, watched map[string]bool) {
 	watched = make(map[string]bool)
-	for _, stub := range s.recentPlayedPreviews(streamName, contentType) {
-		if !watched[stub.ID] {
-			watched[stub.ID] = true
-			ordered = append(ordered, stub.ID)
+	plays = make(map[string]int)
+	if s.attemptRecorder != nil {
+		rows, _ := s.attemptRecorder.RecentPlayedContent(streamName, contentType, 300)
+		for _, row := range rows {
+			id := baseContentID(row.ContentID)
+			if id == "" {
+				continue
+			}
+			plays[id]++
+			if !watched[id] {
+				watched[id] = true
+				ordered = append(ordered, id)
+			}
 		}
 	}
 	playedCount := len(ordered)
@@ -507,15 +529,16 @@ func (s *Server) watchHistory(streamName, contentType string) (ordered []string,
 			}
 		}
 	}
-	return ordered, watched
+	return ordered, plays, watched
 }
 
 // becauseYouWatchedCatalog builds a recommendation row from the requesting
-// stream's most recent watches: TMDB's recommendations for the last few
-// distinct titles, interleaved so no single seed dominates, minus everything
-// already watched or in the library.
+// stream's watch history: TMDB's recommendations for the highest-scoring
+// recent titles, interleaved so no single seed dominates, minus everything
+// already watched or in the library. Deep skips lazily pull further
+// recommendation pages instead of ending the row at one page per seed.
 func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
-	ordered, watched := s.watchHistory(req.StreamName, def.Type)
+	ordered, plays, watched := s.watchHistory(req.StreamName, def.Type)
 	if len(ordered) == 0 {
 		return nil, nil
 	}
@@ -524,83 +547,132 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 		mediaType = "movie"
 	}
 
-	var seedTMDBIDs []int
-	seenSeeds := make(map[int]bool)
-	for _, id := range ordered {
-		if len(seedTMDBIDs) >= becauseYouWatchedSeeds {
-			break
-		}
-		if tmdbID := s.tmdbIDForPreviewID(id, def.Type); tmdbID > 0 && !seenSeeds[tmdbID] {
-			seenSeeds[tmdbID] = true
-			seedTMDBIDs = append(seedTMDBIDs, tmdbID)
+	// watchedTMDB mirrors the watched set in TMDB id space, so a
+	// recommendation whose IMDb resolution fails — and therefore falls back
+	// to a tmdb: preview id — still can't re-offer a watched title. It fills
+	// for free: parsed tmdb: preview ids plus every candidate resolved below.
+	watchedTMDB := make(map[int]bool)
+	for id := range watched {
+		if raw, ok := strings.CutPrefix(id, "tmdb:"); ok {
+			if n, _ := strconv.Atoi(raw); n > 0 {
+				watchedTMDB[n] = true
+			}
 		}
 	}
-	if len(seedTMDBIDs) == 0 {
+
+	// Score the recent window instead of taking the newest three outright:
+	// play count (a binge is many attempt rows) plus a recency bonus for the
+	// newest few, so one rewatch of something old doesn't reshuffle the
+	// whole row.
+	type seed struct {
+		tmdbID    int
+		score     int
+		exhausted bool
+	}
+	var candidates []*seed
+	seenCandidates := make(map[int]bool)
+	for idx, id := range ordered {
+		if len(candidates) >= becauseYouWatchedWindow {
+			break
+		}
+		tmdbID := s.tmdbIDForPreviewID(id, def.Type)
+		if tmdbID <= 0 || seenCandidates[tmdbID] {
+			continue
+		}
+		seenCandidates[tmdbID] = true
+		watchedTMDB[tmdbID] = true
+		score := plays[id]
+		if bonus := becauseYouWatchedSeeds - idx; bonus > 0 {
+			score += bonus
+		}
+		candidates = append(candidates, &seed{tmdbID: tmdbID, score: score})
+	}
+	if len(candidates) == 0 {
 		return nil, nil
 	}
-
-	// One recommendation page per seed, interleaved round-robin so the row
-	// mixes tastes instead of leading with 20 titles like the newest watch.
-	perSeed := make([][]tmdb.SearchMultiResult, 0, len(seedTMDBIDs))
-	for _, seedID := range seedTMDBIDs {
-		resp, err := s.tmdbClient.GetRecommendations(mediaType, seedID, 1, req.Profile.EffectiveLanguage())
-		if err != nil {
-			logger.Debug("TMDB recommendations failed", "tmdb_id", seedID, "err", err)
-			continue
-		}
-		perSeed = append(perSeed, resp.Results)
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	seeds := candidates
+	if len(seeds) > becauseYouWatchedSeeds {
+		seeds = seeds[:becauseYouWatchedSeeds]
 	}
 
-	var merged []tmdb.SearchMultiResult
+	// One recommendation page per seed per round, interleaved round-robin so
+	// the row mixes tastes instead of leading with 20 titles like the top
+	// seed. Later rounds fetch the next page of each non-exhausted seed, and
+	// only run while the skip window still needs previews — deterministic
+	// across requests, so pagination stays coherent.
+	needed := req.Skip + catalogPageSize
 	seenTMDB := make(map[int]bool)
-	for round := 0; ; round++ {
-		advanced := false
-		for _, results := range perSeed {
-			if round >= len(results) {
+	var previews []MetaPreview
+	for page := 1; page <= becauseYouWatchedMaxPages && len(previews) < needed; page++ {
+		perSeed := make([][]tmdb.SearchMultiResult, 0, len(seeds))
+		for _, sd := range seeds {
+			if sd.exhausted {
 				continue
 			}
-			advanced = true
-			res := results[round]
-			if res.ID <= 0 || seenTMDB[res.ID] || seenSeeds[res.ID] {
+			resp, err := s.tmdbClient.GetRecommendations(mediaType, sd.tmdbID, page, req.Profile.EffectiveLanguage())
+			if err != nil {
+				logger.Debug("TMDB recommendations failed", "tmdb_id", sd.tmdbID, "err", err)
+				sd.exhausted = true
 				continue
 			}
-			seenTMDB[res.ID] = true
-			merged = append(merged, res)
+			if page >= resp.TotalPages || len(resp.Results) == 0 {
+				sd.exhausted = true
+			}
+			perSeed = append(perSeed, resp.Results)
 		}
-		if !advanced {
+		if len(perSeed) == 0 {
 			break
 		}
+
+		var merged []tmdb.SearchMultiResult
+		for round := 0; ; round++ {
+			advanced := false
+			for _, results := range perSeed {
+				if round >= len(results) {
+					continue
+				}
+				advanced = true
+				res := results[round]
+				if res.ID <= 0 || seenTMDB[res.ID] || watchedTMDB[res.ID] {
+					continue
+				}
+				seenTMDB[res.ID] = true
+				merged = append(merged, res)
+			}
+			if !advanced {
+				break
+			}
+		}
+
+		if cap, capped := capForProfile(req.Profile); capped {
+			merged = s.filterTMDBResults(mediaType, merged, cap)
+		}
+
+		ids := s.resolveIMDbIDs(mediaType, merged)
+		for i, res := range merged {
+			name := res.Title
+			if name == "" {
+				name = res.Name
+			}
+			if name == "" {
+				continue
+			}
+			id := ids[i]
+			if id == "" {
+				id = fmt.Sprintf("tmdb:%d", res.ID)
+			}
+			if watched[id] {
+				continue
+			}
+			preview := MetaPreview{ID: id, Type: def.Type, Name: name, Description: res.Overview}
+			if res.PosterPath != "" {
+				preview.Poster = tmdbPosterURL + res.PosterPath
+			}
+			previews = append(previews, preview)
+		}
 	}
 
-	if cap, capped := capForProfile(req.Profile); capped {
-		merged = s.filterTMDBResults(mediaType, merged, cap)
-	}
-
-	ids := s.resolveIMDbIDs(mediaType, merged)
-	previews := make([]MetaPreview, 0, len(merged))
-	for i, res := range merged {
-		name := res.Title
-		if name == "" {
-			name = res.Name
-		}
-		if name == "" {
-			continue
-		}
-		id := ids[i]
-		if id == "" {
-			id = fmt.Sprintf("tmdb:%d", res.ID)
-		}
-		if watched[id] {
-			continue
-		}
-		preview := MetaPreview{ID: id, Type: def.Type, Name: name, Description: res.Overview}
-		if res.PosterPath != "" {
-			preview.Poster = tmdbPosterURL + res.PosterPath
-		}
-		previews = append(previews, preview)
-	}
-
-	// Skip/limit over the merged list: at three seeds the pool is ~60 titles.
 	if req.Skip >= len(previews) {
 		return nil, nil
 	}

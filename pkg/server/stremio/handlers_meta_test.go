@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -778,6 +779,209 @@ func TestBecauseYouWatchedCatalog(t *testing.T) {
 	got := resp.Metas[0]
 	if got.ID != "tt0242653" || got.Name != "The Matrix Revolutions" {
 		t.Fatalf("preview = %+v", got)
+	}
+}
+
+// TestBecauseYouWatchedSeedScoring pins the seed selection blend: a binged
+// title (many attempt rows) outranks a newer one-off play, so its
+// recommendations lead the row.
+func TestBecauseYouWatchedSeedScoring(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "byw_scoring_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	mgr, err := persistence.GetManager(tempDir)
+	if err != nil {
+		t.Fatalf("get manager: %v", err)
+	}
+	// Five plays of Reloaded (the binge), then a single play of The Matrix
+	// (the newest watch). Recency alone would seed The Matrix first; the
+	// play-count blend must keep the binge on top.
+	for range 5 {
+		mgr.RecordAttempt(persistence.RecordAttemptParams{
+			StreamName: "test-stream", ContentType: "movie", ContentID: "tt0234215",
+			ContentTitle: "The Matrix Reloaded", ReleaseTitle: "The.Matrix.Reloaded.2003", Success: true,
+		})
+	}
+	mgr.RecordAttempt(persistence.RecordAttemptParams{
+		StreamName: "test-stream", ContentType: "movie", ContentID: "tt0133093",
+		ContentTitle: "The Matrix", ReleaseTitle: "The.Matrix.1999", Success: true,
+	})
+	t.Cleanup(func() { _, _ = mgr.DeleteAttemptsBefore(time.Now().Add(time.Hour)) })
+
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/tt0133093"):
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 603}]}`))
+		case strings.Contains(r.URL.Path, "/find/tt0234215"):
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 604}]}`))
+		case strings.Contains(r.URL.Path, "/movie/603/recommendations"):
+			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 701, "title": "One-Off Rec"}]}`))
+		case strings.Contains(r.URL.Path, "/movie/604/recommendations"):
+			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 700, "title": "Binge Rec"}]}`))
+		case strings.Contains(r.URL.Path, "/movie/700/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 700, "imdb_id": "tt0000700"}`))
+		case strings.Contains(r.URL.Path, "/movie/701/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 701, "imdb_id": "tt0000701"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}, nil, nil)
+	srv.attemptRecorder = mgr
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.because-you-watched.movie", Enabled: true}}
+
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/streamnzb.because-you-watched.movie.json")
+	rec := httptest.NewRecorder()
+	srv.handleCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp CatalogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Metas) != 2 {
+		t.Fatalf("metas = %+v, want both seeds' recommendations", resp.Metas)
+	}
+	if resp.Metas[0].ID != "tt0000700" {
+		t.Fatalf("first = %+v, want the binged seed's recommendation leading", resp.Metas[0])
+	}
+	if resp.Metas[1].ID != "tt0000701" {
+		t.Fatalf("second = %+v", resp.Metas[1])
+	}
+}
+
+// TestBecauseYouWatchedDeepPaging pins the lazy page fetch: while the skip
+// window still needs previews and a seed reports more pages, the next
+// recommendation page is pulled and appended after the first — and no page
+// beyond the reported total is ever requested.
+func TestBecauseYouWatchedDeepPaging(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "byw_paging_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	mgr, err := persistence.GetManager(tempDir)
+	if err != nil {
+		t.Fatalf("get manager: %v", err)
+	}
+	item := &persistence.LibraryItem{ContentType: "movie", ContentID: "tt0133093", ImdbID: "tt0133093", ReleaseTitle: "The.Matrix.1999", Status: "good", NZBData: []byte("<nzb/>")}
+	if err := mgr.LibraryStore().StoreItem(item); err != nil {
+		t.Fatalf("store item: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.LibraryStore().DeleteItem(item.ID) })
+
+	var recRequests atomic.Int32
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/tt0133093"):
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 603}]}`))
+		case strings.Contains(r.URL.Path, "/movie/603/recommendations"):
+			recRequests.Add(1)
+			if r.URL.Query().Get("page") == "2" {
+				_, _ = w.Write([]byte(`{"page": 2, "total_pages": 2, "results": [{"id": 701, "title": "Page Two Rec"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"page": 1, "total_pages": 2, "results": [{"id": 700, "title": "Page One Rec"}]}`))
+		case strings.Contains(r.URL.Path, "/movie/700/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 700, "imdb_id": "tt0000700"}`))
+		case strings.Contains(r.URL.Path, "/movie/701/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 701, "imdb_id": "tt0000701"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}, nil, nil)
+	srv.attemptRecorder = mgr
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.because-you-watched.movie", Enabled: true}}
+
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/streamnzb.because-you-watched.movie.json")
+	rec := httptest.NewRecorder()
+	srv.handleCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp CatalogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Metas) != 2 {
+		t.Fatalf("metas = %+v, want page one and page two merged", resp.Metas)
+	}
+	if resp.Metas[0].ID != "tt0000700" || resp.Metas[1].ID != "tt0000701" {
+		t.Fatalf("metas = %+v, want page order preserved", resp.Metas)
+	}
+	if got := recRequests.Load(); got != 2 {
+		t.Fatalf("recommendation requests = %d, want exactly pages 1 and 2", got)
+	}
+}
+
+// TestBecauseYouWatchedFilterSurvivesFailedResolution pins the TMDB-id-space
+// watched filter: a recommendation of an already-watched title must stay
+// filtered even when its IMDb resolution fails and the preview id would fall
+// back to the tmdb: form, which the tt-keyed watched set can't match.
+func TestBecauseYouWatchedFilterSurvivesFailedResolution(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "byw_fallback_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	mgr, err := persistence.GetManager(tempDir)
+	if err != nil {
+		t.Fatalf("get manager: %v", err)
+	}
+	for _, item := range []*persistence.LibraryItem{
+		{ContentType: "movie", ContentID: "tt0133093", ImdbID: "tt0133093", ReleaseTitle: "The.Matrix.1999", Status: "good", NZBData: []byte("<nzb/>")},
+		{ContentType: "movie", ContentID: "tt0234215", ImdbID: "tt0234215", ReleaseTitle: "The.Matrix.Reloaded.2003", Status: "good", NZBData: []byte("<nzb/>")},
+	} {
+		if err := mgr.LibraryStore().StoreItem(item); err != nil {
+			t.Fatalf("store item: %v", err)
+		}
+		id := item.ID
+		t.Cleanup(func() { _ = mgr.LibraryStore().DeleteItem(id) })
+	}
+
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/tt0133093"):
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 603}]}`))
+		case strings.Contains(r.URL.Path, "/find/tt0234215"):
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 604}]}`))
+		case strings.Contains(r.URL.Path, "/movie/603/recommendations"):
+			// 604 is watched (Reloaded); its external ids carry no imdb_id,
+			// so without the TMDB-id filter it would surface as tmdb:604.
+			_, _ = w.Write([]byte(`{"page": 1, "results": [
+				{"id": 604, "title": "The Matrix Reloaded"},
+				{"id": 605, "title": "The Matrix Revolutions"}
+			]}`))
+		case strings.Contains(r.URL.Path, "/movie/604/recommendations"):
+			_, _ = w.Write([]byte(`{"page": 1, "results": []}`))
+		case strings.Contains(r.URL.Path, "/movie/604/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 604}`))
+		case strings.Contains(r.URL.Path, "/movie/605/external_ids"):
+			_, _ = w.Write([]byte(`{"id": 605, "imdb_id": "tt0242653"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}, nil, nil)
+	srv.attemptRecorder = mgr
+	srv.config.MetadataProfiles[0].Catalogs = []config.CatalogToggle{{ID: "streamnzb.because-you-watched.movie", Enabled: true}}
+
+	req := streamTestRequest(http.MethodGet, "/catalog/movie/streamnzb.because-you-watched.movie.json")
+	rec := httptest.NewRecorder()
+	srv.handleCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp CatalogResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Metas) != 1 {
+		t.Fatalf("metas = %+v, want the watched title filtered despite the tmdb: fallback", resp.Metas)
+	}
+	if resp.Metas[0].ID != "tt0242653" {
+		t.Fatalf("preview = %+v", resp.Metas[0])
 	}
 }
 
