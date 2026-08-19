@@ -66,7 +66,7 @@ func (b *DirectBlueprint) Open(ctx context.Context, files []UnpackableFile, _ st
 		return nil, "", 0, ErrBlueprintFileIndexOutOfRange
 	}
 	f := files[b.FileIndex]
-	stream, err := f.OpenStreamCtx(ctx)
+	stream, err := openPlaybackStream(f, ctx)
 	if err != nil {
 		return nil, "", 0, err
 	}

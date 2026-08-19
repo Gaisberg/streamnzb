@@ -577,6 +577,13 @@ func (f *renamedFile) OpenPlaybackReaderAt(ctx context.Context, offset int64) (i
 	return openPlaybackReaderAt(f.UnpackableFile, ctx, offset)
 }
 
+// Forwarded explicitly: renamedFile embeds the UnpackableFile interface, so a
+// capability the wrapped file offers beyond that interface is not promoted and
+// a type assertion on the wrapper would silently miss it.
+func (f *renamedFile) OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
+	return openPlaybackStream(f.UnpackableFile, ctx)
+}
+
 func (f *renamedFile) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if p, ok := f.UnpackableFile.(playbackPrefetcher); ok {
 		p.PrefetchPlaybackOffset(ctx, offset)

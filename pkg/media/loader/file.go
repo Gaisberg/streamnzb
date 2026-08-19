@@ -868,6 +868,24 @@ func (f *File) OpenStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
 	return NewSegmentReader(ctx, f, 0), nil
 }
 
+// OpenPlaybackStreamCtx opens a seekable stream with the playback read-ahead
+// window, for direct (non-archive) playback of a whole file.
+//
+// OpenStreamCtx is shared with the RAR scan, PAR2 repair and archive-probe
+// paths, which read small pieces and would only waste bandwidth on a deep
+// prefetch — so it keeps DefaultReadAhead. Playback is the opposite case:
+// throughput is read-ahead depth times per-connection rate, and at eight
+// segments in flight a 4K remux runs out of runway (a 67 GB release needs
+// ~7.6 MB/s sustained and was being served 6–8 MB/s, blocked on reads 97% of
+// the time). Multi-volume archive playback already opened its reader with the
+// deeper window; direct playback, the common case, did not.
+func (f *File) OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, error) {
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		return nil, err
+	}
+	return NewSegmentReaderWithReadAhead(ctx, f, 0, PlaybackReadAheadSegments), nil
+}
+
 func (f *File) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
