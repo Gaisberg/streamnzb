@@ -18,12 +18,16 @@ import (
 
 const (
 	maxRepairVolumeBytes = 128 << 20 // 128 MB ceiling for in-memory Volume 1 repair
-	gf16Poly             = 0x1100b   // GF(2^16) generator polynomial x^16 + x^12 + x^3 + x + 1
-	gf16Gen              = 5         // PAR2 generator g = 5
-	gf16Mod              = 65535     // 2^16 - 1
+	par2PacketHeaderSize = 64
+	maxPar2ReadBytes     = 64 << 20 // 64 MB guardrail
+	gf16Poly             = 0x1100b  // GF(2^16) generator polynomial x^16 + x^12 + x^3 + x + 1
+	gf16Gen              = 5        // PAR2 generator g = 5
+	gf16Mod              = 65535    // 2^16 - 1
 )
 
 var (
+	par2PacketMagic      = []byte("PAR2\x00PKT")
+	par2FileDescPacket   = []byte("PAR 2.0\x00FileDesc")
 	par2MainPacketHeader = []byte("PAR 2.0\x00Main\x00\x00\x00\x00")
 	par2RecvPacketHeader = []byte("PAR 2.0\x00RecvSlic")
 
@@ -104,10 +108,14 @@ func gf16Pow(base uint16, exp uint32) uint16 {
 }
 
 type par2FileMeta struct {
-	fileID     [16]byte
-	name       string
-	length     int64
+	fileID [16]byte
+	name   string
+	length int64
+	// hashMD5 covers the whole file; hash16k covers its first 16 KiB (or the
+	// whole file when it is smaller). hash16k is what identifies a file without
+	// reading it: see resolveNamesFromPAR2.
 	hashMD5    [16]byte
+	hash16k    [16]byte
 	sliceStart int
 	sliceCount int
 }
@@ -263,6 +271,7 @@ func parsePAR2Metadata(ctx context.Context, par2Files []UnpackableFile) (*par2Se
 						fileMap[id] = fm
 					}
 					copy(fm.hashMD5[:], body[16:32])
+					copy(fm.hash16k[:], body[32:48])
 					fm.length = int64(binary.LittleEndian.Uint64(body[48:56]))
 					nameRaw := bytes.TrimRight(body[56:], "\x00")
 					fm.name = filepath.Base(string(bytes.ToValidUTF8(nameRaw, nil)))

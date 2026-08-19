@@ -10,6 +10,10 @@ type SegmentData struct {
 	Body         []byte
 	Size         int64
 	ProviderHost string
+	// FileName is the article's yEnc "=ybegin name=". An obfuscated release
+	// carries no usable filename in its NZB subject, and this header is often
+	// the only place the poster left the real one.
+	FileName string
 }
 
 // SegmentCacheBudget limits total segment cache memory across all sessions (0 = no limit).

@@ -72,6 +72,10 @@ type FileInfo struct {
 	IsExtra    bool
 	ParsedInfo *jhin.Result
 
+	// IsObfuscated marks a payload file admitted by elimination rather than by
+	// its subject: see markObfuscatedContentSet.
+	IsObfuscated bool
+
 	// Cached derived values to avoid recomputing string work during sorting
 	// and content grouping. Populated in analyzeFile.
 	pattern     string
@@ -222,6 +226,7 @@ func (n *NZB) GetFileInfo() []*FileInfo {
 			info := analyzeFile(file)
 			infos = append(infos, info)
 		}
+		markObfuscatedContentSet(infos)
 		n.fileInfos = infos
 	})
 	return n.fileInfos
@@ -241,9 +246,7 @@ func largestContentFile(infos []*FileInfo) *FileInfo {
 		if info.Size <= maxSize {
 			continue
 		}
-		if info.IsVideo || info.Extension == ".rar" || info.Extension == ".7z" ||
-			isArchivePart(info.Extension) || isRarVolume(info.Extension) ||
-			isSplitArchivePart(info.Extension) || isRarSplitPart(info.Extension, info.Filename) {
+		if isContentCandidate(info) {
 			maxSize = info.Size
 			largest = info
 		}
@@ -455,9 +458,68 @@ func isContentCandidate(info *FileInfo) bool {
 	if info == nil || info.IsSample || info.IsExtra {
 		return false
 	}
+	return isSubjectClassifiedContent(info) || info.IsObfuscated
+}
+
+// isSubjectClassifiedContent reports whether the subject alone proves the file
+// is payload — a known video container or archive extension.
+func isSubjectClassifiedContent(info *FileInfo) bool {
+	if info == nil || info.IsSample || info.IsExtra {
+		return false
+	}
 	return info.IsVideo || info.Extension == ".rar" || info.Extension == ".7z" ||
 		isArchivePart(info.Extension) || isRarVolume(info.Extension) ||
 		isSplitArchivePart(info.Extension) || isRarSplitPart(info.Extension, info.Filename)
+}
+
+// obfuscatedPattern groups every file of an obfuscated release into one content
+// set. Their subjects are unrelated random tokens, so the per-file pattern that
+// groups a normal release would split each volume into a set of its own and the
+// session would receive a single volume out of dozens.
+const obfuscatedPattern = "\x00obfuscated"
+
+// markObfuscatedContentSet admits a release's payload files when subject-based
+// classification found nothing playable at all. A fully obfuscated post carries
+// random-hash subjects with no extension, so every file classifies as "other"
+// and the release is refused before a single byte is read — even though the real
+// names are recoverable from PAR2, yEnc headers and content signatures once
+// something is allowed to read them.
+//
+// Classification stays subject-first: the moment one file classifies normally,
+// this returns and nothing is marked. Admission here is deliberately coarse
+// (anything not sample/extra, above a relative size floor); telling payload from
+// PAR2 volumes and cover art needs the file's bytes, which is the unpack layer's
+// job, not this one's.
+func markObfuscatedContentSet(infos []*FileInfo) {
+	candidates := make([]*FileInfo, 0, len(infos))
+	for _, info := range infos {
+		if isSubjectClassifiedContent(info) {
+			return
+		}
+		// No extension test here: an obfuscated hash can carry a dot ("abc.xyz.
+		// 1a2b3c"), which reads as an extension and would exclude exactly the
+		// files this exists to admit. Nothing in the release classified, so any
+		// extension present is by definition not a content one, and the sample
+		// / extra checks above already cover PAR2, NFO, art and subtitles.
+		//
+		// There is deliberately no size floor either. A floor looks like cheap
+		// junk filtering, but the smallest file in an obfuscated set is usually
+		// its PAR2 index — the one file that names all the others — and
+		// dropping it forces name recovery onto a multi-megabyte recovery
+		// volume instead. Admitting a stray NFO costs a lazy loader file and
+		// one article; the unpack layer excludes it by content signature.
+		if info == nil || info.IsSample || info.IsExtra {
+			continue
+		}
+		info.IsObfuscated = true
+		candidates = append(candidates, info)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	logger.Debug("NZB admitted an obfuscated content set",
+		"files", len(candidates),
+		"samples", sampleContentFilenames(candidates, 6))
 }
 
 // DescribeMissingContent explains why the NZB yields no playable file, so
@@ -570,6 +632,13 @@ func sortContentFiles(files []*FileInfo) {
 		}
 		if leftCandidate != rightCandidate {
 			return leftCandidate < rightCandidate
+		}
+		// An obfuscated set carries no ordering in its names, so every key below
+		// falls through to size and then to the hash itself — which would sort
+		// the volumes alphabetically and scramble the archive. NZB order is the
+		// poster's own upload order; leave it alone.
+		if left.IsObfuscated && right.IsObfuscated {
+			return false
 		}
 		leftPriority := left.getLeadPriority()
 		rightPriority := right.getLeadPriority()
@@ -690,6 +759,10 @@ func logGetContentFilesEmpty(infos []*FileInfo, mainPattern string) {
 // getFilePattern returns the cached pattern for a file, computing it once.
 func (info *FileInfo) getFilePattern() string {
 	info.patternOnce.Do(func() {
+		if info.IsObfuscated {
+			info.pattern = obfuscatedPattern
+			return
+		}
 		info.pattern = getFilePattern(info.Filename)
 	})
 	return info.pattern

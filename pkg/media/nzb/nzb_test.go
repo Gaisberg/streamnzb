@@ -195,3 +195,106 @@ func TestDescribeMissingContentHandlesEmptyNZB(t *testing.T) {
 		t.Fatal("expected a diagnosis for an NZB with no files")
 	}
 }
+
+// obfuscatedNZB builds a release whose subjects are random hashes with no
+// extension — the "fully obfuscated" shape that subject-based classification
+// cannot recognise at all.
+func obfuscatedNZB() *NZB {
+	files := []File{
+		{Subject: `[01/13] - "aa11bb22cc33dd44.par2" yEnc (1/1)`, Segments: []Segment{{ID: "<p0>", Bytes: 40_000}}},
+		{Subject: `[02/13] - "aa11bb22cc33dd44.vol000+01.par2" yEnc (1/5)`, Segments: []Segment{{ID: "<p1>", Bytes: 3_500_000}}},
+		{Subject: `[03/13] - "0a1b2c3d4e5f6071" yEnc (1/1)`, Segments: []Segment{{ID: "<nfo>", Bytes: 4_000}}},
+	}
+	hashes := []string{
+		"3f8a91b2c7d6e5f4", "9c0d1e2f3a4b5c6d", "7e6d5c4b3a291807", "1122334455667788",
+		"abcdefabcdefabcd", "00112233445566aa", "ffeeddccbbaa9988", "13579bdf2468ace0",
+		"0f1e2d3c4b5a6978", "5a5b5c5d5e5f6061",
+	}
+	for i, h := range hashes {
+		files = append(files, File{
+			Subject:  `[` + string(rune('0'+(i+4)/10)) + string(rune('0'+(i+4)%10)) + `/13] - "` + h + `" yEnc (1/100)`,
+			Segments: []Segment{{ID: "<" + h + ">", Bytes: 70_000_000}},
+		})
+	}
+	return &NZB{Files: files}
+}
+
+func TestObfuscatedReleaseYieldsOneContentSet(t *testing.T) {
+	logger.Init("ERROR")
+
+	n := obfuscatedNZB()
+
+	if detail := n.DescribeMissingContent(); detail != "" {
+		t.Fatalf("obfuscated release reported as having no content: %s", detail)
+	}
+
+	// Every non-PAR2 file lands in one set: the 10 payload files plus the small
+	// unidentified one. Size is deliberately not a filter here — the smallest
+	// file of an obfuscated set is often its PAR2 index, and the unpack layer
+	// is what tells payload from recovery data.
+	files := n.GetSessionContentFilesForEpisode(0, 0, 0)
+	if len(files) != 11 {
+		names := make([]string, 0, len(files))
+		for _, f := range files {
+			names = append(names, f.Filename)
+		}
+		t.Fatalf("expected all 11 non-PAR2 files in one set, got %d (%v)", len(files), names)
+	}
+	for _, f := range files {
+		if f.Extension == ".par2" {
+			t.Fatalf("PAR2 recovery file admitted as content: %q", f.Filename)
+		}
+	}
+	if largest := n.GetLargestContentFile(); largest == nil || largest.Size != 70_000_000 {
+		t.Fatalf("expected a payload file as the largest, got %+v", largest)
+	}
+
+	// The whole set must also survive the pattern-grouped selection path used by
+	// validation and compression-type detection.
+	if got := len(n.GetContentFiles()); got != 11 {
+		t.Fatalf("GetContentFiles() = %d files, want 11", got)
+	}
+}
+
+func TestObfuscatedClassificationStaysSubjectFirst(t *testing.T) {
+	logger.Init("ERROR")
+
+	// One recognisable .mkv alongside extension-less junk: the subject already
+	// classifies the release, so nothing may be admitted by elimination.
+	n := &NZB{Files: []File{
+		{Subject: `Show.S01E01.1080p.mkv`, Segments: []Segment{{ID: "<a>", Bytes: 70_000_000}}},
+		{Subject: `[02/02] - "0a1b2c3d4e5f6071" yEnc (1/1)`, Segments: []Segment{{ID: "<b>", Bytes: 90_000_000}}},
+	}}
+
+	for _, info := range n.GetFileInfo() {
+		if info.IsObfuscated {
+			t.Fatalf("file %q admitted by elimination despite a classified release", info.Filename)
+		}
+	}
+	files := n.GetContentFiles()
+	if len(files) != 1 || files[0].Filename != "Show.S01E01.1080p.mkv" {
+		t.Fatalf("expected only the .mkv, got %v", files)
+	}
+}
+
+func TestObfuscatedContentSetAdmitsDottedHashes(t *testing.T) {
+	logger.Init("ERROR")
+
+	// A hash carrying a dot reads as having an extension, but it is no more a
+	// filename than a bare hash is.
+	n := &NZB{Files: []File{
+		{Subject: `[1/3] - "abc.xyz.1a2b3c4d" yEnc (1/100)`, Segments: []Segment{{ID: "<a>", Bytes: 70_000_000}}},
+		{Subject: `[2/3] - "abc.xyz.5e6f7a8b" yEnc (1/100)`, Segments: []Segment{{ID: "<b>", Bytes: 70_000_000}}},
+		{Subject: `[3/3] - "abc.xyz.par2" yEnc (1/1)`, Segments: []Segment{{ID: "<c>", Bytes: 40_000}}},
+	}}
+
+	files := n.GetSessionContentFilesForEpisode(0, 0, 0)
+	if len(files) != 2 {
+		t.Fatalf("expected both payload files, got %d", len(files))
+	}
+	for _, f := range files {
+		if f.Extension == ".par2" {
+			t.Fatalf("PAR2 file admitted as content: %q", f.Filename)
+		}
+	}
+}

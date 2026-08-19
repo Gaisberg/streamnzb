@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"streamnzb/pkg/core/logger"
@@ -131,6 +132,10 @@ type File struct {
 	firstStatChecked bool
 	firstStatExists  bool
 	firstStatErr     error
+
+	// yencName is the "=ybegin name=" seen on the last decoded article of this
+	// file. Every article of a file repeats it, so one fetch is enough.
+	yencName atomic.Value
 }
 
 type inflightSegmentDownload struct {
@@ -175,6 +180,39 @@ func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, 
 }
 
 func (f *File) Name() string { return f.nzbFile.Subject }
+
+// ReadFirstSegment returns the decoded bytes of the file's first article.
+//
+// Segment 0 always starts at offset 0, so this needs no segment map — unlike
+// ReadAt and every Open* path, which must resolve an arbitrary offset and so
+// probe the whole file first. For a release being identified by its opening
+// bytes that difference is one article per file instead of hundreds.
+func (f *File) ReadFirstSegment(ctx context.Context) ([]byte, error) {
+	if len(f.segments) == 0 {
+		return nil, io.EOF
+	}
+	return f.DownloadSegment(ctx, 0)
+}
+
+// YencFileName returns the filename the poster wrote into this file's yEnc
+// headers, fetching the first segment when no article has been decoded yet.
+// It is the cheapest real name available for a release whose NZB subjects are
+// obfuscated: every article repeats the header, and the first segment is
+// downloaded by archive scanning anyway. Returns "" when the articles carry no
+// name; the fetch error is returned only when nothing could be read at all.
+func (f *File) YencFileName(ctx context.Context) (string, error) {
+	if name, ok := f.yencName.Load().(string); ok && name != "" {
+		return name, nil
+	}
+	if len(f.segments) == 0 {
+		return "", nil
+	}
+	if _, err := f.DownloadSegment(ctx, 0); err != nil {
+		return "", err
+	}
+	name, _ := f.yencName.Load().(string)
+	return name, nil
+}
 
 func (f *File) SetOwnerSessionID(sessionID string) {
 	f.mu.Lock()
@@ -754,6 +792,9 @@ func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]by
 	}
 	if !shouldPersistDownloadedSegment(downloadCtx) {
 		return nil, downloadCtx.Err()
+	}
+	if name := strings.TrimSpace(data.FileName); name != "" {
+		f.yencName.Store(name)
 	}
 	// Don't cache here when using the pool fetcher: the pool already cached by message ID.
 	// Caching again would double memory use (same segment in pool cache + loader segCache) and double-count the budget.

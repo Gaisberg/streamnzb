@@ -201,11 +201,45 @@ func TestGetMediaStreamForEpisodeAllowsLargestDirectFallbackWhenHinted(t *testin
 	}
 }
 
+func TestGetMediaStreamForEpisodeNamesUnknownFileFromItsSignature(t *testing.T) {
+	discardTestLogger(t)
+
+	// An extension-less file whose first bytes are an EBML header: the
+	// signature scan names it, so it is selected as direct media rather than
+	// having to reach the content probe.
+	data := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 1024)...)
+	files := []UnpackableFile{
+		&sizedUnpackableFile{
+			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: data},
+			size:                 80 * 1024 * 1024,
+		},
+	}
+
+	stream, name, _, _, err := GetMediaStreamForEpisodeWithHints(
+		context.Background(),
+		files,
+		nil,
+		"",
+		EpisodeTarget{},
+		StreamSelectionHints{AllowLargestDirectFallback: false},
+	)
+	if err != nil {
+		t.Fatalf("expected signature-named candidate to succeed, got %v", err)
+	}
+	defer stream.Close()
+
+	if name != "abc12345.mkv" {
+		t.Fatalf("expected the recovered container extension on the original stem, got %q", name)
+	}
+}
+
 func TestGetMediaStreamForEpisodeSelectsUnknownNameByContentProbe(t *testing.T) {
 	discardTestLogger(t)
 
-	// Minimal MKV-like prefix (EBML header) is enough for probe validation.
-	data := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 1024)...)
+	// The EBML header sits past offset 0, so the signature scan cannot name the
+	// file and selection has to fall through to the content probe.
+	data := append(make([]byte, 64), []byte{0x1A, 0x45, 0xDF, 0xA3}...)
+	data = append(data, make([]byte, 1024)...)
 	files := []UnpackableFile{
 		&sizedUnpackableFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: data},

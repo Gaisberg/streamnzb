@@ -49,13 +49,20 @@ func SerializeArchiveBlueprint(bp interface{}) ([]byte, bool) {
 		Parts:        make([]serializableVirtualPartDef, 0, len(ab.Parts)),
 	}
 	for _, p := range ab.Parts {
-		if p.VolFile == nil || p.VolFile.Name() == "" {
+		if p.VolFile == nil {
 			return nil, false // can't re-link an unnamed volume
+		}
+		// Record the release's own NZB subject, not a name deobfuscation
+		// recovered: the rename is not persisted, so a replay re-links against
+		// the raw files and would find nothing under a recovered name.
+		volName := originalName(p.VolFile)
+		if volName == "" {
+			return nil, false
 		}
 		s.Parts = append(s.Parts, serializableVirtualPartDef{
 			VirtualStart: p.VirtualStart,
 			VirtualEnd:   p.VirtualEnd,
-			VolFileName:  p.VolFile.Name(),
+			VolFileName:  volName,
 			VolOffset:    p.VolOffset,
 		})
 	}

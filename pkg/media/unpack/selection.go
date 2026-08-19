@@ -138,15 +138,11 @@ func episodeNameMatchRank(name string, target EpisodeTarget) int {
 }
 
 func selectDirectFileIndex(files []UnpackableFile, target EpisodeTarget) (int, error) {
-	return selectDirectFileIndexWithNames(files, target, nil)
-}
-
-func selectDirectFileIndexWithNames(files []UnpackableFile, target EpisodeTarget, nameOverrides map[int]string) (int, error) {
 	firstVideoIdx := -1
 	firstVideoName := ""
 	candidates := make([]namedEpisodeCandidate, 0, len(files))
 	for i, f := range files {
-		name := directFileDisplayName(files, i, nameOverrides)
+		name := ExtractFilename(f.Name())
 		if !IsVideoFile(name) {
 			continue
 		}

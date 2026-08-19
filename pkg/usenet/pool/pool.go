@@ -692,6 +692,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				Body:         frame.Data,
 				Size:         int64(len(frame.Data)),
 				ProviderHost: host,
+				FileName:     frame.FileName,
 			}, providerID: providerID}
 		}(exclude)
 	}
@@ -841,6 +842,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 				Body:         frame.Data,
 				Size:         int64(len(frame.Data)),
 				ProviderHost: host,
+				FileName:     frame.FileName,
 			}, false, nil
 		}()
 		if err != nil {
