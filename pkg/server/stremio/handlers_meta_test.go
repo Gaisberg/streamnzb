@@ -618,7 +618,7 @@ func TestHandleCatalogServesTMDBTrending(t *testing.T) {
 		switch {
 		case strings.Contains(r.URL.Path, "/trending/movie/week"):
 			_, _ = w.Write([]byte(`{"page": 1, "results": [
-				{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg", "overview": "..." },
+				{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg", "backdrop_path": "/m-bg.jpg", "overview": "..." },
 				{"id": 604, "title": "Reloaded"}
 			]}`))
 		case strings.Contains(r.URL.Path, "/movie/603/external_ids"):
@@ -651,6 +651,12 @@ func TestHandleCatalogServesTMDBTrending(t *testing.T) {
 	}
 	if resp.Metas[0].Poster != tmdbPosterURL+"/m.jpg" {
 		t.Fatalf("poster = %q", resp.Metas[0].Poster)
+	}
+	if resp.Metas[0].Background != tmdbBackdropURL+"/m-bg.jpg" {
+		t.Fatalf("background = %q, want the full-size backdrop", resp.Metas[0].Background)
+	}
+	if resp.Metas[1].Background != "" {
+		t.Fatalf("background = %q, want empty without a backdrop", resp.Metas[1].Background)
 	}
 }
 
@@ -685,7 +691,7 @@ func TestContinueWatchingCatalogFromLibrary(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/find/"):
 			_, _ = w.Write([]byte(`{"movie_results": [{"id": 603}]}`))
 		case strings.Contains(r.URL.Path, "/movie/603"):
-			_, _ = w.Write([]byte(`{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg"}`))
+			_, _ = w.Write([]byte(`{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg", "backdrop_path": "/m-bg.jpg"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -710,6 +716,9 @@ func TestContinueWatchingCatalogFromLibrary(t *testing.T) {
 	got := resp.Metas[0]
 	if got.ID != "tt0133093" || got.Name != "The Matrix" || got.Poster != tmdbPosterURL+"/m.jpg" {
 		t.Fatalf("preview = %+v", got)
+	}
+	if got.Background != tmdbBackdropURL+"/m-bg.jpg" {
+		t.Fatalf("background = %q, want the details backdrop", got.Background)
 	}
 	if resp.CacheMaxAge != 0 {
 		t.Fatalf("cacheMaxAge = %d, want 0 (personal catalog)", resp.CacheMaxAge)
@@ -748,7 +757,7 @@ func TestBecauseYouWatchedCatalog(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/movie/603/recommendations"):
 			_, _ = w.Write([]byte(`{"page": 1, "results": [
 				{"id": 604, "title": "The Matrix Reloaded", "poster_path": "/r.jpg"},
-				{"id": 605, "title": "The Matrix Revolutions", "poster_path": "/v.jpg"}
+				{"id": 605, "title": "The Matrix Revolutions", "poster_path": "/v.jpg", "backdrop_path": "/v-bg.jpg"}
 			]}`))
 		case strings.Contains(r.URL.Path, "/movie/604/recommendations"):
 			_, _ = w.Write([]byte(`{"page": 1, "results": []}`))
@@ -779,6 +788,9 @@ func TestBecauseYouWatchedCatalog(t *testing.T) {
 	got := resp.Metas[0]
 	if got.ID != "tt0242653" || got.Name != "The Matrix Revolutions" {
 		t.Fatalf("preview = %+v", got)
+	}
+	if got.Background != tmdbBackdropURL+"/v-bg.jpg" {
+		t.Fatalf("background = %q, want the recommendation backdrop", got.Background)
 	}
 }
 

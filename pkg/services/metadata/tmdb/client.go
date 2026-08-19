@@ -123,6 +123,7 @@ type SearchMultiResult struct {
 	OriginalTitle string `json:"original_title"`
 	OriginalName  string `json:"original_name"`
 	PosterPath    string `json:"poster_path"`
+	BackdropPath  string `json:"backdrop_path"`
 	Overview      string `json:"overview"`
 }
 

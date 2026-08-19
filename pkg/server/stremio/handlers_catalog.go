@@ -220,6 +220,9 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		if res.PosterPath != "" {
 			preview.Poster = tmdbPosterURL + res.PosterPath
 		}
+		if res.BackdropPath != "" {
+			preview.Background = tmdbBackdropURL + res.BackdropPath
+		}
 		previews = append(previews, preview)
 	}
 	return previews, nil
@@ -276,6 +279,7 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 	// so a capped profile filters here for free.
 	cap, capped := capForProfile(req.Profile)
 	ids := make([]string, len(listings))
+	backgrounds := make([]string, len(listings))
 	allowed := make([]bool, len(listings))
 	sem := make(chan struct{}, externalIDConcurrency)
 	var wg sync.WaitGroup
@@ -291,6 +295,7 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 			defer func() { <-sem }()
 			if ext, err := s.tvdbClient.GetSeriesExtended(strconv.Itoa(tvdbID)); err == nil {
 				ids[i] = ext.IMDbID()
+				backgrounds[i] = ext.Background()
 				if capped {
 					allowed[i] = cap.Allows(certification.Resolve(tvdbCertEntries(ext.ContentRatings)))
 				}
@@ -308,7 +313,7 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		if id == "" {
 			id = fmt.Sprintf("tvdb:%d", listing.ID)
 		}
-		preview := MetaPreview{ID: id, Type: def.Type, Name: listing.Name, Description: listing.Overview}
+		preview := MetaPreview{ID: id, Type: def.Type, Name: listing.Name, Description: listing.Overview, Background: backgrounds[i]}
 		if listing.Image != "" {
 			preview.Poster = listing.Image
 			if !strings.HasPrefix(preview.Poster, "http") {
@@ -352,6 +357,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 			Type:        "anime",
 			Name:        item.CanonicalTitle,
 			Poster:      item.PosterImage,
+			Background:  item.CoverImage,
 			Description: item.Synopsis,
 		})
 	}
@@ -669,6 +675,9 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 			if res.PosterPath != "" {
 				preview.Poster = tmdbPosterURL + res.PosterPath
 			}
+			if res.BackdropPath != "" {
+				preview.Background = tmdbBackdropURL + res.BackdropPath
+			}
 			previews = append(previews, preview)
 		}
 	}
@@ -755,15 +764,16 @@ func libraryPreviewID(item *persistence.LibraryItem) string {
 	return ""
 }
 
-// fillPreviewFromMetadata resolves display name and poster for a preview stub
-// through the cached metadata clients, keyed off the preview id. A stub whose
-// resolution fails keeps whatever name it already carries. lang is the
-// profile's display language tag ("" for the English default).
+// fillPreviewFromMetadata resolves display name, poster and background for a
+// preview stub through the cached metadata clients, keyed off the preview id.
+// A stub whose resolution fails keeps whatever name it already carries. lang
+// is the profile's display language tag ("" for the English default).
 func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPreview, contentType, lang string) {
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, kitsuID); err == nil && animeMeta.CanonicalTitle != "" {
 			preview.Name = animeMeta.CanonicalTitle
 			preview.Poster = animeMeta.PosterImage
+			preview.Background = animeMeta.CoverImage
 		}
 		return
 	}
@@ -771,6 +781,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		if ext, err := s.tvdbClient.GetSeriesExtendedTranslated(tvdbID, tvdb.LanguageToISO3(lang)); err == nil && ext.Name != "" {
 			preview.Name = ext.Name
 			preview.Poster = ext.Image
+			preview.Background = ext.Background()
 		}
 		return
 	}
@@ -793,6 +804,9 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 			if details.PosterPath != "" {
 				preview.Poster = tmdbPosterURL + details.PosterPath
 			}
+			if details.BackdropPath != "" {
+				preview.Background = tmdbBackdropURL + details.BackdropPath
+			}
 		}
 		return
 	}
@@ -800,6 +814,9 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		preview.Name = details.Name
 		if details.PosterPath != "" {
 			preview.Poster = tmdbPosterURL + details.PosterPath
+		}
+		if details.BackdropPath != "" {
+			preview.Background = tmdbBackdropURL + details.BackdropPath
 		}
 	}
 }

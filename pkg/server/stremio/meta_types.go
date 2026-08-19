@@ -66,12 +66,15 @@ type MetaResponse struct {
 	StaleRevalidate int         `json:"staleRevalidate,omitempty"`
 }
 
-// MetaPreview is a catalog row entry.
+// MetaPreview is a catalog row entry. Background matters beyond the details
+// page: clients build featured-hero banners straight from catalog rows, and
+// without it they upscale the portrait poster into a blurry crop.
 type MetaPreview struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Poster      string `json:"poster,omitempty"`
+	Background  string `json:"background,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 

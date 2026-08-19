@@ -30,8 +30,11 @@ const (
 // tmdbImageBase is the TMDB image CDN; sizes follow the admin search endpoint
 // precedent (w92 thumbnails there) scaled up for full meta views.
 const (
-	tmdbPosterURL   = "https://image.tmdb.org/t/p/w500"
-	tmdbBackdropURL = "https://image.tmdb.org/t/p/w1280"
+	tmdbPosterURL = "https://image.tmdb.org/t/p/w500"
+	// Backdrops render full-bleed as hero/details backgrounds, upscaled past
+	// 1280px on TVs and wide windows — original is the only TMDB size above
+	// w1280, and anything less arrives visibly soft.
+	tmdbBackdropURL = "https://image.tmdb.org/t/p/original"
 	tmdbStillURL    = "https://image.tmdb.org/t/p/w300"
 	tmdbProfileURL  = "https://image.tmdb.org/t/p/w276_and_h350_face"
 	tmdbLogoURL     = "https://image.tmdb.org/t/p/w500"

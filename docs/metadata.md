@@ -25,7 +25,7 @@ StreamNZB is a full metadata provider — your client needs no other addon or ap
 ## Personal rows & artwork
 
 - **Personal rows** — **Continue Watching** and **Because You Watched** are built from each stream's *own* playback history, so every household member with their own stream gets personal rows from the same server.
-- **Artwork** — Backgrounds pick the community's highest-ranked fanart, title logos come from the source itself (TVDB clearlogo, TMDB logo) with Cinemeta's logo CDN as the fallback, and cast lists carry actor photos. Anime title pages upgrade their background and logo through the anime-lists mapping to the matching TVDB/TMDB record, keeping Kitsu's posters.
+- **Artwork** — Catalog rows carry landscape backgrounds alongside posters (TMDB backdrops, TVDB fanart, Kitsu covers), so clients that build featured-hero banners from catalog rows render a proper backdrop instead of an upscaled poster. Backgrounds on title pages pick the community's highest-ranked fanart, title logos come from the source itself (TVDB clearlogo, TMDB logo) with Cinemeta's logo CDN as the fallback, and cast lists carry actor photos. Anime title pages upgrade their background and logo through the anime-lists mapping to the matching TVDB/TMDB record, keeping Kitsu's posters.
 
 ## API keys
 
