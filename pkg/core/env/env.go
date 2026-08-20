@@ -47,6 +47,7 @@ const (
 	StreamNZBEasynewsAdvancedSearchEnv = "STREAMNZB_EASYNEWS_ADVANCED_SEARCH"
 	EasynewsSpamFilterEnv              = "EASYNEWS_SPAM_FILTER"
 	StreamNZBEasynewsSpamFilterEnv     = "STREAMNZB_EASYNEWS_SPAM_FILTER"
+	NNTPPipelineDepthEnv               = "STREAMNZB_NNTP_PIPELINE_DEPTH"
 	EasynewsFileExtensionsEnv          = "EASYNEWS_FILE_EXTENSIONS"
 	StreamNZBEasynewsFileExtensionsEnv = "STREAMNZB_EASYNEWS_FILE_EXTENSIONS"
 )
@@ -217,6 +218,26 @@ func SpeedTestStepSeconds() int {
 	return DefaultSpeedTestStepSeconds
 }
 
+// NNTPPipelineDepth is how many BODY commands a read-ahead batch keeps
+// outstanding on one connection. Unset takes the pool's default; 1 turns
+// pipelining off, which is the escape hatch for a provider that mishandles more
+// than one command in flight. Like the speed-test ceilings this is deliberately
+// env-only: a deployment-level tuning knob shaped by the round-trip time to the
+// provider, not a per-user setting, so it stays out of Config and the UI.
+//
+// Negative values are returned as -1 so the pool can tell "explicitly off" from
+// "unset"; junk parses as unset.
+func NNTPPipelineDepth() int {
+	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(NNTPPipelineDepthEnv)))
+	if err != nil {
+		return 0
+	}
+	if v < 0 {
+		return -1
+	}
+	return v
+}
+
 // EasynewsAdvancedSearch reports whether searches use Easynews' advanced mode,
 // which filters spam and non-video extensions server-side so fewer junk rows
 // ever reach our own filters. On by default — it is what the upstream Easynews
@@ -268,15 +289,16 @@ func positiveInt(name string) int {
 }
 
 type Provider struct {
-	Name        string
-	Host        string
-	Port        int
-	Username    string
-	Password    string
-	Connections int
-	UseSSL      bool
-	Priority    *int
-	Enabled     *bool
+	Name          string
+	Host          string
+	Port          int
+	Username      string
+	Password      string
+	Connections   int
+	UseSSL        bool
+	Priority      *int
+	Enabled       *bool
+	PipelineDepth *int
 }
 
 type Indexer struct {
@@ -404,16 +426,23 @@ func readProvidersFromEnv() []Provider {
 		}
 		priority := getEnvInt(prefix+"PRIORITY", i)
 		enabled := getEnvBool(prefix+"ENABLED", true)
+		// Absent leaves the provider on the deployment default rather than
+		// pinning it to a number the operator never chose.
+		var pipelineDepth *int
+		if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(prefix + "PIPELINE_DEPTH"))); err == nil {
+			pipelineDepth = &v
+		}
 		list = append(list, Provider{
-			Name:        getEnv(prefix+"NAME", fmt.Sprintf("Provider %d", i)),
-			Host:        host,
-			Port:        getEnvInt(prefix+"PORT", 563),
-			Username:    os.Getenv(prefix + "USERNAME"),
-			Password:    os.Getenv(prefix + "PASSWORD"),
-			Connections: getEnvInt(prefix+"CONNECTIONS", 10),
-			UseSSL:      getEnvBool(prefix+"SSL", true),
-			Priority:    &priority,
-			Enabled:     &enabled,
+			Name:          getEnv(prefix+"NAME", fmt.Sprintf("Provider %d", i)),
+			Host:          host,
+			Port:          getEnvInt(prefix+"PORT", 563),
+			Username:      os.Getenv(prefix + "USERNAME"),
+			Password:      os.Getenv(prefix + "PASSWORD"),
+			Connections:   getEnvInt(prefix+"CONNECTIONS", 10),
+			UseSSL:        getEnvBool(prefix+"SSL", true),
+			Priority:      &priority,
+			Enabled:       &enabled,
+			PipelineDepth: pipelineDepth,
 		})
 	}
 	return list

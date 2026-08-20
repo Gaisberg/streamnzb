@@ -283,9 +283,7 @@ func (r *SegmentReader) triggerReadAhead(fromSeg int) {
 		end = totalSegs
 	}
 
-	for i := fromSeg; i < end; i++ {
-		r.file.ReadAheadSegment(raCtx, i)
-	}
+	r.file.ReadAheadRange(raCtx, fromSeg, end)
 }
 
 func (r *SegmentReader) Seek(offset int64, whence int) (int64, error) {

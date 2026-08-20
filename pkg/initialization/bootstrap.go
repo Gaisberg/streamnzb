@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/paths"
@@ -334,10 +335,16 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 	})
 
 	providerOrder := make([]string, 0, len(providers))
+	// Pipeline depth follows the round-trip time to one particular server, so it
+	// is carried per provider rather than folded into the shared pool default.
+	providerDepths := make(map[string]int, len(providers))
 	for _, provider := range providers {
 		poolName := provider.Name
 		if poolName == "" {
 			poolName = provider.Host
+		}
+		if provider.PipelineDepth != nil {
+			providerDepths[poolName] = *provider.PipelineDepth
 		}
 
 		if prev, ok := prevByName[poolName]; ok && providerConnEqual(prev, provider) {
@@ -401,17 +408,19 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 				continue
 			}
 			providerConfigs = append(providerConfigs, pool.ProviderConfig{
-				ID:         name,
-				Priority:   i,
-				IsBackup:   false,
-				ClientPool: cp,
+				ID:            name,
+				Priority:      i,
+				IsBackup:      false,
+				ClientPool:    cp,
+				PipelineDepth: providerDepths[name],
 			})
 		}
 		if len(providerConfigs) > 0 {
 			var err error
 			usenetPool, err = pool.NewPool(&pool.Config{
-				Providers:    providerConfigs,
-				SegmentCache: pool.NewMemorySegmentCacheWithBudget(segmentCacheBudget),
+				Providers:     providerConfigs,
+				SegmentCache:  pool.NewMemorySegmentCacheWithBudget(segmentCacheBudget),
+				PipelineDepth: env.NNTPPipelineDepth(),
 			})
 			if err != nil {
 				logger.Error("Failed to build usenet pool", "err", err)

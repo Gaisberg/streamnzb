@@ -437,6 +437,52 @@ func (f *sessionTrackingFetcher) FetchSegmentFirst(ctx context.Context, segment 
 	return data, err
 }
 
+// PipelineDepth, FetchSegmentsPipelined and FetchConcurrency forward the
+// optional read-ahead batching capability. They live on the base wrapper rather
+// than in a fourth wrapper type: the loader reads a zero depth as "no
+// pipelining", so a base fetcher without the capability degrades to the
+// one-segment-per-connection path without any composition change here.
+func (f *sessionTrackingFetcher) batcher() loader.SegmentBatchFetcher {
+	if f == nil || f.base == nil {
+		return nil
+	}
+	batcher, _ := f.base.(loader.SegmentBatchFetcher)
+	return batcher
+}
+
+func (f *sessionTrackingFetcher) PipelineDepth() int {
+	batcher := f.batcher()
+	if batcher == nil {
+		return 0
+	}
+	return batcher.PipelineDepth()
+}
+
+func (f *sessionTrackingFetcher) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult {
+	batcher := f.batcher()
+	if batcher == nil {
+		return make([]pool.PipelinedResult, len(segments))
+	}
+	results := batcher.FetchSegmentsPipelined(ctx, segments, groups)
+	for i := range results {
+		if results[i].OK {
+			f.record(results[i].Data)
+		}
+	}
+	return results
+}
+
+func (f *sessionTrackingFetcher) FetchConcurrency() int {
+	if f == nil || f.base == nil {
+		return 0
+	}
+	hinter, ok := f.base.(loader.FetchConcurrencyHinter)
+	if !ok {
+		return 0
+	}
+	return hinter.FetchConcurrency()
+}
+
 type sessionTrackingFetcherWithStat struct {
 	*sessionTrackingFetcher
 	statter loader.SegmentStatter

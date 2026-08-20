@@ -149,6 +149,15 @@ type Report struct {
 	Steps                []StepResult `json:"steps"`
 	PeakMbps             float64      `json:"peak_mbps"`
 	SuggestedConnections int          `json:"suggested_connections"`
+	// SuggestedPipelineDepth is the articles-per-request this provider's
+	// single-connection step implies, and PipelineGain the speedup it predicts
+	// (1.4 = 40% faster). Zero depth means the run could not support a
+	// suggestion; 1 means the gap is too small to be worth pipelining at all.
+	// The gain applies per connection, so it is what the provider is worth once
+	// read-ahead has run out of connections — not a promise about a stream that
+	// still has spare ones.
+	SuggestedPipelineDepth int     `json:"suggested_pipeline_depth"`
+	PipelineGain           float64 `json:"pipeline_gain"`
 	// PlateauFound reports whether throughput actually stopped rising before
 	// the last step. False means the suggestion is a lower bound: the ramp ran
 	// out of connections before the provider (or the local line) ran out of
@@ -301,6 +310,7 @@ func (t *Tester) Run(ctx context.Context, req Request) (*Report, error) {
 	report.TotalBytes = state.bytes.Load()
 	report.CompletedAt = time.Now()
 	report.PeakMbps, report.SuggestedConnections, report.PlateauFound = peakAndKnee(report.Steps)
+	report.SuggestedPipelineDepth, report.PipelineGain = suggestPipelineDepth(report.Steps)
 	report.Resolutions = resolutionVerdicts(report.Steps, report.PeakMbps)
 	report.Warning = state.warning(report.Steps)
 	if state.looped.Load() {
@@ -317,6 +327,7 @@ func (t *Tester) Run(ctx context.Context, req Request) (*Report, error) {
 
 	logger.Info("Provider speed test finished", "provider", provider.Name,
 		"peak_mbps", report.PeakMbps, "suggested_connections", report.SuggestedConnections,
+		"suggested_pipeline_depth", report.SuggestedPipelineDepth, "pipeline_gain", report.PipelineGain,
 		"downloaded_mb", float64(report.TotalBytes)/(1024*1024))
 	return report, nil
 }

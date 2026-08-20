@@ -54,12 +54,25 @@ type ProviderConfig struct {
 	Priority   int
 	IsBackup   bool
 	ClientPool *nntp.ClientPool
+
+	// PipelineDepth is how many article requests this provider may have
+	// outstanding on one connection. Zero inherits Config.PipelineDepth; 1 or
+	// negative switches pipelining off for this provider alone. The useful
+	// depth follows the round-trip time to that particular server, so a local
+	// primary and an overseas backup rarely want the same number.
+	PipelineDepth int
 }
 
 type Config struct {
 	Providers                  []ProviderConfig
 	SegmentCache               SegmentCache
 	PermanentMissingMaxEntries int
+
+	// PipelineDepth is the deployment default for how many BODY commands a
+	// read-ahead batch keeps outstanding on one connection, used by every
+	// provider that does not set its own. Zero takes DefaultPipelineDepth; 1 or
+	// negative disables pipelining. See pipeline.go.
+	PipelineDepth int
 }
 
 type Pool struct {
@@ -69,6 +82,7 @@ type Pool struct {
 	missing              *permanentMissingSegments
 	providerSig          string
 	articleStats         *articleStatsRegistry
+	pipelineDepth        int
 	consecutive430s      map[string]int
 	consecutiveSuccesses map[string]int
 	cooloffUntil         map[string]time.Time
@@ -427,6 +441,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 		missing:              newPermanentMissingSegments(cfg.PermanentMissingMaxEntries),
 		providerSig:          providerSignature(providers),
 		articleStats:         newArticleStatsRegistry(providers),
+		pipelineDepth:        pipelineDepthOrDefault(cfg.PipelineDepth),
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
 		leases:               newLeaseRegistry(),
@@ -1071,6 +1086,33 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 	return false, nil
 }
 
+// FetchConcurrency reports how many segment fetches this view can keep on the
+// wire at once: the connections its non-backup providers offer, capped by the
+// per-stream lease limit when one applies. It is the width read-ahead can fan
+// out to before extra goroutines only queue up inside getConnection — which is
+// what tells read-ahead whether spending depth on a connection is free or
+// whether it is competing with a connection it could have had instead.
+func (p *Pool) FetchConcurrency() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	total := 0
+	for _, prov := range p.providers {
+		if prov.IsBackup || prov.ClientPool == nil {
+			continue
+		}
+		conns := prov.ClientPool.MaxConn()
+		if limit := p.limiter.limitFor(prov.ID); limit > 0 && limit < conns {
+			conns = limit
+		}
+		total += conns
+	}
+	return total
+}
+
 // StatConcurrency reports how many STATs a single caller should run against
 // this pool at once. Staged fan-out means a STAT normally occupies one
 // connection on the leading provider, so the budget is derived from that
@@ -1341,6 +1383,7 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		missing:              p.missing,
 		providerSig:          providerSignature(subset),
 		articleStats:         p.articleStats,
+		pipelineDepth:        p.pipelineDepth,
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
 		leases:               p.leases,

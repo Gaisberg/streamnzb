@@ -150,3 +150,14 @@ func (l *leaseLimiter) applyLimits(limits map[string]int) {
 	}
 	l.limits = next
 }
+
+// limitFor reports the per-lease connection cap for providerID, or 0 when the
+// provider is uncapped for this lease (or there is no lease at all).
+func (l *leaseLimiter) limitFor(providerID string) int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.limits[strings.TrimSpace(providerID)]
+}

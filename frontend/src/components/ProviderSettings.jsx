@@ -146,7 +146,25 @@ function normalizeProviderDraft(draft) {
     use_ssl: value.use_ssl !== false,
     priority: Number(value.priority || 1),
     enabled: value.enabled !== false,
+    // Left undefined when unset, so it is dropped from the payload and the
+    // provider keeps inheriting the deployment default rather than pinning
+    // whatever number happened to be on screen.
+    pipeline_depth: normalizePipelineDepth(value.pipeline_depth),
   }
+}
+
+// Articles per request. Empty means inherit; 1 means off for this provider
+// alone; anything else is the number of requests it may have outstanding on one
+// connection.
+function normalizePipelineDepth(raw) {
+  const depth = Number(raw)
+  return Number.isFinite(depth) && depth > 0 ? depth : undefined
+}
+
+function describePipelineDepth(depth) {
+  const value = normalizePipelineDepth(depth)
+  if (!value) return null
+  return value === 1 ? 'Pipelining: off' : `Articles per request: ${value}`
 }
 
 function emptyProviderDraft() {
@@ -158,6 +176,8 @@ function summarizeProvider(provider) {
   if (provider.host) parts.push(`${provider.host}:${provider.port || 563}`)
   parts.push(provider.use_ssl !== false ? 'SSL' : 'No SSL')
   parts.push(`Connections: ${provider.connections || 30}`)
+  const pipeline = describePipelineDepth(provider.pipeline_depth)
+  if (pipeline) parts.push(pipeline)
   return parts
 }
 
@@ -464,6 +484,34 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
             <p className="mt-1 text-[10px] text-muted-foreground">
               Using too many connections may lead to slower speeds or errors. If performance drops or connection issues occur, try lowering the number of connections.
             </p>
+
+            <div className={`${rowClass} mt-4 border-t border-border/60 pt-4`}>
+              <div className={labelClass}>
+                <Label className="text-sm font-medium">Articles per request</Label>
+              </div>
+              <div className={controlNarrowClass}>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  value={draft.pipeline_depth ?? ''}
+                  onChange={(event) => update('pipeline_depth', event.target.value === '' ? undefined : Number(event.target.value))}
+                >
+                  <option value="">Default</option>
+                  <option value="1">Off</option>
+                  {[2, 3, 4, 5, 6, 7, 8].map((depth) => (
+                    <option key={depth} value={depth}>{depth}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              How many articles may be requested at once on one connection, so the next article is already arriving when the current one ends. It only takes effect when read-ahead runs out of connections; while there are spare ones, each article still gets its own.
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Higher values pay off the further away the server is: 2 covers a nearby provider, 3 covers a distant one. Leave it on Default unless this provider's latency differs from your others.
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Set it to Off if this provider mishandles more than one request at a time — the symptom is stalled or corrupt playback that clears up once it is off.
+            </p>
           </div>
         </div>
         </div>
@@ -573,12 +621,18 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
     onStatus?.({ type: 'success', message: `Provider "${draft.name || draft.host}" saved successfully.${CACHE_CLEARED_SUFFIX}` })
   }
 
-  // Applying the suggested connection count goes through the normal save path,
-  // so it validates, persists and reloads exactly like an edit in the dialog.
+  // Applying a suggestion goes through the normal save path, so it validates,
+  // persists and reloads exactly like an edit in the dialog.
   const handleApplyConnections = async (index, connections) => {
     const current = providers[index]
     if (!current || !connections) return
     await handleSave(index, { ...normalizeProviderDraft(current), connections })
+  }
+
+  const handleApplyPipelineDepth = async (index, depth) => {
+    const current = providers[index]
+    if (!current || !normalizePipelineDepth(depth)) return
+    await handleSave(index, { ...normalizeProviderDraft(current), pipeline_depth: depth })
   }
 
   const onRequestDelete = async (index) => {
@@ -754,6 +808,7 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
                       onOpenChange={(nextOpen) => setSpeedTestIndex(nextOpen ? index : null)}
                       provider={normalized}
                       onApplyConnections={(connections) => handleApplyConnections(index, connections)}
+                      onApplyPipelineDepth={(depth) => handleApplyPipelineDepth(index, depth)}
                     />
                   </Card>
                 )

@@ -185,7 +185,22 @@ function Panel({ label, value, hint, children }) {
   )
 }
 
-export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyConnections }) {
+// panelColumnsClass keeps the readout row square: Ping alone, Ping plus one
+// suggestion, or all three.
+function panelColumnsClass(hasConnectionSuggestion, hasDepthSuggestion) {
+  const panels = 1 + (hasConnectionSuggestion ? 1 : 0) + (hasDepthSuggestion ? 1 : 0)
+  if (panels >= 3) return 'grid-cols-3'
+  if (panels === 2) return 'grid-cols-2'
+  return 'grid-cols-1'
+}
+
+// pipelineOneConnStep is the step the depth suggestion was measured from, so
+// the explanation under it can quote the same number the backend used.
+function pipelineOneConnStep(steps) {
+  return (steps || []).find((step) => step.connections === 1) || null
+}
+
+export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyConnections, onApplyPipelineDepth }) {
   const providerName = provider?.name || ''
   const [report, setReport] = useState(null)
   const [liveSteps, setLiveSteps] = useState([])
@@ -322,6 +337,16 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
   // input up as a finding. While a run is in flight the toggle is frozen, so it
   // already says which kind of run this is, before any step has landed.
   const canSuggest = running ? !quick : steps.length > 1
+  // Depth is measured from the single-connection step alone, so unlike the
+  // connection suggestion it does not need a plateau — but it does need that
+  // step, which a quick run handed a higher count never produces. Zero means
+  // the run could not support a suggestion at all.
+  const suggestedDepth = report?.suggested_pipeline_depth || 0
+  const pipelineGain = report?.pipeline_gain || 0
+  const configuredDepth = provider?.pipeline_depth ?? null
+  const canApplyDepth = suggestedDepth > 0 && suggestedDepth !== configuredDepth
+  const depthLabel = suggestedDepth === 1 ? 'Off' : suggestedDepth ? `${suggestedDepth}` : '—'
+  const gainLabel = pipelineGain > 1 ? `+${Math.round((pipelineGain - 1) * 100)}% per connection` : 'no gap worth hiding'
   const latency = report?.latency_ms || connectionResult?.latency_ms || 0
   const hasResults = Boolean(report) || steps.length > 0 || running
 
@@ -332,6 +357,18 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
       onOpenChange(false)
     } catch (err) {
       setError(err?.message || 'Failed to apply the suggested connection count')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const handleApplyDepth = async () => {
+    setApplying(true)
+    try {
+      await onApplyPipelineDepth?.(suggestedDepth)
+      onOpenChange(false)
+    } catch (err) {
+      setError(err?.message || 'Failed to apply the suggested articles per request')
     } finally {
       setApplying(false)
     }
@@ -450,7 +487,7 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
                   </div>
                 </Panel>
 
-                <div className={`grid gap-3 ${canSuggest ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                <div className={`grid gap-3 ${panelColumnsClass(canSuggest, suggestedDepth > 0)}`}>
                   <Panel label="Ping" value={formatMs(latency)} hint="DATE round-trip" />
                   {canSuggest && (
                     <Panel
@@ -465,7 +502,18 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
                       }
                     />
                   )}
+                  {suggestedDepth > 0 && (
+                    <Panel label="Articles/request" value={depthLabel} hint={gainLabel} />
+                  )}
                 </div>
+
+                {suggestedDepth > 0 && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Measured from the one-connection step: {formatMs(pipelineOneConnStep(steps)?.ttfb_median_ms)} of every article was
+                    spent waiting for it to start. Requesting several at once hides that — but only once read-ahead has run out of
+                    connections, so it lifts a busy or capped stream rather than an idle one.
+                  </p>
+                )}
 
                 {report && (
                   <p className="text-[10px] text-muted-foreground">
@@ -576,6 +624,12 @@ export function ProviderSpeedTestDialog({ open, onOpenChange, provider, onApplyC
               <Button type="button" variant="outline" onClick={() => void handleApply()} disabled={applying || running}>
                 {applying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Use {suggested} connections
+              </Button>
+            )}
+            {canApplyDepth && (
+              <Button type="button" variant="outline" onClick={() => void handleApplyDepth()} disabled={applying || running}>
+                {applying && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {suggestedDepth === 1 ? 'Turn pipelining off' : `Use ${suggestedDepth} articles/request`}
               </Button>
             )}
             <Button type="button" variant="destructive" onClick={() => onOpenChange(false)} disabled={running}>

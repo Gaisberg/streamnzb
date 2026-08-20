@@ -41,6 +41,22 @@ type StatConcurrencyHinter interface {
 	StatConcurrency() int
 }
 
+// SegmentBatchFetcher is optional: when implemented, read-ahead can hand a run
+// of segments to one connection that keeps several BODY commands outstanding,
+// instead of one connection per segment. Results are aligned with the input
+// slice; anything not returned OK stays the caller's to fetch the ordinary way.
+type SegmentBatchFetcher interface {
+	PipelineDepth() int
+	FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult
+}
+
+// FetchConcurrencyHinter is optional: when implemented, the fetcher reports how
+// many segment fetches it can keep on the wire at once. Read-ahead needs it to
+// tell a spare connection from a contended one — see readAheadBatchSize.
+type FetchConcurrencyHinter interface {
+	FetchConcurrency() int
+}
+
 // defaultStatConcurrency applies when the fetcher offers no hint.
 const defaultStatConcurrency = 4
 
@@ -704,6 +720,13 @@ func (f *File) runInflightDownload(index int, req *inflightSegmentDownload) {
 	}
 	logger.Trace("File runInflightDownload: fetch complete", "file", f.Name(), "index", index, "err", err, "dataLen", len(data))
 
+	f.completeInflightDownload(index, req, data, err)
+}
+
+// completeInflightDownload publishes a result to everyone waiting on req and
+// retires it. A req that is no longer the registered one for index lost a race
+// with a reset and is dropped: its waiters have already moved to the new one.
+func (f *File) completeInflightDownload(index int, req *inflightSegmentDownload, data []byte, err error) {
 	f.downloadMu.Lock()
 	defer f.downloadMu.Unlock()
 
@@ -921,9 +944,7 @@ func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if bgCtx == nil {
 		bgCtx = context.Background()
 	}
-	for i := idx; i < end; i++ {
-		f.ReadAheadSegment(bgCtx, i)
-	}
+	f.ReadAheadRange(bgCtx, idx, end)
 }
 
 // MaxSegmentSizeEstimatorEntries caps the number of size entries to prevent unbounded growth.

@@ -17,3 +17,39 @@ STREAMNZB_SPEEDTEST_MAX_BYTES=4294967296
 STREAMNZB_SPEEDTEST_MAX_SECONDS=60
 STREAMNZB_SPEEDTEST_STEP_SECONDS=6
 ```
+
+## Article pipelining
+
+A segment fetch normally costs one idle round trip per article: the `BODY` for the next one is only sent once the current reply has finished arriving, so the connection sits silent for an RTT between articles. Read-ahead can instead hand a connection several segments at once and let the provider start the next article while the current one is still draining.
+
+Depth and connection count are substitutes, not additions — a read-ahead window is a fixed number of segments, so putting three of them on one connection covers it with three times fewer sockets, and most providers throttle per connection. StreamNZB therefore only pipelines what does not fit: while the stream still has idle connections, every segment gets one to itself exactly as before. Batching starts when connections run out — a per-stream cap, several streams sharing one account, or read-ahead falling behind the read pointer — which is precisely when an extra connection was not available to spend instead.
+
+Anything a batch cannot deliver (a missing article, a connection dropped mid-batch, a provider that never had it) falls back to the ordinary per-segment path, where provider failover and retries live. A batch talks to one provider only; it never decides a segment is missing.
+
+What it is worth depends on the round-trip time to your provider and the bandwidth of one connection — roughly `1 + RTT / (article ÷ per-connection bandwidth)`, measured on a 768 KB article:
+
+| Per-connection bandwidth | 30 ms RTT | 80 ms RTT |
+|---|---|---|
+| 25 Mbit/s | +12% | +31% |
+| 100 Mbit/s | +46% | +117% |
+
+Depth 2 covers a 30 ms link; depth 3 covers 80 ms even on a fast connection, and past that extra depth adds nothing but bytes already committed to a connection when the viewer seeks. The default is 3.
+
+The speed test works this out for you. Its one-connection step measures both halves of an article's cost — the whole per-article time, and the part of it (`TTFB`) spent waiting for the article to start arriving — and pipelining hides exactly that waiting part. The suggested depth is `mean / (mean − TTFB)` rounded up: one request outstanding per unit of speedup. It appears as **Articles/request** in the speed test readout, with the predicted per-connection gain and a one-click apply, next to the suggested connection count.
+
+Two things it will not do. It stays silent when the run had no usable one-connection step (a quick test, or a step the byte ceiling cut short) rather than guessing from a noisy measurement. And the gain it predicts is **per connection** — it is what this provider is worth once read-ahead has run out of connections, not a promise about a stream that still has spare ones.
+
+Because the useful depth follows the round-trip time to one particular server, it is set **per provider** — a nearby primary and an overseas backup rarely want the same number. Each provider card in **Settings → Providers** has **Articles per request** next to the connection count:
+
+- **Default** — inherit the deployment default. Leave it here unless this provider's latency differs from your others.
+- **Off** — never pipeline against this provider. The escape hatch for a server that mishandles more than one outstanding command; the symptom is stalled or corrupt playback that clears up once it is off.
+- **2–8** — pin a depth for this provider alone.
+
+The deployment default that "Default" resolves to, and the value for providers bootstrapped from the environment:
+
+```env
+STREAMNZB_NNTP_PIPELINE_DEPTH=3
+PROVIDER_1_PIPELINE_DEPTH=2
+```
+
+Setting the deployment default to `1` switches pipelining off everywhere except providers that pinned their own depth. Values above 8 are clamped.

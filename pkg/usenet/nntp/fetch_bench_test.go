@@ -32,9 +32,14 @@ const benchBodyBytes = 768000
 type delayedWriter struct {
 	w     io.Writer
 	delay time.Duration
-	ch    chan delayedChunk
-	done  chan struct{}
-	once  sync.Once
+	// bps throttles the link to a fixed bytes/second, on top of delay. Zero
+	// leaves it unthrottled. Without it every benchmark measures a link with
+	// infinite bandwidth, where hiding a round trip looks like the whole cost
+	// of an article rather than the fraction of it a real provider sees.
+	bps  int
+	ch   chan delayedChunk
+	done chan struct{}
+	once sync.Once
 }
 
 type delayedChunk struct {
@@ -42,16 +47,27 @@ type delayedChunk struct {
 	data []byte
 }
 
-func newDelayedWriter(w io.Writer, delay time.Duration) *delayedWriter {
-	d := &delayedWriter{w: w, delay: delay, ch: make(chan delayedChunk, 256), done: make(chan struct{})}
+func newDelayedWriter(w io.Writer, delay time.Duration, bps int) *delayedWriter {
+	d := &delayedWriter{w: w, delay: delay, bps: bps, ch: make(chan delayedChunk, 256), done: make(chan struct{})}
 	go d.pump()
 	return d
 }
 
 func (d *delayedWriter) pump() {
 	defer close(d.done)
+	// nextFree is when the throttled link finishes draining what it has already
+	// accepted, so back-to-back chunks queue behind each other instead of each
+	// paying only its own transmit time.
+	var nextFree time.Time
 	for c := range d.ch {
-		if wait := time.Until(c.at); wait > 0 {
+		at := c.at
+		if d.bps > 0 {
+			if nextFree.After(at) {
+				at = nextFree
+			}
+			nextFree = at.Add(time.Duration(float64(len(c.data)) / float64(d.bps) * float64(time.Second)))
+		}
+		if wait := time.Until(at); wait > 0 {
 			time.Sleep(wait)
 		}
 		if _, err := d.w.Write(c.data); err != nil {
@@ -78,10 +94,15 @@ type benchServer struct {
 	ln    net.Listener
 	body  []byte
 	delay time.Duration
+	bps   int
 	wg    sync.WaitGroup
 }
 
 func startBenchServer(tb testing.TB, delay time.Duration) *benchServer {
+	return startThrottledBenchServer(tb, delay, 0)
+}
+
+func startThrottledBenchServer(tb testing.TB, delay time.Duration, bps int) *benchServer {
 	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -89,7 +110,7 @@ func startBenchServer(tb testing.TB, delay time.Duration) *benchServer {
 	}
 	// A body of realistic size; content is irrelevant since nothing decodes it.
 	body := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+/\r\n"), benchBodyBytes/66)
-	s := &benchServer{ln: ln, body: body, delay: delay}
+	s := &benchServer{ln: ln, body: body, delay: delay, bps: bps}
 	s.wg.Add(1)
 	go s.accept()
 	tb.Cleanup(func() {
@@ -122,8 +143,8 @@ func (s *benchServer) accept() {
 func (s *benchServer) handle(conn net.Conn) {
 	defer conn.Close()
 	var w io.Writer = conn
-	if s.delay > 0 {
-		dw := newDelayedWriter(conn, s.delay)
+	if s.delay > 0 || s.bps > 0 {
+		dw := newDelayedWriter(conn, s.delay, s.bps)
 		defer dw.Close()
 		w = dw
 	}
@@ -315,5 +336,97 @@ func BenchmarkArticleBodyPipelined(b *testing.B) {
 				benchPipelined(b, c, depth)
 			})
 		})
+	}
+}
+
+// Throttled benchmarks: the same comparison on a link with finite bandwidth,
+// which is the only form of it that predicts anything about production.
+//
+// On an unthrottled loopback an article transfers instantly, so the round trip
+// IS the article's cost and pipelining looks like a 6x win. On a real link the
+// article takes size/bandwidth to arrive and the round trip is only the gap in
+// front of it, so the win is 1 + RTT/(size/bandwidth) — large on a fast
+// connection, small on a slow one. These runs bracket that: 25 Mbit is a
+// per-connection rate a throttling provider hands out, 100 Mbit is what an
+// unthrottled one does on a well-peered line.
+var benchLinkRates = []struct {
+	name string
+	bps  int
+}{
+	{"25Mbit", 25_000_000 / 8},
+	{"100Mbit", 100_000_000 / 8},
+}
+
+func forEachThrottledLink(b *testing.B, fn func(b *testing.B, s *benchServer)) {
+	for _, rate := range benchLinkRates {
+		for _, d := range []time.Duration{30 * time.Millisecond, 80 * time.Millisecond} {
+			b.Run(fmt.Sprintf("%s/rtt=%s", rate.name, d), func(b *testing.B) {
+				s := startThrottledBenchServer(b, d, rate.bps)
+				b.SetBytes(benchBodyBytes)
+				b.ResetTimer()
+				fn(b, s)
+			})
+		}
+	}
+}
+
+// BenchmarkThrottledBodyOnly is the production sequence on a finite link: one
+// BODY at a time, one idle round trip between articles.
+func BenchmarkThrottledBodyOnly(b *testing.B) {
+	forEachThrottledLink(b, func(b *testing.B, s *benchServer) {
+		c := benchClient(b, s)
+		if err := c.Group("alt.bench"); err != nil {
+			b.Fatalf("group: %v", err)
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			r, err := c.Body("<bench>")
+			if err != nil {
+				b.Fatalf("body: %v", err)
+			}
+			drainBody(b, r)
+		}
+	})
+}
+
+// BenchmarkThrottledBodyPipelined is the same link driven by BodyPipeline. The
+// delta against BenchmarkThrottledBodyOnly at equal rate and RTT is what
+// read-ahead batching is worth on a connection that is already saturated.
+func BenchmarkThrottledBodyPipelined(b *testing.B) {
+	for _, depth := range []int{2, 3, 4} {
+		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
+			forEachThrottledLink(b, func(b *testing.B, s *benchServer) {
+				c := benchClient(b, s)
+				if err := c.Group("alt.bench"); err != nil {
+					b.Fatalf("group: %v", err)
+				}
+				b.ResetTimer()
+				benchBodyPipeline(b, c, depth)
+			})
+		})
+	}
+}
+
+// benchBodyPipeline drives the production BodyPipeline, keeping depth commands
+// outstanding. Unlike benchPipelined it exercises the shipped type, so a
+// regression in Issue/Next shows up here rather than only in production.
+func benchBodyPipeline(b *testing.B, c *Client, depth int) {
+	p := c.NewBodyPipeline(depth)
+	issued := 0
+	for i := 0; i < b.N; i++ {
+		for issued < b.N && p.Len() < p.Depth() {
+			if err := p.Issue("<bench>"); err != nil {
+				b.Fatalf("issue: %v", err)
+			}
+			issued++
+		}
+		reply, err := p.Next()
+		if err != nil {
+			b.Fatalf("next: %v", err)
+		}
+		if reply.Err != nil {
+			b.Fatalf("article: %v", reply.Err)
+		}
+		drainBody(b, reply.Body)
 	}
 }

@@ -64,6 +64,13 @@ type Provider struct {
 	UseSSL      bool   `json:"use_ssl"`
 	Priority    *int   `json:"priority,omitempty"`
 	Enabled     *bool  `json:"enabled,omitempty"`
+
+	// PipelineDepth is how many article requests this provider may have
+	// outstanding on one connection. Nil inherits the deployment default; 1
+	// switches pipelining off for this provider alone. It is per-provider
+	// because the useful depth follows the round-trip time to that particular
+	// server, which a local primary and an overseas backup do not share.
+	PipelineDepth *int `json:"pipeline_depth,omitempty"`
 }
 
 func ptrBool(b bool) *bool { return &b }
@@ -1716,15 +1723,16 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 	cfg.Providers = make([]Provider, len(o.Providers))
 	for i, p := range o.Providers {
 		cfg.Providers[i] = Provider{
-			Name:        p.Name,
-			Host:        p.Host,
-			Port:        p.Port,
-			Username:    p.Username,
-			Password:    p.Password,
-			Connections: p.Connections,
-			UseSSL:      p.UseSSL,
-			Priority:    p.Priority,
-			Enabled:     p.Enabled,
+			Name:          p.Name,
+			Host:          p.Host,
+			Port:          p.Port,
+			Username:      p.Username,
+			Password:      p.Password,
+			Connections:   p.Connections,
+			UseSSL:        p.UseSSL,
+			Priority:      p.Priority,
+			Enabled:       p.Enabled,
+			PipelineDepth: p.PipelineDepth,
 		}
 	}
 	cfg.Indexers = make([]IndexerConfig, len(o.Indexers))
