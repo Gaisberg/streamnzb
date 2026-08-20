@@ -484,21 +484,6 @@ func TestValidateConfigTMDBAndTVDBAPIKeys(t *testing.T) {
 	}
 }
 
-// Adding a PIN to an already-stored TVDB key arrives as a patch that names only
-// the PIN. Without this the pair would be re-checked on a key edit alone, so the
-// PIN a subscriber key needs to authenticate would never be verified.
-func TestValidationPlanChecksTVDBOnPINOnlyPatch(t *testing.T) {
-	current := &config.Config{TVDBAPIKey: "user-key"}
-	next := &config.Config{TVDBAPIKey: "user-key", TVDBSubscriberPIN: "1234"}
-	body, err := json.Marshal(map[string]any{"tvdb_subscriber_pin": "1234"})
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
-	if plan := validationPlanFromPatch(body, current, next); !plan.validateTVDBAPIKey {
-		t.Fatal("a PIN-only patch must re-validate the TVDB credentials")
-	}
-}
-
 // Resetting a trait back to its default drops its key from the profile's
 // attribute map. The save path unmarshals the patch over the current config, and
 // encoding/json keeps map entries the patch does not mention, so without

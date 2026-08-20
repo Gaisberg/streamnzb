@@ -22,7 +22,6 @@ import (
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/server/web"
 	"streamnzb/pkg/services/availnzb"
-	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/usenet/nntp/proxy"
 
@@ -108,14 +107,8 @@ func main() {
 	availNZBAPIKey := firstNonEmpty(os.Getenv(env.AvailNZBAPIKey), AvailNZBAPIKey)
 	userTMDBKey := firstNonEmpty(os.Getenv(env.TMDBAPIKey), strings.TrimSpace(cfg.TMDBAPIKey))
 	userTVDBKey := firstNonEmpty(os.Getenv(env.TVDBAPIKey), strings.TrimSpace(cfg.TVDBAPIKey))
-	userTVDBPIN := firstNonEmpty(os.Getenv(env.TVDBSubscriberPIN), strings.TrimSpace(cfg.TVDBSubscriberPIN))
 	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
-	// The PIN belongs to the user's own key; the baked-in fallback is a
-	// project key and logs in without one.
-	effectiveTVDBCreds := tvdb.Credentials{APIKey: userTVDBKey, PIN: userTVDBPIN}
-	if effectiveTVDBCreds.APIKey == "" {
-		effectiveTVDBCreds = tvdb.Credentials{APIKey: TVDBKey}
-	}
+	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 
 	dataDir := filepath.Dir(cfg.LoadedPath)
@@ -220,7 +213,6 @@ func main() {
 		AvailNZBAPIKey:     availNZBAPIKey,
 		TMDBAPIKey:         userTMDBKey,
 		TVDBAPIKey:         userTVDBKey,
-		TVDBSubscriberPIN:  userTVDBPIN,
 		FallbackTMDBAPIKey: TMDBKey,
 		FallbackTVDBAPIKey: TVDBKey,
 		DataDir:            dataDir,
@@ -262,7 +254,7 @@ func main() {
 		initialization.WaitForInputAndExit(fmt.Errorf("failed to initialize Stremio server: %v", err))
 	}
 
-	apiServer := api.NewServerWithApp(comp.Config, comp.ProviderPools, sessionManager, stremioServer, comp.Indexer, streamManager, application, availNZBUrl, availNZBAPIKey, effectiveTMDBKey, effectiveTVDBCreds)
+	apiServer := api.NewServerWithApp(comp.Config, comp.ProviderPools, sessionManager, stremioServer, comp.Indexer, streamManager, application, availNZBUrl, availNZBAPIKey, effectiveTMDBKey, effectiveTVDBKey)
 	apiServer.SetIndexerCaps(comp.IndexerCaps)
 	apiServer.SetAttemptLister(stateMgr)
 	stremioServer.SetWebHandler(web.Handler())

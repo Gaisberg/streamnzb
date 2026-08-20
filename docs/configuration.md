@@ -65,7 +65,6 @@ See [Database backends](database.md) for how switching and migration work.
 | `METADATA_ENABLED` | Master switch for the built-in metadata provider — see [Metadata & Catalogs](metadata.md) |
 | `TMDB_API_KEY` | Your own TMDB key (otherwise the built-in fallback key is used) |
 | `TVDB_API_KEY` | Your own TVDB key (otherwise the built-in fallback key is used) |
-| `TVDB_SUBSCRIBER_PIN` | Subscriber PIN for a user-supported TVDB key — required by the keys TheTVDB issues to individuals |
 | `AVAILNZB_URL` | AvailNZB server URL — see [AvailNZB](availnzb.md) |
 | `AVAILNZB_API_KEY` | AvailNZB API key |
 

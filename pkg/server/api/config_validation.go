@@ -191,13 +191,7 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	if _, ok := raw["tmdb_api_key"]; ok {
 		plan.validateTMDBAPIKey = true
 	}
-	// Key and PIN are two halves of one credential: changing either has to
-	// re-check the pair, or a PIN added to an already-stored key would never
-	// be verified.
 	if _, ok := raw["tvdb_api_key"]; ok {
-		plan.validateTVDBAPIKey = true
-	}
-	if _, ok := raw["tvdb_subscriber_pin"]; ok {
 		plan.validateTVDBAPIKey = true
 	}
 	if _, ok := raw["filter_profiles"]; ok {
@@ -701,15 +695,15 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		}(strings.TrimSpace(cfg.TMDBAPIKey))
 	}
 
-	if creds := (tvdb.Credentials{APIKey: cfg.TVDBAPIKey, PIN: cfg.TVDBSubscriberPIN}).Trimmed(); plan.validateTVDBAPIKey && creds.APIKey != "" {
+	if plan.validateTVDBAPIKey && strings.TrimSpace(cfg.TVDBAPIKey) != "" {
 		wg.Add(1)
-		go func(creds tvdb.Credentials) {
+		go func(key string) {
 			defer wg.Done()
-			client := tvdb.NewClient(creds, paths.GetDataDir())
+			client := tvdb.NewClient(key, paths.GetDataDir())
 			if err := client.Ping(); err != nil {
 				setErr("tvdb_api_key", err.Error())
 			}
-		}(creds)
+		}(strings.TrimSpace(cfg.TVDBAPIKey))
 	}
 
 	wg.Wait()

@@ -1,7 +1,6 @@
 package tvdb
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,7 +35,7 @@ func newStubClient(t *testing.T, handler http.HandlerFunc) *Client {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	client := NewClient(Credentials{APIKey: "test-key"}, dir)
+	client := NewClient("test-key", dir)
 	client.BaseURL = server.URL
 	return client
 }
@@ -255,7 +254,7 @@ func TestExtendedSharedCacheAcrossInstances(t *testing.T) {
 		t.Fatalf("first client: %v", err)
 	}
 
-	rebuilt := NewClientWithCache(Credentials{APIKey: "test-key"}, client.dataDir, shared)
+	rebuilt := NewClientWithCache("test-key", client.dataDir, shared)
 	rebuilt.BaseURL = client.BaseURL
 	ext, err := rebuilt.GetSeriesExtended("73739")
 	if err != nil {
@@ -270,7 +269,7 @@ func TestExtendedSharedCacheAcrossInstances(t *testing.T) {
 }
 
 func TestExtendedErrorsWithoutAPIKey(t *testing.T) {
-	client := NewClient(Credentials{}, "")
+	client := NewClient("", "")
 	if _, err := client.GetSeriesExtended("73739"); err == nil {
 		t.Fatal("expected error without API key")
 	}
@@ -323,86 +322,43 @@ func TestResolveTVDBIDPicksSeriesOverMovie(t *testing.T) {
 	}
 }
 
-// loginBodyFor captures the JSON body a login attempt sends. login() is called
-// directly so the assertion is about the request shape, not the token cache.
-func loginBodyFor(t *testing.T, creds Credentials) map[string]string {
-	t.Helper()
-	logger.Init("ERROR")
-	var body map[string]string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		_, _ = w.Write([]byte(`{"status": "success", "data": {"token": "test-token"}}`))
-	}))
-	t.Cleanup(server.Close)
-
-	client := NewClient(creds, t.TempDir())
-	client.BaseURL = server.URL
-	if _, err := client.login(); err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	return body
-}
-
-// TVDB v4 has two key shapes: a project key logs in on the key alone, while a
-// user-supported (subscriber) key only authenticates with the account's PIN
-// alongside it. Sending an empty pin field would break the former, and omitting
-// it entirely made the latter impossible to configure at all.
-func TestLoginSendsSubscriberPINOnlyWhenSet(t *testing.T) {
-	project := loginBodyFor(t, Credentials{APIKey: "project-key"})
-	if project["apikey"] != "project-key" {
-		t.Errorf("apikey = %q, want %q", project["apikey"], "project-key")
-	}
-	if _, ok := project["pin"]; ok {
-		t.Errorf("project-key login must not carry a pin field, got %#v", project)
-	}
-
-	subscriber := loginBodyFor(t, Credentials{APIKey: "  user-key  ", PIN: "  1234  "})
-	if subscriber["apikey"] != "user-key" || subscriber["pin"] != "1234" {
-		t.Errorf("subscriber login = %#v, want trimmed apikey/pin", subscriber)
-	}
-}
-
-// A subscriber key sent without its PIN comes back as a bare 401. The message
-// is what the settings UI shows, so it has to name the likely cause.
-func TestLoginWithoutPINExplains401(t *testing.T) {
+// A key TVDB will not accept comes back as a bare 401. The message is what the
+// settings UI shows, so it has to say what to do about it.
+func TestLoginRejectedKeyExplains401(t *testing.T) {
 	logger.Init("ERROR")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewClient(Credentials{APIKey: "user-key"}, t.TempDir())
+	client := NewClient("rejected-key", t.TempDir())
 	client.BaseURL = server.URL
 	err := client.Ping()
 	if err == nil {
 		t.Fatal("expected a 401 to fail the ping")
 	}
-	if !strings.Contains(err.Error(), "PIN") {
-		t.Errorf("error = %q, want it to mention the subscriber PIN", err)
+	if !strings.Contains(err.Error(), "built-in") {
+		t.Errorf("error = %q, want it to point at the built-in key", err)
 	}
 }
 
-func TestCredentialsFingerprint(t *testing.T) {
-	base := Credentials{APIKey: "key", PIN: "1234"}
-	if base.fingerprint() != (Credentials{APIKey: " key ", PIN: " 1234 "}).fingerprint() {
+func TestCredentialFingerprint(t *testing.T) {
+	if credentialFingerprint("key") != credentialFingerprint("  key  ") {
 		t.Error("fingerprint must ignore surrounding whitespace")
 	}
-	if base.fingerprint() == (Credentials{APIKey: "key", PIN: "5678"}).fingerprint() {
-		t.Error("a changed PIN must change the fingerprint")
-	}
-	if base.fingerprint() == (Credentials{APIKey: "other", PIN: "1234"}).fingerprint() {
+	if credentialFingerprint("key") == credentialFingerprint("other") {
 		t.Error("a changed key must change the fingerprint")
 	}
-	if (Credentials{PIN: "1234"}).fingerprint() != "" {
-		t.Error("credentials without a key have nothing to fingerprint")
+	if credentialFingerprint("") != "" {
+		t.Error("an empty key has nothing to fingerprint")
 	}
 }
 
-// The persisted token is trusted for 25 days, so it has to be pinned to the
-// credentials that minted it. Without that, replacing the API key kept
-// authenticating as the old one until the stored token finally aged out — the
-// new key looked like it had no effect.
-func TestEnsureTokenRefreshesWhenCredentialsChanged(t *testing.T) {
+// The persisted token is trusted for 25 days, so it has to be pinned to the key
+// that minted it. Without that, replacing the API key kept authenticating as the
+// old one until the stored token finally aged out — the new key looked like it
+// had no effect.
+func TestEnsureTokenRefreshesWhenKeyChanged(t *testing.T) {
 	logger.Init("ERROR")
 	var logins atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +367,13 @@ func TestEnsureTokenRefreshesWhenCredentialsChanged(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	dir := t.TempDir()
+	// Not t.TempDir(): the persistence singleton keeps streamnzb.db open for the
+	// life of the process, and its cleanup would fail the test on Windows.
+	dir, err := os.MkdirTemp("", "tvdb_token_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	manager, err := persistence.GetManager(dir)
 	if err != nil {
 		t.Fatalf("state manager: %v", err)
@@ -420,12 +382,12 @@ func TestEnsureTokenRefreshesWhenCredentialsChanged(t *testing.T) {
 	if err := manager.Set(stateKey, tokenState{
 		Token:       "stale-token",
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		Fingerprint: Credentials{APIKey: "old-key"}.fingerprint(),
+		Fingerprint: credentialFingerprint("old-key"),
 	}); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 
-	client := NewClient(Credentials{APIKey: "new-key"}, dir)
+	client := NewClient("new-key", dir)
 	client.BaseURL = server.URL
 	token, err := client.ensureToken()
 	if err != nil {
@@ -435,9 +397,9 @@ func TestEnsureTokenRefreshesWhenCredentialsChanged(t *testing.T) {
 		t.Errorf("token = %q, want the token minted for the new key", token)
 	}
 
-	// The same credentials reuse what was just persisted rather than logging in
-	// on every rebuild of the client.
-	rebuilt := NewClient(Credentials{APIKey: "new-key"}, dir)
+	// The same key reuses what was just persisted rather than logging in on
+	// every rebuild of the client.
+	rebuilt := NewClient("new-key", dir)
 	rebuilt.BaseURL = server.URL
 	if token, err = rebuilt.ensureToken(); err != nil {
 		t.Fatalf("ensureToken on rebuilt client: %v", err)
@@ -446,6 +408,6 @@ func TestEnsureTokenRefreshesWhenCredentialsChanged(t *testing.T) {
 		t.Errorf("rebuilt token = %q, want the persisted one", token)
 	}
 	if got := logins.Load(); got != 1 {
-		t.Errorf("logins = %d, want 1 (unchanged credentials must reuse the stored token)", got)
+		t.Errorf("logins = %d, want 1 (an unchanged key must reuse the stored token)", got)
 	}
 }

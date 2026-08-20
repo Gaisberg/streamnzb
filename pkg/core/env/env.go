@@ -19,7 +19,6 @@ const (
 	AvailNZBAPIKey                     = "AVAILNZB_API_KEY"
 	TMDBAPIKey                         = "TMDB_API_KEY"
 	TVDBAPIKey                         = "TVDB_API_KEY"
-	TVDBSubscriberPIN                  = "TVDB_SUBSCRIBER_PIN"
 	MetadataEnabledEnv                 = "METADATA_ENABLED"
 	NNTPProxyPort                      = "NNTP_PROXY_PORT"
 	NNTPProxyHost                      = "NNTP_PROXY_HOST"
@@ -69,7 +68,6 @@ const (
 	KeyAvailNZBAPIKey     = "availnzb_api_key"
 	KeyTMDBAPIKey         = "tmdb_api_key"
 	KeyTVDBAPIKey         = "tvdb_api_key"
-	KeyTVDBSubscriberPIN  = "tvdb_subscriber_pin"
 	KeyMetadataEnabled    = "metadata_enabled"
 	KeyIndexerQueryHeader = "indexer_query_header"
 	KeyIndexerGrabHeader  = "indexer_grab_header"
@@ -319,7 +317,6 @@ type ConfigOverrides struct {
 	AvailNZBAPIKey     string
 	TMDBAPIKey         string
 	TVDBAPIKey         string
-	TVDBSubscriberPIN  string
 	IndexerQueryHeader string
 	IndexerGrabHeader  string
 	ProviderHeader     string
@@ -382,7 +379,6 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	r.str(&o.AvailNZBAPIKey, KeyAvailNZBAPIKey, AvailNZBAPIKey)
 	r.str(&o.TMDBAPIKey, KeyTMDBAPIKey, TMDBAPIKey)
 	r.str(&o.TVDBAPIKey, KeyTVDBAPIKey, TVDBAPIKey)
-	r.str(&o.TVDBSubscriberPIN, KeyTVDBSubscriberPIN, TVDBSubscriberPIN)
 	if v, ok := os.LookupEnv(MetadataEnabledEnv); ok && v != "" {
 		o.MetadataEnabled = getEnvBool(MetadataEnabledEnv, false)
 		r.keys = append(r.keys, KeyMetadataEnabled)

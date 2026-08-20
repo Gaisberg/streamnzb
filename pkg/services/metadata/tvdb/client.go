@@ -57,38 +57,20 @@ func cachePut(m *sync.Map, key string, value interface{}) {
 	m.Store(key, cacheEntry{value: value, expires: time.Now().Add(metadataCacheTTL)})
 }
 
-// Credentials are the two inputs TVDB v4 /login accepts. A user-supported
-// (subscriber) key only authenticates alongside the subscriber PIN from the
-// account's dashboard; a project key logs in with the key alone and rejects a
-// PIN, so PIN stays empty for those.
-type Credentials struct {
-	APIKey string
-	PIN    string
-}
-
-// Trimmed is the form the client stores: callers pass values straight from
-// config or the environment, where stray whitespace is routine.
-func (c Credentials) Trimmed() Credentials {
-	return Credentials{APIKey: strings.TrimSpace(c.APIKey), PIN: strings.TrimSpace(c.PIN)}
-}
-
-// fingerprint identifies which credential pair a cached token was minted from,
+// credentialFingerprint identifies which key a cached token was minted from,
 // without the persisted state ever holding the key itself. An empty key has no
 // fingerprint: there is nothing to log in with.
-func (c Credentials) fingerprint() string {
-	trimmed := c.Trimmed()
-	if trimmed.APIKey == "" {
+func credentialFingerprint(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
 		return ""
 	}
-	// %q on both halves keeps the pair unambiguous: no key/PIN split can be
-	// re-formed from a different one.
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%q:%q", trimmed.APIKey, trimmed.PIN)))
+	sum := sha256.Sum256([]byte(apiKey))
 	return hex.EncodeToString(sum[:])
 }
 
 type Client struct {
 	apiKey  string
-	pin     string
 	dataDir string
 	client  *http.Client
 	BaseURL string
@@ -107,13 +89,13 @@ type Client struct {
 	cache *metacache.Cache
 }
 
-func NewClient(creds Credentials, dataDir string) *Client {
-	return NewClientWithCache(creds, dataDir, nil)
+func NewClient(apiKey, dataDir string) *Client {
+	return NewClientWithCache(apiKey, dataDir, nil)
 }
 
 // NewClientWithCache builds a client backed by the shared persistent response
 // cache. A nil cache degrades to in-memory-only caching.
-func NewClientWithCache(creds Credentials, dataDir string, cache *metacache.Cache) *Client {
+func NewClientWithCache(apiKey, dataDir string, cache *metacache.Cache) *Client {
 	baseURL := "https://api4.thetvdb.com/v4"
 	if envURL := os.Getenv("STREAMNZB_TVDB_BASE_URL"); envURL != "" {
 		baseURL = envURL
@@ -126,10 +108,8 @@ func NewClientWithCache(creds Credentials, dataDir string, cache *metacache.Cach
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	creds = creds.Trimmed()
 	return &Client{
-		apiKey:  creds.APIKey,
-		pin:     creds.PIN,
+		apiKey:  strings.TrimSpace(apiKey),
 		dataDir: dataDir,
 		client: &http.Client{
 			Timeout:   10 * time.Second,
@@ -192,9 +172,9 @@ type searchRemoteIDResponse struct {
 type tokenState struct {
 	Token     string `json:"token"`
 	CreatedAt string `json:"created_at"`
-	// Fingerprint pins the token to the credentials it was minted from. The
-	// token stays valid for 25 days, so without this a key change kept
-	// authenticating as the old key until the stored token finally expired.
+	// Fingerprint pins the token to the key it was minted from. The token stays
+	// valid for 25 days, so without this a key change kept authenticating as
+	// the old key until the stored token finally expired.
 	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
@@ -214,14 +194,14 @@ func (c *Client) ensureToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get state manager: %w", err)
 	}
-	fingerprint := c.credentials().fingerprint()
+	fingerprint := credentialFingerprint(c.apiKey)
 	var stored tokenState
 	if found, _ := manager.Get(stateKey, &stored); found && stored.Token != "" {
 		if stored.Fingerprint != fingerprint {
 			// A token written before this field existed, or one minted from a
 			// key the user has since replaced. Either way it does not speak
-			// for the current credentials.
-			logger.Debug("TVDB token was minted from different credentials, refreshing")
+			// for the key in use now.
+			logger.Debug("TVDB token was minted from a different API key, refreshing")
 		} else if created, err := time.Parse(time.RFC3339, stored.CreatedAt); err == nil {
 			age := time.Since(created)
 			if age < tokenValidDays*24*time.Hour {
@@ -249,18 +229,8 @@ func (c *Client) ensureToken() (string, error) {
 	return token, nil
 }
 
-// credentials rebuilds the pair the client was constructed with.
-func (c *Client) credentials() Credentials {
-	return Credentials{APIKey: c.apiKey, PIN: c.pin}
-}
-
 func (c *Client) login() (string, error) {
 	body := map[string]string{"apikey": c.apiKey}
-	// Only user-supported keys carry a PIN; sending an empty one would make a
-	// project key's login fail.
-	if c.pin != "" {
-		body["pin"] = c.pin
-	}
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", err
@@ -277,11 +247,11 @@ func (c *Client) login() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// The commonest cause of a rejected key is a user-supported
-		// (subscriber) key sent without its PIN, and TVDB answers that with a
-		// bare 401 — say so rather than leaving the operator with a number.
-		if resp.StatusCode == http.StatusUnauthorized && c.pin == "" {
-			return "", fmt.Errorf("TVDB rejected the API key (401) — a user-supported key also needs its subscriber PIN")
+		// TVDB answers a key it will not accept with a bare 401. Only keys that
+		// log in on their own work here, so name the way out rather than
+		// leaving the operator with a status number.
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", fmt.Errorf("TVDB rejected the API key (401) — check the key, or leave the field blank to use the built-in one")
 		}
 		return "", fmt.Errorf("TVDB login returned status: %d", resp.StatusCode)
 	}

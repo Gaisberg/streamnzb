@@ -351,7 +351,7 @@ func withTVDBStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
 		t.Fatalf("temp dir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	srv.tvdbClient = tvdb.NewClient(tvdb.Credentials{APIKey: "test-key"}, dir)
+	srv.tvdbClient = tvdb.NewClient("test-key", dir)
 	srv.tvdbClient.BaseURL = ts.URL
 }
 

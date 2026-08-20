@@ -409,8 +409,6 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   )
 }
 
-const TVDB_FIELD_IDS = ["metadata-tvdb-key", "metadata-tvdb-pin"]
-
 // keyErrorMessage prefers the per-field reason the backend returns — the live
 // provider check's own words — over the generic "Validation failed" summary.
 function keyErrorMessage(error, fields) {
@@ -457,7 +455,6 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const [keysOpen, setKeysOpen] = useState(false)
   const [tmdbKey, setTmdbKey] = useState("")
   const [tvdbKey, setTvdbKey] = useState("")
-  const [tvdbPin, setTvdbPin] = useState("")
   const [keyStatus, setKeyStatus] = useState({})
   // The last patch committed per group, so re-focusing a field does not fire
   // another provider round trip for a value that already landed.
@@ -475,10 +472,7 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   }, [])
 
   // API keys save on blur. The backend keeps a key the patch does not mention,
-  // so a blank field means "leave the stored one alone" and is never sent. The
-  // TVDB key travels with its subscriber PIN: they are one credential, and the
-  // live check the backend runs on save rejects a user-supported key that
-  // arrives without its PIN.
+  // so a blank field means "leave the stored one alone" and is never sent.
   const commitKeys = (group, fields) => {
     const patch = {}
     Object.entries(fields).forEach(([field, value]) => {
@@ -499,14 +493,6 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
           [group]: { state: "error", message: keyErrorMessage(err, Object.keys(patch)) },
         }))
       })
-  }
-
-  // Tabbing between the key and its PIN must not fire a check on the half the
-  // user has already moved past: a user-supported key on its own is rejected,
-  // and the error would land before they reached the PIN box.
-  const commitTvdb = (event) => {
-    if (TVDB_FIELD_IDS.includes(event?.relatedTarget?.id)) return
-    commitKeys("tvdb", { tvdb_api_key: tvdbKey, tvdb_subscriber_pin: tvdbPin })
   }
 
   return (
@@ -610,24 +596,11 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
                 className="h-9 w-full font-mono text-xs"
                 value={tvdbKey}
                 onChange={(e) => setTvdbKey(e.target.value)}
-                onBlur={commitTvdb}
+                onBlur={() => commitKeys("tvdb", { tvdb_api_key: tvdbKey })}
               />
               <p className="text-xs text-muted-foreground">
                 The default source for series artwork and episode lists, and the resolver for TVDB ids.
-              </p>
-              <Label htmlFor="metadata-tvdb-pin" className="flex items-center gap-1.5 pt-1.5 text-sm">
-                TVDB Subscriber PIN <EnvOverrideIndicator show={envOverrides.includes("tvdb_subscriber_pin")} />
-              </Label>
-              <PasswordInput
-                id="metadata-tvdb-pin"
-                className="h-9 w-full font-mono text-xs"
-                value={tvdbPin}
-                onChange={(e) => setTvdbPin(e.target.value)}
-                onBlur={commitTvdb}
-              />
-              <p className="text-xs text-muted-foreground">
-                Required by the user-supported keys TheTVDB issues to individuals — such a key is
-                rejected without it. Leave blank for a project key.
+                Leave blank to use the built-in key, which has no quota you would need to escape.
               </p>
               <KeySaveStatus status={keyStatus.tvdb} />
             </div>

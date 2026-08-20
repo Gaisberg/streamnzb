@@ -34,7 +34,7 @@ TMDB/TVDB keys are shared by every profile and live in their own section at the 
 A key is verified against its provider as you leave the field and is only stored once the provider answers — if it is rejected, the reason appears under the field and nothing is saved. Two things trip that up:
 
 - **TMDB** wants the long **Read Access Token** from its API settings page, not the short v3 API key.
-- **TVDB** issues two kinds of key. A *user-supported* key — what an individual account gets — only authenticates together with the **subscriber PIN** from the same dashboard, so fill in both fields; a *project* key logs in on its own and leaves the PIN blank.
+- **TVDB** only accepts a key that authenticates on its own. A key from TheTVDB's self-service signup is tied to an individual subscription and is rejected here with a 401 — leave the field blank and use the built-in key instead, which carries no quota you would need to escape.
 
 Saved keys are never shown back, so the fields start blank on every visit; leaving one blank keeps whatever is already stored.
 

@@ -256,7 +256,7 @@ func (s *Server) reloadConfig(newCfg *config.Config) {
 	availNZBURL := s.availNZBURL
 	availNZBAPIKey := s.availNZBAPIKey
 	tmdbAPIKey := s.tmdbAPIKey
-	tvdbCreds := s.tvdbCreds
+	tvdbAPIKey := s.tvdbAPIKey
 	s.mu.RUnlock()
 	availClient := availnzb.NewClient(availNZBURL, availNZBAPIKey)
 	tmdbClient := s.cachedTMDBClient(tmdbAPIKey)
@@ -264,7 +264,7 @@ func (s *Server) reloadConfig(newCfg *config.Config) {
 	if dataDir == "" {
 		dataDir, _ = os.Getwd()
 	}
-	tvdbClient := tvdb.NewClientWithCache(tvdbCreds, dataDir, s.metadataCache("tvdb"))
+	tvdbClient := tvdb.NewClientWithCache(tvdbAPIKey, dataDir, s.metadataCache("tvdb"))
 	comp := &app.Components{
 		Config:               base.Config,
 		Indexer:              base.Indexer,
