@@ -22,6 +22,10 @@ type explainRequest struct {
 	Profile     *config.FilterProfileConfig `json:"profile,omitempty"`
 	ProfileName string                      `json:"profile_name,omitempty"`
 	TargetTitle string                      `json:"target_title,omitempty"`
+	// Kind selects which scoped rules and per-kind limits apply, so a profile
+	// tuned per content kind can be previewed as each of them. Empty exercises
+	// the rules that apply everywhere.
+	Kind string `json:"kind,omitempty"`
 }
 
 type explainResponse struct {
@@ -71,10 +75,13 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := rank.RankOptions{TargetTitle: strings.TrimSpace(req.TargetTitle)}
-	results := make([]*ranking.Explanation, 0, len(titles))
-	for _, title := range titles {
-		results = append(results, profile.Explain(title, opts))
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	explainReq := ranking.Request{
+		Kind:    kind,
+		IsAnime: kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
+		Title:   strings.TrimSpace(req.TargetTitle),
 	}
+	results := profile.Explain(titles, explainReq, opts)
 
 	writeJSON(w, http.StatusOK, explainResponse{Profile: profile.Name, Results: results})
 }

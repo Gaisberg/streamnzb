@@ -21,7 +21,7 @@ Each stream configuration defines:
 - **Indexer Mode** — `Combine` (parallel query) or `Failover` (sequential).
 - **Search requests mode** — `Combine all` (parallel, merged) or `Stop after first hit` (sequential fallback) — see [Search requests](search-queries.md).
 - **Skip unaired episodes** — Answer with no results instead of asking this stream's indexers for an episode that has not aired. It is per stream because how early a release lands depends on which indexers the stream asks: a stream pointed at a fast scene can turn the gate off while the rest keep it. The gate uses the exact broadcast time where a source knows one and the whole of the air date where it only knows a date, read in the server's own timezone, and any lookup that fails searches as normal. Skipped searches show as **Not aired yet** in History.
-- **Results Mode & Limit** — Resolution ordering and maximum release count returned to Stremio.
+- **Results Mode & Limit** — Whether each release is listed separately or collapsed into one combined entry, and the maximum release count returned to Stremio. Resolution ordering lives in the filter profile, on its Order tab — see [Filters & ranking](filters.md).
 - **Filter Profiles** — General and per-kind (Movies, Shows, Anime films, Anime shows) release filter bindings powered by `jhin` — see [Filters & ranking](filters.md).
 - **Metadata Profile** — Which catalogs, display language and rating limit the stream serves. None means the classic stream-only manifest — see [Metadata & Catalogs](metadata.md).
 - **Format Profile** — How the stream's results render in Stremio. None means the built-in format — see [Custom result formats](result-formatting.md).

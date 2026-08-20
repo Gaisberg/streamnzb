@@ -1,18 +1,6 @@
 // Shape and vocabulary of a filter profile, mirrored for the Filters UI.
 // Keys here must match the JSON the backend stores.
 
-export const RESOLUTIONS = [
-  { key: "2160p", label: "4K" },
-  { key: "1440p", label: "1440p" },
-  { key: "1080p", label: "1080p" },
-  { key: "720p", label: "720p" },
-  { key: "576p", label: "576p" },
-  { key: "480p", label: "480p" },
-  { key: "360p", label: "360p" },
-  { key: "240p", label: "240p" },
-  { key: "unknown", label: "Unknown" },
-]
-
 // Release traits grouped the way people reason about them. The policy behind
 // each is { fetch, rank } on the wire; the UI calls rank "score".
 export const ATTRIBUTE_GROUPS = [
@@ -45,7 +33,7 @@ export const ATTRIBUTE_GROUPS = [
   {
     id: "trash",
     label: "Trash sources",
-    description: "Rejected outright while “Remove garbage titles” is on. Turn that off to decide these one by one.",
+    description: "“Remove garbage titles” on the Eligibility tab rejects all of these outright. Turn that switch off to decide them one by one here.",
     attrs: [
       { key: "cam", label: "CAM" },
       { key: "telesync", label: "TeleSync" },
@@ -133,113 +121,10 @@ export const ATTRIBUTE_LABELS = ATTRIBUTE_GROUPS.reduce((acc, group) => {
   return acc
 }, {})
 
-// The baseline a trait falls back to when a profile does not change it.
-export const DEFAULT_POLICIES = {
-  remux: { fetch: true, rank: 10000 }, webdl: { fetch: true, rank: 200 },
-  web: { fetch: true, rank: 100 }, bluray: { fetch: true, rank: 100 },
-  webrip: { fetch: true, rank: -1000 }, dvd: { fetch: false, rank: -5000 },
-  hdtv: { fetch: true, rank: -5000 }, bdrip: { fetch: false, rank: -5000 },
-  dvdrip: { fetch: false, rank: -5000 }, uhdrip: { fetch: false, rank: -5000 },
-  vhs: { fetch: false, rank: -10000 }, webmux: { fetch: false, rank: -10000 },
-  brrip: { fetch: false, rank: -10000 }, hdrip: { fetch: true, rank: -10000 },
-  ppvrip: { fetch: false, rank: -10000 }, tvrip: { fetch: false, rank: -10000 },
-  vhsrip: { fetch: false, rank: -10000 }, webdlrip: { fetch: false, rank: -10000 },
-  satrip: { fetch: false, rank: -10000 },
-  cam: { fetch: false, rank: -10000 }, telecine: { fetch: false, rank: -10000 },
-  telesync: { fetch: false, rank: -10000 }, screener: { fetch: false, rank: -10000 },
-  r5: { fetch: false, rank: -10000 }, pdtv: { fetch: false, rank: -10000 },
-  avc: { fetch: true, rank: 500 }, hevc: { fetch: true, rank: 500 },
-  av1: { fetch: true, rank: 500 }, xvid: { fetch: false, rank: -10000 },
-  mpeg: { fetch: false, rank: -1000 },
-  dolby_vision: { fetch: true, rank: 3000 }, hdr10plus: { fetch: true, rank: 2100 },
-  hdr: { fetch: true, rank: 2000 }, sdr: { fetch: true, rank: 0 },
-  "10bit": { fetch: true, rank: 100 },
-  dts_lossless: { fetch: true, rank: 2000 }, truehd: { fetch: true, rank: 2000 },
-  atmos: { fetch: true, rank: 1000 }, dolby_digital_plus: { fetch: true, rank: 150 },
-  dts_lossy: { fetch: true, rank: 100 }, aac: { fetch: true, rank: 100 },
-  dolby_digital: { fetch: true, rank: 50 }, flac: { fetch: true, rank: 0 },
-  opus: { fetch: true, rank: 0 }, pcm: { fetch: true, rank: 0 },
-  mp3: { fetch: false, rank: -1000 }, clean_audio: { fetch: false, rank: -10000 },
-  surround: { fetch: true, rank: 0 }, stereo: { fetch: true, rank: 0 },
-  mono: { fetch: false, rank: 0 },
-  edition: { fetch: true, rank: 100 }, proper: { fetch: true, rank: 20 },
-  repack: { fetch: true, rank: 20 }, network: { fetch: true, rank: 0 },
-  retail: { fetch: true, rank: 0 }, subbed: { fetch: true, rank: 0 },
-  scene: { fetch: true, rank: 0 }, uncensored: { fetch: true, rank: 0 },
-  hardcoded: { fetch: true, rank: 0 }, documentary: { fetch: false, rank: -250 },
-  converted: { fetch: false, rank: -1000 }, dubbed: { fetch: true, rank: -1000 },
-  "3d": { fetch: false, rank: -10000 }, upscaled: { fetch: false, rank: -10000 },
-  site: { fetch: false, rank: -10000 }, size: { fetch: false, rank: -10000 },
-}
-
-export const LANGUAGE_CODES = [
-  "en", "ja", "ko", "zh", "fr", "es", "la", "pt", "it", "de", "ru", "uk", "nl",
-  "da", "fi", "sv", "no", "el", "pl", "cs", "sk", "hu", "ro", "bg", "sr", "hr",
-  "sl", "hi", "ta", "te", "ml", "kn", "mr", "ar", "tr", "he", "fa", "vi", "id",
-  "th", "ms",
-]
-
-export const LANGUAGE_OPTIONS = [
-  { code: "all", name: "All Languages", isGroup: true },
-  { code: "common", name: "Common Languages (de, es, hi, ta, ru, ua, th, it, zh, ar, fr)", isGroup: true },
-  { code: "anime", name: "Anime Languages (ja, zh, ko)", isGroup: true },
-  { code: "non_anime", name: "Non-Anime Languages", isGroup: true },
-  { code: "en", name: "English" },
-  { code: "ja", name: "Japanese" },
-  { code: "ko", name: "Korean" },
-  { code: "zh", name: "Chinese" },
-  { code: "fr", name: "French" },
-  { code: "es", name: "Spanish" },
-  { code: "de", name: "German" },
-  { code: "ru", name: "Russian" },
-  { code: "it", name: "Italian" },
-  { code: "pt", name: "Portuguese" },
-  { code: "uk", name: "Ukrainian" },
-  { code: "nl", name: "Dutch" },
-  { code: "da", name: "Danish" },
-  { code: "fi", name: "Finnish" },
-  { code: "sv", name: "Swedish" },
-  { code: "no", name: "Norwegian" },
-  { code: "el", name: "Greek" },
-  { code: "pl", name: "Polish" },
-  { code: "cs", name: "Czech" },
-  { code: "sk", name: "Slovak" },
-  { code: "hu", name: "Hungarian" },
-  { code: "ro", name: "Romanian" },
-  { code: "bg", name: "Bulgarian" },
-  { code: "sr", name: "Serbian" },
-  { code: "hr", name: "Croatian" },
-  { code: "sl", name: "Slovenian" },
-  { code: "hi", name: "Hindi" },
-  { code: "ta", name: "Tamil" },
-  { code: "te", name: "Telugu" },
-  { code: "ml", name: "Malayalam" },
-  { code: "kn", name: "Kannada" },
-  { code: "mr", name: "Marathi" },
-  { code: "ar", name: "Arabic" },
-  { code: "tr", name: "Turkish" },
-  { code: "he", name: "Hebrew" },
-  { code: "fa", name: "Persian" },
-  { code: "vi", name: "Vietnamese" },
-  { code: "id", name: "Indonesian" },
-  { code: "th", name: "Thai" },
-  { code: "ms", name: "Malay" },
-  { code: "la", name: "Latin" },
-]
-
-// Each of these resolves to a set of language codes.
-export const LANGUAGE_GROUPS = ["anime", "common", "non_anime", "all"]
-
-// Common weighted patterns, so the usual preferences do not need a regex.
-// These match on the release name, which is the only place they appear.
-export const PATTERN_PRESETS = [
-  { label: "Dual audio", pattern: "\\bDual[. _-]?Audio\\b", rank: 5000 },
-  { label: "Multi audio", pattern: "\\bMulti[. _-]?Audio\\b", rank: 3000 },
-  { label: "English dub", pattern: "\\b(ENG[. _-]?DUB|English[. _-]?Dub)\\b", rank: 4000 },
-  { label: "IMAX", pattern: "\\bIMAX\\b", rank: 2000 },
-  { label: "Open matte", pattern: "\\bOpen[. _-]?Matte\\b", rank: 1000 },
-  { label: "Hardcoded subs", pattern: "\\bHC\\b|\\bHardsub", rank: -3000 },
-]
+// TRAIT_KEYS is every attribute key the parser can report, flattened from the
+// groups above. Rules read them through `traits`, which is what makes a rule
+// able to say anything the ranking baseline can.
+export const TRAIT_KEYS = ATTRIBUTE_GROUPS.flatMap((g) => g.attrs.map((a) => a.key)).sort()
 
 // Content kinds partition every request, so exactly one profile ever applies.
 // A profile itself is global; a stream picks which one each kind uses.
@@ -250,75 +135,211 @@ export const CONTENT_KINDS = [
   { key: "anime_show", label: "Anime shows" },
 ]
 
-// NZB limit columns for the profile's Limits grid. Keys match LimitsConfig in
-// pkg/core/config/filterprofile.go; zero/absent leaves a bound unenforced.
-export const LIMIT_FIELDS = [
-  { key: "min_size_gb", label: "Min size (GB)", step: 0.5 },
-  { key: "max_size_gb", label: "Max size (GB)", step: 0.5 },
-  { key: "max_age_days", label: "Max age (days)", step: 1 },
-  { key: "min_grabs", label: "Min grabs", step: 1 },
+// PRESETS are the whole of a profile's baseline. Mirrors Presets in
+// pkg/core/config/preset.go — keep the keys in step.
+//
+// They differ only in the resolution ceiling, because that is the one decision
+// that is about the person rather than the release. Everything else — which
+// sources are worth what, which garbage to refuse — has one right answer and is
+// a default rather than a question. Anything beyond that is a rule.
+export const PRESETS = [
+  {
+    key: "4k",
+    label: "4K",
+    tiers: "2160p · 1440p · 1080p · 720p",
+    description: "Everything up to 2160p. Largest files, best picture.",
+  },
+  {
+    key: "1080p",
+    label: "1080p",
+    tiers: "1080p · 720p",
+    description: "Smaller files, kinder to a shared connection.",
+  },
+  {
+    key: "720p",
+    label: "720p",
+    tiers: "720p",
+    description: "Smallest files, for slow lines and small screens.",
+  },
 ]
 
-// NZB scoring columns for the profile's Scoring grid. Keys match ScoringConfig
-// in pkg/core/config/filterprofile.go. Each attribute is a target paired with
-// what a perfect match is worth; one without the other is inert. Point columns
-// are `signed` because a negative weight inverts the preference.
-export const SCORING_FIELDS = [
-  { key: "size_target_gb", label: "Size target (GB)", step: 0.5 },
-  { key: "size_weight", label: "Size points", step: 50, signed: true },
-  { key: "age_fresh_days", label: "Fresh for (days)", step: 1 },
-  { key: "age_weight", label: "Age points", step: 50, signed: true },
-  { key: "grabs_target", label: "Grabs target", step: 10 },
-  { key: "grabs_weight", label: "Grabs points", step: 50, signed: true },
+export const DEFAULT_PRESET = "4k"
+
+// matchesReleaseName builds the condition for the common case: a regular
+// expression applied to the whole release name. Mirrors MatchesReleaseName in
+// pkg/core/config/rules.go so a rule written here reads the same as one the
+// migration produced.
+export function matchesReleaseName(pattern) {
+  const inner = /^\/.*\/$/.test(pattern)
+    ? pattern.slice(1, -1)
+    : (pattern.startsWith("(?i)") ? pattern : `(?i)${pattern}`)
+  return `releaseName matches ${JSON.stringify(inner)}`
+}
+
+// Starting points for the rule table. The first six are the weighted patterns
+// this used to ship as presets; the rest are the conditions no single regular
+// expression could express, which is why rules exist.
+export const RULE_PRESETS = [
+  { name: "Dual audio", when: matchesReleaseName("\\bDual[. _-]?Audio\\b"), points: 5000 },
+  { name: "Multi audio", when: matchesReleaseName("\\bMulti[. _-]?Audio\\b"), points: 3000 },
+  { name: "English dub", when: matchesReleaseName("\\b(ENG[. _-]?DUB|English[. _-]?Dub)\\b"), points: 4000 },
+  { name: "IMAX", when: matchesReleaseName("\\bIMAX\\b"), points: 2000 },
+  { name: "Open matte", when: matchesReleaseName("\\bOpen[. _-]?Matte\\b"), points: 1000 },
+  { name: "Hardcoded subs", when: matchesReleaseName("\\bHC\\b|\\bHardsub"), points: -3000 },
+  { name: "DV without HDR fallback", when: "dolbyVision and not hdrFallback", action: "reject" },
+  { name: "Oversized unless 4K", when: 'sizeGB > 30 and resolution != "2160p"', action: "reject" },
+  { name: "Known unavailable", when: 'avail.status == "unavailable"', action: "reject" },
+  { name: "Alive on our backbone", when: "avail.onMyBackbone", points: 500 },
+  { name: "Recently confirmed", when: "avail.checkedDaysAgo >= 0 and avail.checkedDaysAgo < 30", points: 300 },
+  { name: "Measured 10-bit", when: "probed.bitDepth >= 10", points: 400 },
+  { name: "At most 3 in 4K", when: 'resolution == "2160p"', action: "limit", count: 3 },
+  { name: "At most 5 in 1080p", when: 'resolution == "1080p"', action: "limit", count: 5 },
 ]
 
-// Limit rows: the default every kind inherits from, then per-kind overrides.
-export const LIMIT_KINDS = [{ key: "default", label: "All content" }, ...CONTENT_KINDS]
+// What a rule can do. Scoring moves a release, rejecting removes it, and
+// limiting caps how many of the matching ones you are offered — the one thing a
+// condition about a single release cannot say on its own.
+export const RULE_ACTIONS = [
+  { key: "score", label: "Score" },
+  { key: "reject", label: "Reject" },
+  { key: "limit", label: "Limit" },
+]
 
-// The traits a new profile rejects, matching defaultBlockedAttrs in
-// pkg/core/config/filterprofile.go: the CAM-class rips, the fake audio dubbed
-// over them, and satellite rips. Everything else jhin demotes is opened up and
-// left to sort last. Keep the two lists in step.
-const BLOCKED_ATTRS = ["cam", "telesync", "telecine", "screener", "r5", "pdtv", "clean_audio", "satrip"]
+// A rule can be limited to one content kind. "all" is the default.
+export const RULE_SCOPES = [{ key: "all", label: "All content" }, ...CONTENT_KINDS]
 
-// NO_SCORE_FLOOR is low enough that no stack of demotions reaches it, so score
-// orders results rather than rejecting them.
-const NO_SCORE_FLOOR = -1000000
-
-function defaultAttributePolicies() {
-  const policies = {}
-  Object.entries(DEFAULT_POLICIES).forEach(([attr, policy]) => {
-    if (BLOCKED_ATTRS.includes(attr)) policies[attr] = { fetch: false, rank: policy.rank }
-    else if (!policy.fetch) policies[attr] = { fetch: true, rank: policy.rank }
-  })
-  return policies
+// How far a value can be trusted. This is the axis the editor groups by:
+// which subsystem computed a value is an implementation detail, but whether
+// it was read off a name, claimed by an indexer, reported by strangers or
+// measured in the file decides how you should write a rule about it.
+export const CONFIDENCE = {
+  inferred: {
+    label: "inferred",
+    short: "read off the release name",
+    hint: "Read out of the release name. Every release has it, and it is wrong often enough to be worth saying so.",
+  },
+  reported: {
+    label: "reported",
+    short: "claimed by the indexer",
+    hint: "Claimed by the indexer. Near-total coverage, fresh, unverified.",
+  },
+  community: {
+    label: "community",
+    short: "reported to AvailNZB",
+    hint: "From the availability database, per backbone. Partial coverage and a record can be months old. Rules reading it skip releases nobody has reported.",
+  },
+  measured: {
+    label: "measured",
+    short: "measured by ffprobe",
+    hint: "Measured by ffprobe in the file itself. Only library releases have ever been opened, so rules reading it skip everything else.",
+  },
 }
 
-export function defaultRankProfile(name = "New Profile") {
-  return {
-    name,
-    require: [],
-    exclude: [],
-    preferred: [],
-    pattern_ranks: [],
-    resolutions: {
-      "2160p": true, "1440p": true, "1080p": true, "720p": true,
-      "576p": false, "480p": false, "360p": false, "240p": false,
-      unknown: true,
-    },
-    languages: { required: [], allowed: [], exclude: [], preferred: [] },
-    options: {
-      title_threshold: 0.85,
-      remove_trash: true,
-      remove_adult: true,
-      remove_unknown_languages: false,
-      allow_english: true,
-      min_rank: NO_SCORE_FLOOR,
-      preferred_bonus: 10000,
-    },
-    attributes: defaultAttributePolicies(),
-  }
-}
+// The rule attribute namespace, shown as a reference in the editor and used to
+// sanity-check a condition before it reaches the server. Grouped by how much
+// each value can be trusted. Mirrors Env in pkg/search/rules/env.go.
+export const RULE_ATTRIBUTES = [
+  {
+    tier: "inferred",
+    title: "From the release name",
+    note: "Bare names prefer what was measured when the file has been opened, and fall back to the name. parsed.* is always the name's own account.",
+    items: [
+      { name: "resolution", type: "text", example: '"2160p"' },
+      { name: "quality", type: "text", example: '"WEB-DL", "BluRay", "REMUX"' },
+      { name: "codec", type: "text", example: '"x265"' },
+      { name: "bitDepth", type: "number", example: "10" },
+      { name: "hdr", type: "list", example: '"DV" in hdr — note the parser writes plain HDR10 as "HDR"' },
+      { name: "dolbyVision", type: "yes/no", example: "carries a Dolby Vision layer" },
+      { name: "hdrFallback", type: "yes/no", example: "a non-DV device still gets HDR" },
+      { name: "audio", type: "list", example: '"TrueHD" in audio' },
+      { name: "channels", type: "list", example: '"7.1" in channels' },
+      { name: "languages", type: "list", example: '"en" in languages' },
+      { name: "group", type: "text" },
+      { name: "edition", type: "text" },
+      { name: "container", type: "text" },
+      { name: "year", type: "number" },
+      { name: "seasonPack", type: "yes/no" },
+      { name: "proper", type: "yes/no" },
+      { name: "repack", type: "yes/no" },
+      { name: "remastered", type: "yes/no" },
+      { name: "upscaled", type: "yes/no" },
+      { name: "threeD", type: "yes/no" },
+      { name: "dubbed", type: "yes/no" },
+      { name: "subbed", type: "yes/no" },
+      { name: "hardcoded", type: "yes/no" },
+      { name: "complete", type: "yes/no" },
+      { name: "verified", type: "yes/no", example: "the values above came from the file, not its name" },
+      { name: "parsed.resolution", type: "text" },
+      { name: "parsed.codec", type: "text" },
+      { name: "parsed.hdr", type: "list" },
+      { name: "parsed.bitDepth", type: "number" },
+      { name: "parsed.dolbyVision", type: "yes/no" },
+      { name: "parsed.hdrFallback", type: "yes/no" },
+      { name: "parsed.title", type: "text" },
+    ],
+  },
+  {
+    tier: "reported",
+    title: "From the indexer",
+    items: [
+      { name: "releaseName", type: "text", example: 'releaseName matches "(?i)\\bIMAX\\b"' },
+      { name: "sizeGB", type: "number", example: "the whole release" },
+      { name: "sizePerEpisodeGB", type: "number", example: "per-episode share; -1 for an uncountable season pack" },
+      { name: "ageDays", type: "number", example: "-1 when the indexer reported no date" },
+      { name: "grabs", type: "number" },
+      { name: "passworded", type: "yes/no" },
+      { name: "indexer", type: "text" },
+      { name: "querySource", type: "text" },
+      { name: "library", type: "yes/no", example: "already in your library" },
+    ],
+  },
+  {
+    tier: "community",
+    title: "From AvailNZB",
+    note: "A rule reading any of these skips releases nobody has reported, so turning one on never empties a result list.",
+    items: [
+      { name: "avail.status", type: "text", example: '"available", "unavailable" or "unknown"' },
+      { name: "avail.known", type: "yes/no" },
+      { name: "avail.onMyBackbone", type: "yes/no", example: "healthy on a backbone your providers use" },
+      { name: "avail.checkedDaysAgo", type: "number", example: "-1 when the record has no timestamp" },
+      { name: "avail.compression", type: "text", example: '"rar", "7z"' },
+    ],
+  },
+  {
+    tier: "measured",
+    title: "From ffprobe",
+    note: "Library releases only — a fresh indexer hit has never been opened. Rules reading these skip everything unprobed.",
+    items: [
+      { name: "probed.height", type: "number" },
+      { name: "probed.width", type: "number" },
+      { name: "probed.videoCodec", type: "text", example: '"hevc"' },
+      { name: "probed.audioCodec", type: "text" },
+      { name: "probed.profile", type: "text", example: '"Main 10"' },
+      { name: "probed.bitDepth", type: "number" },
+      { name: "probed.hdr", type: "text", example: '"HDR10", "HDR10+", "HLG", or "" for SDR' },
+      { name: "probed.dolbyVision", type: "yes/no" },
+      { name: "probed.hasHDRFallback", type: "yes/no" },
+      { name: "probed.dynamicRange", type: "text", example: '"DV + HDR10", "DV only", "HDR10"' },
+    ],
+  },
+  {
+    tier: "inferred",
+    title: "Detected traits",
+    note: "Every trait the parser found, by key. `\"remux\" in traits` reaches anything the baseline has an opinion about, without a separate control for each one.",
+    items: TRAIT_KEYS.map((key) => ({ name: key, type: "trait" })),
+  },
+  {
+    tier: "inferred",
+    title: "About the request",
+    items: [
+      { name: "kind", type: "text", example: '"movie", "series", "anime_movie", "anime_show"' },
+      { name: "isAnime", type: "yes/no" },
+      { name: "season", type: "number" },
+      { name: "episode", type: "number" },
+      { name: "title", type: "text", example: "the title that was searched for" },
+    ],
+  },
+]
 
 // Fields from the pre-migration schema. They are read once, to build a
 // ranking profile for a config that predates it, and ignored from then on —
@@ -339,24 +360,7 @@ export function withoutLegacyFields(profile) {
 }
 
 export function defaultProfile(name = "New Profile") {
-  return {
-    name,
-    ranking: defaultRankProfile(name),
-  }
-}
-
-// effectivePolicy resolves what a trait actually does: the profile's own
-// setting when it has one, otherwise the baseline. The wire format calls the
-// number "rank"; it is surfaced as "score" so the UI reads consistently.
-export function effectivePolicy(ranking, attr) {
-  const override = ranking?.attributes?.[attr]
-  const base = DEFAULT_POLICIES[attr] || { fetch: true, rank: 0 }
-  const policy = override || base
-  return {
-    fetch: policy.fetch !== false,
-    score: policy.rank ?? 0,
-    overridden: Boolean(override),
-  }
+  return { name, preset: DEFAULT_PRESET, rules: [] }
 }
 
 export function formatScore(value) {
@@ -421,4 +425,65 @@ export async function decodeProfileShareCode(code) {
     throw new Error("The code does not contain a filter profile.")
   }
   return withoutLegacyFields(profile)
+}
+
+// A profile is a preset plus rules. Export writes exactly that, formatted, so
+// the file is readable in a diff and editable by hand — which is the point:
+// share codes travel well through a chat window but cannot be reviewed in a
+// pull request or versioned in a repository.
+export function profileToJSON(profile) {
+  return JSON.stringify(
+    {
+      streamnzb_profile: 1,
+      name: (profile.name || "").trim(),
+      preset: profile.preset || DEFAULT_PRESET,
+      rules: (profile.rules || []).map((rule) => {
+        const out = { name: rule.name || "", when: rule.when || "" }
+        if (rule.action === "reject") out.action = "reject"
+        else if (rule.points) out.points = rule.points
+        if (rule.scope && rule.scope !== "all") out.scope = rule.scope
+        if (rule.enabled === false) out.enabled = false
+        return out
+      }),
+    },
+    null,
+    2,
+  )
+}
+
+// profileFromJSON parses an exported profile. It is strict about the shape and
+// forgiving about everything else: a file hand-edited in a repository should
+// fail loudly on a typo rather than import half a ruleset.
+export function profileFromJSON(text) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error("That is not valid JSON.")
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Expected a profile object.")
+  }
+  if (parsed.streamnzb_profile !== 1) {
+    throw new Error("Missing \"streamnzb_profile\": 1 — is this a StreamNZB profile?")
+  }
+  const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
+  if (!name) throw new Error("The profile needs a name.")
+
+  const preset = PRESETS.some((p) => p.key === parsed.preset) ? parsed.preset : DEFAULT_PRESET
+  const rawRules = Array.isArray(parsed.rules) ? parsed.rules : []
+  const rules = rawRules.map((rule, i) => {
+    if (!rule || typeof rule !== "object") throw new Error(`Rule ${i + 1} is not an object.`)
+    if (typeof rule.when !== "string" || !rule.when.trim()) {
+      throw new Error(`Rule ${i + 1}${rule.name ? ` (${rule.name})` : ""} has no condition.`)
+    }
+    const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
+    if (rule.action === "reject") out.action = "reject"
+    else if (Number.isFinite(rule.points)) out.points = rule.points
+    if (typeof rule.scope === "string" && rule.scope !== "all") out.scope = rule.scope
+    if (rule.enabled === false) out.enabled = false
+    return out
+  })
+
+  return { name, preset, rules }
 }

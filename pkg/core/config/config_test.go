@@ -720,16 +720,24 @@ func TestConfigBootstrapsDefaultFilterProfile(t *testing.T) {
 	if p.Name != DefaultFilterProfileName {
 		t.Errorf("expected default profile name %q, got %q", DefaultFilterProfileName, p.Name)
 	}
-	if p.Ranking == nil {
-		t.Fatal("expected the bootstrapped profile to carry a ranking profile")
+	if p.Preset != DefaultPreset {
+		t.Errorf("bootstrapped preset = %q, want %q", p.Preset, DefaultPreset)
+	}
+	// A profile is a preset plus rules; a fresh one carries no spec of its own
+	// and nothing to migrate.
+	if p.Ranking != nil {
+		t.Error("expected the bootstrapped profile to carry no hand-tuned ranking spec")
+	}
+	if len(p.Rules) != 0 {
+		t.Errorf("expected no rules on a fresh profile, got %d", len(p.Rules))
 	}
 }
 
-// The shipped profile is what every install starts from and branches off, so
-// it should reject only the CAM-class rips and adult releases and let the rest
+// The baseline behind every preset is what all installs start from, so it
+// should reject only the CAM-class rips and adult releases and let the rest
 // through, demoted rather than dropped.
-func TestDefaultFilterProfileBlocksOnlyTrashAndAdult(t *testing.T) {
-	profile := *DefaultFilterProfile().Ranking
+func TestPresetBaselineBlocksOnlyTrashAndAdult(t *testing.T) {
+	profile := PresetSpec(PresetUHD)
 
 	if !profile.Options.RemoveAdult {
 		t.Error("adult content should be blocked by default")
@@ -743,9 +751,9 @@ func TestDefaultFilterProfileBlocksOnlyTrashAndAdult(t *testing.T) {
 		t.Errorf("MinRank = %d, want the score floor disabled (%d)", profile.Options.MinRank, noScoreFloor)
 	}
 
-	// Exhaustive in both directions: the SD tiers are off because jhin's
-	// defaults disable them, so a change to those defaults has to fail here
-	// rather than quietly widen what the addon streams.
+	// Exhaustive in both directions: the SD tiers stay off at every ceiling, so
+	// a change there has to fail here rather than quietly widen what the addon
+	// streams.
 	wantResolutions := map[rank.Resolution]bool{
 		rank.Res2160p: true, rank.Res1440p: true, rank.Res1080p: true,
 		rank.Res720p: true, rank.ResUnknown: true,

@@ -87,7 +87,8 @@ func TestSynthesizedProfileFiltering(t *testing.T) {
 // Sorting runs off jhin's score.
 func TestProfileSortOrder(t *testing.T) {
 	profile := profileFor(t, config.FilterProfileConfig{
-		Name: "Sorting",
+		Name:   "Sorting",
+		Preset: config.PresetUHD,
 	})
 
 	cands := candidatesFor(
@@ -96,7 +97,7 @@ func TestProfileSortOrder(t *testing.T) {
 		"Movie 2020 1080p BluRay REMUX-GRP",
 	)
 
-	got := keptTitles(profile.Apply(ranking.KindMovie, cands, rank.RankOptions{}))
+	got := keptTitles(profile.Apply(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{}))
 	if len(got) == 0 {
 		t.Fatal("expected results")
 	}
@@ -170,7 +171,11 @@ func TestExplainReportsRejection(t *testing.T) {
 		BlockedQualities: []string{"CAM"},
 	})
 
-	ex := profile.Explain("Movie 2020 1080p CAM x264-TRASH", rank.RankOptions{})
+	explained := profile.Explain([]string{"Movie 2020 1080p CAM x264-TRASH"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	if len(explained) != 1 {
+		t.Fatalf("Explain returned %d results, want 1", len(explained))
+	}
+	ex := explained[0]
 	if ex == nil {
 		t.Fatal("expected an explanation")
 	}
@@ -272,7 +277,7 @@ func TestProfileForKindIgnoresProfileInAIOStreamsMode(t *testing.T) {
 }
 
 // A Kitsu request stays anime regardless of what the other metadata says.
-func TestKindForRequestPrefersKitsu(t *testing.T) {
+func TestRankingRequestPrefersKitsu(t *testing.T) {
 	source := &playlistSource{Params: &query.SearchParams{
 		ContentType: "series",
 		Metadata: &query.ResolvedSearchMetadata{
@@ -280,7 +285,11 @@ func TestKindForRequestPrefersKitsu(t *testing.T) {
 			TVDetails:    &tmdb.TVDetails{OriginalLanguage: "en", Genres: []tmdb.Genre{{Name: "Drama"}}},
 		},
 	}}
-	if got := kindForRequest(source); got != ranking.KindAnimeMovie {
-		t.Errorf("kindForRequest() = %q, want %q", got, ranking.KindAnimeMovie)
+	got := rankingRequest(source)
+	if got.Kind != ranking.KindAnimeMovie {
+		t.Errorf("rankingRequest().Kind = %q, want %q", got.Kind, ranking.KindAnimeMovie)
+	}
+	if !got.IsAnime {
+		t.Error("rankingRequest().IsAnime = false, want true")
 	}
 }

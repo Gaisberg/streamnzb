@@ -75,6 +75,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Metadata & catalogs](docs/metadata.md) — StreamNZB as a full Stremio metadata provider
 - [Stream model](docs/stream-model.md) — global configuration vs. per-stream behavior
 - [Filters & ranking](docs/filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
+- [Rules](docs/rules.md) — named conditions over everything known about a release
 - [Custom result formats](docs/result-formatting.md) — per-stream result templates, helper reference, and the AIOStreams formatter import
 - [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](docs/obfuscated-releases.md) — how releases with random-hash filenames are identified and played

@@ -18,6 +18,12 @@ func limitsProfile(t *testing.T, fp config.FilterProfileConfig) *ranking.Profile
 	if fp.Name == "" {
 		fp.Name = "Limits"
 	}
+	// A profile with no scoring of its own inherits the preset's size
+	// preference. These tests measure one attribute at a time, so they opt out
+	// with an empty map rather than a nil one.
+	if fp.Scoring == nil {
+		fp.Scoring = map[string]*config.ScoringConfig{}
+	}
 	p, err := ranking.Compile(fp)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +38,7 @@ func candidateWith(rel *release.Release) []triage.Candidate {
 // applyOne runs one release through the profile and reports whether it was
 // kept, plus the rejection reasons when it was not.
 func applyOne(p *ranking.Profile, kind string, rel *release.Release) (bool, []string) {
-	kept, rejected := p.ApplyWithRejected(kind, candidateWith(rel), rank.RankOptions{})
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: kind}, candidateWith(rel), rank.RankOptions{})
 	if len(kept) == 1 {
 		return true, nil
 	}

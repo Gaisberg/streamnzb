@@ -1,75 +1,208 @@
 # Filters & ranking
 
-A filter profile decides which releases a stream offers, how they are scored, and what order they arrive in. Profiles are defined once on the **Filters** page (under Settings) and take effect only when a stream selects one — an unbound profile does nothing, and a stream with no profile returns every release unfiltered.
+A filter profile decides which releases a stream offers, how they are scored,
+and what order they arrive in. A profile is two things and nothing else:
 
-Parsing and scoring are powered by [jhin](https://github.com/dreulavelle/jhin): every release name is parsed into traits (source, codec, HDR, audio, languages, …), each trait contributes a score, and the profile decides which traits are allowed at all.
+- a **preset** — 4K, 1080p or 720p — which sets the resolution ceiling and
+  carries every other ranking default;
+- **[rules](rules.md)** — named conditions over everything known about a
+  release, which move its score, reject it, or cap how many like it you are
+  offered.
 
-## The model: rejecting vs. scoring
+Profiles are defined on the **Filters** page (under Settings) and take effect
+only when a stream selects one. An unbound profile does nothing, and a stream
+with no profile returns every release unfiltered.
 
-Two separate mechanisms, and keeping them apart is the key to configuring profiles well:
+Parsing and scoring are powered by [jhin](https://github.com/dreulavelle/jhin):
+every release name is parsed into traits (source, codec, HDR, audio, languages,
+…) and each trait contributes a score.
 
-- **Rejection** removes a release entirely: disabled resolutions, blocked traits (the allow/block switch on a trait), "Must match" / "Never match" rules, language requirements/exclusions, garbage and adult removal.
-- **Scoring** only orders what survives: every detected trait adds its score, preferred patterns and languages each add the preference bonus, weighted preferences stack on top. Kept releases are returned best-score first. By default score never rejects anything — the minimum-score threshold ships effectively disabled so that a low score sorts a release last rather than hiding it.
+## Presets
 
-So: to *never see* something, block it; to *see it later*, score it down.
+The **Quality** tab, and for most people the only decision here: pick the
+largest screen you watch on. The three presets differ **only in the resolution
+ceiling**. Everything else —
+which sources are worth what, which garbage to refuse, how to treat a title that
+could not be parsed — has one right answer, so it is a default rather than a
+question.
+
+| Preset | Offers | For |
+|---|---|---|
+| **4K** | 2160p · 1440p · 1080p · 720p | Largest files, best picture |
+| **1080p** | 1080p · 720p | Smaller files, kinder to a shared connection |
+| **720p** | 720p | Slow lines and small screens |
+
+The baseline behind all three is deliberately permissive. It rejects camcorder,
+telesync, telecine and screener rips, the source-less junk that carries no
+provenance (leaked copies, pre-retail rips, deleted-scene reels), and adult
+releases. Everything else is *scored*, not blocked, so a poor release sorts last
+rather than disappearing. Unparsable resolutions are kept for the same reason —
+a name nobody could read is not evidence of a bad release.
+
+There is no score floor. Rejecting is what rules are for, and a rule says why.
+
+Within a preset, the resolution ceiling sorts above the tiers below it, so
+picking 1080p prefers 1080p rather than merely allowing it.
+
+### Tuned for streaming, not for downloading
+
+The scoring comes from jhin, which is built for a downloader: fetch the very
+best copy and keep it, where size costs you disk once. StreamNZB assembles the
+file from usenet articles *while it plays*, so size is a running cost paid on
+every playback. Three places where "best copy" and "best copy to stream" differ:
+
+- **Remux scores 1500, not jhin's 10000.** At 10000 nothing could outweigh it,
+  so a remux always won however much bandwidth it cost. It is still clearly the
+  best source — WEB-DL scores 200 — without being the only thing that matters.
+- **Modern codecs are preferred.** HEVC and AV1 score 700, AVC 300: the same
+  picture in fewer bytes is exactly the currency here. This is a uniform
+  preference, not a guess about your player — what a device can decode is the
+  device's business, and nothing is hidden. An AVC release still sorts, just
+  below its equivalent.
+- **Size is scored.** Each preset knows roughly what a good copy weighs — 20 GB
+  for a 4K film, 6 GB for a 4K episode, 8 GB and 2.5 GB at 1080p — and scores
+  full marks at that size, tapering to nothing at twice it. Nothing is rejected
+  for size; an oversized release simply stops earning.
+
+Together these turn what used to be a landslide into a real choice:
+
+```
+ 10250   20GB  2160p WEB-DL DV HDR10+ HEVC DDP5.1 Atmos
+ 10200   70GB  2160p UHD BluRay REMUX DV HDR HEVC TrueHD 7.1 Atmos
+  5450   16GB  2160p WEB-DL HDR HEVC DDP5.1
+  1950    6GB  1080p WEB-DL DDP5.1 x265
+  1850    8GB  1080p WEB-DL DDP5.1 H.264
+```
+
+The 70 GB remux and the 20 GB WEB-DL now finish within 50 points of each other,
+so availability and grab count decide between them rather than source alone.
+Want the remux back on top regardless? That is one rule:
+`"remux" in traits → +5000`.
+
+## Rules
+
+The **Rules** tab. Everything beyond the preset is a rule. Rules can read the release name, what
+the indexer reported, what the community availability database says, and what
+ffprobe measured in library files — combined with `and` / `or` / `not`, and
+scoped to a content kind.
+
+```
+dolbyVision and not hdrFallback                        → reject
+sizePerEpisodeGB >= 0 and sizePerEpisodeGB > 30        → reject
+quality == "WEB-DL" and group in ["FraMeSToR", "NTb"]  → +500
+isAnime and "remux" in traits                          → +1000
+avail.onMyBackbone                                     → +500
+resolution == "2160p"                                  → keep best 3
+```
+
+`traits` is the whole vocabulary the baseline scores by — `"remux"`, `"webrip"`,
+`"cam"`, `"hevc"`, `"10bit"`, `"dual_audio"` and so on — so a rule can reach
+anything the baseline has an opinion about. See **[Rules](rules.md)** for the
+complete attribute reference, the operators, and the fail-open contract.
 
 ## Binding a profile to a stream
 
-On the **Streams** page, each stream's **General** tab has a **Filter/Sorting** dropdown: `None` (everything unfiltered), `AIOStreams` (raw results for [AIOStreams](aiostreams.md) to filter on its side), or one of your profiles.
+On the **Streams** page, each stream's **General** tab has a **Filter/Sorting**
+dropdown: `None` (everything unfiltered), `AIOStreams` (raw results for
+[AIOStreams](aiostreams.md) to filter on its side), or one of your profiles.
 
-Below it, **By content type** overrides the chosen profile for specific kinds: **Movies**, **Shows**, **Anime films**, **Anime shows**. Anything left on Default uses the main profile. Exactly one profile applies per request — the per-kind binding wins, profiles never combine. Anime detection uses Kitsu when the request comes from a Kitsu catalog, otherwise TMDB genres (animation not originally in English), which needs TMDB configured.
+Below it, **By content type** overrides the chosen profile for specific kinds:
+**Movies**, **Shows**, **Anime films**, **Anime shows**. Anything left on Default
+uses the main profile. Exactly one profile applies per request — the per-kind
+binding wins, profiles never combine. Anime detection uses Kitsu when the
+request comes from a Kitsu catalog, otherwise TMDB genres (animation not
+originally in English), which needs TMDB configured.
 
-Renaming a profile updates every stream that uses it; deleting one clears it from those streams, which then fall back to unfiltered.
+Renaming a profile updates every stream that uses it; deleting one clears it
+from those streams, which then fall back to unfiltered.
 
-## The default profile
+Note: the default stream created on first install is set to AIOStreams mode, so
+the default profile is *not* applied until you select it on a stream.
 
-A fresh install ships a **Default Profile**: HD tiers (4K–720p) plus *Unknown* enabled, SD tiers off, garbage and adult removal on, English always allowed and preferred. *Unknown* resolution stays on deliberately so a release whose title couldn't be parsed is not silently dropped. Camcorder-class sources (CAM, TeleSync, TeleCine, Screener, R5, PDTV) are blocked explicitly, so they stay gone even if you later turn "Remove garbage titles" off.
+## Preview
 
-Note: the default stream created on first install is set to AIOStreams mode, so the default profile is *not* applied until you select it on a stream.
+The panel under the rules: paste release names (one per
+line), optionally a title to match against, and pick which content kind to
+**judge as**. Each release shows offered/rejected, its score, the rules that paid
+out, and an expandable breakdown of exactly which clauses contributed what. It
+re-evaluates as you type and includes unsaved edits.
 
-## Profile editor
+It is also what the rules list measures against: the per-rule counts there
+(*pays out on 2 of 4*) come from this same evaluation, so editing the release
+names changes both.
 
-### Quality
-
-- **Resolutions** — toggle the tiers this profile offers (4K down to 240p, plus *Unknown* for unparsable titles). A disabled tier rejects.
-- **Remove garbage titles** — rejects camcorder, telesync, telecine and screener rips and source-less junk (leaked/pre-retail copies). Turn it off to decide those sources one by one on the Scoring tab.
-- **Skip adult content**.
-- **Thresholds** — **Minimum score** (default is far below any real score, i.e. no floor), **Preference bonus** (added once when a preferred pattern matches and once more when a preferred language matches, default +10000 — the same setting the Languages tab surfaces as its bonus slider), and **Title match strictness** (how closely a name must match a requested title; only applies where a target title is known, i.e. the Try it out bench — live results are already title-validated during search, before the profile runs).
-- **NZB limits** — bounds on the NZB itself rather than the parsed title. **Block password-protected releases** (on by default) rejects releases the indexer flags as passworded. The grid below it bounds **size** (decimal GB, matching the sizes stream descriptions show), **age** (days since the release hit usenet — cap it at your provider's retention) and **grabs** (minimum download count, a cheap health signal). Empty fields are off. The **All content** row applies everywhere; the **Movies** / **Shows** / **Anime films** / **Anime shows** rows override it field by field, so one profile can cap movies at 30 GB and episodes at 5 GB. Bounds fail open: multi-episode releases are judged per episode, a season pack whose episode count can't be parsed is not size-checked at all, and a release that doesn't report a date or grab count is never rejected for it. Limit rejections show up in History and the debug stream like any other profile rejection (`size 42 GB above max 30 GB`, `password protected`, …).
-- **NZB scoring** — points for the NZB itself, added to the points its title earns on the Scoring tab, in the same per-kind grid as the limits. Each attribute pairs a **target** with the **points** a perfect match is worth; a target with no points (or points with no target) does nothing. **Size** scores full points at the target and tapers to zero at nothing and at twice it, so a target of 8 GB prefers 8 GB, still likes 6 and 11, and ignores 20. **Age** scores full points for a release posted just now, counting down to zero over the fresh window. **Grabs** scale logarithmically to their target, because the step from 1 to 10 grabs reads like the step from 10 to 100. Points may be negative to invert a preference (a negative grabs weight prefers the obscure release). Scoring fails open the same way the limits do: multi-episode releases are judged per episode, unparseable season packs are not size-scored, and a release that reports no date or grab count is never docked for it.
-
-  Limits decide what is eligible; scoring decides what sorts first among the eligible. To *reject* an out-of-range release, use the limits — scoring only moves it down the list.
-
-### Scoring
-
-Every trait jhin can detect, grouped (Sources, Codecs, HDR & bit depth, Audio, Channels, Release traits), each with a score slider and an allow/block switch. Scores add up to decide the order; blocking a trait rejects releases carrying it. Use **Changed only** to see what you've overridden; the reset icon returns a trait to its recommended value.
-
-**Library hit score bonus** (default 500) is added to releases already in your library — proven-playable results outrank fresh indexer hits. Set −1 to disable.
-
-### Rules
-
-Regular expressions matched against the full release name (case-insensitive; wrap in `/slashes/` for case-sensitive). Patterns are compiled when the config is saved — a pattern that fails to compile rejects the save with the compile error, so a broken profile can never silently stop filtering its streams.
-
-- **Must match** — every pattern must appear or the release is rejected. For either/or, use one pattern: `(IMAX|Extended)`.
-- **Never match** — any match rejects.
-- **Prefer** — adds the preference bonus when matched; never rejects.
-- **Weighted preferences** — patterns with their own score, stacking; presets included for dual audio, multi audio, English dub, IMAX, open matte, and hardcoded subs.
-
-### Languages
-
-**Required**, **Excluded** and **Preferred** language lists, plus:
-
-- **Always allow English** — keeps English releases even when the exclusion list would catch them.
-- **Reject unknown languages** — drops releases where no language could be detected (off by default; most single-language releases don't tag one).
-
-### Try it out
-
-The built-in bench at the bottom of the editor: paste release names (one per line), optionally a title to match against, and **Run** — each release shows kept/rejected, its score, and an expandable breakdown of exactly which clauses contributed what. It uses your current unsaved edits, so it's the fastest way to tune a profile before saving.
+A release name carries no file measurements and no availability record, so rules
+reading `probed.*` or `avail.*` are reported under **Not judged here** rather
+than looking broken — which is exactly what happens to them against any release
+that has never been probed or reported.
 
 ## Sharing profiles
 
-**Export** turns a profile into a compact `SNZBP1:` share code; **Import** adds a shared code as a new profile (never overwriting). Handy for Discord.
+Two formats, for two jobs:
+
+- **Share code** — a compact `SNZBP1:` string. Pastes into a chat window
+  intact. Import accepts it directly.
+- **JSON** — the profile as a readable file: preset, rules, nothing else. This
+  is the one to commit to a repository, review in a pull request, or hand-edit.
+  **Download** saves it as `<name>.streamnzb.json`.
+
+```json
+{
+  "streamnzb_profile": 1,
+  "name": "Samsung QN90A",
+  "preset": "4k",
+  "rules": [
+    { "name": "DV without HDR fallback", "when": "dolbyVision and not hdrFallback", "action": "reject" },
+    { "name": "WEB-DL tier 1", "when": "quality == \"WEB-DL\" and group in [\"NTb\", \"FLUX\"]", "points": 500 }
+  ]
+}
+```
+
+Import takes either format in the same box — a share code is base64 and a
+profile file starts with `{`, so there is nothing to choose. An import is always
+added as a new profile and never overwrites an existing one; a name collision
+gets a numeric suffix.
+
+## Upgrading from the old editor
+
+Profiles tuned before presets existed are converted on first load, and **nothing
+is lost**: every setting that used to have its own control becomes a rule with a
+name.
+
+| Was | Becomes |
+|---|---|
+| Enabled resolutions | The preset matching the highest tier you had on |
+| A blocked trait | `"webrip" in traits` → reject |
+| A re-scored trait | `"remux" in traits` → the difference from the baseline |
+| Must match / Never match | A reject rule on the pattern |
+| Preferred patterns | A score rule each, at the preference bonus |
+| Excluded / required languages | A reject rule |
+| NZB size / age / grab limits | A reject rule, per content kind where you set one |
+| Weighted patterns | A score rule each |
+
+Size rules use `sizePerEpisodeGB`, which is what the limits always judged: the
+whole release for films and single episodes, the per-episode share for a
+multi-episode release, and `-1` for a season pack whose episode count the title
+does not reveal. A rule against the total would reject packs for being packs.
+
+Migrated rules are named after whatever they came from — rename them; the name
+is what shows in the score breakdown, in History, and in
+[custom result formats](result-formatting.md).
+
+A profile that only ever used the recommended values migrates to a bare preset
+with no rules at all.
 
 ## Seeing what a profile did
 
-The **History** page shows the full funnel per search: raw results → validated → deduped → known-bad removed → **Profile (name) input → kept**. Expanding **Rejected by profile** lists every dropped release with its reason codes (`trash`, `resolution:480p`, `exclude:<pattern>`, `language:missing_required`, `attribute:cam`, …). A profile that filters everything out looks identical to an indexer that found nothing unless you look here — so look here first when streams come back empty. See also the **Search debug stream** toggle under Advanced, which prepends the same summary as a result row in Stremio.
+The **History** page shows the full funnel per search: raw results → validated →
+deduped → known-bad removed → **Profile (name) input → kept**, with a separate
+count for what rules rejected. Expanding **Rejected by profile** lists every
+dropped release with its reason codes (`trash`, `resolution:480p`,
+`language:missing_required`, `attribute:cam`, `rule: <name>`, …). Rule
+rejections are counted separately because "the baseline blocked it" and "a rule
+you wrote blocked it" send you to very different places.
+
+A profile that filters everything out looks identical to an indexer that found
+nothing unless you look here — so look here first when streams come back empty.
+See also the **Search debug stream** toggle under Advanced, which prepends the
+same summary as a result row in Stremio.

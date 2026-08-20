@@ -14,6 +14,13 @@ type Candidate struct {
 	Group       string
 	Score       int
 	QuerySource string
+
+	// Verdict is what the pipeline decided about this release beyond its
+	// score: the content kind it was ranked as, why a profile rejected it,
+	// which named rules paid out, what ffprobe measured, and what the
+	// community availability database knows. Stages fill their own part; an
+	// unset field means that stage did not run or had nothing to say.
+	Verdict Verdict
 }
 
 type Service struct{}

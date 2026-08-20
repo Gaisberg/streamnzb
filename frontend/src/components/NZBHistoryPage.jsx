@@ -430,6 +430,11 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         {!shortCircuit && snap.profile_name && (
           <FunnelChip label={`Profile (${snap.profile_name})`} value={`${snap.profile_input || 0} → ${snap.profile_kept || 0}`} />
         )}
+        {/* Split out because "a trait blocked it" and "a rule you wrote blocked
+            it" send you to very different parts of the profile editor. */}
+        {!shortCircuit && snap.rules_rejected > 0 && (
+          <FunnelChip label="By rules" value={`−${snap.rules_rejected}`} />
+        )}
       </div>
 
       {shortCircuit && (
@@ -489,7 +494,16 @@ function SearchDiagnosticsPanel({ diagnostic }) {
                   <div className="mt-1 flex flex-wrap items-center gap-1">
                     {r.indexer && <span className="text-[10px] text-muted-foreground">{r.indexer}</span>}
                     {(r.reasons || []).map((reason) => (
-                      <Badge key={reason} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                      <Badge
+                        key={reason}
+                        variant="outline"
+                        className={cn(
+                          'px-1.5 py-0 text-[10px] font-normal',
+                          reason.startsWith('rule: ')
+                            ? 'border-primary/40 text-primary'
+                            : 'text-muted-foreground',
+                        )}
+                      >
                         {reason}
                       </Badge>
                     ))}

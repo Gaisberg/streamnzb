@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
 )
 
 // applyScoring adds the profile's NZB attribute points to each result's rank
@@ -43,7 +44,7 @@ func (p *Profile) applyScoring(kind string, results []Result) {
 func attributeScore(scoring config.ScoringConfig, episodic bool, rel *release.Release, parsed *jhinparser.Result) int {
 	total := 0.0
 	if scoring.SizeTargetGB > 0 && scoring.SizeWeight != 0 {
-		if size, ok := effectiveSize(rel.Size, episodic, parsed); ok {
+		if size, ok := parser.EffectiveEpisodeSize(rel.Size, episodic, parsed); ok {
 			total += float64(scoring.SizeWeight) * sizeFactor(size, scoring.SizeTargetGB)
 		}
 	}

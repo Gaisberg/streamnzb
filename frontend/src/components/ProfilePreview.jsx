@@ -1,28 +1,21 @@
 import React, { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ChevronDown, FlaskConical, Loader2 } from "lucide-react"
-import { apiFetch } from "@/api"
-import { ATTRIBUTE_LABELS, formatScore } from "@/lib/profiles"
-import { cn } from "@/lib/utils"
-
-const SAMPLE_TITLES = [
-  "The Matrix 1999 2160p UHD BluRay REMUX DV HDR HEVC TrueHD 7.1 Atmos-FraMeSToR",
-  "The Matrix 1999 1080p BluRay DDP5.1 x264-GRP",
-  "The Matrix 1999 720p HDTV XviD-TRASH",
-  "The.Matrix.1999.1080p.WEBRip.HDCAM.x264",
-]
+import { SettingBlock, SettingGroup, SettingRow } from "@/components/ui/setting"
+import { ChevronDown, FlaskConical, Loader2, SkipForward } from "lucide-react"
+import { ATTRIBUTE_LABELS, RULE_SCOPES, formatScore } from "@/lib/profiles"
+import { cn, selectClass } from "@/lib/utils"
 
 // clauseLabel turns a scoring clause into something readable:
-// "attribute:remux" -> "Remux", "pattern:IMAX" -> "Pattern IMAX".
+// "attribute:remux" -> "Remux", "rule:IMAX" -> "Rule IMAX".
 function clauseLabel(source = "") {
   if (source.startsWith("attribute:")) {
     const key = source.slice("attribute:".length)
     return ATTRIBUTE_LABELS[key] || key
   }
+  if (source.startsWith("rule:")) return `Rule ${source.slice("rule:".length)}`
   if (source.startsWith("pattern:")) return `Pattern ${source.slice("pattern:".length)}`
   if (source === "preferred_pattern") return "Preferred pattern"
   if (source === "preferred_language") return "Preferred language"
@@ -31,6 +24,8 @@ function clauseLabel(source = "") {
 
 // reasonLabel turns a rejection reason into plain language.
 function reasonLabel(reason = "") {
+  if (reason.startsWith("rule: ")) return `Rule ${reason.slice(6)}`
+  if (reason.startsWith("score ")) return reason
   if (reason.startsWith("attribute:")) return `${ATTRIBUTE_LABELS[reason.slice(10)] || reason.slice(10)} not allowed`
   if (reason.startsWith("resolution:")) return `${reason.slice(11)} not allowed`
   if (reason.startsWith("require:")) return `Missing ${reason.slice(8)}`
@@ -51,28 +46,33 @@ function ResultRow({ result, expanded, onToggle }) {
   return (
     <div className={cn(
       "overflow-hidden rounded-lg border transition-colors",
-      result.fetch ? "border-border/60 bg-card/40" : "border-destructive/25 bg-destructive/[0.03]"
+      result.fetch ? "border-border/60 bg-card/40" : "border-destructive/25 bg-destructive/[0.03]",
     )}>
-      <button type="button" onClick={onToggle} className="flex w-full items-start gap-3 px-3.5 py-3 text-left">
+      <button type="button" onClick={onToggle} className="flex w-full items-start gap-3 px-3 py-2.5 text-left">
         <ChevronDown className={cn(
           "mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-          !expanded && "-rotate-90"
+          !expanded && "-rotate-90",
         )} />
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="truncate font-mono text-xs text-foreground">{result.title}</div>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant={result.fetch ? "default" : "destructive"} className="h-5 text-[10px] font-normal">
-              {result.fetch ? "Eligible" : "Rejected"}
+              {result.fetch ? "Offered" : "Rejected"}
             </Badge>
             <span className={cn(
               "font-mono text-xs tabular-nums",
-              result.rank > 0 ? "text-emerald-500" : result.rank < 0 ? "text-destructive" : "text-muted-foreground"
+              result.rank > 0 ? "text-emerald-600 dark:text-emerald-500" : result.rank < 0 ? "text-destructive" : "text-muted-foreground",
             )}>
               {formatScore(result.rank)}
             </span>
             {result.resolution && result.resolution !== "unknown" && (
               <Badge variant="outline" className="h-5 text-[10px] font-normal">{result.resolution}</Badge>
             )}
+            {(result.matched || []).map((m) => (
+              <Badge key={m.name} variant="outline" className="h-5 border-primary/40 text-[10px] font-normal text-primary">
+                {m.name} {formatScore(m.score)}
+              </Badge>
+            ))}
             {typeof result.title_ratio === "number" && result.title_ratio > 0 && (
               <Badge variant="outline" className="h-5 text-[10px] font-normal">
                 {Math.round(result.title_ratio * 100)}% title match
@@ -92,7 +92,7 @@ function ResultRow({ result, expanded, onToggle }) {
       </button>
 
       {expanded && (
-        <div className="border-t border-border/60 px-3.5 py-3">
+        <div className="border-t border-border/60 px-3 py-2.5">
           {clauses.length > 0 ? (
             <div className="space-y-1.5">
               {clauses.map((clause, i) => (
@@ -104,7 +104,7 @@ function ResultRow({ result, expanded, onToggle }) {
                     <div
                       className={cn(
                         "absolute inset-y-0 rounded-full",
-                        clause.rank >= 0 ? "left-1/2 bg-emerald-500/70" : "right-1/2 bg-destructive/70"
+                        clause.rank >= 0 ? "left-1/2 bg-emerald-500/70" : "right-1/2 bg-destructive/70",
                       )}
                       style={{ width: `${(Math.abs(clause.rank) / peak) * 50}%` }}
                     />
@@ -112,7 +112,7 @@ function ResultRow({ result, expanded, onToggle }) {
                   </div>
                   <span className={cn(
                     "w-16 shrink-0 text-right font-mono text-xs tabular-nums",
-                    clause.rank > 0 ? "text-emerald-500" : clause.rank < 0 ? "text-destructive" : "text-muted-foreground"
+                    clause.rank > 0 ? "text-emerald-600 dark:text-emerald-500" : clause.rank < 0 ? "text-destructive" : "text-muted-foreground",
                   )}>
                     {formatScore(clause.rank)}
                   </span>
@@ -126,98 +126,116 @@ function ResultRow({ result, expanded, onToggle }) {
           ) : (
             <p className="text-xs text-muted-foreground">Nothing in this profile scored this release.</p>
           )}
+
+          {result.skipped_rules?.length > 0 && (
+            <div className="mt-3 space-y-1 border-t border-border/60 pt-2">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                <SkipForward className="h-3 w-3" /> Not judged here
+              </p>
+              {result.skipped_rules.map((note, i) => (
+                <p key={i} className="text-[11px] text-muted-foreground">{note}</p>
+              ))}
+              <p className="max-w-prose pt-0.5 text-[11px] text-muted-foreground/80">
+                A release name carries no file measurements and no availability record, so these rules are skipped —
+                exactly as they would be for any release that has never been probed or reported.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
 
-// ExplainBench runs release names through the profile being edited and shows
-// why each one scored what it did, including unsaved changes.
-export function ExplainBench({ profile }) {
-  const [input, setInput] = useState(SAMPLE_TITLES.join("\n"))
-  const [targetTitle, setTargetTitle] = useState("")
-  const [results, setResults] = useState(null)
+// ProfilePreview shows what the profile being edited would do to a set of
+// release names. It is fed by the editor rather than fetching for itself, so
+// the per-rule counts on the Rules tab and the breakdown here always come from
+// the same evaluation.
+export function ProfilePreview({
+  preview,
+  sampleInput,
+  onSampleInputChange,
+  kind,
+  onKindChange,
+  targetTitle,
+  onTargetTitleChange,
+}) {
   const [expanded, setExpanded] = useState({})
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState("")
+  const { results, loading, error } = preview
 
-  const run = async () => {
-    const titles = input.split("\n").map((t) => t.trim()).filter(Boolean)
-    if (titles.length === 0) {
-      setError("Add at least one release name.")
-      return
-    }
-    setLoading(true)
-    setError("")
-    try {
-      const data = await apiFetch("/api/ranking/explain", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ titles, profile, target_title: targetTitle.trim() || undefined }),
-      })
-      setResults(data?.results || [])
-      setExpanded({})
-    } catch (err) {
-      setError(err.message || "Could not evaluate those release names.")
-      setResults(null)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Eligible releases first, then by score, matching what the addon returns.
+  // Offered first, then by score, matching what the addon returns.
   const ordered = results
     ? results.map((r, i) => ({ ...r, idx: i })).sort((a, b) => {
         if (a.fetch !== b.fetch) return a.fetch ? -1 : 1
         return (b.rank || 0) - (a.rank || 0)
       })
     : []
-
-  const eligible = ordered.filter((r) => r.fetch).length
+  const offered = ordered.filter((r) => r.fetch).length
 
   return (
     <Card className="border border-border bg-card">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold">
-          <FlaskConical className="h-4 w-4" /> Try it out
-        </CardTitle>
-        <CardDescription>
-          Paste release names to see how this profile scores them, and why. Unsaved changes are included.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="bench-titles">Release names, one per line</Label>
-          <textarea
-            id="bench-titles"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            rows={5}
-            spellCheck={false}
-            className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring"
-          />
-        </div>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-          <div className="flex-1 space-y-1.5">
-            <Label htmlFor="bench-target">Match against a title (optional)</Label>
-            <Input
-              id="bench-target"
-              value={targetTitle}
-              onChange={(e) => setTargetTitle(e.target.value)}
-              placeholder="The Matrix"
-              className="h-9"
-            />
-            <p className="text-xs text-muted-foreground">
-              Scores how closely each name matches, and rejects the ones that do not.
-            </p>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <FlaskConical className="h-4 w-4" /> Preview
+            </CardTitle>
+            <CardDescription>
+              What this profile would do to these releases. Updates as you edit, unsaved changes included.
+            </CardDescription>
           </div>
-          <Button onClick={run} disabled={loading} className="h-9 sm:mt-6 sm:w-28">
-            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {loading ? "Running" : "Run"}
-          </Button>
+          <div className="flex h-6 items-center text-xs text-muted-foreground">
+            {loading && <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Evaluating…</span>}
+          </div>
         </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <SettingGroup>
+          <SettingBlock
+            label="Release names"
+            description="One per line. These are also what the per-rule counts on the Rules tab are measured against."
+          >
+            <textarea
+              value={sampleInput}
+              onChange={(e) => onSampleInputChange(e.target.value)}
+              rows={5}
+              spellCheck={false}
+              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label="Release names"
+            />
+          </SettingBlock>
+
+          <SettingRow
+            label="Judge as"
+            htmlFor="preview-kind"
+            description="Picks which scoped rules and per-kind NZB limits apply."
+          >
+            <select
+              id="preview-kind"
+              className={cn(selectClass, "w-44")}
+              value={kind}
+              onChange={(e) => onKindChange(e.target.value)}
+            >
+              {RULE_SCOPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+          </SettingRow>
+
+          <SettingRow
+            label="Match against a title"
+            htmlFor="preview-target"
+            description="Optional. Scores how closely each name matches the title you are pretending to have searched for, and rejects the ones that fall short."
+          >
+            <Input
+              id="preview-target"
+              value={targetTitle}
+              onChange={(e) => onTargetTitleChange(e.target.value)}
+              placeholder="The Matrix"
+              className="h-9 w-44"
+            />
+          </SettingRow>
+
+        </SettingGroup>
 
         {error && (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -225,15 +243,13 @@ export function ExplainBench({ profile }) {
           </div>
         )}
 
-        {results && results.length === 0 && (
-          <p className="text-sm text-muted-foreground">No results.</p>
-        )}
-
         {ordered.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              {eligible} of {ordered.length} would be offered.
-            </p>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-normal text-muted-foreground">
+                {offered} of {ordered.length} would be offered
+              </Label>
+            </div>
             {ordered.map((result) => (
               <ResultRow
                 key={result.idx}
@@ -243,6 +259,10 @@ export function ExplainBench({ profile }) {
               />
             ))}
           </div>
+        )}
+
+        {!error && ordered.length === 0 && !loading && (
+          <p className="text-sm text-muted-foreground">Add a release name above to see what this profile does.</p>
         )}
       </CardContent>
     </Card>

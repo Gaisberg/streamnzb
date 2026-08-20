@@ -31,7 +31,7 @@ type FormatContext struct {
 	Index        int        // 1-based position in the result list
 	Count        int        // total results in the list
 	Score        int        // final ranking score (library bonus included)
-	Avail        bool       // AvailNZB-verified available
+	Avail        bool       // AvailNZB reports this release available
 	Library      bool       // served from the local release library
 	Size         int64      // bytes
 	Indexer      string     // indexer display name
@@ -40,6 +40,29 @@ type FormatContext struct {
 	Duration     string     // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
 	Languages    stringList // parsed language codes
 	Caps         string     // ffprobe-verified caps summary (library releases only)
+
+	// Kind is the content kind the request was ranked as: "movie", "series",
+	// "anime_movie" or "anime_show". IsAnime is the anime half of that
+	// decision on its own, which is the form templates usually want.
+	Kind    string
+	IsAnime bool
+
+	// MatchedRules are the profile's named rules that paid out on this
+	// release, in configuration order. Range over them for badges
+	// ({{range .MatchedRules}}{{.Name}}{{end}}) or read .Score for the points
+	// each was worth.
+	MatchedRules []triage.RuleMatch
+
+	// Probed is what ffprobe measured about the file. Zero for fresh indexer
+	// hits, which have never been opened — guard with {{if .Verified}}.
+	Probed ProbedCaps
+	// Verified reports that Probed holds real measurements.
+	Verified bool
+
+	// Availability is the full community availability record. Avail above
+	// stays the plain "reported available" boolean that existing templates
+	// use; this is the tri-state, the backbone match and the record age.
+	Availability AvailInfo
 
 	ParsedTitle string // content title as parsed out of the release name
 	Resolution  string
@@ -82,6 +105,38 @@ type FormatContext struct {
 	Episodes    intList
 	EpisodeCode string
 	Volumes     intList
+}
+
+// ProbedCaps is the ffprobe reading of a library file, exposed to templates.
+// Dolby Vision and the HDR base layer stay separate because they are: a DV
+// release with no fallback shows as SDR on a device that cannot decode it, and
+// that is exactly the distinction a badge is for.
+type ProbedCaps struct {
+	VideoCodec     string
+	AudioCodec     string
+	Width          int
+	Height         int
+	Profile        string
+	BitDepth       int
+	HDR            string // base layer: "HDR10", "HDR10+", "HLG", or ""
+	DolbyVision    bool
+	HasHDRFallback bool
+	DynamicRange   string // "DV + HDR10", "DV only", "HDR10", or "" for SDR
+}
+
+// AvailInfo is the community availability record for one release.
+type AvailInfo struct {
+	// Status is "available", "unavailable" or "unknown". Unknown is the
+	// common case and means nobody has reported the release either way.
+	Status string
+	Known  bool
+	// OnMyBackbone reports the release healthy on a backbone this stream's
+	// own providers use, which is a stronger claim than plain availability.
+	OnMyBackbone bool
+	// CheckedDaysAgo is how stale the record is, or -1 when it has no
+	// timestamp.
+	CheckedDaysAgo int
+	Compression    string
 }
 
 // stringList and intList render as comma-separated text instead of Go's
@@ -407,14 +462,33 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		service = DefaultServiceName
 	}
 	ctx := FormatContext{
-		Service: service,
-		Stream:  streamID,
-		Content: contentTitle,
-		Index:   index,
-		Count:   count,
-		Score:   cand.Score,
-		Avail:   avail,
-		Caps:    caps,
+		Service:      service,
+		Stream:       streamID,
+		Content:      contentTitle,
+		Index:        index,
+		Count:        count,
+		Score:        cand.Score,
+		Avail:        avail,
+		Caps:         caps,
+		Kind:         cand.Verdict.Kind,
+		IsAnime:      cand.Verdict.IsAnime,
+		MatchedRules: cand.Verdict.Matched,
+		Availability: availInfo(cand.Verdict.Avail),
+	}
+	if probed := cand.Verdict.Probed; probed != nil {
+		ctx.Verified = true
+		ctx.Probed = ProbedCaps{
+			VideoCodec:     probed.VideoCodec,
+			AudioCodec:     probed.AudioCodec,
+			Width:          probed.Width,
+			Height:         probed.Height,
+			Profile:        probed.Profile,
+			BitDepth:       probed.BitDepth,
+			HDR:            probed.HDR,
+			DolbyVision:    probed.DolbyVision,
+			HasHDRFallback: probed.HasHDRFallback(),
+			DynamicRange:   probed.DynamicRange(),
+		}
 	}
 	rel := cand.Release
 	if rel != nil {
@@ -732,4 +806,20 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 		})
 	}
 	return res
+}
+
+// availInfo renders one availability record for templates, defaulting the
+// status so a template never sees an empty string where a tri-state belongs.
+func availInfo(state triage.AvailState) AvailInfo {
+	status := string(state.Status)
+	if status == "" {
+		status = string(triage.AvailUnknown)
+	}
+	return AvailInfo{
+		Status:         status,
+		Known:          state.Known(),
+		OnMyBackbone:   state.OnMyBackbone,
+		CheckedDaysAgo: state.CheckedDaysAgo(),
+		Compression:    state.Compression,
+	}
 }

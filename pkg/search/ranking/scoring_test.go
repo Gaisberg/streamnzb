@@ -16,7 +16,7 @@ import (
 // with, kept or not.
 func rankOf(t *testing.T, p *ranking.Profile, kind string, rel *release.Release) int {
 	t.Helper()
-	kept, rejected := p.ApplyWithRejected(kind, candidateWith(rel), rank.RankOptions{})
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: kind}, candidateWith(rel), rank.RankOptions{})
 	if len(kept) == 1 {
 		return kept[0].Torrent.Rank
 	}
@@ -177,7 +177,7 @@ func TestScoringReordersEligibleReleases(t *testing.T) {
 		{Release: &release.Release{Title: scoringTitle, Size: 8 * gb, Grabs: 1}},
 		{Release: &release.Release{Title: scoringTitle, Size: 8 * gb, Grabs: 400}},
 	}
-	kept, _ := p.ApplyWithRejected(ranking.KindMovie, candidates, rank.RankOptions{})
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, candidates, rank.RankOptions{})
 	if len(kept) != 2 {
 		t.Fatalf("kept %d releases, want 2", len(kept))
 	}

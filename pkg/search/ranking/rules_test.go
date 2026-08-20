@@ -1,0 +1,295 @@
+package ranking_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/dreulavelle/jhin/rank"
+
+	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/ranking"
+	"streamnzb/pkg/search/triage"
+)
+
+func rulesProfile(t *testing.T, rules ...config.RuleConfig) *ranking.Profile {
+	t.Helper()
+	p, err := ranking.Compile(config.FilterProfileConfig{Name: "Rules", Rules: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A rule that rejects removes the release and says which rule did it, in the
+// same list every other rejection reason lands in.
+func TestRuleRejectionJoinsTheRejectionList(t *testing.T) {
+	p := rulesProfile(t, config.RuleConfig{
+		Name:   "DV without HDR fallback",
+		When:   "dolbyVision and not hdrFallback",
+		Action: config.RuleActionReject,
+	})
+
+	kept, reasons := applyOne(p, ranking.KindMovie, &release.Release{
+		Title: "Movie 2020 2160p BluRay REMUX DV HEVC-GRP",
+	})
+	if kept {
+		t.Fatal("a DV-only release was kept")
+	}
+	found := false
+	for _, r := range reasons {
+		if strings.HasPrefix(r, "rule: ") && strings.Contains(r, "DV without HDR fallback") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("rejection reasons %v do not name the rule", reasons)
+	}
+}
+
+// Rule points land in the same score everything else uses, so they order
+// results and count towards the floor like any other points.
+func TestRulePointsReachTheScore(t *testing.T) {
+	plain := rulesProfile(t)
+	scored := rulesProfile(t, config.RuleConfig{
+		Name:   "IMAX",
+		When:   `releaseName matches "(?i)\\bIMAX\\b"`,
+		Points: 1234,
+	})
+
+	rel := &release.Release{Title: "Movie 2020 IMAX 1080p WEB-DL H264-GRP"}
+	if got := rankOf(t, scored, ranking.KindMovie, rel) - rankOf(t, plain, ranking.KindMovie, rel); got != 1234 {
+		t.Errorf("rule earned %d points, want 1234", got)
+	}
+}
+
+// A rule reading the probe judges library releases and leaves everything else
+// alone, rather than rejecting every release that has never been opened.
+func TestProbeRuleOnlyJudgesProbedReleases(t *testing.T) {
+	p := rulesProfile(t, config.RuleConfig{
+		Name:   "No SD files",
+		When:   "probed.height < 1080",
+		Action: config.RuleActionReject,
+	})
+
+	fresh := triage.Candidate{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}}
+	probedSD := triage.Candidate{
+		Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP", IsLibrary: true},
+		Verdict: triage.Verdict{Probed: &release.MediaCaps{Height: 480}},
+	}
+	probedHD := triage.Candidate{
+		Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP", IsLibrary: true},
+		Verdict: triage.Verdict{Probed: &release.MediaCaps{Height: 1080}},
+	}
+
+	kept, rejected := p.ApplyWithRejected(
+		ranking.Request{Kind: ranking.KindMovie},
+		[]triage.Candidate{fresh, probedSD, probedHD},
+		rank.RankOptions{},
+	)
+	if len(kept) != 2 {
+		t.Fatalf("kept %d releases, want 2 (the unprobed one and the probed 1080p one)", len(kept))
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("rejected %d releases, want 1", len(rejected))
+	}
+	if !rejected[0].Candidate.Release.IsLibraryResult() {
+		t.Error("the rejected release was not the probed one")
+	}
+}
+
+// Compiling a profile is what validates its rules, so a broken condition
+// rejects the config save with the rule named.
+func TestProfileCompileRejectsBrokenRules(t *testing.T) {
+	_, err := ranking.Compile(config.FilterProfileConfig{
+		Name:  "Broken",
+		Rules: []config.RuleConfig{{Name: "Nonsense", When: "seeders > 10"}},
+	})
+	if err == nil {
+		t.Fatal("Compile succeeded with an invalid rule")
+	}
+	if !strings.Contains(err.Error(), "Nonsense") {
+		t.Errorf("error %q does not name the rule", err)
+	}
+}
+
+// The scoped half: a rule limited to one kind does not touch the others.
+func TestRuleScopeAppliesPerKind(t *testing.T) {
+	p := rulesProfile(t, config.RuleConfig{
+		Name:   "Anime bonus",
+		Scope:  ranking.KindAnimeShow,
+		When:   "true",
+		Points: 777,
+	})
+	plain := rulesProfile(t)
+
+	rel := &release.Release{Title: "Show S01E01 1080p WEB-DL H264-GRP"}
+	base := rankOf(t, plain, ranking.KindAnimeShow, rel)
+	if got := rankOf(t, p, ranking.KindAnimeShow, rel) - base; got != 777 {
+		t.Errorf("scoped kind earned %d, want 777", got)
+	}
+	if got := rankOf(t, p, ranking.KindSeries, rel) - rankOf(t, plain, ranking.KindSeries, rel); got != 0 {
+		t.Errorf("another kind earned %d, want 0", got)
+	}
+}
+
+// The bench evaluates rules too, and reports the ones a bare title cannot
+// answer instead of letting them look broken.
+func TestExplainReportsRulesAndSkips(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "IMAX", When: `releaseName matches "(?i)\\bIMAX\\b"`, Points: 1000},
+		config.RuleConfig{Name: "Measured 10-bit", When: "probed.bitDepth >= 10", Points: 400},
+	)
+
+	out := p.Explain([]string{"Movie 2020 IMAX 1080p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	if len(out) != 1 {
+		t.Fatalf("Explain returned %d results, want 1", len(out))
+	}
+	ex := out[0]
+	if len(ex.Matched) != 1 || ex.Matched[0].Name != "IMAX" {
+		t.Errorf("Matched = %+v, want one IMAX entry", ex.Matched)
+	}
+	if len(ex.SkippedRules) != 1 || !strings.Contains(ex.SkippedRules[0], "Measured 10-bit") {
+		t.Errorf("SkippedRules = %v, want the probe rule reported", ex.SkippedRules)
+	}
+	found := false
+	for _, c := range ex.Contributions {
+		if c.Source == "rule:IMAX" && c.Rank == 1000 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("contributions %+v do not include the rule", ex.Contributions)
+	}
+}
+
+// "At most three 4K releases" is the one thing a per-release condition cannot
+// say on its own, so it is an action: the best N matching survive and the tail
+// is dropped.
+func TestLimitRuleCapsMatchingReleases(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Capped",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{Name: "Max two 4K", When: `resolution == "2160p"`, Action: config.RuleActionLimit, Count: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEB-DL H265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEBRip x265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p BluRay REMUX-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}},
+	}
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+
+	fourK := 0
+	for _, r := range kept {
+		if strings.Contains(r.Candidate.Release.Title, "2160p") {
+			fourK++
+		}
+	}
+	if fourK != 2 {
+		t.Errorf("kept %d 4K releases, want 2", fourK)
+	}
+	// Nothing below the cap is touched: the 1080p releases all survive.
+	if len(kept) != 4 {
+		t.Errorf("kept %d releases in total, want 4", len(kept))
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("rejected %d, want 1", len(rejected))
+	}
+	if !strings.Contains(strings.Join(rejected[0].Torrent.Rejections, " "), "over the limit of 2") {
+		t.Errorf("rejection %v does not say it was over the limit", rejected[0].Torrent.Rejections)
+	}
+}
+
+// The survivors are the best ones, not the first ones the indexer happened to
+// return, so a cap never costs you the release you wanted.
+func TestLimitRuleKeepsTheBest(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Best one",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{Name: "One 4K only", When: `resolution == "2160p"`, Action: config.RuleActionLimit, Count: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The remux is last in the input and scores highest.
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p WEBRip x265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEB-DL H265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+	}
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+	if len(kept) != 1 {
+		t.Fatalf("kept %d, want 1", len(kept))
+	}
+	if !strings.Contains(kept[0].Candidate.Release.Title, "REMUX") {
+		t.Errorf("kept %q, want the remux — a cap should keep the best, not the first", kept[0].Candidate.Release.Title)
+	}
+}
+
+// A limit rule with no count is a rule that would silently drop everything, so
+// it fails the profile instead.
+func TestLimitRuleNeedsACount(t *testing.T) {
+	_, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Bad cap",
+		Preset: config.PresetUHD,
+		Rules:  []config.RuleConfig{{Name: "Nothing", When: "true", Action: config.RuleActionLimit}},
+	})
+	if err == nil {
+		t.Fatal("Compile accepted a limit rule with no count")
+	}
+	if !strings.Contains(err.Error(), "Nothing") {
+		t.Errorf("error %q does not name the rule", err)
+	}
+}
+
+// The preview runs the same set pipeline a real search does, so a cap shows up
+// there rather than looking like a rule that never fires.
+func TestExplainReflectsLimitRules(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Preview cap",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{Name: "One 4K", When: `resolution == "2160p"`, Action: config.RuleActionLimit, Count: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := p.Explain([]string{
+		"Movie 2020 2160p BluRay REMUX HEVC-GRP",
+		"Movie 2020 2160p WEB-DL H265-GRP",
+		"Movie 2020 1080p WEB-DL H264-GRP",
+	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+
+	if len(out) != 3 {
+		t.Fatalf("Explain returned %d results, want 3", len(out))
+	}
+	offered, capped := 0, 0
+	for _, ex := range out {
+		if ex.Fetch {
+			offered++
+			continue
+		}
+		if strings.Contains(strings.Join(ex.Rejections, " "), "over the limit of 1") {
+			capped++
+		}
+	}
+	if offered != 2 {
+		t.Errorf("%d offered, want 2 (one 4K plus the 1080p)", offered)
+	}
+	if capped != 1 {
+		t.Errorf("%d capped, want 1", capped)
+	}
+}

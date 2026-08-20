@@ -8,6 +8,7 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
 )
 
 // applyLimits rejects results whose release falls outside the profile's NZB
@@ -45,7 +46,7 @@ func limitRejections(limits config.LimitsConfig, blockPassworded, episodic bool,
 	if blockPassworded && rel.Password {
 		reasons = append(reasons, "password protected")
 	}
-	if size, ok := effectiveSize(rel.Size, episodic, parsed); ok {
+	if size, ok := parser.EffectiveEpisodeSize(rel.Size, episodic, parsed); ok {
 		if limits.MaxSizeGB > 0 && size > gbToBytes(limits.MaxSizeGB) {
 			reasons = append(reasons, fmt.Sprintf("size %s above max %s", formatGB(size), formatGB(gbToBytes(limits.MaxSizeGB))))
 		}
@@ -64,27 +65,6 @@ func limitRejections(limits config.LimitsConfig, blockPassworded, episodic bool,
 		reasons = append(reasons, fmt.Sprintf("grabs %d below min %d", rel.Grabs, limits.MinGrabs))
 	}
 	return reasons
-}
-
-// effectiveSize is the size the bounds judge: the full size for films and
-// single episodes, the per-episode share for a multi-episode release, and
-// nothing (ok=false) for a season or show pack whose episode count the title
-// does not reveal — a 40 GB pack of unknown length cannot be compared against
-// a per-episode cap.
-func effectiveSize(size int64, episodic bool, parsed *jhinparser.Result) (int64, bool) {
-	if size <= 0 {
-		return 0, false
-	}
-	if !episodic || parsed == nil {
-		return size, true
-	}
-	if n := len(parsed.Episodes); n > 1 {
-		return size / int64(n), true
-	}
-	if len(parsed.Episodes) == 0 && (parsed.Complete || len(parsed.Seasons) > 0) {
-		return 0, false
-	}
-	return size, true
 }
 
 func gbToBytes(gb float64) int64 {

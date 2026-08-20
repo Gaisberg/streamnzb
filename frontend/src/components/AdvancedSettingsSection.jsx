@@ -12,7 +12,7 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { apiFetch } from '@/api'
 import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { normalizeAvailNZBMode } from "@/lib/availnzb"
-import { cn } from "@/lib/utils"
+import { cn, selectClass } from "@/lib/utils"
 
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'search_debug_stream', 'keep_log_files'],
@@ -156,7 +156,6 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
 
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
-  const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
   const labelClass = "min-w-0 text-sm font-medium"
 
   return (
@@ -182,7 +181,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                         <div className={stackedFieldRowClass}>
                           <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Log Level <EnvOverrideIndicator show={envOverrides.includes('log_level')} /></FormLabel>
                           <FormControl>
-                            <select className={controlSelectClass} {...field} onChange={(e) => { field.onChange(e); commitField('log_level') }}>
+                            <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitField('log_level') }}>
                               <option value="DEBUG">DEBUG</option>
                               <option value="INFO">INFO</option>
                               <option value="WARN">WARN</option>
@@ -510,7 +509,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                       <FormLabel className={labelClass}>Library Search Priority</FormLabel>
                     </div>
                     <FormControl>
-                      <select className={controlSelectClass} {...field} onChange={(e) => { field.onChange(e); commitField('library_search_mode') }}>
+                      <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitField('library_search_mode') }}>
                         <option value="library_first">Library First (Fastest)</option>
                         <option value="combine">Combine Library + Indexers</option>
                         <option value="fallback_only">Fallback to Library</option>

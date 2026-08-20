@@ -23,8 +23,10 @@ release's parsed data.
 
 | Group | Fields |
 |---|---|
-| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` |
-| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` |
+| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.Kind` `.IsAnime` |
+| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
+| Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` |
+| Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
 | Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
@@ -35,6 +37,58 @@ List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.Seasons`,
 media summary, present on library releases only. `.Duration` is the humanized
 runtime (`1h 52m`), filled only when the indexer reports one (e.g. Easynews) —
 newznab NZBs don't carry a runtime.
+
+### Anime and content kind
+
+`.IsAnime` is the classification StreamNZB already made for this request —
+Kitsu when the request came from a Kitsu catalog, TMDB genres otherwise — not a
+guess from the release name. `.Kind` is the full content kind: `movie`,
+`series`, `anime_movie` or `anime_show`.
+
+```
+{{if .IsAnime}}🌸 {{end}}{{.Resolution}}
+```
+
+### Matched rules
+
+`.MatchedRules` lists the profile [rules](rules.md) that paid out on this
+release, in the order they are configured. Each entry has `.Name` and `.Score`:
+
+```
+{{range .MatchedRules}}[{{.Name}}] {{end}}
+{{range .MatchedRules}}{{.Name}} {{score .Score}} · {{end}}
+```
+
+It is empty when no profile ran or nothing matched. Rules that *rejected* a
+release never reach a template — the release is gone by then.
+
+### Measured properties
+
+`.Probed` is what ffprobe found in the actual file. It is only populated for
+library releases, since a fresh indexer hit has never been opened — guard with
+`.Verified`:
+
+```
+{{if .Verified}}{{.Probed.DynamicRange}} {{.Probed.BitDepth}}-bit{{end}}
+```
+
+`.Probed.DolbyVision` and `.Probed.HDR` are independent, so a DV release with
+an HDR10 base layer is tellable apart from one without — the difference between
+a file that looks right on a non-DV TV and one that does not.
+`.Probed.HasHDRFallback` answers that directly, and `.Probed.DynamicRange`
+renders it as `DV + HDR10`, `DV only`, `HDR10`, or empty for SDR.
+
+### Availability
+
+`.Avail` stays the plain "reported available" boolean it has always been.
+`.Availability` is the full record: `.Status` is three-valued (`available`,
+`unavailable`, `unknown`), `.OnMyBackbone` reports the release healthy on a
+backbone this stream's providers use, and `.CheckedDaysAgo` is how stale the
+record is (`-1` when it carries no timestamp).
+
+```
+{{if .Availability.OnMyBackbone}}✅{{else if eq .Availability.Status "unknown"}}·{{end}}
+```
 
 ## Helpers
 

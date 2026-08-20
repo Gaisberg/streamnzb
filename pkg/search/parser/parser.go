@@ -298,3 +298,28 @@ func (p *ParsedRelease) ResolutionGroup() string {
 	}
 	return "sd"
 }
+
+// EffectiveEpisodeSize is the size a size bound or a size score should judge:
+// the whole release for films and single episodes, the per-episode share for a
+// multi-episode release, and nothing at all for a season pack whose episode
+// count the title does not reveal — judging a 10-episode pack as one 40 GB
+// file would reject it for being large when it is not.
+//
+// It lives here rather than in ranking because the rule engine has to reach the
+// same number: a size rule that disagreed with the size limit about what a
+// season pack weighs would be a trap.
+func EffectiveEpisodeSize(size int64, episodic bool, parsed *jhin.Result) (int64, bool) {
+	if size <= 0 {
+		return 0, false
+	}
+	if !episodic || parsed == nil {
+		return size, true
+	}
+	if n := len(parsed.Episodes); n > 1 {
+		return size / int64(n), true
+	}
+	if len(parsed.Episodes) == 0 && (parsed.Complete || len(parsed.Seasons) > 0) {
+		return 0, false
+	}
+	return size, true
+}

@@ -12,7 +12,7 @@ import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { Check, ChevronRight, Clapperboard, Info, KeyRound, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
-import { cn } from "@/lib/utils"
+import { cn, selectClass } from "@/lib/utils"
 
 const PROVIDER_LABELS = {
   tmdb: "TMDB",
@@ -21,7 +21,6 @@ const PROVIDER_LABELS = {
   local: "This server",
 }
 
-const sourceSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-60"
 
 // Display languages for meta responses and catalog rows, as TMDB-style tags.
 // TMDB localizes fully; TVDB series pick up translated names/overviews where
@@ -241,7 +240,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
             <Label htmlFor="metadata-max-cert" className="text-sm">Rating limit</Label>
             <select
               id="metadata-max-cert"
-              className={sourceSelectClass}
+              className={selectClass}
               value={draft.max_certification || ""}
               onChange={(e) => {
                 const value = e.target.value
@@ -297,7 +296,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
               <Label htmlFor="metadata-source-movie" className="text-sm">Movies</Label>
-              <select id="metadata-source-movie" className={sourceSelectClass} value="tmdb" disabled>
+              <select id="metadata-source-movie" className={selectClass} value="tmdb" disabled>
                 <option value="tmdb">TMDB</option>
               </select>
             </div>
@@ -305,7 +304,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               <Label htmlFor="metadata-source-series" className="text-sm">Series</Label>
               <select
                 id="metadata-source-series"
-                className={sourceSelectClass}
+                className={selectClass}
                 value={draft.series_source === "tmdb" ? "tmdb" : "tvdb"}
                 onChange={(e) => onChange({ ...draft, series_source: e.target.value === "tmdb" ? "tmdb" : undefined })}
               >
@@ -315,7 +314,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="metadata-source-anime" className="text-sm">Anime</Label>
-              <select id="metadata-source-anime" className={sourceSelectClass} value="kitsu" disabled>
+              <select id="metadata-source-anime" className={selectClass} value="kitsu" disabled>
                 <option value="kitsu">Kitsu</option>
               </select>
             </div>
@@ -328,7 +327,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
             <Label htmlFor="metadata-language" className="text-sm">Language</Label>
             <select
               id="metadata-language"
-              className={sourceSelectClass}
+              className={selectClass}
               value={draft.language || "en-US"}
               onChange={(e) => onChange({ ...draft, language: e.target.value === "en-US" ? undefined : e.target.value })}
             >

@@ -2,7 +2,7 @@ package stremio
 
 import (
 	"context"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -939,9 +939,15 @@ func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *p
 // Streams with no profile bound keep the pre-jhin ordering, so filtering stays
 // opt-in rather than silently changing what an unconfigured stream returns.
 func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate, source *playlistSource, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
-	kind := kindForRequest(source)
-	profile := s.profileForKind(kind, stream)
+	req := rankingRequest(source)
+	profile := s.profileForKind(req.Kind, stream)
 	inputResults := len(candidates)
+
+	// What ffprobe measured and what the availability database reports are
+	// attached before any profile runs: stream descriptions render them
+	// whether or not this stream filters, and profile rules read them.
+	s.annotateVerdicts(candidates, source, stream)
+
 	if profile == nil {
 		if filteringActive {
 			sortCandidates(s.triageService, candidates)
@@ -949,16 +955,14 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 		// Unconditional: scoring happens to populate metadata today, but
 		// stream descriptions need it whatever that path does.
 		ensureCandidateMetadata(candidates)
-		logRankingSelection(source, stream, kind, nil, inputResults, inputResults)
+		logRankingSelection(source, stream, req.Kind, nil, inputResults, inputResults)
 		logStreamSorting(stream, filterMode, len(candidates), len(candidates))
 		return candidates
 	}
 
-	results, rejected := profile.ApplyWithRejected(kind, candidates, rank.RankOptions{})
-	logRankingSelection(source, stream, kind, profile, inputResults, len(results))
+	results, rejected := profile.ApplyWithRejected(req, candidates, rank.RankOptions{})
+	logRankingSelection(source, stream, req.Kind, profile, inputResults, len(results))
 	diag.From(ctx).SetProfile(profile.Name, inputResults, len(results), rejectedForDiag(rejected))
-
-	libraryBonus := profile.LibraryScoreBonus
 
 	out := make([]triage.Candidate, 0, len(results))
 	for _, r := range results {
@@ -967,21 +971,73 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 		cand.Metadata = parser.FromResult(r.Torrent.Raw, r.Torrent.Data)
 		cand.Group = cand.Metadata.ResolutionGroup()
 		// The computed score replaces the old size/age/grabs heuristic, so
-		// everything downstream ranks the same way.
+		// everything downstream ranks the same way. Every source of points —
+		// NZB attributes, the library bonus, rules — has already contributed
+		// and the profile has already ordered the list, so nothing re-sorts it
+		// here: doing so used to discard the profile resolution precedence.
 		cand.Score = r.Torrent.Rank
-		if cand.Release != nil && cand.Release.IsLibraryResult() {
-			cand.Score += libraryBonus
-		}
 		out = append(out, cand)
 	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Score > out[j].Score
-	})
 
 	logStreamFiltering(stream, filterMode, inputResults, len(out))
 	logStreamSorting(stream, filterMode, inputResults, len(out))
 	return out
+}
+
+// annotateVerdicts attaches the two attribute tiers that live outside the
+// release itself: what ffprobe measured when a library item was last played,
+// and what the community availability database reports for it.
+//
+// Availability is recorded per backbone rather than as one flag, because a
+// release healthy on a backbone this stream does not use is not a release this
+// stream can play.
+func (s *Server) annotateVerdicts(candidates []triage.Candidate, source *playlistSource, stream *auth.Stream) {
+	var byDetailsURL map[string]*availnzb.ReleaseWithStatus
+	if source != nil && source.Avail != nil {
+		byDetailsURL = source.Avail.ByDetailsURL
+	}
+	var ourBackbones map[string]bool
+	if s.availClient != nil && len(byDetailsURL) > 0 {
+		ourBackbones, _ = s.availClient.OurBackbones(s.providerHostsForStream(stream))
+	}
+
+	for i := range candidates {
+		rel := candidates[i].Release
+		if rel == nil {
+			continue
+		}
+		candidates[i].Verdict.Probed = libraryCapsForRelease(rel)
+		candidates[i].Verdict.Avail = availStateFor(byDetailsURL[rel.DetailsURL], ourBackbones)
+	}
+}
+
+// availStateFor turns one availability record into the tri-state the rest of
+// the pipeline reads. A release nobody has reported stays unknown, which is a
+// different claim from reported-bad and must not be conflated with it.
+func availStateFor(status *availnzb.ReleaseWithStatus, ourBackbones map[string]bool) triage.AvailState {
+	state := triage.AvailState{Status: triage.AvailUnknown}
+	if status == nil {
+		return state
+	}
+	state.Status = triage.AvailUnavailable
+	if status.Available {
+		state.Status = triage.AvailAvailable
+	}
+	state.Compression = status.CompressionType
+	if len(status.Summary) == 0 {
+		return state
+	}
+	state.Backbones = make(map[string]bool, len(status.Summary))
+	for backbone, report := range status.Summary {
+		state.Backbones[backbone] = report.Healthy
+		if report.LastUpdated.After(state.CheckedAt) {
+			state.CheckedAt = report.LastUpdated
+		}
+		if report.Healthy && ourBackbones[backbone] {
+			state.OnMyBackbone = true
+		}
+	}
+	return state
 }
 
 // rejectedForDiag converts the profile's turned-away releases into the diag
@@ -1014,14 +1070,24 @@ func ensureCandidateMetadata(candidates []triage.Candidate) {
 	}
 }
 
-// kindForRequest classifies a request. A Kitsu request is anime by definition
-// and carries its own film/episodic subtype; anything else falls back to what
-// the metadata says, since most anime is browsed through ordinary catalogues.
-func kindForRequest(source *playlistSource) string {
+// rankingRequest classifies a request and gathers the media context a profile
+// can read. A Kitsu request is anime by definition and carries its own
+// film/episodic subtype; anything else falls back to what the metadata says,
+// since most anime is browsed through ordinary catalogues.
+//
+// The anime classification rides on the request rather than being recomputed
+// downstream: it used to be derived here, used for one profile lookup and
+// discarded, which left custom result formats guessing at it from release
+// names.
+func rankingRequest(source *playlistSource) ranking.Request {
 	contentType, kitsuShowType := "", ""
 	isAnime := false
+	req := ranking.Request{}
 	if source != nil && source.Params != nil {
 		contentType = source.Params.ContentType
+		req.Season = atoiOrZero(source.Params.Req.Season)
+		req.Episode = atoiOrZero(source.Params.Req.Episode)
+		req.Title = source.Params.ContentTitle
 		if meta := source.Params.Metadata; meta != nil {
 			if meta.KitsuDetails != nil {
 				isAnime = true
@@ -1031,7 +1097,9 @@ func kindForRequest(source *playlistSource) string {
 			}
 		}
 	}
-	return ranking.Kind(contentType, kitsuShowType, isAnime)
+	req.IsAnime = isAnime
+	req.Kind = ranking.Kind(contentType, kitsuShowType, isAnime)
+	return req
 }
 
 // logRankingSelection records how a request was classified, which profile that
@@ -1201,4 +1269,14 @@ func logStreamSorting(stream *auth.Stream, filterMode string, inputResults, fina
 		"input_results", inputResults,
 		"final_results", finalResults,
 	)
+}
+
+// atoiOrZero reads a numeric request field, yielding zero for the empty or
+// non-numeric values a movie request carries.
+func atoiOrZero(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }

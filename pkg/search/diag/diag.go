@@ -11,9 +11,16 @@ package diag
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
+
+// RuleRejectionPrefix marks a rejection written by a profile's named rule, so
+// that a rule can be told apart from a trait, a limit or a language in the one
+// list they all share. It lives here because this package sits below everyone
+// who writes or reads those lists.
+const RuleRejectionPrefix = "rule: "
 
 // IndexerCall is one Search round trip to one indexer, cache hits included —
 // a request answered from cache is still part of the story of a search, it is
@@ -65,6 +72,11 @@ type Snapshot struct {
 	ProfileInput int               `json:"profile_input"`
 	ProfileKept  int               `json:"profile_kept"`
 	Rejected     []RejectedRelease `json:"rejected,omitempty"`
+	// RulesRejected is how many of those rejections came from the profile's
+	// named rules rather than from its traits, limits or languages. A profile
+	// that empties a result list reads very differently depending on which,
+	// and the reason strings alone make that a counting exercise.
+	RulesRejected int `json:"rules_rejected,omitempty"`
 
 	// UnairedAirsAt (RFC 3339) is set when the search was short-circuited
 	// because the episode has not aired yet — the reason there are no
@@ -169,7 +181,24 @@ func (c *Collector) SetProfile(name string, input, kept int, rejected []Rejected
 	c.snap.ProfileName = name
 	c.snap.ProfileInput, c.snap.ProfileKept = input, kept
 	c.snap.Rejected = rejected
+	c.snap.RulesRejected = countRuleRejections(rejected)
 	c.mu.Unlock()
+}
+
+// countRuleRejections counts releases turned away by at least one named rule.
+// Rule rejections are prefixed so they stay tellable apart from a trait or a
+// limit in the same list.
+func countRuleRejections(rejected []RejectedRelease) int {
+	n := 0
+	for _, r := range rejected {
+		for _, reason := range r.Reasons {
+			if strings.HasPrefix(reason, RuleRejectionPrefix) {
+				n++
+				break
+			}
+		}
+	}
+	return n
 }
 
 // Snapshot stamps the elapsed time and returns a copy of everything recorded

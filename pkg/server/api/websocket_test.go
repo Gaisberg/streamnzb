@@ -484,33 +484,30 @@ func TestValidateConfigTMDBAndTVDBAPIKeys(t *testing.T) {
 	}
 }
 
-// Resetting a trait back to its default drops its key from the profile's
-// attribute map. The save path unmarshals the patch over the current config, and
-// encoding/json keeps map entries the patch does not mention, so without
-// clearPatchedFilterProfiles the removed override would survive the round trip.
-func TestClearPatchedFilterProfilesDropsResetAttribute(t *testing.T) {
-	current := &config.Config{FilterProfiles: []config.FilterProfileConfig{config.DefaultFilterProfile()}}
+// Deleting a rule has to survive the save. The save path unmarshals the patch
+// over the current config, and encoding/json keeps what the patch does not
+// mention, so without clearPatchedFilterProfiles the deleted rule would come
+// straight back.
+func TestClearPatchedFilterProfilesDropsDeletedRule(t *testing.T) {
+	profile := config.DefaultFilterProfile()
+	profile.Rules = []config.RuleConfig{
+		{Name: "Keep", When: "dolbyVision", Points: 100},
+		{Name: "Delete me", When: "seasonPack", Points: 200},
+	}
+	current := &config.Config{FilterProfiles: []config.FilterProfileConfig{profile}}
 	currentJSON, err := json.Marshal(current)
 	if err != nil {
 		t.Fatalf("marshal current: %v", err)
 	}
 
-	// The UI sends the profile back with "cam" reset to its default.
-	profile := config.DefaultFilterProfile()
-	attrs := map[string]any{}
-	rawAttrs, err := json.Marshal(profile.Ranking.Attributes)
-	if err != nil {
-		t.Fatalf("marshal attributes: %v", err)
-	}
-	if err := json.Unmarshal(rawAttrs, &attrs); err != nil {
-		t.Fatalf("unmarshal attributes: %v", err)
-	}
-	delete(attrs, "cam")
-
+	// The UI sends the profile back with the second rule gone.
 	body, err := json.Marshal(map[string]any{
 		"filter_profiles": []map[string]any{{
-			"name":    profile.Name,
-			"ranking": map[string]any{"name": profile.Name, "attributes": attrs},
+			"name":   profile.Name,
+			"preset": profile.Preset,
+			"rules": []map[string]any{
+				{"name": "Keep", "when": "dolbyVision", "points": 100},
+			},
 		}},
 	})
 	if err != nil {
@@ -529,8 +526,9 @@ func TestClearPatchedFilterProfilesDropsResetAttribute(t *testing.T) {
 	if len(newCfg.FilterProfiles) != 1 {
 		t.Fatalf("expected 1 filter profile, got %d", len(newCfg.FilterProfiles))
 	}
-	if _, still := newCfg.FilterProfiles[0].Ranking.Attributes["cam"]; still {
-		t.Fatal("reset attribute survived the patch")
+	rules := newCfg.FilterProfiles[0].Rules
+	if len(rules) != 1 || rules[0].Name != "Keep" {
+		t.Fatalf("rules = %+v, want only the kept one", rules)
 	}
 }
 

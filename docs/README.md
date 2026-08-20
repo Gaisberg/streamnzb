@@ -15,6 +15,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Metadata & catalogs](metadata.md) — StreamNZB as a full Stremio metadata provider
 - [Stream model](stream-model.md) — global configuration vs. per-stream behavior
 - [Filters & ranking](filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
+- [Rules](rules.md) — named conditions over everything known about a release, including what ffprobe measured and what AvailNZB reports
 - [Custom result formats](result-formatting.md) — reusable format profiles, helper reference, and the AIOStreams formatter import
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](obfuscated-releases.md) — how releases with random-hash filenames are identified and played

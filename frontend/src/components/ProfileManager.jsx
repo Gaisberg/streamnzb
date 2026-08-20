@@ -61,6 +61,17 @@ export function ProfileManager({
   const timerRef = useRef(null)
   const adoptedRef = useRef(null)
   const draftRef = useRef(null)
+  // forceReseedRef marks a list operation the user just performed — select,
+  // add, duplicate, delete. After one of those the draft has to be re-adopted
+  // from the saved list even though one of our own saves is still in flight:
+  // that save belongs to the row we just left, and the guards below would
+  // otherwise leave the editor holding it while the selection points somewhere
+  // else. Armed to start, because the first render is itself a selection.
+  const forceReseedRef = useRef(true)
+  // prunedRef holds the list a delete just committed. A delete renumbers every
+  // row after it, so until that save lands the saved list has a different
+  // profile at `selected` than the user is now looking at.
+  const prunedRef = useRef(null)
   useEffect(() => { draftRef.current = draft }, [draft])
 
   const commit = (next, nextIndex) => {
@@ -130,14 +141,32 @@ export function ProfileManager({
   }, [draft])
 
   // Adopt the saved profile when the selection changes, or when the profile
-  // itself changed underneath us (another page, another browser). Skipped
-  // while our own save is in flight so the echo cannot clobber newer typing.
+  // itself changed underneath us (another page, another browser).
+  //
+  // The in-flight guards exist to stop a save's own echo from clobbering newer
+  // typing on the profile being edited. They must not apply to a selection
+  // change: there is no newer typing for a row the user has only just moved
+  // to, and skipping left the draft holding the previous profile while the
+  // selection pointed at the next one — which the list then rendered under the
+  // wrong row, since a selected row shows the draft's name.
   useEffect(() => {
-    const current = profiles[selected]
-    const serialized = current ? JSON.stringify(current) : null
-    if (pendingRef.current > 0 || timerRef.current) return
-    if (serialized === adoptedRef.current && draftRef.current) return
-    adoptedRef.current = serialized
+    // Read a just-deleted-from list from the delete itself rather than from the
+    // saved list, which still carries the removed profile — and so still has
+    // the row the user was on sitting at `selected`. Once the prop catches up
+    // the two agree and the stashed list is done.
+    if (prunedRef.current && prunedRef.current.length === profiles.length) prunedRef.current = null
+    const source = forceReseedRef.current && prunedRef.current ? prunedRef.current : profiles
+    const current = source[selected]
+    if (forceReseedRef.current) {
+      // An add or duplicate selects an index the saved list does not contain
+      // until its save lands. Stay armed until there is something to adopt.
+      if (!current) return
+      forceReseedRef.current = false
+    } else {
+      if (pendingRef.current > 0 || timerRef.current) return
+      if ((current ? JSON.stringify(current) : null) === adoptedRef.current && draftRef.current) return
+    }
+    adoptedRef.current = current ? JSON.stringify(current) : null
     setDraft(current ? structuredClone(current) : null)
     setNameError("")
   }, [profiles, selected])
@@ -151,6 +180,7 @@ export function ProfileManager({
       commit(base)
     }
     adoptedRef.current = null
+    forceReseedRef.current = true
     setSelected(index)
   }
 
@@ -158,6 +188,7 @@ export function ProfileManager({
     const base = listWithDraft()
     const name = uniqueProfileName(base, newProfileBaseName)
     adoptedRef.current = null
+    forceReseedRef.current = true
     commit([...base, newProfile(name)], base.length)
   }
 
@@ -166,12 +197,15 @@ export function ProfileManager({
     const copy = normalizeOnDuplicate(structuredClone(base[selected]))
     copy.name = uniqueProfileName(base, `${copy.name} copy`)
     adoptedRef.current = null
+    forceReseedRef.current = true
     commit([...base, normalizeOnSave(copy)], base.length)
   }
 
   const deleteProfile = (index) => {
-    const next = profiles.filter((_, i) => i !== index)
+    const next = listWithDraft().filter((_, i) => i !== index)
     adoptedRef.current = null
+    forceReseedRef.current = true
+    prunedRef.current = next
     commit(next, Math.max(0, Math.min(selected, next.length - 1)))
     setConfirmDelete(null)
   }
@@ -197,7 +231,7 @@ export function ProfileManager({
         </Button>
         {profiles.map((profile, index) => (
           <button
-            key={`${profile.name}-${index}`}
+            key={index}
             type="button"
             onClick={() => selectProfile(index)}
             className={cn(

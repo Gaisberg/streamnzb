@@ -116,49 +116,11 @@ type Session struct {
 // MediaCapabilities holds client-relevant properties of the selected playback
 // file, captured by ffprobe during (pre-)probing. It lets the addon distinguish
 // "this release is broken" from "this client cannot decode this codec."
-type MediaCapabilities struct {
-	VideoCodec    string
-	AudioCodec    string
-	Width         int
-	Height        int
-	Profile       string
-	PixFmt        string
-	BitDepth      int
-	HDR           string // "", "HDR10", "HDR10+", "HLG"
-	DolbyVision   bool
-	ColorTransfer string
-	CodecTag      string
-}
-
-// Summary renders a short human-readable capability string suitable for a
-// Stremio stream description, e.g. "hevc Main 10 2160p 10-bit HDR10".
-func (c *MediaCapabilities) Summary() string {
-	if c == nil {
-		return ""
-	}
-	parts := make([]string, 0, 6)
-	if c.VideoCodec != "" {
-		parts = append(parts, c.VideoCodec)
-	}
-	if c.Profile != "" {
-		parts = append(parts, c.Profile)
-	}
-	if c.Height > 0 {
-		parts = append(parts, fmt.Sprintf("%dp", c.Height))
-	}
-	if c.BitDepth > 0 {
-		parts = append(parts, fmt.Sprintf("%d-bit", c.BitDepth))
-	}
-	if c.DolbyVision {
-		parts = append(parts, "Dolby Vision")
-	} else if c.HDR != "" {
-		parts = append(parts, c.HDR)
-	}
-	if c.AudioCodec != "" {
-		parts = append(parts, c.AudioCodec)
-	}
-	return strings.Join(parts, " ")
-}
+//
+// The type itself lives in pkg/release so that search ranking can read the same
+// values back off library items; this alias keeps playback code reading as it
+// always has.
+type MediaCapabilities = release.MediaCaps
 
 // Done returns a channel that is closed when the session is closed (e.g. user closed from dashboard).
 // Use with request context so playback aborts when either the client disconnects or the session is closed.

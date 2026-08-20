@@ -187,47 +187,35 @@ var defaultBlockedAttrs = []rank.Attr{
 // leaves eligibility to the traits and resolutions alone.
 const noScoreFloor = -1000000
 
-// DefaultFilterProfile is the profile new installs start with, expressed as a
-// jhin profile rather than left to legacy synthesis.
+// streamingOverrides are the scores where jhin's defaults and StreamNZB's job
+// disagree.
 //
-// It is deliberately permissive: this is the profile everyone begins from and
-// branches off, so it rejects only what nobody is asking for — camcorder rips,
-// the garbage that carries no source of its own, and adult releases — and lets
-// the rest through. Quality preferences are expressed as score, so a poor
-// release sorts last rather than disappearing.
-func DefaultFilterProfile() FilterProfileConfig {
-	profile := rank.Default()
-	profile.Name = DefaultFilterProfileName
+// jhin is tuned for a downloader: fetch the very best copy and keep it, where
+// file size costs you disk once. StreamNZB assembles the file from usenet
+// articles while it plays, so size is a running cost paid on every playback —
+// a 70 GB remux needs several times the bandwidth of a 20 GB encode and is far
+// likelier to stall. These are the places where "best copy" and "best copy to
+// stream" are not the same release.
+var streamingOverrides = map[rank.Attr]int{
+	// Remux at jhin's 10000 buries everything: no combination of resolution,
+	// HDR and audio can outweigh it, so a remux always wins whatever it costs
+	// to play. At 1500 it is still clearly the best source — WEB-DL scores
+	// 200 — without being the only thing that matters.
+	rank.AttrRemux: 1500,
 
-	// Streaming happens on the fly from archive segments, so the SD tiers are
-	// more trouble than they are worth; jhin's defaults already disable them.
-	// Unknown stays on so an unparsed release is not silently dropped.
-	profile.Resolutions[rank.Res2160p] = true
-	profile.Resolutions[rank.Res1440p] = true
-	profile.Resolutions[rank.Res1080p] = true
-	profile.Resolutions[rank.Res720p] = true
-	profile.Resolutions[rank.ResUnknown] = true
-
-	profile.Options.RemoveAdult = true
-	// Catches the garbage the per-source toggles cannot: leaked copies,
-	// pre-retail rips and deleted-scene reels carry no source of their own.
-	profile.Options.RemoveTrash = true
-	// Score orders results, it does not reject them: a release demoted by
-	// several traits should sort last, not fall through the floor.
-	profile.Options.MinRank = noScoreFloor
-	profile.Options.PreferredBonus = 10000
-	profile.Languages.Preferred = []string{"en"}
-
-	profile.Attributes = defaultAttributePolicies()
-
-	return FilterProfileConfig{
-		Name:    DefaultFilterProfileName,
-		Ranking: &profile,
-	}
+	// Modern codecs carry the same picture in fewer bytes, which is exactly
+	// the currency here. This is a uniform preference, not a guess about the
+	// client: what a device can decode is the device's business, and nothing
+	// here is hidden — an AVC release still sorts, just below its equivalent.
+	rank.AttrHEVC: 700,
+	rank.AttrAV1:  700,
+	rank.AttrAVC:  300,
 }
 
 // defaultAttributePolicies opens every trait jhin blocks by default except the
-// ones in defaultBlockedAttrs, keeping jhin's score so the order is unchanged.
+// ones in defaultBlockedAttrs, then applies the streaming overrides. Traits not
+// mentioned keep jhin's score.
+//
 // The blocked ones are written out too, so the profile says what it rejects
 // rather than leaving it to the baseline.
 func defaultAttributePolicies() map[rank.Attr]rank.Policy {
@@ -245,6 +233,8 @@ func defaultAttributePolicies() map[rank.Attr]rank.Policy {
 			policies[attr] = rank.Policy{Fetch: true, Rank: policy.Rank}
 		}
 	}
-	policies[rank.AttrRemux] = rank.Policy{Fetch: true, Rank: 5000}
+	for attr, score := range streamingOverrides {
+		policies[attr] = rank.Policy{Fetch: true, Rank: score}
+	}
 	return policies
 }

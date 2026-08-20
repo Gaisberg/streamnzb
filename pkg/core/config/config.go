@@ -151,8 +151,14 @@ type SearchQueryConfig struct {
 type FilterProfileConfig struct {
 	Name string `json:"name"`
 
-	// Ranking is jhin's rank.Profile. Nil on configs written before the jhin
-	// migration, in which case it is synthesized from the legacy fields on load.
+	// Preset is the profile's baseline: "4k", "1080p" or "720p". It decides
+	// the resolution ceiling and carries every other ranking default, so it
+	// and Rules are the whole of a profile.
+	Preset string `json:"preset,omitempty"`
+
+	// Ranking is jhin's rank.Profile. It is legacy: profiles used to carry a
+	// hand-tuned spec, which is migrated to a preset plus rules on load and
+	// cleared. Nil on anything written since.
 	Ranking *rank.Profile `json:"ranking,omitempty"`
 
 	// LibraryScoreBonus is the ranking bonus added to cached library releases
@@ -174,6 +180,12 @@ type FilterProfileConfig struct {
 	// protected. Nil defaults to true; indexers that never report the flag
 	// are unaffected.
 	BlockPassworded *bool `json:"block_passworded,omitempty"`
+
+	// Rules are named conditions over a release's attributes that reject it
+	// or move its score. They are the general form of the weighted regex
+	// patterns jhin used to own, and the only part of a profile that can read
+	// what ffprobe measured or what the availability database reports.
+	Rules []RuleConfig `json:"rules,omitempty"`
 
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
@@ -1146,7 +1158,12 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	// Carry pre-jhin profiles onto rank.Profile once and write it back, so the
 	// stored profile is what the UI edits and what ranking compiles.
 	for i := range cfg.FilterProfiles {
-		if cfg.FilterProfiles[i].Ranking == nil {
+		// Only a profile that predates jhin needs synthesizing, and only if it
+		// has not already been collapsed onto a preset. Synthesizing a
+		// preset-only profile would hand the preset migration below a spec to
+		// re-derive a preset from, which is how a 1080p profile turned itself
+		// into a 4K one.
+		if cfg.FilterProfiles[i].Ranking == nil && cfg.FilterProfiles[i].Preset == "" && cfg.FilterProfiles[i].HasLegacyFields() {
 			ranking := Synthesize(cfg.FilterProfiles[i])
 			cfg.FilterProfiles[i].Ranking = &ranking
 			needSave = true
@@ -1156,6 +1173,18 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		if cfg.FilterProfiles[i].LibraryScoreBonus == nil && cfg.LibraryScoreBonus != 0 {
 			bonus := cfg.LibraryScoreBonus
 			cfg.FilterProfiles[i].LibraryScoreBonus = &bonus
+			needSave = true
+		}
+		// Move jhin's weighted patterns onto named rules. Clearing the jhin
+		// side is what makes this idempotent: once moved there is nothing
+		// left to move, and the pattern is scored exactly once.
+		if cfg.FilterProfiles[i].migratePatternRanks() {
+			needSave = true
+		}
+		// Then collapse whatever else the profile tuned into a preset plus
+		// rules, which is all a profile carries now. Clearing the spec is
+		// again what makes it idempotent.
+		if cfg.FilterProfiles[i].MigrateToPreset() {
 			needSave = true
 		}
 	}

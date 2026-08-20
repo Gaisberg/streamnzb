@@ -107,6 +107,11 @@ func Synthesize(fp FilterProfileConfig) rank.Profile {
 	// the exception: it is blocked everywhere, migrated profiles included.
 	p.Options.RemoveTrash = false
 	p.Options.RemoveAdult = true
+	// The legacy schema had no score floor either, and the floor now judges
+	// the finished score rather than what the title alone earned. Inheriting
+	// jhin's default here would give a migrated profile a threshold its owner
+	// never set, and one that bites harder than it used to.
+	p.Options.MinRank = noScoreFloor
 
 	applyResolutions(&p, fp)
 	applyAttributes(&p, fp)

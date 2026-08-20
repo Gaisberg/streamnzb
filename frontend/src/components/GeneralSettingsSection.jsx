@@ -11,7 +11,7 @@ import { PasswordInput } from "@/components/ui/password-input"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
-import { cn } from "@/lib/utils"
+import { cn, selectClass } from "@/lib/utils"
 
 // The TMDB/TVDB API keys live on the Metadata page, next to what they power.
 const CARD_FIELDS = {
@@ -181,7 +181,6 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
   const controlWideClass = "w-full min-w-0 sm:max-w-xs"
   const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
   const labelClass = "min-w-0 text-sm font-medium"
-  const controlSelectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]"
 
   return (
     <Form {...form}>
@@ -249,7 +248,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
                       <div className={stackedFieldRowClass}>
                         <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Backend <EnvOverrideIndicator show={envOverrides.includes('database_driver')} /></FormLabel>
                         <FormControl>
-                          <select className={controlSelectClass} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
+                          <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
                             <option value="sqlite">SQLite (default)</option>
                             <option value="postgres">Postgres</option>
                           </select>
