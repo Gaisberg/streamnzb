@@ -12,7 +12,7 @@ import (
 )
 
 // orderingProfile builds a profile from a jhin spec, which these tests need in
-// order to set ResolutionOrder and MinRank directly.
+// order to set MinRank directly.
 func orderingProfile(t *testing.T, name string, spec rank.Profile, mutate func(*config.FilterProfileConfig)) *ranking.Profile {
 	t.Helper()
 	fp := config.FilterProfileConfig{Name: name, Ranking: &spec}
@@ -26,29 +26,111 @@ func orderingProfile(t *testing.T, name string, spec rank.Profile, mutate func(*
 	return p
 }
 
-// A profile that puts 1080p first returns 1080p first, even when a 2160p
-// release outscores it. The precedence is the whole point of the setting:
-// "prefer 1080p without banning 4K" is not expressible any other way.
-func TestResolutionPrecedenceSurvivesScoring(t *testing.T) {
-	spec := rank.Default()
-	spec.ResolutionOrder = []rank.Resolution{rank.Res1080p, rank.Res2160p}
-	p := orderingProfile(t, "precedence", spec, nil)
+// Score is the whole of the order. A rule that pays enough puts its releases
+// first, whatever resolution they are and whatever resolution the rest are:
+// resolution used to sort ahead of the score as a hard tier, so a rule worth
+// 80000 could not lift a 1080p release past a 4K one worth 900.
+func TestScoreOrdersAcrossResolutions(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "language",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{{
+			Name:   "Prefer Finnish",
+			When:   `"fi" in languages`,
+			Action: config.RuleActionScore,
+			Points: 80000,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// The remux scores far above the WEB-DL, so a score-only sort would put
-	// the 2160p release first.
+	// The 2160p remux is the highest-scoring release here on its own merits,
+	// which is what makes the rule's points worth testing.
 	cands := []triage.Candidate{
 		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
-		{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p FINNISH WEB-DL H264-GRP"}},
 	}
 	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
 	if len(kept) != 2 {
 		t.Fatalf("kept %d releases, want 2", len(kept))
 	}
 	if got := kept[0].Torrent.Resolution(); got != rank.Res1080p {
-		t.Fatalf("first result is %s, want 1080p — resolution precedence was discarded", got)
+		t.Fatalf("first result is %s, want the 1080p release the rule paid for", got)
 	}
-	if kept[1].Torrent.Rank <= kept[0].Torrent.Rank {
-		t.Fatal("test is not exercising precedence: the 2160p release did not outscore the 1080p one")
+	if kept[0].Torrent.Rank <= kept[1].Torrent.Rank {
+		t.Fatal("test is not exercising the order: the rule did not outscore the 2160p remux")
+	}
+}
+
+// Without a rule to say otherwise, the better resolution still leads: the
+// tiers are scored, so dropping the resolution bracket did not turn the
+// default order into a lottery.
+func TestBetterResolutionStillLeadsByScore(t *testing.T) {
+	p := orderingProfile(t, "default", config.PresetSpec(config.PresetUHD), nil)
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEB-DL H265-GRP"}},
+	}
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+	if len(kept) != 2 {
+		t.Fatalf("kept %d releases, want 2", len(kept))
+	}
+	if got := kept[0].Torrent.Resolution(); got != rank.Res2160p {
+		t.Fatalf("first result is %s, want 2160p", got)
+	}
+}
+
+// A resolution is worth one tier step, and the step is wide enough that
+// nothing the baseline scores — a remux is 1500, the preferred-language bonus
+// 10000 — crosses it. That is what keeps "4K first" true by default now that
+// resolution competes for the order in points rather than outranking them.
+func TestResolutionIsWorthOneTierStep(t *testing.T) {
+	p := orderingProfile(t, "tiers", config.PresetSpec(config.PresetUHD), nil)
+
+	rankOfTitle := func(title string) int {
+		kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie},
+			[]triage.Candidate{{Release: &release.Release{Title: title}}}, rank.RankOptions{})
+		if len(kept) != 1 {
+			t.Fatalf("%q was not kept", title)
+		}
+		return kept[0].Torrent.Rank
+	}
+
+	uhd := rankOfTitle("Movie 2020 2160p WEB-DL H264-GRP")
+	hd := rankOfTitle("Movie 2020 1080p WEB-DL H264-GRP")
+	sd := rankOfTitle("Movie 2020 720p WEB-DL H264-GRP")
+
+	if got := hd - sd; got != ranking.ResolutionTierPoints {
+		t.Errorf("1080p is worth %d over 720p, want %d", got, ranking.ResolutionTierPoints)
+	}
+	if got := uhd - hd; got != 2*ranking.ResolutionTierPoints {
+		t.Errorf("2160p is worth %d over 1080p, want %d", got, 2*ranking.ResolutionTierPoints)
+	}
+
+	// A remux is the best thing the baseline can say about a release, and it
+	// still does not buy a tier.
+	if remux := rankOfTitle("Movie 2020 1080p BluRay REMUX AVC-GRP"); remux >= uhd {
+		t.Errorf("a 1080p remux scored %d against a 2160p WEB-DL's %d — the tier step is too narrow to hold", remux, uhd)
+	}
+}
+
+// An unreadable resolution ranks with 720p rather than under it: keeping such
+// a release and then burying it would undo the decision to keep it.
+func TestUnknownResolutionRanksWithTheBottomTier(t *testing.T) {
+	p := orderingProfile(t, "unknown", config.PresetSpec(config.PresetUHD), nil)
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 720p WEB-DL H264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 WEB-DL H264-GRP"}},
+	}
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+	if len(kept) != 2 {
+		t.Fatalf("kept %d releases, want 2", len(kept))
+	}
+	if kept[0].Torrent.Rank != kept[1].Torrent.Rank {
+		t.Errorf("unknown scored %d against 720p's %d", kept[1].Torrent.Rank, kept[0].Torrent.Rank)
 	}
 }
 
@@ -58,9 +140,9 @@ func TestResolutionPrecedenceSurvivesScoring(t *testing.T) {
 // releases whose real score clears it.
 func TestMinRankSeesLibraryBonus(t *testing.T) {
 	spec := rank.Default()
-	// Well above what a plain WEB-DL earns from its title, but below what it
-	// earns once the library bonus lands.
-	spec.Options.MinRank = 5000
+	// Well above what a plain 1080p WEB-DL earns from its title and its
+	// resolution, but below what it earns once the library bonus lands.
+	spec.Options.MinRank = ranking.ResolutionTierPoints + 5000
 	p := orderingProfile(t, "floor", spec, func(fp *config.FilterProfileConfig) {
 		bonus := 100000
 		fp.LibraryScoreBonus = &bonus
@@ -81,7 +163,7 @@ func TestMinRankSeesLibraryBonus(t *testing.T) {
 // NZB attribute points count towards the floor for the same reason.
 func TestMinRankSeesAttributeScoring(t *testing.T) {
 	spec := rank.Default()
-	spec.Options.MinRank = 5000
+	spec.Options.MinRank = ranking.ResolutionTierPoints + 5000
 	p := orderingProfile(t, "floor-nzb", spec, func(fp *config.FilterProfileConfig) {
 		fp.Scoring = map[string]*config.ScoringConfig{
 			config.LimitKindDefault: {GrabsTarget: 100, GrabsWeight: 100000},

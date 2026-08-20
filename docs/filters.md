@@ -41,8 +41,11 @@ a name nobody could read is not evidence of a bad release.
 
 There is no score floor. Rejecting is what rules are for, and a rule says why.
 
-Within a preset, the resolution ceiling sorts above the tiers below it, so
-picking 1080p prefers 1080p rather than merely allowing it.
+The preset decides which resolutions are offered. It does not decide the order
+they arrive in — the score does, and only the score. A resolution is worth
+20000 points per tier, so 4K leads a list nobody has written a rule about, but a
+rule that pays more than that can put a 1080p release first. See
+[Order is score, and only score](#order-is-score-and-only-score).
 
 ### Tuned for streaming, not for downloading
 
@@ -99,6 +102,37 @@ resolution == "2160p"                                  → keep best 3
 `"cam"`, `"hevc"`, `"10bit"`, `"dual_audio"` and so on — so a rule can reach
 anything the baseline has an opinion about. See **[Rules](rules.md)** for the
 complete attribute reference, the operators, and the fail-open contract.
+
+## Order is score, and only score
+
+Every release ends up with one number, and the list is that number, highest
+first. Resolution, source and codec pay into it; the NZB attribute scoring pays
+for size, age and grab count; the library bonus and your rules pay on top.
+Nothing sorts ahead of the total.
+
+Resolution is priced at **20000 points a tier** — 2160p 60000, 1440p 40000,
+1080p 20000, 720p 0, and an unparsable resolution alongside 720p. The step is
+deliberately wider than everything else the baseline scores (a remux is 1500,
+HEVC 700, the preferred-language bonus 10000), so no combination of them
+crosses a tier and the default order is still every 4K release, then every
+1080p one. What it buys you is a price to beat: a rule worth 20000 moves its
+releases up one tier, 80000 moves them past the lot.
+
+That is worth stating plainly because it used to be untrue. Resolution sorted
+first as a hard bracket, and the score only broke ties inside it — so a rule
+worth 80000 points to prefer a language put its releases at the top of their own
+resolution and behind every 4K release, which is not what a number that large
+can be read to mean. If you want a preference to win, price it above what it is
+competing with; if you want it to win only among equals, price it low.
+
+**Scores got bigger.** A plain 1080p WEB-DL used to score 500 and now scores
+20500. Nothing about the order between two releases changed except that
+resolution can now be outbid, but a hand-written score floor from the old
+editor is worth re-checking: it is measured against the larger numbers, so it
+now lets more through.
+
+A resolution you never want is a job for the preset (which does not offer it) or
+a rule (which rejects it and says so), not for the order.
 
 ## Binding a profile to a stream
 
@@ -191,6 +225,12 @@ is what shows in the score breakdown, in History, and in
 
 A profile that only ever used the recommended values migrates to a bare preset
 with no rules at all.
+
+One thing genuinely is dropped: a hand-written `resolution_order` no longer does
+anything, because resolution is priced into the score rather than sorted ahead
+of it. "Prefer 1080p without banning 4K" is now a rule — `resolution == "1080p"`
+worth more than 20000 — which says the same thing in the same currency as
+everything else, and says it out loud.
 
 ## Seeing what a profile did
 

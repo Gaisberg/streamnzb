@@ -109,9 +109,11 @@ func PresetSpec(preset string) rank.Profile {
 		rank.ResUnknown: true,
 	}
 
-	// Prefer the ceiling over what is below it, rather than letting a
-	// high-scoring lower tier outrank the resolution the user chose.
-	profile.ResolutionOrder = presetCeilings[NormalizePreset(preset)]
+	// No ResolutionOrder: the ceiling decides which tiers are offered, and
+	// the score decides the order they come in. Pinning the order here made
+	// resolution a bracket no amount of points could cross, so a rule that
+	// preferred a language or an edition could only ever reorder releases
+	// within one tier.
 
 	profile.Options.RemoveAdult = true
 	// Catches the garbage the per-source scores cannot: leaked copies,

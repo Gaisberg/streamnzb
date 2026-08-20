@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dreulavelle/jhin/rank"
-
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
@@ -44,26 +42,34 @@ func rankTitles(t *testing.T, s *Server, stream *auth.Stream, source *playlistSo
 	return s.applyRanking(context.Background(), releasesToCandidates(rels), source, true, "profile", stream)
 }
 
-// The playlist must return the order the profile decided. It used to re-sort
-// by score alone after the profile had already ordered by resolution
-// precedence, which silently discarded the precedence.
+// The playlist must return the order the profile decided, which is the order
+// the finished score puts the releases in — rules included. It used to re-sort
+// on a heuristic of its own after the profile had already ordered the list,
+// which silently discarded whatever the profile had decided.
 func TestApplyRankingKeepsProfileOrder(t *testing.T) {
-	spec := rank.Default()
-	spec.ResolutionOrder = []rank.Resolution{rank.Res1080p, rank.Res2160p}
-	s, stream := rankingServerFor(t, config.FilterProfileConfig{Name: "Precedence", Ranking: &spec})
+	s, stream := rankingServerFor(t, config.FilterProfileConfig{
+		Name:   "Rules",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{{
+			Name:   "Prefer Finnish",
+			When:   `"fi" in languages`,
+			Action: config.RuleActionScore,
+			Points: 80000,
+		}},
+	})
 
 	out := rankTitles(t, s, stream, movieSource(),
 		"Movie 2020 2160p BluRay REMUX HEVC-GRP",
-		"Movie 2020 1080p WEB-DL H264-GRP",
+		"Movie 2020 1080p FINNISH WEB-DL H264-GRP",
 	)
 	if len(out) != 2 {
 		t.Fatalf("got %d results, want 2", len(out))
 	}
 	if !strings.Contains(out[0].Release.Title, "1080p") {
-		t.Fatalf("first result is %q, want the 1080p release — resolution precedence was discarded", out[0].Release.Title)
+		t.Fatalf("first result is %q, want the 1080p release the rule paid for", out[0].Release.Title)
 	}
-	if out[1].Score <= out[0].Score {
-		t.Fatal("test is not exercising precedence: the 2160p release did not outscore the 1080p one")
+	if out[0].Score <= out[1].Score {
+		t.Fatal("test is not exercising the order: the rule did not outscore the 2160p remux")
 	}
 }
 

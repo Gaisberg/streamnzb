@@ -238,11 +238,11 @@ func (p *Profile) Apply(req Request, candidates []triage.Candidate, opts rank.Ra
 //
 // The order is the point. Every one of those stages used to run somewhere
 // downstream of the floor and of the sort, which meant the floor rejected on a
-// partial score and the resolution ordering was overwritten by whoever sorted
-// last.
+// partial score and the ordering was overwritten by whoever sorted last.
 func (p *Profile) ApplyWithRejected(req Request, candidates []triage.Candidate, opts rank.RankOptions) (kept, rejected []Result) {
 	results := p.Evaluate(candidates, opts)
 	p.applyLimits(req.Kind, results)
+	p.applyResolutionScore(results)
 	p.applyScoring(req.Kind, results)
 	p.applyLibraryBonus(results)
 	p.applyRules(req, results)
@@ -391,35 +391,26 @@ func (p *Profile) Evaluate(candidates []triage.Candidate, opts rank.RankOptions)
 	return out
 }
 
-// SortResults orders results in place by resolution precedence, then by jhin score (Rank).
+// SortResults orders results in place by score (Rank), and by nothing else.
+//
+// Score is the only ordering currency there is. Resolution used to sort ahead
+// of it as a hard tier, which meant a release could never be lifted past a
+// higher-resolution one however many points it earned — a rule paying 80000 to
+// prefer a language sorted its releases first among their own tier and behind
+// every 4K release, which is not what a number that large can be read to mean.
+//
+// Nothing is lost by dropping the bracket, because resolution is paid for in
+// points instead — see ResolutionTierPoints, which is wider than the whole
+// spread of the baseline's other scores. 4K still leads a list nobody has
+// written a rule about. The difference is that a rule can now outbid it, which
+// is the point of letting a rule name its own number.
 func (p *Profile) SortResults(results []Result) {
 	if len(results) <= 1 {
 		return
 	}
-	precedence := p.resolutionPrecedence()
-
 	sort.SliceStable(results, func(i, j int) bool {
-		resI := precedence[results[i].Torrent.Resolution()]
-		resJ := precedence[results[j].Torrent.Resolution()]
-		if resI != resJ {
-			return resI > resJ
-		}
 		return results[i].Torrent.Rank > results[j].Torrent.Rank
 	})
-}
-
-// resolutionPrecedence honors the profile's ResolutionOrder when it sets one,
-// so "prefer 1080p over 4K" works without banning 4K.
-func (p *Profile) resolutionPrecedence() map[rank.Resolution]int {
-	out := map[rank.Resolution]int{
-		rank.Res2160p: 9, rank.Res1440p: 8, rank.Res1080p: 7, rank.Res720p: 6,
-		rank.Res576p: 5, rank.Res480p: 4, rank.Res360p: 3, rank.Res240p: 2,
-		rank.ResUnknown: 1,
-	}
-	for i, res := range p.Spec.ResolutionOrder {
-		out[res] = 1000 - i
-	}
-	return out
 }
 
 // Explanation is the per-clause breakdown of one release's score, plus the

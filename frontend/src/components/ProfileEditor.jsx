@@ -112,6 +112,11 @@ export function ProfileEditor({ profile, onChange }) {
             default: garbage and adult releases are refused, and everything else is scored so a poor release
             sorts last rather than disappearing. Anything you want beyond that is a rule.
           </p>
+          <p className="max-w-prose text-xs text-muted-foreground">
+            The ceiling decides what you are offered, not the order you are offered it in. Order is the score,
+            and only the score: a resolution is worth 20000 points a tier, so 4K leads on its own, and a rule
+            worth more than that puts its releases first whatever resolution they are.
+          </p>
           <PresetPicker
             value={profile.preset}
             onChange={(preset) => onChange({ ...profile, preset })}
