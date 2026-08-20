@@ -627,6 +627,10 @@ type Config struct {
 	IndexerProxyURL    string `json:"indexer_proxy_url,omitempty"`
 
 	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
+	// TVDBSubscriberPIN pairs with a user-supported TVDB key: those only
+	// authenticate when the account's subscriber PIN is sent alongside them.
+	// Project keys log in on the key alone and leave this empty.
+	TVDBSubscriberPIN string `json:"tvdb_subscriber_pin,omitempty"`
 
 	// DatabaseDriver selects the persistence backend: "sqlite" (default,
 	// <data dir>/streamnzb.db) or "postgres". DatabaseURL is the Postgres
@@ -1638,6 +1642,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyAvailNZBAPIKey:     func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
 	env.KeyTMDBAPIKey:         func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
 	env.KeyTVDBAPIKey:         func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeyTVDBSubscriberPIN:  func(d, s *Config) { d.TVDBSubscriberPIN = s.TVDBSubscriberPIN },
 	env.KeyIndexerQueryHeader: func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
 	env.KeyIndexerGrabHeader:  func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
 	env.KeyProviderHeader:     func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
@@ -1706,6 +1711,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		AvailNZBAPIKey:          o.AvailNZBAPIKey,
 		TMDBAPIKey:              o.TMDBAPIKey,
 		TVDBAPIKey:              o.TVDBAPIKey,
+		TVDBSubscriberPIN:       o.TVDBSubscriberPIN,
 		IndexerQueryHeader:      o.IndexerQueryHeader,
 		IndexerGrabHeader:       o.IndexerGrabHeader,
 		ProviderHeader:          o.ProviderHeader,
@@ -1783,6 +1789,7 @@ func (c *Config) RedactForAPI() Config {
 	out.AvailNZBAPIKey = ""
 	out.TMDBAPIKey = ""
 	out.TVDBAPIKey = ""
+	out.TVDBSubscriberPIN = ""
 	out.DatabaseURL = RedactDatabaseURLForAPI(c.DatabaseURL)
 	out.Providers = make([]Provider, len(c.Providers))
 	for i, provider := range c.Providers {

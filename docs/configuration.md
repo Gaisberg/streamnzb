@@ -65,6 +65,7 @@ See [Database backends](database.md) for how switching and migration work.
 | `METADATA_ENABLED` | Master switch for the built-in metadata provider — see [Metadata & Catalogs](metadata.md) |
 | `TMDB_API_KEY` | Your own TMDB key (otherwise the built-in fallback key is used) |
 | `TVDB_API_KEY` | Your own TVDB key (otherwise the built-in fallback key is used) |
+| `TVDB_SUBSCRIBER_PIN` | Subscriber PIN for a user-supported TVDB key — required by the keys TheTVDB issues to individuals |
 | `AVAILNZB_URL` | AvailNZB server URL — see [AvailNZB](availnzb.md) |
 | `AVAILNZB_API_KEY` | AvailNZB API key |
 
@@ -85,6 +86,24 @@ See [Database backends](database.md) for how switching and migration work.
 | `STREAMNZB_INDEXER_QUERY_HEADER` (legacy `INDEXER_QUERY_HEADER`) | User-Agent sent on indexer search requests |
 | `STREAMNZB_INDEXER_GRAB_HEADER` (legacy `INDEXER_GRAB_HEADER`) | User-Agent sent on NZB downloads |
 | `STREAMNZB_PROVIDER_HEADER` (legacy `PROVIDER_HEADER`) | Identification sent to Usenet providers |
+
+Indexers increasingly gate content on the client version, so a header pinned to
+whatever was current when it was typed eventually starts being rejected.
+**Update to latest** on the Settings → General User-Agent card looks up what
+each of these tools is on today and lifts the headers to it:
+
+| Tool | Version source |
+|---|---|
+| Prowlarr, Sonarr, Radarr | Latest stable GitHub release (develop builds are published as prereleases and are skipped) |
+| SABnzbd, NZBGet | Latest stable GitHub release |
+| VLC | VideoLAN updater manifest — VLC publishes no GitHub releases |
+
+Whichever tool a header already names is kept, only its version moves; an empty
+header is seeded with the default for its slot (Prowlarr for queries, SABnzbd
+for grabs, VLC for providers), and a header naming a tool that is not in that
+list is left untouched. Headers set from the environment are never rewritten —
+the process value wins over config regardless. Results are cached for an hour,
+since GitHub allows 60 unauthenticated requests per hour per IP.
 
 ### Bootstrapping providers and indexers
 

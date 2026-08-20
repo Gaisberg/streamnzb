@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
-import { ChevronRight, Clapperboard, Info, KeyRound, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, ChevronRight, Clapperboard, Info, KeyRound, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { cn } from "@/lib/utils"
 
@@ -409,6 +409,40 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   )
 }
 
+const TVDB_FIELD_IDS = ["metadata-tvdb-key", "metadata-tvdb-pin"]
+
+// keyErrorMessage prefers the per-field reason the backend returns — the live
+// provider check's own words — over the generic "Validation failed" summary.
+function keyErrorMessage(error, fields) {
+  const fieldErrors = error?.fieldErrors || {}
+  for (const field of fields) {
+    const message = fieldErrors[field]
+    if (typeof message === "string" && message.trim() !== "") return message
+  }
+  return error?.message || "Save failed."
+}
+
+// KeySaveStatus is the only feedback these fields have: they never show a
+// stored key back, so without it a rejected key and a saved one look identical.
+function KeySaveStatus({ status }) {
+  if (!status) return null
+  if (status.state === "saving") {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
+      </p>
+    )
+  }
+  if (status.state === "saved") {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-emerald-500">
+        <Check className="h-3.5 w-3.5" /> Saved.
+      </p>
+    )
+  }
+  return <p className="text-xs text-destructive">{status.message}</p>
+}
+
 export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const envOverrides = config?.env_overrides ?? []
   // null means the backend has not migrated yet; treat as none, never PUT
@@ -423,6 +457,11 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const [keysOpen, setKeysOpen] = useState(false)
   const [tmdbKey, setTmdbKey] = useState("")
   const [tvdbKey, setTvdbKey] = useState("")
+  const [tvdbPin, setTvdbPin] = useState("")
+  const [keyStatus, setKeyStatus] = useState({})
+  // The last patch committed per group, so re-focusing a field does not fire
+  // another provider round trip for a value that already landed.
+  const committedRef = useRef({})
 
   useEffect(() => {
     let cancelled = false
@@ -435,13 +474,39 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
     return () => { cancelled = true }
   }, [])
 
-  // API keys save on blur, one field per patch — the backend keeps a key the
-  // patch does not mention, and returns keys redacted, so the inputs start
-  // blank even when a key is stored.
-  const commitKey = (field, value) => {
-    const trimmed = value.trim()
-    if (trimmed === "") return
-    onPersist({ [field]: trimmed })
+  // API keys save on blur. The backend keeps a key the patch does not mention,
+  // so a blank field means "leave the stored one alone" and is never sent. The
+  // TVDB key travels with its subscriber PIN: they are one credential, and the
+  // live check the backend runs on save rejects a user-supported key that
+  // arrives without its PIN.
+  const commitKeys = (group, fields) => {
+    const patch = {}
+    Object.entries(fields).forEach(([field, value]) => {
+      const trimmed = value.trim()
+      if (trimmed !== "") patch[field] = trimmed
+    })
+    const signature = JSON.stringify(patch)
+    if (Object.keys(patch).length === 0 || committedRef.current[group] === signature) return
+    committedRef.current[group] = signature
+    setKeyStatus((prev) => ({ ...prev, [group]: { state: "saving" } }))
+    Promise.resolve(onPersist(patch))
+      .then(() => setKeyStatus((prev) => ({ ...prev, [group]: { state: "saved" } })))
+      .catch((err) => {
+        // Nothing landed, so the next blur has to be free to retry.
+        committedRef.current[group] = ""
+        setKeyStatus((prev) => ({
+          ...prev,
+          [group]: { state: "error", message: keyErrorMessage(err, Object.keys(patch)) },
+        }))
+      })
+  }
+
+  // Tabbing between the key and its PIN must not fire a check on the half the
+  // user has already moved past: a user-supported key on its own is rejected,
+  // and the error would land before they reached the PIN box.
+  const commitTvdb = (event) => {
+    if (TVDB_FIELD_IDS.includes(event?.relatedTarget?.id)) return
+    commitKeys("tvdb", { tvdb_api_key: tvdbKey, tvdb_subscriber_pin: tvdbPin })
   }
 
   return (
@@ -515,7 +580,8 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
           <CardContent className="space-y-5 border-t border-border pt-4">
             <p className="text-xs text-muted-foreground">
               Stored server-side and never shown back, so these start blank even when a key is saved.
-              Leaving a field blank keeps the stored key. TVMaze and Kitsu need no key.
+              Leaving a field blank keeps the stored key. Each key is verified against its provider as
+              you leave the field, and only saved once it answers. TVMaze and Kitsu need no key.
             </p>
             <div className="space-y-1.5">
               <Label htmlFor="metadata-tmdb-key" className="flex items-center gap-1.5 text-sm">
@@ -526,11 +592,14 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
                 className="h-9 w-full font-mono text-xs"
                 value={tmdbKey}
                 onChange={(e) => setTmdbKey(e.target.value)}
-                onBlur={() => commitKey("tmdb_api_key", tmdbKey)}
+                onBlur={() => commitKeys("tmdb", { tmdb_api_key: tmdbKey })}
               />
               <p className="text-xs text-muted-foreground">
-                Powers titles, artwork, episode lists and the TMDB catalogs.
+                Powers titles, artwork, episode lists and the TMDB catalogs. This is the long{" "}
+                <span className="font-mono">Read Access Token</span> from the API settings page, not the
+                short v3 API key.
               </p>
+              <KeySaveStatus status={keyStatus.tmdb} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="metadata-tvdb-key" className="flex items-center gap-1.5 text-sm">
@@ -541,11 +610,26 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
                 className="h-9 w-full font-mono text-xs"
                 value={tvdbKey}
                 onChange={(e) => setTvdbKey(e.target.value)}
-                onBlur={() => commitKey("tvdb_api_key", tvdbKey)}
+                onBlur={commitTvdb}
               />
               <p className="text-xs text-muted-foreground">
                 The default source for series artwork and episode lists, and the resolver for TVDB ids.
               </p>
+              <Label htmlFor="metadata-tvdb-pin" className="flex items-center gap-1.5 pt-1.5 text-sm">
+                TVDB Subscriber PIN <EnvOverrideIndicator show={envOverrides.includes("tvdb_subscriber_pin")} />
+              </Label>
+              <PasswordInput
+                id="metadata-tvdb-pin"
+                className="h-9 w-full font-mono text-xs"
+                value={tvdbPin}
+                onChange={(e) => setTvdbPin(e.target.value)}
+                onBlur={commitTvdb}
+              />
+              <p className="text-xs text-muted-foreground">
+                Required by the user-supported keys TheTVDB issues to individuals — such a key is
+                rejected without it. Leave blank for a project key.
+              </p>
+              <KeySaveStatus status={keyStatus.tvdb} />
             </div>
             <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground/80">
               This product uses the TMDB API but is not endorsed or certified by TMDB. Series metadata is

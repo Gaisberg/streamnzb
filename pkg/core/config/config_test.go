@@ -456,6 +456,16 @@ func TestRedactForAPIStripsDatabasePassword(t *testing.T) {
 	}
 }
 
+// The subscriber PIN is half of a TVDB credential and has to be stripped for
+// non-admin viewers alongside the key it pairs with.
+func TestRedactForAPIStripsTVDBSubscriberPIN(t *testing.T) {
+	cfg := &Config{TVDBAPIKey: "user-key", TVDBSubscriberPIN: "1234"}
+	out := cfg.RedactForAPI()
+	if out.TVDBAPIKey != "" || out.TVDBSubscriberPIN != "" {
+		t.Fatalf("RedactForAPI leaked TVDB credentials: key=%q pin=%q", out.TVDBAPIKey, out.TVDBSubscriberPIN)
+	}
+}
+
 func TestMigrateLegacyIndexersBackfillsEasynewsTimeout(t *testing.T) {
 	cfg := &Config{
 		Indexers: []IndexerConfig{
@@ -813,7 +823,7 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyAddonPort, env.KeyAddonBaseURL, env.KeyLogLevel, env.KeyKeepLogFiles,
 		env.KeyProxyPort, env.KeyProxyHost, env.KeyProxyEnabled, env.KeyProxyAuthUser,
 		env.KeyProxyAuthPass, env.KeyProviders, env.KeyIndexers, env.KeyAvailNZBURL,
-		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey,
+		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey, env.KeyTVDBSubscriberPIN,
 		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
 		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
 		env.KeyDatabaseDriver, env.KeyDatabaseURL, env.KeyMetadataEnabled,

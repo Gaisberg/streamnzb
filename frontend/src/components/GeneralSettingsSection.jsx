@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
-import { Loader2 } from "lucide-react"
+import { Loader2, RefreshCw } from "lucide-react"
+import { apiFetch } from '@/api'
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage, FormDescription } from "@/components/ui/form"
@@ -22,6 +24,18 @@ const CARD_FIELDS = {
 const FIELD_CARD = Object.fromEntries(
   Object.entries(CARD_FIELDS).flatMap(([card, fields]) => fields.map((field) => [field, card]))
 )
+
+// Which slot each header fills, for /api/useragents/latest. The role only
+// decides what an empty field is seeded with — a field that already names a
+// tool keeps that tool and is only lifted to its current version.
+const USER_AGENT_ROLES = {
+  indexer_query_header: 'query',
+  indexer_grab_header: 'grab',
+  provider_header: 'provider',
+}
+
+// productToken pulls "Prowlarr" out of "Prowlarr/2.3.0.5236 (windows 10.0)".
+const productToken = (value) => String(value || '').trim().split('/')[0].trim()
 
 // Every setting here is applied without a restart, so nothing is gated on one.
 // The addon port still warns: rebinding drops the connection this page is
@@ -63,6 +77,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
 }) {
   const defaults = useMemo(() => pickInitialValues(initialValues), [initialValues])
   const [confirmField, setConfirmField] = useState('')
+  const [agentRefresh, setAgentRefresh] = useState({ busy: false, message: '', error: false })
 
   const form = useForm({ defaultValues: defaults })
   const { control, reset, setError, clearErrors } = form
@@ -117,6 +132,42 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
   const commitDatabaseURL = (field) => () => {
     field.onBlur()
     void saveFields(['database_driver', 'database_url'], 'database')
+  }
+
+  // Indexers are beginning to reject headers pinned to a version that has long
+  // since shipped. Rather than making the user chase release pages, this looks
+  // up what each configured tool is on today and lifts the header to it,
+  // keeping whichever tool they picked. Env-set headers are left alone: the
+  // process value wins regardless, so writing to config would only mislead.
+  const refreshUserAgents = async () => {
+    setAgentRefresh({ busy: true, message: '', error: false })
+    try {
+      const { agents = [], errors = [] } = await apiFetch('/api/useragents/latest') || {}
+      const applied = []
+      const unknown = []
+      Object.entries(USER_AGENT_ROLES).forEach(([name, role]) => {
+        if (envOverrides.includes(name)) return
+        const current = form.getValues(name) || ''
+        const token = productToken(current)
+        const match = token
+          ? agents.find((agent) => agent.product.toLowerCase() === token.toLowerCase())
+          : agents.find((agent) => agent.role === role)
+        if (!match) {
+          if (token) unknown.push(token)
+          return
+        }
+        if (current === match.user_agent) return
+        form.setValue(name, match.user_agent, { shouldDirty: true })
+        applied.push(match.user_agent)
+      })
+      if (applied.length) await saveFields(CARD_FIELDS.useragent, 'useragent')
+      const notes = [applied.length ? `Updated to ${applied.join(', ')}.` : 'Already on the latest versions.']
+      if (unknown.length) notes.push(`No release source for ${[...new Set(unknown)].join(', ')} — left unchanged.`)
+      if (errors.length) notes.push(`Could not check ${errors.join('; ')}.`)
+      setAgentRefresh({ busy: false, message: notes.join(' '), error: false })
+    } catch (err) {
+      setAgentRefresh({ busy: false, message: err?.message || 'Could not reach the release APIs.', error: true })
+    }
   }
 
   const renderCardSpinner = (cardId) => (
@@ -325,10 +376,21 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
                 <CardTitle>User-Agent</CardTitle>
                 <CardDescription>Custom User-Agent headers for indexer queries, NZB grabs, and provider-facing requests.</CardDescription>
               </div>
-              <div className="shrink-0">{renderCardSpinner('useragent')}</div>
+              <div className="flex shrink-0 items-center gap-2">
+                {renderCardSpinner('useragent')}
+                <Button type="button" variant="outline" size="sm" disabled={agentRefresh.busy} onClick={() => { void refreshUserAgents() }}>
+                  {agentRefresh.busy
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <RefreshCw className="h-4 w-4" />}
+                  Update to latest
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
+            {agentRefresh.message ? (
+              <p className={cn('mb-3 text-sm', agentRefresh.error ? 'text-destructive' : 'text-muted-foreground')}>{agentRefresh.message}</p>
+            ) : null}
             <div className="rounded-md border border-border/60">
               <FormField control={control} name="indexer_query_header" render={({ field }) => (
                 <FormItem className="rounded-none border-0 p-3">

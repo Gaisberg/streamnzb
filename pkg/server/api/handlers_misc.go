@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/services/useragent"
 )
 
 type persistedStatsResponse struct {
@@ -55,6 +56,22 @@ func (s *Server) handleGetIndexerCaps(w http.ResponseWriter, r *http.Request) {
 		caps = make(map[string]*indexer.Caps)
 	}
 	writeJSON(w, http.StatusOK, caps)
+}
+
+// handleLatestUserAgents reports the current release version of every tool
+// StreamNZB can spoof, so the Settings page can lift headers that indexers have
+// started rejecting as stale. Partial results are a success: the response
+// carries whichever sources answered plus the ones that did not.
+func (s *Server) handleLatestUserAgents(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r, "Forbidden", http.MethodGet) {
+		return
+	}
+	result, err := useragent.Latest(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleRefreshIndexerCaps(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,7 @@ type BuildOpts struct {
 	AvailNZBAPIKey     string
 	TMDBAPIKey         string
 	TVDBAPIKey         string
+	TVDBSubscriberPIN  string
 	FallbackTMDBAPIKey string
 	FallbackTVDBAPIKey string
 	DataDir            string
@@ -80,11 +81,14 @@ func (a *App) effectiveTMDBKey() string {
 	return strings.TrimSpace(a.opts.FallbackTMDBAPIKey)
 }
 
-func (a *App) effectiveTVDBKey() string {
+// effectiveTVDBCredentials picks the user's key over the built-in fallback. The
+// subscriber PIN only travels with the user's own key: the fallback is a
+// project key, and TVDB rejects a login that sends a PIN alongside one.
+func (a *App) effectiveTVDBCredentials() tvdb.Credentials {
 	if k := strings.TrimSpace(a.opts.TVDBAPIKey); k != "" {
-		return k
+		return tvdb.Credentials{APIKey: k, PIN: strings.TrimSpace(a.opts.TVDBSubscriberPIN)}
 	}
-	return strings.TrimSpace(a.opts.FallbackTVDBAPIKey)
+	return tvdb.Credentials{APIKey: strings.TrimSpace(a.opts.FallbackTVDBAPIKey)}
 }
 
 func (a *App) EffectiveTMDBKey() string {
@@ -93,10 +97,10 @@ func (a *App) EffectiveTMDBKey() string {
 	return a.effectiveTMDBKey()
 }
 
-func (a *App) EffectiveTVDBKey() string {
+func (a *App) EffectiveTVDBCredentials() tvdb.Credentials {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.effectiveTVDBKey()
+	return a.effectiveTVDBCredentials()
 }
 
 func (a *App) Build(cfg *config.Config, opts BuildOpts) (*Components, error) {
@@ -144,7 +148,7 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 	// Display language is a per-call parameter on the shared clients, derived
 	// from each stream's metadata profile — never client state.
 	tmdbClient := tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
-	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
+	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBCredentials(), dataDir, metadataResponseCache(dataDir, "tvdb"))
 
 	return &Components{
 		Config:               base.Config,
@@ -233,7 +237,7 @@ func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
 	comp.Triage = triage.NewService()
 	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
 	comp.TMDBClient = tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
-	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
+	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBCredentials(), dataDir, metadataResponseCache(dataDir, "tvdb"))
 }
 
 func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
@@ -242,6 +246,7 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 
 	a.opts.TMDBAPIKey = strings.TrimSpace(newCfg.TMDBAPIKey)
 	a.opts.TVDBAPIKey = strings.TrimSpace(newCfg.TVDBAPIKey)
+	a.opts.TVDBSubscriberPIN = strings.TrimSpace(newCfg.TVDBSubscriberPIN)
 	env.SetRuntimeHeaders(newCfg.IndexerQueryHeader, newCfg.IndexerGrabHeader, newCfg.ProviderHeader)
 
 	old := a.components

@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/nntp/proxy"
@@ -41,7 +42,7 @@ type Server struct {
 	availNZBURL    string
 	availNZBAPIKey string
 	tmdbAPIKey     string
-	tvdbAPIKey     string
+	tvdbCreds      tvdb.Credentials
 
 	clients         map[*Client]bool
 	clientsMu       sync.Mutex
@@ -67,11 +68,11 @@ type Client struct {
 	stream *auth.Stream
 }
 
-func NewServer(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
-	return NewServerWithApp(cfg, pools, sessMgr, strmServer, indexer, streamManager, nil, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey)
+func NewServer(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, availNZBURL, availNZBAPIKey, tmdbAPIKey string, tvdbCreds tvdb.Credentials) *Server {
+	return NewServerWithApp(cfg, pools, sessMgr, strmServer, indexer, streamManager, nil, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbCreds)
 }
 
-func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, a *app.App, availNZBURL, availNZBAPIKey, tmdbAPIKey, tvdbAPIKey string) *Server {
+func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, sessMgr *session.Manager, strmServer *stremio.Server, indexer indexer.Indexer, streamManager *auth.StreamManager, a *app.App, availNZBURL, availNZBAPIKey, tmdbAPIKey string, tvdbCreds tvdb.Credentials) *Server {
 
 	var list []*nntp.ClientPool
 	for _, p := range pools {
@@ -90,7 +91,7 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 		availNZBURL:    availNZBURL,
 		availNZBAPIKey: availNZBAPIKey,
 		tmdbAPIKey:     tmdbAPIKey,
-		tvdbAPIKey:     tvdbAPIKey,
+		tvdbCreds:      tvdbCreds,
 		clients:        make(map[*Client]bool),
 		logCh:          make(chan string, 100),
 		speedTester:    speedtest.NewTester(),
@@ -242,10 +243,13 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 		s.sessionMgr.SetPostPlaybackEvictTTL(time.Duration(comp.Config.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second)
 	}
 	s.tmdbAPIKey = strings.TrimSpace(comp.Config.TMDBAPIKey)
-	s.tvdbAPIKey = strings.TrimSpace(comp.Config.TVDBAPIKey)
+	s.tvdbCreds = tvdb.Credentials{
+		APIKey: comp.Config.TVDBAPIKey,
+		PIN:    comp.Config.TVDBSubscriberPIN,
+	}.Trimmed()
 	if s.app != nil {
 		s.tmdbAPIKey = s.app.EffectiveTMDBKey()
-		s.tvdbAPIKey = s.app.EffectiveTVDBKey()
+		s.tvdbCreds = s.app.EffectiveTVDBCredentials()
 	}
 	if s.streamManager != nil {
 		s.streamManager.SetConfig(comp.Config, nil)
@@ -384,6 +388,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/providers/speedtest", authMiddleware(http.HandlerFunc(s.handleProviderSpeedTest)))
 	mux.Handle("/api/indexer/caps", authMiddleware(http.HandlerFunc(s.handleGetIndexerCaps)))
 	mux.Handle("/api/indexer/caps/refresh", authMiddleware(http.HandlerFunc(s.handleRefreshIndexerCaps)))
+	mux.Handle("/api/useragents/latest", authMiddleware(http.HandlerFunc(s.handleLatestUserAgents)))
 	mux.Handle("/api/stats/persisted", authMiddleware(http.HandlerFunc(s.handlePersistedStats)))
 	mux.Handle("/api/stats/history", authMiddleware(http.HandlerFunc(s.handleStatsHistory)))
 	mux.Handle("/api/stats/performance", authMiddleware(http.HandlerFunc(s.handlePerformanceStats)))

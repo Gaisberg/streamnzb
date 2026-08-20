@@ -31,4 +31,11 @@ StreamNZB is a full metadata provider — your client needs no other addon or ap
 
 TMDB/TVDB keys are shared by every profile and live in their own section at the bottom of the Metadata page. Built-in fallback keys make this work with zero setup; adding your own raises the ceiling and is recommended for anything beyond personal use.
 
+A key is verified against its provider as you leave the field and is only stored once the provider answers — if it is rejected, the reason appears under the field and nothing is saved. Two things trip that up:
+
+- **TMDB** wants the long **Read Access Token** from its API settings page, not the short v3 API key.
+- **TVDB** issues two kinds of key. A *user-supported* key — what an individual account gets — only authenticates together with the **subscriber PIN** from the same dashboard, so fill in both fields; a *project* key logs in on its own and leaves the PIN blank.
+
+Saved keys are never shown back, so the fields start blank on every visit; leaving one blank keeps whatever is already stored.
+
 > This product uses the TMDB API but is not endorsed or certified by TMDB. Series metadata is provided by [TheTVDB](https://thetvdb.com) — consider subscribing to support them.
