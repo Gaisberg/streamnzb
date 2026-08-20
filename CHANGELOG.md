@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.4.0](https://github.com/Gaisberg/streamnzb/compare/v5.3.0...v5.4.0) (2026-08-20)
+
+
+### Features
+
+* **metadata:** accept the TVDB subscriber PIN a user-supported key needs to log in ([717604f](https://github.com/Gaisberg/streamnzb/commit/717604f1c8141d0fa24bad485e9f38348e609e2d))
+* **settings:** refresh User-Agent headers from upstream releases ([717604f](https://github.com/Gaisberg/streamnzb/commit/717604f1c8141d0fa24bad485e9f38348e609e2d))
+* **usenet:** pipeline article requests when read-ahead runs out of connections ([bde5c53](https://github.com/Gaisberg/streamnzb/commit/bde5c53e5c1514c40799e7617436783e5f45ec2a))
+
+
+### Bug Fixes
+
+* **metadata:** show why an API key was rejected instead of failing silently ([717604f](https://github.com/Gaisberg/streamnzb/commit/717604f1c8141d0fa24bad485e9f38348e609e2d))
+* **tvdb:** pin the cached auth token to the credentials that minted it ([717604f](https://github.com/Gaisberg/streamnzb/commit/717604f1c8141d0fa24bad485e9f38348e609e2d))
+
 ## [5.3.0](https://github.com/Gaisberg/streamnzb/compare/v5.2.0...v5.3.0) (2026-08-19)
 
 
