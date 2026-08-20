@@ -73,9 +73,9 @@ See [Database backends](database.md) for how switching and migration work.
 
 | Variable | Meaning |
 |---|---|
-| `NNTP_PROXY_ENABLED` | Enable/disable the built-in NNTP proxy |
+| `NNTP_PROXY_ENABLED` | Enable/disable the built-in NNTP proxy (default off) |
 | `NNTP_PROXY_HOST` | Listen host |
-| `NNTP_PROXY_PORT` | Listen port (default 119) |
+| `NNTP_PROXY_PORT` | Listen port (default 1119 — unprivileged, so it binds without root) |
 | `NNTP_PROXY_AUTH_USER` | Username downstream clients (SABnzbd, NZBGet) authenticate with |
 | `NNTP_PROXY_AUTH_PASS` | Password for the same |
 

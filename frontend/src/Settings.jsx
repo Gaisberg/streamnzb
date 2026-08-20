@@ -108,7 +108,7 @@ function Settings({
 
   useEffect(() => {
     if (initialConfig) {
-      const { env_overrides: _envOverrides, admin_username: _au, admin_password: _ap, ...configForForm } = initialConfig
+      const { env_overrides: _envOverrides, proxy_status: _proxyStatus, admin_username: _au, admin_password: _ap, ...configForForm } = initialConfig
       const formattedData = {
         ...configForForm,
         addon_port: Number(initialConfig.addon_port),
@@ -333,6 +333,7 @@ function Settings({
         <GeneralSettingsSection
           initialValues={generalInitialValues}
           envOverrides={envOverrides}
+          proxyStatus={initialConfig?.proxy_status}
           onPersist={handleGeneralPersist}
           saveStatus={saveStatus}
           />

@@ -873,3 +873,42 @@ func TestCopyEnvOverridesFromDeepCopiesProviders(t *testing.T) {
 		t.Error("Enabled pointer is shared between configs")
 	}
 }
+
+// TestProxyDefaultsOnlyApplyToFreshInstalls pins both halves of the fix for
+// issue #192: a new install must land on a port it can bind without root and
+// must not open an unauthenticated relay nobody asked for, while an existing
+// config keeps whatever it already had — its downloader is pointed at it.
+func TestProxyDefaultsOnlyApplyToFreshInstalls(t *testing.T) {
+	t.Run("fresh install", func(t *testing.T) {
+		fresh := filepath.Join(t.TempDir(), "config.json")
+
+		cfg, err := LoadWithPath(fresh)
+		if err != nil {
+			t.Fatalf("LoadWithPath(%q) error = %v", fresh, err)
+		}
+		if cfg.ProxyPort != DefaultProxyPort {
+			t.Errorf("ProxyPort = %d, want %d (unprivileged)", cfg.ProxyPort, DefaultProxyPort)
+		}
+		if cfg.ProxyEnabled {
+			t.Error("ProxyEnabled = true, want false on a fresh install")
+		}
+	})
+
+	t.Run("existing config", func(t *testing.T) {
+		existing := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(existing, []byte(`{"proxy_enabled":true,"proxy_port":119}`), 0644); err != nil {
+			t.Fatalf("writing config: %v", err)
+		}
+
+		cfg, err := LoadWithPath(existing)
+		if err != nil {
+			t.Fatalf("LoadWithPath(%q) error = %v", existing, err)
+		}
+		if cfg.ProxyPort != 119 {
+			t.Errorf("ProxyPort = %d, want 119 carried over from the stored config", cfg.ProxyPort)
+		}
+		if !cfg.ProxyEnabled {
+			t.Error("ProxyEnabled = false, want the stored true to survive the default change")
+		}
+	})
+}

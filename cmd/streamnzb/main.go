@@ -276,19 +276,22 @@ func main() {
 
 	{
 		if comp.Config.ProxyEnabled {
-			proxyServer, err := proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
-			if err != nil {
-				initialization.WaitForInputAndExit(fmt.Errorf("failed to initialize NNTP proxy: %v", err))
-			}
-
+			proxyServer := proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
+			// Registered before the bind attempt so a failed listener still has
+			// somewhere to report from: the dashboard reads its status.
 			apiServer.SetProxyServer(proxyServer)
 
-			go func() {
-				logger.Info("Starting NNTP proxy", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
-				if err := proxyServer.Start(); err != nil {
-					initialization.WaitForInputAndExit(fmt.Errorf("nntp proxy failed: %w", err))
-				}
-			}()
+			logger.Info("Starting NNTP proxy", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
+			if err := proxyServer.Listen(); err != nil {
+				// Optional feature, non-fatal failure: everything else still boots.
+				logger.Warn("NNTP proxy is not listening", "err", err)
+			} else {
+				go func() {
+					if err := proxyServer.Serve(); err != nil {
+						logger.Error("NNTP proxy stopped serving", "err", err)
+					}
+				}()
+			}
 		} else {
 			logger.Info("NNTP proxy disabled")
 		}

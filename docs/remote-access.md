@@ -49,4 +49,4 @@ server {
 ## Notes
 
 - **Changing the Base URL changes your manifest URLs.** Already-installed addons keep pointing at the old address, so reinstall the stream in your clients after switching (the token stays the same, so playback history is kept).
-- The **NNTP proxy** (default port 119) is raw TCP, not HTTP — it cannot go through an HTTP reverse proxy. Reach it over the VPN, or forward its port separately. See [NNTP proxy](nntp-proxy.md).
+- The **NNTP proxy** (default port 1119) is raw TCP, not HTTP — it cannot go through an HTTP reverse proxy. Reach it over the VPN, or forward its port separately. See [NNTP proxy](nntp-proxy.md).

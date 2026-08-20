@@ -6,11 +6,28 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/usenet/nntp/proxy"
 )
 
 type configPayload struct {
 	config.Config
 	EnvOverrides []string `json:"env_overrides,omitempty"`
+	// ProxyStatus is absent when the proxy is switched off. When it is on, it
+	// carries whether the listener actually came up — an enabled proxy that
+	// failed to bind is otherwise indistinguishable from a working one.
+	ProxyStatus *proxy.Status `json:"proxy_status,omitempty"`
+}
+
+func (s *Server) proxyStatus() *proxy.Status {
+	s.mu.RLock()
+	p := s.proxyServer
+	s.mu.RUnlock()
+
+	if p == nil {
+		return nil
+	}
+	status := p.Status()
+	return &status
 }
 
 func configForAdminAPI(cfg *config.Config) config.Config {
@@ -54,7 +71,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.AdminUsername = s.adminUsername()
 	}
 	if stream != nil && stream.Username == s.adminUsername() {
-		writeJSON(w, http.StatusOK, configPayload{Config: cfg, EnvOverrides: config.GetEnvOverrideKeys()})
+		writeJSON(w, http.StatusOK, configPayload{Config: cfg, EnvOverrides: config.GetEnvOverrideKeys(), ProxyStatus: s.proxyStatus()})
 	} else {
 		writeJSON(w, http.StatusOK, cfg)
 	}

@@ -8,22 +8,24 @@ Configured in **General** (under Settings) → **NNTP Proxy Server**, or via the
 
 | Setting | Default | Meaning |
 |---|---|---|
-| Enable NNTP Proxy | on | Turn the proxy listener on or off |
+| Enable NNTP Proxy | off | Turn the proxy listener on or off |
 | Bind Host | `0.0.0.0` | Which local address to listen on |
-| Port | `119` | The port clients connect to |
+| Port | `1119` | The port clients connect to |
 | Proxy Username / Password | blank | Optional credentials clients must present |
 
 Notes on the settings:
 
 - **Set both credentials or neither.** With both blank, no authentication is required. A username without a password is a lock with no key — no client will be able to authenticate.
 - The credential fields read back as blank after a reload — they are redacted from API responses, not lost.
-- On Linux/macOS native installs, port 119 is privileged; run as root, grant `CAP_NET_BIND_SERVICE`, or pick a port above 1024. In Docker (where the app runs as root) just map the port: `"119:119"`.
+- **The default port is 1119, not the standard 119.** Ports below 1024 are privileged on Linux and macOS, so a container that drops root — or any non-root install — cannot bind 119. Setting the proxy to 119 anyway is supported: run as root, grant `CAP_NET_BIND_SERVICE`, or map the port in Docker (`"119:1119"`) and leave the listener itself unprivileged.
+- **A listener that cannot bind does not stop the rest of StreamNZB.** The addon, dashboard and playback all start regardless; the failure is logged as a warning and the **NNTP Proxy Server** card shows why the proxy is enabled but not listening.
+- Upgrading does not move your port. The new defaults apply to fresh installs only — an existing `config.json` keeps whatever it already has.
 
 ## Client configuration
 
 Point SABnzbd/NZBGet at StreamNZB as if it were a Usenet provider:
 
-- **Host**: the machine running StreamNZB; **Port**: 119 (or your configured port)
+- **Host**: the machine running StreamNZB; **Port**: 1119 (or your configured port)
 - **SSL/TLS: off** — the listener is plain TCP. Connections *upstream* to your providers still use SSL as configured per provider; only the local hop is unencrypted. Keep that hop on your LAN or VPN and never expose the proxy port to the internet — see [Remote access](remote-access.md) (an HTTP reverse proxy cannot carry it; it is not HTTP).
 - **Username/Password**: your proxy credentials, or blank if none are set
 - **Connections**: each in-flight article borrows a real connection from your providers, and the proxy shares that pool with Stremio playback. Asking the client for more connections than your providers allow does **not** open more upstream connections — the surplus queues for a free slot, so it buys no speed. Set the client's connection count below your total provider connections so downloads leave headroom for streams.

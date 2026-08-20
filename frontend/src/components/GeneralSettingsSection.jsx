@@ -56,7 +56,7 @@ function pickInitialValues(values = {}) {
     addon_port: Number(values.addon_port ?? 7000),
     addon_base_url: values.addon_base_url ?? '',
     proxy_enabled: values.proxy_enabled !== false,
-    proxy_port: Number(values.proxy_port ?? 119),
+    proxy_port: Number(values.proxy_port ?? 1119),
     proxy_host: values.proxy_host ?? '',
     proxy_auth_user: values.proxy_auth_user ?? '',
     proxy_auth_pass: values.proxy_auth_pass ?? '',
@@ -72,6 +72,7 @@ function pickInitialValues(values = {}) {
 export const GeneralSettingsSection = React.memo(function GeneralSettingsSection({
   initialValues,
   envOverrides,
+  proxyStatus,
   onPersist,
   saveStatus,
 }) {
@@ -305,6 +306,14 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
               )}
             </CardHeader>
             <CardContent>
+              {/* An enabled proxy that never bound looks identical to a working
+                  one from here, so say so rather than leaving the user to find
+                  it in the log. */}
+              {proxyStatus && !proxyStatus.listening && (
+                <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  The proxy is enabled but not listening{proxyStatus.error ? `: ${proxyStatus.error}` : '.'}
+                </div>
+              )}
               <div className="mb-4">
                 <FormField control={control} name="proxy_enabled" render={({ field }) => (
                   <FormItem className="rounded-md border border-border/60 p-3">

@@ -292,17 +292,22 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 	if restartProxy {
 		if comp.Config.ProxyEnabled {
 			logger.Info("Restarting NNTP Proxy...", "host", comp.Config.ProxyHost, "port", comp.Config.ProxyPort)
-			var err error
-			newProxy, err = proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
-			if err != nil {
-				logger.Error("Failed to create new proxy during reload", "err", err)
+			newProxy = proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
+			// Installed even when the bind below fails, so the settings page can
+			// read the reason off it instead of showing a healthy-looking proxy.
+			s.mu.Lock()
+			s.proxyServer = newProxy
+			s.mu.Unlock()
+
+			// Binding here rather than inside the goroutine keeps the failure
+			// visible to the save that caused it: the settings page refetches
+			// the config as soon as this reload returns.
+			if err := newProxy.Listen(); err != nil {
+				logger.Warn("NNTP proxy is not listening", "err", err)
 			} else {
-				s.mu.Lock()
-				s.proxyServer = newProxy
-				s.mu.Unlock()
 				go func(p *proxy.Server) {
-					if err := p.Start(); err != nil {
-						logger.Error("Proxy server failed to start", "err", err)
+					if err := p.Serve(); err != nil {
+						logger.Error("NNTP proxy stopped serving", "err", err)
 					}
 				}(newProxy)
 			}

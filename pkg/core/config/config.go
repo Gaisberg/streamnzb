@@ -54,6 +54,11 @@ const (
 	legacySeriesSearchScopeSeasonQuery  = "season_query"
 )
 
+// DefaultProxyPort is deliberately unprivileged: ports below 1024 need root on
+// Linux and macOS, so the standard NNTP port cannot be bound by a container
+// that drops privileges. See issue #192.
+const DefaultProxyPort = 1119
+
 type Provider struct {
 	Name        string `json:"name"`
 	Host        string `json:"host"`
@@ -1088,15 +1093,20 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		logger.Warn("Failed to create data directory", "dir", dataDir, "err", err)
 	}
 
+	// These apply to fresh installs only — LoadFile below overwrites every one
+	// of them from an existing config.json. The proxy defaults are off and
+	// unprivileged on purpose: 119 needs root, which no container that drops
+	// privileges has, and an NNTP relay nobody asked for should not be
+	// listening at all. See issue #192.
 	cfg := &Config{
 		AddonPort:                        7000,
 		AddonBaseURL:                     "http://localhost:7000",
 		LogLevel:                         "INFO",
 		VerboseNNTPLogging:               false,
 		AdminUsername:                    "admin",
-		ProxyPort:                        119,
+		ProxyPort:                        DefaultProxyPort,
 		ProxyHost:                        "0.0.0.0",
-		ProxyEnabled:                     true,
+		ProxyEnabled:                     false,
 		MemoryLimitMB:                    512,
 		KeepLogFiles:                     9,
 		NZBHistoryRetentionDays:          90,

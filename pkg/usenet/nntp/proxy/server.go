@@ -2,14 +2,21 @@ package proxy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/usenet/pool"
 )
+
+// privilegedPortCeiling is the highest port a non-root process cannot bind on
+// Linux. The default NNTP port (119) sits below it, so every containerised
+// deployment that drops root fails there — hence the hint on bind errors.
+const privilegedPortCeiling = 1024
 
 type Server struct {
 	host     string
@@ -19,12 +26,16 @@ type Server struct {
 	authPass string
 
 	listener net.Listener
-	mu       sync.Mutex
-	sessions map[string]*Session
+	// listening is tracked separately from the listener handle: Stop must not
+	// clear the handle out from under a Serve goroutine that is still starting.
+	listening bool
+	mu        sync.Mutex
+	sessions  map[string]*Session
+	lastErr   string
 }
 
-func NewServer(host string, port int, usenet *pool.Pool, authUser, authPass string) (*Server, error) {
-	s := &Server{
+func NewServer(host string, port int, usenet *pool.Pool, authUser, authPass string) *Server {
+	return &Server{
 		host:     host,
 		port:     port,
 		usenet:   usenet,
@@ -32,35 +43,71 @@ func NewServer(host string, port int, usenet *pool.Pool, authUser, authPass stri
 		authPass: authPass,
 		sessions: make(map[string]*Session),
 	}
-
-	if err := s.Validate(); err != nil {
-		return nil, err
-	}
-
-	return s, nil
 }
 
-func (s *Server) Validate() error {
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("NNTP proxy port %d is already in use", s.port)
-	}
-	ln.Close()
+func (s *Server) addr() string {
+	return fmt.Sprintf("%s:%d", s.host, s.port)
+}
 
+// Listen binds the proxy port. It is separate from Serve so both startup and
+// config reload learn synchronously whether the bind worked — the caller can
+// report a failure instead of discovering it from a goroutine after the fact.
+//
+// A bind failure is never fatal to the process: the proxy is one optional
+// feature, and refusing to boot the addon over it costs the user everything
+// else. See issue #192.
+func (s *Server) Listen() error {
+	listener, err := net.Listen("tcp", s.addr())
+	if err != nil {
+		bindErr := s.describeBindError(err)
+		s.mu.Lock()
+		s.lastErr = bindErr.Error()
+		s.mu.Unlock()
+		return bindErr
+	}
+
+	s.mu.Lock()
+	s.listener = listener
+	s.listening = true
+	s.lastErr = ""
+	s.mu.Unlock()
+
+	logger.Info("NNTP proxy listening", "addr", s.addr())
 	return nil
 }
 
-func (s *Server) Start() error {
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to start NNTP proxy: %w", err)
+// describeBindError turns a raw bind failure into something a user can act on.
+// The two cases that actually happen are a privileged port without root and a
+// port already taken by something else.
+func (s *Server) describeBindError(err error) error {
+	if errors.Is(err, os.ErrPermission) && s.port < privilegedPortCeiling {
+		return fmt.Errorf("port %d needs root; pick a port above %d (for example 1119) and point your downloader at it", s.port, privilegedPortCeiling-1)
 	}
+	if isAddrInUse(err) {
+		return fmt.Errorf("port %d is already in use", s.port)
+	}
+	return fmt.Errorf("could not bind %s: %w", s.addr(), err)
+}
 
-	s.listener = listener
-	logger.Info("NNTP proxy listening", "addr", addr)
+// isAddrInUse matches on message text rather than a syscall sentinel because
+// the code differs per platform (EADDRINUSE on Unix, WSAEADDRINUSE on Windows)
+// and this only decides the wording of a log line.
+func isAddrInUse(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address")
+}
+
+// Serve accepts connections until Stop closes the listener. Listen must have
+// succeeded first.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+
+	if listener == nil {
+		return fmt.Errorf("NNTP proxy: Serve called before a successful Listen")
+	}
 
 	for {
 		conn, err := listener.Accept()
@@ -78,10 +125,36 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
-	if s.listener != nil {
-		return s.listener.Close()
+	s.mu.Lock()
+	listener := s.listener
+	s.listening = false
+	s.mu.Unlock()
+
+	if listener != nil {
+		return listener.Close()
 	}
 	return nil
+}
+
+// Status describes the listener for the dashboard, so a proxy that is enabled
+// but not actually listening says so instead of looking healthy.
+type Status struct {
+	Enabled   bool   `json:"enabled"`
+	Listening bool   `json:"listening"`
+	Addr      string `json:"addr"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Server) Status() Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return Status{
+		Enabled:   true,
+		Listening: s.listening,
+		Addr:      s.addr(),
+		Error:     s.lastErr,
+	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
