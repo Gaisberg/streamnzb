@@ -72,14 +72,20 @@ type Show struct {
 	} `json:"_embedded"`
 }
 
-// Episode is one TVMaze episode. Airstamp is the authoritative ISO 8601 air
-// time; Airdate is the date-only fallback.
+// Episode is one TVMaze episode.
+//
+// Airtime is the discriminator that matters: TVMaze emits an Airstamp for
+// every episode, but when it holds no broadcast time it leaves Airtime empty
+// and stamps a placeholder of noon UTC. Only an episode with a non-empty
+// Airtime has a real instant behind its Airstamp; the rest carry nothing more
+// than Airdate.
 type Episode struct {
 	ID       int    `json:"id"`
 	Season   int    `json:"season"`
 	Number   int    `json:"number"`
 	Name     string `json:"name"`
 	Airdate  string `json:"airdate"`
+	Airtime  string `json:"airtime"`
 	Airstamp string `json:"airstamp"`
 	Summary  string `json:"summary"`
 	Image    struct {

@@ -627,18 +627,21 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	// Air-date gate: a positively-unaired episode gets an instant empty result
 	// instead of a full indexer fan-out that cannot find anything. Strictly
 	// failure-open — only a trusted source saying "airs in the future" gates.
-	if aired, airsAt, known := s.episodeAiredState(ctx, stream, contentType, params.ContentIDs); known && !aired {
+	if aired, window, known := s.episodeAiredState(ctx, stream, contentType, params.ContentIDs); known && !aired {
+		reportAt, timeKnown := window.reportAt()
 		logger.Info("Episode has not aired yet; skipping search",
 			"stream", streamLabel,
 			"type", contentType,
 			"id", id,
-			"airs_at", airsAt.Format(time.RFC3339),
+			"airs_at", reportAt.Format(time.RFC3339),
+			"air_time_known", timeKnown,
+			"gate_opens_at", window.opensAt.Format(time.RFC3339),
 		)
-		diag.From(ctx).SetUnaired(airsAt.UTC().Format(time.RFC3339))
+		diag.From(ctx).SetUnaired(reportAt.UTC().Format(time.RFC3339), timeKnown)
 		return &rawSearchResult{
 			Params:  params,
 			Unaired: true,
-			AirsAt:  airsAt,
+			Air:     window,
 			Avail: &AvailContext{
 				ByDetailsURL:            make(map[string]*availnzb.ReleaseWithStatus),
 				AvailableByDetailsURL:   make(map[string]bool),

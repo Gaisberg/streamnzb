@@ -63,7 +63,14 @@ func formatSearchDebugDescription(snap *diag.Snapshot) string {
 	if snap.UnairedAirsAt != "" {
 		when := snap.UnairedAirsAt
 		if t, err := time.Parse(time.RFC3339, when); err == nil {
-			when = t.Format("2006-01-02 15:04 MST")
+			// Without a known air time the stamp is midnight UTC standing in
+			// for the date, so render the date alone rather than a clock
+			// reading no source ever gave.
+			if snap.UnairedTimeKnown {
+				when = t.Format("2006-01-02 15:04 MST")
+			} else {
+				when = t.Format("2006-01-02")
+			}
 		}
 		lines = append(lines, "⏳ Not aired yet — airs "+when)
 	}

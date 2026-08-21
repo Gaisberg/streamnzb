@@ -721,13 +721,22 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 // applyTVMazeOverlay makes TVMaze the air-date authority: its airstamp carries
 // the actual air time and timezone and always wins over a source's date-only
 // air date; thumbnail and summary only fill gaps the source left.
+//
+// Only an episode with a non-empty airtime has a real instant behind its
+// airstamp. Where TVMaze holds no air time it stamps noon UTC, and passing
+// that through as a released timestamp made clients render an air time nobody
+// stated — and, east of UTC+12, the wrong day. Those episodes get the same
+// midnight-UTC date form every other date-only source is expressed in.
 func applyTVMazeOverlay(video *MetaVideo, overlay map[[2]int]tvmaze.Episode) {
 	tvm, ok := overlay[[2]int{video.Season, video.Episode}]
 	if !ok {
 		return
 	}
-	if tvm.Airstamp != "" {
+	switch {
+	case tvm.Airtime != "" && tvm.Airstamp != "":
 		video.Released = tvm.Airstamp
+	case tvm.Airdate != "":
+		video.Released = tvm.Airdate + "T00:00:00.000Z"
 	}
 	if video.Thumbnail == "" && tvm.Image.Medium != "" {
 		video.Thumbnail = tvm.Image.Medium

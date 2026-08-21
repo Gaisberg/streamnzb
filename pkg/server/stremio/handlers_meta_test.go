@@ -218,7 +218,7 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id": 82, "name": "Game of Thrones"}`))
 		case strings.HasPrefix(r.URL.Path, "/shows/82"):
 			_, _ = w.Write([]byte(`{"id": 82, "_embedded": {"episodes": [
-				{"id": 1, "season": 1, "number": 1, "airstamp": "2011-04-18T01:00:00+00:00",
+				{"id": 1, "season": 1, "number": 1, "airdate": "2011-04-17", "airtime": "21:00", "airstamp": "2011-04-18T01:00:00+00:00",
 				 "summary": "<p>TVMaze summary</p>", "image": {"medium": "https://img/e1.jpg"}}
 			]}}`))
 		default:
@@ -371,7 +371,7 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id": 82}`))
 		case strings.HasPrefix(r.URL.Path, "/shows/82"):
 			_, _ = w.Write([]byte(`{"id": 82, "_embedded": {"episodes": [
-				{"id": 1, "season": 1, "number": 1, "airstamp": "2011-04-18T01:00:00+00:00"}
+				{"id": 1, "season": 1, "number": 1, "airdate": "2011-04-17", "airtime": "21:00", "airstamp": "2011-04-18T01:00:00+00:00"}
 			]}}`))
 		default:
 			http.NotFound(w, r)
@@ -1154,5 +1154,29 @@ func TestHandleCatalogUpstreamFailureServesEmptyPage(t *testing.T) {
 	}
 	if resp.Metas == nil || len(resp.Metas) != 0 {
 		t.Fatalf("metas = %v, want empty non-nil", resp.Metas)
+	}
+}
+
+func TestTVMazeOverlayDoesNotPassThroughTheNoonPlaceholder(t *testing.T) {
+	// TVMaze stamps noon UTC on every episode it holds no air time for. Handed
+	// to a client as a released timestamp that reads as a 12:00 broadcast, and
+	// east of UTC+12 it rolls the episode onto the following day.
+	placeholder := map[[2]int]tvmaze.Episode{
+		{1, 1}: {Season: 1, Number: 1, Airdate: "2026-08-21", Airstamp: "2026-08-21T12:00:00+00:00"},
+	}
+	video := &MetaVideo{Season: 1, Episode: 1, Released: "2026-08-21T00:00:00.000Z"}
+	applyTVMazeOverlay(video, placeholder)
+	if want := "2026-08-21T00:00:00.000Z"; video.Released != want {
+		t.Fatalf("released = %q, want the date-only form %q", video.Released, want)
+	}
+
+	// A real air time still wins over whatever the source had.
+	scheduled := map[[2]int]tvmaze.Episode{
+		{1, 1}: {Season: 1, Number: 1, Airdate: "2011-04-17", Airtime: "21:00", Airstamp: "2011-04-18T01:00:00+00:00"},
+	}
+	video = &MetaVideo{Season: 1, Episode: 1, Released: "2011-04-17T00:00:00.000Z"}
+	applyTVMazeOverlay(video, scheduled)
+	if want := "2011-04-18T01:00:00+00:00"; video.Released != want {
+		t.Fatalf("released = %q, want the TVMaze airstamp %q", video.Released, want)
 	}
 }

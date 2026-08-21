@@ -83,6 +83,12 @@ type Snapshot struct {
 	// indexer calls to report.
 	UnairedAirsAt string `json:"unaired_airs_at,omitempty"`
 
+	// UnairedTimeKnown reports whether UnairedAirsAt carries a real broadcast
+	// time or only an air date. Most streaming titles have no air time on
+	// record, and rendering their midnight-UTC placeholder as a clock time
+	// would state something no source ever said.
+	UnairedTimeKnown bool `json:"unaired_time_known,omitempty"`
+
 	// CertificationBlocked is set when the search was short-circuited by the
 	// stream's metadata-profile certification cap (e.g. "R over cap 13", or
 	// "unrated" when the cap fails closed on unknown certifications).
@@ -146,12 +152,13 @@ func (c *Collector) SetDedup(input, output int) {
 	c.mu.Unlock()
 }
 
-func (c *Collector) SetUnaired(airsAt string) {
+func (c *Collector) SetUnaired(airsAt string, timeKnown bool) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	c.snap.UnairedAirsAt = airsAt
+	c.snap.UnairedTimeKnown = timeKnown
 	c.mu.Unlock()
 }
 

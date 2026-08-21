@@ -63,8 +63,11 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString()
 }
 
-function formatDateOnly(value) {
-  return new Date(value).toLocaleDateString()
+// utc forces the calendar date to be read as UTC, which a date-only value must
+// be: it is stamped midnight UTC, so a local reading would slide it a day back
+// for every viewer west of Greenwich.
+function formatDateOnly(value, { utc = false } = {}) {
+  return new Date(value).toLocaleDateString(undefined, utc ? { timeZone: 'UTC' } : undefined)
 }
 
 function formatTimeOnly(value) {
@@ -268,7 +271,14 @@ const historyWindowMs = 15 * 60 * 1000
 function searchShortCircuit(snap) {
   if (!snap) return null
   if (snap.unaired_airs_at) {
-    return { label: 'Not aired yet', detail: formatDateTime(snap.unaired_airs_at) }
+    // Most streaming titles have no air time on record, only a date; showing a
+    // clock reading for those would state something no source ever said.
+    return {
+      label: 'Not aired yet',
+      detail: snap.unaired_time_known
+        ? formatDateTime(snap.unaired_airs_at)
+        : formatDateOnly(snap.unaired_airs_at, { utc: true }),
+    }
   }
   if (snap.certification_blocked) {
     return { label: 'Rating blocked', detail: snap.certification_blocked }
@@ -440,7 +450,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
       {shortCircuit && (
         <p className="mt-2 text-xs text-muted-foreground">
           {snap.unaired_airs_at
-            ? 'No indexer was asked: a trusted source puts this episode’s air time in the future. Turn off "Skip unaired episodes" in the stream’s indexer settings to search anyway.'
+            ? 'No indexer was asked: a trusted source puts this episode’s air date in the future. The gate opens as soon as that date begins anywhere in the world, so a release can never be hidden behind it. Turn off "Skip unaired episodes" in the stream’s indexer settings to search anyway.'
             : 'No indexer was asked: the stream’s metadata profile caps this title by age rating.'}
         </p>
       )}

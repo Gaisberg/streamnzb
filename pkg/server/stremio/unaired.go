@@ -17,46 +17,90 @@ const unairedMargin = 15 * time.Minute
 // airDateLayout is the date-only form every source falls back to.
 const airDateLayout = "2006-01-02"
 
-// Air times arrive in two shapes and the gate treats them differently.
-//
-// A TVMaze airstamp carries a real broadcast time and its network's offset, so
-// it names an actual instant: gate on it directly and the search opens when the
-// episode is genuinely out, not hours before. Everything else — TVMaze's
-// date-only airdate, and what TVDB and TMDB serve — is a bare calendar date
-// with no time behind it, and the only honest reading of "2026-08-19" is the
-// whole of that day.
-//
-// The bug this replaces: a bare date was parsed as midnight UTC, which is the
-// previous evening in the Americas and mid-morning east of Greenwich, so
-// whether an episode counted as aired on its own air date depended on where the
-// server happened to sit. parseAirDate reads it as midnight in the server's own
-// zone instead, which makes the date mean the same day everywhere.
+// maxZoneOffset is the furthest ahead of UTC any inhabited zone runs (+14:00,
+// the Line Islands). A calendar date therefore begins maxZoneOffset before
+// midnight UTC on that date, and not one instant earlier anywhere on Earth.
+const maxZoneOffset = 14 * time.Hour
 
-// parseAirDate reads a bare "2006-01-02" air date as the start of that day in
-// the server's local zone.
-func parseAirDate(raw string) (time.Time, bool) {
-	t, err := time.ParseInLocation(airDateLayout, raw, time.Local)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
+// The gate has two clocks and they are deliberately not the same one.
+//
+// What it gates on is the earliest instant the episode could exist anywhere.
+// A release cannot precede its own broadcast, so that instant is the start of
+// the air date in the furthest-east zone — nothing airs before its own date
+// begins. Gating on anything later leaves a window where a real release is on
+// the indexers and the gate still reports the episode as unaired, which is the
+// one failure mode that costs a user a playable stream. Opening early costs a
+// single fan-out that finds nothing.
+//
+// What it reports is the scheduled air time, when a source actually knows one.
+// That is what the "airs at" line in a stream description should say, and it
+// has no business deciding whether to search.
+//
+// The trap this replaces: TVMaze emits an airstamp for every episode, including
+// the ones it holds no air time for, and those get stamped noon UTC (Silo,
+// Loki, Queen Sono — every country-less web channel). Read as a broadcast
+// instant, that held the gate shut until midday UTC on episodes the streamer
+// had already dropped. Airstamps are also normalised to UTC rather than the
+// network's own offset, so nothing about the stamp's clock reveals which kind
+// it is. Only the airtime field does.
+
+// airWindow is one episode's air time in the forms the gate needs.
+type airWindow struct {
+	// opensAt is the earliest instant the episode could have aired anywhere.
+	opensAt time.Time
+	// date is midnight UTC on the stated air date.
+	date time.Time
+	// scheduled is the broadcast instant a source positively stated, and is
+	// zero when the source knew only a date.
+	scheduled time.Time
 }
 
-// localMidnightOn rebuilds a calendar date — read in whatever zone t carries —
-// as the start of that same date locally.
-func localMidnightOn(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+// reportAt is what to tell the user: the broadcast instant when one is known,
+// and otherwise the air date alone. Never opensAt — that runs up to a day
+// ahead of the air date by design, and reporting it would announce an air
+// time no source ever stated.
+func (w airWindow) reportAt() (at time.Time, timeKnown bool) {
+	if !w.scheduled.IsZero() {
+		return w.scheduled, true
+	}
+	return w.date, false
+}
+
+// dateWindow builds the window for a bare "2006-01-02" air date: the gate
+// opens when that date begins in the furthest-east zone, and there is no
+// scheduled instant to report.
+func dateWindow(raw string) (airWindow, bool) {
+	day, err := time.ParseInLocation(airDateLayout, raw, time.UTC)
+	if err != nil {
+		return airWindow{}, false
+	}
+	return airWindow{opensAt: day.Add(-maxZoneOffset), date: day}, true
+}
+
+// withSchedule pairs a known broadcast instant with the date it belongs to.
+// The gate still opens on the date, so a network airing late enough to land on
+// the following UTC day cannot pull the gate shut over its own air date.
+func withSchedule(scheduled time.Time, airdate string) airWindow {
+	w, ok := dateWindow(airdate)
+	if !ok {
+		w = airWindow{opensAt: scheduled, date: scheduled.UTC().Truncate(24 * time.Hour)}
+	}
+	w.scheduled = scheduled
+	if scheduled.Before(w.opensAt) {
+		w.opensAt = scheduled
+	}
+	return w
 }
 
 // episodeAiredState reports whether the requested episode has aired.
 //
-// known is true only when a trusted source positively stated an air time —
+// known is true only when a trusted source positively stated an air date —
 // any lookup error, missing mapping, or missing episode leaves known=false,
 // and the caller must fail open into a normal search. Getting this wrong in
 // the other direction hides real releases behind a metadata gap.
 //
-// Sources, in order: TVMaze (the air-date authority — airstamps carry the
-// actual air time), then TVDB episodes and TMDB season details (date-only
+// Sources, in order: TVMaze (the air-date authority — it alone carries a real
+// broadcast time), then TVDB episodes and TMDB season details (date-only
 // fallbacks, mirroring the meta source policy). Kitsu numbering is
 // entry-relative and cannot be matched to the resolved season/episode safely,
 // so anime relies on the same sources via its mapped ids.
@@ -68,103 +112,86 @@ func localMidnightOn(t time.Time) time.Time {
 //
 // The stream can turn the gate off (unaired_search_gate, in its indexer
 // settings); that reports known=false and searches as usual.
-func (s *Server) episodeAiredState(ctx context.Context, stream *auth.Stream, contentType string, ids *session.AvailReportMeta) (aired bool, airsAt time.Time, known bool) {
+func (s *Server) episodeAiredState(ctx context.Context, stream *auth.Stream, contentType string, ids *session.AvailReportMeta) (aired bool, window airWindow, known bool) {
 	if s == nil || ids == nil || ids.Season <= 0 || ids.Episode <= 0 {
-		return false, time.Time{}, false
+		return false, airWindow{}, false
 	}
 	if !stream.EffectiveUnairedSearchGate() {
-		return false, time.Time{}, false
+		return false, airWindow{}, false
 	}
 	switch contentType {
 	case "series", "anime", "tv":
 	default:
-		return false, time.Time{}, false
+		return false, airWindow{}, false
 	}
 
-	if airsAt, ok := s.tvmazeAirTime(ctx, ids); ok {
-		return airedByTime(airsAt), airsAt, true
+	if w, ok := s.tvmazeAirWindow(ctx, ids); ok {
+		return airedByTime(w.opensAt), w, true
 	}
-	if airsAt, ok := s.tvdbAirTime(ids); ok {
-		return airedByTime(airsAt), airsAt, true
+	if w, ok := s.tvdbAirWindow(ids); ok {
+		return airedByTime(w.opensAt), w, true
 	}
-	if airsAt, ok := s.tmdbAirTime(ids); ok {
-		return airedByTime(airsAt), airsAt, true
+	if w, ok := s.tmdbAirWindow(ids); ok {
+		return airedByTime(w.opensAt), w, true
 	}
-	return false, time.Time{}, false
+	return false, airWindow{}, false
 }
 
-func (s *Server) tvdbAirTime(ids *session.AvailReportMeta) (time.Time, bool) {
+func (s *Server) tvdbAirWindow(ids *session.AvailReportMeta) (airWindow, bool) {
 	if s.tvdbClient == nil || ids.TvdbID == "" {
-		return time.Time{}, false
+		return airWindow{}, false
 	}
 	episodes, err := s.tvdbClient.GetSeriesEpisodes(ids.TvdbID)
 	if err != nil {
 		logger.Debug("TVDB episodes for air-date gating failed", "tvdb_id", ids.TvdbID, "err", err)
-		return time.Time{}, false
+		return airWindow{}, false
 	}
 	for _, ep := range episodes {
 		if ep.SeasonNumber == ids.Season && ep.Number == ids.Episode {
-			if t, ok := parseAirDate(ep.Aired); ok {
-				return t, true
-			}
-			return time.Time{}, false
+			return dateWindow(ep.Aired)
 		}
 	}
-	return time.Time{}, false
+	return airWindow{}, false
 }
 
-func airedByTime(airsAt time.Time) bool {
-	return !airsAt.After(time.Now().Add(unairedMargin))
+func airedByTime(opensAt time.Time) bool {
+	return !opensAt.After(time.Now().Add(unairedMargin))
 }
 
-func (s *Server) tvmazeAirTime(ctx context.Context, ids *session.AvailReportMeta) (time.Time, bool) {
+func (s *Server) tvmazeAirWindow(ctx context.Context, ids *session.AvailReportMeta) (airWindow, bool) {
 	overlay := s.tvmazeEpisodes(ctx, ids.ImdbID, ids.TvdbID)
 	ep, ok := overlay[[2]int{ids.Season, ids.Episode}]
 	if !ok {
-		return time.Time{}, false
+		return airWindow{}, false
 	}
-	if ep.Airstamp != "" {
+	// A non-empty airtime is TVMaze saying it knows when this one broadcasts,
+	// and only then does the airstamp name a real instant. With airtime empty
+	// the stamp is a noon-UTC placeholder and the airdate is all there is.
+	if ep.Airtime != "" && ep.Airstamp != "" {
 		if t, err := time.Parse(time.RFC3339, ep.Airstamp); err == nil {
-			// TVMaze builds the airstamp from the air date, the air time and
-			// the network's zone. Shows it holds no air time for still get an
-			// airstamp — one landing exactly on midnight in the network's own
-			// zone — so that is a date in disguise, not a broadcast at
-			// 00:00, and it gets the date-only reading rather than gating the
-			// search until midnight somewhere else in the world.
-			if h, m, sec := t.Clock(); h == 0 && m == 0 && sec == 0 {
-				return localMidnightOn(t), true
-			}
-			return t, true
+			return withSchedule(t, ep.Airdate), true
 		}
 	}
-	if ep.Airdate != "" {
-		if t, ok := parseAirDate(ep.Airdate); ok {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return dateWindow(ep.Airdate)
 }
 
-func (s *Server) tmdbAirTime(ids *session.AvailReportMeta) (time.Time, bool) {
+func (s *Server) tmdbAirWindow(ids *session.AvailReportMeta) (airWindow, bool) {
 	if s.tmdbClient == nil || ids.TmdbID == "" {
-		return time.Time{}, false
+		return airWindow{}, false
 	}
 	tmdbID, err := strconv.Atoi(ids.TmdbID)
 	if err != nil || tmdbID <= 0 {
-		return time.Time{}, false
+		return airWindow{}, false
 	}
 	details, err := s.tmdbClient.GetTVSeasonDetails(tmdbID, ids.Season)
 	if err != nil {
 		logger.Debug("TMDB season details for air-date gating failed", "tmdb_id", tmdbID, "season", ids.Season, "err", err)
-		return time.Time{}, false
+		return airWindow{}, false
 	}
 	for _, ep := range details.Episodes {
 		if ep.EpisodeNumber == ids.Episode {
-			if t, ok := parseAirDate(ep.AirDate); ok {
-				return t, true
-			}
-			return time.Time{}, false
+			return dateWindow(ep.AirDate)
 		}
 	}
-	return time.Time{}, false
+	return airWindow{}, false
 }

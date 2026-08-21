@@ -38,24 +38,37 @@ func TestRawSearchCacheUntil(t *testing.T) {
 	})
 
 	t.Run("unaired expires when the gate opens", func(t *testing.T) {
-		// Inside the TTL, so the air time is the binding deadline.
-		airsAt := time.Now().Add(time.Hour)
-		raw := &rawSearchResult{Unaired: true, AirsAt: airsAt}
+		// Inside the TTL, so the gate instant is the binding deadline.
+		opensAt := time.Now().Add(time.Hour)
+		raw := &rawSearchResult{Unaired: true, Air: airWindow{opensAt: opensAt}}
 		until := srv.rawSearchCacheUntil(raw)
-		want := airsAt.Add(-unairedMargin)
+		want := opensAt.Add(-unairedMargin)
 		if !until.Equal(want) {
 			t.Fatalf("unaired cached until %v, want the gate-open moment %v", until, want)
 		}
-		if !until.Before(airsAt) {
-			t.Fatalf("unaired cached until %v, not before its own air time %v", until, airsAt)
+		if !until.Before(opensAt) {
+			t.Fatalf("unaired cached until %v, not before its own gate instant %v", until, opensAt)
 		}
 		if rawSearchCacheSlides(raw) {
 			t.Fatalf("an unaired entry must not have its deadline pushed out on access")
 		}
 	})
 
-	t.Run("an air time beyond the TTL keeps the TTL", func(t *testing.T) {
-		raw := &rawSearchResult{Unaired: true, AirsAt: time.Now().Add(30 * 24 * time.Hour)}
+	t.Run("the deadline tracks the gate, not the schedule", func(t *testing.T) {
+		// A scheduled broadcast well after the gate opens must not hold the
+		// cached "unaired" answer past the moment searching becomes useful.
+		opensAt := time.Now().Add(time.Hour)
+		raw := &rawSearchResult{Unaired: true, Air: airWindow{
+			opensAt:   opensAt,
+			scheduled: opensAt.Add(20 * time.Hour),
+		}}
+		if until := srv.rawSearchCacheUntil(raw); !until.Equal(opensAt.Add(-unairedMargin)) {
+			t.Fatalf("unaired cached until %v, want the gate-open moment %v", until, opensAt.Add(-unairedMargin))
+		}
+	})
+
+	t.Run("a gate instant beyond the TTL keeps the TTL", func(t *testing.T) {
+		raw := &rawSearchResult{Unaired: true, Air: airWindow{opensAt: time.Now().Add(30 * 24 * time.Hour)}}
 		if remaining := time.Until(srv.rawSearchCacheUntil(raw)); remaining > full {
 			t.Fatalf("unaired cached for %v, want no more than the TTL %v", remaining, full)
 		}

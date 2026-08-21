@@ -87,11 +87,11 @@ type rawSearchResult struct {
 	IndexerReleases []*release.Release
 	Avail           *AvailContext
 	// Unaired marks an empty result produced by the air-date gate rather than
-	// by a search: the episode positively airs at AirsAt, so no indexer was
-	// asked. The cache entry expires when the gate opens instead of running
-	// the normal TTL.
+	// by a search: the episode cannot exist before Air.opensAt, so no indexer
+	// was asked. The cache entry expires when the gate opens instead of
+	// running the normal TTL.
 	Unaired bool
-	AirsAt  time.Time
+	Air     airWindow
 }
 
 // emptyRawSearchTTL is how long a search that found nothing is cached. The
@@ -325,11 +325,13 @@ func (s *Server) rawSearchCacheUntil(raw *rawSearchResult) time.Time {
 	if raw == nil {
 		return until
 	}
-	if raw.Unaired && !raw.AirsAt.IsZero() {
+	if raw.Unaired && !raw.Air.opensAt.IsZero() {
 		// Match airedByTime: it opens the gate a margin early, so holding the
-		// cached answer to the air time itself would keep serving "unaired"
-		// for a quarter hour after searching became worthwhile.
-		if opens := raw.AirsAt.Add(-unairedMargin); opens.Before(until) {
+		// cached answer to the gate instant itself would keep serving
+		// "unaired" for a quarter hour after searching became worthwhile.
+		// This tracks opensAt, not the scheduled air time — pinning it to the
+		// schedule would re-close the window the gate deliberately opens.
+		if opens := raw.Air.opensAt.Add(-unairedMargin); opens.Before(until) {
 			return opens
 		}
 		return until
@@ -632,7 +634,7 @@ func cloneRawSearchResult(raw *rawSearchResult) *rawSearchResult {
 		Params:  cloneSearchParams(raw.Params),
 		Avail:   cloneAvailContext(raw.Avail),
 		Unaired: raw.Unaired,
-		AirsAt:  raw.AirsAt,
+		Air:     raw.Air,
 	}
 	if raw.IndexerReleases != nil {
 		next.IndexerReleases = make([]*release.Release, 0, len(raw.IndexerReleases))
