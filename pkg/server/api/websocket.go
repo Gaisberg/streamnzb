@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/app"
@@ -73,13 +72,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug("WS Client connected", "remote", r.RemoteAddr)
 
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
 	go func() {
-		stats := s.collectStats()
-		payload, _ := json.Marshal(stats)
-		trySendWS(client, WSMessage{Type: "stats", Payload: payload})
+		// The collector's latest snapshot, not a fresh one: collecting here would
+		// advance the speed meters out of turn.
+		if payload := s.snapshotStats(); payload != nil {
+			trySendWS(client, WSMessage{Type: "stats", Payload: payload})
+		}
 		s.sendLogHistory(client)
 		var mustChangePassword bool
 		if client.stream != nil && client.stream.Username == s.adminUsername() {
@@ -119,8 +117,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-ticker.C:
-			s.sendStats(client)
 		case msg, ok := <-client.send:
 			if !ok {
 				conn.WriteMessage(websocket.CloseMessage, []byte{})
@@ -140,12 +136,6 @@ func trySendWS(client *Client, msg WSMessage) bool {
 	default:
 		return false
 	}
-}
-
-func (s *Server) sendStats(client *Client) {
-	stats := s.collectStats()
-	payload, _ := json.Marshal(stats)
-	trySendWS(client, WSMessage{Type: "stats", Payload: payload})
 }
 
 func (s *Server) sendConfig(client *Client) {

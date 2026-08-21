@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { apiFetch, getApiUrl, notifySpeedTestProgress, notifyUnauthorized } from '@/api'
 
+export const DEFAULT_STREAM_NAME = 'default'
+
 const MAX_HISTORY = 20
 const MAX_LOGS = 200
 
@@ -22,6 +24,7 @@ export function useAdminRuntime({
   const [error, setError] = useState(null)
   const [history, setHistory] = useState([])
   const [connHistory, setConnHistory] = useState([])
+  const [streamHistory, setStreamHistory] = useState([])
   const [wsStatus, setWsStatus] = useState('connecting')
   const [ws, setWs] = useState(null)
   const [version, setVersion] = useState(null)
@@ -42,6 +45,7 @@ export function useAdminRuntime({
     setError(null)
     setHistory([])
     setConnHistory([])
+    setStreamHistory([])
     setWsStatus('connecting')
     setWs(null)
     window.ws = null
@@ -127,6 +131,9 @@ export function useAdminRuntime({
             const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
             setHistory((prev) => [...prev, { time: timestamp, speed: data.total_speed_mbps }].slice(-MAX_HISTORY))
             setConnHistory((prev) => [...prev, { time: timestamp, conns: data.active_connections }].slice(-MAX_HISTORY))
+            // Metered server-side alongside total speed; plotted as given, so the
+            // two lines never drift apart on websocket jitter.
+            setStreamHistory((prev) => [...prev, { time: timestamp, speeds: data.stream_speeds_mbps || {} }].slice(-MAX_HISTORY))
             break
           }
           case 'log_entry':
@@ -285,6 +292,7 @@ export function useAdminRuntime({
     error,
     history,
     connHistory,
+    streamHistory,
     wsStatus,
     ws,
     version,

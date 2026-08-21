@@ -1819,11 +1819,12 @@ func (m *Manager) AddBytesRead(sessionID string, n int64) {
 }
 
 type ActiveSessionInfo struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Clients   []string `json:"clients"`
-	StartTime string   `json:"start_time"`
-	BytesRead int64    `json:"bytes_read"`
+	ID         string   `json:"id"`
+	StreamName string   `json:"stream_name"`
+	Title      string   `json:"title"`
+	Clients    []string `json:"clients"`
+	StartTime  string   `json:"start_time"`
+	BytesRead  int64    `json:"bytes_read"`
 }
 
 func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
@@ -1867,11 +1868,12 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 				}
 			}
 			result = append(result, ActiveSessionInfo{
-				ID:        s.ID,
-				Title:     title,
-				Clients:   clients,
-				StartTime: s.CreatedAt.Format(time.Kitchen),
-				BytesRead: s.BytesRead(),
+				ID:         s.ID,
+				StreamName: s.StreamName,
+				Title:      title,
+				Clients:    clients,
+				StartTime:  s.CreatedAt.Format(time.Kitchen),
+				BytesRead:  s.BytesRead(),
 			})
 			createdAt[s.ID] = s.CreatedAt
 		}
@@ -1911,9 +1913,11 @@ func (m *Manager) SegmentFetcherForProviders(providerIDs []string) loader.Segmen
 // SegmentFetcherForLease is SegmentFetcherForProviders with the caller's
 // per-provider connection caps applied. leaseKey identifies whose budget the
 // connections come out of, so every fetcher handed to one stream shares a
-// single cap rather than getting a fresh allowance per session.
+// single cap rather than getting a fresh allowance per session. A lease with no
+// caps still gets its own view: the key is what attributes fetched bytes to the
+// stream, and that holds whether or not the stream limits its connections.
 func (m *Manager) SegmentFetcherForLease(leaseKey string, providerIDs []string, limits map[string]int) loader.SegmentFetcher {
-	if leaseKey == "" || len(limits) == 0 {
+	if leaseKey == "" {
 		return m.SegmentFetcherForProviders(providerIDs)
 	}
 	m.mu.RLock()

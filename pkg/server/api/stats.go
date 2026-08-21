@@ -24,6 +24,11 @@ type SystemStats struct {
 	Providers         []ProviderStats             `json:"providers"`
 	Indexers          []IndexerStats              `json:"indexers"`
 	ActiveSessions    []session.ActiveSessionInfo `json:"active_sessions"`
+	// StreamSpeeds is each stream's share of TotalSpeed, keyed by stream name and
+	// metered the same way, so the dashboard can plot both on one axis. What is
+	// missing from the sum is pool work no stream asked for: availability checks,
+	// NZB downloads, probes and speed tests.
+	StreamSpeeds map[string]float64 `json:"stream_speeds_mbps"`
 }
 
 type IndexerStats struct {
@@ -74,6 +79,7 @@ func (s *Server) collectStats() SystemStats {
 	articleByHost := map[string]usenetpool.ProviderArticleStats{}
 	if application != nil {
 		if comp := application.Components(); comp != nil && comp.UsenetPool != nil {
+			stats.StreamSpeeds = comp.UsenetPool.StreamSpeeds()
 			for _, providerStat := range comp.UsenetPool.ProviderArticleStats() {
 				articleByProvider[providerStat.ProviderID] = providerStat
 				if providerStat.Host != "" {

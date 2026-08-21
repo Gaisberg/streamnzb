@@ -22,9 +22,7 @@ type ClientPool struct {
 
 	bytesRead      int64
 	totalBytesRead int64
-	lastTotalBytes int64
-	lastSpeed      float64
-	lastCheck      time.Time
+	speed          SpeedMeter
 
 	providerName string
 	usageManager *ProviderUsageManager
@@ -44,7 +42,6 @@ func NewClientPool(host string, port int, ssl bool, user, pass string, maxConn i
 		idleClients: make(chan *Client, maxConn),
 		slots:       make(chan struct{}, maxConn),
 		stopCh:      make(chan struct{}),
-		lastCheck:   time.Now(),
 	}
 
 	for i := 0; i < maxConn; i++ {
@@ -66,7 +63,7 @@ func (p *ClientPool) RestoreTotalBytes(total int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.totalBytesRead = total
-	p.lastTotalBytes = total
+	p.speed.Rebase(total)
 }
 
 func (p *ClientPool) TrackRead(n int) {
@@ -82,43 +79,11 @@ func (p *ClientPool) TrackRead(n int) {
 	}
 }
 
-const minSpeedWindow = 0.05
-
-const maxSpeedDuration = 5.0
-
 func (p *ClientPool) GetSpeed() float64 {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	now := time.Now()
-	duration := now.Sub(p.lastCheck).Seconds()
-
-	p.lastCheck = now
-
-	if duration < minSpeedWindow {
-		return p.lastSpeed
-	}
-
-	if duration > maxSpeedDuration {
-		p.lastTotalBytes = p.totalBytesRead
-		p.lastSpeed = 0
-		return 0
-	}
-
-	delta := p.totalBytesRead - p.lastTotalBytes
-	p.lastTotalBytes = p.totalBytesRead
-
-	if delta > 0 {
-
-		p.lastSpeed = (float64(delta) * 8) / (1024 * 1024) / duration
-	} else {
-		const decay = 0.35
-		p.lastSpeed *= decay
-		if p.lastSpeed < 0.1 {
-			p.lastSpeed = 0
-		}
-	}
-	return p.lastSpeed
+	total := p.totalBytesRead
+	p.mu.Unlock()
+	return p.speed.Rate(total)
 }
 
 func (p *ClientPool) TotalMegabytes() float64 {

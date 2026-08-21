@@ -485,9 +485,11 @@ func (s *Server) segmentFetcherForStream(stream *auth.Stream) loader.SegmentFetc
 		return nil
 	}
 	if stream == nil {
-		return s.sessionManager.SegmentFetcherForProviders(nil)
+		return s.sessionManager.SegmentFetcherForLease(streamID(nil), nil, nil)
 	}
-	return s.sessionManager.SegmentFetcherForLease(stream.Username, streamProviderSelections(stream), stream.ProviderConnectionLimits)
+	// streamID, not Username: it matches the name the session is tagged with, so
+	// fetched bytes and the session they were fetched for line up under one key.
+	return s.sessionManager.SegmentFetcherForLease(streamID(stream), streamProviderSelections(stream), stream.ProviderConnectionLimits)
 }
 
 func buildAllReleasesFromRaw(raw *rawSearchResult) []*release.Release {

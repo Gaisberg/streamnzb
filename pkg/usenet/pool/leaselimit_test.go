@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"streamnzb/pkg/media/nzb"
 )
 
 func TestLeaseLimiterCapsConcurrentPermits(t *testing.T) {
@@ -114,5 +116,59 @@ func TestLeaseLimiterAppliesRaisedLimit(t *testing.T) {
 		if _, ok := limiter.tryAcquire("eweka"); !ok {
 			t.Fatalf("raised cap should grant permit %d", i+1)
 		}
+	}
+}
+
+// A lease-scoped subset charges the bytes it pulls to its stream, and the parent
+// pool sees them: the registry is shared, the way provider article stats are.
+func TestSubsetForLeaseAttributesFetchedBytes(t *testing.T) {
+	s := startPipelinePoolServer(t, nil)
+	p := newPipelineTestPool(t, s, 0)
+
+	lease := p.SubsetForLease("stream01", []string{"test"}, nil)
+	if lease == nil {
+		t.Fatal("SubsetForLease returned nil")
+	}
+	if _, err := lease.FetchSegment(context.Background(), &nzb.Segment{ID: "a@x"}, []string{"alt.test"}); err != nil {
+		t.Fatalf("fetch segment: %v", err)
+	}
+
+	charged := p.streamByteTotals()["stream01"]
+	if charged <= 0 {
+		t.Fatalf("stream01 charged %d bytes, want > 0", charged)
+	}
+	if got := lease.streamByteTotals()["stream01"]; got != charged {
+		t.Fatalf("subset sees %d bytes, parent sees %d; registry is not shared", got, charged)
+	}
+}
+
+// An unattributed view (no lease) must not charge anyone.
+func TestSubsetWithoutLeaseChargesNoStream(t *testing.T) {
+	s := startPipelinePoolServer(t, nil)
+	p := newPipelineTestPool(t, s, 0)
+
+	plain := p.Subset([]string{"test"})
+	if _, err := plain.FetchSegment(context.Background(), &nzb.Segment{ID: "b@x"}, []string{"alt.test"}); err != nil {
+		t.Fatalf("fetch segment: %v", err)
+	}
+
+	if got := p.streamByteTotals(); len(got) != 0 {
+		t.Fatalf("StreamBytes() = %v, want empty", got)
+	}
+}
+
+// A subset derived from a lease keeps the attribution: read-ahead and failover
+// both re-derive views from the fetcher a session was handed.
+func TestSubsetOfLeaseKeepsAttribution(t *testing.T) {
+	s := startPipelinePoolServer(t, nil)
+	p := newPipelineTestPool(t, s, 0)
+
+	derived := p.SubsetForLease("stream01", []string{"test"}, nil).Subset([]string{"test"})
+	if _, err := derived.FetchSegment(context.Background(), &nzb.Segment{ID: "c@x"}, []string{"alt.test"}); err != nil {
+		t.Fatalf("fetch segment: %v", err)
+	}
+
+	if got := p.streamByteTotals()["stream01"]; got <= 0 {
+		t.Fatalf("stream01 charged %d bytes through a derived subset, want > 0", got)
 	}
 }

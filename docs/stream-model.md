@@ -28,3 +28,24 @@ Each stream configuration defines:
 - **Failover & AvailNZB** — Automatic stream fallback walking and community availability checking. See [AvailNZB](availnzb.md).
 
 This architecture allows running multiple distinct Stremio manifests from a single StreamNZB instance, each tailored with different search rules, filters, or provider selections.
+
+## Per-stream activity on the dashboard
+
+The dashboard's **Network activity** chart plots total provider speed and pool
+connections, plus one line per stream. The dropdown at the top right picks which
+streams are drawn — all of them by default — and the list underneath groups what
+is currently playing by the stream serving it.
+
+A stream's line is measured the same way the total is, by the same meter, on the
+same tick: bytes read off the provider connections, charged to the stream that
+asked for them. Read-ahead counts, because prefetch is issued through the same
+per-stream view of the pool as the read that triggered it. So the stream lines
+add up to the total, minus whatever the pool did for nobody in particular —
+availability checks, NZB downloads, probes and speed tests.
+
+Two consequences worth knowing:
+
+- A stream's line runs **above** its media bitrate whenever playback is building
+  buffer ahead of the player, and drops back toward the bitrate once it is full.
+- Segments served from cache cost nothing on the wire, so a stream replaying
+  something already fetched can show a flat line while playback continues.

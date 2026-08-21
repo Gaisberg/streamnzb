@@ -216,6 +216,8 @@ func (p *Pool) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segme
 		cr := &countReader{Reader: reply.Body}
 		frame, decodeErr := decode.DecodeToBytes(cr)
 		reply.Body.Close()
+		// Charged whether or not the decode succeeded: the bytes crossed the wire.
+		p.recordStreamBytes(cr.n)
 		if decodeErr != nil {
 			logSegmentDecodeFailure(fetchCtx, providerID, reply.MessageID, decodeErr, cr.n)
 			// A half-read body means the pipeline can no longer find the next

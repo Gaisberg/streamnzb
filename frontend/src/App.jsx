@@ -17,10 +17,21 @@ import { ProfilePage } from "@/components/ProfilePage"
 import { DirectPlayPage } from "@/components/DirectPlayPage"
 import StreamManagement from '@/components/StreamManagement'
 import { apiFetch, UNAUTHORIZED_EVENT } from '@/api'
+import { streamSeriesKey } from '@/lib/utils'
 import { AlertCircle, Loader2 } from "lucide-react"
 
 import { useAdminRuntime } from '@/hooks/useAdminRuntime'
 import { isAvailNZBEnabled } from '@/lib/availnzb'
+
+// Stream speeds are namespaced so a stream name can never shadow the chart's own
+// `time` / `speed` / `conns` keys.
+function streamSeries(speeds) {
+  const series = {}
+  Object.entries(speeds || {}).forEach(([name, mbps]) => {
+    series[streamSeriesKey(name)] = mbps
+  })
+  return series
+}
 
 function App() {
   const [authChecked, setAuthChecked] = useState(false)
@@ -72,6 +83,7 @@ function App() {
     error,
     history,
     connHistory,
+    streamHistory,
     wsStatus,
     ws,
     version,
@@ -106,15 +118,18 @@ function App() {
     for (let i = 0; i < count; i++) {
       const secAgo = count - i - 1
       const label = secAgo === 0 ? 'now' : `-${secAgo}s`
+      // Per-stream speeds ride along under their stream name so the chart can pick
+      // out any subset of streams without a second data pass.
       points.push({
         time: history[i]?.time || label,
         speed: history[i]?.speed ?? 0,
         conns: connHistory[i]?.conns ?? 0,
+        ...streamSeries(streamHistory[i]?.speeds),
       })
     }
 
     return points
-  }, [history, connHistory])
+  }, [history, connHistory, streamHistory])
 
   useEffect(() => {
     const token = localStorage.getItem('auth_token')

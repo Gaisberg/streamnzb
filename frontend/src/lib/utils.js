@@ -14,6 +14,12 @@ export function formatBytes(bytes, decimals = 2) {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
 }
 
+// streamSeriesKey namespaces a stream name used as a recharts dataKey, so a
+// user-chosen name can never collide with the chart's own series names.
+export function streamSeriesKey(name) {
+    return `stream:${name}`
+}
+
 // selectClass styles a native <select> to match the Input primitive. Native
 // selects are used wherever a Radix popover would be more machinery than the
 // choice deserves; this keeps them looking like every other control.

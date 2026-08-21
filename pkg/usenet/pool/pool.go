@@ -93,6 +93,88 @@ type Pool struct {
 	// on, nil on the parent and on uncapped subsets.
 	leases  *leaseRegistry
 	limiter *leaseLimiter
+
+	// streamBytes is shared with every Subset; leaseKey names the stream this
+	// view fetches for, empty on the parent and on unattributed subsets.
+	streamBytes *streamByteRegistry
+	leaseKey    string
+}
+
+// streamByteRegistry tracks what each stream pulled off the providers, behind its
+// own lock. A parent Pool and every Subset derived from it share one registry, so
+// the counters must never be guarded by any individual Pool's mutex.
+type streamByteRegistry struct {
+	mu      sync.RWMutex
+	byLease map[string]*streamByteCounter
+}
+
+// streamByteCounter is one stream's byte total plus the meter that turns it into a
+// rate. It meters through nntp.SpeedMeter, the same type the provider pools use
+// for total speed, so a stream's line and the total carry identical smoothing and
+// share one timebase — otherwise the two disagree on every quiet or bursty tick.
+type streamByteCounter struct {
+	total atomic.Int64
+	speed nntp.SpeedMeter
+}
+
+func newStreamByteRegistry() *streamByteRegistry {
+	return &streamByteRegistry{byLease: make(map[string]*streamByteCounter)}
+}
+
+func (r *streamByteRegistry) counter(leaseKey string) *streamByteCounter {
+	r.mu.RLock()
+	counter := r.byLease[leaseKey]
+	r.mu.RUnlock()
+	if counter != nil {
+		return counter
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if counter = r.byLease[leaseKey]; counter == nil {
+		counter = &streamByteCounter{}
+		r.byLease[leaseKey] = counter
+	}
+	return counter
+}
+
+func (r *streamByteRegistry) add(leaseKey string, n int64) {
+	if r == nil || leaseKey == "" || n <= 0 {
+		return
+	}
+	r.counter(leaseKey).total.Add(n)
+}
+
+func (r *streamByteRegistry) snapshot() map[string]int64 {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]int64, len(r.byLease))
+	for leaseKey, counter := range r.byLease {
+		out[leaseKey] = counter.total.Load()
+	}
+	return out
+}
+
+// speeds samples every stream's meter. Stateful, like ClientPool.GetSpeed: each
+// call closes the window the next one opens, so only the stats tick may call it.
+func (r *streamByteRegistry) speeds() map[string]float64 {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	counters := make(map[string]*streamByteCounter, len(r.byLease))
+	for leaseKey, counter := range r.byLease {
+		counters[leaseKey] = counter
+	}
+	r.mu.RUnlock()
+
+	out := make(map[string]float64, len(counters))
+	for leaseKey, counter := range counters {
+		out[leaseKey] = counter.speed.Rate(counter.total.Load())
+	}
+	return out
 }
 
 const (
@@ -445,7 +527,37 @@ func NewPool(cfg *Config) (*Pool, error) {
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
 		leases:               newLeaseRegistry(),
+		streamBytes:          newStreamByteRegistry(),
 	}, nil
+}
+
+// recordStreamBytes attributes n wire bytes to the stream this view fetches for.
+// Read-ahead lands here too: it is issued through the same lease-scoped subset as
+// the read that triggered it, so a stream is charged for what it prefetches.
+func (p *Pool) recordStreamBytes(n int64) {
+	if p == nil {
+		return
+	}
+	p.streamBytes.add(p.leaseKey, n)
+}
+
+// streamByteTotals totals the wire bytes pulled per stream since the pool was
+// built. Unexported: the rate is what leaves the package; this is what the
+// attribution tests assert on.
+func (p *Pool) streamByteTotals() map[string]int64 {
+	if p == nil {
+		return nil
+	}
+	return p.streamBytes.snapshot()
+}
+
+// StreamSpeeds reports each stream's current rate in Mbps, metered exactly as
+// provider speed is. Sampling advances the meters, so call it once per tick.
+func (p *Pool) StreamSpeeds() map[string]float64 {
+	if p == nil {
+		return nil
+	}
+	return p.streamBytes.speeds()
 }
 
 func (p *Pool) recordArticleResult(providerID string, available bool) {
@@ -695,6 +807,8 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			frame, err := decode.DecodeToBytes(cr)
 			// Close ensures EndResponse is called even if decode stopped before EOF.
 			r.Close()
+			// Charged whether or not the decode succeeded: the bytes crossed the wire.
+			p.recordStreamBytes(cr.n)
 			if err != nil {
 				// A failed decode leaves unread body bytes on the wire; the
 				// connection is desynced and must not go back to the pool.
@@ -847,6 +961,8 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			frame, err := decode.DecodeToBytes(cr)
 			// Close ensures EndResponse is called even if decode stopped before EOF.
 			r.Close()
+			// Charged whether or not the decode succeeded: the bytes crossed the wire.
+			p.recordStreamBytes(cr.n)
 			if err != nil {
 				discard()
 				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
@@ -1340,6 +1456,7 @@ func (p *Pool) SubsetForLease(leaseKey string, providerIDs []string, limits map[
 		return nil
 	}
 	subset.limiter = p.leases.limiter(leaseKey, limits)
+	subset.leaseKey = strings.TrimSpace(leaseKey)
 	return subset
 }
 
@@ -1387,6 +1504,8 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		consecutive430s:      make(map[string]int),
 		consecutiveSuccesses: make(map[string]int),
 		leases:               p.leases,
+		streamBytes:          p.streamBytes,
+		leaseKey:             p.leaseKey,
 	}
 }
 

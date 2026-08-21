@@ -69,7 +69,7 @@ func TestGetSpeed_ResetsOnLongDurationGap(t *testing.T) {
 	pool.TrackRead(50 * 1024 * 1024)
 
 	// Simulate long duration gap (last check was 10 minutes ago)
-	pool.lastCheck = time.Now().Add(-10 * time.Minute)
+	pool.speed.lastCheck = time.Now().Add(-10 * time.Minute)
 
 	speed := pool.GetSpeed()
 	if speed != 0 {

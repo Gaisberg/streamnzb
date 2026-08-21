@@ -43,8 +43,14 @@ type Server struct {
 	tmdbAPIKey     string
 	tvdbAPIKey     string
 
-	clients         map[*Client]bool
-	clientsMu       sync.Mutex
+	clients   map[*Client]bool
+	clientsMu sync.Mutex
+	// latestStats is the most recent snapshot the stats collector broadcast.
+	// Connecting clients are handed this rather than collecting their own: the
+	// speed meters are stateful, so an extra collection would steal part of the
+	// window from the tick and leave the numbers in it disagreeing.
+	latestStats     json.RawMessage
+	latestStatsMu   sync.RWMutex
 	logCh           chan string
 	attemptLister   *persistence.StateManager
 	addonRebind     func(int) error
@@ -98,36 +104,62 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 
 	logger.SetBroadcast(s.logCh)
 	go s.broadcastLogs()
+	go s.collectStatsLoop()
 
 	return s
 }
 
+// collectStatsLoop samples every meter once per second and hands the same
+// snapshot to every client. Provider speed and per-stream speed are stateful
+// meters — each sample closes the window the next one opens — so they must be
+// read from one place, or clients see numbers measured over different slices of
+// time that cannot be reconciled against each other.
+func (s *Server) collectStatsLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		s.publishStats()
+		<-ticker.C
+	}
+}
+
+func (s *Server) publishStats() {
+	payload, err := json.Marshal(s.collectStats())
+	if err != nil {
+		logger.Error("Failed to encode stats", "err", err)
+		return
+	}
+	s.latestStatsMu.Lock()
+	s.latestStats = payload
+	s.latestStatsMu.Unlock()
+	s.broadcast(WSMessage{Type: "stats", Payload: payload})
+}
+
+// snapshotStats returns the last published snapshot, nil before the first tick.
+func (s *Server) snapshotStats() json.RawMessage {
+	s.latestStatsMu.RLock()
+	defer s.latestStatsMu.RUnlock()
+	return s.latestStats
+}
+
+// broadcast queues msg to every connected client, dropping it for any client
+// whose buffer is full rather than blocking the sender.
+func (s *Server) broadcast(msg WSMessage) {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	for client := range s.clients {
+		trySendWS(client, msg)
+	}
+}
+
 func (s *Server) broadcastLogs() {
 	for msgStr := range s.logCh {
-		msg := WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))}
-
-		s.clientsMu.Lock()
-		for client := range s.clients {
-			select {
-			case client.send <- msg:
-			default:
-
-			}
-		}
-		s.clientsMu.Unlock()
+		s.broadcast(WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))})
 	}
 }
 
 func (s *Server) BroadcastNZBAttemptsUpdate() {
-	msg := WSMessage{Type: "nzb_attempts_updated", Payload: json.RawMessage("null")}
-	s.clientsMu.Lock()
-	defer s.clientsMu.Unlock()
-	for client := range s.clients {
-		select {
-		case client.send <- msg:
-		default:
-		}
-	}
+	s.broadcast(WSMessage{Type: "nzb_attempts_updated", Payload: json.RawMessage("null")})
 }
 
 func (s *Server) AddClient(client *Client) {
