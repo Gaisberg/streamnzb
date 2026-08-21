@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.5.0](https://github.com/Gaisberg/streamnzb/compare/v5.4.0...v5.5.0) (2026-08-21)
+
+
+### Features
+
+* **filters:** replace the profile editor with quality presets and rules ([ca412d3](https://github.com/Gaisberg/streamnzb/commit/ca412d39e22c03e4a559cb0010acd727c20b0a8c))
+* **settings:** show why an enabled NNTP proxy is not listening ([a913ac3](https://github.com/Gaisberg/streamnzb/commit/a913ac3bde0aeeebc6de67644259dfb8b8a7eae7))
+
+
+### Bug Fixes
+
+* **nntp:** default fresh installs to port 1119 with the proxy off ([a913ac3](https://github.com/Gaisberg/streamnzb/commit/a913ac3bde0aeeebc6de67644259dfb8b8a7eae7))
+* **nntp:** keep serving when the proxy port cannot be bound ([a913ac3](https://github.com/Gaisberg/streamnzb/commit/a913ac3bde0aeeebc6de67644259dfb8b8a7eae7)), closes [#192](https://github.com/Gaisberg/streamnzb/issues/192)
+* **settings:** drop the dead global skip-unaired-episodes knob ([14e2574](https://github.com/Gaisberg/streamnzb/commit/14e257493c9880ccaeade5a764826200f3ccb69d))
+
+
+### Reverts
+
+* **metadata:** drop TVDB subscriber PIN support ([3219d81](https://github.com/Gaisberg/streamnzb/commit/3219d81b68ba1b715255f8839d573b22b4cf190e))
+
 ## [5.4.0](https://github.com/Gaisberg/streamnzb/compare/v5.3.0...v5.4.0) (2026-08-20)
 
 
