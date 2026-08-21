@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.6.0](https://github.com/Gaisberg/streamnzb/compare/v5.5.0...v5.6.0) (2026-08-21)
+
+
+### Features
+
+* **dashboard:** chart per-stream network activity ([1fcf3a0](https://github.com/Gaisberg/streamnzb/commit/1fcf3a07e16c7df968ae8ddd924d7d9e36dcd679))
+
+
+### Bug Fixes
+
+* **indexer:** stop offering releases from indexers that cannot grab them ([525f810](https://github.com/Gaisberg/streamnzb/commit/525f810eeb87a8689f67d463735390cfea3ca753))
+* **stremio:** gate unaired episodes on the air date, not TVMaze's noon placeholder ([066c8b8](https://github.com/Gaisberg/streamnzb/commit/066c8b88030277585ff7b42120a935bec8e40198))
+
 ## [5.5.0](https://github.com/Gaisberg/streamnzb/compare/v5.4.0...v5.5.0) (2026-08-21)
 
 
