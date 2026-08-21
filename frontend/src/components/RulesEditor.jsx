@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { NumberField, ScoreInput, SettingBlock, SettingGroup } from "@/components/ui/setting"
 import { ConfidenceChip } from "@/components/ConfidenceChip"
-import { Check, ChevronDown, Plus, SkipForward, Trash2, TriangleAlert } from "lucide-react"
+import { Check, ChevronDown, Copy, Plus, SkipForward, Trash2, TriangleAlert } from "lucide-react"
 import { RULE_ACTIONS, RULE_ATTRIBUTES, RULE_PRESETS, RULE_SCOPES, formatScore } from "@/lib/profiles"
 import { cn, selectClass } from "@/lib/utils"
 
@@ -27,6 +27,10 @@ function tierOf(when = "") {
 const SKIP_NOTE = {
   measured: "Only judges releases that have been probed — library items. Everything else passes untouched.",
   community: "Only judges releases AvailNZB has an opinion about. Everything else passes untouched.",
+  // Not a fail-open caveat like the two above: this one runs on every real
+  // result. It is the preview that cannot answer it, and saying so is the
+  // difference between "my rule is broken" and "my rule is untestable here".
+  reported: "Reads size, age or grabs, which come from the NZB. Runs on every real result, but the preview below cannot judge it from a release name alone.",
 }
 
 // AttributeReference is the rules counterpart to the formatter's field list:
@@ -116,7 +120,7 @@ function RuleStat({ stat, sampleCount, action, count }) {
     return (
       <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
         <SkipForward className="h-3 w-3" />
-        not judged on any sample
+        {action === "limit" ? "not judged here" : "cannot be judged here"}
       </span>
     )
   }
@@ -155,7 +159,7 @@ function RuleStat({ stat, sampleCount, action, count }) {
   )
 }
 
-function RuleCard({ rule, stat, sampleCount, onChange, onRemove, registerInput }) {
+function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, registerInput }) {
   // Three actions, not two. Reading this as a boolean is what made a limit
   // preset arrive as a score rule worth nothing.
   const action = rule.action === "reject" || rule.action === "limit" ? rule.action : "score"
@@ -232,9 +236,19 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, registerInput }
         )}
         <button
           type="button"
+          onClick={onDuplicate}
+          className="text-muted-foreground/70 transition-colors hover:text-foreground"
+          aria-label={`Duplicate ${rule.name || "rule"}`}
+          title="Duplicate"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
           onClick={onRemove}
           className="text-muted-foreground/70 transition-colors hover:text-destructive"
           aria-label={`Delete ${rule.name || "rule"}`}
+          title="Delete"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -309,6 +323,23 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
     focusedRef.current = values.length
   }
 
+  // duplicate drops the copy directly under its original rather than at the
+  // end. Tiers are built in runs — T1, T2, T3 — and the same rule is often
+  // copied between anime shows and anime films with only the scope changed, so
+  // the copy belongs next to what it was copied from.
+  const duplicate = (index) => {
+    const source = values[index]
+    if (!source) return
+    const taken = new Set(values.map((r) => (r.name || "").toLowerCase()))
+    const base = (source.name || "Rule").replace(/ copy( \d+)?$/i, "")
+    let name = `${base} copy`
+    for (let n = 2; taken.has(name.toLowerCase()); n += 1) name = `${base} copy ${n}`
+    const next = [...values]
+    next.splice(index + 1, 0, { ...source, name })
+    onChange(next)
+    focusedRef.current = index + 1
+  }
+
   const availablePresets = RULE_PRESETS.filter((preset) => !values.some((v) => v.name === preset.name))
 
   return (
@@ -344,6 +375,7 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
                 sampleCount={sampleCount}
                 onChange={(next) => onChange(values.map((r, i) => (i === index ? next : r)))}
                 onRemove={() => onChange(values.filter((_, i) => i !== index))}
+                onDuplicate={() => duplicate(index)}
                 registerInput={(el) => {
                   if (el) {
                     inputsRef.current[index] = el

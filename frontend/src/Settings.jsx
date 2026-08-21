@@ -10,7 +10,6 @@ import { cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import { useSettingsState } from '@/hooks/useSettingsState'
 import { normalizeAvailNZBMode } from '@/lib/availnzb'
 import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from '@/lib/config'
@@ -72,7 +71,6 @@ function Settings({
   const [liveStreamsByName, setLiveStreamsByName] = useState(initialConfig?.streams || {})
   const [globalIndexerProxyURL, setGlobalIndexerProxyURL] = useState('')
   const [savingGlobalIndexerProxy, setSavingGlobalIndexerProxy] = useState(false)
-  const [savingUnairedGate, setSavingUnairedGate] = useState(false)
 
   const form = useForm({
     defaultValues: {
@@ -262,23 +260,6 @@ function Settings({
     setError,
   })
 
-  // The gate is a plain switch, so it saves on change rather than on blur.
-  // Nothing local mirrors it: the snapshot is the value the UI renders, and a
-  // failed save leaves it untouched instead of needing to be rolled back.
-  const unairedGateEnabled = configSnapshot?.unaired_search_gate !== false
-  const handleUnairedGateChange = async (value) => {
-    if (savingUnairedGate) return
-    setSavingUnairedGate(true)
-    try {
-      await submitSettings({ unaired_search_gate: value }, 'indexers')
-      showFooterStatus({ type: 'success', message: 'Unaired episode gate saved. Search cache cleared.' })
-    } catch (error) {
-      showFooterStatus({ type: 'error', message: error?.message || 'Failed to save the unaired episode gate.' })
-    } finally {
-      setSavingUnairedGate(false)
-    }
-  }
-
   const handleGlobalIndexerProxyBlur = async () => {
     const saved = configSnapshot?.indexer_proxy_url || ''
     if (globalIndexerProxyURL === saved || savingGlobalIndexerProxy) return
@@ -379,37 +360,6 @@ function Settings({
                     onBlur={handleGlobalIndexerProxyBlur}
                     placeholder="http://proxy:8888"
                     autoComplete="off"
-                  />
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                    <CardTitle>Search Behaviour</CardTitle>
-                    <CardDescription>Rules applied before any indexer is asked. Changes save automatically.</CardDescription>
-                  </div>
-                  {savingUnairedGate && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground shrink-0" />}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <Label htmlFor="unaired-search-gate" className="text-sm">Skip unaired episodes</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Answer with no results instead of searching for an episode that has not aired yet.
-                      Uses the exact air time where a source knows one, and the whole of the air date where
-                      it only knows a date. Only a source that positively states an air time gates &mdash; a
-                      lookup failure always searches. Turn it off if a show&apos;s air dates run ahead of
-                      when its releases actually land.
-                    </p>
-                  </div>
-                  <Switch
-                    id="unaired-search-gate"
-                    checked={unairedGateEnabled}
-                    onCheckedChange={handleUnairedGateChange}
-                    disabled={savingUnairedGate}
                   />
                 </div>
               </CardContent>

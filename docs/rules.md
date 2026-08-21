@@ -38,8 +38,12 @@ releaseName matches "(?i)\bIMAX\b"                 → +2000
 | **Keep best** | For limit rules: how many survive. The best that many by final score are kept, the rest dropped. |
 | **Enabled** | Turn a rule off without deleting it. A disabled rule is not compiled, so a half-written one never blocks a save. |
 
-Every field is editable in place. A condition that will not compile rejects the
-save and names the rule, the same way a broken regex always has.
+Every field is editable in place, and **Duplicate** drops a copy directly below
+the original — tiers get built in runs (T1, T2, T3), and the same rule is often
+copied between anime shows and anime films with only the scope changed.
+
+A condition that will not compile rejects the save and names the rule, the same
+way a broken regex always has.
 
 ## Limits
 
@@ -200,6 +204,18 @@ affected rules and the preview lists what it skipped and why.
 
 Practical consequence: a probe rule can only ever *reward* or *remove* library
 releases. It cannot be used to demote everything else by omission.
+
+### The preview cannot judge indexer data
+
+`sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`,
+`querySource` and `library` come from the NZB. Every real result has one; a
+release name pasted into the preview does not. Rules reading them run normally
+in a live search and are reported as **cannot be judged here** in the preview,
+rather than being evaluated against zeros — which would show a `grabs < 5` rule
+rejecting everything when against real results it will do nothing of the sort.
+
+This is not the fail-open contract above. Those rules always run in production;
+it is only the preview that has nothing to answer them with.
 
 ## Syntax
 

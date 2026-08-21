@@ -114,6 +114,13 @@ type Env struct {
 
 	Probed ProbedEnv `expr:"probed"`
 
+	// HasIndexerData reports that a real NZB stands behind this release, so
+	// its size, age and grab count mean something. It is false only in the
+	// preview, where a release name is all there is. Not exposed to
+	// conditions: a rule should say what it wants, and the engine decides
+	// whether it can be answered.
+	HasIndexerData bool `expr:"-"`
+
 	// ---- request context ----
 
 	Library bool   `expr:"library"`
@@ -235,6 +242,9 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 
 	if rel := cand.Release; rel != nil {
 		env.ReleaseName = rel.Title
+		// A release the indexer actually returned has at least a size. A
+		// preview sample is a bare title and has none of the three.
+		env.HasIndexerData = rel.Size > 0 || rel.Grabs > 0 || rel.PubDate != "" || rel.IsLibraryResult()
 		env.SizeGB = float64(rel.Size) / 1e9
 		if per, ok := parser.EffectiveEpisodeSize(rel.Size, ctx.Episodic, parsed); ok {
 			env.SizePerEpisodeGB = float64(per) / 1e9

@@ -24,11 +24,12 @@ type Rule struct {
 	Count int
 
 	program *vm.Program
-	// needsProbe and needsAvail record that the condition reads a tier the
-	// release may not have. Such a rule is skipped rather than evaluated
-	// against zero values — see Evaluate.
-	needsProbe bool
-	needsAvail bool
+	// needsProbe, needsAvail and needsIndexer record that the condition reads
+	// a tier the release may not have. Such a rule is skipped rather than
+	// evaluated against zero values — see Evaluate.
+	needsProbe   bool
+	needsAvail   bool
+	needsIndexer bool
 }
 
 // Set is a profile's rules, compiled once and reused for every request.
@@ -86,19 +87,20 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
-		needsProbe, needsAvail, err := tiersUsed(when)
+		tiers, err := tiersUsed(when)
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
 		set.rules = append(set.rules, Rule{
-			Name:       name,
-			Scope:      rc.EffectiveScope(),
-			Action:     rc.EffectiveAction(),
-			Points:     rc.Points,
-			Count:      rc.Count,
-			program:    program,
-			needsProbe: needsProbe,
-			needsAvail: needsAvail,
+			Name:         name,
+			Scope:        rc.EffectiveScope(),
+			Action:       rc.EffectiveAction(),
+			Points:       rc.Points,
+			Count:        rc.Count,
+			program:      program,
+			needsProbe:   tiers.probe,
+			needsAvail:   tiers.avail,
+			needsIndexer: tiers.indexer,
 		})
 	}
 	if len(set.rules) == 0 {
@@ -162,6 +164,15 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 			out.Skipped = append(out.Skipped, r.Name+": availability is unknown")
 			continue
 		}
+		// Size, age and grab count come from the NZB, which a bare release
+		// name does not have. In a real search every release carries one, so
+		// this only ever fires in the preview — where evaluating against zeros
+		// would show a rule doing something it will not do live, or nothing
+		// when it will.
+		if r.needsIndexer && !env.HasIndexerData {
+			out.Skipped = append(out.Skipped, r.Name+": needs size, age or grabs, which a release name does not carry")
+			continue
+		}
 		result, err := expr.Run(r.program, env)
 		if err != nil {
 			// A compiled, type-checked rule that fails at run time has hit
@@ -186,23 +197,37 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 	return out
 }
 
+// indexerAttributes are the attributes that come from the NZB rather than from
+// the release name. A condition reading any of them cannot be judged without
+// one.
+var indexerAttributes = map[string]bool{
+	"sizeGB": true, "sizePerEpisodeGB": true, "ageDays": true,
+	"grabs": true, "passworded": true, "indexer": true,
+	"querySource": true, "library": true,
+}
+
+type tierUse struct {
+	probe   bool
+	avail   bool
+	indexer bool
+}
+
 // tiersUsed reports which optional attribute tiers a condition reads. It walks
 // the parsed expression rather than searching the text so that a pattern
 // mentioning "probed." inside a string literal is not mistaken for an
 // attribute reference.
-func tiersUsed(source string) (probe, avail bool, err error) {
+func tiersUsed(source string) (tierUse, error) {
 	tree, err := exprparser.Parse(source)
 	if err != nil {
-		return false, false, err
+		return tierUse{}, err
 	}
 	v := &identVisitor{}
 	ast.Walk(&tree.Node, v)
-	return v.probe, v.avail, nil
+	return v.use, nil
 }
 
 type identVisitor struct {
-	probe bool
-	avail bool
+	use tierUse
 }
 
 func (v *identVisitor) Visit(node *ast.Node) {
@@ -210,10 +235,12 @@ func (v *identVisitor) Visit(node *ast.Node) {
 	if !ok {
 		return
 	}
-	switch ident.Value {
-	case "probed":
-		v.probe = true
-	case "avail":
-		v.avail = true
+	switch {
+	case ident.Value == "probed":
+		v.use.probe = true
+	case ident.Value == "avail":
+		v.use.avail = true
+	case indexerAttributes[ident.Value]:
+		v.use.indexer = true
 	}
 }

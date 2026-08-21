@@ -314,14 +314,79 @@ func TestMissingDateIsNotAgeZero(t *testing.T) {
 	set := compile(t, config.RuleConfig{
 		Name: "Fresh", When: `ageDays >= 0 and ageDays < 7`, Points: 100,
 	})
-	if got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", nil), "movie"); got.Points != 0 {
+	// The release has a size, so it is a real indexer result — just one whose
+	// date the indexer never reported. Without the size the rule would be
+	// skipped for lack of any NZB at all, which is a different thing.
+	dateless := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Size = 8e9
+	})
+	if got := set.Evaluate(dateless, "movie"); got.Points != 0 {
 		t.Errorf("a dateless release earned %d freshness points", got.Points)
 	}
 
 	fresh := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Size = 8e9
 		c.Release.PubDate = time.Now().Add(-24 * time.Hour).Format(time.RFC1123Z)
 	})
 	if got := set.Evaluate(fresh, "movie"); got.Points != 100 {
 		t.Errorf("a day-old release earned %d, want 100", got.Points)
+	}
+}
+
+// Size, age and grab count come from the NZB. A bare release name has none, so
+// a rule reading them is skipped and reported rather than judged against zeros
+// — otherwise the preview would show a grabs rule rejecting everything when it
+// will do nothing of the sort against real results.
+func TestIndexerRulesSkipWithoutAnNZB(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Unpopular", When: "grabs < 5", Action: config.RuleActionReject},
+		config.RuleConfig{Name: "Oversized", When: "sizeGB > 30", Action: config.RuleActionReject},
+		config.RuleConfig{Name: "From my indexer", When: `indexer == "nzbgeek"`, Points: 100},
+	)
+
+	bare := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", nil), "movie")
+	if len(bare.Rejections) > 0 {
+		t.Errorf("a bare release name was rejected on indexer data it does not have: %v", bare.Rejections)
+	}
+	if len(bare.Skipped) != 3 {
+		t.Errorf("Skipped = %v, want all three reported", bare.Skipped)
+	}
+	for _, note := range bare.Skipped {
+		if !strings.Contains(note, "size, age or grabs") {
+			t.Errorf("skip reason %q does not say what is missing", note)
+		}
+	}
+}
+
+// A real indexer result carries an NZB, so the same rules judge it normally.
+// This is the half that matters: the skip must never reach a live search.
+func TestIndexerRulesRunOnRealResults(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name: "Unpopular", When: "grabs < 5", Action: config.RuleActionReject,
+	})
+
+	real := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Size = 8e9
+		c.Release.Grabs = 2
+	})
+	got := set.Evaluate(real, "movie")
+	if len(got.Skipped) > 0 {
+		t.Errorf("a real indexer result skipped an indexer rule: %v", got.Skipped)
+	}
+	if len(got.Rejections) == 0 {
+		t.Error("a release with 2 grabs was not rejected by a grabs rule")
+	}
+}
+
+// A library release counts as having indexer data even with nothing else set:
+// it came from somewhere and its provenance is exactly what the rule asks about.
+func TestLibraryReleaseCountsAsIndexerData(t *testing.T) {
+	set := compile(t, config.RuleConfig{Name: "Cached", When: "library", Points: 500})
+
+	env := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.IsLibrary = true
+	})
+	if got := set.Evaluate(env, "movie"); got.Points != 500 {
+		t.Errorf("Points = %d, want 500 — a library release should be judged", got.Points)
 	}
 }
