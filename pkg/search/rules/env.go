@@ -192,6 +192,12 @@ type Context struct {
 	// Episodic marks a request for episodic content, which is what decides
 	// whether a size is judged whole or per episode.
 	Episodic bool
+	// IndexerDataKnown vouches for the release's size, age and grab count even
+	// when they are zero. A live search never needs it — an indexer result
+	// always has a size — but the preview builds its releases itself, and a
+	// simulated release with nothing grabbed yet is still a release whose grab
+	// count is known to be nought.
+	IndexerDataKnown bool
 }
 
 // BuildEnv assembles the environment for one release. parsed may be nil when
@@ -244,7 +250,8 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 		env.ReleaseName = rel.Title
 		// A release the indexer actually returned has at least a size. A
 		// preview sample is a bare title and has none of the three.
-		env.HasIndexerData = rel.Size > 0 || rel.Grabs > 0 || rel.PubDate != "" || rel.IsLibraryResult()
+		env.HasIndexerData = ctx.IndexerDataKnown ||
+			rel.Size > 0 || rel.Grabs > 0 || rel.PubDate != "" || rel.IsLibraryResult()
 		env.SizeGB = float64(rel.Size) / 1e9
 		if per, ok := parser.EffectiveEpisodeSize(rel.Size, ctx.Episodic, parsed); ok {
 			env.SizePerEpisodeGB = float64(per) / 1e9

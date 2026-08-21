@@ -165,10 +165,12 @@ It is also what the rules list measures against: the per-rule counts there
 (*pays out on 2 of 4*) come from this same evaluation, so editing the release
 names changes both.
 
-A release name carries no file measurements and no availability record, so rules
-reading `probed.*` or `avail.*` are reported under **Not judged here** rather
-than looking broken — which is exactly what happens to them against any release
-that has never been probed or reported.
+A release name carries no size, no file measurements and no availability
+record, so rules reading those are reported as **cannot be judged here** rather
+than answered against nothing. **Pretend the release also has** supplies them —
+size, age and grabs; a probed file; an availability record — in three opt-in
+groups, so those rules become testable too. See
+[Rules](rules.md#testing-rules-the-preview-cannot-answer-on-its-own).
 
 ## Sharing profiles
 

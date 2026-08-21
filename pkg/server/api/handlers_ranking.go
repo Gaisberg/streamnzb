@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dreulavelle/jhin/rank"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/ranking"
+	"streamnzb/pkg/search/triage"
 )
 
 const maxExplainTitles = 100
@@ -26,6 +29,78 @@ type explainRequest struct {
 	// tuned per content kind can be previewed as each of them. Empty exercises
 	// the rules that apply everywhere.
 	Kind string `json:"kind,omitempty"`
+	// Sample is what to pretend about the releases being judged, for the parts
+	// a release name cannot carry. Absent leaves those rules unjudged.
+	Sample *explainSample `json:"sample,omitempty"`
+}
+
+// explainSample mirrors the preview's simulated-release controls. Each group
+// is opt-in: what is not supplied stays unknown, and rules that read it are
+// reported as unjudgeable rather than answered against a zero.
+type explainSample struct {
+	IndexerData bool    `json:"indexer_data,omitempty"`
+	SizeGB      float64 `json:"size_gb,omitempty"`
+	AgeDays     int     `json:"age_days,omitempty"`
+	Grabs       int     `json:"grabs,omitempty"`
+	Passworded  bool    `json:"passworded,omitempty"`
+	Indexer     string  `json:"indexer,omitempty"`
+	Library     bool    `json:"library,omitempty"`
+
+	Probed *explainProbe `json:"probed,omitempty"`
+
+	AvailStatus       string `json:"avail_status,omitempty"`
+	AvailOnMyBackbone bool   `json:"avail_on_my_backbone,omitempty"`
+	AvailCheckedDays  int    `json:"avail_checked_days,omitempty"`
+}
+
+type explainProbe struct {
+	Height      int    `json:"height,omitempty"`
+	VideoCodec  string `json:"video_codec,omitempty"`
+	AudioCodec  string `json:"audio_codec,omitempty"`
+	BitDepth    int    `json:"bit_depth,omitempty"`
+	HDR         string `json:"hdr,omitempty"`
+	DolbyVision bool   `json:"dolby_vision,omitempty"`
+}
+
+// toSample turns the request's pretend-release into what ranking evaluates
+// against.
+func (e *explainSample) toSample() *ranking.Sample {
+	if e == nil {
+		return nil
+	}
+	out := &ranking.Sample{
+		IndexerData: e.IndexerData,
+		SizeBytes:   int64(e.SizeGB * 1e9),
+		AgeDays:     e.AgeDays,
+		Grabs:       e.Grabs,
+		Passworded:  e.Passworded,
+		Indexer:     e.Indexer,
+		Library:     e.Library,
+	}
+	if p := e.Probed; p != nil {
+		out.Probed = &release.MediaCaps{
+			Height:      p.Height,
+			Width:       p.Height * 16 / 9,
+			VideoCodec:  p.VideoCodec,
+			AudioCodec:  p.AudioCodec,
+			BitDepth:    p.BitDepth,
+			HDR:         p.HDR,
+			DolbyVision: p.DolbyVision,
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(e.AvailStatus)) {
+	case "available":
+		out.Avail.Status = triage.AvailAvailable
+	case "unavailable":
+		out.Avail.Status = triage.AvailUnavailable
+	default:
+		out.Avail.Status = triage.AvailUnknown
+	}
+	out.Avail.OnMyBackbone = e.AvailOnMyBackbone
+	if out.Avail.Known() && e.AvailCheckedDays >= 0 {
+		out.Avail.CheckedAt = time.Now().AddDate(0, 0, -e.AvailCheckedDays)
+	}
+	return out
 }
 
 type explainResponse struct {
@@ -80,6 +155,7 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		Kind:    kind,
 		IsAnime: kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
 		Title:   strings.TrimSpace(req.TargetTitle),
+		Sample:  req.Sample.toSample(),
 	}
 	results := profile.Explain(titles, explainReq, opts)
 

@@ -205,17 +205,35 @@ affected rules and the preview lists what it skipped and why.
 Practical consequence: a probe rule can only ever *reward* or *remove* library
 releases. It cannot be used to demote everything else by omission.
 
-### The preview cannot judge indexer data
+### Testing rules the preview cannot answer on its own
 
 `sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`,
 `querySource` and `library` come from the NZB. Every real result has one; a
-release name pasted into the preview does not. Rules reading them run normally
-in a live search and are reported as **cannot be judged here** in the preview,
-rather than being evaluated against zeros — which would show a `grabs < 5` rule
-rejecting everything when against real results it will do nothing of the sort.
+release name pasted into the preview does not — and neither has it been probed
+or reported to AvailNZB.
 
-This is not the fail-open contract above. Those rules always run in production;
-it is only the preview that has nothing to answer them with.
+Rather than judge those rules against zeros — which would show a `grabs < 5`
+rule rejecting everything when against real results it will do nothing of the
+sort — the preview reports them as **cannot be judged here** until you say what
+to assume. **Pretend the release also has** in the preview supplies exactly
+that, in three opt-in groups matching the three tiers:
+
+| Group | Answers rules about |
+|---|---|
+| From the indexer | `sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`, `library` |
+| From ffprobe | every `probed.*` attribute |
+| From AvailNZB | every `avail.*` attribute |
+
+Each group is off by default, because pretending by default would be the same
+trap in a different coat. Turn one on and its rules are answered with the values
+you set; leave it off and they stay reported as unjudgeable.
+
+The values apply to every release name in the list, so to compare a large
+release against a small one, change the size and read the list again.
+
+Note this is a preview limitation, not the fail-open contract above. Indexer
+rules always run in a live search — it is only a pasted name that has nothing
+to answer them with.
 
 ## Syntax
 

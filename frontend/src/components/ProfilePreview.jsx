@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { SettingBlock, SettingGroup, SettingRow } from "@/components/ui/setting"
+import { SampleRelease } from "@/components/SampleRelease"
 import { ChevronDown, FlaskConical, Loader2, SkipForward } from "lucide-react"
 import { ATTRIBUTE_LABELS, RULE_SCOPES, formatScore } from "@/lib/profiles"
 import { cn, selectClass } from "@/lib/utils"
@@ -159,8 +160,11 @@ export function ProfilePreview({
   onKindChange,
   targetTitle,
   onTargetTitleChange,
+  sample,
+  onSampleChange,
 }) {
   const [expanded, setExpanded] = useState({})
+  const [sampleOpen, setSampleOpen] = useState(false)
   const { results, loading, error } = preview
 
   // Offered first, then by score, matching what the addon returns.
@@ -182,6 +186,7 @@ export function ProfilePreview({
             </CardTitle>
             <CardDescription>
               What this profile would do to these releases. Updates as you edit, unsaved changes included.
+              Rules about size, grabs, the file itself or availability need something to judge — supply it below.
             </CardDescription>
           </div>
           <div className="flex h-6 items-center text-xs text-muted-foreground">
@@ -236,6 +241,13 @@ export function ProfilePreview({
           </SettingRow>
 
         </SettingGroup>
+
+        <SampleRelease
+          value={sample}
+          onChange={onSampleChange}
+          open={sampleOpen}
+          onOpenChange={setSampleOpen}
+        />
 
         {error && (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

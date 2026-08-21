@@ -18,7 +18,7 @@ export const SAMPLE_TITLES = [
 // match counts, the bench reads it for the full breakdown. Two components
 // asking the same question separately would double the traffic and let them
 // disagree on screen, which is worse than either.
-export function useProfilePreview(profile, { titles, kind, targetTitle } = {}) {
+export function useProfilePreview(profile, { titles, kind, targetTitle, sample } = {}) {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
@@ -27,6 +27,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle } = {}) {
   // serialization is what keeps the effect from firing on identity alone.
   const profileKey = useMemo(() => JSON.stringify(profile ?? null), [profile])
   const titleKey = useMemo(() => (titles || []).join("\n"), [titles])
+  const sampleKey = useMemo(() => JSON.stringify(sample ?? null), [sample])
   const requestRef = useRef(0)
 
   useEffect(() => {
@@ -48,6 +49,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle } = {}) {
           profile,
           kind: kind && kind !== "all" ? kind : undefined,
           target_title: targetTitle?.trim() || undefined,
+          sample: sample || undefined,
         }),
       })
         .then((data) => {
@@ -69,7 +71,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle } = {}) {
     return () => window.clearTimeout(handle)
     // profileKey and titleKey stand in for the objects they serialize.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileKey, titleKey, kind, targetTitle])
+  }, [profileKey, titleKey, sampleKey, kind, targetTitle])
 
   // ruleStats counts, per rule name, how many sampled releases it paid out on
   // and how many it could not be judged against. It is what turns a condition

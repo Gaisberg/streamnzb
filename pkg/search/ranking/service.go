@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dreulavelle/jhin/rank"
 
@@ -216,6 +217,31 @@ type Request struct {
 	Season  int
 	Episode int
 	Title   string
+	// Sample stands in for the parts of a release a bare title cannot carry.
+	// It is set only by the preview: a live search has real releases and never
+	// needs to invent one.
+	Sample *Sample
+}
+
+// Sample is a made-up release, used to answer rules the preview otherwise
+// could not. Size, age and grabs come from the NZB; Probed from having opened
+// the file; Avail from the community database. None of it can be read off a
+// release name, so without this a rule about any of them is untestable.
+type Sample struct {
+	// IndexerData vouches for Size, AgeDays, Grabs, Passworded, Indexer and
+	// Library, even where those are zero.
+	IndexerData bool
+	SizeBytes   int64
+	AgeDays     int
+	Grabs       int
+	Passworded  bool
+	Indexer     string
+	Library     bool
+
+	// Probed, when set, is what ffprobe would have measured.
+	Probed *release.MediaCaps
+	// Avail is the availability record to answer avail.* with.
+	Avail triage.AvailState
 }
 
 // Apply runs every candidate through the profile's ranker, drops the ones it
@@ -319,12 +345,13 @@ func (p *Profile) applyRules(req Request, results []Result) {
 		return
 	}
 	ctx := rules.Context{
-		Kind:     req.Kind,
-		IsAnime:  req.IsAnime,
-		Season:   req.Season,
-		Episode:  req.Episode,
-		Title:    req.Title,
-		Episodic: req.Kind == KindSeries || req.Kind == KindAnimeShow,
+		Kind:             req.Kind,
+		IsAnime:          req.IsAnime,
+		Season:           req.Season,
+		Episode:          req.Episode,
+		Title:            req.Title,
+		Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
+		IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
 	}
 	for i := range results {
 		r := &results[i]
@@ -457,7 +484,7 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) [
 
 	candidates := make([]triage.Candidate, 0, len(titles))
 	for _, title := range titles {
-		candidates = append(candidates, triage.Candidate{Release: &release.Release{Title: title}})
+		candidates = append(candidates, req.sampleCandidate(title))
 	}
 
 	kept, rejected := p.ApplyWithRejected(req, candidates, opts)
@@ -471,6 +498,28 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) [
 		}
 	}
 	return out
+}
+
+// sampleCandidate builds the release the preview judges: the title, plus
+// whatever the caller chose to pretend about it. Each title gets its own
+// Release so nothing is shared between them.
+func (r Request) sampleCandidate(title string) triage.Candidate {
+	rel := &release.Release{Title: title}
+	cand := triage.Candidate{Release: rel}
+	if r.Sample == nil {
+		return cand
+	}
+	rel.Size = r.Sample.SizeBytes
+	rel.Grabs = r.Sample.Grabs
+	rel.Password = r.Sample.Passworded
+	rel.Indexer = r.Sample.Indexer
+	rel.IsLibrary = r.Sample.Library
+	if r.Sample.AgeDays > 0 {
+		rel.PubDate = time.Now().AddDate(0, 0, -r.Sample.AgeDays).Format(time.RFC1123Z)
+	}
+	cand.Verdict.Probed = r.Sample.Probed
+	cand.Verdict.Avail = r.Sample.Avail
+	return cand
 }
 
 // explainResult renders one judged release. Rule contributions are appended to
@@ -499,12 +548,13 @@ func (p *Profile) explainResult(r *Result, req Request) *Explanation {
 	}
 	if p.rules.Len() > 0 {
 		env := rules.BuildEnv(r.Candidate, r.Torrent.Data, rules.Context{
-			Kind:     req.Kind,
-			IsAnime:  req.IsAnime,
-			Season:   req.Season,
-			Episode:  req.Episode,
-			Title:    req.Title,
-			Episodic: req.Kind == KindSeries || req.Kind == KindAnimeShow,
+			Kind:             req.Kind,
+			IsAnime:          req.IsAnime,
+			Season:           req.Season,
+			Episode:          req.Episode,
+			Title:            req.Title,
+			Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
+			IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
 		})
 		out.SkippedRules = p.rules.Evaluate(env, req.Kind).Skipped
 	}

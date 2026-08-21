@@ -5,6 +5,7 @@ import { Check } from "lucide-react"
 import { RulesEditor } from "@/components/RulesEditor"
 import { ProfilePreview } from "@/components/ProfilePreview"
 import { PresetArt } from "@/components/PresetArt"
+import { EMPTY_SAMPLE } from "@/lib/sample"
 import { DEFAULT_PRESET, PRESETS } from "@/lib/profiles"
 import { SAMPLE_TITLES, useProfilePreview } from "@/hooks/useProfilePreview"
 import { cn } from "@/lib/utils"
@@ -77,6 +78,7 @@ export function ProfileEditor({ profile, onChange }) {
   const [sampleInput, setSampleInput] = useState(SAMPLE_TITLES.join("\n"))
   const [previewKind, setPreviewKind] = useState("movie")
   const [targetTitle, setTargetTitle] = useState("")
+  const [sample, setSample] = useState(EMPTY_SAMPLE)
 
   // One preview request serves the rules tab's per-rule counts and the panel's
   // full breakdown, so the two can never disagree on screen. It lives here
@@ -89,6 +91,7 @@ export function ProfileEditor({ profile, onChange }) {
     titles: sampleTitles,
     kind: previewKind,
     targetTitle,
+    sample,
   })
 
   const ruleCount = (profile.rules || []).filter((r) => r && r.enabled !== false).length
@@ -144,6 +147,8 @@ export function ProfileEditor({ profile, onChange }) {
             onKindChange={setPreviewKind}
             targetTitle={targetTitle}
             onTargetTitleChange={setTargetTitle}
+            sample={sample}
+            onSampleChange={setSample}
           />
         </TabsContent>
       </Tabs>

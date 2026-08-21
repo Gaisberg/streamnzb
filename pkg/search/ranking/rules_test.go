@@ -293,3 +293,88 @@ func TestExplainReflectsLimitRules(t *testing.T) {
 		t.Errorf("%d capped, want 1", capped)
 	}
 }
+
+// The preview can be told what to pretend about a release, so a rule about
+// size, grabs or a probed file is testable instead of merely reported as
+// unjudgeable.
+func TestExplainJudgesAgainstASample(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Sampled",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{Name: "Unpopular", When: "grabs < 5", Action: config.RuleActionReject},
+			{Name: "Measured 10-bit", When: "probed.bitDepth >= 10", Points: 400},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "Movie 2020 2160p WEB-DL HEVC-GRP"
+
+	// With nothing supplied both rules are unjudgeable and neither fires.
+	bare := p.Explain([]string{title}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	if len(bare) != 1 {
+		t.Fatalf("got %d results, want 1", len(bare))
+	}
+	if !bare[0].Fetch {
+		t.Errorf("a bare title was rejected: %v", bare[0].Rejections)
+	}
+	if len(bare[0].SkippedRules) != 2 {
+		t.Errorf("SkippedRules = %v, want both reported", bare[0].SkippedRules)
+	}
+
+	// Supplying a grab count makes the grabs rule answerable, and it rejects.
+	sampled := p.Explain([]string{title}, ranking.Request{
+		Kind:   ranking.KindMovie,
+		Sample: &ranking.Sample{IndexerData: true, SizeBytes: 20e9, Grabs: 2},
+	}, rank.RankOptions{})
+	if sampled[0].Fetch {
+		t.Error("a release with 2 grabs was not rejected once grabs were supplied")
+	}
+
+	// A grab count above the bar leaves it alone, and a probed file answers
+	// the other rule.
+	good := p.Explain([]string{title}, ranking.Request{
+		Kind: ranking.KindMovie,
+		Sample: &ranking.Sample{
+			IndexerData: true, SizeBytes: 20e9, Grabs: 500,
+			Probed: &release.MediaCaps{Height: 2160, BitDepth: 10},
+		},
+	}, rank.RankOptions{})
+	if !good[0].Fetch {
+		t.Errorf("a healthy sampled release was rejected: %v", good[0].Rejections)
+	}
+	if len(good[0].SkippedRules) != 0 {
+		t.Errorf("SkippedRules = %v, want none once everything is supplied", good[0].SkippedRules)
+	}
+	var paid bool
+	for _, m := range good[0].Matched {
+		if m.Name == "Measured 10-bit" {
+			paid = true
+		}
+	}
+	if !paid {
+		t.Errorf("the probe rule did not pay out: %+v", good[0].Matched)
+	}
+}
+
+// A simulated release with nothing grabbed yet still has a known grab count of
+// zero — the flag says so, rather than the zero being read as "unknown".
+func TestSampleVouchesForZeroes(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Zeroes",
+		Preset: config.PresetUHD,
+		Rules:  []config.RuleConfig{{Name: "Unpopular", When: "grabs < 5", Action: config.RuleActionReject}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := p.Explain([]string{"Movie 2020 2160p WEB-DL HEVC-GRP"}, ranking.Request{
+		Kind:   ranking.KindMovie,
+		Sample: &ranking.Sample{IndexerData: true},
+	}, rank.RankOptions{})
+	if out[0].Fetch {
+		t.Error("a release vouched for with no grabs was not rejected")
+	}
+}
