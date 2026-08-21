@@ -38,6 +38,12 @@ media summary, present on library releases only. `.Duration` is the humanized
 runtime (`1h 52m`), filled only when the indexer reports one (e.g. Easynews) —
 newznab NZBs don't carry a runtime.
 
+`.Library` is true once the release's NZB is stored locally, and `.Indexer`
+then reads `StreamNZB Library - <original indexer>`. A release that was an
+indexer hit when the stream list was built flips to both the moment it plays
+through and is saved, including on a reload served from cache — from then on it
+replays from the stored NZB and spends no indexer download.
+
 ### Anime and content kind
 
 `.IsAnime` is the classification StreamNZB already made for this request —

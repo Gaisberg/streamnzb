@@ -102,3 +102,63 @@ func TestCheckThrottledIsInertWithoutAThrottle(t *testing.T) {
 		t.Fatalf("a fresh core must not be in cooldown, got %v", err)
 	}
 }
+
+func TestCheckSearchAllowedSkipsWhenDownloadBudgetSpent(t *testing.T) {
+	// One download left, no API limit: searching is still worthwhile.
+	c := NewClientCore("Treasuremaps", 0, 10, 0, nil)
+	now := time.Now()
+
+	if err := c.CheckSearchAllowed("Treasuremaps", now); err != nil {
+		t.Fatalf("expected search allowed while downloads remain, got %v", err)
+	}
+
+	h := http.Header{}
+	h.Set("X-DNZBLimit-Daily-Limit", "10")
+	h.Set("X-DNZBLimit-Daily-Remaining", "0")
+	c.ApplyHeaderUsage(h)
+
+	// The first call after exhaustion is the probe and passes through, so the
+	// indexer keeps a chance to report a budget we cannot otherwise observe.
+	if err := c.CheckSearchAllowed("Treasuremaps", now); err != nil {
+		t.Fatalf("expected the first post-exhaustion search to probe, got %v", err)
+	}
+	if err := c.CheckSearchAllowed("Treasuremaps", now); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected search skipped inside the probe interval, got %v", err)
+	}
+	if err := c.CheckSearchAllowed("Treasuremaps", now.Add(DownloadExhaustedProbeInterval+time.Second)); err != nil {
+		t.Fatalf("expected another probe once the interval elapsed, got %v", err)
+	}
+}
+
+func TestCheckSearchAllowedIgnoresDownloadBudgetWithoutLimit(t *testing.T) {
+	// No configured download limit means no budget to spend, so search must
+	// never be gated on it.
+	c := NewClientCore("Treasuremaps", 0, 0, 0, nil)
+	now := time.Now()
+
+	for i := 0; i < 3; i++ {
+		if err := c.CheckSearchAllowed("Treasuremaps", now); err != nil {
+			t.Fatalf("expected search allowed with no download limit, got %v", err)
+		}
+	}
+}
+
+func TestCheckGrabAllowedStillBlocksOnSpentDownloadBudget(t *testing.T) {
+	c := NewClientCore("Treasuremaps", 0, 1, 0, nil)
+	now := time.Now()
+
+	if err := c.CheckGrabAllowed("Treasuremaps", now); err != nil {
+		t.Fatalf("expected grab allowed with budget left, got %v", err)
+	}
+
+	h := http.Header{}
+	h.Set("X-DNZBLimit-Daily-Limit", "1")
+	h.Set("X-DNZBLimit-Daily-Remaining", "0")
+	c.ApplyHeaderUsage(h)
+
+	// Unlike search there is no probe here: a grab that cannot succeed must not
+	// be attempted just to refresh a counter.
+	if err := c.CheckGrabAllowed("Treasuremaps", now); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected grab blocked once the budget is spent, got %v", err)
+	}
+}

@@ -800,22 +800,31 @@ func (s *Server) filterBadReleases(streamLabel string, releases []*release.Relea
 	return kept
 }
 
+// libraryIndexerName renders the display name a library-backed release carries,
+// crediting the indexer the item originally came from. Shared with the rebind
+// pass in the playlist builder so a cached release that turns out to be in the
+// library ends up labelled exactly as a fresh search would have labelled it.
+func libraryIndexerName(indexerName string) string {
+	name := strings.TrimSpace(indexerName)
+	if name == "" || name == "Library" || name == "StreamNZB Library" {
+		return "StreamNZB Library"
+	}
+	if strings.HasPrefix(name, "StreamNZB Library - ") {
+		return name
+	}
+	return "StreamNZB Library - " + name
+}
+
 func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release {
 	if item == nil {
 		return nil
-	}
-	indexerName := strings.TrimSpace(item.IndexerName)
-	if indexerName == "" || indexerName == "Library" || indexerName == "StreamNZB Library" {
-		indexerName = "StreamNZB Library"
-	} else if !strings.HasPrefix(indexerName, "StreamNZB Library - ") {
-		indexerName = "StreamNZB Library - " + indexerName
 	}
 
 	return &release.Release{
 		Title:         item.ReleaseTitle,
 		Link:          item.DetailsURL,
 		DetailsURL:    item.DetailsURL,
-		Indexer:       indexerName,
+		Indexer:       libraryIndexerName(item.IndexerName),
 		Size:          item.SizeBytes,
 		SourceIndexer: item,
 		IsLibrary:     true,

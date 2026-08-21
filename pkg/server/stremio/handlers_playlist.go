@@ -149,6 +149,17 @@ func filterPlaylistByOrder(list *playlistResult, key StreamSlotKey, order []stri
 		return list
 	}
 	maxIndex := len(list.Candidates) - 1
+	// When slot paths are present they, not the candidate index, are the
+	// authority — an earlier pass (library rebind / spent-quota drop, or the
+	// AIOStreams availability filter) may already have removed candidates, so
+	// the index parsed out of a stored order entry no longer addresses the same
+	// release. Same precedence resolveStreamSlotFromPlaylist applies.
+	bySlotPath := map[string]int{}
+	if len(list.SlotPaths) == len(list.Candidates) {
+		for i, slotPath := range list.SlotPaths {
+			bySlotPath[slotPath] = i
+		}
+	}
 	var filtered []triage.Candidate
 	var paths []string
 	for _, entry := range order {
@@ -156,13 +167,22 @@ func filterPlaylistByOrder(list *playlistResult, key StreamSlotKey, order []stri
 			continue
 		}
 		sid, ct, id, idx, ok := parseStreamSlotID(entry)
-		if !ok || idx < 0 || idx > maxIndex {
+		if !ok {
 			continue
 		}
 		if ct != key.ContentType || id != key.ID {
 			continue
 		}
 		if sid != "" && sid != key.StreamID {
+			continue
+		}
+		if len(bySlotPath) > 0 {
+			mapped, found := bySlotPath[entry]
+			if !found {
+				continue
+			}
+			idx = mapped
+		} else if idx < 0 || idx > maxIndex {
 			continue
 		}
 		filtered = append(filtered, list.Candidates[idx])
@@ -191,16 +211,24 @@ func filterPlaylistToAvailableForAIOStreams(list *playlistResult) *playlistResul
 	if list == nil || list.UnavailableDetailsURLs == nil || len(list.UnavailableDetailsURLs) == 0 {
 		return list
 	}
+	// Slot paths are filtered in lockstep rather than dropped: they are the only
+	// record of which slot each surviving candidate answers to once an earlier
+	// pass has already removed candidates, and filterPlaylistByOrder below reads
+	// them to line stored failover orders up against this list.
+	paths := list.SlotPaths
+	if len(paths) != len(list.Candidates) {
+		paths = nil
+	}
 	var filtered []triage.Candidate
-	for _, c := range list.Candidates {
-		if c.Release == nil || c.Release.DetailsURL == "" {
-			filtered = append(filtered, c)
-			continue
-		}
-		if list.UnavailableDetailsURLs[c.Release.DetailsURL] {
+	var filteredPaths []string
+	for i, c := range list.Candidates {
+		if c.Release != nil && c.Release.DetailsURL != "" && list.UnavailableDetailsURLs[c.Release.DetailsURL] {
 			continue
 		}
 		filtered = append(filtered, c)
+		if paths != nil {
+			filteredPaths = append(filteredPaths, paths[i])
+		}
 	}
 	if len(filtered) == len(list.Candidates) {
 		return list
@@ -215,7 +243,7 @@ func filterPlaylistToAvailableForAIOStreams(list *playlistResult) *playlistResul
 		Params:                 list.Params,
 		CachedAvailable:        list.CachedAvailable,
 		UnavailableDetailsURLs: list.UnavailableDetailsURLs,
-		SlotPaths:              nil,
+		SlotPaths:              filteredPaths,
 	}
 }
 
@@ -237,7 +265,7 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 			// Sliding expiry: keep the entry alive while it is being used (reconnects, seeks, failover resolution).
 			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
 			s.playlistCache.CompareAndSwap(cacheKey, v, &playlistCacheEntry{result: ent.result, until: time.Now().Add(s.playlistCacheTTL())})
-			return ent.result, nil
+			return s.applyLiveSourceState(ent.result, key), nil
 		}
 	}
 	logger.Debug("Playback playlist cache miss", "key", cacheKey)
@@ -245,8 +273,11 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 	if err != nil || list == nil {
 		return list, err
 	}
+	// Cache the full list and filter the view: a fresh build can also be stale
+	// by the time it is replayed, and a quota that comes back should simply
+	// stop filtering rather than force a re-search.
 	s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: list, until: time.Now().Add(s.playlistCacheTTL())})
-	return list, nil
+	return s.applyLiveSourceState(list, key), nil
 }
 
 func (s *Server) buildPlaylistUncached(ctx context.Context, key StreamSlotKey, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
@@ -673,6 +704,176 @@ func clonePlaylistResult(list *playlistResult) *playlistResult {
 		next.UnavailableDetailsURLs[k] = v
 	}
 	return next
+}
+
+// Outcomes of re-resolving one cached candidate against live source state.
+const (
+	liveSourceKeep = iota
+	liveSourceRebindLibrary
+	liveSourceDrop
+)
+
+// applyLiveSourceState re-resolves every candidate's source against the two
+// things that move after a playlist is cached: the library gains a stored NZB
+// when a release plays through, and an indexer's daily download budget runs
+// out. Both caches freeze SourceIndexer at build time, so without this a replay
+// inside the TTL re-grabs an NZB already sitting in SQLite — spending the very
+// budget this pass exists to protect — while candidates behind a spent quota
+// stay on offer for the user to walk one failover hop at a time.
+//
+// The result is a filtered view; the caller keeps caching the full list. That
+// is deliberate: a quota is transient, so dropping candidates from the cache
+// would mean re-searching (and paying API hits) the moment the day rolls over,
+// where a view simply stops filtering.
+func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *playlistResult {
+	if list == nil || len(list.Candidates) == 0 {
+		return list
+	}
+	libraryItems := s.libraryNZBsByDetailsURL(list.Params)
+	grabbable := make(map[indexer.Indexer]bool)
+	actions := make([]int, len(list.Candidates))
+	rebinds, drops := 0, 0
+	for i, candidate := range list.Candidates {
+		actions[i] = s.liveSourceAction(candidate.Release, libraryItems, grabbable)
+		switch actions[i] {
+		case liveSourceRebindLibrary:
+			rebinds++
+		case liveSourceDrop:
+			drops++
+		}
+	}
+	if rebinds == 0 && drops == 0 {
+		return list
+	}
+
+	next := clonePlaylistResult(list)
+	// Slot paths are captured before filtering and carried through, so a client
+	// holding /play/<key>:3 still resolves to the same release after a drop —
+	// the same lockstep markPlaylistResultUnavailable maintains.
+	paths := playlistSlotPaths(next, key)
+	if len(paths) != len(next.Candidates) {
+		paths = nil
+	}
+	keptCandidates := make([]triage.Candidate, 0, len(next.Candidates))
+	keptPaths := make([]string, 0, len(next.Candidates))
+	for i, candidate := range next.Candidates {
+		switch actions[i] {
+		case liveSourceDrop:
+			continue
+		case liveSourceRebindLibrary:
+			rebindReleaseToLibrary(candidate.Release, libraryItems[candidate.Release.DetailsURL])
+		}
+		keptCandidates = append(keptCandidates, candidate)
+		if paths != nil {
+			keptPaths = append(keptPaths, paths[i])
+		}
+	}
+	next.Candidates = keptCandidates
+	if paths != nil {
+		next.SlotPaths = keptPaths
+	}
+	recomputePlaylistAvailability(next)
+	logger.Debug("Playlist sources re-resolved",
+		"key", key.CacheKey(),
+		"rebound_to_library", rebinds,
+		"dropped_no_download_budget", drops,
+		"candidates", len(next.Candidates),
+	)
+	return next
+}
+
+// liveSourceAction decides what to do with one cached candidate. Rebind is
+// tested before the download budget and never the other way round: a release
+// now held in the library still names the indexer it originally came from, so
+// checking the budget first would drop exactly the candidates that no longer
+// need an indexer at all.
+func (s *Server) liveSourceAction(rel *release.Release, libraryItems map[string]*persistence.LibraryItem, grabbable map[indexer.Indexer]bool) int {
+	if rel == nil || rel.IsLibraryResult() {
+		return liveSourceKeep
+	}
+	if url := strings.TrimSpace(rel.DetailsURL); url != "" {
+		if item := libraryItems[url]; item != nil {
+			return liveSourceRebindLibrary
+		}
+	}
+	if s.releaseSourceCanGrab(rel, grabbable) {
+		return liveSourceKeep
+	}
+	return liveSourceDrop
+}
+
+// releaseSourceCanGrab reports whether the indexer behind rel can still fetch
+// an NZB. Only a spent daily download budget counts: a throttle cooldown is
+// minutes long and failover steps past it cheaply, but a spent quota holds
+// until the day turns over, and every candidate behind it is a dead slot.
+func (s *Server) releaseSourceCanGrab(rel *release.Release, grabbable map[indexer.Indexer]bool) bool {
+	idx, _ := rel.SourceIndexer.(indexer.Indexer)
+	if idx == nil {
+		// Unknown source: the aggregate answers for it, and it still has budget
+		// as long as any single indexer does.
+		idx = s.indexer
+	}
+	if idx == nil {
+		return true
+	}
+	if can, ok := grabbable[idx]; ok {
+		return can
+	}
+	usage := idx.GetUsage()
+	can := usage.DownloadsLimit <= 0 || usage.DownloadsRemaining > 0
+	grabbable[idx] = can
+	return can
+}
+
+// rebindReleaseToLibrary points a cached release at its library row, so the NZB
+// comes from SQLite instead of a grab and the name matches a fresh library hit.
+// Link is left pointing at the indexer: nothing reads it once NZB bytes are
+// present, and keeping it preserves the grab as a fallback. Ranking and parse
+// metadata already on the release are untouched — only the source moves.
+func rebindReleaseToLibrary(rel *release.Release, item *persistence.LibraryItem) {
+	if rel == nil || item == nil {
+		return
+	}
+	rel.SourceIndexer = item
+	rel.IsLibrary = true
+	rel.Indexer = libraryIndexerName(item.IndexerName)
+}
+
+// libraryNZBsByDetailsURL indexes this content's library rows that carry a
+// stored NZB, keyed by details URL. Gated on the library search mode: with it
+// disabled a fresh build would not have surfaced these as library hits either,
+// and this pass exists to make a cached playlist agree with what a fresh one
+// would produce.
+func (s *Server) libraryNZBsByDetailsURL(params *query.SearchParams) map[string]*persistence.LibraryItem {
+	if s == nil || s.config == nil || params == nil || s.attemptRecorder == nil {
+		return nil
+	}
+	if s.config.EffectiveLibrarySearchMode() == "disabled" {
+		return nil
+	}
+	libStore := s.attemptRecorder.LibraryStore()
+	if libStore == nil {
+		return nil
+	}
+	season, episode := 0, 0
+	if params.ContentIDs != nil {
+		season = params.ContentIDs.Season
+		episode = params.ContentIDs.Episode
+	}
+	items, err := libStore.GetCandidatesByIDs(params.ContentType, params.Req.IMDbID, params.Req.TMDBID, params.Req.TVDBID, params.Req.KitsuID, season, episode)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	byURL := make(map[string]*persistence.LibraryItem, len(items))
+	for _, item := range items {
+		if item == nil || len(item.NZBData) == 0 {
+			continue
+		}
+		if url := strings.TrimSpace(item.DetailsURL); url != "" {
+			byURL[url] = item
+		}
+	}
+	return byURL
 }
 
 func playlistSlotPaths(list *playlistResult, key StreamSlotKey) []string {

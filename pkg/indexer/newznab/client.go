@@ -217,17 +217,11 @@ func (c *Client) effectiveGrabHeader() string {
 }
 
 func (c *Client) checkAPILimit() error {
-	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
-		return err
-	}
-	return c.core.CheckAPILimit(c.Name())
+	return c.core.CheckSearchAllowed(c.Name(), time.Now())
 }
 
 func (c *Client) checkDownloadLimit() error {
-	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
-		return err
-	}
-	return c.core.CheckDownloadLimit(c.Name())
+	return c.core.CheckGrabAllowed(c.Name(), time.Now())
 }
 
 // noteThrottled opens the shared cooldown and logs it once, so a burst of

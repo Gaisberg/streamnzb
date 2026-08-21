@@ -18,16 +18,17 @@ type ClientCore struct {
 	usageManager *UsageManager
 	Limiter      *RequestLimiter
 
-	mu                sync.RWMutex
-	apiLimit          int
-	apiUsed           int
-	apiRemaining      int
-	downloadLimit     int
-	downloadUsed      int
-	downloadRemaining int
-	searchesCount     int
-	totalResponseMS   int64
-	throttledUntil    time.Time
+	mu                 sync.RWMutex
+	apiLimit           int
+	apiUsed            int
+	apiRemaining       int
+	downloadLimit      int
+	downloadUsed       int
+	downloadRemaining  int
+	searchesCount      int
+	totalResponseMS    int64
+	throttledUntil     time.Time
+	downloadProbeAfter time.Time
 }
 
 // Rate-limit cooldown bounds. An indexer that answers 429 without a usable
@@ -38,6 +39,22 @@ const (
 	DefaultThrottleCooldown = 60 * time.Second
 	MaxThrottleCooldown     = 15 * time.Minute
 )
+
+// DownloadExhaustedProbeInterval bounds how long an indexer whose daily
+// download budget is spent stays skipped for search before one request is let
+// through anyway.
+//
+// The skip itself is worth having: a result we can never grab is a dead
+// candidate, and offering it costs the user a failover hop per release. But the
+// skip is self-sealing if made absolute. The only trustworthy view of the
+// download budget is X-DNZBLimit-Daily-Remaining, which ApplyHeaderUsage reads
+// off a response — so it arrives only when we make a request. Our own counter
+// cannot stand in for it: the daily reset here turns over on local midnight
+// while indexers use their own clock or a rolling window, and downloadLimit may
+// be a conservative number the operator typed rather than the real quota. Left
+// to itself, a wrong counter would retire a working indexer until the local day
+// rolled over. The periodic probe is what lets the indexer tell us otherwise.
+const DownloadExhaustedProbeInterval = 15 * time.Minute
 
 // NewClientCore builds the core and restores persisted usage counters for
 // name when a usage manager is available.
@@ -155,6 +172,48 @@ func (c *ClientCore) CheckDownloadLimit(displayName string) error {
 		return fmt.Errorf("download limit reached for %s: %w", displayName, ErrRateLimited)
 	}
 	return nil
+}
+
+// CheckSearchAllowed runs the full search preflight shared by every client:
+// the rate-limit cooldown, the daily API budget, and — because a release we
+// cannot grab is not worth finding — the daily download budget.
+func (c *ClientCore) CheckSearchAllowed(displayName string, now time.Time) error {
+	if err := c.CheckThrottled(displayName, now); err != nil {
+		return err
+	}
+	// Refreshes the persisted counters for both budgets, which the download
+	// check below then reads without a second round through the state manager.
+	if err := c.CheckAPILimit(displayName); err != nil {
+		return err
+	}
+	return c.checkDownloadBudgetForSearch(displayName, now)
+}
+
+// CheckGrabAllowed runs the NZB-download preflight: cooldown plus the daily
+// download budget.
+func (c *ClientCore) CheckGrabAllowed(displayName string, now time.Time) error {
+	if err := c.CheckThrottled(displayName, now); err != nil {
+		return err
+	}
+	return c.CheckDownloadLimit(displayName)
+}
+
+// checkDownloadBudgetForSearch skips a search whose results could never be
+// grabbed, letting one request through every DownloadExhaustedProbeInterval so
+// the indexer's own headers can re-open it. Relies on the caller having just
+// refreshed usage.
+func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.downloadLimit <= 0 || c.downloadRemaining > 0 {
+		return nil
+	}
+	if !now.Before(c.downloadProbeAfter) {
+		c.downloadProbeAfter = now.Add(DownloadExhaustedProbeInterval)
+		return nil
+	}
+	return fmt.Errorf("download limit reached for %s, skipping search until %s: %w",
+		displayName, c.downloadProbeAfter.Sub(now).Round(time.Second), ErrRateLimited)
 }
 
 // IncrementUsed records api/download hits against the persisted counters.

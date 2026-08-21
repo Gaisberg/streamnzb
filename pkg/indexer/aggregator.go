@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -137,6 +138,19 @@ func shouldSkipIndexer(req SearchRequest, overrides *config.IndexerSearchConfig)
 	return skipIndexerReason(req, overrides) != ""
 }
 
+// logIndexerSearchFailure reports one indexer dropping out of a fan-out. A
+// spent quota or an open cooldown is an expected steady state — since the
+// search preflight now also declines on an exhausted download budget, warning
+// about it would fill the log with one line per indexer per search for the rest
+// of the day. Anything else is a real failure and stays at Warn.
+func logIndexerSearchFailure(name string, err error) {
+	if errors.Is(err, ErrRateLimited) {
+		logger.Debug("Indexer skipped: limit reached", "indexer", name, "err", err)
+		return
+	}
+	logger.Warn("Indexer search failed", "indexer", name, "err", err)
+}
+
 func ShouldSkipIndexerForRequest(req SearchRequest, overrides *config.IndexerSearchConfig) bool {
 	return shouldSkipIndexer(req, overrides)
 }
@@ -158,7 +172,7 @@ func (a *Aggregator) searchCombined(ctx context.Context, req SearchRequest) (*Se
 			defer wg.Done()
 			items, err := searchItemsForIndexer(ctx, indexer, r)
 			if err != nil {
-				logger.Warn("Indexer search failed", "indexer", indexer.Name(), "err", err)
+				logIndexerSearchFailure(indexer.Name(), err)
 				resultsChan <- []Item{}
 				return
 			}
@@ -255,7 +269,7 @@ func (a *Aggregator) searchWithFailover(ctx context.Context, req SearchRequest) 
 		pending--
 		done[result.index] = true
 		if result.err != nil {
-			logger.Warn("Indexer search failed", "indexer", a.Indexers[result.index].Name(), "err", result.err)
+			logIndexerSearchFailure(a.Indexers[result.index].Name(), result.err)
 		} else {
 			itemsByIndexer[result.index] = result.items
 		}
