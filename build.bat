@@ -1,5 +1,12 @@
 @echo off
 
+REM pkg\server\web embeds pkg\server\web\static, which is gitignored and is
+REM produced by the frontend build below. On a fresh clone it does not exist and
+REM `//go:embed all:static` is a compile error, so every Go command here would
+REM fail before checking anything. The real assets replace the placeholder later.
+if not exist pkg\server\web\static mkdir pkg\server\web\static
+if not exist pkg\server\web\static\.gitkeep type nul > pkg\server\web\static\.gitkeep
+
 echo Formatting Go code...
 go fmt ./...
 if %errorlevel% neq 0 exit /b %errorlevel%

@@ -6,6 +6,10 @@ on:
   push:
     branches-ignore:
       - 'release-please--branches--main'
+      # Dependabot pushes a branch per update. Without this, each one builds
+      # five platforms and tries to publish images it has no secrets for —
+      # and a dependency bump is not something to release from a branch.
+      - 'dependabot/**'
   workflow_dispatch:
     inputs:
       tag_name:

@@ -49,6 +49,19 @@ jobs:
             exit 1
           fi
 
+      # pkg/server/web embeds pkg/server/web/static, which is gitignored: it is
+      # produced by the frontend build. On a fresh checkout the directory does
+      # not exist, so `//go:embed all:static` is a compile error and every Go
+      # command below fails before it checks anything. The dev machine never saw
+      # it because a previous build had always left the directory behind.
+      #
+      # A placeholder is enough: nothing under test reads the real assets, and
+      # build-release copies them in before building the binary it ships.
+      - name: Ensure the embedded asset directory exists
+        run: |
+          mkdir -p pkg/server/web/static
+          touch pkg/server/web/static/.gitkeep
+
       - name: Vet
         run: go vet ./...
 
@@ -110,6 +123,19 @@ jobs:
           restore-keys: |
             go-race-${{ hashFiles('go.sum') }}-
             go-race-
+
+      # pkg/server/web embeds pkg/server/web/static, which is gitignored: it is
+      # produced by the frontend build. On a fresh checkout the directory does
+      # not exist, so `//go:embed all:static` is a compile error and every Go
+      # command below fails before it checks anything. The dev machine never saw
+      # it because a previous build had always left the directory behind.
+      #
+      # A placeholder is enough: nothing under test reads the real assets, and
+      # build-release copies them in before building the binary it ships.
+      - name: Ensure the embedded asset directory exists
+        run: |
+          mkdir -p pkg/server/web/static
+          touch pkg/server/web/static/.gitkeep
 
       - name: Test with race detector
         run: go test -race ./...

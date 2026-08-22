@@ -1,6 +1,15 @@
 #!/bin/bash
 set -e
 
+# pkg/server/web embeds pkg/server/web/static, which is gitignored and produced
+# by the frontend build below. On a fresh clone it does not exist yet, and
+# `//go:embed all:static` is a compile error — so every Go command here would
+# fail before running a single check. It only ever worked on a machine where a
+# previous build had left the directory behind, which is why CI found this and
+# this script did not. The real assets replace the placeholder further down.
+mkdir -p pkg/server/web/static
+touch pkg/server/web/static/.gitkeep
+
 echo "Formatting Go code..."
 go fmt ./...
 
