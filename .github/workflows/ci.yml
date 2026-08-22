@@ -7,6 +7,21 @@ name: ci
 # PR check can never drift apart.
 on:
   pull_request:
+    # release-please's "chore(main): release X" pull request changes these two
+    # files and nothing else, so there is no code in it to check — it is the
+    # code already on main, which CI passed on the way in. Skipping is worth ~3
+    # minutes and two red-looking checks on every release.
+    #
+    # A path filter rather than a branch or title match, because it is
+    # self-limiting: `paths-ignore` only skips when *every* changed file matches,
+    # so the day one of these pull requests carries a code change, CI runs.
+    #
+    # Only under pull_request. workflow_call takes no path filters, and
+    # build-release calls this workflow for the release build itself, which must
+    # always run.
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '.release-please-manifest.json'
   workflow_call:
 
 permissions:
