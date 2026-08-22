@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.9.0](https://github.com/Gaisberg/streamnzb/compare/v5.8.0...v5.9.0) (2026-08-22)
+
+
+### Features
+
+* close device-token holes, fix config-reload races, unify env booleans ([431a8af](https://github.com/Gaisberg/streamnzb/commit/431a8afc89f50f0998e40fbaee578d15ffdd7594))
+* harden admin auth, gate releases on CI, and shut down cleanly ([b70af6e](https://github.com/Gaisberg/streamnzb/commit/b70af6edb8127c4dcbe855c11326c6a6246efa68))
+
 ## [5.8.0](https://github.com/Gaisberg/streamnzb/compare/v5.7.0...v5.8.0) (2026-08-22)
 
 
