@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.8.0](https://github.com/Gaisberg/streamnzb/compare/v5.7.0...v5.8.0) (2026-08-22)
+
+
+### Features
+
+* **filters:** one share format, and rules you can write as text ([b961cd4](https://github.com/Gaisberg/streamnzb/commit/b961cd406c64c2b739dff62882bf6d7f01e3646c))
+
 ## [5.7.0](https://github.com/Gaisberg/streamnzb/compare/v5.6.0...v5.7.0) (2026-08-22)
 
 
