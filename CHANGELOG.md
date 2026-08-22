@@ -1,5 +1,19 @@
 # Changelog
 
+## [5.7.0](https://github.com/Gaisberg/streamnzb/compare/v5.6.0...v5.7.0) (2026-08-22)
+
+
+### Features
+
+* **availnzb:** make the integration opt-in so a fresh install never phones home ([4de49fc](https://github.com/Gaisberg/streamnzb/commit/4de49fc5caf4760e7d385180dd304e66505c9c48)), closes [#194](https://github.com/Gaisberg/streamnzb/issues/194)
+* **newznab:** serve configured indexers as a Newznab API ([446bb6d](https://github.com/Gaisberg/streamnzb/commit/446bb6d3f7d8b0a61366aa3aadb701c78e559fb3))
+* **providers:** hold backup-only providers back for failover ([e0d05a8](https://github.com/Gaisberg/streamnzb/commit/e0d05a85202b5732bf72f861fc85454acf107237))
+
+
+### Bug Fixes
+
+* **formatting:** list the fields the editor stopped advertising and fold them away by default [#205](https://github.com/Gaisberg/streamnzb/issues/205) ([415772f](https://github.com/Gaisberg/streamnzb/commit/415772f33506b6c395d83637c3d4d8e79d116f5e))
+
 ## [5.6.0](https://github.com/Gaisberg/streamnzb/compare/v5.5.0...v5.6.0) (2026-08-21)
 
 
