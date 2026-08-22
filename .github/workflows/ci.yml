@@ -26,9 +26,75 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  verify:
+  # Which halves of the tree a pull request touches.
+  #
+  # The Go checks and the frontend checks are independent, despite the embed:
+  # Go only ever needs a *placeholder* at pkg/server/web/static, never the built
+  # assets (see the step that creates one). So a Go-only change has no reason to
+  # install npm, and a frontend-only change has no reason to run the Go suite
+  # twice. The one place the two really are coupled is a single step in
+  # build-release, which builds the frontend and copies it in before `go build`
+  # — that is untouched and still always runs.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.detect.outputs.go }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+    steps:
+      - name: Detect which halves changed
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          # Anything that is not a pull request — a push or a release arriving
+          # through build-release — checks everything. That is what makes the
+          # per-pull-request skipping below safe: whatever an individual pull
+          # request skipped, main is verified in full before anything ships.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: checking everything"
+            exit 0
+          fi
+
+          # Read the file list from the API rather than diffing, so this job
+          # needs no checkout and finishes in seconds.
+          changed="$(gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[].filename')"
+          echo "changed files:"
+          echo "${changed}"
+
+          # Shared ground runs both halves rather than guessing: the workflows
+          # themselves, the build scripts, and anything at the repository root
+          # (go.mod, Dockerfile, .gitignore, ...).
+          if echo "${changed}" | grep -qE '^(\.github/|[^/]+$)'; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "shared or root-level file touched: checking everything"
+            exit 0
+          fi
+
+          go=false
+          frontend=false
+          if echo "${changed}" | grep -qE '^(cmd|pkg|tools|third_party)/'; then
+            go=true
+          fi
+          if echo "${changed}" | grep -qE '^frontend/'; then
+            frontend=true
+          fi
+          echo "go=${go}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${frontend}" >> "$GITHUB_OUTPUT"
+          echo "go=${go} frontend=${frontend}"
+
+  go:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -71,7 +137,8 @@ jobs:
       # it because a previous build had always left the directory behind.
       #
       # A placeholder is enough: nothing under test reads the real assets, and
-      # build-release copies them in before building the binary it ships.
+      # build-release copies them in before building the binary it ships. That is
+      # also why this job does not have to wait for the frontend one.
       - name: Ensure the embedded asset directory exists
         run: |
           mkdir -p pkg/server/web/static
@@ -83,6 +150,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
@@ -90,15 +165,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: npm ci
         working-directory: frontend
 
-      - name: Lint frontend
+      - name: Lint
         run: npm run lint
         working-directory: frontend
 
-      - name: Test frontend
+      - name: Test
         run: npm test
         working-directory: frontend
 
@@ -106,11 +181,13 @@ jobs:
       # Tailwind config errors, and anything that only fails under Vite's
       # bundler. build-release builds the frontend again for the artifact; this
       # run exists to fail fast on a broken tree.
-      - name: Build frontend
+      - name: Build
         run: npm run build
         working-directory: frontend
 
   race:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     # `-race` needs cgo, which the dev machine does not have, so this is the
     # only place it runs on every change. It was non-blocking while its first
     # results were unknown; those came back, the races it found were fixed, and
@@ -118,10 +195,10 @@ jobs:
     # way a failing test does.
     #
     # To reproduce a failure from here without a cgo toolchain, run it in a
-    # container. `GetDataDir()` returns /app/data whenever /.dockerenv exists,
-    # which breaks the data-dir tests, so remove that marker first:
+    # container. Note that GetDataDir() returns /app/data whenever /.dockerenv
+    # exists, which breaks the data-dir tests, so remove that marker first:
     #
-    #   docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh -c     #     'rm -f /.dockerenv && mkdir -p pkg/server/web/static &&     #      touch pkg/server/web/static/.gitkeep && go test -race ./...'
+    #   docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh -c 'rm -f /.dockerenv && mkdir -p pkg/server/web/static && touch pkg/server/web/static/.gitkeep && go test -race ./...'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -144,14 +221,6 @@ jobs:
             go-race-${{ hashFiles('go.sum') }}-
             go-race-
 
-      # pkg/server/web embeds pkg/server/web/static, which is gitignored: it is
-      # produced by the frontend build. On a fresh checkout the directory does
-      # not exist, so `//go:embed all:static` is a compile error and every Go
-      # command below fails before it checks anything. The dev machine never saw
-      # it because a previous build had always left the directory behind.
-      #
-      # A placeholder is enough: nothing under test reads the real assets, and
-      # build-release copies them in before building the binary it ships.
       - name: Ensure the embedded asset directory exists
         run: |
           mkdir -p pkg/server/web/static
