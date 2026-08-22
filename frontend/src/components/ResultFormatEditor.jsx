@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
+import { ChevronDown } from "lucide-react"
 import { apiFetch } from '@/api'
+import { cn } from "@/lib/utils"
 
 // Starting points for custom result templates, mirroring the built-in format.
 const EXAMPLE_NAME_TEMPLATE = `{{if .Avail}}⚡ {{end}}{{.Service}}
@@ -13,17 +15,52 @@ const EXAMPLE_DESCRIPTION_TEMPLATE = `{{.ReleaseTitle}}
 {{if .Caps}}✅ {{.Caps}}
 {{end}}🔍 {{.Indexer}} • 🎯 {{score .Score}}{{if .Age}} • 🕰️ {{.Age}}{{end}}`
 
-// Field reference shown next to the template editors. Kept flat on purpose:
-// these are exactly the FormatContext fields the backend exposes.
+// Field reference shown under the template editors. Groups mirror FormatContext
+// in the backend formatter, including the parts a fresh indexer hit cannot
+// answer (Probed, Avail) — those are labelled rather than hidden, because a
+// field that renders empty half the time is worth knowing about before you use
+// it. Entries in a `raw` group are printed verbatim; every other entry is
+// wrapped in {{ }}.
 const FORMAT_FIELDS = [
   { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count'] },
   { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
+  {
+    group: 'Rules',
+    raw: true,
+    fields: [
+      '{{range .MatchedRules}}[{{.Name}}] {{end}}',
+      '{{range .MatchedRules}}{{.Name}} {{score .Score}} · {{end}}',
+    ],
+  },
   { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages'] },
   { group: 'Episode', fields: ['.Season', '.Episode', '.Seasons', '.Episodes', '.EpisodeCode', '.Volumes'] },
   { group: 'Flags', fields: ['.Proper', '.Repack', '.Remastered', '.Upscaled', '.ThreeD', '.Scene', '.Retail', '.Hardcoded', '.Dubbed', '.Subbed', '.Commentary', '.Complete', '.Documentary', '.Unrated', '.Uncensored', '.PPV'] },
-  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network'] },
+  { group: 'Kind', fields: ['.Kind', '.IsAnime'] },
+  { group: 'Probed', fields: ['.Verified', '.Probed.VideoCodec', '.Probed.AudioCodec', '.Probed.Width', '.Probed.Height', '.Probed.Profile', '.Probed.BitDepth', '.Probed.HDR', '.Probed.DolbyVision', '.Probed.HasHDRFallback', '.Probed.DynamicRange'] },
+  { group: 'Avail', fields: ['.Availability.Status', '.Availability.Known', '.Availability.OnMyBackbone', '.Availability.CheckedDaysAgo', '.Availability.Compression'] },
+  { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network', '.ParsedTitle | title | truncate 24'] },
   { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "'] },
-  { group: 'Checks', fields: ['if exists .HDR', 'if gt (length .Audio) 1', 'if eq .Resolution "2160p"', 'if contains "DV" .HDR', 'if hasPrefix "2160" .Resolution', 'if hasSuffix "p" .Resolution'] },
+  {
+    group: 'Checks',
+    raw: true,
+    fields: [
+      '{{if .HDR}}…{{end}}',
+      '{{if not .Avail}}…{{end}}',
+      '{{if .Avail}}…{{else}}…{{end}}',
+      '{{if and .Avail .Library}}…{{end}}',
+      '{{if or .Proper .Repack}}…{{end}}',
+      '{{if exists .HDR}}…{{end}}',
+      '{{if eq .Resolution "2160p"}}…{{end}}',
+      '{{if ne .Group ""}}…{{end}}',
+      '{{if gt (length .Audio) 1}}…{{end}}',
+      '{{if ge .Grabs 100}}…{{end}}',
+      '{{if lt .Year 2000}}…{{end}}',
+      '{{if le .Index 3}}…{{end}}',
+      '{{if contains "DV" .HDR}}…{{end}}',
+      '{{if hasPrefix "2160" .Resolution}}…{{end}}',
+      '{{if hasSuffix "p" .Resolution}}…{{end}}',
+    ],
+  },
 ]
 
 const templateBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -155,6 +192,55 @@ function AIOStreamsImport({ onNameChange, onDescriptionChange }) {
   )
 }
 
+// FieldReference is the read-only counterpart to the rules editor's attribute
+// list: everything a template can read, collapsed by default so the dialog
+// opens on the editors rather than on a wall of field names.
+function FieldReference() {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-card/40">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+      >
+        <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} />
+        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Available fields
+        </span>
+        <span className="text-[11px] text-muted-foreground/70">
+          {open ? "" : "everything a template can read"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-border/50 px-3 py-3">
+          <div className="space-y-1.5">
+            {FORMAT_FIELDS.map((group) => (
+              <div key={group.group} className="flex flex-wrap items-baseline gap-1.5">
+                <span className="w-16 shrink-0 text-[11px] text-muted-foreground">{group.group}</span>
+                {group.fields.map((f) => (
+                  <code key={f} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+                    {group.raw ? f : `{{${f}}}`}
+                  </code>
+                ))}
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 max-w-prose text-[11px] text-muted-foreground">
+            Lines that render empty are removed, so a false conditional on its own line never leaves a blank line.
+            Lists render comma-separated until you join them yourself. Rules are the profile rules that paid out on
+            this release, in configuration order — one that rejected it never reaches a template. Caps, Verified and
+            Probed are ffprobe readings, filled for library releases only; Availability stays blank until AvailNZB
+            has an opinion.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ResultFormatEditor edits one stream's result name/description templates with
 // a field reference and a live preview rendered by the backend.
 export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameChange, onDescriptionChange, onErrorsChange }) {
@@ -203,27 +289,7 @@ export function ResultFormatEditor({ nameTemplate, descriptionTemplate, onNameCh
         <p className="text-xs text-muted-foreground">The multi-line detail text under each result.</p>
       </div>
 
-      <div className="rounded-md border border-border/60 p-3">
-        <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Available fields</div>
-        <div className="space-y-1.5">
-          {FORMAT_FIELDS.map((group) => (
-            <div key={group.group} className="flex flex-wrap items-baseline gap-1.5">
-              <span className="w-16 shrink-0 text-[11px] text-muted-foreground">{group.group}</span>
-              {group.fields.map((f) => (
-                <code key={f} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">{`{{${f}}}`}</code>
-              ))}
-            </div>
-          ))}
-        </div>
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Conditionals: {'{{if .HDR}}…{{end}}'}, {'{{if .Avail}}…{{else}}…{{end}}'}, {'{{if not .Avail}}…{{end}}'}.
-          Comparisons and boolean logic are built in: {'{{if gt (length .Audio) 1}}'}, {'{{if and .Avail .Library}}'}, plus eq/ne/lt/le/gt/ge.
-          Helpers compose by nesting ({'{{join (sortAsc .Audio) " · "}}'}) or piping ({'{{.ParsedTitle | title | truncate 24}}'}).
-          Lists ({'{{.HDR}}'}, {'{{.Languages}}'}) render comma-separated; use {'{{join .HDR "|"}}'} for a custom separator.
-          Lines that render empty are removed, so a false conditional on its own line never leaves a blank line.
-          Caps is the ffprobe-verified summary, present on library releases only.
-        </p>
-      </div>
+      <FieldReference />
 
       <AIOStreamsImport onNameChange={onNameChange} onDescriptionChange={onDescriptionChange} />
 
