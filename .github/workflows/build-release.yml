@@ -10,6 +10,18 @@ on:
       # five platforms and tries to publish images it has no secrets for —
       # and a dependency bump is not something to release from a branch.
       - 'dependabot/**'
+    # The release-please merge commit lands on main carrying only these two
+    # files, and the tag's `release: published` event rebuilds the same code
+    # seconds later. Without this the push still starts a run: the publish job
+    # skipped itself, but `verify` had already spent two minutes on the whole
+    # test suite for a changelog entry. Now the push produces no run at all.
+    #
+    # Same self-limiting property as ci.yml's filter: `paths-ignore` only skips
+    # when *every* changed file matches, so a release commit that ever carries
+    # code still builds.
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '.release-please-manifest.json'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -32,6 +44,12 @@ jobs:
   # runs locally. Reused from ci.yml rather than repeated here so the release
   # gate and the pull-request check can never drift apart.
   verify:
+    # Backstop to the paths-ignore above, for the day a release commit carries
+    # something besides the changelog: the filter would let the push through,
+    # and without this the suite would run in full for a build that then skips.
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(main): release')
     uses: ./.github/workflows/ci.yml
 
   build-release:
