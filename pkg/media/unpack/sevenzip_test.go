@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 	"testing"
-
-	"streamnzb/pkg/core/logger"
 )
 
 type nopReadSeekCloser struct {
@@ -137,12 +134,6 @@ func TestValidateSplit7zPartNamesAcceptsComplete29VolumeSet(t *testing.T) {
 }
 
 func TestGetMediaStreamForEpisodeUsesCachedSevenZipBlueprintFiles(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	bp := &SevenZipBlueprint{
 		MainFileName: "episode.mkv",
 		TotalSize:    4,
@@ -179,12 +170,6 @@ func TestGetMediaStreamForEpisodeUsesCachedSevenZipBlueprintFiles(t *testing.T) 
 }
 
 func TestGetMediaStreamForEpisodeSkipsCachedSevenZipBlueprintForDifferentTarget(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "Show.S01E01.mkv", data: []byte("ep1")},
 		&memoryUnpackableFile{name: "Show.S01E04.mkv", data: []byte("ep4")},

@@ -22,8 +22,6 @@ func (f *readTrackingFile) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func TestResolveObfuscatedNamesLeavesNamedReleaseUntouched(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&readTrackingFile{memoryUnpackableFile: &memoryUnpackableFile{name: "Show.S01E01.1080p.part01.rar"}, t: t},
 		&readTrackingFile{memoryUnpackableFile: &memoryUnpackableFile{name: "Show.S01E01.1080p.part02.rar"}, t: t},
@@ -65,8 +63,6 @@ func par2IndexWithFileDesc(entries map[string][]byte) []byte {
 }
 
 func TestResolveObfuscatedNamesFromPAR2FileDesc(t *testing.T) {
-	discardTestLogger(t)
-
 	media := bytes.Repeat([]byte("M"), 20<<10)
 	par2 := par2IndexWithFileDesc(map[string][]byte{"Real.Movie.2024.1080p.BluRay.mkv": media})
 
@@ -97,8 +93,6 @@ type yencNamedFile struct {
 func (f *yencNamedFile) YencFileName(context.Context) (string, error) { return f.yenc, nil }
 
 func TestResolveObfuscatedNamesFromYencHeader(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&yencNamedFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: `[1/1] - "7e6d5c4b3a291807" yEnc (1/1)`, data: bytes.Repeat([]byte("x"), 4096)},
@@ -113,8 +107,6 @@ func TestResolveObfuscatedNamesFromYencHeader(t *testing.T) {
 }
 
 func TestResolveObfuscatedNamesRejectsObfuscatedRecoveredNames(t *testing.T) {
-	discardTestLogger(t)
-
 	// A poster who renamed the files before building the PAR2 set leaves the
 	// same hashes in the recovery data. Signature naming must take over rather
 	// than swapping one meaningless name for another.
@@ -153,8 +145,6 @@ func rar5MainHeader(volume int) []byte {
 }
 
 func TestResolveObfuscatedNamesOrdersRARVolumesFromHeaders(t *testing.T) {
-	discardTestLogger(t)
-
 	// NZB order deliberately does not match volume order.
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: `"9c0d1e2f3a4b5c6d"`, data: rar5MainHeader(2)},
@@ -189,8 +179,6 @@ func TestResolveObfuscatedNamesOrdersRARVolumesFromHeaders(t *testing.T) {
 }
 
 func TestParseRAR4MainHeaderFlagsFirstVolume(t *testing.T) {
-	discardTestLogger(t)
-
 	header := func(flags uint16) []byte {
 		var b bytes.Buffer
 		b.Write(rar4Signature)
@@ -218,8 +206,6 @@ func TestParseRAR4MainHeaderFlagsFirstVolume(t *testing.T) {
 }
 
 func TestGetMediaStreamPlaysFullyObfuscatedReleaseNamedByPAR2(t *testing.T) {
-	discardTestLogger(t)
-
 	media := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, bytes.Repeat([]byte("M"), 20<<10)...)
 	par2 := par2IndexWithFileDesc(map[string][]byte{"Real.Show.S01E03.1080p.WEB-DL.mkv": media})
 
@@ -286,8 +272,6 @@ func (f *mappedFile) ReadFirstSegment(context.Context) ([]byte, error) {
 }
 
 func TestDeobfuscationReadsOnlyTheFirstSegment(t *testing.T) {
-	discardTestLogger(t)
-
 	// Mapping a file means probing every one of its segments. Identifying a
 	// release must cost one article per file, not a full map of each.
 	files := []UnpackableFile{
@@ -310,8 +294,6 @@ func TestDeobfuscationReadsOnlyTheFirstSegment(t *testing.T) {
 }
 
 func TestUsableFilenameIgnoresHashedAuxiliaryStems(t *testing.T) {
-	discardTestLogger(t)
-
 	// A hashed stem on a PAR2 or NFO says nothing worth recovering — only the
 	// extension matters for those — so it must not drag the file into a read.
 	// The payload's stem still counts: that one has to be episode-matchable.
@@ -335,8 +317,6 @@ func TestUsableFilenameIgnoresHashedAuxiliaryStems(t *testing.T) {
 }
 
 func TestResolveObfuscatedNamesSkipsHashedButClassifiedRelease(t *testing.T) {
-	discardTestLogger(t)
-
 	// A hashed-stem release with real extensions routes fine on its subjects
 	// alone. Not one file may be read, including the PAR2 index whose bare
 	// 32-hex stem is the most hash-like name in the set.

@@ -3,24 +3,16 @@ package loader
 import (
 	"context"
 	"io"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/usenet/pool"
 )
 
 func TestSegmentReaderLiveCount(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	before := LiveSegmentReaders()
 	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil)
 	r := NewSegmentReader(context.Background(), f, 0)
@@ -37,12 +29,6 @@ func TestSegmentReaderLiveCount(t *testing.T) {
 }
 
 func TestSegmentReaderLiveDetailsIncludeOwner(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	f := NewFile(context.Background(), &nzb.File{Subject: "test.mkv"}, nil, nil)
 	f.SetOwnerSessionID("sess-42")
 	r := NewSegmentReader(context.Background(), f, 0)
@@ -70,12 +56,6 @@ func TestSegmentReaderLiveDetailsIncludeOwner(t *testing.T) {
 }
 
 func TestSegmentReaderSeekIsNonBlocking(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	f := NewFile(context.Background(), testNZBFile("seek-test.mkv", 4, 4, 4), nil, &staticSegmentFetcher{})
 	r := NewSegmentReader(context.Background(), f, 0)
 	defer func() { _ = r.Close() }()
@@ -97,12 +77,6 @@ func TestSegmentReaderSeekIsNonBlocking(t *testing.T) {
 }
 
 func TestSegmentReaderDoesNotAdvanceBeforeMappedEnd(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &fixedLenSegmentFetcher{length: 8}
 	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10), nil, fetcher)
 	f.mu.Lock()
@@ -128,12 +102,6 @@ func TestSegmentReaderDoesNotAdvanceBeforeMappedEnd(t *testing.T) {
 }
 
 func TestSegmentReaderSeekDoesNotCancelInFlightForegroundRead(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &blockingForegroundSegmentFetcher{
 		started: make(chan struct{}),
 		release: make(chan struct{}),

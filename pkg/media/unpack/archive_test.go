@@ -9,8 +9,6 @@ import (
 )
 
 func TestGetMediaStreamForEpisodeSkipsCachedDirectBlueprintForDifferentTarget(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "Show.S01E01.mkv", data: []byte("ep1")},
 		&memoryUnpackableFile{name: "Show.S01E04.mkv", data: []byte("ep4")},
@@ -39,8 +37,6 @@ func TestGetMediaStreamForEpisodeSkipsCachedDirectBlueprintForDifferentTarget(t 
 }
 
 func TestGetMediaStreamForEpisodeSkipsCachedFailureForDifferentTarget(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "Show.S01E01.mkv", data: []byte("ep1")},
 	}
@@ -61,8 +57,6 @@ func TestGetMediaStreamForEpisodeSkipsCachedFailureForDifferentTarget(t *testing
 }
 
 func TestGetMediaStreamForEpisodeFailsWhenRequestedEpisodeMissingFromDirectFiles(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "Show.S01E04.mkv", data: []byte("ep4")},
 		&memoryUnpackableFile{name: "Show.S01E06.mkv", data: []byte("ep6")},
@@ -87,8 +81,6 @@ func TestGetMediaStreamForEpisodeFailsWhenRequestedEpisodeMissingFromDirectFiles
 }
 
 func TestGetMediaStreamRejectsSuspiciousLargestDirectFallback(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&sizedUnpackableFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: "release.par2", data: []byte("par2")},
@@ -119,8 +111,6 @@ func TestGetMediaStreamRejectsSuspiciousLargestDirectFallback(t *testing.T) {
 }
 
 func TestGetMediaStreamAllowsPlausibleLargestDirectFallback(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&sizedUnpackableFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: []byte("video")},
@@ -140,8 +130,6 @@ func TestGetMediaStreamAllowsPlausibleLargestDirectFallback(t *testing.T) {
 }
 
 func TestGetMediaStreamForEpisodeWithHintsRefusesLargestDirectFallbackWhenDisabled(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&sizedUnpackableFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: []byte("video")},
@@ -175,8 +163,6 @@ func TestGetMediaStreamForEpisodeWithHintsRefusesLargestDirectFallbackWhenDisabl
 }
 
 func TestGetMediaStreamForEpisodeAllowsLargestDirectFallbackWhenHinted(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&sizedUnpackableFile{
 			memoryUnpackableFile: &memoryUnpackableFile{name: "abc12345", data: []byte("video")},
@@ -203,8 +189,6 @@ func TestGetMediaStreamForEpisodeAllowsLargestDirectFallbackWhenHinted(t *testin
 }
 
 func TestGetMediaStreamForEpisodeNamesUnknownFileFromItsSignature(t *testing.T) {
-	discardTestLogger(t)
-
 	// An extension-less file whose first bytes are an EBML header: the
 	// signature scan names it, so it is selected as direct media rather than
 	// having to reach the content probe.
@@ -235,8 +219,6 @@ func TestGetMediaStreamForEpisodeNamesUnknownFileFromItsSignature(t *testing.T) 
 }
 
 func TestGetMediaStreamForEpisodeSelectsUnknownNameByContentProbe(t *testing.T) {
-	discardTestLogger(t)
-
 	// The EBML header sits past offset 0, so the signature scan cannot name the
 	// file and selection has to fall through to the content probe.
 	data := append(make([]byte, 64), []byte{0x1A, 0x45, 0xDF, 0xA3}...)

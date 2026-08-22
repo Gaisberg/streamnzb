@@ -57,8 +57,6 @@ func TestGF16MatrixInversion(t *testing.T) {
 }
 
 func TestRepairFirstVolumeWithPAR2Synthetic(t *testing.T) {
-	discardTestLogger(t)
-
 	// Slice size 64 bytes
 	sliceSize := int64(64)
 	vol1Data := bytes.Repeat([]byte("A"), 64)

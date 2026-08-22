@@ -18,6 +18,17 @@ import (
 	"streamnzb/pkg/usenet/pool"
 )
 
+// The logger is silenced once for the whole test binary rather than per test.
+// These packages start read-ahead goroutines that outlive the test body and
+// call logger.Trace, so a per-test restore wrote logger.Log while those
+// goroutines were still reading it — a data race the detector flagged the first
+// time CI managed to compile that job. Production assigns Log once in
+// logger.Init before anything starts, so only the tests ever had this problem.
+// Same shape as pkg/indexer's test setup.
+func init() {
+	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func TestShouldPersistDownloadedSegment(t *testing.T) {
 	if !shouldPersistDownloadedSegment(nil) {
 		t.Fatal("nil context should allow segment persistence")
@@ -144,12 +155,6 @@ func testNZBFileWithNSegments(n int) *nzb.File {
 }
 
 func TestDownloadSegmentDeduplicatesConcurrentCalls(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
 	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
@@ -189,12 +194,6 @@ func TestDownloadSegmentDeduplicatesConcurrentCalls(t *testing.T) {
 }
 
 func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := newDedupBlockingSegmentFetcher(nil, errors.New("boom"))
 	f := NewFile(context.Background(), testNZBFileWithSegments(3, 4), nil, fetcher)
 
@@ -237,12 +236,6 @@ func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
 }
 
 func TestOpenStreamCtxUsesProvidedContextForSegmentDetection(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
 	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
@@ -261,12 +254,6 @@ func TestOpenStreamCtxUsesProvidedContextForSegmentDetection(t *testing.T) {
 }
 
 func TestDownloadSegmentLeaderCancellationDoesNotCancelFollower(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := newDedupBlockingSegmentFetcher([]byte("abc"), nil)
 	f := NewFile(context.Background(), testNZBFileWithSegments(3), nil, fetcher)
 
@@ -324,12 +311,6 @@ func TestDownloadSegmentLeaderCancellationDoesNotCancelFollower(t *testing.T) {
 }
 
 func TestDownloadSegmentReusesWaiterlessInflightRequest(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := newDedupBlockingSegmentFetcher([]byte("fresh"), nil)
 	f := NewFile(context.Background(), testNZBFileWithSegments(5), nil, fetcher)
 
@@ -418,12 +399,6 @@ func (f *varyingSizeSegmentFetcher) Calls() []int {
 }
 
 func TestEnsureSegmentMapUsesActualLastSegmentSize(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 8, 5}}
 	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, fetcher)
 
@@ -459,12 +434,6 @@ func TestEnsureSegmentMapUsesActualLastSegmentSize(t *testing.T) {
 }
 
 func TestEnsureSegmentMapUsesPerSegmentNZBBytes(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 12, 5}}
 	f := NewFile(context.Background(), testNZBFileWithSegments(10, 15, 10), nil, fetcher)
 
@@ -488,12 +457,6 @@ func TestEnsureSegmentMapUsesPerSegmentNZBBytes(t *testing.T) {
 }
 
 func TestEnsureSegmentMapSlowModeCalibratesUniformNZB(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
 	f := NewFile(context.Background(), testNZBFileWithSegments(10, 10, 10), nil, fetcher)
 
@@ -510,12 +473,6 @@ func TestEnsureSegmentMapSlowModeCalibratesUniformNZB(t *testing.T) {
 }
 
 func TestEnsureSegmentMapFastModeGapProbesSkippedMiddle(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
 	ctx := context.Background()
 	f := NewFile(ctx, testNZBFileWithSegments(10, 10, 10), nil, fetcher)
@@ -549,12 +506,6 @@ func segmentProbeCallsMatch(calls []int, want []int) bool {
 }
 
 func TestEnsureSegmentMapEstimatorPrimesWithoutNNTPProbes(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	estimator := NewSegmentSizeEstimator()
 	estimator.Set(10, 8)
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 8, 5}}
@@ -576,12 +527,6 @@ func TestEnsureSegmentMapEstimatorPrimesWithoutNNTPProbes(t *testing.T) {
 }
 
 func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{8, 10, 5}}
 	ctx := context.Background()
 	ctx = WithSkipGapProbing(ctx, true)
@@ -600,12 +545,6 @@ func TestEnsureSegmentMapWithSkipGapProbing(t *testing.T) {
 }
 
 func TestPrimeUniformSegmentMapFromEstimatorSkipsNNTPProbes(t *testing.T) {
-	oldLogger := logger.Log
-	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	defer func() {
-		logger.Log = oldLogger
-	}()
-
 	estimator := NewSegmentSizeEstimator()
 	estimator.Set(768000, 768000)
 	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{768000, 768000, 768000}}

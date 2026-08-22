@@ -16,32 +16,41 @@ import (
 	"github.com/javi11/rardecode/v2"
 )
 
-func discardTestLogger(t *testing.T) {
-	t.Helper()
-	oldLogger := logger.Log
+// The logger is silenced once for the whole test binary rather than per test.
+// These packages start read-ahead goroutines that outlive the test body and
+// call logger.Trace, so a per-test restore wrote logger.Log while those
+// goroutines were still reading it — a data race the detector flagged the first
+// time CI managed to compile that job. Production assigns Log once in
+// logger.Init before anything starts, so only the tests ever had this problem.
+// Same shape as pkg/indexer's test setup.
+func init() {
 	logger.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	t.Cleanup(func() {
-		logger.Log = oldLogger
-	})
 }
 
+// Counters are atomic because the real *File is safe to call from several
+// goroutines and this stands in for it: aggregateRemainingVolumesFromStart
+// primes continuation volumes in the background, so EnsureSegmentMap runs off
+// the test goroutine while the assertions read the counts.
 type trackingUnpackableFile struct {
 	*memoryUnpackableFile
-	ensureCalls int
-	detected    bool
+	ensureCalls atomic.Int64
+	detected    atomic.Bool
 }
 
 // EnsureSegmentMap mirrors the real *File: detection runs once and subsequent
 // calls are cheap cache hits. ensureCalls therefore counts actual detection
 // work, not the number of (possibly redundant) invocations.
 func (f *trackingUnpackableFile) EnsureSegmentMap() error {
-	if f.detected {
+	if !f.detected.CompareAndSwap(false, true) {
 		return nil
 	}
-	f.detected = true
-	f.ensureCalls++
+	f.ensureCalls.Add(1)
 	return nil
 }
+
+// calls reads the counter. Named rather than inlined so every assertion goes
+// through the atomic load.
+func (f *trackingUnpackableFile) calls() int64 { return f.ensureCalls.Load() }
 
 func TestNormalizeContinuationProbeFallsBackToFirstPartPackedSize(t *testing.T) {
 	probe := normalizeContinuationProbe([]rardecode.FilePartInfo{
@@ -57,8 +66,6 @@ func TestNormalizeContinuationProbeFallsBackToFirstPartPackedSize(t *testing.T) 
 }
 
 func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvidesPackedSize(t *testing.T) {
-	discardTestLogger(t)
-
 	firstFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part001.rar", data: []byte("first")}}
 	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: []byte("second")}}
 	thirdFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part003.rar", data: []byte("third")}}
@@ -91,13 +98,19 @@ func TestAggregateRemainingVolumesFromStartSkipsSegmentDetectionWhenProbeProvide
 	if got := parts[2].dataOffset; got != 24 {
 		t.Fatalf("expected later continuation dataOffset 24, got %d", got)
 	}
-	if secondFile.ensureCalls != 0 {
-		t.Fatalf("expected no EnsureSegmentMap on middle volumes with probe metadata, got second=%d", secondFile.ensureCalls)
+	if got := secondFile.calls(); got != 0 {
+		t.Fatalf("expected no EnsureSegmentMap on middle volumes with probe metadata, got second=%d", got)
 	}
-	// Continuation volumes are primed in the background for playback seeks.
-	time.Sleep(50 * time.Millisecond)
-	if thirdFile.ensureCalls > 1 {
-		t.Fatalf("expected at most one background EnsureSegmentMap on last volume, got third=%d", thirdFile.ensureCalls)
+	// The last volume is primed in the background for playback seeks. Waited
+	// for rather than slept past: a fixed sleep either flakes on a slow runner
+	// or wastes time on a fast one, and it made this assertion meaningless
+	// whenever the priming had not started yet.
+	deadline := time.Now().Add(2 * time.Second)
+	for thirdFile.calls() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := thirdFile.calls(); got > 1 {
+		t.Fatalf("expected at most one background EnsureSegmentMap on last volume, got third=%d", got)
 	}
 }
 
@@ -118,8 +131,6 @@ func TestReconcileMainPartsPackedSpanTrimsOvershootFromLastPart(t *testing.T) {
 }
 
 func TestApplyContinuationProbeToMainPartsAlignsFirstVolume(t *testing.T) {
-	discardTestLogger(t)
-
 	firstFile := &memoryUnpackableFile{name: "release.part001.rar", data: []byte("first")}
 	parts := []filePart{{
 		name: "movie.mkv", unpackedSize: 1000, dataOffset: 200, packedSize: 199,
@@ -154,8 +165,6 @@ func TestApplyContinuationProbeToMainPartsAlignsFirstVolume(t *testing.T) {
 }
 
 func TestAggregateRemainingVolumesIncludesAllFirstVolumeParts(t *testing.T) {
-	discardTestLogger(t)
-
 	firstFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part001.rar", data: []byte("first")}}
 	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: []byte("second")}}
 	thirdFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part003.rar", data: []byte("third")}}
@@ -213,8 +222,6 @@ func TestAggregateRemainingVolumesIncludesAllFirstVolumeParts(t *testing.T) {
 }
 
 func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutProbePackedSize(t *testing.T) {
-	discardTestLogger(t)
-
 	firstFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part001.rar", data: []byte("first")}}
 	secondFile := &trackingUnpackableFile{memoryUnpackableFile: &memoryUnpackableFile{name: "release.part002.rar", data: make([]byte, 350)}}
 
@@ -234,7 +241,7 @@ func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutPro
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(parts))
 	}
-	if got := secondFile.ensureCalls; got != 1 {
+	if got := secondFile.calls(); got != 1 {
 		t.Fatalf("expected one EnsureSegmentMap call in fallback path, got %d", got)
 	}
 	if got := parts[1].packedSize; got != 300 {
@@ -243,8 +250,6 @@ func TestAggregateRemainingVolumesFromStartFallsBackToSegmentDetectionWithoutPro
 }
 
 func TestGetMediaStreamForEpisodeSkipsCachedArchiveBlueprintForDifferentTarget(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "Show.S01E01.mkv", data: []byte("ep1")},
 		&memoryUnpackableFile{name: "Show.S01E04.mkv", data: []byte("ep4")},
@@ -266,8 +271,6 @@ func TestGetMediaStreamForEpisodeSkipsCachedArchiveBlueprintForDifferentTarget(t
 }
 
 func TestTryNestedArchiveFailsWhenRequestedEpisodeMissing(t *testing.T) {
-	discardTestLogger(t)
-
 	_, err := tryNestedArchive(context.Background(), []filePart{
 		{name: "Show.S01E04.rar", packedSize: 100},
 		{name: "Show.S01E04.r00", packedSize: 100},
@@ -278,8 +281,6 @@ func TestTryNestedArchiveFailsWhenRequestedEpisodeMissing(t *testing.T) {
 }
 
 func TestScanArchiveReturnsContextErrorWhenCanceled(t *testing.T) {
-	discardTestLogger(t)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -467,8 +468,6 @@ func TestBuildBlueprintCiphertextBlockAlignmentForEncryptedRAR(t *testing.T) {
 }
 
 func TestScanArchiveReturnsVolumeScanErrorInsteadOfEmptyArchive(t *testing.T) {
-	discardTestLogger(t)
-
 	// Memory file containing garbage data that will cause rardecode.ListArchiveInfo to fail
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "invalid_release.part01.rar", data: []byte("not a real rar archive header")},
@@ -488,8 +487,6 @@ func TestScanArchiveReturnsVolumeScanErrorInsteadOfEmptyArchive(t *testing.T) {
 }
 
 func TestScanArchiveWithMiddleVolumesOnlyReportsMissingFirstVolume(t *testing.T) {
-	discardTestLogger(t)
-
 	// Set containing only middle volumes (e.g. part02.rar, part03.rar) with missing part01.rar
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "release.part02.rar", data: []byte("middle volume content")},
@@ -513,8 +510,6 @@ func TestScanArchiveWithMiddleVolumesOnlyReportsMissingFirstVolume(t *testing.T)
 }
 
 func TestTryNestedArchiveScansRemainingOuterVolumesWhenFirstVolumeMissing(t *testing.T) {
-	discardTestLogger(t)
-
 	initialParts := []filePart{
 		{name: "inner.r16", volName: "outer.part01.rar", packedSize: 100},
 	}
@@ -533,8 +528,6 @@ func TestTryNestedArchiveScansRemainingOuterVolumesWhenFirstVolumeMissing(t *tes
 // A nested set is only as complete as the outer scan that produced it, so a
 // missing inner first volume must not be reported as a damaged release.
 func TestScanArchiveNestedSetMissingFirstVolumeIsNotBlamedOnPAR2(t *testing.T) {
-	discardTestLogger(t)
-
 	// The shape a partial outer scan leaves behind: some inner continuation
 	// volumes, no inner first volume, and no PAR2 anywhere in sight.
 	files := []UnpackableFile{
@@ -560,8 +553,6 @@ func TestScanArchiveNestedSetMissingFirstVolumeIsNotBlamedOnPAR2(t *testing.T) {
 
 // The top-level case keeps its PAR2 wording, so the two stay distinguishable.
 func TestScanArchiveTopLevelMissingFirstVolumeStillReportsPAR2(t *testing.T) {
-	discardTestLogger(t)
-
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "release.part02.rar", data: []byte("middle volume content")},
 		&memoryUnpackableFile{name: "release.part03.rar", data: []byte("middle volume content 2")},
@@ -623,8 +614,6 @@ func (f *countingUnpackableFile) OpenStreamCtx(ctx context.Context) (io.ReadSeek
 // A 135-volume release used to scan every remaining outer volume looking for
 // one inner first volume, running past the client's timeout.
 func TestTryNestedArchiveCapsTheOuterRescan(t *testing.T) {
-	discardTestLogger(t)
-
 	var opened atomic.Int64
 	initialParts := []filePart{
 		{name: "inner.r16", volName: "outer.part001.rar", packedSize: 100},
