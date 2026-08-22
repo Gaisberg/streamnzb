@@ -20,6 +20,12 @@ on:
 permissions:
   contents: write
   packages: write
+  # Required because this workflow calls ci.yml, whose `changes` job reads the
+  # pull request's file list. A called workflow may not request a permission the
+  # caller has not granted, and the check happens when the file is parsed — not
+  # when the step runs — so it fails even on the push and release paths, where
+  # that job never touches the API.
+  pull-requests: read
 
 jobs:
   # Nothing is published for a tree that does not pass the same checks build.sh

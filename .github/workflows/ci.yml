@@ -24,6 +24,10 @@ on:
       - '.release-please-manifest.json'
   workflow_call:
 
+# pull-requests: read is what the `changes` job needs to list a pull request's
+# files. Anything that calls this workflow must grant it too — a callee cannot
+# request more than its caller allows, and the mismatch is a parse error rather
+# than a runtime one.
 permissions:
   contents: read
   pull-requests: read
