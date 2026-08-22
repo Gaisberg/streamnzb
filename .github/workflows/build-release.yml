@@ -38,10 +38,10 @@ jobs:
           echo "REPO=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.25'
           cache: false
@@ -51,7 +51,7 @@ jobs:
       # Key on the commit SHA instead: every run saves an incremental cache and
       # the next run restores the newest one via restore-keys.
       - name: Cache Go build and module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/go-build
@@ -83,7 +83,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -120,7 +120,7 @@ jobs:
       # binaries only change when that file does.
       - name: Cache embedded ffprobe binaries
         id: ffprobe-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: pkg/media/ffprobe/bin
           key: ffprobe-${{ hashFiles('pkg/media/ffprobe/installer.go') }}
