@@ -44,7 +44,10 @@ type LibraryListResponse struct {
 }
 
 func (s *Server) handleGetLibrary(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
+	// The library is one shared store, not a per-stream view, so everything
+	// under /api/library is admin-only: reads expose what every device played,
+	// and writes reach every device's cache.
+	if !s.requireAdmin(w, r, "Only admin can read the library", http.MethodGet) {
 		return
 	}
 
@@ -111,7 +114,7 @@ func (s *Server) handleGetLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePinLibrary(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodPost) {
+	if !s.requireAdmin(w, r, "Only admin can pin library items", http.MethodPost) {
 		return
 	}
 
@@ -139,8 +142,7 @@ func (s *Server) handlePinLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !s.requireAdmin(w, r, "Only admin can delete library items", http.MethodDelete, http.MethodPost) {
 		return
 	}
 
@@ -183,7 +185,7 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
+	if !s.requireAdmin(w, r, "Only admin can read library stats", http.MethodGet) {
 		return
 	}
 
@@ -201,9 +203,9 @@ func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
 
 	maxItems := 5000
 	maxSizeMB := 250
-	if s.config != nil {
-		maxItems = s.config.EffectiveLibraryMaxItems()
-		maxSizeMB = s.config.EffectiveLibraryMaxSizeMB()
+	if cfg := s.Config(); cfg != nil {
+		maxItems = cfg.EffectiveLibraryMaxItems()
+		maxSizeMB = cfg.EffectiveLibraryMaxSizeMB()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

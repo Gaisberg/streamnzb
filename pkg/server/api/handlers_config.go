@@ -61,11 +61,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream, _ := auth.StreamFromContext(r)
+	live := s.Config()
 	var cfg config.Config
 	if stream != nil && stream.Username == s.adminUsername() {
-		cfg = configForAdminAPI(s.config)
+		cfg = configForAdminAPI(live)
 	} else {
-		cfg = redactedConfigForViewer(s.config)
+		cfg = redactedConfigForViewer(live)
 	}
 	if cfg.AdminUsername == "" {
 		cfg.AdminUsername = s.adminUsername()

@@ -2,7 +2,6 @@ package stremio
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,11 +18,9 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
-	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
-	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/playback"
 	searchparser "streamnzb/pkg/search/parser"
@@ -561,7 +557,8 @@ func (k StreamSlotKey) CacheKey() string {
 }
 
 func (s *Server) baseURLWithToken(stream *auth.Stream) string {
-	base := strings.TrimSuffix(s.baseURL, "/")
+	rt := s.runtime()
+	base := strings.TrimSuffix(rt.baseURL, "/")
 	if stream != nil && stream.Token != "" {
 		base += "/" + stream.Token
 	}
@@ -653,7 +650,8 @@ func streamIndexerSelections(stream *auth.Stream) []string {
 }
 
 func (s *Server) indexerHostsForStream(stream *auth.Stream) []string {
-	if len(s.availNZBIndexerHosts) == 0 {
+	rt := s.runtime()
+	if len(rt.availNZBIndexerHosts) == 0 {
 		return nil
 	}
 	selections := streamIndexerSelections(stream)
@@ -663,7 +661,7 @@ func (s *Server) indexerHostsForStream(stream *auth.Stream) []string {
 	seen := make(map[string]bool, len(selections))
 	hosts := make([]string, 0, len(selections))
 	for _, name := range selections {
-		host := strings.TrimSpace(s.availNZBIndexerHosts[name])
+		host := strings.TrimSpace(rt.availNZBIndexerHosts[name])
 		if host == "" || seen[host] {
 			continue
 		}
@@ -709,15 +707,6 @@ func hasUsableIDSearchIdentifier(req indexer.SearchRequest, contentType string) 
 
 func hasPreparedTextQueries(req indexer.SearchRequest) bool {
 	return strings.TrimSpace(req.Query) != ""
-}
-
-func looksLikeTMDBID(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	_, err := strconv.Atoi(value)
-	return err == nil
 }
 
 func applyStreamIndexerSelection(req *indexer.SearchRequest, stream *auth.Stream) {
@@ -791,6 +780,7 @@ func getStreamSinkFromContext(ctx context.Context) StreamSink {
 // ensureDeferredSessionsForPlaylist creates deferred sessions for every candidate in the play list,
 // keyed by the same slot path used in stream URLs, so handlePlay can serve without resolving or hitting indexers.
 func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key StreamSlotKey, stream *auth.Stream) {
+	rt := s.runtime()
 	if list == nil || list.Params == nil {
 		return
 	}
@@ -807,8 +797,8 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 		if len(list.SlotPaths) == n {
 			playPath = list.SlotPaths[i]
 		}
-		downloadURL := addAPIKeyToDownloadURL(cand.Release.Link, s.config.Indexers)
-		idx := s.indexer
+		downloadURL := addAPIKeyToDownloadURL(cand.Release.Link, rt.config.Indexers)
+		idx := rt.indexer
 		if cand.Release.SourceIndexer != nil {
 			if ii, ok := cand.Release.SourceIndexer.(indexer.Indexer); ok {
 				idx = ii
@@ -862,6 +852,7 @@ func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index
 }
 
 func (s *Server) resolveStreamSlotFromPlaylist(key StreamSlotKey, index int, list *playlistResult, stream *auth.Stream) (*session.Session, error) {
+	rt := s.runtime()
 	requestedSlotPath := key.SlotPath(index)
 	candidateIndex := index
 	if len(list.SlotPaths) == len(list.Candidates) {
@@ -881,8 +872,8 @@ func (s *Server) resolveStreamSlotFromPlaylist(key StreamSlotKey, index int, lis
 	if rel == nil || rel.Link == "" {
 		return nil, fmt.Errorf("no release at slot %s", requestedSlotPath)
 	}
-	downloadURL := addAPIKeyToDownloadURL(rel.Link, s.config.Indexers)
-	idx := s.indexer
+	downloadURL := addAPIKeyToDownloadURL(rel.Link, rt.config.Indexers)
+	idx := rt.indexer
 	if rel.SourceIndexer != nil {
 		if i, ok := rel.SourceIndexer.(indexer.Indexer); ok {
 			idx = i
@@ -1160,13 +1151,14 @@ func isIndexerLimitErr(err error) bool {
 // disconnects it when no slot is left. Used on the two paths where a slot is
 // already known to have failed before any response was written.
 func (s *Server) redirectToNextSlotOrFail(w http.ResponseWriter, r *http.Request, sessionID string, streamConfig *auth.Stream, logMsg string) {
+	rt := s.runtime()
 	if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
 		logger.Info(logMsg, "from", sessionID, "to", nextID)
 		w.Header().Set("Location", s.baseURLWithToken(streamConfig)+"/play/"+nextID)
 		w.WriteHeader(http.StatusFound)
 		return
 	}
-	forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+	forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
 }
 
 // handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,
@@ -1380,6 +1372,7 @@ func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, stre
 // in-memory playlist so failover moves on, but leaves nothing behind — the
 // release is offered again on the next search.
 func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durable bool) {
+	rt := s.runtime()
 	if s == nil || sess == nil {
 		return
 	}
@@ -1411,8 +1404,8 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durabl
 		// release after every restart.
 		if badStore := s.attemptRecorder.BadReleaseStore(); badStore != nil && detailsURL != "" {
 			ttl := config.DefaultBadReleaseTTLHours * time.Hour
-			if s.config != nil {
-				ttl = s.config.EffectiveBadReleaseTTL()
+			if rt.config != nil {
+				ttl = rt.config.EffectiveBadReleaseTTL()
 			}
 			if ttl > 0 {
 				badStore.MarkBad(detailsURL, releaseTitle, reason, ttl)
@@ -1477,13 +1470,14 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 // that only definitive failures reach AvailNZB; the speculative pre-probe
 // path gates on preProbeConfirmsBadRelease before calling and passes false.
 func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error, requireReportGate bool) availnzb.ReportOutcome {
+	rt := s.runtime()
 	availOutcome := availOutcomeForFailure(streamErr)
-	canReport := s.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
+	canReport := rt.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
 	if canReport {
 		if shouldReportBadReleaseAllProviders(streamErr) {
-			availOutcome = s.availReporter.ReportBadAllProviders(sess, streamErr.Error())
+			availOutcome = rt.availReporter.ReportBadAllProviders(sess, streamErr.Error())
 		} else {
-			availOutcome = s.availReporter.ReportBad(sess, streamErr.Error())
+			availOutcome = rt.availReporter.ReportBad(sess, streamErr.Error())
 		}
 	}
 	s.applyReportedBadReleaseToCaches(sess, availOutcome, conclusiveBadRelease(streamErr))
@@ -1860,6 +1854,7 @@ func (s *Server) logBelowGoodThresholdOnce(sess *session.Session, sessionID stri
 // run long enough and far enough to count. It reports whether the session has
 // committed, including when an earlier call already did it.
 func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID string, serveStartedAt time.Time) bool {
+	rt := s.runtime()
 	if sess == nil {
 		return false
 	}
@@ -1869,16 +1864,16 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 	serveDuration := time.Since(serveStartedAt)
 	minBytes := availnzb.DefaultMinBytesToReportGood
 	minDuration := availnzb.DefaultMinDurationToReportGood
-	if s.availReporter != nil {
-		minBytes = s.availReporter.MinBytesToReportGood
-		minDuration = s.availReporter.MinDurationToReportGood
+	if rt.availReporter != nil {
+		minBytes = rt.availReporter.MinBytesToReportGood
+		minDuration = rt.availReporter.MinDurationToReportGood
 	}
 	if !availnzb.QualifiesGood(sess, serveDuration, minBytes, minDuration) {
 		return false
 	}
 	availOutcome := availnzb.ReportOutcome{}
-	if s.availReporter != nil {
-		availOutcome = s.availReporter.ReportGood(sess, serveDuration)
+	if rt.availReporter != nil {
+		availOutcome = rt.availReporter.ReportGood(sess, serveDuration)
 	}
 	if !sess.Once(onceSuccessRecorded) {
 		return true
@@ -1926,170 +1921,6 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 		"min_duration", minDuration,
 	)
 	return true
-}
-
-func (s *Server) handleDebugPlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
-	if debugValue := strings.ToLower(strings.TrimSpace(os.Getenv("STREAMNZB_DEBUG_PLAY"))); debugValue != "1" && debugValue != "true" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	nzbPath := r.URL.Query().Get("nzb")
-	if nzbPath == "" {
-		http.Error(w, "Missing 'nzb' query parameter (URL or file path)", http.StatusBadRequest)
-		return
-	}
-
-	logger.Info("Debug Play request", "nzb", nzbPath)
-
-	var nzbData []byte
-	var err error
-
-	if strings.HasPrefix(nzbPath, "/") || (len(nzbPath) > 2 && nzbPath[1] == ':') {
-
-		logger.Debug("Reading NZB from local file", "path", nzbPath)
-		nzbData, err = os.ReadFile(nzbPath)
-		if err != nil {
-			logger.Error("Failed to read local NZB file", "path", nzbPath, "err", err)
-			http.Error(w, "Failed to read local NZB file: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-
-		dlCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-		nzbData, err = s.indexer.DownloadNZB(dlCtx, nzbPath)
-		cancel()
-		if err != nil {
-
-			httpClient := &http.Client{Timeout: 60 * time.Second}
-			resp, httpErr := httpClient.Get(nzbPath)
-			if httpErr != nil {
-				logger.Error("Failed to download NZB", "url", nzbPath, "err", err, "httpErr", httpErr)
-				http.Error(w, "Failed to download NZB: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != 200 {
-				msg := fmt.Sprintf("Failed to download NZB (HTTP %d)", resp.StatusCode)
-				logger.Error(msg, "url", nzbPath)
-				http.Error(w, msg, http.StatusInternalServerError)
-				return
-			}
-
-			nzbData, err = io.ReadAll(resp.Body)
-			if err != nil {
-				http.Error(w, "Failed to read NZB body", http.StatusInternalServerError)
-				return
-			}
-		}
-	}
-
-	nzbParsed, err := nzb.ParseWithContext(r.Context(), bytes.NewReader(nzbData))
-	if err != nil {
-		logger.Error("Failed to parse NZB", "err", err)
-		http.Error(w, "Failed to parse NZB", http.StatusInternalServerError)
-		return
-	}
-
-	sessionID := fmt.Sprintf("debug-%x", nzbPath)
-
-	sess, err := s.sessionManager.CreateSession(sessionID, nzbParsed, nil, nil)
-	if err != nil {
-		logger.Error("Failed to create session", "err", err)
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
-		return
-	}
-
-	files := sess.Files()
-	if len(files) == 0 {
-		http.Error(w, "No files in NZB", http.StatusInternalServerError)
-		return
-	}
-	unpackFiles := make([]unpack.UnpackableFile, len(files))
-	for i := range files {
-		unpackFiles[i] = files[i]
-	}
-	password := ""
-	if sessNZB := sess.NZB(); sessNZB != nil {
-		password = sessNZB.Password()
-	}
-	// Cancel stream when either request ends or session is closed (e.g. from dashboard).
-	mergedCtx, mergedCancel := context.WithCancel(r.Context())
-	go func(done <-chan struct{}) {
-		select {
-		case <-done:
-			return
-		case <-sess.Done():
-			logger.Debug("debug play aborted: session closed", "session", sessionID)
-			mergedCancel()
-		}
-	}(mergedCtx.Done())
-	defer mergedCancel()
-	target := unpack.EpisodeTarget{}
-	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
-	}
-	hints := unpack.StreamSelectionHints{
-		// Debug play should be permissive and mirror nzbdav-style direct playback
-		// behavior for odd/obfuscated NZBs where strict content typing is absent.
-		AllowLargestDirectFallback: true,
-	}
-	startupTimeout := s.playbackStartupTimeout()
-	if startupTimeout < 2*time.Minute {
-		startupTimeout = 2 * time.Minute
-	}
-	openCtx, openCancel := context.WithTimeout(mergedCtx, startupTimeout)
-	defer openCancel()
-	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(openCtx, unpackFiles, sess.Blueprint(), password, target, hints)
-	playback.CacheReturnedBlueprint(sess, bp)
-	if err != nil {
-		logger.Error("Failed to open media stream", "err", err)
-		http.Error(w, "Failed to open media stream: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	var closeStreamOnce sync.Once
-	closeStream := func(reason string) {
-		closeStreamOnce.Do(func() {
-			if stream != nil {
-				logger.Debug("debug play closing stream", "session", sessionID, "reason", reason)
-				stream.Close()
-				stream = nil
-			}
-		})
-	}
-	defer closeStream("handler exit")
-	go func(done <-chan struct{}) {
-		<-done
-		closeStream("playback canceled")
-	}(mergedCtx.Done())
-
-	clientIP := httpx.ClientIP(r)
-
-	s.sessionManager.StartPlayback(sessionID, clientIP)
-	var endPlaybackOnce sync.Once
-	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
-	defer endPlaybackOnce.Do(endPlayback)
-	go func() {
-		<-r.Context().Done()
-		endPlaybackOnce.Do(endPlayback)
-	}()
-
-	monitoredStream := &StreamMonitor{
-		ReadSeekCloser: stream,
-		sessionID:      sessionID,
-		clientIP:       clientIP,
-		manager:        s.sessionManager,
-		lastUpdate:     time.Now(),
-	}
-
-	logger.Info("Serving debug media", "name", name, "size", size)
-	logger.Debug("HTTP Request", "method", r.Method, "range", r.Header.Get("Range"), "user_agent", r.Header.Get("User-Agent"))
-
-	bufW := newMediaResponseWriter(w, name)
-	defer bufW.Flush()
-	http.ServeContent(bufW, r, name, time.Time{}, monitoredStream)
-
-	logger.Debug("Finished serving debug media")
 }
 
 func (s *Server) preProbeSessionSync(ctx context.Context, sess *session.Session) (bool, error) {
@@ -2191,6 +2022,7 @@ func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts 
 }
 
 func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
+	rt := s.runtime()
 	if streamUsesAIOStreamsProfile(stream) {
 		logger.Debug("Skipping speculative pre-probing in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
 		return
@@ -2209,14 +2041,15 @@ func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, l
 		slotPaths[i] = key.SlotPath(i)
 	}
 
-	s.preProbeSlots(key.CacheKey(), slotPaths, s.config.EffectiveSpeculativePreProbingMaxAttempts())
+	s.preProbeSlots(key.CacheKey(), slotPaths, rt.config.EffectiveSpeculativePreProbingMaxAttempts())
 }
 
 func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
+	rt := s.runtime()
 	if len(order) == 0 {
 		return
 	}
-	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, s.config.EffectiveSpeculativePreProbingMaxAttempts())
+	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, rt.config.EffectiveSpeculativePreProbingMaxAttempts())
 }
 
 // saveSessionToLibrary upserts the session's NZB + blueprint into the library.
@@ -2225,11 +2058,12 @@ func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
 // then LibraryStatusGood once validated or played through — a pending re-save
 // never downgrades an existing good/bad verdict (enforced in StoreItem).
 func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint, mediaFileName string, mediaFileSize int64, status string) {
+	rt := s.runtime()
 	rel := sess.Release()
 	if s == nil || s.attemptRecorder == nil || sess == nil || rel == nil {
 		return
 	}
-	if s.config != nil && !s.config.EffectiveLibraryAutoSave() {
+	if rt.config != nil && !rt.config.EffectiveLibraryAutoSave() {
 		return
 	}
 	libStore := s.attemptRecorder.LibraryStore()
@@ -2308,8 +2142,8 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint
 		logger.Warn("Failed to save session to library", "title", rel.Title, "err", err)
 	} else {
 		logger.Debug("Saved session to library", "title", rel.Title, "type", contentType, "id", contentID, "status", status)
-		if s.config != nil {
-			_ = libStore.EnforceQuota(s.config.EffectiveLibraryMaxItems(), s.config.EffectiveLibraryMaxSizeMB())
+		if rt.config != nil {
+			_ = libStore.EnforceQuota(rt.config.EffectiveLibraryMaxItems(), rt.config.EffectiveLibraryMaxSizeMB())
 		}
 	}
 }

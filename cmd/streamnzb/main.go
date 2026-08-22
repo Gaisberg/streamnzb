@@ -94,6 +94,16 @@ func main() {
 	logger.SetLevel(cfg.LogLevel)
 	logger.SetVerboseNNTPLogging(cfg.VerboseNNTPLogging)
 
+	// An environment variable set to something that is not a boolean leaves the
+	// default in place rather than flipping it, which is safe but silent — the
+	// operator wrote something and nothing happened. Reported here rather than
+	// in pkg/core/env, which cannot log: logger imports env.
+	for _, bad := range env.MalformedBooleans() {
+		logger.Warn("Ignoring environment variable: not a boolean",
+			"name", bad.Name, "value", bad.Value,
+			"accepted", "1/true/yes/on or 0/false/no/off")
+	}
+
 	if cfg.MemoryLimitMB > 0 {
 		limit := int64(cfg.MemoryLimitMB) * 1024 * 1024
 		debug.SetMemoryLimit(limit)

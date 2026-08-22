@@ -138,7 +138,10 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownloadLogs(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
+	// The log is redacted of API keys but not of indexer hostnames, release
+	// titles, client addresses or stream names, so it is the admin's operating
+	// history and not a device's business.
+	if !s.requireAdmin(w, r, "Only admin can download logs", http.MethodGet) {
 		return
 	}
 
@@ -165,7 +168,7 @@ func (s *Server) handleDownloadLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
+	if !s.requireAdmin(w, r, "Only admin can read NZB attempts", http.MethodGet) {
 		return
 	}
 	s.mu.RLock()
@@ -210,7 +213,9 @@ func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
 // handleSearchDiagnostics serves the persisted search-funnel records the
 // history page attaches to its request groups.
 func (s *Server) handleSearchDiagnostics(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
+	// stream_name is a caller-supplied filter, so without this a device could
+	// read the search history of any other device by naming it.
+	if !s.requireAdmin(w, r, "Only admin can read search diagnostics", http.MethodGet) {
 		return
 	}
 	s.mu.RLock()
@@ -328,6 +333,11 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 
 	case http.MethodDelete:
+		// Reading history stays open to any authenticated caller, as the other
+		// stats routes are. Erasing it does not.
+		if !s.requireAdmin(w, r, "Only admin can delete statistics") {
+			return
+		}
 		if mgr == nil {
 			http.Error(w, "State manager unavailable", http.StatusInternalServerError)
 			return

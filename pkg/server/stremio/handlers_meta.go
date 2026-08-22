@@ -13,6 +13,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -103,38 +104,27 @@ type resolvedMetaID struct {
 }
 
 func (s *Server) resolveMetaID(ctx context.Context, contentType, rawID string) (*resolvedMetaID, error) {
+	rt := s.runtime()
 	id := strings.TrimSpace(rawID)
+	// Which segment means what is decided in one place for the whole addon.
+	// The policy on top of it is this endpoint's own and deliberately differs
+	// from the search path's: a client is waiting for a document here, so an id
+	// that resolves to nothing is an error rather than an empty result.
+	parsed := query.ParseContentID(id)
 	rid := &resolvedMetaID{}
+
 	switch {
-	case strings.HasPrefix(id, "kitsu:"):
-		parts := strings.Split(id, ":")
-		if len(parts) < 2 || parts[1] == "" {
-			return nil, fmt.Errorf("invalid kitsu id %q", id)
-		}
-		rid.kitsuID = parts[1]
-		rid.canonicalID = "kitsu:" + parts[1]
+	case parsed.KitsuID != "":
+		rid.kitsuID = parsed.KitsuID
+		rid.canonicalID = "kitsu:" + parsed.KitsuID
 		return rid, nil
 
-	case strings.HasPrefix(id, "tmdb:"):
-		parts := strings.Split(id, ":")
-		n, err := strconv.Atoi(parts[1])
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("invalid tmdb id %q", id)
-		}
-		rid.tmdbID = n
-		rid.canonicalID = "tmdb:" + parts[1]
-		return rid, nil
-
-	case strings.HasPrefix(id, "tvdb:"):
-		parts := strings.Split(id, ":")
-		if len(parts) < 2 || parts[1] == "" {
-			return nil, fmt.Errorf("invalid tvdb id %q", id)
-		}
+	case parsed.TVDBID != "":
 		// TVDB is the series meta source, so the id is usable as-is; TMDB
 		// resolution is best-effort for the movie path and the tt fallback.
-		rid.tvdbID = parts[1]
-		rid.canonicalID = "tvdb:" + parts[1]
-		if find, err := s.tmdbClient.Find(rid.tvdbID, "tvdb_id"); err == nil {
+		rid.tvdbID = parsed.TVDBID
+		rid.canonicalID = "tvdb:" + parsed.TVDBID
+		if find, err := rt.tmdbClient.Find(rid.tvdbID, "tvdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				rid.tmdbID = res.ID
 				rid.canonicalID = fmt.Sprintf("tmdb:%d", res.ID)
@@ -142,30 +132,39 @@ func (s *Server) resolveMetaID(ctx context.Context, contentType, rawID string) (
 		}
 		return rid, nil
 
-	case strings.HasPrefix(id, "tt"):
+	case parsed.IMDbID != "":
 		// TMDB resolution is best-effort: series can still be served from
 		// TVDB via the imdb id alone.
-		imdb := strings.Split(id, ":")[0]
-		rid.imdbID = imdb
-		rid.canonicalID = imdb
-		if find, err := s.tmdbClient.Find(imdb, "imdb_id"); err == nil {
+		rid.imdbID = parsed.IMDbID
+		rid.canonicalID = parsed.IMDbID
+		if find, err := rt.tmdbClient.Find(parsed.IMDbID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				rid.tmdbID = res.ID
 			}
 		}
 		return rid, nil
 
-	default:
-		// Bare numeric ids are TMDB ids, matching the stream handler.
-		numeric := strings.Split(id, ":")[0]
-		n, err := strconv.Atoi(numeric)
+	case parsed.TMDBID != "":
+		// Covers both "tmdb:N" and a bare number, which the stream handler also
+		// treats as a TMDB id. The parser is total and says nothing about
+		// whether the number is usable, so the range check stays here.
+		n, err := strconv.Atoi(parsed.TMDBID)
 		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("unrecognized meta id %q", id)
+			return nil, fmt.Errorf("invalid tmdb id %q", id)
 		}
 		rid.tmdbID = n
-		rid.canonicalID = "tmdb:" + numeric
+		rid.canonicalID = "tmdb:" + parsed.TMDBID
 		return rid, nil
 	}
+
+	// A recognised prefix carrying nothing usable is named as such; anything
+	// else was never an id this addon speaks.
+	for prefix, label := range map[string]string{"kitsu:": "kitsu", "tmdb:": "tmdb", "tvdb:": "tvdb"} {
+		if strings.HasPrefix(id, prefix) {
+			return nil, fmt.Errorf("invalid %s id %q", label, id)
+		}
+	}
+	return nil, fmt.Errorf("unrecognized meta id %q", id)
 }
 
 // pickFindResult chooses the TMDB find result matching the requested type,
@@ -197,10 +196,11 @@ func metaLogoLang(profile *config.MetadataProfileConfig) string {
 }
 
 func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	rt := s.runtime()
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
 	}
-	details, err := s.tmdbClient.GetMovieDetailsFull(rid.tmdbID, profile.EffectiveLanguage())
+	details, err := rt.tmdbClient.GetMovieDetailsFull(rid.tmdbID, profile.EffectiveLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -342,17 +342,18 @@ func (s *Server) buildSeriesMeta(ctx context.Context, profile *config.MetadataPr
 
 // resolveTVDBIDForMeta fills rid.tvdbID from whichever id the request carried.
 func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
+	rt := s.runtime()
 	if rid.tvdbID != "" {
 		return rid.tvdbID
 	}
-	if rid.imdbID != "" && s.tvdbClient != nil {
-		if id, err := s.tvdbClient.ResolveTVDBID(rid.imdbID); err == nil && id != "" {
+	if rid.imdbID != "" && rt.tvdbClient != nil {
+		if id, err := rt.tvdbClient.ResolveTVDBID(rid.imdbID); err == nil && id != "" {
 			rid.tvdbID = id
 			return id
 		}
 	}
 	if rid.tmdbID > 0 {
-		if ext, err := s.tmdbClient.GetExternalIDs(rid.tmdbID, "tv"); err == nil && ext.TVDBID > 0 {
+		if ext, err := rt.tmdbClient.GetExternalIDs(rid.tmdbID, "tv"); err == nil && ext.TVDBID > 0 {
 			rid.tvdbID = strconv.Itoa(ext.TVDBID)
 			return rid.tvdbID
 		}
@@ -361,12 +362,13 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 }
 
 func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	rt := s.runtime()
 	tvdbID := s.resolveTVDBIDForMeta(rid)
 	if tvdbID == "" {
 		return nil, fmt.Errorf("no TVDB id resolved")
 	}
 	lang3 := tvdb.LanguageToISO3(profile.EffectiveLanguage())
-	ext, err := s.tvdbClient.GetSeriesExtendedTranslated(tvdbID, lang3)
+	ext, err := rt.tvdbClient.GetSeriesExtendedTranslated(tvdbID, lang3)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +426,7 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 		}
 	}
 
-	episodes, err := s.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
+	episodes, err := rt.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
 	if err != nil {
 		logger.Debug("TVDB episodes fetch failed; serving series meta without videos", "tvdb_id", tvdbID, "err", err)
 	}
@@ -452,10 +454,11 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 }
 
 func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	rt := s.runtime()
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
 	}
-	details, _, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage())
+	details, _, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +483,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.Me
 			seasonNumbers = append(seasonNumbers, si.SeasonNumber)
 		}
 	}
-	_, seasons, err := s.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, seasonNumbers, profile.EffectiveLanguage())
+	_, seasons, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, seasonNumbers, profile.EffectiveLanguage())
 	if err != nil {
 		return nil, err
 	}
@@ -602,6 +605,7 @@ func seriesMetaType(contentType string) string {
 // Kitsu title stays — anime audiences expect the romaji/canonical name.
 // Purely best-effort: no mapping or a failed fetch leaves the Kitsu meta as-is.
 func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataProfileConfig, kitsuID string) {
+	rt := s.runtime()
 	if s.animeLists == nil {
 		return
 	}
@@ -611,7 +615,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 	}
 	switch {
 	case mapping.TVDBID != "":
-		ext, err := s.tvdbClient.GetSeriesExtended(mapping.TVDBID)
+		ext, err := rt.tvdbClient.GetSeriesExtended(mapping.TVDBID)
 		if err != nil {
 			logger.Debug("Anime TVDB artwork fetch failed", "kitsu_id", kitsuID, "tvdb_id", mapping.TVDBID, "err", err)
 			return
@@ -625,7 +629,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 		if meta.Poster == "" {
 			meta.Poster = ext.Image
 		}
-		if _, overview := s.tvdbClient.SeriesTranslation(mapping.TVDBID, tvdb.LanguageToISO3(profile.EffectiveLanguage())); overview != "" {
+		if _, overview := rt.tvdbClient.SeriesTranslation(mapping.TVDBID, tvdb.LanguageToISO3(profile.EffectiveLanguage())); overview != "" {
 			meta.Description = overview
 		}
 	case mapping.TMDBID != "" && strings.EqualFold(mapping.Type, "movie"):
@@ -633,7 +637,7 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 		if err != nil || tmdbID <= 0 {
 			return
 		}
-		details, err := s.tmdbClient.GetMovieDetailsFull(tmdbID, profile.EffectiveLanguage())
+		details, err := rt.tmdbClient.GetMovieDetailsFull(tmdbID, profile.EffectiveLanguage())
 		if err != nil {
 			logger.Debug("Anime TMDB artwork fetch failed", "kitsu_id", kitsuID, "tmdb_id", mapping.TMDBID, "err", err)
 			return

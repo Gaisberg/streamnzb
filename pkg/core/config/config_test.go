@@ -978,3 +978,41 @@ func TestLoadWithPathAvailNZBModeDefaultsOff(t *testing.T) {
 		t.Fatalf("AvailNZBMode of an enabled install = %q, want %q", got, "on")
 	}
 }
+
+// A stream's token is the credential its device authenticates with, so the
+// non-admin view of the config must not carry anybody's. This also pins that
+// redaction leaves the live config alone: RedactForAPI starts from a shallow
+// copy, and Streams holds pointers, so blanking a token without cloning would
+// erase it from the running server.
+func TestRedactForAPIStripsStreamTokensWithoutTouchingTheLiveConfig(t *testing.T) {
+	cfg := &Config{
+		Streams: map[string]*StreamEntry{
+			"living-room": {Username: "living-room", Token: "living-room-secret", AddonName: "Lounge"},
+			"phone":       {Username: "phone", Token: "phone-secret"},
+		},
+	}
+
+	out := cfg.RedactForAPI()
+
+	for name, entry := range out.Streams {
+		if entry.Token != "" {
+			t.Fatalf("RedactForAPI leaked the token for stream %q: %q", name, entry.Token)
+		}
+	}
+	if out.Streams["living-room"].AddonName != "Lounge" {
+		t.Fatalf("non-secret stream fields should survive redaction, got %#v", out.Streams["living-room"])
+	}
+	if cfg.Streams["living-room"].Token != "living-room-secret" || cfg.Streams["phone"].Token != "phone-secret" {
+		t.Fatalf("RedactForAPI mutated the live config: %#v", cfg.Streams)
+	}
+}
+
+// A nil entry is not something the loader produces, but the map is decoded
+// straight from user-editable JSON, where `"phone": null` is legal.
+func TestRedactForAPIToleratesANilStreamEntry(t *testing.T) {
+	cfg := &Config{Streams: map[string]*StreamEntry{"phone": nil}}
+	out := cfg.RedactForAPI()
+	if entry, ok := out.Streams["phone"]; !ok || entry != nil {
+		t.Fatalf("expected the nil entry to survive as nil, got %#v", out.Streams)
+	}
+}

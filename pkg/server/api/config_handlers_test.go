@@ -1,8 +1,12 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 )
 
@@ -72,5 +76,52 @@ func TestRedactedConfigForViewerRemovesProviderAndIndexerCredentials(t *testing.
 	}
 	if out.IndexerProxyURL != "http://proxy-global:8080" {
 		t.Fatalf("expected global proxy userinfo redacted for viewers, got %q", out.IndexerProxyURL)
+	}
+}
+
+// The route this covers is the one that matters: /api/config is wrapped in
+// authMiddleware, which authenticates *any* stream token, not just the admin's.
+// So a device reading the config must not come away with the credential of the
+// device next to it. Exercised through the handler rather than the redaction
+// helper, because the split between the two branches is where the mistake would
+// live.
+func TestGetConfigWithholdsStreamTokensFromNonAdminDevices(t *testing.T) {
+	cfg := &config.Config{
+		AdminUsername: "admin",
+		Streams: map[string]*config.StreamEntry{
+			"living-room": {Username: "living-room", Token: "living-room-secret"},
+			"phone":       {Username: "phone", Token: "phone-secret"},
+		},
+	}
+	s := &Server{config: cfg}
+
+	for _, tc := range []struct {
+		name       string
+		as         string
+		wantTokens bool
+	}{
+		{"a device sees no tokens at all", "phone", false},
+		{"the admin still sees them", "admin", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+			req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: tc.as}))
+			rr := httptest.NewRecorder()
+
+			s.handleGetConfig(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rr.Code)
+			}
+			body := rr.Body.String()
+			leaked := strings.Contains(body, "living-room-secret") || strings.Contains(body, "phone-secret")
+			if leaked != tc.wantTokens {
+				t.Fatalf("tokens present = %v, want %v; body: %s", leaked, tc.wantTokens, body)
+			}
+		})
+	}
+
+	if cfg.Streams["phone"].Token != "phone-secret" {
+		t.Fatalf("serving the config mutated it: %#v", cfg.Streams["phone"])
 	}
 }

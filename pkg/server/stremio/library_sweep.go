@@ -21,10 +21,11 @@ const (
 // expired, so the library stops offering dead releases. Disabled when the TTL is
 // non-positive. Runs a bounded batch per tick so a large backlog drains gradually.
 func (s *Server) startLibraryFreshnessSweeper() {
-	if s == nil || s.config == nil {
+	rt := s.runtime()
+	if s == nil || rt.config == nil {
 		return
 	}
-	ttl := s.config.EffectiveLibraryVerifyTTL()
+	ttl := rt.config.EffectiveLibraryVerifyTTL()
 	if ttl <= 0 {
 		logger.Debug("Library freshness sweep disabled")
 		return

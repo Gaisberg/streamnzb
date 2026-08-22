@@ -4,4 +4,8 @@
 streamnzb.exe
 frontend/node_modules
 frontend/dist
-pkg/web/static/*
+pkg/server/web/static
+docs
+third_party
+tools
+*.md

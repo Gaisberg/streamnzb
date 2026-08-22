@@ -94,7 +94,7 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 	s.config = &newCfg
 	s.mu.Unlock()
 
-	if err := s.config.Save(); err != nil {
+	if err := newCfg.Save(); err != nil {
 		return "", nil, "Failed to save config: " + err.Error()
 	}
 

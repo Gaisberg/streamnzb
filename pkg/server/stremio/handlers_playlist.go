@@ -120,8 +120,9 @@ type playlistSource struct {
 // computed. Tied to the configured session TTLs (whichever is longer) and
 // refreshed on access, matching the inactivity-based session eviction semantics.
 func (s *Server) playlistCacheTTL() time.Duration {
-	inactive := time.Duration(s.config.EffectiveSessionTTLSeconds()) * time.Second
-	postPlayback := time.Duration(s.config.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second
+	rt := s.runtime()
+	inactive := time.Duration(rt.config.EffectiveSessionTTLSeconds()) * time.Second
+	postPlayback := time.Duration(rt.config.EffectiveSessionPostPlaybackTTLSeconds()) * time.Second
 	if postPlayback > inactive {
 		return postPlayback
 	}
@@ -384,11 +385,12 @@ func rawSearchCacheSlides(raw *rawSearchResult) bool {
 }
 
 func (s *Server) GetSearchReleases(ctx context.Context, contentType, id string) (*SearchReleasesResponse, error) {
+	rt := s.runtime()
 	fallbackStream := &auth.Stream{Username: defaultStreamID}
 	if contentType == "movie" {
-		fallbackStream.MovieSearchQueries = allSearchQueryNames(s.config.MovieSearchQueries)
+		fallbackStream.MovieSearchQueries = allSearchQueryNames(rt.config.MovieSearchQueries)
 	} else {
-		fallbackStream.SeriesSearchQueries = allSearchQueryNames(s.config.SeriesSearchQueries)
+		fallbackStream.SeriesSearchQueries = allSearchQueryNames(rt.config.SeriesSearchQueries)
 	}
 	raw, err := s.getOrBuildRawSearchResult(ctx, contentType, id, fallbackStream)
 	if err != nil || raw == nil {
@@ -465,13 +467,14 @@ func populateAvailable(raw *rawSearchResult) {
 }
 
 func (s *Server) providerHostsForStream(stream *auth.Stream) []string {
+	rt := s.runtime()
 	if s.sessionManager != nil {
 		if hosts := s.sessionManager.ProviderHostsForProviders(streamProviderSelections(stream)); len(hosts) > 0 {
 			return hosts
 		}
 	}
-	if s.validator != nil {
-		return s.validator.GetProviderHosts()
+	if rt.validator != nil {
+		return rt.validator.GetProviderHosts()
 	}
 	return nil
 }
@@ -554,10 +557,11 @@ func (s *Server) buildPlaylistFromRaw(ctx context.Context, raw *rawSearchResult,
 }
 
 func (s *Server) shouldFilterAvailNZBReportedBad(stream *auth.Stream) bool {
-	if s == nil || s.config == nil {
+	rt := s.runtime()
+	if s == nil || rt.config == nil {
 		return false
 	}
-	return stream.EffectiveFilterAvailNZB(s.config)
+	return stream.EffectiveFilterAvailNZB(rt.config)
 }
 
 func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []triage.Candidate, source *playlistSource, filteringActive bool, stream *auth.Stream) {
@@ -809,11 +813,12 @@ func (s *Server) liveSourceAction(rel *release.Release, libraryItems map[string]
 // minutes long and failover steps past it cheaply, but a spent quota holds
 // until the day turns over, and every candidate behind it is a dead slot.
 func (s *Server) releaseSourceCanGrab(rel *release.Release, grabbable map[indexer.Indexer]bool) bool {
+	rt := s.runtime()
 	idx, _ := rel.SourceIndexer.(indexer.Indexer)
 	if idx == nil {
 		// Unknown source: the aggregate answers for it, and it still has budget
 		// as long as any single indexer does.
-		idx = s.indexer
+		idx = rt.indexer
 	}
 	if idx == nil {
 		return true
@@ -847,10 +852,11 @@ func rebindReleaseToLibrary(rel *release.Release, item *persistence.LibraryItem)
 // and this pass exists to make a cached playlist agree with what a fresh one
 // would produce.
 func (s *Server) libraryNZBsByDetailsURL(params *query.SearchParams) map[string]*persistence.LibraryItem {
-	if s == nil || s.config == nil || params == nil || s.attemptRecorder == nil {
+	rt := s.runtime()
+	if s == nil || rt.config == nil || params == nil || s.attemptRecorder == nil {
 		return nil
 	}
-	if s.config.EffectiveLibrarySearchMode() == "disabled" {
+	if rt.config.EffectiveLibrarySearchMode() == "disabled" {
 		return nil
 	}
 	libStore := s.attemptRecorder.LibraryStore()
@@ -1144,6 +1150,7 @@ func (s *Server) applyPlaylistFiltering(candidates []triage.Candidate, source *p
 // Streams with no profile bound keep the pre-jhin ordering, so filtering stays
 // opt-in rather than silently changing what an unconfigured stream returns.
 func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate, source *playlistSource, filteringActive bool, filterMode string, stream *auth.Stream) []triage.Candidate {
+	rt := s.runtime()
 	req := rankingRequest(source)
 	profile := s.profileForKind(req.Kind, stream)
 	inputResults := len(candidates)
@@ -1155,7 +1162,7 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 
 	if profile == nil {
 		if filteringActive {
-			sortCandidates(s.triageService, candidates)
+			sortCandidates(rt.triageService, candidates)
 		}
 		// Unconditional: scoring happens to populate metadata today, but
 		// stream descriptions need it whatever that path does.
@@ -1197,13 +1204,14 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 // release healthy on a backbone this stream does not use is not a release this
 // stream can play.
 func (s *Server) annotateVerdicts(candidates []triage.Candidate, source *playlistSource, stream *auth.Stream) {
+	rt := s.runtime()
 	var byDetailsURL map[string]*availnzb.ReleaseWithStatus
 	if source != nil && source.Avail != nil {
 		byDetailsURL = source.Avail.ByDetailsURL
 	}
 	var ourBackbones map[string]bool
-	if s.availClient != nil && len(byDetailsURL) > 0 {
-		ourBackbones, _ = s.availClient.OurBackbones(s.providerHostsForStream(stream))
+	if rt.availClient != nil && len(byDetailsURL) > 0 {
+		ourBackbones, _ = rt.availClient.OurBackbones(s.providerHostsForStream(stream))
 	}
 
 	for i := range candidates {
@@ -1384,10 +1392,11 @@ func buildPlaylistResult(source *playlistSource, candidates []triage.Candidate) 
 }
 
 func (s *Server) filterCachedUnhealthyCandidates(merged []triage.Candidate, availCtx *AvailContext, filteringActive bool, stream *auth.Stream) []triage.Candidate {
-	if !filteringActive || availCtx == nil || availCtx.Result == nil || s.availClient == nil {
+	rt := s.runtime()
+	if !filteringActive || availCtx == nil || availCtx.Result == nil || rt.availClient == nil {
 		return merged
 	}
-	ourBackbones, _ := s.availClient.OurBackbones(s.providerHostsForStream(stream))
+	ourBackbones, _ := rt.availClient.OurBackbones(s.providerHostsForStream(stream))
 	cachedUnhealthyForUs := make(map[string]bool)
 	for _, rws := range availCtx.Result.Releases {
 		if rws == nil || rws.Release == nil || rws.Available {

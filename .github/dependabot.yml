@@ -1,0 +1,53 @@
+version: 2
+
+# Nothing was watching dependencies before this: no update automation and no
+# audit step anywhere. Deliberately Dependabot rather than an `npm audit` step
+# in CI — a new advisory in a build-time dependency would otherwise turn every
+# unrelated pull request red, which teaches people to ignore the check. A
+# separate pull request is where a dependency bump belongs.
+updates:
+  # Grouped by ecosystem rather than left per-package: this tree has ~450 npm
+  # packages, and one pull request each would bury everything else.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      # Split so a React or Vite major lands on its own and gets read, while
+      # the weekly patch noise arrives as one reviewable diff.
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Vendored via a replace directive in go.mod, so an upstream bump here
+      # would not be what the build actually compiles.
+      - dependency-name: github.com/javi11/rardecode/v2
+
+  # The workflows pin actions by major tag, so this is what notices a v6 exists.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1

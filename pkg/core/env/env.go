@@ -269,18 +269,93 @@ func EasynewsFileExtensions() string {
 	return v
 }
 
-// envBool reads primary, then legacy, falling back to def. Junk values count as
-// unset so a typo cannot silently flip a default.
+// parseBool is the one boolean vocabulary this package speaks.
+//
+// There used to be two. envBool accepted yes/on/no/off and treated anything
+// else as unset; getEnvBool accepted only "true" and "1" and read everything
+// else — including "yes" and "on" — as *false*. Since the numbered blocks went
+// through the second one, `PROVIDER_1_ENABLED: yes` disabled the provider and
+// `PROVIDER_1_SSL: on` silently dropped TLS. Both are ordinary YAML for true.
+//
+// ok reports whether the value was understood. An unrecognised value is not
+// false: it means the operator has not successfully said anything, so the
+// caller's default stands and MalformedBooleans reports it at startup.
+func parseBool(value string) (parsed bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
+}
+
+// envBool reads primary, then legacy, falling back to def. An unrecognised
+// value counts as unset so a typo cannot silently flip a default.
 func envBool(primary, legacy string, def bool) bool {
 	for _, name := range []string{primary, legacy} {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-		case "1", "true", "yes", "on":
-			return true
-		case "0", "false", "no", "off":
-			return false
+		if name == "" {
+			continue
+		}
+		if v, ok := parseBool(os.Getenv(name)); ok {
+			return v
 		}
 	}
 	return def
+}
+
+// MalformedBool names an environment variable whose value this package could
+// not read as a boolean.
+type MalformedBool struct {
+	Name  string
+	Value string
+}
+
+// booleanEnvNames lists the fixed-name boolean variables. The numbered
+// PROVIDER_n_* and INDEXER_n_* blocks are generated in MalformedBooleans, since
+// their names depend on the index.
+//
+// TestBooleanEnvNamesCoversEveryFixedName keeps this in step with the calls
+// themselves, so a new switch cannot be added without becoming checkable.
+var booleanEnvNames = []string{
+	MetadataEnabledEnv,
+	NNTPProxyEnabled,
+	NewznabEnabledEnv,
+	AdminForcePasswordResetEnv,
+	EasynewsAdvancedSearchEnv,
+	StreamNZBEasynewsAdvancedSearchEnv,
+	EasynewsSpamFilterEnv,
+	StreamNZBEasynewsSpamFilterEnv,
+}
+
+// MalformedBooleans returns every boolean variable that is set to something
+// this package does not understand.
+//
+// An unrecognised value leaves the default in place rather than flipping it,
+// which is the safe behaviour but also a silent one — the operator wrote
+// something and nothing happened. The caller logs these at startup, because
+// this package cannot: logger imports env, so env cannot import logger.
+func MalformedBooleans() []MalformedBool {
+	var out []MalformedBool
+	check := func(name string) {
+		v, set := os.LookupEnv(name)
+		if !set || strings.TrimSpace(v) == "" {
+			return
+		}
+		if _, ok := parseBool(v); !ok {
+			out = append(out, MalformedBool{Name: name, Value: v})
+		}
+	}
+	for _, name := range booleanEnvNames {
+		check(name)
+	}
+	for i := 1; i <= maxNumberedBlocks; i++ {
+		for _, suffix := range []string{"ENABLED", "BACKUP", "SSL"} {
+			check(fmt.Sprintf("%s%d_%s", ProviderPrefix, i, suffix))
+		}
+		check(fmt.Sprintf("%s%d_ENABLED", IndexerPrefix, i))
+	}
+	return out
 }
 
 // positiveInt reads name as a positive integer, returning 0 when unset or junk.
@@ -428,9 +503,13 @@ func OverrideKeys() []string {
 	return keys
 }
 
+// maxNumberedBlocks is how far the PROVIDER_n_* / INDEXER_n_* scan goes. An
+// eleventh block is ignored, silently — see the backlog.
+const maxNumberedBlocks = 10
+
 func readProvidersFromEnv() []Provider {
 	var list []Provider
-	for i := 1; i <= 10; i++ {
+	for i := 1; i <= maxNumberedBlocks; i++ {
 		prefix := fmt.Sprintf("%s%d_", ProviderPrefix, i)
 		host := os.Getenv(prefix + "HOST")
 		if host == "" {
@@ -464,7 +543,7 @@ func readProvidersFromEnv() []Provider {
 
 func readIndexersFromEnv() []Indexer {
 	var list []Indexer
-	for i := 1; i <= 10; i++ {
+	for i := 1; i <= maxNumberedBlocks; i++ {
 		prefix := fmt.Sprintf("%s%d_", IndexerPrefix, i)
 		url := os.Getenv(prefix + "URL")
 		if url == "" {
@@ -498,8 +577,5 @@ func getEnvInt(key string, defaultVal int) int {
 }
 
 func getEnvBool(key string, defaultVal bool) bool {
-	if v := os.Getenv(key); v != "" {
-		return strings.ToLower(v) == "true" || v == "1"
-	}
-	return defaultVal
+	return envBool(key, "", defaultVal)
 }

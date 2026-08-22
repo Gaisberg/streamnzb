@@ -72,7 +72,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var mustChangePassword bool
 	if stream.Username == s.adminUsername() {
-		mustChangePassword = s.config.AdminMustChangePassword
+		mustChangePassword = s.adminMustChangePassword()
 	}
 
 	writeJSON(w, http.StatusOK, LoginResponse{
@@ -110,9 +110,12 @@ func (s *Server) upgradeAdminPasswordHash(password string) {
 		return
 	}
 	s.config.AdminPasswordHash = newHash
+	// Save the config this write landed on, not whatever s.config points at by
+	// the time the disk write starts — a reload may have swapped it since.
+	cfg := s.config
 	s.mu.Unlock()
 
-	if err := s.config.Save(); err != nil {
+	if err := cfg.Save(); err != nil {
 		logger.Warn("Failed to persist upgraded admin password hash", "err", err)
 		return
 	}
@@ -140,7 +143,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(auth.SessionCookieName)
 		if err == nil && cookie != nil {
 			cookiePresent = true
-			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.config.AdminToken)
+			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.adminToken())
 			if err == nil {
 				logger.Debug("Auth check authenticated", "via", "cookie")
 				authViaCookie = true
@@ -156,7 +159,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && parts[0] == "Bearer" {
 				var err error
-				stream, err = s.streamManager.AuthenticateToken(parts[1], s.adminUsername(), s.config.AdminToken)
+				stream, err = s.streamManager.AuthenticateToken(parts[1], s.adminUsername(), s.adminToken())
 				if err == nil {
 					logger.Debug("Auth check authenticated", "via", "bearer")
 					ok = true
@@ -170,7 +173,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		var mustChangePassword bool
 		if stream.Username == s.adminUsername() {
-			mustChangePassword = s.config.AdminMustChangePassword
+			mustChangePassword = s.adminMustChangePassword()
 		}
 		out := map[string]interface{}{
 			"authenticated":        true,
@@ -228,8 +231,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.config.AdminPasswordHash = newHash
 	s.config.AdminMustChangePassword = false
+	cfg := s.config
 	s.mu.Unlock()
-	if err := s.config.Save(); err != nil {
+	if err := cfg.Save(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

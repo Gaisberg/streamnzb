@@ -42,10 +42,10 @@ func TestHandleDownloadLogsServesCurrentLogFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/logs/download", nil)
+	req := adminStreamRequest(http.MethodGet, "/api/logs/download", nil)
 	rr := httptest.NewRecorder()
 
-	(&Server{}).handleDownloadLogs(rr, req)
+	adminServer().handleDownloadLogs(rr, req)
 
 	res := rr.Result()
 	defer res.Body.Close()
@@ -70,10 +70,10 @@ func TestHandleDownloadLogsServesCurrentLogFile(t *testing.T) {
 func TestHandleDownloadLogsReturnsNotFoundWhenMissing(t *testing.T) {
 	setTestDataDir(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/logs/download", nil)
+	req := adminStreamRequest(http.MethodGet, "/api/logs/download", nil)
 	rr := httptest.NewRecorder()
 
-	(&Server{}).handleDownloadLogs(rr, req)
+	adminServer().handleDownloadLogs(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
@@ -81,10 +81,10 @@ func TestHandleDownloadLogsReturnsNotFoundWhenMissing(t *testing.T) {
 }
 
 func TestHandleDownloadLogsRejectsNonGet(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/logs/download", nil)
+	req := adminStreamRequest(http.MethodPost, "/api/logs/download", nil)
 	rr := httptest.NewRecorder()
 
-	(&Server{}).handleDownloadLogs(rr, req)
+	adminServer().handleDownloadLogs(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)

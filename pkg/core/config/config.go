@@ -1904,6 +1904,23 @@ func (c *Config) RedactForAPI() Config {
 		redactedIndexer.ProxyURL = RedactProxyURLForAPI(indexer.ProxyURL)
 		out.Indexers[i] = redactedIndexer
 	}
+	// A stream's token is the credential its device authenticates with, so the
+	// map has to be rebuilt rather than shared: `out := *c` copies the map
+	// header, and the values are pointers, so blanking a token in place would
+	// erase it from the running configuration. A device already holds its own
+	// token; what it must not receive is anybody else's.
+	if c.Streams != nil {
+		out.Streams = make(map[string]*StreamEntry, len(c.Streams))
+		for name, entry := range c.Streams {
+			if entry == nil {
+				out.Streams[name] = nil
+				continue
+			}
+			redactedStream := *entry
+			redactedStream.Token = ""
+			out.Streams[name] = &redactedStream
+		}
+	}
 	return out
 }
 

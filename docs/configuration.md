@@ -28,7 +28,11 @@ The data directory holds `config.json`, `streamnzb.db`, logs, and runtime state.
 
 ## Environment variable reference
 
-Booleans accept `true`/`1` (and `false`/`0` where a variable can force a setting off); unparsable values are treated as unset rather than flipping a default. Variables listed as `STREAMNZB_*` with a legacy alias accept either name, with the `STREAMNZB_`-prefixed one winning.
+Booleans accept `1`, `true`, `yes` or `on`, and `0`, `false`, `no` or `off`, case-insensitively and ignoring surrounding whitespace. Anything else is treated as unset rather than flipping a default, and is reported at startup as a warning naming the variable and the value — so a typo leaves the setting alone instead of silently doing the opposite.
+
+> Before 5.9.0 the numbered `PROVIDER_<n>_*` and `INDEXER_<n>_*` switches, along with `METADATA_ENABLED`, `NNTP_PROXY_ENABLED`, `NEWZNAB_ENABLED` and `ADMIN_FORCE_PASSWORD_RESET`, accepted only `true` and `1` and read everything else as **false**. In a compose file that meant `PROVIDER_1_ENABLED: yes` disabled the provider and `PROVIDER_1_SSL: on` turned TLS off, both of which are ordinary YAML for true. If you worked around that by writing `no` or `off` where you meant it, nothing changes; if you wrote `yes` or `on` and got the opposite, those settings now do what they say.
+
+Variables listed as `STREAMNZB_*` with a legacy alias accept either name, with the `STREAMNZB_`-prefixed one winning.
 
 ### Core
 

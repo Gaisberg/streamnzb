@@ -203,6 +203,7 @@ func (s *Server) primeRangeOrFailover(
 	onReadError func(string, error),
 	closeStream func(string),
 ) bool {
+	rt := s.runtime()
 	if r.Method == http.MethodHead {
 		return true
 	}
@@ -218,7 +219,7 @@ func (s *Server) primeRangeOrFailover(
 			s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,
 				"Redirecting to next fallback (requested range unavailable)")
 		} else {
-			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+			forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
 		}
 		return false
 	case primeErr != nil:
@@ -301,6 +302,7 @@ func (s *Server) finishServeBookkeeping(
 	serveStartedAt time.Time,
 	serveFailureRecorded *bool,
 ) {
+	rt := s.runtime()
 	if *serveFailureRecorded {
 		return
 	}
@@ -332,9 +334,9 @@ func (s *Server) finishServeBookkeeping(
 	serveDuration := time.Since(serveStartedAt)
 	minBytes := availnzb.DefaultMinBytesToReportGood
 	minDuration := availnzb.DefaultMinDurationToReportGood
-	if s.availReporter != nil {
-		minBytes = s.availReporter.MinBytesToReportGood
-		minDuration = s.availReporter.MinDurationToReportGood
+	if rt.availReporter != nil {
+		minBytes = rt.availReporter.MinBytesToReportGood
+		minDuration = rt.availReporter.MinDurationToReportGood
 	}
 	if !availnzb.QualifiesGood(sess, serveDuration, minBytes, minDuration) {
 		reason := fmt.Sprintf(

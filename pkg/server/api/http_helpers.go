@@ -58,6 +58,16 @@ func (s *Server) adminToken() string {
 	return s.config.AdminToken
 }
 
+// adminMustChangePassword reports whether the admin is still on the credential
+// it was installed with. Locked for a second reason on top of the config swap:
+// handleChangePassword clears this field in place, so it is one of the few that
+// changes without the surrounding Config being replaced.
+func (s *Server) adminMustChangePassword() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.AdminMustChangePassword
+}
+
 // isAdmin reports whether the request carries the admin stream.
 func (s *Server) isAdmin(r *http.Request) bool {
 	stream, _ := auth.StreamFromContext(r)

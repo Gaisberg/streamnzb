@@ -23,6 +23,10 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		streamManager := s.streamManager
 		webHandler := s.webHandler
 		apiHandler := s.apiHandler
+		// Snapshotted with the rest rather than read where it is used below: a
+		// config reload swaps the whole struct, and this one decides whether a
+		// request is the admin's.
+		cfg := s.config
 		s.mu.RUnlock()
 
 		path := r.URL.Path
@@ -39,18 +43,17 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		if len(parts) == 2 && parts[0] != "" {
 			effectivePath = "/" + parts[1]
 		}
-		isDebugPlayRoute := strings.HasPrefix(path, "/debug/play") || strings.HasPrefix(effectivePath, "/debug/play")
 		// NOTE: this route set and the dispatch chain below must stay in
 		// lockstep — a prefix listed in only one of them either serves the SPA
 		// to bad tokens (missing here) or falls through to the SPA entirely
 		// (missing below).
-		isStremioRoute := effectivePath == "/manifest.json" || effectivePath == FailoverOrderPath || strings.HasPrefix(effectivePath, "/stream/") || strings.HasPrefix(effectivePath, "/meta/") || strings.HasPrefix(effectivePath, "/catalog/") || strings.HasPrefix(effectivePath, "/play/") || strings.HasPrefix(effectivePath, "/next/") || strings.HasPrefix(effectivePath, "/debug/play")
+		isStremioRoute := effectivePath == "/manifest.json" || effectivePath == FailoverOrderPath || strings.HasPrefix(effectivePath, "/stream/") || strings.HasPrefix(effectivePath, "/meta/") || strings.HasPrefix(effectivePath, "/catalog/") || strings.HasPrefix(effectivePath, "/play/") || strings.HasPrefix(effectivePath, "/next/")
 
 		if len(parts) >= 1 && parts[0] != "" {
 			token := parts[0]
 
 			if streamManager != nil {
-				stream, err := streamManager.AuthenticateToken(token, s.config.GetAdminUsername(), s.config.AdminToken)
+				stream, err := streamManager.AuthenticateToken(token, cfg.GetAdminUsername(), cfg.AdminToken)
 				if err == nil && stream != nil {
 					authenticatedStream = stream
 
@@ -63,20 +66,20 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 
 					r = r.WithContext(auth.ContextWithStream(r.Context(), stream))
 
-				} else if isStremioRoute && !isDebugPlayRoute {
+				} else if isStremioRoute {
 
 					logger.Warn("Unauthorized request - invalid stream token", "path", path, "remote", r.RemoteAddr)
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 					return
 				}
 
-			} else if isStremioRoute && !isDebugPlayRoute {
+			} else if isStremioRoute {
 
 				logger.Warn("Unauthorized request - stream authentication unavailable", "path", path, "remote", r.RemoteAddr)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-		} else if isStremioRoute && !isDebugPlayRoute {
+		} else if isStremioRoute {
 
 			logger.Warn("Unauthorized request - Stremio route requires stream token", "path", path, "remote", r.RemoteAddr)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -97,8 +100,6 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 			s.handleNextRelease(w, r, authenticatedStream)
 		} else if path == FailoverOrderPath {
 			s.handleFailoverOrder(w, r, authenticatedStream)
-		} else if strings.HasPrefix(path, "/debug/play") {
-			s.handleDebugPlay(w, r, authenticatedStream)
 		} else if path == "/health" {
 			s.handleHealth(w, r)
 		} else if strings.HasPrefix(path, "/api/") {
@@ -149,6 +150,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *auth.Stream) {
+	rt := s.runtime()
 	startTime := time.Now()
 
 	path := strings.TrimPrefix(r.URL.Path, "/stream/")
@@ -181,7 +183,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	}
 	// Deliberately prepended even to an empty response: a search filtered down
 	// to nothing is exactly the case the debug row needs to explain.
-	if s.config != nil && s.config.SearchDebugStream {
+	if rt.config != nil && rt.config.SearchDebugStream {
 		if dbg := s.buildSearchDebugStream(key, ServiceName(stream), baseURL); dbg != nil {
 			streams = append([]Stream{*dbg}, streams...)
 		}

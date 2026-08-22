@@ -43,6 +43,7 @@ type resolvedPlayback struct {
 // given a status line and a Content-Length cannot be failed over to a different
 // release.
 func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream, requestedSessionID string) (*resolvedPlayback, bool) {
+	rt := s.runtime()
 	sess, sessionID, ok := s.openPlaySession(w, r, streamConfig, requestedSessionID)
 	if !ok {
 		return nil, false
@@ -54,7 +55,7 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		if streamFailoverEnabled(streamConfig) && s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
 			nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
 			if nextID == "" {
-				forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+				forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
 				return nil, false
 			}
 			logger.Info("Skipping known-failed slot, trying next fallback", "from", sessionID, "to", nextID)
@@ -110,7 +111,7 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
 		if nextID == "" {
 			logger.Info("No more fallback slots", "last", sessionID, "err", prepareErr)
-			forceDisconnect(w, r, s.baseURL, streamConfig.IsErrorVideoMuted(s.config))
+			forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
 			return nil, false
 		}
 		logger.Info("Playback failover advanced", "from", sessionID, "to", nextID, "err", prepareErr)

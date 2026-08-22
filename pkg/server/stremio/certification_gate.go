@@ -62,17 +62,18 @@ func tvdbCertEntries(ratings []tvdb.ContentRating) []certification.Entry {
 // tmdbCertAge resolves one TMDB title's certification through the small
 // cached lookup endpoints. mediaType is "movie" or "tv".
 func (s *Server) tmdbCertAge(mediaType string, tmdbID int) (age int, known bool) {
-	if s.tmdbClient == nil || tmdbID <= 0 {
+	rt := s.runtime()
+	if rt.tmdbClient == nil || tmdbID <= 0 {
 		return 0, false
 	}
 	if mediaType == "movie" {
-		rd, err := s.tmdbClient.GetMovieReleaseDates(tmdbID)
+		rd, err := rt.tmdbClient.GetMovieReleaseDates(tmdbID)
 		if err != nil {
 			return 0, false
 		}
 		return certification.Resolve(tmdbMovieCertEntries(rd))
 	}
-	cr, err := s.tmdbClient.GetTVContentRatings(tmdbID)
+	cr, err := rt.tmdbClient.GetTVContentRatings(tmdbID)
 	if err != nil {
 		return 0, false
 	}
@@ -83,6 +84,7 @@ func (s *Server) tmdbCertAge(mediaType string, tmdbID int) (age int, known bool)
 // whichever cached client the id scheme addresses. Used only by the local
 // catalogs — the provider catalogs filter from data they already fetched.
 func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, contentType string) (age int, known bool) {
+	rt := s.runtime()
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if s.kitsuClient == nil {
 			return 0, false
@@ -94,10 +96,10 @@ func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, conten
 		return certification.NormalizeKitsu(animeMeta.AgeRating, animeMeta.Nsfw)
 	}
 	if tvdbID, ok := strings.CutPrefix(preview.ID, "tvdb:"); ok {
-		if s.tvdbClient == nil {
+		if rt.tvdbClient == nil {
 			return 0, false
 		}
-		ext, err := s.tvdbClient.GetSeriesExtended(tvdbID)
+		ext, err := rt.tvdbClient.GetSeriesExtended(tvdbID)
 		if err != nil {
 			return 0, false
 		}
@@ -110,8 +112,8 @@ func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, conten
 	tmdbID := 0
 	if raw, ok := strings.CutPrefix(preview.ID, "tmdb:"); ok {
 		tmdbID, _ = strconv.Atoi(raw)
-	} else if strings.HasPrefix(preview.ID, "tt") && s.tmdbClient != nil {
-		if find, err := s.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
+	} else if strings.HasPrefix(preview.ID, "tt") && rt.tmdbClient != nil {
+		if find, err := rt.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				tmdbID = res.ID
 			}
@@ -210,6 +212,7 @@ func certGateMeta(profile *config.MetadataProfileConfig, age int, known bool) er
 // for the playback gate, preferring metadata already resolved into params
 // (Kitsu carries its rating inline) before the cached TMDB/TVDB lookups.
 func (s *Server) resolveSearchCertification(contentType string, params *query.SearchParams) (age int, known bool) {
+	rt := s.runtime()
 	if params == nil {
 		return 0, false
 	}
@@ -223,8 +226,8 @@ func (s *Server) resolveSearchCertification(contentType string, params *query.Se
 	if tmdbID, err := strconv.Atoi(strings.TrimSpace(params.Req.TMDBID)); err == nil && tmdbID > 0 {
 		return s.tmdbCertAge(mediaType, tmdbID)
 	}
-	if mediaType == "tv" && strings.TrimSpace(params.Req.TVDBID) != "" && s.tvdbClient != nil {
-		if ext, err := s.tvdbClient.GetSeriesExtended(strings.TrimSpace(params.Req.TVDBID)); err == nil {
+	if mediaType == "tv" && strings.TrimSpace(params.Req.TVDBID) != "" && rt.tvdbClient != nil {
+		if ext, err := rt.tvdbClient.GetSeriesExtended(strings.TrimSpace(params.Req.TVDBID)); err == nil {
 			return certification.Resolve(tvdbCertEntries(ext.ContentRatings))
 		}
 	}

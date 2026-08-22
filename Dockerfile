@@ -1,6 +1,9 @@
 ARG TARGETARCH
 
-FROM alpine:latest
+# Pinned to a release rather than :latest so two builds of the same commit
+# produce the same image, and so a broken Alpine release cannot break the build
+# with nothing in this repository having changed. Dependabot proposes the bumps.
+FROM alpine:3.24
 # sqlite is the CLI only — the server itself uses a pure-Go driver and does not
 # link against it. It ships so maintenance SQL against /app/data/streamnzb.db
 # can be run from inside the container without installing anything first.

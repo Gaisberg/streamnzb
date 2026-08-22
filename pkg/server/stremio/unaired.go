@@ -138,10 +138,11 @@ func (s *Server) episodeAiredState(ctx context.Context, stream *auth.Stream, con
 }
 
 func (s *Server) tvdbAirWindow(ids *session.AvailReportMeta) (airWindow, bool) {
-	if s.tvdbClient == nil || ids.TvdbID == "" {
+	rt := s.runtime()
+	if rt.tvdbClient == nil || ids.TvdbID == "" {
 		return airWindow{}, false
 	}
-	episodes, err := s.tvdbClient.GetSeriesEpisodes(ids.TvdbID)
+	episodes, err := rt.tvdbClient.GetSeriesEpisodes(ids.TvdbID)
 	if err != nil {
 		logger.Debug("TVDB episodes for air-date gating failed", "tvdb_id", ids.TvdbID, "err", err)
 		return airWindow{}, false
@@ -176,14 +177,15 @@ func (s *Server) tvmazeAirWindow(ctx context.Context, ids *session.AvailReportMe
 }
 
 func (s *Server) tmdbAirWindow(ids *session.AvailReportMeta) (airWindow, bool) {
-	if s.tmdbClient == nil || ids.TmdbID == "" {
+	rt := s.runtime()
+	if rt.tmdbClient == nil || ids.TmdbID == "" {
 		return airWindow{}, false
 	}
 	tmdbID, err := strconv.Atoi(ids.TmdbID)
 	if err != nil || tmdbID <= 0 {
 		return airWindow{}, false
 	}
-	details, err := s.tmdbClient.GetTVSeasonDetails(tmdbID, ids.Season)
+	details, err := rt.tmdbClient.GetTVSeasonDetails(tmdbID, ids.Season)
 	if err != nil {
 		logger.Debug("TMDB season details for air-date gating failed", "tmdb_id", tmdbID, "season", ids.Season, "err", err)
 		return airWindow{}, false

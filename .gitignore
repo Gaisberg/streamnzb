@@ -19,3 +19,6 @@ postgres_data
 /ffprobe
 /ffprobe.exe
 pkg/media/ffprobe/bin/ffprobe-*
+
+# Review backlog: a working record, deliberately not part of the repository.
+/backlog.md

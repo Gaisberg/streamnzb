@@ -37,7 +37,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		cookie, err := r.Cookie(auth.SessionCookieName)
 		if err == nil && cookie != nil {
-			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.config.AdminToken)
+			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.adminToken())
 			if err != nil {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -81,7 +81,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.sendLogHistory(client)
 		var mustChangePassword bool
 		if client.stream != nil && client.stream.Username == s.adminUsername() {
-			mustChangePassword = s.config.AdminMustChangePassword
+			mustChangePassword = s.adminMustChangePassword()
 		}
 		authInfo := map[string]interface{}{
 			"authenticated":        true,
@@ -140,13 +140,12 @@ func trySendWS(client *Client, msg WSMessage) bool {
 
 func (s *Server) sendConfig(client *Client) {
 
+	live := s.Config()
 	var cfg config.Config
 	if client.stream != nil && client.stream.Username == s.adminUsername() {
-		cfg = configForAdminAPI(s.config)
-	} else if client.stream != nil {
-		cfg = redactedConfigForViewer(s.config)
+		cfg = configForAdminAPI(live)
 	} else {
-		cfg = redactedConfigForViewer(s.config)
+		cfg = redactedConfigForViewer(live)
 	}
 
 	var payload []byte

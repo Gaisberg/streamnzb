@@ -36,8 +36,9 @@ func shutdownSignals() <-chan os.Signal {
 // The order is the substance of this function:
 //
 //   - HTTP first, so nothing new arrives while the rest is going away.
-//   - The addon's background sweeps next: they read the library and the search
-//     caches, and must not still be running when the database closes below.
+//   - The addon's background sweeps and the API server's stats loop next: they
+//     read the library and the search caches and write metric rows, and must not
+//     still be running when the database closes below.
 //   - The NNTP proxy next, for the same reason.
 //   - Sessions before provider pools: closing a session ends its playback
 //     stream, which hands the NNTP connections back instead of leaving them for
@@ -69,6 +70,9 @@ func gracefulShutdown(
 	}
 
 	stremioServer.Shutdown()
+	// Waits for the stats loop, which persists metrics every thirty seconds and
+	// would otherwise still be writing when the database closes below.
+	apiServer.Shutdown()
 
 	if proxyServer := apiServer.ProxyServer(); proxyServer != nil {
 		if err := proxyServer.Stop(); err != nil {

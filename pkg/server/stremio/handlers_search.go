@@ -196,11 +196,12 @@ func newAvailContext(result *availnzb.ReleasesResult, inputResults int) *AvailCo
 }
 
 func (s *Server) loadAvailContext(params *query.SearchParams, stream *auth.Stream) *AvailContext {
+	rt := s.runtime()
 	if params == nil || params.ContentIDs == nil {
 		return newAvailContext(nil, 0)
 	}
 	contentIDs := params.ContentIDs
-	if !streamUsesAvailNZB(stream) || s.availClient == nil || s.availClient.BaseURL == "" {
+	if !streamUsesAvailNZB(stream) || rt.availClient == nil || rt.availClient.BaseURL == "" {
 		return newAvailContext(nil, 0)
 	}
 	if strings.TrimSpace(params.Req.TMDBID) == "" && contentIDs.ImdbID == "" && contentIDs.TvdbID == "" {
@@ -211,7 +212,7 @@ func (s *Server) loadAvailContext(params *query.SearchParams, stream *auth.Strea
 	if availSeason <= 0 && availEpisode > 0 {
 		availSeason = 1
 	}
-	availResult, _ := s.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, availSeason, availEpisode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
+	availResult, _ := rt.availClient.GetReleases(contentIDs.ImdbID, params.Req.TMDBID, contentIDs.TvdbID, availSeason, availEpisode, s.indexerHostsForStream(stream), s.providerHostsForStream(stream))
 	inputResults := 0
 	if availResult != nil {
 		inputResults = len(availResult.Releases)
@@ -220,6 +221,7 @@ func (s *Server) loadAvailContext(params *query.SearchParams, stream *auth.Strea
 }
 
 func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, id, streamLabel string, stream *auth.Stream, selectedQueries []string, params *query.SearchParams) ([]*release.Release, int, error) {
+	rt := s.runtime()
 	indexerReleases := make([]*release.Release, 0)
 	executedRequests := 0
 	// runOne executes a single configured request. It returns the releases that
@@ -378,7 +380,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 				reqVariant.EffectiveByIndexer = absoluteEffective
 			}
 			executedRequests++
-			releases, runErr := search.RunIndexerSearches(ctx, s.indexer, reqVariant, validationContentType(profileParams, contentType))
+			releases, runErr := search.RunIndexerSearches(ctx, rt.indexer, reqVariant, validationContentType(profileParams, contentType))
 			if runErr != nil {
 				return nil, executedRequests, runErr
 			}
@@ -401,7 +403,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 
 	queries := make([]*config.SearchQueryConfig, 0, len(selectedQueries))
 	for _, name := range selectedQueries {
-		searchQuery := s.config.GetSearchQueryByName(contentType, name)
+		searchQuery := rt.config.GetSearchQueryByName(contentType, name)
 		if searchQuery == nil {
 			logger.Debug("Stream search query missing", "stream", streamLabel, "content_type", contentType, "id", id, "query", name)
 			continue
@@ -589,6 +591,7 @@ func libraryContentID(imdb, tmdb, tvdb, kitsu string) string {
 }
 
 func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id string, stream *auth.Stream) (*rawSearchResult, error) {
+	rt := s.runtime()
 	selectedQueries := streamSearchQueryNames(stream, contentType)
 	if len(selectedQueries) == 0 {
 		return nil, fmt.Errorf("stream is missing at least one %s search request", contentType)
@@ -684,7 +687,7 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	}
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
 
-	libMode := s.config.EffectiveLibrarySearchMode()
+	libMode := rt.config.EffectiveLibrarySearchMode()
 	var libraryReleases []*release.Release
 	if libMode != "disabled" && s.attemptRecorder != nil && s.attemptRecorder.LibraryStore() != nil {
 		season := 0
@@ -855,6 +858,7 @@ func logMetadataResolutionState(contentType, requestID, resolver string, attrs .
 }
 
 func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *config.SearchQueryConfig) (*query.SearchParams, error) {
+	rt := s.runtime()
 	const searchLimit = 0
 	params := &query.SearchParams{
 		ContentType:        contentType,
@@ -870,54 +874,15 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 	req.SeriesSearchScope = scope
 
-	var kitsuID string
-	var kitsuEpisode string
-
-	searchID := id
-	if strings.HasPrefix(id, "kitsu:") {
-		parts := strings.Split(id, ":")
-		if len(parts) >= 3 {
-			kitsuID = parts[1]
-			kitsuEpisode = parts[2]
-			req.Episode = kitsuEpisode
-		} else if len(parts) >= 2 {
-			kitsuID = parts[1]
-		}
-		req.KitsuID = kitsuID
-	} else if strings.HasPrefix(id, "tvdb:") {
-		parts := strings.Split(id, ":")
-		if len(parts) >= 4 {
-			req.TVDBID = parts[1]
-			searchID = parts[1]
-			req.Season, req.Episode = parts[2], parts[3]
-		} else if len(parts) >= 2 {
-			req.TVDBID = parts[1]
-			searchID = parts[1]
-		}
-	} else if strings.HasPrefix(id, "tmdb:") {
-		parts := strings.Split(id, ":")
-		if len(parts) >= 4 {
-			req.TMDBID = parts[1]
-			searchID = parts[1]
-			req.Season, req.Episode = parts[2], parts[3]
-		} else if len(parts) >= 2 {
-			req.TMDBID = parts[1]
-			searchID = parts[1]
-		}
-	} else if strings.Contains(id, ":") {
-		parts := strings.Split(id, ":")
-		if len(parts) >= 3 {
-			searchID = parts[0]
-			req.Season, req.Episode = parts[1], parts[2]
-		} else if len(parts) > 0 {
-			searchID = parts[0]
-		}
-	}
-	if strings.HasPrefix(searchID, "tt") {
-		req.IMDbID = searchID
-	} else if looksLikeTMDBID(searchID) && req.TVDBID == "" {
-		req.TMDBID = searchID
-	}
+	// Reading the id apart is pure string work with no clients in it, so it
+	// lives in pkg/search/query where its arities can be tested directly.
+	parsed := query.ParseContentID(id)
+	kitsuID, kitsuEpisode := parsed.KitsuID, parsed.KitsuEpisode
+	req.KitsuID = parsed.KitsuID
+	req.IMDbID = parsed.IMDbID
+	req.TMDBID = parsed.TMDBID
+	req.TVDBID = parsed.TVDBID
+	req.Season, req.Episode = parsed.Season, parsed.Episode
 
 	// Kitsu addresses anime per entry — usually one season, often one cour —
 	// and numbers episodes within that entry, while Kitsu's own mappings carry
@@ -1059,10 +1024,10 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	movieLike := query.MovieLike(params.Metadata, contentType)
 
 	if req.TMDBID == "" && req.IMDbID != "" {
-		if s.tmdbClient == nil {
+		if rt.tmdbClient == nil {
 			logMetadataResolutionState(contentType, id, "tmdb_find", "imdb_id", req.IMDbID, "status", "skipped", "reason", "tmdb_client_unconfigured")
 		} else {
-			findResp, findErr := s.tmdbClient.Find(req.IMDbID, "imdb_id")
+			findResp, findErr := rt.tmdbClient.Find(req.IMDbID, "imdb_id")
 			if findErr != nil {
 				logMetadataResolutionState(contentType, id, "tmdb_find", "imdb_id", req.IMDbID, "status", "failed", "err", findErr)
 			} else {
@@ -1087,10 +1052,10 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 
 	if req.TMDBID == "" && req.TVDBID != "" {
-		if s.tmdbClient == nil {
+		if rt.tmdbClient == nil {
 			logMetadataResolutionState(contentType, id, "tmdb_find_tvdb", "tvdb_id", req.TVDBID, "status", "skipped", "reason", "tmdb_client_unconfigured")
 		} else {
-			findResp, findErr := s.tmdbClient.Find(req.TVDBID, "tvdb_id")
+			findResp, findErr := rt.tmdbClient.Find(req.TVDBID, "tvdb_id")
 			if findErr != nil {
 				logMetadataResolutionState(contentType, id, "tmdb_find_tvdb", "tvdb_id", req.TVDBID, "status", "failed", "err", findErr)
 			} else {
@@ -1113,7 +1078,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	isSeriesLike := !movieLike && (contentType == "series" || contentType == "anime" || contentType == "tv" || (req.Season != "" && req.Episode != ""))
 	if isSeriesLike {
 		if req.TMDBID != "" {
-			if s.tmdbClient == nil {
+			if rt.tmdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "skipped", "reason", "tmdb_client_unconfigured")
 			} else if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 				var tvDetails *tmdb.TVDetails
@@ -1123,26 +1088,26 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 
 				query.RunParallel(
 					func() {
-						if details, err := s.tmdbClient.GetTVDetails(tmdbIDNum); err == nil {
+						if details, err := rt.tmdbClient.GetTVDetails(tmdbIDNum); err == nil {
 							tvDetails = details
 						} else {
 							logMetadataResolutionState(contentType, id, "tmdb_series_details", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
 						}
 					},
 					func() {
-						if translations, err := s.tmdbClient.GetTVTranslations(tmdbIDNum); err == nil {
+						if translations, err := rt.tmdbClient.GetTVTranslations(tmdbIDNum); err == nil {
 							tvTranslations = translations
 						} else {
 							logMetadataResolutionState(contentType, id, "tmdb_series_translations", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
 						}
 					},
 					func() {
-						if alternatives, err := s.tmdbClient.GetTVAlternativeTitles(tmdbIDNum); err == nil {
+						if alternatives, err := rt.tmdbClient.GetTVAlternativeTitles(tmdbIDNum); err == nil {
 							tvAlternatives = alternatives
 						}
 					},
 					func() {
-						if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
+						if extIDs, err := rt.tmdbClient.GetExternalIDs(tmdbIDNum, "tv"); err == nil {
 							tvExtIDs = extIDs
 						} else {
 							logMetadataResolutionState(contentType, id, "tmdb_series_external_ids", "tmdb_id", req.TMDBID, "status", "failed", "err", err)
@@ -1171,11 +1136,11 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			}
 		}
 		if req.IMDbID != "" && req.TVDBID == "" {
-			if s.tvdbClient == nil {
+			if rt.tvdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tvdb_resolve", "imdb_id", req.IMDbID, "status", "skipped", "reason", "tvdb_client_unconfigured")
 			}
-			if s.tvdbClient != nil {
-				if tvdbID, err := s.tvdbClient.ResolveTVDBID(req.IMDbID); err == nil && tvdbID != "" {
+			if rt.tvdbClient != nil {
+				if tvdbID, err := rt.tvdbClient.ResolveTVDBID(req.IMDbID); err == nil && tvdbID != "" {
 					req.TVDBID = tvdbID
 				} else if err != nil {
 					logMetadataResolutionState(contentType, id, "tvdb_resolve", "imdb_id", req.IMDbID, "status", "failed", "err", err)
@@ -1183,20 +1148,20 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 					logMetadataResolutionState(contentType, id, "tvdb_resolve", "imdb_id", req.IMDbID, "status", "empty")
 				}
 			}
-			if req.TVDBID == "" && s.tmdbClient != nil {
-				if tvdbID, err := s.tmdbClient.ResolveTVDBID(req.IMDbID); err == nil && tvdbID != "" {
+			if req.TVDBID == "" && rt.tmdbClient != nil {
+				if tvdbID, err := rt.tmdbClient.ResolveTVDBID(req.IMDbID); err == nil && tvdbID != "" {
 					req.TVDBID = tvdbID
 				} else if err != nil {
 					logMetadataResolutionState(contentType, id, "tmdb_resolve_tvdb", "imdb_id", req.IMDbID, "status", "failed", "err", err)
 				} else {
 					logMetadataResolutionState(contentType, id, "tmdb_resolve_tvdb", "imdb_id", req.IMDbID, "status", "empty")
 				}
-			} else if req.TVDBID == "" && s.tmdbClient == nil {
+			} else if req.TVDBID == "" && rt.tmdbClient == nil {
 				logMetadataResolutionState(contentType, id, "tmdb_resolve_tvdb", "imdb_id", req.IMDbID, "status", "skipped", "reason", "tmdb_client_unconfigured")
 			}
 		}
-		if req.TMDBID == "" && req.TVDBID != "" && s.tvdbClient != nil {
-			if tvdbDetails, err := s.tvdbClient.GetSeriesDetails(req.TVDBID); err == nil && tvdbDetails != nil {
+		if req.TMDBID == "" && req.TVDBID != "" && rt.tvdbClient != nil {
+			if tvdbDetails, err := rt.tvdbClient.GetSeriesDetails(req.TVDBID); err == nil && tvdbDetails != nil {
 				params.Metadata.TVDBDetails = tvdbDetails
 				logMetadataResolutionState(contentType, id, "tvdb_series_details", "tvdb_id", req.TVDBID, "status", "success", "title", tvdbDetails.Name)
 			} else if err != nil {
@@ -1208,7 +1173,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
 	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.AbsoluteEpisode, params.Metadata, req.Season, req.Episode)
-	if movieLike && req.TMDBID != "" && s.tmdbClient != nil {
+	if movieLike && req.TMDBID != "" && rt.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var movieDetails *tmdb.MovieDetails
 			var movieTranslations *tmdb.MovieTranslationsResponse
@@ -1217,22 +1182,22 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 
 			query.RunParallel(
 				func() {
-					if details, err := s.tmdbClient.GetMovieDetails(tmdbIDNum); err == nil {
+					if details, err := rt.tmdbClient.GetMovieDetails(tmdbIDNum); err == nil {
 						movieDetails = details
 					}
 				},
 				func() {
-					if translations, err := s.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
+					if translations, err := rt.tmdbClient.GetMovieTranslations(tmdbIDNum); err == nil {
 						movieTranslations = translations
 					}
 				},
 				func() {
-					if alternatives, err := s.tmdbClient.GetMovieAlternativeTitles(tmdbIDNum); err == nil {
+					if alternatives, err := rt.tmdbClient.GetMovieAlternativeTitles(tmdbIDNum); err == nil {
 						movieAlternatives = alternatives
 					}
 				},
 				func() {
-					if extIDs, err := s.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil {
+					if extIDs, err := rt.tmdbClient.GetExternalIDs(tmdbIDNum, "movie"); err == nil {
 						movieExtIDs = extIDs
 					}
 				},
@@ -1288,16 +1253,17 @@ func cloneSearchParams(base *query.SearchParams) *query.SearchParams {
 // effectiveIndexerConfigs merges each enabled indexer's search settings with a
 // search query's overrides. Nil when no indexers are configured.
 func (s *Server) effectiveIndexerConfigs(queryIndexerConfig *config.IndexerSearchConfig) map[string]*config.IndexerSearchConfig {
-	if len(s.config.Indexers) == 0 {
+	rt := s.runtime()
+	if len(rt.config.Indexers) == 0 {
 		return nil
 	}
-	out := make(map[string]*config.IndexerSearchConfig, len(s.config.Indexers))
-	for i := range s.config.Indexers {
-		ic := &s.config.Indexers[i]
+	out := make(map[string]*config.IndexerSearchConfig, len(rt.config.Indexers))
+	for i := range rt.config.Indexers {
+		ic := &rt.config.Indexers[i]
 		if ic.Enabled != nil && !*ic.Enabled {
 			continue
 		}
-		eff := config.MergeIndexerSearch(ic, queryIndexerConfig, s.config)
+		eff := config.MergeIndexerSearch(ic, queryIndexerConfig, rt.config)
 		if strings.EqualFold(ic.Type, "easynews") {
 			t := true
 			eff.DisableIdSearch = &t

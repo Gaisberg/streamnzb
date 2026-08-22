@@ -87,6 +87,7 @@ func (s *Server) DirectPlayPathForSession(sessionID string, stream *auth.Stream)
 }
 
 func (s *Server) downloadNZBForDirectPlay(ctx context.Context, nzbURL string) ([]byte, error) {
+	rt := s.runtime()
 	if s == nil {
 		return nil, fmt.Errorf("playback server unavailable")
 	}
@@ -95,8 +96,8 @@ func (s *Server) downloadNZBForDirectPlay(ctx context.Context, nzbURL string) ([
 
 	var nzbData []byte
 	var err error
-	if s.indexer != nil {
-		nzbData, err = s.indexer.DownloadNZB(dlCtx, nzbURL)
+	if rt.indexer != nil {
+		nzbData, err = rt.indexer.DownloadNZB(dlCtx, nzbURL)
 		if err == nil && len(nzbData) > 0 {
 			if len(nzbData) > maxDirectPlayNZBSize {
 				return nil, fmt.Errorf("downloaded NZB exceeds max size")

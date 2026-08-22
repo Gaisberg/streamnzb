@@ -69,6 +69,15 @@ type Server struct {
 	reloadMu      sync.Mutex
 	pendingReload *config.Config
 	reloadActive  bool
+
+	// stopCh is closed by Shutdown to stop the stats and log-broadcast loops.
+	// Only the constructors create it: tests build bare Servers, which have no
+	// goroutines to stop. bgDone lets Shutdown wait for both to actually be
+	// finished rather than merely told to stop — the stats loop writes metric
+	// rows, and the caller closes the database next.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	bgDone   sync.WaitGroup
 }
 
 type Client struct {
@@ -107,10 +116,27 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 	}
 
 	logger.SetBroadcast(s.logCh)
+	s.stopCh = make(chan struct{})
+	s.bgDone.Add(2)
 	go s.broadcastLogs()
 	go s.collectStatsLoop()
 
 	return s
+}
+
+// Shutdown stops the background loops and waits for them to finish.
+//
+// The waiting is the substance. collectStatsLoop persists provider and indexer
+// metrics every thirty seconds, so it has to be provably done before the caller
+// closes the database — signalling it and moving on would leave a write racing
+// the close. Safe on a Server no constructor built, and safe to call twice.
+func (s *Server) Shutdown() {
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
+	s.bgDone.Wait()
 }
 
 // collectStatsLoop samples every meter once per second and hands the same
@@ -119,11 +145,16 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 // read from one place, or clients see numbers measured over different slices of
 // time that cannot be reconciled against each other.
 func (s *Server) collectStatsLoop() {
+	defer s.bgDone.Done()
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
 		s.publishStats()
-		<-ticker.C
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -157,8 +188,14 @@ func (s *Server) broadcast(msg WSMessage) {
 }
 
 func (s *Server) broadcastLogs() {
-	for msgStr := range s.logCh {
-		s.broadcast(WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))})
+	defer s.bgDone.Done()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case msgStr := <-s.logCh:
+			s.broadcast(WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))})
+		}
 	}
 }
 
@@ -444,7 +481,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	mux.HandleFunc("/api/info", s.handleInfo)
 
-	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.adminUsername() }, func() string { return s.config.AdminToken })
+	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.adminUsername() }, func() string { return s.adminToken() })
 	mux.Handle("/api/ws", authMiddleware(http.HandlerFunc(s.handleWebSocket)))
 	mux.Handle("/api/config", authMiddleware(http.HandlerFunc(s.handleConfig)))
 	mux.Handle("/api/cache/clear", authMiddleware(http.HandlerFunc(s.handleClearCache)))

@@ -74,6 +74,8 @@ func (s *Server) collectStats() SystemStats {
 	s.mu.RLock()
 	pools := s.providerPools
 	application := s.app
+	liveIndexer := s.indexer
+	attempts := s.attemptLister
 	s.mu.RUnlock()
 	articleByProvider := map[string]usenetpool.ProviderArticleStats{}
 	articleByHost := map[string]usenetpool.ProviderArticleStats{}
@@ -128,7 +130,7 @@ func (s *Server) collectStats() SystemStats {
 		return stats.Providers[i].Name < stats.Providers[j].Name
 	})
 
-	if s.indexer != nil {
+	if liveIndexer != nil {
 		availIndexerStats := map[string]stremio.AvailIndexerStats{}
 		uniqueIndexerHits := map[string]int64{}
 		if s.strmServer != nil {
@@ -141,10 +143,10 @@ func (s *Server) collectStats() SystemStats {
 		}
 
 		var indexers []indexer.Indexer
-		if container, ok := s.indexer.(indexerContainer); ok {
+		if container, ok := liveIndexer.(indexerContainer); ok {
 			indexers = container.GetIndexers()
 		} else {
-			indexers = []indexer.Indexer{s.indexer}
+			indexers = []indexer.Indexer{liveIndexer}
 		}
 
 		for _, idx := range indexers {
@@ -224,14 +226,13 @@ func (s *Server) collectStats() SystemStats {
 
 	stats.ActiveStreams = len(stats.ActiveSessions)
 
-	s.maybePersistMetrics(stats)
+	s.maybePersistMetrics(attempts, stats)
 
 	logger.Trace("collectStats done", "providers", len(stats.Providers), "sessions", len(stats.ActiveSessions))
 	return stats
 }
 
-func (s *Server) maybePersistMetrics(stats SystemStats) {
-	mgr := s.attemptLister
+func (s *Server) maybePersistMetrics(mgr *persistence.StateManager, stats SystemStats) {
 	if mgr == nil {
 		return
 	}

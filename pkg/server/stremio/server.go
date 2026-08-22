@@ -227,11 +227,12 @@ func (s *Server) Shutdown() {
 }
 
 func (s *Server) ClearSearchCaches() {
+	rt := s.runtime()
 	playlists := clearSyncMap(&s.playlistCache)
 	raw := clearSyncMap(&s.rawSearchCache)
 	clearSyncMap(&s.nextReleaseIndex)
-	if s.queryCache != nil {
-		s.queryCache.Clear()
+	if rt.queryCache != nil {
+		rt.queryCache.Clear()
 	}
 	// Empty caches clear silently — debounced profile auto-saves would
 	// otherwise log this on every keystroke pause.

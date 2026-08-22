@@ -252,6 +252,10 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		s.writeSaveStatus(w, "error", "Invalid stream config data", nil)
 		return
 	}
+	// One snapshot for the whole loop rather than a locked read per stream: a
+	// reload landing mid-loop would otherwise sync half the streams against the
+	// old provider list and half against the new one.
+	live := s.Config()
 	var (
 		errors  []string
 		updated bool
@@ -264,15 +268,15 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		indexerSelections := append([]string(nil), dc.IndexerSelections...)
 		indexerOverrides := cloneIndexerOverrides(dc.IndexerOverrides)
 		if dc.AutoAddProviders != nil && *dc.AutoAddProviders {
-			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(s.config.Providers))
+			providerSelections = syncOrderedSelections(providerSelections, enabledProviderNames(live.Providers))
 		}
 		if dc.AutoAddIndexers != nil && *dc.AutoAddIndexers {
-			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(s.config.Indexers))
+			indexerSelections = syncOrderedSelections(indexerSelections, enabledIndexerNames(live.Indexers))
 			indexerOverrides = filterIndexerOverrides(indexerOverrides, indexerSelections)
 		}
 		// Sanitized after the sync so per-provider settings survive a provider
 		// that sync just added back to the list.
-		connectionLimits := sanitizeConnectionLimits(dc.ProviderConnectionLimits, providerSelections, s.config.Providers)
+		connectionLimits := sanitizeConnectionLimits(dc.ProviderConnectionLimits, providerSelections, live.Providers)
 		disabledProviders := sanitizeDisabledProviders(dc.DisabledProviders, providerSelections)
 		// An empty provider list means "every provider" downstream, so disabling
 		// all of them would silently do the opposite of what was asked.

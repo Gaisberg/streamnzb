@@ -15,6 +15,7 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -170,6 +171,7 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 }
 
 func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
 	mediaType := "tv"
 	if def.Type == "movie" {
 		mediaType = "movie"
@@ -180,7 +182,7 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 	var err error
 	switch {
 	case req.Search != "":
-		resp, err = s.tmdbClient.SearchByType(mediaType, req.Search, page)
+		resp, err = rt.tmdbClient.SearchByType(mediaType, req.Search, page)
 	case def.Kind == "discover":
 		filters := tmdb.DiscoverFilters{Genres: def.DiscoverGenres}
 		// Movies push the ceiling upstream (certification.lte) so the row
@@ -189,9 +191,9 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		if ceiling := catalogCertCeilingAge(def, req.Profile); ceiling >= 0 && mediaType == "movie" {
 			filters.MaxCert = certification.USMovieCertLTE(ceiling)
 		}
-		resp, err = s.tmdbClient.Discover(mediaType, filters, page, req.Profile.EffectiveLanguage())
+		resp, err = rt.tmdbClient.Discover(mediaType, filters, page, req.Profile.EffectiveLanguage())
 	default:
-		resp, err = s.tmdbClient.GetListing(mediaType, def.Kind, page, req.Profile.EffectiveLanguage())
+		resp, err = rt.tmdbClient.GetListing(mediaType, def.Kind, page, req.Profile.EffectiveLanguage())
 	}
 	if err != nil {
 		return nil, err
@@ -232,6 +234,7 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 // externalIDConcurrency in flight. Failures leave the slot empty — the caller
 // falls back to a tmdb: id.
 func (s *Server) resolveIMDbIDs(mediaType string, results []tmdb.SearchMultiResult) []string {
+	rt := s.runtime()
 	ids := make([]string, len(results))
 	sem := make(chan struct{}, externalIDConcurrency)
 	var wg sync.WaitGroup
@@ -244,7 +247,7 @@ func (s *Server) resolveIMDbIDs(mediaType string, results []tmdb.SearchMultiResu
 		go func(i, tmdbID int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			ext, err := s.tmdbClient.GetExternalIDs(tmdbID, mediaType)
+			ext, err := rt.tmdbClient.GetExternalIDs(tmdbID, mediaType)
 			if err == nil && strings.HasPrefix(ext.IMDbID, "tt") {
 				ids[i] = ext.IMDbID
 			}
@@ -259,11 +262,12 @@ func (s *Server) resolveIMDbIDs(mediaType string, results []tmdb.SearchMultiResu
 // resolve through each row's extended record (bounded fan-out, cached, and
 // reused later by the series meta pages those rows open).
 func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
 	sort := "score"
 	if def.Kind == "new" {
 		sort = "firstAired"
 	}
-	listings, err := s.tvdbClient.FilterSeries(sort, 0)
+	listings, err := rt.tvdbClient.FilterSeries(sort, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +297,7 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		go func(i, tvdbID int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if ext, err := s.tvdbClient.GetSeriesExtended(strconv.Itoa(tvdbID)); err == nil {
+			if ext, err := rt.tvdbClient.GetSeriesExtended(strconv.Itoa(tvdbID)); err == nil {
 				ids[i] = ext.IMDbID()
 				backgrounds[i] = ext.Background()
 				if capped {
@@ -368,23 +372,22 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 // "kitsu:486:3", bare TMDB numbers) to movie/series granularity in preview-id
 // form, or "" when unrecognizable.
 func baseContentID(rawID string) string {
-	id := strings.TrimSpace(rawID)
-	if id == "" {
-		return ""
-	}
-	parts := strings.Split(id, ":")
+	parsed := query.ParseContentID(strings.TrimSpace(rawID))
 	switch {
-	case strings.HasPrefix(id, "kitsu:"), strings.HasPrefix(id, "tmdb:"), strings.HasPrefix(id, "tvdb:"):
-		if len(parts) >= 2 && parts[1] != "" {
-			return parts[0] + ":" + parts[1]
+	case parsed.KitsuID != "":
+		return "kitsu:" + parsed.KitsuID
+	case parsed.TVDBID != "":
+		return "tvdb:" + parsed.TVDBID
+	case parsed.IMDbID != "":
+		return parsed.IMDbID
+	case parsed.TMDBID != "":
+		// A bare "0" splits fine but is not an id. The parser is deliberately
+		// total and says nothing about whether a number is usable, so the
+		// caller that cares checks — this one does.
+		if n, err := strconv.Atoi(parsed.TMDBID); err != nil || n <= 0 {
+			return ""
 		}
-		return ""
-	case strings.HasPrefix(id, "tt"):
-		return parts[0]
-	default:
-		if n, err := strconv.Atoi(parts[0]); err == nil && n > 0 {
-			return "tmdb:" + parts[0]
-		}
+		return "tmdb:" + parsed.TMDBID
 	}
 	return ""
 }
@@ -544,6 +547,7 @@ func (s *Server) watchHistory(streamName, contentType string) (ordered []string,
 // already watched or in the library. Deep skips lazily pull further
 // recommendation pages instead of ending the row at one page per seed.
 func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
 	ordered, plays, watched := s.watchHistory(req.StreamName, def.Type)
 	if len(ordered) == 0 {
 		return nil, nil
@@ -616,7 +620,7 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 			if sd.exhausted {
 				continue
 			}
-			resp, err := s.tmdbClient.GetRecommendations(mediaType, sd.tmdbID, page, req.Profile.EffectiveLanguage())
+			resp, err := rt.tmdbClient.GetRecommendations(mediaType, sd.tmdbID, page, req.Profile.EffectiveLanguage())
 			if err != nil {
 				logger.Debug("TMDB recommendations failed", "tmdb_id", sd.tmdbID, "err", err)
 				sd.exhausted = true
@@ -695,12 +699,13 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 // tmdbIDForPreviewID resolves a catalog preview id back to a TMDB id, through
 // the cached Find lookup for tt ids.
 func (s *Server) tmdbIDForPreviewID(previewID, contentType string) int {
+	rt := s.runtime()
 	if raw, ok := strings.CutPrefix(previewID, "tmdb:"); ok {
 		id, _ := strconv.Atoi(raw)
 		return id
 	}
 	if strings.HasPrefix(previewID, "tt") {
-		if find, err := s.tmdbClient.Find(previewID, "imdb_id"); err == nil {
+		if find, err := rt.tmdbClient.Find(previewID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				return res.ID
 			}
@@ -769,6 +774,7 @@ func libraryPreviewID(item *persistence.LibraryItem) string {
 // A stub whose resolution fails keeps whatever name it already carries. lang
 // is the profile's display language tag ("" for the English default).
 func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPreview, contentType, lang string) {
+	rt := s.runtime()
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, kitsuID); err == nil && animeMeta.CanonicalTitle != "" {
 			preview.Name = animeMeta.CanonicalTitle
@@ -778,7 +784,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		return
 	}
 	if tvdbID, ok := strings.CutPrefix(preview.ID, "tvdb:"); ok {
-		if ext, err := s.tvdbClient.GetSeriesExtendedTranslated(tvdbID, tvdb.LanguageToISO3(lang)); err == nil && ext.Name != "" {
+		if ext, err := rt.tvdbClient.GetSeriesExtendedTranslated(tvdbID, tvdb.LanguageToISO3(lang)); err == nil && ext.Name != "" {
 			preview.Name = ext.Name
 			preview.Poster = ext.Image
 			preview.Background = ext.Background()
@@ -789,7 +795,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 	if raw, ok := strings.CutPrefix(preview.ID, "tmdb:"); ok {
 		tmdbID, _ = strconv.Atoi(raw)
 	} else if strings.HasPrefix(preview.ID, "tt") {
-		if find, err := s.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
+		if find, err := rt.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				tmdbID = res.ID
 			}
@@ -799,7 +805,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		return
 	}
 	if contentType == "movie" {
-		if details, err := s.tmdbClient.GetMovieDetailsWithLanguage(tmdbID, lang); err == nil && details.Title != "" {
+		if details, err := rt.tmdbClient.GetMovieDetailsWithLanguage(tmdbID, lang); err == nil && details.Title != "" {
 			preview.Name = details.Title
 			if details.PosterPath != "" {
 				preview.Poster = tmdbPosterURL + details.PosterPath
@@ -810,7 +816,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		}
 		return
 	}
-	if details, err := s.tmdbClient.GetTVDetailsWithLanguage(tmdbID, lang); err == nil && details.Name != "" {
+	if details, err := rt.tmdbClient.GetTVDetailsWithLanguage(tmdbID, lang); err == nil && details.Name != "" {
 		preview.Name = details.Name
 		if details.PosterPath != "" {
 			preview.Poster = tmdbPosterURL + details.PosterPath
