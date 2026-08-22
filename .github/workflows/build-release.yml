@@ -63,7 +63,7 @@ jobs:
     steps:
       - name: Lowercase repo name
         run: |
-          echo "REPO=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
+          echo "REPO=${GITHUB_REPOSITORY,,}" >> "${GITHUB_ENV}"
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -132,15 +132,15 @@ jobs:
           if [ "${{ github.event_name }}" = "release" ]; then
             VERSION="${GITHUB_REF#refs/tags/}"
             VERSION="${VERSION#v}"
-            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "VERSION=$VERSION" >> "${GITHUB_OUTPUT}"
           else
             TAG="${{ github.event.inputs.tag_name }}"
             if [ -n "$TAG" ] && [ "$TAG" != "manual-build" ]; then
-              echo "VERSION=${TAG#v}" >> $GITHUB_OUTPUT
+              echo "VERSION=${TAG#v}" >> "${GITHUB_OUTPUT}"
             else
               SHORT_SHA="${GITHUB_SHA:0:7}"
               RELEASE_VERSION=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' .release-please-manifest.json | head -1 || echo "0.0.0")
-              echo "VERSION=${RELEASE_VERSION}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+              echo "VERSION=${RELEASE_VERSION}-${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
             fi
           fi
 
