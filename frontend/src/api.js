@@ -40,13 +40,13 @@ async function readTextError(res) {
     : body
 }
 
+// The browser authenticates with the HttpOnly session cookie and nothing else.
+// The server still accepts a bearer token for non-browser clients, but keeping a
+// copy here would hand any XSS the credential the cookie exists to protect.
+// A caller may still set Authorization itself; nothing in the UI does.
 export async function apiFetch(path, options = {}) {
   const url = getApiUrl(path)
   const headers = new Headers(options.headers || {})
-  const storedToken = typeof window !== 'undefined' ? window.localStorage.getItem('auth_token') || '' : ''
-  if (storedToken && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${storedToken}`)
-  }
   const res = await fetch(url, { credentials: 'include', ...options, headers })
   let data = null
   let textError = ''

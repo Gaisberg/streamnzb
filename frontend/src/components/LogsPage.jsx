@@ -17,15 +17,11 @@ export const LogsPage = memo(function LogsPage({ logs = [] }) {
     setDownloadError('')
     setDownloading(true)
     try {
-      const headers = new Headers()
-      const token = window.localStorage.getItem('auth_token') || ''
-      if (token) {
-        headers.set('Authorization', `Bearer ${token}`)
-      }
+      // Raw fetch rather than apiFetch: this wants the response as a blob,
+      // not parsed JSON. The session cookie authenticates it.
       const response = await fetch(getApiUrl('/api/logs/download'), {
         method: 'GET',
         credentials: 'include',
-        headers,
       })
       if (!response.ok) {
         throw new Error(`Download failed (${response.status})`)

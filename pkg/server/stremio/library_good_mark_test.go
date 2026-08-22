@@ -41,7 +41,7 @@ func TestCommitGoodMarksLibraryItemGoodForDirectPlay(t *testing.T) {
 	sess := &session.Session{ID: "direct-abc123", ContentTitle: title}
 	sess.AddBytesRead(65 << 20)
 
-	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, sess.ID, time.Now().Add(-21*time.Second)); !committed {
+	if committed := server.commitGoodAttemptIfQualified(sess, sess.ID, time.Now().Add(-21*time.Second)); !committed {
 		t.Fatal("expected sustained direct play to commit success")
 	}
 

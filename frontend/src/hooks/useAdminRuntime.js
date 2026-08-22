@@ -9,7 +9,6 @@ const MAX_LOGS = 200
 
 export function useAdminRuntime({
   authenticated,
-  authToken,
   hasLoggedOutRef,
   setAuthenticated,
   setCurrentUser,
@@ -89,11 +88,12 @@ export function useAdminRuntime({
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      // Same origin as the page, so the session cookie rides along with the
+      // handshake. It used to append ?token=, which put a credential in a URL
+      // for no gain — after a reload the token was gone anyway and the cookie
+      // was doing the work.
       const wsEndpoint = new URL(getApiUrl('/api/ws'), window.location.origin)
       wsEndpoint.protocol = protocol
-      if (authToken) {
-        wsEndpoint.searchParams.set('token', authToken)
-      }
       const socket = new WebSocket(wsEndpoint.toString())
       activeSocketRef.current = socket
 
@@ -222,7 +222,7 @@ export function useAdminRuntime({
         socket.close()
       }
     }
-  }, [authenticated, authToken, hasLoggedOutRef, resetRuntime, setAuthenticated, setCurrentUser, setMustChangePassword])
+  }, [authenticated, hasLoggedOutRef, resetRuntime, setAuthenticated, setCurrentUser, setMustChangePassword])
 
   const sendCommand = useCallback((type, payload) => {
     if (type === 'save_config') {

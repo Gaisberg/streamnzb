@@ -17,6 +17,12 @@ Anything else that appears alongside (an extracted ffprobe binary, leftovers fro
 
 > `config.json` contains your Usenet provider and indexer credentials in plain text. Treat backups accordingly.
 
+## Stopping cleanly
+
+`docker stop`, `systemctl stop` and Ctrl-C all send a termination signal that StreamNZB acts on rather than dying where it stands. It stops accepting new requests, gives in-flight ones five seconds to finish, then cuts anything still running — a playback stream can last hours, so waiting for those to end on their own is not an option. After that it closes live sessions, hands back its Usenet connections, flushes provider usage counters to the database, and closes the database.
+
+Two things follow from that. Playback in progress stops when you stop the server, as expected. And the whole sequence fits inside Docker's default ten-second stop timeout, so the container is never `SIGKILL`ed partway through — no truncated writes, and no Usenet connections left for your provider to time out on its own, which would otherwise count against your connection limit for a while after a restart.
+
 ## Updating
 
 Migrations (database schema and config format) run automatically on startup, so updating is just replacing the binary/image. Back up the data directory first when jumping many versions. Downgrading is not supported — a newer version may have migrated the schema past what an older binary understands; restore the pre-upgrade backup instead.

@@ -4,6 +4,31 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { CONTENT_KINDS } from "@/lib/profiles"
+import {
+  MAX_ADDON_NAME_LENGTH,
+  activeProviderNames,
+  applyFilterSortingMode,
+  buildIndexerOverrides,
+  buildStreamDraft,
+  buildStreamStateFromDraft,
+  defaultAddonName,
+  filterSortingLabel,
+  filterSortingSummaryValues,
+  formattingSummaryValues,
+  generalCompactValues,
+  generalDetailValues,
+  getInitialStreamDraft,
+  indexerModeLabel,
+  mapStreamsByUsername,
+  metadataSummaryValues,
+  nextStreamName,
+  normalizeStreamDraft,
+  resultsModeLabel,
+  searchRequestsLabel,
+  streamsFromMap,
+  tabHasError,
+  uniquePreserveOrder,
+} from '@/lib/streams'
 import { isAvailNZBEnabled } from "@/lib/availnzb"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
@@ -16,236 +41,6 @@ import { copyToClipboard } from "@/lib/utils"
 import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2, Type } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
-
-function mapStreamsByUsername(streams) {
-  return (Array.isArray(streams) ? streams : []).reduce((acc, stream) => {
-    if (!stream?.username) return acc
-    acc[stream.username] = stream
-    return acc
-  }, {})
-}
-
-function streamsFromMap(streamsByName) {
-  return Object.values(streamsByName || {}).filter(Boolean)
-}
-
-function uniquePreserveOrder(values) {
-  const seen = new Set()
-  const next = []
-  ;(Array.isArray(values) ? values : []).forEach((value) => {
-    if (!value || seen.has(value)) return
-    seen.add(value)
-    next.push(value)
-  })
-  return next
-}
-
-// sortedByKey rebuilds a map in key order. The dirty check compares serialized
-// drafts and Go marshals maps sorted, so insertion order would otherwise read
-// as an unsaved change.
-function sortedByKey(value) {
-  const out = {}
-  Object.keys(value || {}).sort().forEach((key) => { out[key] = value[key] })
-  return out
-}
-
-// pickConnectionLimits keeps caps only for providers the stream still selects,
-// so removing a provider does not leave a limit behind that silently reapplies
-// if it is added back later.
-function pickConnectionLimits(limits, selectedProviders) {
-  const kept = {}
-  selectedProviders.forEach((name) => {
-    const limit = Number.parseInt(limits?.[name], 10)
-    if (Number.isFinite(limit) && limit > 0) kept[name] = limit
-  })
-  return kept
-}
-
-// Mirrors MaxAddonNameLength and the default manifest name in
-// pkg/server/stremio/manifest.go. Keep them in step.
-const MAX_ADDON_NAME_LENGTH = 60
-const SERVICE_NAME = 'StreamNZB'
-
-function defaultAddonName(streamName) {
-  const trimmed = (streamName || '').trim()
-  return trimmed ? `${SERVICE_NAME} · ${trimmed}` : SERVICE_NAME
-}
-
-// activeProviderNames mirrors Stream.ActiveProviderSelections on the backend:
-// summaries should count what the stream actually uses, not what is merely
-// listed. Keep the two in step.
-function activeProviderNames(stream) {
-  const disabled = new Set(stream?.disabled_providers || [])
-  return (stream?.provider_selections || []).filter((name) => !disabled.has(name))
-}
-
-function normalizeStreamDraft(draft) {
-  const normalizedFilterSortingMode = draft?.filter_sorting_mode === 'aiostreams' ? 'aiostreams' : 'none'
-  const providers = uniquePreserveOrder(draft?.providers)
-  return {
-    filter_sorting_mode: normalizedFilterSortingMode,
-    indexer_mode: draft?.indexer_mode === 'failover' ? 'failover' : 'combine',
-    username: (draft?.username || '').trim(),
-    combine_results: draft?.combine_results !== false,
-    enable_failover: draft?.enable_failover !== false,
-    results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
-    auto_add_providers: draft?.auto_add_providers === true,
-    auto_add_indexers: draft?.auto_add_indexers === true,
-    unaired_search_gate: draft?.unaired_search_gate !== false,
-    filter_availnzb: draft?.filter_availnzb === true,
-    providers,
-    provider_connection_limits: pickConnectionLimits(draft?.provider_connection_limits, providers),
-    disabled_providers: uniquePreserveOrder(draft?.disabled_providers).filter((name) => providers.includes(name)),
-    indexers: uniquePreserveOrder(draft?.indexers),
-    indexer_overrides: draft?.indexer_overrides || {},
-    movie_search_queries: uniquePreserveOrder(draft?.movie_search_queries),
-    series_search_queries: uniquePreserveOrder(draft?.series_search_queries),
-    filter_profile_name: normalizedFilterSortingMode === 'aiostreams' ? '' : (draft?.filter_profile_name || ''),
-    filter_profile_by_type: sortedByKey(draft?.filter_profile_by_type),
-    metadata_profile_name: draft?.metadata_profile_name || '',
-    format_profile_name: draft?.format_profile_name || '',
-    result_name_template: draft?.result_name_template || '',
-    result_description_template: draft?.result_description_template || '',
-    addon_name: (draft?.addon_name || '').trim(),
-  }
-}
-
-function buildStreamDraft(stream) {
-  return normalizeStreamDraft({
-    filter_sorting_mode: stream?.filter_sorting_mode,
-    indexer_mode: stream?.indexer_mode,
-    username: stream?.username || '',
-    combine_results: stream?.combine_results,
-    enable_failover: stream?.enable_failover,
-    results_mode: stream?.results_mode,
-    auto_add_providers: stream?.auto_add_providers,
-    auto_add_indexers: stream?.auto_add_indexers,
-    unaired_search_gate: stream?.unaired_search_gate,
-    filter_availnzb: stream?.filter_availnzb,
-    providers: stream?.provider_selections || stream?.providers || [],
-    provider_connection_limits: stream?.provider_connection_limits || {},
-    disabled_providers: stream?.disabled_providers || [],
-    indexers: stream?.indexer_selections || stream?.indexers || Object.keys(stream?.indexer_overrides || {}),
-    indexer_overrides: stream?.indexer_overrides || {},
-    movie_search_queries: stream?.movie_search_queries || [],
-    series_search_queries: stream?.series_search_queries || [],
-    filter_profile_name: stream?.filter_profile_name || '',
-    filter_profile_by_type: stream?.filter_profile_by_type || {},
-    metadata_profile_name: stream?.metadata_profile_name || '',
-    format_profile_name: stream?.format_profile_name || '',
-    result_name_template: stream?.result_name_template || '',
-    result_description_template: stream?.result_description_template || '',
-    addon_name: stream?.addon_name || '',
-  })
-}
-
-function buildIndexerOverrides(selectedIndexerNames, existingOverrides = {}) {
-  return selectedIndexerNames.reduce((acc, name) => {
-    acc[name] = existingOverrides?.[name] || {}
-    return acc
-  }, {})
-}
-
-function buildStreamStateFromDraft(username, token, draft, existingOverrides = {}) {
-  return {
-    username,
-    token: token || '',
-    filter_sorting_mode: draft.filter_sorting_mode,
-    indexer_mode: draft.indexer_mode,
-    combine_results: draft.combine_results,
-    enable_failover: draft.enable_failover,
-    results_mode: draft.results_mode,
-    auto_add_providers: draft.auto_add_providers,
-    auto_add_indexers: draft.auto_add_indexers,
-    unaired_search_gate: draft.unaired_search_gate,
-    filter_availnzb: draft.filter_availnzb,
-    provider_selections: draft.providers || [],
-    provider_connection_limits: draft.provider_connection_limits || {},
-    disabled_providers: draft.disabled_providers || [],
-    indexer_selections: draft.indexers || [],
-    indexer_overrides: buildIndexerOverrides(draft.indexers || [], draft.indexer_overrides || existingOverrides),
-    movie_search_queries: draft.movie_search_queries || [],
-    series_search_queries: draft.series_search_queries || [],
-    filter_profile_name: draft.filter_profile_name || '',
-    filter_profile_by_type: draft.filter_profile_by_type || {},
-    metadata_profile_name: draft.metadata_profile_name || '',
-    format_profile_name: draft.format_profile_name || '',
-    result_name_template: draft.result_name_template || '',
-    result_description_template: draft.result_description_template || '',
-    addon_name: draft.addon_name || '',
-  }
-}
-
-function generalCompactValues(stream) {
-  return [stream?.filter_sorting_mode === 'aiostreams' ? 'AIOStreams' : 'Custom']
-}
-
-function generalDetailValues(stream) {
-  return [
-    `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
-    `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
-    `Search ${stream?.combine_results !== false ? 'Combine' : 'First hit'}`,
-    `Results ${stream?.results_mode === 'display_all' ? 'All' : 'Combine'}`,
-    `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
-    `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
-  ]
-}
-
-function filterSortingSummaryValues(stream) {
-  if (stream?.filter_sorting_mode === 'aiostreams') {
-    return ['AIOStreams']
-  }
-  if (stream?.filter_profile_name) {
-    return [stream.filter_profile_name]
-  }
-  return ['None']
-}
-
-function filterSortingLabel(draft) {
-  if (draft?.filter_sorting_mode === 'aiostreams') {
-    return 'AIOStreams'
-  }
-  if (draft?.filter_profile_name) {
-    return draft.filter_profile_name
-  }
-  return 'None'
-}
-
-function metadataSummaryValues(stream) {
-  return [stream?.metadata_profile_name || 'Off']
-}
-
-function formattingSummaryValues(stream) {
-  if (stream?.format_profile_name) return [stream.format_profile_name]
-  // Legacy inline templates survive until the migration has run.
-  return [stream?.result_name_template || stream?.result_description_template ? 'Custom' : 'Default']
-}
-
-function searchRequestsLabel(combineResults) {
-  return combineResults !== false ? 'Combine all' : 'Stop after first hit'
-}
-
-function indexerModeLabel(value) {
-  return value === 'failover' ? 'Failover' : 'Combine'
-}
-
-function resultsModeLabel(value) {
-  return value === 'display_all' ? 'Display all' : 'Combined stream'
-}
-
-function applyFilterSortingMode(current, nextMode, profileName = '') {
-  const normalizedMode = nextMode === 'aiostreams' ? 'aiostreams' : 'none'
-  const nextDraft = {
-    ...current,
-    filter_sorting_mode: normalizedMode,
-    filter_profile_name: normalizedMode === 'aiostreams' ? '' : profileName,
-    filter_profile_by_type: current?.filter_profile_by_type || {},
-  }
-  if (normalizedMode === 'aiostreams') {
-    nextDraft.results_mode = 'display_all'
-  }
-  return normalizeStreamDraft(nextDraft)
-}
 
 function SummaryRow({ label, values, icon: Icon }) {
   return (
@@ -351,42 +146,6 @@ const STREAM_DIALOG_TABS = [
 
 // tabFieldErrorKeys maps a dialog tab to the field errors it hosts, so the
 // tab strip can flag where a failed save needs attention.
-const tabFieldErrorKeys = {
-  providers: ['providers'],
-  indexers: ['indexers'],
-  search: ['movie_search_queries', 'series_search_queries'],
-}
-
-function tabHasError(tabId, fieldErrors) {
-  return (tabFieldErrorKeys[tabId] || []).some((key) => fieldErrors[key])
-}
-
-function defaultStreamName(index) {
-  return `Stream${String(index + 1).padStart(2, '0')}`
-}
-
-function nextStreamName(streams) {
-  const existing = new Set((Array.isArray(streams) ? streams : []).map((stream) => (stream?.username || '').toLowerCase()))
-  for (let index = 0; index < 999; index += 1) {
-    const candidate = defaultStreamName(index)
-    if (!existing.has(candidate.toLowerCase())) {
-      return candidate
-    }
-  }
-  return `Stream${Date.now()}`
-}
-
-function getInitialStreamDraft(initialStream, isEditing, enabledProviderNames = [], enabledIndexerNames = []) {
-  const base = buildStreamDraft(initialStream)
-  if (!isEditing) {
-    base.auto_add_providers = true
-    base.auto_add_indexers = true
-    base.providers = uniquePreserveOrder(enabledProviderNames)
-    base.indexers = uniquePreserveOrder(enabledIndexerNames)
-  }
-  return base
-}
-
 function StreamDialog({
   open,
   onOpenChange,

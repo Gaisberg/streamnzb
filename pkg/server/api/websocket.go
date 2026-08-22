@@ -35,7 +35,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	stream, ok := auth.StreamFromContext(r)
 	if !ok {
 
-		cookie, err := r.Cookie("auth_session")
+		cookie, err := r.Cookie(auth.SessionCookieName)
 		if err == nil && cookie != nil {
 			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.config.AdminToken)
 			if err != nil {

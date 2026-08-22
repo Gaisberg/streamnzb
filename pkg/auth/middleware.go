@@ -35,7 +35,7 @@ func AuthMiddleware(streamManager *StreamManager, getAdminUsername, getAdminToke
 			var stream *Stream
 			var err error
 
-			cookie, err := r.Cookie("auth_session")
+			cookie, err := r.Cookie(SessionCookieName)
 			if err == nil && cookie != nil {
 				stream, err = streamManager.AuthenticateToken(cookie.Value, adminUsername, adminToken)
 				if err == nil {
@@ -45,13 +45,7 @@ func AuthMiddleware(streamManager *StreamManager, getAdminUsername, getAdminToke
 				}
 				// Cookie present but invalid (e.g. after container restart with a new token).
 				// Clear it so the browser doesn't keep sending a stale credential.
-				http.SetCookie(w, &http.Cookie{
-					Name:     "auth_session",
-					Value:    "",
-					Path:     "/",
-					HttpOnly: true,
-					MaxAge:   -1,
-				})
+				http.SetCookie(w, ClearSessionCookie(r))
 			}
 
 			authHeader := r.Header.Get("Authorization")

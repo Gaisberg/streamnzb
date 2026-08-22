@@ -20,6 +20,7 @@ import { apiFetch, UNAUTHORIZED_EVENT } from '@/api'
 import { streamSeriesKey } from '@/lib/utils'
 import { AlertCircle, Loader2 } from "lucide-react"
 
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAdminRuntime } from '@/hooks/useAdminRuntime'
 import { isAvailNZBEnabled } from '@/lib/availnzb'
 
@@ -37,7 +38,6 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
-  const [authToken, setAuthToken] = useState(localStorage.getItem('auth_token') || '')
   const [mustChangePassword, setMustChangePassword] = useState(false)
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'system')
   const hasLoggedOutRef = useRef(false)
@@ -93,7 +93,6 @@ function App() {
     sendCommand,
   } = useAdminRuntime({
     authenticated,
-    authToken,
     hasLoggedOutRef,
     setAuthenticated,
     setCurrentUser,
@@ -132,71 +131,60 @@ function App() {
   }, [history, connHistory, streamHistory])
 
   useEffect(() => {
-    const token = localStorage.getItem('auth_token')
     const pathParts = window.location.pathname.split('/').filter(p => p !== '')
     const isLegacyPath = pathParts.length > 0 && pathParts[0] !== 'api'
 
-    if (!token && isLegacyPath) {
-      // Stremio token-in-URL path — no cookie/localStorage auth needed
-      hasLoggedOutRef.current = false
-      setAuthenticated(true)
-      setCurrentUser('legacy')
-      setAuthChecked(true)
-      return
+    // Not authenticated as the admin. Under a path prefix that is the Stremio
+    // token-in-URL case: the token in the path is the credential and there is
+    // no admin session to establish. Anywhere else it means the login screen.
+    //
+    // This used to be decided up front from a token in localStorage, which had
+    // it backwards — an admin reaching the UI through a reverse-proxy sub-path
+    // was read as a stream client whenever that copy was missing. Asking the
+    // server first answers it for both.
+    const applyUnauthenticated = () => {
+      if (isLegacyPath) {
+        hasLoggedOutRef.current = false
+        setAuthenticated(true)
+        setCurrentUser('legacy')
+        return
+      }
+      setAuthenticated(false)
     }
 
-    // Verify the stored token against the server before showing the UI.
-    // This catches the case where the container was restarted and a new
-    // AdminToken was generated, making the stored cookie/token stale.
-    // We intentionally always check the server session cookie as well,
-    // so a valid cookie keeps the admin logged in even if localStorage
-    // was cleared or not yet populated.
+    // Ask the server before showing anything: a container restart generates a
+    // new admin token, which leaves the browser holding a cookie that no longer
+    // authenticates.
     apiFetch('/api/auth/check', { skipAuthNotify: true })
       .then(data => {
         if (data && data.authenticated) {
-          const restoredToken = data.token || token || ''
           hasLoggedOutRef.current = false
-          setAuthToken(restoredToken)
           setAuthenticated(true)
           setCurrentUser(data.username)
           setMustChangePassword(data.must_change_password || false)
-          if (restoredToken) {
-            localStorage.setItem('auth_token', restoredToken)
-          }
-        } else {
-          // Server rejected the token — clear stale state and show login
-          setAuthenticated(false)
-          setAuthToken('')
-          if (token) localStorage.removeItem('auth_token')
+          return
         }
+        applyUnauthenticated()
       })
-      .catch(() => {
-        // Server unreachable on startup — fall back to login screen
-        setAuthenticated(false)
-        setAuthToken('')
-        if (token) localStorage.removeItem('auth_token')
-      })
+      // Also the 401 path: apiFetch rejects on a non-OK response.
+      .catch(applyUnauthenticated)
       .finally(() => {
         setAuthChecked(true)
       })
   }, [])
 
-  const handleLogin = (username, token, mustChange) => {
+  const handleLogin = (username, mustChange) => {
     hasLoggedOutRef.current = false
     setAuthenticated(true)
     setCurrentUser(username)
-    setAuthToken(token)
     setMustChangePassword(mustChange)
-    localStorage.setItem('auth_token', token)
   }
 
   const clearAuthState = useCallback(() => {
     hasLoggedOutRef.current = true
     setAuthenticated(false)
     setCurrentUser(null)
-    setAuthToken('')
     setMustChangePassword(false)
-    localStorage.removeItem('auth_token')
     if (ws) {
       ws.close()
     }
@@ -333,109 +321,113 @@ function App() {
       />
       <SidebarInset className="min-h-0 min-w-0 overflow-x-hidden">
         <SiteHeader activePage={activePage} />
-        <div className="flex min-w-0 flex-1 min-h-0 flex-col overflow-x-hidden">
-          {activePage === 'dashboard' && (
-            <DashboardPage
-              stats={stats}
-              chartData={chartData}
-              sendCommand={sendCommand}
-              config={config}
-              onNavigate={handleNavigate}
-              availNZBStatus={availNZBStatus}
-              availNZBStatusLoading={availNZBStatusLoading}
-              availNZBStatusError={availNZBStatusError}
-            />
-          )}
-          {activePage === 'statistics' && (
-            <StatisticsPage />
-          )}
-          {activePage === 'nzb-history' && (
-            <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />
-          )}
-          {activePage === 'library' && (
-            <LibraryPage
-              onPlay={(item) => {
-                setDirectPlayLibraryItem(item)
-                handleNavigate('direct-play')
-              }}
-            />
-          )}
-          {activePage === 'direct-play' && (
-            <DirectPlayPage
-              libraryItem={directPlayLibraryItem}
-              onLibraryItemConsumed={() => setDirectPlayLibraryItem(null)}
-            />
-          )}
-          {activePage === 'install' && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <StreamManagement
-                globalConfig={config}
-                movieSearchQueries={config?.movie_search_queries || []}
-                seriesSearchQueries={config?.series_search_queries || []}
-                initialStreamsByName={config?.streams || {}}
-              />
-            </div>
-          )}
-          {activePage === 'logs' && (
-            <LogsPage logs={logs} />
-          )}
-          {activePage === 'filters' && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <FiltersPage
-                config={config}
-                onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
-                isSaving={isSaving}
-                saveStatus={saveStatus}
-              />
-            </div>
-          )}
-          {activePage === 'metadata' && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <MetadataPage
-                config={config}
-                onPersist={(patch) => sendCommand('save_config', patch)}
-                isSaving={isSaving}
-                saveStatus={saveStatus}
-              />
-            </div>
-          )}
-          {activePage === 'formatting' && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <FormattingPage
-                config={config}
-                onPersist={(patch) => sendCommand('save_config', patch)}
-                isSaving={isSaving}
-                saveStatus={saveStatus}
-              />
-            </div>
-          )}
-          {activePage === 'profile' && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <ProfilePage
-                currentUser={currentUser}
-                config={config}
-                sendCommand={sendCommand}
-                ws={ws}
-                onUsernameChanged={setCurrentUser}
-              />
-            </div>
-          )}
-          {isSettingsPage && (
-            <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
-              <Settings
-                initialConfig={config}
-                sendCommand={sendCommand}
-                saveStatus={saveStatus}
-                clearSaveStatus={clearSaveStatus}
-                adminToken={currentUser && currentUser !== 'legacy' ? authToken : null}
-                indexerCaps={indexerCaps}
+        {/* Keyed on the page so navigating away clears a crashed one: React
+            never resets a boundary on its own, and without the key the fallback
+            would follow the user to every other page. */}
+        <ErrorBoundary key={activePage} label={activePage.replace(/-/g, ' ')}>
+          <div className="flex min-w-0 flex-1 min-h-0 flex-col overflow-x-hidden">
+            {activePage === 'dashboard' && (
+              <DashboardPage
                 stats={stats}
-                activeTab={settingsTabMap[activePage] || 'general'}
-                hideTabs={true}
+                chartData={chartData}
+                sendCommand={sendCommand}
+                config={config}
+                onNavigate={handleNavigate}
+                availNZBStatus={availNZBStatus}
+                availNZBStatusLoading={availNZBStatusLoading}
+                availNZBStatusError={availNZBStatusError}
               />
-            </div>
-          )}
-        </div>
+            )}
+            {activePage === 'statistics' && (
+              <StatisticsPage />
+            )}
+            {activePage === 'nzb-history' && (
+              <NZBHistoryPage refreshTrigger={nzbAttemptsRefreshTrigger} />
+            )}
+            {activePage === 'library' && (
+              <LibraryPage
+                onPlay={(item) => {
+                  setDirectPlayLibraryItem(item)
+                  handleNavigate('direct-play')
+                }}
+              />
+            )}
+            {activePage === 'direct-play' && (
+              <DirectPlayPage
+                libraryItem={directPlayLibraryItem}
+                onLibraryItemConsumed={() => setDirectPlayLibraryItem(null)}
+              />
+            )}
+            {activePage === 'install' && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <StreamManagement
+                  globalConfig={config}
+                  movieSearchQueries={config?.movie_search_queries || []}
+                  seriesSearchQueries={config?.series_search_queries || []}
+                  initialStreamsByName={config?.streams || {}}
+                />
+              </div>
+            )}
+            {activePage === 'logs' && (
+              <LogsPage logs={logs} />
+            )}
+            {activePage === 'filters' && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <FiltersPage
+                  config={config}
+                  onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
+                  isSaving={isSaving}
+                  saveStatus={saveStatus}
+                />
+              </div>
+            )}
+            {activePage === 'metadata' && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <MetadataPage
+                  config={config}
+                  onPersist={(patch) => sendCommand('save_config', patch)}
+                  isSaving={isSaving}
+                  saveStatus={saveStatus}
+                />
+              </div>
+            )}
+            {activePage === 'formatting' && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <FormattingPage
+                  config={config}
+                  onPersist={(patch) => sendCommand('save_config', patch)}
+                  isSaving={isSaving}
+                  saveStatus={saveStatus}
+                />
+              </div>
+            )}
+            {activePage === 'profile' && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <ProfilePage
+                  currentUser={currentUser}
+                  config={config}
+                  sendCommand={sendCommand}
+                  ws={ws}
+                  onUsernameChanged={setCurrentUser}
+                />
+              </div>
+            )}
+            {isSettingsPage && (
+              <div className="pt-4 md:pt-5 pb-3 px-4 lg:px-5">
+                <Settings
+                  initialConfig={config}
+                  sendCommand={sendCommand}
+                  saveStatus={saveStatus}
+                  clearSaveStatus={clearSaveStatus}
+                  indexerCaps={indexerCaps}
+                  stats={stats}
+                  activeTab={settingsTabMap[activePage] || 'general'}
+                  hideTabs={true}
+                />
+              </div>
+            )}
+          </div>
+        </ErrorBoundary>
       </SidebarInset>
     </SidebarProvider>
   )

@@ -33,7 +33,14 @@ func (s *Server) startLibraryFreshnessSweeper() {
 		timer := time.NewTimer(librarySweepStartupDelay)
 		defer timer.Stop()
 		for {
-			<-timer.C
+			// Stops with the server. Without this the sweep keeps querying the
+			// library after shutdown has begun, and can still be mid-query when
+			// the database is closed underneath it.
+			select {
+			case <-s.stopCh:
+				return
+			case <-timer.C:
+			}
 			s.sweepStaleLibraryItems(ttl)
 			timer.Reset(librarySweepInterval)
 		}

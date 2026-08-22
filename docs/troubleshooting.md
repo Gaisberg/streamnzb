@@ -24,6 +24,16 @@ Search results are cached per stream and title. A search that found **nothing** 
 
 If it is still empty after that, the air-date gate may be holding it: an episode that has not aired answers with no results without asking any indexer, and **History** shows it as **Not aired yet** with the air date it read instead of a bare "No results". The gate opens as soon as that date begins anywhere on Earth (midnight at UTC+14), so it cannot hide a release that already exists — nothing airs before its own air date starts. The server's timezone does not enter into it; only its clock being badly wrong would. If the show's air dates simply run ahead of when its releases land, turn **Skip unaired episodes** off in that stream's **Indexers** tab (Streams → edit → Indexers).
 
+## Locked out after repeated failed logins
+
+The admin login backs off after repeated wrong passwords from the same address. The first four failures cost nothing; after that each further failure doubles the wait before the next attempt is accepted, starting at 2 seconds and stopping at 15 minutes. Attempts made during a wait are answered with `429 Too Many Requests` and a `Retry-After` header rather than being checked.
+
+Waiting is the only thing required — the penalty expires on its own, and restarting StreamNZB is not needed. A single correct password clears the history immediately, so a run of typos leaves nothing behind once you get in.
+
+One caveat behind a reverse proxy or tunnel: every request arrives from the proxy's address, so the backoff applies to that one address rather than to each client separately. Forwarded headers are deliberately ignored here, because anyone can set them and would otherwise be able to sidestep their own backoff. On a single-admin instance this mainly means someone else's failed attempts can make you wait too.
+
+Passwords themselves are stored as salted argon2id hashes. Instances created before that change carry the older format and are upgraded silently on the next successful login — there is nothing to do, and no need to re-enter the password.
+
 ## Force password reset on next startup
 
 If you need to force the admin account to land on the password-change screen after restart, set:

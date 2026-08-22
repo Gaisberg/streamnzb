@@ -334,10 +334,27 @@ func main() {
 	logger.Info("Stremio addon server starting", "base_url", comp.Config.AddonBaseURL, "port", comp.Config.AddonPort)
 	logger.Info("Note: Access requires stream authentication tokens")
 
+	// Registered before the listener binds, so a signal arriving during startup
+	// is queued rather than killing the process outright.
+	signals := shutdownSignals()
+
 	if err := addonServer.start(comp.Config.AddonPort); err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", err))
 	}
-	if err := addonServer.wait(); err != nil {
-		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", err))
+
+	var serveErr error
+	select {
+	case serveErr = <-addonServer.failures():
+		logger.Error("Addon server stopped serving", "err", serveErr)
+	case sig := <-signals:
+		logger.Info("Received termination signal", "signal", sig.String())
+	}
+
+	// Runs on both paths. A listener that died still leaves sessions, provider
+	// connections and unflushed usage counters behind.
+	gracefulShutdown(addonServer, stremioServer, apiServer, sessionManager, application, stateMgr)
+
+	if serveErr != nil {
+		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", serveErr))
 	}
 }

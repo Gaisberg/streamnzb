@@ -18,7 +18,14 @@ permissions:
   packages: write
 
 jobs:
+  # Nothing is published for a tree that does not pass the same checks build.sh
+  # runs locally. Reused from ci.yml rather than repeated here so the release
+  # gate and the pull-request check can never drift apart.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   build-release:
+    needs: verify
     # Skip the release-please merge commit on push: the same code is rebuilt
     # seconds later by the tag's `release: published` event.
     if: >-

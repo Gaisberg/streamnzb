@@ -44,6 +44,20 @@ func (s *Server) adminUsername() string {
 	return s.config.GetAdminUsername()
 }
 
+// adminPasswordHash and adminToken read the admin credentials under the same
+// read lock and for the same reason as adminUsername.
+func (s *Server) adminPasswordHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.AdminPasswordHash
+}
+
+func (s *Server) adminToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.AdminToken
+}
+
 // isAdmin reports whether the request carries the admin stream.
 func (s *Server) isAdmin(r *http.Request) bool {
 	stream, _ := auth.StreamFromContext(r)

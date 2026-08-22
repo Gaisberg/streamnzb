@@ -8,11 +8,16 @@ echo "Vetting Go code..."
 go vet ./...
 
 echo "Running Go tests..."
-go test ./pkg/...
+# ./... rather than ./pkg/...: cmd/streamnzb holds the shutdown and
+# listener-rebind tests, which would otherwise never run.
+go test ./...
 
 echo "Linting Frontend..."
 cd frontend
 npm run lint
+
+echo "Testing Frontend..."
+npm test
 
 echo "Building Frontend..."
 npm run build

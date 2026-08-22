@@ -2,10 +2,10 @@ package api
 
 import (
 	"fmt"
-	"net"
 	"sort"
 	"time"
 
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
@@ -186,10 +186,7 @@ func (s *Server) collectStats() SystemStats {
 
 		for _, ps := range proxySessions {
 
-			ip := ps.RemoteAddr
-			if host, _, err := net.SplitHostPort(ip); err == nil {
-				ip = host
-			}
+			ip := httpx.HostFromAddr(ps.RemoteAddr)
 
 			if _, exists := groups[ip]; !exists {
 				groups[ip] = &proxyGroup{ip: ip}

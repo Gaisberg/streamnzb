@@ -23,6 +23,11 @@ import (
 )
 
 const (
+	// The initial "admin" password, in the legacy unsalted SHA-256 format.
+	// Passwords are argon2id now, but that hash is salted and so cannot be a
+	// constant. Leaving the default in the old format costs nothing: it is
+	// paired with AdminMustChangePassword, and auth.VerifyPassword still
+	// accepts legacy digests and upgrades them on the first successful login.
 	defaultAdminPasswordHash                = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 	DefaultInternalIndexerTimeoutSeconds    = 5
 	DefaultAggregatorIndexerTimeoutSeconds  = 10

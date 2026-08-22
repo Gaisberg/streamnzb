@@ -35,11 +35,14 @@ server {
         proxy_pass http://127.0.0.1:7000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;   # marks the login cookie Secure
         proxy_buffering off;        # stream video through, don't spool it
         proxy_read_timeout 1h;      # playback connections are long-lived
     }
 }
 ```
+
+StreamNZB reads `X-Forwarded-Proto` to tell whether the browser reached it over HTTPS, and marks the admin session cookie `Secure` when it did — so the browser will not send that cookie back over plain HTTP. Caddy sets the header on its own; nginx needs the line above. Without it, everything still works, the cookie simply misses a protection it could have had.
 
 ## What to avoid
 

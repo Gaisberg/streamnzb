@@ -1,0 +1,115 @@
+name: ci
+
+# The same checks build.sh runs locally, so a red tree is caught before
+# build-release publishes anything. Pull requests run this directly; pushes
+# reach it through build-release, which calls this workflow and gates on it.
+# Keeping it callable rather than duplicating the steps means the gate and the
+# PR check can never drift apart.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # Same cache strategy as build-release: setup-go's built-in cache is keyed
+      # only on go.sum and goes stale as commits land, so key on the commit SHA
+      # and restore the newest prefix match.
+      - name: Cache Go build and module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ hashFiles('go.sum') }}-
+            go-
+
+      # build.sh runs `go fmt`, which rewrites files; CI only reports.
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l ./pkg ./cmd)"
+          if [ -n "${unformatted}" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Lint frontend
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Test frontend
+        run: npm test
+        working-directory: frontend
+
+      # The production build catches what ESLint does not: import resolution,
+      # Tailwind config errors, and anything that only fails under Vite's
+      # bundler. build-release builds the frontend again for the artifact; this
+      # run exists to fail fast on a broken tree.
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+  race:
+    # The dev machine has no cgo toolchain, so `-race` cannot run there — this
+    # is the only place it executes. Non-blocking on purpose: a data race found
+    # here is worth seeing immediately, but it must not stop dev builds from
+    # publishing until the backlog has caught up with what it reports. Promote
+    # it into `verify` (or add it to build-release's `needs`) once it is green.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Cache Go build and module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-race-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-race-${{ hashFiles('go.sum') }}-
+            go-race-
+
+      - name: Test with race detector
+        run: go test -race ./...

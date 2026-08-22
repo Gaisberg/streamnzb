@@ -38,6 +38,10 @@ type Server struct {
 	streamManager  *auth.StreamManager
 	app            *app.App
 
+	// loginThrottle backs off repeated failed admin logins per client address.
+	// Usable at its zero value, so it needs no wiring in the constructors.
+	loginThrottle loginThrottle
+
 	availNZBURL    string
 	availNZBAPIKey string
 	tmdbAPIKey     string
@@ -222,6 +226,15 @@ func (s *Server) SetProxyServer(p *proxy.Server) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.proxyServer = p
+}
+
+// ProxyServer returns the NNTP proxy currently installed, or nil when it is
+// disabled. A config reload can replace it, so shutdown has to ask for the live
+// one rather than holding the instance it started with.
+func (s *Server) ProxyServer() *proxy.Server {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.proxyServer
 }
 
 func (s *Server) SetAvailNZBAPIKey(apiKey string) {

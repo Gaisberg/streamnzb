@@ -111,6 +111,11 @@ type Session struct {
 	mediaCaps *MediaCapabilities // codec/profile/HDR metadata captured during probing
 
 	libraryBlueprintJSON string // serialized archive blueprint from the library, rehydrated onto Blueprint once loader files exist
+
+	// Per-session bookkeeping for the layers above; see bookkeeping.go. Both
+	// are guarded by mu.
+	once          map[OnceKey]struct{}
+	deferredToken int64
 }
 
 // MediaCapabilities holds client-relevant properties of the selected playback
@@ -125,7 +130,11 @@ type MediaCapabilities = release.MediaCaps
 // Done returns a channel that is closed when the session is closed (e.g. user closed from dashboard).
 // Use with request context so playback aborts when either the client disconnects or the session is closed.
 func (s *Session) Done() <-chan struct{} {
-	if s == nil {
+	// A session only gets a context from the manager that created it. One built
+	// directly — as tests do — has none, and a nil channel is the right answer
+	// there: it blocks forever, which is what "never closed" means in a select.
+	// Context() already guards the same way.
+	if s == nil || s.ctx == nil {
 		return nil
 	}
 	return s.ctx.Done()
@@ -847,11 +856,35 @@ func (m *Manager) SetPostPlaybackEvictTTL(d time.Duration) {
 	m.postPlaybackEvictTTL = d
 }
 
-// Shutdown stops the background cleanup goroutine. Call during application shutdown.
-// Safe to call more than once.
+// Shutdown stops the background cleanup goroutine and closes every live
+// session. Call during application shutdown. Safe to call more than once.
+//
+// Closing the sessions is the part that matters on the way out: a session holds
+// a playback stream, and that stream holds NNTP connections. Exiting without
+// closing them drops the sockets instead of ending them, and a provider keeps
+// counting a dropped socket against the account's connection limit until it
+// notices — which can leave the next start short of connections it is entitled
+// to.
 func (m *Manager) Shutdown() {
 	m.stopOnce.Do(func() {
 		close(m.stopCh)
+
+		m.mu.Lock()
+		toClose := make([]*Session, 0, len(m.sessions))
+		for id, session := range m.sessions {
+			toClose = append(toClose, session)
+			delete(m.sessions, id)
+		}
+		m.mu.Unlock()
+
+		// Closed outside the lock: Close touches the network, and holding m.mu
+		// across IO is exactly the deadlock this package avoids everywhere else.
+		for _, s := range toClose {
+			s.closeWithLogging(false, "shutdown")
+		}
+		if len(toClose) > 0 {
+			logger.Info("Closed live sessions", "count", len(toClose))
+		}
 	})
 }
 
@@ -1404,6 +1437,19 @@ func (m *Manager) HasActiveSessionForContentID(contentType, contentID string) bo
 		}
 	}
 	return false
+}
+
+// PeekSession returns a session without marking it as accessed. Use it for
+// questions *about* a session — has it committed, is it still around — rather
+// than for work on one: GetSession stamps LastAccess, so asking through it
+// keeps the session alive and defers the eviction that would otherwise follow.
+func (m *Manager) PeekSession(sessionID string) *Session {
+	if m == nil || sessionID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[sessionID]
 }
 
 func (m *Manager) GetSession(sessionID string) (*Session, error) {

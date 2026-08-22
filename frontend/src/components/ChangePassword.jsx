@@ -38,7 +38,6 @@ export default function ChangePassword({ username, onPasswordChanged, requireCur
           setLoading(false)
           return
         }
-        if (loginData.token) localStorage.setItem('auth_token', loginData.token)
       }
       await apiFetch('/api/auth/change-password', {
         method: 'POST',

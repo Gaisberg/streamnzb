@@ -36,6 +36,16 @@ export default defineConfig({
       }
     }
   },
+  // Vitest reads this config, so the "@" alias and the React plugin apply to
+  // tests exactly as they do to the build.
+  test: {
+    // jsdom only where a test asks for it, via the @vitest-environment docblock.
+    // The lib and api tests are plain functions and run faster without a DOM.
+    environment: 'node',
+    include: ['src/**/*.{test,spec}.{js,jsx}'],
+    setupFiles: ['./src/test/setup.js'],
+    restoreMocks: true,
+  },
   server: {
     proxy: {
       '/api': {

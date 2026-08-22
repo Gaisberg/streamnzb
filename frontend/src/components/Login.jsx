@@ -28,11 +28,9 @@ export default function Login({ onLogin, version }) {
       })
 
       if (data.success) {
-        // Store token in localStorage for API calls
-        if (data.token) {
-          localStorage.setItem('auth_token', data.token)
-        }
-        onLogin(data.user, data.token, data.must_change_password || false)
+        // The session cookie the response set is the credential; nothing is
+        // kept on this side.
+        onLogin(data.user, data.must_change_password || false)
       } else {
         setError(data.error || 'Login failed')
       }

@@ -34,44 +34,48 @@ var (
 )
 
 type Server struct {
-	mu                        sync.RWMutex
-	availStatsMu              sync.RWMutex
-	manifest                  *Manifest
-	version                   string
-	baseURL                   string
-	config                    *config.Config
-	indexer                   indexer.Indexer
-	queryCache                *indexer.QueryCache
-	validator                 *validation.Checker
-	sessionManager            *session.Manager
-	triageService             *triage.Service
-	rankingService            *ranking.Service
-	availClient               *availnzb.Client
-	availReporter             *availnzb.Reporter
-	availNZBIndexerHosts      map[string]string
-	tmdbClient                *tmdb.Client
-	tvdbClient                *tvdb.Client
-	kitsuClient               *kitsu.Client
-	tvmazeClient              *tvmaze.Client
-	animeLists                *animelists.Store
-	streamManager             *auth.StreamManager
-	playlistCache             sync.Map
-	rawSearchCache            sync.Map
-	recordedSuccessSessionIDs sync.Map // session ID -> struct{}; record actual playback success only once per stream
-	recordedPreloadSessionIDs sync.Map // session ID -> struct{}; record preload only once per session lifetime
-	recordedFailureSessionIDs sync.Map // session ID -> struct{}; record failure only once per session lifetime (prevents concurrent goroutines from inserting duplicate rows)
-	loggedThresholdSkipIDs    sync.Map // session ID -> struct{}; keep threshold-below logs to a single line per session
-	pendingAttemptResolutions sync.Map // session ID -> int64 token; delayed finalization for short plays/probes
-	nextReleaseIndex          sync.Map // key: streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
-	preProbeCancels           sync.Map // key: StreamSlotKey.CacheKey() → *preProbeCancelEntry; cancels the in-flight speculative pre-probe sweep when real playback starts
-	pendingLibrarySavedIDs    sync.Map // session ID -> struct{}; the serve-path pending library save runs once per session, not once per HTTP range request
-	webHandler                http.Handler
-	apiHandler                http.Handler
-	playback                  *playback.Service
-	attemptRecorder           *persistence.StateManager
-	onAttemptRecorded         func()
-	availIndexerStats         map[string]AvailIndexerStats
-	uniqueIndexerHits         map[string]int64
+	mu                   sync.RWMutex
+	availStatsMu         sync.RWMutex
+	manifest             *Manifest
+	version              string
+	baseURL              string
+	config               *config.Config
+	indexer              indexer.Indexer
+	queryCache           *indexer.QueryCache
+	validator            *validation.Checker
+	sessionManager       *session.Manager
+	triageService        *triage.Service
+	rankingService       *ranking.Service
+	availClient          *availnzb.Client
+	availReporter        *availnzb.Reporter
+	availNZBIndexerHosts map[string]string
+	tmdbClient           *tmdb.Client
+	tvdbClient           *tvdb.Client
+	kitsuClient          *kitsu.Client
+	tvmazeClient         *tvmaze.Client
+	animeLists           *animelists.Store
+	streamManager        *auth.StreamManager
+	// Caches and registries keyed by something other than a session. Anything
+	// that *is* per-session lives on the session itself (see once_keys.go):
+	// session IDs are reused slot paths, so a map out here needed a goroutine
+	// parked on Done() to forget each entry before the slot came back.
+	playlistCache     sync.Map // cache key → *playlistCacheEntry
+	rawSearchCache    sync.Map // raw key → *rawSearchCacheEntry
+	nextReleaseIndex  sync.Map // streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
+	preProbeCancels   sync.Map // StreamSlotKey.CacheKey() → *preProbeCancelEntry; cancels the in-flight speculative pre-probe sweep when real playback starts
+	webHandler        http.Handler
+	apiHandler        http.Handler
+	playback          *playback.Service
+	attemptRecorder   *persistence.StateManager
+	onAttemptRecorded func()
+	availIndexerStats map[string]AvailIndexerStats
+	uniqueIndexerHits map[string]int64
+
+	// stopCh is closed by Shutdown to stop the background sweeps. It is only
+	// created by NewServer: tests build bare Servers, and those have no
+	// goroutines to stop.
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // AvailIndexerStats stores per-indexer availability outcomes aggregated from
@@ -145,6 +149,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),
 		uniqueIndexerHits:    make(map[string]int64),
+		stopCh:               make(chan struct{}),
 	}
 
 	playbackSvc := &playback.Service{
@@ -174,6 +179,9 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		}
 	}()
 
+	// Started once the constructor can no longer fail, so a rejected port does
+	// not leave goroutines behind on a Server nobody holds.
+	go s.searchCacheJanitor()
 	s.startLibraryFreshnessSweeper()
 
 	return s, nil
@@ -206,6 +214,16 @@ func clearSyncMap(m *sync.Map) int {
 		return true
 	})
 	return cleared
+}
+
+// Shutdown stops the server's background sweeps. Safe on a Server that was
+// never started through NewServer, and safe to call more than once.
+func (s *Server) Shutdown() {
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
 }
 
 func (s *Server) ClearSearchCaches() {

@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"maps"
@@ -341,11 +342,6 @@ func (dm *StreamManager) SetConfig(cfg *config.Config, saveFn func() error) {
 	}
 }
 
-func HashPassword(password string) string {
-	hash := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(hash[:])
-}
-
 func GenerateToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -360,22 +356,23 @@ func (dm *StreamManager) Authenticate(loginUsername, password, adminUsername, ad
 		adminUsername = "admin"
 	}
 
-	if loginUsername == adminUsername {
-		if adminPasswordHash == "" || adminToken == "" {
-			return nil, fmt.Errorf("invalid credentials")
-		}
-		passwordHash := HashPassword(password)
-		if passwordHash != adminPasswordHash {
-			return nil, fmt.Errorf("invalid credentials")
-		}
-		return &Stream{
-			Username:         adminUsername,
-			Token:            adminToken,
-			IndexerOverrides: nil,
-		}, nil
-	}
+	// Verify unconditionally, before deciding anything about the username. An
+	// early return for an unknown username would answer without paying the
+	// argon2id cost, and that difference is enough to find out what the admin
+	// username was renamed to. VerifyPassword spends the same work on an empty
+	// or malformed stored hash, so a half-configured instance reads the same
+	// from outside as a fully configured one.
+	passwordOK := VerifyPassword(password, adminPasswordHash)
+	usernameOK := subtle.ConstantTimeCompare([]byte(loginUsername), []byte(adminUsername)) == 1
 
-	return nil, fmt.Errorf("invalid credentials")
+	if !usernameOK || !passwordOK || adminPasswordHash == "" || adminToken == "" {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	return &Stream{
+		Username:         adminUsername,
+		Token:            adminToken,
+		IndexerOverrides: nil,
+	}, nil
 }
 
 func (dm *StreamManager) AuthenticateToken(token string, adminUsername, adminToken string) (*Stream, error) {
@@ -383,7 +380,11 @@ func (dm *StreamManager) AuthenticateToken(token string, adminUsername, adminTok
 		adminUsername = "admin"
 	}
 
-	if adminToken != "" && token == adminToken {
+	// Tokens are bearer credentials, so every comparison against one is
+	// constant-time. Walking the stream map still takes longer for a match late
+	// in the map than early, but that only leaks which stream matched — not the
+	// bytes of a token that did not.
+	if adminToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminToken)) == 1 {
 		return &Stream{
 			Username:         adminUsername,
 			Token:            adminToken,
@@ -394,7 +395,7 @@ func (dm *StreamManager) AuthenticateToken(token string, adminUsername, adminTok
 	dm.mu.RLock()
 	defer dm.mu.RUnlock()
 	for _, stream := range dm.streams {
-		if stream.Token == token {
+		if subtle.ConstantTimeCompare([]byte(stream.Token), []byte(token)) == 1 {
 			return stream, nil
 		}
 	}
