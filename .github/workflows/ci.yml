@@ -96,13 +96,18 @@ jobs:
         working-directory: frontend
 
   race:
-    # The dev machine has no cgo toolchain, so `-race` cannot run there — this
-    # is the only place it executes. Non-blocking on purpose: a data race found
-    # here is worth seeing immediately, but it must not stop dev builds from
-    # publishing until the backlog has caught up with what it reports. Promote
-    # it into `verify` (or add it to build-release's `needs`) once it is green.
+    # `-race` needs cgo, which the dev machine does not have, so this is the
+    # only place it runs on every change. It was non-blocking while its first
+    # results were unknown; those came back, the races it found were fixed, and
+    # it is green — so it blocks now, and a data race stops a release the same
+    # way a failing test does.
+    #
+    # To reproduce a failure from here without a cgo toolchain, run it in a
+    # container. `GetDataDir()` returns /app/data whenever /.dockerenv exists,
+    # which breaks the data-dir tests, so remove that marker first:
+    #
+    #   docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh -c     #     'rm -f /.dockerenv && mkdir -p pkg/server/web/static &&     #      touch pkg/server/web/static/.gitkeep && go test -race ./...'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
