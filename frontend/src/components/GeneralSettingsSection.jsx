@@ -16,7 +16,6 @@ import { cn, selectClass } from "@/lib/utils"
 // The TMDB/TVDB API keys live on the Metadata page, next to what they power.
 const CARD_FIELDS = {
   addon: ['addon_base_url', 'addon_port'],
-  proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   useragent: ['indexer_query_header', 'indexer_grab_header', 'provider_header'],
   database: ['database_driver', 'database_url', 'nzb_history_retention_days'],
 }
@@ -55,11 +54,6 @@ function pickInitialValues(values = {}) {
   return {
     addon_port: Number(values.addon_port ?? 7000),
     addon_base_url: values.addon_base_url ?? '',
-    proxy_enabled: values.proxy_enabled !== false,
-    proxy_port: Number(values.proxy_port ?? 1119),
-    proxy_host: values.proxy_host ?? '',
-    proxy_auth_user: values.proxy_auth_user ?? '',
-    proxy_auth_pass: values.proxy_auth_pass ?? '',
     indexer_query_header: values.indexer_query_header ?? '',
     indexer_grab_header: values.indexer_grab_header ?? '',
     provider_header: values.provider_header ?? '',
@@ -72,7 +66,6 @@ function pickInitialValues(values = {}) {
 export const GeneralSettingsSection = React.memo(function GeneralSettingsSection({
   initialValues,
   envOverrides,
-  proxyStatus,
   onPersist,
   saveStatus,
 }) {
@@ -82,7 +75,6 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
 
   const form = useForm({ defaultValues: defaults })
   const { control, reset, setError, clearErrors } = form
-  const proxyEnabled = useWatch({ control, name: 'proxy_enabled' }) !== false
   const usingPostgres = useWatch({ control, name: 'database_driver' }) === 'postgres'
   const { saveField, saveFields, savingField, hasFieldChanged, revertField } = useFieldAutoSave({
     form,
@@ -185,196 +177,106 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
   return (
     <Form {...form}>
       <form className="space-y-6">
-        <div className="grid grid-cols-1 gap-6 2xl:grid-cols-2">
-          {/* Stacked in one column so the short Addon card is not pulled to
-              the height of the taller proxy card beside it. */}
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                    <CardTitle>Addon</CardTitle>
-                    <CardDescription>Configure how the Stremio addon listens and is accessed. Changes save automatically.</CardDescription>
-                  </div>
-                  <div className="shrink-0">{renderCardSpinner('addon')}</div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-md border border-border/60">
-                  <FormField control={control} name="addon_base_url" render={({ field }) => (
-                    <FormItem className="rounded-none border-0 p-3">
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Base URL <EnvOverrideIndicator show={envOverrides.includes('addon_base_url')} /></FormLabel>
-                        <FormControl><Input placeholder="http://localhost:7000" className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'addon_base_url')} /></FormControl>
-                      </div>
-                      <FormDescription className="mt-3">The public base URL clients use to reach your StreamNZB addon.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="addon_port" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Port <EnvOverrideIndicator show={envOverrides.includes('addon_port')} /></FormLabel>
-                        <FormControl><Input type="number" className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'addon_port')} /></FormControl>
-                      </div>
-                      <FormDescription className="mt-3">The local port where the addon server listens.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                    <CardTitle>Database</CardTitle>
-                    <CardDescription>Where the library, NZB history, and metrics are stored. Changes are applied without a restart.</CardDescription>
-                  </div>
-                  <div className="shrink-0">{renderCardSpinner('database')}</div>
-                </div>
-                {(envOverrides.includes('database_driver') || envOverrides.includes('database_url')) && (
-                  <div className="mt-1">
-                    <EnvOverrideIndicator show message="Some settings are overwritten by environment variables (DATABASE_*) on restart." />
-                  </div>
-                )}
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-md border border-border/60">
-                  <FormField control={control} name="database_driver" render={({ field }) => (
-                    <FormItem className="rounded-none border-0 p-3">
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Backend <EnvOverrideIndicator show={envOverrides.includes('database_driver')} /></FormLabel>
-                        <FormControl>
-                          <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
-                            <option value="sqlite">SQLite (default)</option>
-                            <option value="postgres">Postgres</option>
-                          </select>
-                        </FormControl>
-                      </div>
-                      <FormDescription className="mt-3">
-                        SQLite keeps everything in a local <code>streamnzb.db</code> and needs no setup. Switching to Postgres copies that file across, so your library and history come with you. Selecting Postgres saves once you fill in the connection string below.
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="database_url" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Connection String <EnvOverrideIndicator show={envOverrides.includes('database_url')} /></FormLabel>
-                        <FormControl><Input placeholder="postgres://user:password@db-host:5432/streamnzb?sslmode=disable" disabled={!usingPostgres} className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} onBlur={commitDatabaseURL(field)} /></FormControl>
-                      </div>
-                      <FormDescription className="mt-3">
-                        The password is hidden here. Editing this field replaces the whole connection string, so include the password when you change it. Saving verifies the server is reachable, then switches over without a restart.
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="nzb_history_retention_days" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>NZB history retention (days)</FormLabel>
-                        <FormControl><Input type="number" min={0} max={3650} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} onBlur={blurCommit(field, 'nzb_history_retention_days')} /></FormControl>
-                      </div>
-                      <FormDescription className="mt-3">Delete NZB history entries older than this many days on startup.</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
+        <div className="grid grid-cols-1 items-start gap-6 2xl:grid-cols-2">
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                  <CardTitle>NNTP Proxy Server</CardTitle>
-                  <CardDescription>Allow other apps (SABnzbd, NZBGet) to use StreamNZB as a localized news server.</CardDescription>
+                  <CardTitle>Addon</CardTitle>
+                  <CardDescription>Configure how the Stremio addon listens and is accessed. Changes save automatically.</CardDescription>
                 </div>
-                <div className="shrink-0">{renderCardSpinner('proxy')}</div>
+                <div className="shrink-0">{renderCardSpinner('addon')}</div>
               </div>
-              {(envOverrides.includes('proxy_port') || envOverrides.includes('proxy_host') || envOverrides.includes('proxy_enabled') || envOverrides.includes('proxy_auth_user') || envOverrides.includes('proxy_auth_pass')) && (
-                <div className="mt-1">
-                  <EnvOverrideIndicator show message="Some settings are overwritten by environment variables (NNTP_PROXY_*) on restart." />
-                </div>
-              )}
             </CardHeader>
             <CardContent>
-              {/* An enabled proxy that never bound looks identical to a working
-                  one from here, so say so rather than leaving the user to find
-                  it in the log. */}
-              {proxyStatus && !proxyStatus.listening && (
-                <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  The proxy is enabled but not listening{proxyStatus.error ? `: ${proxyStatus.error}` : '.'}
-                </div>
-              )}
-              <div className="mb-4">
-                <FormField control={control} name="proxy_enabled" render={({ field }) => (
-                  <FormItem className="rounded-md border border-border/60 p-3">
-                    <div className={stackedFieldRowClass}>
-                      <FormLabel className={labelClass}>Enable NNTP Proxy</FormLabel>
-                      <FormControl><Switch checked={field.value !== false} onCheckedChange={(checked) => { field.onChange(checked); commitField('proxy_enabled') }} /></FormControl>
-                    </div>
-                    <FormDescription className="mt-3">Turn the local NNTP proxy server on or off.</FormDescription>
-                  </FormItem>
-                )} />
-              </div>
               <div className="rounded-md border border-border/60">
-                <FormField control={control} name="proxy_host" render={({ field }) => (
+                <FormField control={control} name="addon_base_url" render={({ field }) => (
                   <FormItem className="rounded-none border-0 p-3">
                     <div className={stackedFieldRowClass}>
-                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Bind Host</FormLabel>
-                      <FormControl><Input placeholder="0.0.0.0" disabled={!proxyEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'proxy_host')} /></FormControl>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Base URL <EnvOverrideIndicator show={envOverrides.includes('addon_base_url')} /></FormLabel>
+                      <FormControl><Input placeholder="http://localhost:7000" className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'addon_base_url')} /></FormControl>
                     </div>
-                    <FormDescription className="mt-3">Which local address the proxy server should bind to.</FormDescription>
+                    <FormDescription className="mt-3">The public base URL clients use to reach your StreamNZB addon.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )} />
-                <FormField control={control} name="proxy_port" render={({ field }) => (
+                <FormField control={control} name="addon_port" render={({ field }) => (
                   <FormItem className="relative rounded-none border-0 p-3">
                     <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
                     <div className={stackedFieldRowClass}>
-                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Port</FormLabel>
-                      <FormControl><Input type="number" disabled={!proxyEnabled} className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'proxy_port')} /></FormControl>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Port <EnvOverrideIndicator show={envOverrides.includes('addon_port')} /></FormLabel>
+                      <FormControl><Input type="number" className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'addon_port')} /></FormControl>
                     </div>
-                    <FormDescription className="mt-3">The port other apps use when connecting to the local NNTP proxy.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="proxy_auth_user" render={({ field }) => (
-                  <FormItem className="relative rounded-none border-0 p-3">
-                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className={stackedFieldRowClass}>
-                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Username</FormLabel>
-                      <FormControl><Input disabled={!proxyEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'proxy_auth_user')} /></FormControl>
-                    </div>
-                    <FormDescription className="mt-3">Optional username clients must provide when using the proxy.</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={control} name="proxy_auth_pass" render={({ field }) => (
-                  <FormItem className="relative rounded-none border-0 p-3">
-                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                    <div className={stackedFieldRowClass}>
-                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Proxy Password</FormLabel>
-                      <FormControl>
-                        <div className={controlWideClass}>
-                          <PasswordInput disabled={!proxyEnabled} className="h-9 w-full" {...field} onBlur={blurCommit(field, 'proxy_auth_pass')} />
-                        </div>
-                      </FormControl>
-                    </div>
-                    <FormDescription className="mt-3">Optional password clients must provide when using the proxy.</FormDescription>
+                    <FormDescription className="mt-3">The local port where the addon server listens.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )} />
               </div>
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                  <CardTitle>Database</CardTitle>
+                  <CardDescription>Where the library, NZB history, and metrics are stored. Changes are applied without a restart.</CardDescription>
+                </div>
+                <div className="shrink-0">{renderCardSpinner('database')}</div>
+              </div>
+              {(envOverrides.includes('database_driver') || envOverrides.includes('database_url')) && (
+                <div className="mt-1">
+                  <EnvOverrideIndicator show message="Some settings are overwritten by environment variables (DATABASE_*) on restart." />
+                </div>
+              )}
+            </CardHeader>
+            <CardContent>
+              <div className="rounded-md border border-border/60">
+                <FormField control={control} name="database_driver" render={({ field }) => (
+                  <FormItem className="rounded-none border-0 p-3">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Backend <EnvOverrideIndicator show={envOverrides.includes('database_driver')} /></FormLabel>
+                      <FormControl>
+                        <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
+                          <option value="sqlite">SQLite (default)</option>
+                          <option value="postgres">Postgres</option>
+                        </select>
+                      </FormControl>
+                    </div>
+                    <FormDescription className="mt-3">
+                      SQLite keeps everything in a local <code>streamnzb.db</code> and needs no setup. Switching to Postgres copies that file across, so your library and history come with you. Selecting Postgres saves once you fill in the connection string below.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={control} name="database_url" render={({ field }) => (
+                  <FormItem className="relative rounded-none border-0 p-3">
+                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Connection String <EnvOverrideIndicator show={envOverrides.includes('database_url')} /></FormLabel>
+                      <FormControl><Input placeholder="postgres://user:password@db-host:5432/streamnzb?sslmode=disable" disabled={!usingPostgres} className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} onBlur={commitDatabaseURL(field)} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">
+                      The password is hidden here. Editing this field replaces the whole connection string, so include the password when you change it. Saving verifies the server is reachable, then switches over without a restart.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={control} name="nzb_history_retention_days" render={({ field }) => (
+                  <FormItem className="relative rounded-none border-0 p-3">
+                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>NZB history retention (days)</FormLabel>
+                      <FormControl><Input type="number" min={0} max={3650} className={`h-9 ${controlMediumClass}`} {...field} value={field.value ?? ''} onChange={e => { const v = e.target.value; const next = Number(v); field.onChange(v === '' ? 90 : Math.min(3650, Math.max(0, Number.isNaN(next) ? 90 : next))) }} onBlur={blurCommit(field, 'nzb_history_retention_days')} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">Delete NZB history entries older than this many days on startup.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+            </CardContent>
+          </Card>
+
         </div>
 
         <Card>

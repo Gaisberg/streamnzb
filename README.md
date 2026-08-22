@@ -81,6 +81,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](docs/obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
+- [Newznab endpoint](docs/newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [AvailNZB](docs/availnzb.md) — community availability database integration
 - [Using with AIOStreams](docs/aiostreams.md) — adding StreamNZB as an AIOStreams preset
 - [Troubleshooting](docs/troubleshooting.md) — reporting problems, Cloudflare Tunnel buffering, admin password recovery

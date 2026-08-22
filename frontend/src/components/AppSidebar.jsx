@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Settings, LogOut, Settings2, Server, Globe, Search,
-  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal, Library, Clapperboard, Type
+  Sun, Moon, Monitor, Zap, FileText, Coffee, User, MoreVertical, History, ChartColumn, AlertTriangle, PlayCircle, SlidersHorizontal, Library, Clapperboard, Type, Plug
 } from "lucide-react"
 import {
   Sidebar,
@@ -43,6 +43,7 @@ const navSettings = [
   { id: "metadata", title: "Metadata", icon: Clapperboard },
   { id: "formatting", title: "Formatting", icon: Type },
   { id: "install", title: "Streams", icon: Zap },
+  { id: "settings-integrations", title: "Integrations", icon: Plug },
   { id: "settings-advanced", title: "Advanced", icon: Settings },
 ]
 

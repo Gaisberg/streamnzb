@@ -640,6 +640,17 @@ type Config struct {
 	ProxyAuthUser string `json:"proxy_auth_user"`
 	ProxyAuthPass string `json:"proxy_auth_pass"`
 
+	// NewznabEnabled serves the configured indexers as one Newznab API at
+	// /newznab/api, for any Newznab-compatible application. It rides on
+	// the addon listener, so unlike the NNTP proxy it needs no host or port —
+	// only the credential below.
+	NewznabEnabled bool `json:"newznab_enabled"`
+	// NewznabAPIKey is that endpoint's only credential; clients send it as the
+	// apikey parameter, the one form every Newznab client speaks. It is
+	// generated when empty rather than defaulting to blank, because a blank
+	// key would either lock the endpoint out of use or leave it open.
+	NewznabAPIKey string `json:"newznab_api_key"`
+
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
 
@@ -1111,7 +1122,8 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	// of them from an existing config.json. The proxy defaults are off and
 	// unprivileged on purpose: 119 needs root, which no container that drops
 	// privileges has, and an NNTP relay nobody asked for should not be
-	// listening at all. See issue #192.
+	// listening at all. See issue #192. The Newznab endpoint is off for the
+	// same reason: an API that spends indexer quota should be asked for.
 	cfg := &Config{
 		AddonPort:                        7000,
 		AddonBaseURL:                     "http://localhost:7000",
@@ -1121,6 +1133,7 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		ProxyPort:                        DefaultProxyPort,
 		ProxyHost:                        "0.0.0.0",
 		ProxyEnabled:                     false,
+		NewznabEnabled:                   false,
 		MemoryLimitMB:                    512,
 		KeepLogFiles:                     9,
 		NZBHistoryRetentionDays:          90,
@@ -1257,10 +1270,14 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	}
 
 	if cfg.AdminToken == "" {
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err == nil {
-			hash := sha256.Sum256(bytes)
-			cfg.AdminToken = hex.EncodeToString(hash[:])
+		if token, err := NewAPIKey(); err == nil {
+			cfg.AdminToken = token
+			needSave = true
+		}
+	}
+	if cfg.NewznabAPIKey == "" {
+		if key, err := NewAPIKey(); err == nil {
+			cfg.NewznabAPIKey = key
 			needSave = true
 		}
 	}
@@ -1691,6 +1708,8 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyProxyEnabled:       func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
 	env.KeyProxyAuthUser:      func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
 	env.KeyProxyAuthPass:      func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyNewznabEnabled:     func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
+	env.KeyNewznabAPIKey:      func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
 	env.KeyAdminUsername:      func(d, s *Config) { d.AdminUsername = s.AdminUsername },
 	env.KeyAdminMustChangePwd: func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyProviders:          func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
@@ -1767,6 +1786,8 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		ProxyEnabled:            o.ProxyEnabled,
 		ProxyAuthUser:           o.ProxyAuthUser,
 		ProxyAuthPass:           o.ProxyAuthPass,
+		NewznabEnabled:          o.NewznabEnabled,
+		NewznabAPIKey:           o.NewznabAPIKey,
 		AdminUsername:           o.AdminUsername,
 		AdminMustChangePassword: o.AdminMustChangePwd,
 		DatabaseDriver:          o.DatabaseDriver,
@@ -1824,10 +1845,26 @@ func GetEnvOverrideKeys() []string {
 	return env.OverrideKeys()
 }
 
+// NewAPIKey returns a fresh 256-bit hex credential, the form every generated
+// StreamNZB token takes.
+func NewAPIKey() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(buf)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// RedactForAPI blanks every credential for the non-admin view of the config.
+// The admin view keeps the ones the settings page has to display — the Newznab
+// API key among them, since it is what gets pasted into the client — so those are
+// stripped here and only here.
 func (c *Config) RedactForAPI() Config {
 	out := *c
 	out.AdminPasswordHash = ""
 	out.AdminToken = ""
+	out.NewznabAPIKey = ""
 	out.ProxyAuthUser = ""
 	out.ProxyAuthPass = ""
 	out.IndexerQueryHeader = ""

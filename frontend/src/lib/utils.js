@@ -24,3 +24,21 @@ export function streamSeriesKey(name) {
 // selects are used wherever a Radix popover would be more machinery than the
 // choice deserves; this keeps them looking like every other control.
 export const selectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-60"
+
+// copyToClipboard writes text to the clipboard, falling back to a hidden
+// textarea where the async API is unavailable — StreamNZB is routinely served
+// over plain HTTP on a LAN, where navigator.clipboard does not exist.
+export function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text)
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try { document.execCommand('copy') } catch { void 0 }
+    document.body.removeChild(textarea)
+    return Promise.resolve()
+}

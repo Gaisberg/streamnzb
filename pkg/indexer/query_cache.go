@@ -47,6 +47,7 @@ func BuildQueryCacheKey(indexerName string, req SearchRequest) string {
 		"scope=" + strings.TrimSpace(req.SeriesSearchScope),
 		"no_filter=" + fmt.Sprintf("%t", req.DisableResultFiltering),
 		"year_val=" + fmt.Sprintf("%t", req.EnableYearValidation),
+		"pass=" + req.Passthrough.CacheKey(),
 	}
 	// Every override that changes the outgoing indexer request must be part of
 	// the key, or requests with different effective parameters share a cache

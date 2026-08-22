@@ -449,7 +449,9 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	c.mu.RUnlock()
 
 	limit := req.Limit
-	if o := req.OptionalOverrides; o != nil && o.SearchResultLimit > 0 {
+	// The per-indexer result limit is a stream-search knob: a proxied query
+	// carries the caller's own limit and must not be shrunk by it.
+	if o := req.OptionalOverrides; o != nil && o.SearchResultLimit > 0 && req.Passthrough == nil {
 		limit = o.SearchResultLimit
 	}
 	maxLimit := 2000
@@ -458,6 +460,19 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	}
 	if limit <= 0 {
 		limit = maxLimit
+	}
+
+	if req.Passthrough != nil {
+		if reason := passthroughSkipReason(caps, req); reason != "" {
+			logger.Debug("Indexer skipped for request",
+				"stream", req.StreamLabel,
+				"request", req.RequestLabel,
+				"indexer", c.Name(),
+				"reason", reason,
+			)
+			return emptySearchResponse(), nil
+		}
+		return c.executeSearch(ctx, req, c.passthroughParams(req, limit), limit)
 	}
 
 	params := url.Values{}
@@ -574,6 +589,109 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		params.Set("cachetime", strconv.Itoa(c.cfg.SearchResultsCacheTime))
 	}
 
+	return c.executeSearch(ctx, req, params, limit)
+}
+
+// passthroughIDParams are the identifier parameters a proxied query can carry,
+// beyond the three StreamNZB models itself. They are forwarded untouched — no
+// id is ever translated into another — so an indexer only sees one it asked
+// for in its caps.
+var passthroughIDParams = []string{"imdbid", "tmdbid", "tvdbid", "tvmazeid", "traktid", "rid"}
+
+// passthroughSkipReason declines a proxied query this indexer cannot answer,
+// returning a log-ready reason or "" to proceed. It matters more here than for
+// a stream search: an indexer sent an id it does not understand does not fail,
+// it ignores the parameter and answers with its latest listing, and that would
+// land in the merged feed as results the caller never asked for.
+//
+// A query carrying text is never declined — the id is then a refinement the
+// indexer may ignore, and the text search still means what it says.
+func passthroughSkipReason(caps *indexer.Caps, req indexer.SearchRequest) string {
+	p := req.Passthrough
+	if p == nil || strings.TrimSpace(p.Params.Get("q")) != "" {
+		return ""
+	}
+
+	var supported, fallback map[string]bool
+	switch p.Function {
+	case "movie":
+		if caps != nil && !caps.Searching.MovieSearch {
+			return "movie search unsupported by caps"
+		}
+		supported, fallback = movieSupportedParams(caps), movieIDParamDefault
+	case "tvsearch":
+		if caps != nil && !caps.Searching.TVSearch {
+			return "tv search unsupported by caps"
+		}
+		supported, fallback = tvSupportedParams(caps), tvIDParamDefault
+	default:
+		// Ids are not part of any other function's contract, so there is
+		// nothing to check them against.
+		return ""
+	}
+
+	requested := make([]string, 0, len(passthroughIDParams))
+	for _, param := range passthroughIDParams {
+		if strings.TrimSpace(p.Params.Get(param)) != "" {
+			requested = append(requested, param)
+		}
+	}
+	if len(requested) == 0 {
+		return ""
+	}
+	for _, param := range requested {
+		if supportsIDParam(supported, fallback, param) {
+			return ""
+		}
+	}
+	return "no supported id parameter for caps: " + strings.Join(requested, ",")
+}
+
+// passthroughParams renders a verbatim Newznab query for this indexer: the
+// caller's function and parameters, with this client's credentials, paging and
+// output format layered on. The configured movie/TV category lists only fill
+// in when the caller named no categories at all — a client that asked for
+// specific ones gets exactly those.
+func (c *Client) passthroughParams(req indexer.SearchRequest, limit int) url.Values {
+	params := url.Values{}
+	for key, values := range req.Passthrough.Params {
+		params[key] = append([]string(nil), values...)
+	}
+	params.Set("t", req.Passthrough.Function)
+	params.Set("apikey", c.apiKey)
+	params.Set("o", "xml")
+	params.Set("limit", strconv.Itoa(limit))
+	if params.Get("offset") == "" {
+		params.Set("offset", "0")
+	}
+	if params.Get("cat") == "" {
+		cat := ""
+		switch {
+		case strings.HasPrefix(req.Cat, "2"):
+			cat = c.cfg.MovieCategories
+			if o := req.OptionalOverrides; o != nil && o.MovieCategories != nil && *o.MovieCategories != "" {
+				cat = *o.MovieCategories
+			}
+		case strings.HasPrefix(req.Cat, "5"):
+			cat = c.cfg.TVCategories
+			if o := req.OptionalOverrides; o != nil && o.TVCategories != nil && *o.TVCategories != "" {
+				cat = *o.TVCategories
+			}
+		}
+		if cat != "" {
+			params.Set("cat", cat)
+		}
+	}
+	if c.cfg.SearchResultsCacheTime > 0 && config.IsAggregatorIndexerType(c.cfg.Type) {
+		params.Set("cachetime", strconv.Itoa(c.cfg.SearchResultsCacheTime))
+	}
+	return params
+}
+
+// executeSearch issues a built query, records usage and timing, and parses the
+// result set. Shared by the stream-search mapping above and the Newznab
+// endpoint's passthrough queries, which differ only in how params are built.
+func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, params url.Values, limit int) (*indexer.SearchResponse, error) {
 	apiURL := c.buildAPIURL(params)
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,

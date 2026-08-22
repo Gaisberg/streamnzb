@@ -72,6 +72,13 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 	if newCfg.AdminUsername == "" {
 		newCfg.AdminUsername = currentCfg.GetAdminUsername()
 	}
+	// A blank Newznab key locks the endpoint rather than opening it, so a save
+	// that clears the field gets a fresh key instead of an unusable one.
+	if newCfg.NewznabAPIKey == "" {
+		if key, err := config.NewAPIKey(); err == nil {
+			newCfg.NewznabAPIKey = key
+		}
+	}
 
 	plan := validationPlanFromPatch(patch, currentCfg, &newCfg)
 	if fieldErrors := s.validateConfigWithPlan(&newCfg, plan); len(fieldErrors) > 0 {

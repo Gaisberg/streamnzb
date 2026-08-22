@@ -12,6 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { apiFetch } from "@/api"
+import { copyToClipboard } from "@/lib/utils"
 import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2, Type } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
@@ -244,21 +245,6 @@ function applyFilterSortingMode(current, nextMode, profileName = '') {
     nextDraft.results_mode = 'display_all'
   }
   return normalizeStreamDraft(nextDraft)
-}
-
-function copyToClipboard(text) {
-  if (navigator.clipboard && window.isSecureContext) {
-    return navigator.clipboard.writeText(text)
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  try { document.execCommand('copy') } catch { void 0 }
-  document.body.removeChild(textarea)
-  return Promise.resolve()
 }
 
 function SummaryRow({ label, values, icon: Icon }) {

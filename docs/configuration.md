@@ -78,6 +78,13 @@ See [Database backends](database.md) for how switching and migration work.
 | `NNTP_PROXY_AUTH_USER` | Username downstream clients (SABnzbd, NZBGet) authenticate with |
 | `NNTP_PROXY_AUTH_PASS` | Password for the same |
 
+### Newznab endpoint
+
+| Variable | Meaning |
+|---|---|
+| `NEWZNAB_ENABLED` | Enable/disable the Newznab endpoint (default off) — see [Newznab endpoint](newznab.md) |
+| `NEWZNAB_API_KEY` | The key clients authenticate with (one is generated on first start) |
+
 ### Outbound User-Agent headers
 
 | Variable | Meaning |

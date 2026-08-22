@@ -102,6 +102,8 @@ var patchKeysNoCacheImpact = map[string]bool{
 	"proxy_port":                          true,
 	"proxy_auth_user":                     true,
 	"proxy_auth_pass":                     true,
+	"newznab_enabled":                     true,
+	"newznab_api_key":                     true,
 	"indexer_query_header":                true,
 	"indexer_grab_header":                 true,
 	"provider_header":                     true,

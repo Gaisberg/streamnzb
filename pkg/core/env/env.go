@@ -25,6 +25,8 @@ const (
 	NNTPProxyEnabled                   = "NNTP_PROXY_ENABLED"
 	NNTPProxyAuthUser                  = "NNTP_PROXY_AUTH_USER"
 	NNTPProxyAuthPass                  = "NNTP_PROXY_AUTH_PASS"
+	NewznabEnabledEnv                  = "NEWZNAB_ENABLED"
+	NewznabAPIKeyEnv                   = "NEWZNAB_API_KEY"
 	TZVar                              = "TZ"
 	ProviderPrefix                     = "PROVIDER_"
 	IndexerPrefix                      = "INDEXER_"
@@ -62,6 +64,8 @@ const (
 	KeyProxyEnabled       = "proxy_enabled"
 	KeyProxyAuthUser      = "proxy_auth_user"
 	KeyProxyAuthPass      = "proxy_auth_pass"
+	KeyNewznabEnabled     = "newznab_enabled"
+	KeyNewznabAPIKey      = "newznab_api_key"
 	KeyProviders          = "providers"
 	KeyIndexers           = "indexers"
 	KeyAvailNZBURL        = "availnzb_url"
@@ -326,6 +330,8 @@ type ConfigOverrides struct {
 	ProxyEnabled       bool
 	ProxyAuthUser      string
 	ProxyAuthPass      string
+	NewznabEnabled     bool
+	NewznabAPIKey      string
 	AdminUsername      string
 	AdminMustChangePwd bool
 	DatabaseDriver     string
@@ -395,6 +401,11 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	}
 	r.str(&o.ProxyAuthUser, KeyProxyAuthUser, NNTPProxyAuthUser)
 	r.str(&o.ProxyAuthPass, KeyProxyAuthPass, NNTPProxyAuthPass)
+	if v, ok := os.LookupEnv(NewznabEnabledEnv); ok && v != "" {
+		o.NewznabEnabled = getEnvBool(NewznabEnabledEnv, true)
+		r.keys = append(r.keys, KeyNewznabEnabled)
+	}
+	r.str(&o.NewznabAPIKey, KeyNewznabAPIKey, NewznabAPIKeyEnv)
 	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
 	r.str(&o.DatabaseDriver, KeyDatabaseDriver, StreamNZBDatabaseDriverEnv, DatabaseDriverEnv)
 	r.str(&o.DatabaseURL, KeyDatabaseURL, StreamNZBDatabaseURLEnv, DatabaseURLEnv)

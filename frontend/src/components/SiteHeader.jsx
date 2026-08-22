@@ -15,6 +15,7 @@ const pageTitles = {
   "settings-search": "Search Settings",
   install: "Streams",
   streams: "Streams",
+  "settings-integrations": "Integrations",
   "settings-advanced": "Advanced Settings",
   profile: "Profile",
   settings: "Settings",

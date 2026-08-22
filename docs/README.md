@@ -21,6 +21,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
+- [Newznab endpoint](newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [AvailNZB](availnzb.md) — community availability database integration
 - [Using with AIOStreams](aiostreams.md) — adding StreamNZB as an AIOStreams preset
 

@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"encoding/xml"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -60,9 +61,32 @@ type SearchRequest struct {
 	StreamLabel             string `json:"-"`
 	RequestLabel            string `json:"-"`
 
+	// Passthrough carries a verbatim Newznab query from the Newznab endpoint.
+	// When set, a Newznab-speaking client forwards the function and parameters
+	// as the caller sent them instead of deriving them from the fields above,
+	// which exist to serve stream searches and would rewrite a proxied query
+	// (dropping season/ep on a text tvsearch, for one).
+	Passthrough *PassthroughQuery `json:"-"`
+
 	EffectiveByIndexer map[string]*config.IndexerSearchConfig `json:"-"`
 
 	OptionalOverrides *config.IndexerSearchConfig `json:"-"`
+}
+
+// PassthroughQuery is one Newznab request as a client sent it: the function
+// (t=) and the parameters to forward. Credentials and output/paging params are
+// deliberately absent — each client fills in its own.
+type PassthroughQuery struct {
+	Function string
+	Params   url.Values
+}
+
+// CacheKey renders the query as a stable string for the query cache.
+func (p *PassthroughQuery) CacheKey() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Function) + "?" + p.Params.Encode()
 }
 
 type ValidationQueryProfile struct {

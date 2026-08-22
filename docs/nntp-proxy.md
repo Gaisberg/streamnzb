@@ -4,7 +4,7 @@ StreamNZB includes an NNTP proxy so other apps (SABnzbd, NZBGet) can use it as a
 
 ## Settings
 
-Configured in **General** (under Settings) → **NNTP Proxy Server**, or via the `NNTP_PROXY_*` environment variables (see [Configuration](configuration.md#nntp-proxy)). Changes apply live, without a restart.
+Configured in **Integrations** (under Settings) → **NNTP Proxy Server**, or via the `NNTP_PROXY_*` environment variables (see [Configuration](configuration.md#nntp-proxy)). Changes apply live, without a restart. The card prints the address clients should connect to.
 
 | Setting | Default | Meaning |
 |---|---|---|

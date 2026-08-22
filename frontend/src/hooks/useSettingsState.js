@@ -5,11 +5,6 @@ import { apiFetch } from '@/api'
 const GENERAL_TAB_FIELDS = [
   'addon_port',
   'addon_base_url',
-  'proxy_enabled',
-  'proxy_port',
-  'proxy_host',
-  'proxy_auth_user',
-  'proxy_auth_pass',
   'indexer_query_header',
   'indexer_grab_header',
   'provider_header',
@@ -18,6 +13,18 @@ const GENERAL_TAB_FIELDS = [
   'nzb_history_retention_days',
   'tmdb_api_key',
   'tvdb_api_key',
+]
+
+// The Integrations tab: everything that serves StreamNZB's own resources to
+// another application.
+const INTEGRATIONS_TAB_FIELDS = [
+  'proxy_enabled',
+  'proxy_port',
+  'proxy_host',
+  'proxy_auth_user',
+  'proxy_auth_pass',
+  'newznab_enabled',
+  'newznab_api_key',
 ]
 
 const ADVANCED_TAB_FIELDS = [
@@ -61,12 +68,13 @@ export function fieldToTab(fieldName) {
   if (fieldName.startsWith('format_profiles')) return 'formatting'
   if (fieldName.startsWith('movie_search_queries') || fieldName.startsWith('series_search_queries')) return 'search_query'
   if (GENERAL_TAB_FIELDS.includes(fieldName)) return 'general'
+  if (INTEGRATIONS_TAB_FIELDS.includes(fieldName)) return 'integrations'
   if (ADVANCED_TAB_FIELDS.includes(fieldName)) return 'advanced'
   return null
 }
 
 export function isConfigTab(tabId) {
-  return tabId === 'general' || tabId === 'advanced'
+  return tabId === 'general' || tabId === 'integrations' || tabId === 'advanced'
 }
 
 function pickConfigSlice(values, keys) {
@@ -149,6 +157,11 @@ export function useSettingsState({
     [configSnapshot]
   )
 
+  const integrationsInitialValues = useMemo(
+    () => pickConfigSlice(configSnapshot, INTEGRATIONS_TAB_FIELDS),
+    [configSnapshot]
+  )
+
   const advancedInitialValues = useMemo(
     () => pickConfigSlice(configSnapshot, ADVANCED_TAB_FIELDS),
     [configSnapshot]
@@ -211,7 +224,7 @@ export function useSettingsState({
   useEffect(() => {
     if (!isConfigTab(lastConfigSaveSource)) return
     if (tabsWithErrors.size > 0 && !tabsWithErrors.has(activeTab)) {
-      const firstErrorTabOrder = ['general', 'indexers', 'providers', 'search_query', 'advanced']
+      const firstErrorTabOrder = ['general', 'indexers', 'providers', 'search_query', 'integrations', 'advanced']
       const firstErrorTab = firstErrorTabOrder.find((tabId) => tabsWithErrors.has(tabId))
       if (firstErrorTab) setActiveTab(firstErrorTab)
     }
@@ -220,9 +233,11 @@ export function useSettingsState({
   const errorCount = saveStatus.errors ? Object.keys(saveStatus.errors).length : 0
   const settingsCardTitles = {
     general: 'General',
+    integrations: 'Integrations',
     advanced: 'Advanced',
     addon: 'Addon',
     proxy: 'NNTP Proxy Server',
+    newznab: 'Newznab Endpoint',
     useragent: 'User-Agent',
     database: 'Database',
     admin: 'Logs',
@@ -244,7 +259,7 @@ export function useSettingsState({
         : saveStatus.msg
 
   useEffect(() => {
-    if (activeTab !== 'advanced' && activeTab !== 'general') return
+    if (!isConfigTab(activeTab)) return
     if (lastConfigSaveSource !== activeTab) {
       setVisibleFooterStatus(null)
       return
@@ -362,6 +377,11 @@ export function useSettingsState({
     return submitSettings(payload, 'general')
   }, [submitSettings])
 
+  const handleIntegrationsPersist = useCallback((payload, cardId = 'integrations') => {
+    setLastSettingsSaveCard(cardId)
+    return submitSettings(payload, 'integrations')
+  }, [submitSettings])
+
   const handleAdvancedPersist = useCallback((payload, cardId = 'advanced') => {
     setLastSettingsSaveCard(cardId)
     return submitSettings(payload, 'advanced')
@@ -384,7 +404,9 @@ export function useSettingsState({
     handleAdvancedPersist,
     handleClearCache,
     handleGeneralPersist,
+    handleIntegrationsPersist,
     generalInitialValues,
+    integrationsInitialValues,
     showFooterStatus,
     submitSettings,
     tabsWithErrors,

@@ -22,9 +22,13 @@ type CapsSearching struct {
 	Search                     bool            `json:"search"`
 	TVSearch                   bool            `json:"tv_search"`
 	MovieSearch                bool            `json:"movie_search"`
+	AudioSearch                bool            `json:"audio_search"`
+	BookSearch                 bool            `json:"book_search"`
 	SearchSupportedParams      map[string]bool `json:"search_supported_params,omitempty"`
 	TVSearchSupportedParams    map[string]bool `json:"tv_search_supported_params,omitempty"`
 	MovieSearchSupportedParams map[string]bool `json:"movie_search_supported_params,omitempty"`
+	AudioSearchSupportedParams map[string]bool `json:"audio_search_supported_params,omitempty"`
+	BookSearchSupportedParams  map[string]bool `json:"book_search_supported_params,omitempty"`
 }
 
 type CapsLimits struct {
@@ -53,6 +57,8 @@ type capsXMLSearching struct {
 	Search      capsXMLSearchType `xml:"search"`
 	TVSearch    capsXMLSearchType `xml:"tv-search"`
 	MovieSearch capsXMLSearchType `xml:"movie-search"`
+	AudioSearch capsXMLSearchType `xml:"audio-search"`
+	BookSearch  capsXMLSearchType `xml:"book-search"`
 }
 
 type capsXMLSearchType struct {
@@ -75,9 +81,13 @@ func ParseCapsXML(data []byte) (*Caps, error) {
 			Search:                     raw.Searching.Search.Available == "yes",
 			TVSearch:                   raw.Searching.TVSearch.Available == "yes",
 			MovieSearch:                raw.Searching.MovieSearch.Available == "yes",
+			AudioSearch:                raw.Searching.AudioSearch.Available == "yes",
+			BookSearch:                 raw.Searching.BookSearch.Available == "yes",
 			SearchSupportedParams:      parseSupportedParams(raw.Searching.Search.SupportedParams),
 			TVSearchSupportedParams:    parseSupportedParams(raw.Searching.TVSearch.SupportedParams),
 			MovieSearchSupportedParams: parseSupportedParams(raw.Searching.MovieSearch.SupportedParams),
+			AudioSearchSupportedParams: parseSupportedParams(raw.Searching.AudioSearch.SupportedParams),
+			BookSearchSupportedParams:  parseSupportedParams(raw.Searching.BookSearch.SupportedParams),
 		},
 		Limits: CapsLimits{
 			Max:     raw.Limits.Max,

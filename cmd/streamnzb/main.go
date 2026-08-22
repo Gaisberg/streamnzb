@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/api"
+	"streamnzb/pkg/server/newznab"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/server/web"
 	"streamnzb/pkg/services/availnzb"
@@ -265,6 +266,39 @@ func main() {
 	stremioServer.SetupRoutes(mux)
 
 	mux.Handle("/api/", apiServer.Handler())
+
+	// The configured indexers, re-served as one Newznab API for any
+	// Newznab-compatible application. Everything it needs — including whether it is switched on —
+	// is read back off the API server per request, so a config reload reaches
+	// it without rebinding anything.
+	newznabServer := newznab.New(newznab.Options{
+		Enabled: func() bool {
+			liveCfg := apiServer.Config()
+			return liveCfg != nil && liveCfg.NewznabEnabled
+		},
+		Indexer: apiServer.Indexer,
+		Caps:    apiServer.IndexerCaps,
+		Config:  apiServer.Config,
+		APIKey: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.NewznabAPIKey
+			}
+			return ""
+		},
+		GrabSecret: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.AdminToken
+			}
+			return ""
+		},
+		Version: Version,
+	})
+	mux.Handle(newznab.Mount, newznabServer.Handler())
+	if comp.Config.NewznabEnabled {
+		logger.Info("Newznab endpoint enabled", "path", newznab.APIPath)
+	} else {
+		logger.Info("Newznab endpoint disabled")
+	}
 
 	{
 		if comp.Config.ProxyEnabled {

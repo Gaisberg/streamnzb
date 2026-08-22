@@ -211,6 +211,18 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	if strings.TrimSpace(req.Query) == "" {
+		// Easynews answers text queries only. An empty one is not an id search
+		// it could still serve — it asks for the whole index, which is never
+		// what the caller meant, so spend no quota on it.
+		logger.Debug("Indexer skipped for request",
+			"stream", req.StreamLabel,
+			"request", req.RequestLabel,
+			"indexer", c.name,
+			"reason", "no text query",
+		)
+		return &indexer.SearchResponse{Channel: indexer.Channel{Items: []indexer.Item{}}}, nil
+	}
 	if err := c.checkAPILimit(); err != nil {
 		return nil, err
 	}

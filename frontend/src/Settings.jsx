@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
-import { AlertTriangle, Settings2, SlidersHorizontal, Server, Globe, Search, Loader2, Filter } from "lucide-react"
+import { AlertTriangle, Settings2, SlidersHorizontal, Server, Globe, Search, Loader2, Filter, Plug } from "lucide-react"
 import { IndexerSettings } from "@/components/IndexerSettings"
 import { ProviderSettings } from "@/components/ProviderSettings"
 import { SearchQuerySettings } from "@/components/SearchQuerySettings"
 import { GeneralSettingsSection } from "@/components/GeneralSettingsSection"
+import { IntegrationsSettingsSection } from "@/components/IntegrationsSettingsSection"
 import { AdvancedSettingsSection } from "@/components/AdvancedSettingsSection"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,6 +20,7 @@ const TABS = [
   { id: 'indexers', label: 'Indexers', icon: Server },
   { id: 'providers', label: 'Providers', icon: Globe },
   { id: 'search_query', label: 'Search', icon: Search },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'advanced', label: 'Advanced', icon: SlidersHorizontal },
 ]
 
@@ -112,6 +114,8 @@ function Settings({
         addon_port: Number(initialConfig.addon_port),
         proxy_port: Number(initialConfig.proxy_port),
         proxy_enabled: initialConfig.proxy_enabled !== false,
+        newznab_enabled: initialConfig.newznab_enabled === true,
+        newznab_api_key: initialConfig.newznab_api_key ?? '',
         availnzb_mode: normalizeAvailNZBMode(initialConfig.availnzb_mode),
         tmdb_api_key: initialConfig.tmdb_api_key ?? '',
         tvdb_api_key: initialConfig.tvdb_api_key ?? '',
@@ -243,7 +247,9 @@ function Settings({
     handleAdvancedPersist,
     handleClearCache,
     handleGeneralPersist,
+    handleIntegrationsPersist,
     generalInitialValues,
+    integrationsInitialValues,
     showFooterStatus,
     submitSettings,
     tabsWithErrors,
@@ -314,8 +320,18 @@ function Settings({
         <GeneralSettingsSection
           initialValues={generalInitialValues}
           envOverrides={envOverrides}
-          proxyStatus={initialConfig?.proxy_status}
           onPersist={handleGeneralPersist}
+          saveStatus={saveStatus}
+          />
+        )}
+
+        {activeTab === 'integrations' && (
+        <IntegrationsSettingsSection
+          initialValues={integrationsInitialValues}
+          envOverrides={envOverrides}
+          proxyStatus={initialConfig?.proxy_status}
+          addonBaseURL={initialConfig?.addon_base_url}
+          onPersist={handleIntegrationsPersist}
           saveStatus={saveStatus}
           />
         )}

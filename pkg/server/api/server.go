@@ -175,6 +175,28 @@ func (s *Server) RemoveClient(client *Client) {
 	close(client.send)
 }
 
+// Indexer, IndexerCaps and Config expose the live indexer stack and
+// configuration to handlers mounted outside this package (the Newznab
+// endpoint). They are read through the lock on every call because a config
+// reload swaps all three out from under a caller that held on to them.
+func (s *Server) Indexer() indexer.Indexer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.indexer
+}
+
+func (s *Server) IndexerCaps() map[string]*indexer.Caps {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.indexerCaps
+}
+
+func (s *Server) Config() *config.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config
+}
+
 func (s *Server) SetIndexerCaps(caps map[string]*indexer.Caps) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

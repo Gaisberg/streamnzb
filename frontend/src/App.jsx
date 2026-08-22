@@ -240,6 +240,7 @@ function App() {
     'settings-indexers': 'indexers',
     'settings-providers': 'providers',
     'settings-search': 'search_query',
+    'settings-integrations': 'integrations',
     'settings-advanced': 'advanced',
   }
   const isSettingsPage = activePage in settingsTabMap
