@@ -16,6 +16,10 @@ Usenet releases decay: individual articles go missing from providers over time. 
 
 **A missing first segment always fails immediately.** It carries the container and volume headers, and nothing downstream can make sense of a zero-filled one, so that miss stays a fast, definitive verdict about the release.
 
+**A missing first RAR volume is repaired, not refused.** Where the release ships a PAR2 recovery set with enough blocks, the volume is reconstructed from it in memory and playback proceeds — so a set that is missing the one file that opens it is still playable. The reconstruction is capped at 128 MB, which covers ordinary volume sizes; past that the release fails over as any other unplayable one would.
+
+**Encrypted archives play when the password is in the NZB.** AES-encrypted RAR and 7z sets are decrypted as they stream, using the `password` meta field indexers put in the NZB head. A set whose password lives only in a forum post or a `.nfo` cannot be opened — there is nowhere to enter one.
+
 **Ranges are proven before they are promised.** Before writing a response header, StreamNZB reads the first byte of the range the player asked for. A release that cannot deliver that byte gets a redirect to the next candidate — logged as `Refusing to advertise a range this release cannot deliver` — instead of a `206` that advertises a full length and then delivers nothing. Players fail over promptly rather than waiting on a response that will never arrive.
 
 ## An episode still shows no streams after it aired

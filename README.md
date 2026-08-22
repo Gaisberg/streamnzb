@@ -3,14 +3,29 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg)](https://buymeacoffee.com/gaisberg)
 [![Discord](https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&logoColor=white)](https://snzb.stream/discord)
 
-StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integration with [AIOStreams](https://github.com/Viren070/AIOStreams)). It searches your configured indexers, filters and ranks releases using the [jhin](https://github.com/dreulavelle/jhin) parsing and ranking engine, checks availability via [AvailNZB](https://check.snzb.stream), and streams releases on-the-fly from your Usenet providers. It is also a **complete metadata provider**: browsable catalogs, search, posters, episode lists, air dates and personalized rows all come from the addon itself — install StreamNZB and nothing else, no Cinemeta, no separate catalog addons, no companion apps. One binary provides the addon UI, stream management, NNTP proxy, and playback pipeline behind a single IP. No extra containers, just your Usenet provider(s) and indexer(s).
+**StreamNZB is the one place you configure Usenet.** Providers, indexers, filter and ranking rules, search requests and metadata all live in a single binary — and everything else consumes that configuration. Set a provider up once and every app you point at StreamNZB gets it, with your credentials and API keys staying on the server.
+
+The playback engine underneath streams releases on-the-fly from your providers, recovers obfuscated releases from their own bytes, and repairs a missing archive volume from PAR2 rather than giving up on the release.
+
+
+## Consume it from
+
+| From | What it gets | Docs |
+|---|---|---|
+| **Stremio** | A complete addon: catalogs, search, title pages, air dates and streams. No Cinemeta, no companion addons | [Metadata & catalogs](docs/metadata.md) |
+| **Prowlarr, Sonarr, Radarr** | Every indexer you configured, as one Newznab API behind one key | [Newznab endpoint](docs/newznab.md) |
+| **SABnzbd, NZBGet** | Your whole provider pool, as one NNTP server | [NNTP proxy](docs/nntp-proxy.md) |
+| **AIOStreams** | StreamNZB as a preset, alongside what it already runs | [Using with AIOStreams](docs/aiostreams.md) |
+
+One config, one IP, no extra containers — just your Usenet provider(s) and indexer(s). See [Integrations](docs/integrations.md) for the whole picture in one page.
 
 
 ## What it does
 
-- **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
+- **Configure once, use everywhere** — Define global providers, indexers, search queries and filter profiles once, then create one or more streams that decide which of those resources belong to each manifest. The same configuration backs the Newznab endpoint and the NNTP proxy, so adding a provider or swapping an indexer is one edit, not one per app.
 - **The only addon you need** — StreamNZB serves catalogs and full metadata alongside streams: trending/popular/top-rated rows, search, series pages with episode lists and exact air dates, plus per-stream **Continue Watching** and **Because You Watched** rows built from your own playback history. Works out of the box in any Stremio-compatible client, including ones without Cinemeta.
-- **Stream-based addon** — Define global providers, indexers, search queries, and filter profiles once, then create one or more streams that decide which resources belong to each stream manifest.
+- **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
+- **Newznab endpoint** — Every configured indexer re-served as a single Newznab API (off by default), so Prowlarr, Sonarr, Radarr or any Newznab client searches the whole set through one URL and one key. Your indexers' own API keys are never handed to the client.
 - **NNTP proxy** — Standard NNTP (default port 1119, off by default) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database, opt-in. Bad releases are skipped; success/failure is reported on play so the shared DB stays current. Off by default, and nothing is sent until you enable it.
 - **Search history & diagnostics** — The **History** page shows every search with its play attempts nested under it: per-indexer API timings, what validation/dedup/filtering dropped and why, including searches that returned nothing. An optional **Search debug stream** toggle (under Advanced) prepends the same summary as a result row in Stremio — selecting it just plays the top real result.
@@ -18,12 +33,28 @@ StreamNZB is a stream-based Usenet addon for Stremio clients (and optional integ
 - **Single binary** — Docker image or native Windows/Linux/macOS. No other containers required.
 
 
-## Release types we don't support
+## What can and cannot be streamed
 
-Streaming is done on-the-fly from archive segments. That only works when the inner file is stored uncompressed:
+Playing from an archive without downloading it first means seeking to an arbitrary byte inside it. That is possible when the inner file is **stored** (no compression) and impossible when it is compressed, because reaching byte *n* of a compressed stream means decoding everything before it. This is a property of the formats, not of StreamNZB — Stremio's own addon SDK documents its native 7zip support as *"supports seeking only when compression is not used"*, and every streaming implementation lands in the same place.
 
-- **Compressed RAR** — RAR must be STORE (no compression). Compressed RAR releases will not play.
-- **Compressed 7z** — Same idea: only uncompressed (copy/store) 7z content is streamable.
+**Plays:**
+
+- **RAR in STORE mode**, RAR4 and RAR5, including multi-volume sets — which is how scene and P2P releases are packed.
+- **7z with copy/store content.**
+- **Encrypted RAR and 7z**, where the NZB carries the password — AES sets are decrypted as they stream.
+- **Obfuscated releases**, where the filenames were stripped before upload. Names are recovered from the release's own bytes — see [Obfuscated releases](docs/obfuscated-releases.md).
+- **Damaged releases, up to a point.** Isolated missing articles are zero-filled and playback continues; a missing first RAR volume is repaired from PAR2 recovery data rather than failing the release. See [Troubleshooting](docs/troubleshooting.md#playback-glitches-or-drops-on-a-damaged-release).
+
+**Does not play:**
+
+- **Compressed RAR or 7z.** Not streamable by anyone, per the above. Such a release has to be downloaded and unpacked — point [SABnzbd or NZBGet at the NNTP proxy](docs/nntp-proxy.md) if you want that from the same provider pool.
+
+### Why run the engine at all
+
+Stremio v5 can stream NZBs natively on desktop, with Android TV in beta. Two reasons to keep playback on the server anyway:
+
+- **Every other client.** Web, iOS, Android mobile and TV platforms have no native path; StreamNZB serves all of them the same way.
+- **Your provider credentials stay put.** The native path passes NNTP server strings — username and password included — to the client in the stream object. Through StreamNZB they never leave the server, and playback comes from one IP.
 
 
 ## Quickstart
@@ -80,10 +111,11 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Custom result formats](docs/result-formatting.md) — per-stream result templates, helper reference, and the AIOStreams formatter import
 - [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](docs/obfuscated-releases.md) — how releases with random-hash filenames are identified and played
+- [Integrations](docs/integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
 - [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](docs/newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [AvailNZB](docs/availnzb.md) — community availability database integration
-- [Using with AIOStreams](docs/aiostreams.md) — adding StreamNZB as an AIOStreams preset
+- [Using with AIOStreams](docs/aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 - [Troubleshooting](docs/troubleshooting.md) — reporting problems, Cloudflare Tunnel buffering, admin password recovery
 - [Backup & updates](docs/backup-and-updates.md) — what to back up and how to update safely
 

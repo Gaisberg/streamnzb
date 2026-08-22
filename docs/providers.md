@@ -60,7 +60,7 @@ StreamNZB gets the same treatment as playback.
 ## Environment
 
 Providers declared through the environment take `PROVIDER_<n>_BACKUP` (default
-`false`); see the [configuration reference](configuration.md#providers-and-indexers).
+`false`); see the [configuration reference](configuration.md#bootstrapping-providers-and-indexers).
 
 ## Connections
 

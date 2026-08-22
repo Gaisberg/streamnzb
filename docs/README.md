@@ -20,10 +20,11 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Custom result formats](result-formatting.md) — reusable format profiles, helper reference, and the AIOStreams formatter import
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](obfuscated-releases.md) — how releases with random-hash filenames are identified and played
+- [Integrations](integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [AvailNZB](availnzb.md) — community availability database integration
-- [Using with AIOStreams](aiostreams.md) — adding StreamNZB as an AIOStreams preset
+- [Using with AIOStreams](aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 
 ## Help
 
