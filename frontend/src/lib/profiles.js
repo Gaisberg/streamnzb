@@ -368,6 +368,51 @@ export function formatScore(value) {
   return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString()
 }
 
+// What a rule does. Three actions, not two: anything unrecorded is a score
+// rule, but "reject" and "limit" are not interchangeable, and reading the
+// action as a boolean is what made a limit rule export as a score rule worth
+// nothing.
+export function ruleAction(rule) {
+  return rule?.action === "reject" || rule?.action === "limit" ? rule.action : "score"
+}
+
+// What a limit rule keeps when it does not say. A limit of zero is not a limit
+// — the backend refuses the whole profile over it — so a count is never below
+// one.
+export const DEFAULT_LIMIT_COUNT = 3
+
+function limitCount(value) {
+  const count = Math.trunc(Number(value))
+  return Number.isFinite(count) && count >= 1 ? count : DEFAULT_LIMIT_COUNT
+}
+
+// exportedProfile is the form a profile travels in: a preset plus rules, with
+// only the fields that survive a round trip. It is what a share code carries,
+// and profileFromParsed is what reads it back — one shape, written and read in
+// one place each, because the two drifting apart is what broke sharing before.
+function exportedProfile(profile) {
+  return {
+    streamnzb_profile: 1,
+    name: (profile.name || "").trim(),
+    preset: profile.preset || DEFAULT_PRESET,
+    rules: (profile.rules || []).map((rule) => {
+      const out = { name: rule.name || "", when: rule.when || "" }
+      const action = ruleAction(rule)
+      if (action === "reject") {
+        out.action = "reject"
+      } else if (action === "limit") {
+        out.action = "limit"
+        out.count = limitCount(rule.count)
+      } else if (rule.points) {
+        out.points = rule.points
+      }
+      if (rule.scope && rule.scope !== "all") out.scope = rule.scope
+      if (rule.enabled === false) out.enabled = false
+      return out
+    }),
+  }
+}
+
 // Profile share codes: the profile JSON, gzip-compressed and base64url-encoded
 // behind a versioned prefix, so a whole profile travels as one pasteable string.
 const SHARE_CODE_PREFIX = "SNZBP1:"
@@ -387,85 +432,83 @@ function fromBase64Url(text) {
 }
 
 export async function encodeProfileShareCode(profile) {
-  const json = JSON.stringify(withoutLegacyFields(profile))
+  const json = JSON.stringify(exportedProfile(profile))
   const stream = new Blob([new TextEncoder().encode(json)]).stream().pipeThrough(new CompressionStream("gzip"))
   const packed = new Uint8Array(await new Response(stream).arrayBuffer())
   return SHARE_CODE_PREFIX + toBase64Url(packed)
 }
 
 // Share codes travel through chats and phone keyboards that quietly rewrite
-// them: zero-width/invisible characters get injected around pasted text, and
-// "smart punctuation" turns the hyphens of base64url into en/em dashes.
-// Undo all of that, then pick the code out of any surrounding prose.
-const invisibleCharsRE = /[\s\u00AD\u200B-\u200F\u2060\uFEFF]/g
+// them: zero-width/invisible characters get injected around pasted text,
+// "smart punctuation" turns the hyphens of base64url into en/em dashes, and a
+// long code arrives wrapped across several lines. Undo all of that, then pick
+// the code out of any surrounding prose.
+const invisibleCharsRE = /[\u00AD\u200B-\u200F\u2060\uFEFF]/g
 const dashVariantsRE = /[\u2010-\u2015\u2212]/g
 
-function sanitizeShareCodeInput(code) {
+// How many whitespace-separated pieces of a paste are worth trying. Each one
+// costs a decode attempt, and no chat client wraps a code into more lines than
+// this.
+const maxShareCodeSegments = 8
+
+// shareCodeCandidates lists the payloads a pasted blob might hold, longest
+// first. Whitespace inside a code is ambiguous — it separates the code from a
+// trailing "enjoy!" as readily as it wraps the code across two lines — and only
+// a decode attempt can tell those apart, so every prefix that ends at a break
+// is a candidate.
+function shareCodeCandidates(code) {
   const cleaned = (code || "")
     .replace(invisibleCharsRE, "")
     .replace(dashVariantsRE, "-")
-  const match = cleaned.match(/SNZBP1:[A-Za-z0-9\-_+/=]+/i)
-  return match ? match[0] : cleaned
+  const match = cleaned.match(/SNZBP1:[A-Za-z0-9\-_+/=\s]+/i)
+  const picked = (match ? match[0] : cleaned).trim()
+  const segments = picked.split(/\s+/).slice(0, maxShareCodeSegments)
+  const candidates = []
+  for (let n = segments.length; n >= 1; n--) candidates.push(segments.slice(0, n).join(""))
+  return candidates
+}
+
+// unpackShareCode returns the profile a payload carries, or undefined if it
+// does not carry one. gzip is self-checking, so this doubles as the test of
+// whether a candidate is the whole code and nothing else.
+async function unpackShareCode(payload) {
+  try {
+    const bytes = fromBase64Url(payload)
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
+    return JSON.parse(await new Response(stream).text())
+  } catch {
+    return undefined
+  }
 }
 
 export async function decodeProfileShareCode(code) {
-  const trimmed = sanitizeShareCodeInput(code)
-  if (trimmed.slice(0, SHARE_CODE_PREFIX.length).toUpperCase() !== SHARE_CODE_PREFIX) {
+  const candidates = shareCodeCandidates(code)
+  if (candidates[0].slice(0, SHARE_CODE_PREFIX.length).toUpperCase() !== SHARE_CODE_PREFIX) {
     throw new Error("Not a StreamNZB profile code.")
   }
-  let profile
-  try {
-    const bytes = fromBase64Url(trimmed.slice(SHARE_CODE_PREFIX.length))
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
-    profile = JSON.parse(await new Response(stream).text())
-  } catch {
+  let parsed
+  for (const candidate of candidates) {
+    parsed = await unpackShareCode(candidate.slice(SHARE_CODE_PREFIX.length))
+    if (parsed !== undefined) break
+  }
+  if (parsed === undefined) {
     throw new Error("The code is damaged or incomplete.")
   }
-  if (!profile || typeof profile !== "object" || typeof profile.name !== "string" || !profile.ranking) {
+  // A code made before presets carries a hand-tuned ranking profile that this
+  // editor can no longer express, so say that rather than complain about a
+  // missing marker the code was never going to have.
+  if (parsed && typeof parsed === "object" && parsed.streamnzb_profile !== 1 && parsed.ranking) {
+    throw new Error("That code predates filter presets and can no longer be imported.")
+  }
+  return profileFromParsed(parsed)
+}
+
+// profileFromParsed reads what a share code carried. It is strict about the
+// shape and says which rule is wrong when one is: a code that arrives damaged
+// should fail loudly rather than import half a ruleset.
+function profileFromParsed(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.streamnzb_profile !== 1) {
     throw new Error("The code does not contain a filter profile.")
-  }
-  return withoutLegacyFields(profile)
-}
-
-// A profile is a preset plus rules. Export writes exactly that, formatted, so
-// the file is readable in a diff and editable by hand — which is the point:
-// share codes travel well through a chat window but cannot be reviewed in a
-// pull request or versioned in a repository.
-export function profileToJSON(profile) {
-  return JSON.stringify(
-    {
-      streamnzb_profile: 1,
-      name: (profile.name || "").trim(),
-      preset: profile.preset || DEFAULT_PRESET,
-      rules: (profile.rules || []).map((rule) => {
-        const out = { name: rule.name || "", when: rule.when || "" }
-        if (rule.action === "reject") out.action = "reject"
-        else if (rule.points) out.points = rule.points
-        if (rule.scope && rule.scope !== "all") out.scope = rule.scope
-        if (rule.enabled === false) out.enabled = false
-        return out
-      }),
-    },
-    null,
-    2,
-  )
-}
-
-// profileFromJSON parses an exported profile. It is strict about the shape and
-// forgiving about everything else: a file hand-edited in a repository should
-// fail loudly on a typo rather than import half a ruleset.
-export function profileFromJSON(text) {
-  let parsed
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    throw new Error("That is not valid JSON.")
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Expected a profile object.")
-  }
-  if (parsed.streamnzb_profile !== 1) {
-    throw new Error("Missing \"streamnzb_profile\": 1 — is this a StreamNZB profile?")
   }
   const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
   if (!name) throw new Error("The profile needs a name.")
@@ -474,16 +517,135 @@ export function profileFromJSON(text) {
   const rawRules = Array.isArray(parsed.rules) ? parsed.rules : []
   const rules = rawRules.map((rule, i) => {
     if (!rule || typeof rule !== "object") throw new Error(`Rule ${i + 1} is not an object.`)
+    const label = `Rule ${i + 1}${rule.name ? ` (${rule.name})` : ""}`
     if (typeof rule.when !== "string" || !rule.when.trim()) {
-      throw new Error(`Rule ${i + 1}${rule.name ? ` (${rule.name})` : ""} has no condition.`)
+      throw new Error(`${label} has no condition.`)
     }
     const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
-    if (rule.action === "reject") out.action = "reject"
-    else if (Number.isFinite(rule.points)) out.points = rule.points
+    const action = ruleAction(rule)
+    if (action === "reject") {
+      out.action = "reject"
+    } else if (action === "limit") {
+      // The server refuses a profile whose limit keeps nothing, so a count
+      // that would be dropped there is refused here, where it can still be
+      // pointed at the rule that carries it.
+      const count = Math.trunc(Number(rule.count))
+      if (!Number.isFinite(count) || count < 1) {
+        throw new Error(`${label} limits releases but does not say how many to keep.`)
+      }
+      out.action = "limit"
+      out.count = count
+    } else if (Number.isFinite(rule.points)) {
+      out.points = rule.points
+    }
     if (typeof rule.scope === "string" && rule.scope !== "all") out.scope = rule.scope
     if (rule.enabled === false) out.enabled = false
     return out
   })
 
   return { name, preset, rules }
+}
+
+// Rules as text.
+//
+// The card editor is one rule per card, which is the wrong shape for writing
+// or reviewing twenty of them at once. The text form is the same rules as
+// lines:
+//
+//   Atmos [movie]: score -800 if "atmos" in traits
+//   DV without HDR fallback: reject if dolbyVision and not hdrFallback
+//   4K cap [off]: keep 3 if resolution == "2160p"
+//
+// Everything after `if` is the condition, carried through untouched. This
+// grammar wraps conditions and never parses them, so there is still exactly
+// one thing that understands `"atmos" in traits` — the same expression
+// language the server compiles.
+
+const scopeKeys = new Set(CONTENT_KINDS.map((kind) => kind.key))
+
+// A rule line is NAME [tags]: ACTION if CONDITION. Tags are the scope, "off",
+// or both; the brackets and the name are optional.
+const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|keep\s+(\d+))\s+if\b\s*([\s\S]*)$/i
+const ruleTagsRE = /^(.*?)\s*\[([^\]]*)\]\s*$/
+
+function ruleToText(rule) {
+  const tags = []
+  if (rule.scope && rule.scope !== "all") tags.push(rule.scope)
+  if (rule.enabled === false) tags.push("off")
+  const action = ruleAction(rule)
+  const verb = action === "reject" ? "reject"
+    : action === "limit" ? `keep ${limitCount(rule.count)}`
+    : `score ${Math.trunc(Number(rule.points)) || 0}`
+  // A condition written across several lines folds onto one: the text form is
+  // a line per rule, and the expression language does not care where the
+  // whitespace falls.
+  const when = (rule.when || "").replace(/\s+/g, " ").trim()
+  const head = `${(rule.name || "").trim()}${tags.length ? ` [${tags.join(", ")}]` : ""}`
+  return `${head}: ${verb} if ${when}`
+}
+
+export function rulesToText(rules = []) {
+  return rules.map(ruleToText).join("\n")
+}
+
+// splitRuleLine finds the ":" that divides the name from the action: the first
+// one whose remainder reads as an action, so a rule may be named "Tier 1: NTb"
+// and a condition may contain a colon of its own.
+function splitRuleLine(line) {
+  for (let at = line.indexOf(":"); at >= 0; at = line.indexOf(":", at + 1)) {
+    const body = ruleBodyRE.exec(line.slice(at + 1))
+    if (body) return { head: line.slice(0, at), body }
+  }
+  return null
+}
+
+// parseRuleTags reads a trailing [movie, off]. Brackets only mean tags when
+// every token is one, so a rule named "Remux [2160p]" stays named that.
+function parseRuleTags(head) {
+  const match = ruleTagsRE.exec(head)
+  if (!match) return { name: head.trim() }
+  const tokens = match[2].split(",").map((token) => token.trim().toLowerCase()).filter(Boolean)
+  if (!tokens.length || !tokens.every((token) => token === "off" || scopeKeys.has(token))) {
+    return { name: head.trim() }
+  }
+  return {
+    name: match[1].trim(),
+    scope: tokens.find((token) => token !== "off"),
+    off: tokens.includes("off"),
+  }
+}
+
+// rulesFromText parses the whole block, or throws naming the line that stopped
+// it. Partial results are never returned: half a ruleset silently replacing a
+// whole one is the failure worth avoiding here.
+export function rulesFromText(text) {
+  const lines = String(text || "").split(/\r?\n/)
+  const rules = []
+  lines.forEach((raw, i) => {
+    const line = raw.trim()
+    if (!line) return
+    const at = `Line ${i + 1}`
+    const split = splitRuleLine(line)
+    if (!split) {
+      throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / keep 3 in place of score.`)
+    }
+    const [, points, count, when] = split.body
+    if (!when.trim()) throw new Error(`${at}: the rule has no condition.`)
+
+    const tags = parseRuleTags(split.head)
+    const rule = { name: tags.name, when: when.trim() }
+    if (count !== undefined) {
+      if (Number(count) < 1) throw new Error(`${at}: a limit has to keep at least one release.`)
+      rule.action = "limit"
+      rule.count = Number(count)
+    } else if (points !== undefined) {
+      rule.points = Number(points)
+    } else {
+      rule.action = "reject"
+    }
+    if (tags.scope) rule.scope = tags.scope
+    if (tags.off) rule.enabled = false
+    rules.push(rule)
+  })
+  return rules
 }

@@ -174,30 +174,18 @@ groups, so those rules become testable too. See
 
 ## Sharing profiles
 
-Two formats, for two jobs:
+**Export** turns the whole profile — preset and rules — into one `SNZBP1:`
+string. It survives a chat window: the code is picked out of any prose around
+it, smart-quote mangling is undone, and a code wrapped across lines is put back
+together.
 
-- **Share code** — a compact `SNZBP1:` string. Pastes into a chat window
-  intact. Import accepts it directly.
-- **JSON** — the profile as a readable file: preset, rules, nothing else. This
-  is the one to commit to a repository, review in a pull request, or hand-edit.
-  **Download** saves it as `<name>.streamnzb.json`.
+**Import** takes that code and adds it as a new profile. It never overwrites an
+existing one; a name collision gets a numeric suffix. A code that arrives
+damaged says so, and one written before presets existed says that instead of
+importing something this editor cannot express.
 
-```json
-{
-  "streamnzb_profile": 1,
-  "name": "Samsung QN90A",
-  "preset": "4k",
-  "rules": [
-    { "name": "DV without HDR fallback", "when": "dolbyVision and not hdrFallback", "action": "reject" },
-    { "name": "WEB-DL tier 1", "when": "quality == \"WEB-DL\" and group in [\"NTb\", \"FLUX\"]", "points": 500 }
-  ]
-}
-```
-
-Import takes either format in the same box — a share code is base64 and a
-profile file starts with `{`, so there is nothing to choose. An import is always
-added as a new profile and never overwrites an existing one; a name collision
-gets a numeric suffix.
+To version a profile or review one in a pull request, paste its code — it is a
+single line, and importing it is how it gets read back.
 
 ## Upgrading from the old editor
 

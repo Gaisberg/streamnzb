@@ -1,13 +1,13 @@
 import React, { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Copy, Download, Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
+import { Copy, Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
 import { Label } from "@/components/ui/label"
 import { ProfileManager } from "@/components/ProfileManager"
 import { ProfileEditor } from "@/components/ProfileEditor"
 import {
   CONTENT_KINDS, DEFAULT_PRESET, PRESETS, decodeProfileShareCode, defaultProfile,
-  encodeProfileShareCode, profileFromJSON, profileToJSON, withoutLegacyFields,
+  encodeProfileShareCode, withoutLegacyFields,
 } from "@/lib/profiles"
 
 // summarize gives each profile card a one-line read of what it does. A profile
@@ -68,29 +68,14 @@ function normalizeOnSave(profile) {
   }
 }
 
-// One box style for every code/JSON textarea in this page.
+// One box style for every share-code textarea in this page.
 const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-
-// downloadJSON hands the profile over as a file, which is the form it needs to
-// be in to live in a repository.
-function downloadJSON(name, json) {
-  const slug = (name || "profile").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile"
-  const url = URL.createObjectURL(new Blob([json], { type: "application/json" }))
-  const link = document.createElement("a")
-  link.href = url
-  link.download = `${slug}.streamnzb.json`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
-}
 
 export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
   const anyInUse = Object.keys(usage).length > 0
   const [exportCode, setExportCode] = useState(null)
-  const [exportJSON, setExportJSON] = useState("")
   const [exportName, setExportName] = useState("")
   const [exportCopied, setExportCopied] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
@@ -102,7 +87,6 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
     try {
       setExportCopied(false)
       setExportName(draft.name || "")
-      setExportJSON(profileToJSON(draft))
       const code = await encodeProfileShareCode(draft)
       setExportCode(code)
     } catch {
@@ -120,16 +104,9 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
     }
   }
 
-  // Import takes either format from one box. A share code is base64 and a
-  // profile file is JSON, so they are trivially distinguishable and asking the
-  // user which one they pasted would be asking them something the computer
-  // already knows.
   const importProfile = async () => {
     try {
-      const text = importCode.trim()
-      const profile = text.startsWith("{")
-        ? profileFromJSON(text)
-        : await decodeProfileShareCode(text)
+      const profile = await decodeProfileShareCode(importCode)
 
       const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
       let name = (profile.name || "").trim() || "Imported Profile"
@@ -201,71 +178,36 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
       />
 
       <Dialog open={exportCode !== null} onOpenChange={(open) => { if (!open) setExportCode(null) }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Export “{exportName}”</DialogTitle>
             <DialogDescription>
-              Two formats for two jobs. A share code pastes into a chat; the JSON is what you commit to a
-              repository, review in a pull request, or edit by hand.
+              The whole profile — preset and rules — as one string. It pastes into a chat window intact, and
+              whoever receives it imports it from this page.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label className="text-sm">Share code</Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  disabled={!exportCode}
-                  onClick={() => copyText(exportCode)}
-                >
-                  <Copy className="mr-1.5 h-3 w-3" /> Copy
-                </Button>
-              </div>
-              <textarea
-                readOnly
-                value={exportCode || "This browser cannot generate share codes."}
-                onFocus={(e) => e.target.select()}
-                rows={3}
-                className={shareBoxClass}
-              />
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-sm">Share code</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={!exportCode}
+                onClick={() => copyText(exportCode)}
+              >
+                <Copy className="mr-1.5 h-3 w-3" /> Copy
+              </Button>
             </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label className="text-sm">JSON</Label>
-                <div className="flex items-center gap-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => copyText(exportJSON)}
-                  >
-                    <Copy className="mr-1.5 h-3 w-3" /> Copy
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => downloadJSON(exportName, exportJSON)}
-                  >
-                    <Download className="mr-1.5 h-3 w-3" /> Download
-                  </Button>
-                </div>
-              </div>
-              <textarea
-                readOnly
-                value={exportJSON}
-                onFocus={(e) => e.target.select()}
-                rows={12}
-                className={shareBoxClass}
-              />
-            </div>
+            <textarea
+              readOnly
+              value={exportCode || "This browser cannot generate share codes."}
+              onFocus={(e) => e.target.select()}
+              rows={4}
+              className={shareBoxClass}
+            />
           </div>
 
           <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between sm:space-x-0">
@@ -280,15 +222,14 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
           <DialogHeader>
             <DialogTitle>Import profile</DialogTitle>
             <DialogDescription>
-              Paste a share code or an exported JSON profile — either works. It is added as a new profile and
-              never overwrites an existing one.
+              Paste a share code. It is added as a new profile and never overwrites an existing one.
             </DialogDescription>
           </DialogHeader>
           <textarea
             value={importCode}
             onChange={(e) => { setImportCode(e.target.value); setImportError("") }}
-            rows={8}
-            placeholder={'SNZBP1:…  or  { "streamnzb_profile": 1, … }'}
+            rows={6}
+            placeholder="SNZBP1:…"
             className="w-full resize-none rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           {importError && <p className="text-xs text-destructive">{importError}</p>}

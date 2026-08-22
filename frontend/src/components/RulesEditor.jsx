@@ -2,12 +2,14 @@ import React, { useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { NumberField, ScoreInput, SettingBlock, SettingGroup } from "@/components/ui/setting"
+import { Hint, NumberField, ScoreInput, SettingBlock, SettingGroup } from "@/components/ui/setting"
 import { ConfidenceChip } from "@/components/ConfidenceChip"
 import { Check, ChevronDown, Copy, Plus, SkipForward, Trash2, TriangleAlert } from "lucide-react"
-import { RULE_ACTIONS, RULE_ATTRIBUTES, RULE_PRESETS, RULE_SCOPES, formatScore } from "@/lib/profiles"
+import {
+  DEFAULT_LIMIT_COUNT, RULE_ACTIONS, RULE_ATTRIBUTES, RULE_PRESETS, RULE_SCOPES,
+  formatScore, ruleAction, rulesFromText, rulesToText,
+} from "@/lib/profiles"
 import { cn, selectClass } from "@/lib/utils"
 
 // tierOf reports which optional attribute tier a condition depends on. It
@@ -160,18 +162,30 @@ function RuleStat({ stat, sampleCount, action, count }) {
 }
 
 function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, registerInput }) {
-  // Three actions, not two. Reading this as a boolean is what made a limit
-  // preset arrive as a score rule worth nothing.
-  const action = rule.action === "reject" || rule.action === "limit" ? rule.action : "score"
+  const action = ruleAction(rule)
   const enabled = rule.enabled !== false
   const tier = tierOf(rule.when)
   const skipNote = SKIP_NOTE[tier]
+
+  // A rule with no condition yet is one just added, and it opens: everything
+  // else stays folded, because a list of twenty is easier to move around when
+  // each rule is a line rather than a box.
+  const [open, setOpen] = useState(() => !(rule.when || "").trim())
 
   const patch = (next) => onChange({ ...rule, ...next })
 
   return (
     <div className={cn("rounded-lg border border-border/60 bg-card/40", !enabled && "opacity-55")}>
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/50 px-3 py-2">
+      <div className={cn("flex flex-wrap items-center gap-2 px-3 py-2", open && "border-b border-border/50")}>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="text-muted-foreground/70 transition-colors hover:text-foreground"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${rule.name || "rule"}`}
+        >
+          <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", !open && "-rotate-90")} />
+        </button>
         <Switch
           checked={enabled}
           onCheckedChange={(v) => patch({ enabled: v })}
@@ -201,7 +215,7 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
             const next = e.target.value
             patch({
               action: next === "score" ? undefined : next,
-              count: next === "limit" ? (rule.count || 3) : undefined,
+              count: next === "limit" ? (rule.count || DEFAULT_LIMIT_COUNT) : undefined,
             })
           }}
           aria-label="Action"
@@ -225,7 +239,7 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
           <span className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
             keep best
             <NumberField
-              value={rule.count ?? 3}
+              value={rule.count ?? DEFAULT_LIMIT_COUNT}
               onCommit={(count) => patch({ count: Math.max(1, count) })}
               min={1}
               step={1}
@@ -254,26 +268,38 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
         </button>
       </div>
 
-      <div className="space-y-1.5 px-3 py-2.5">
-        <textarea
-          ref={registerInput}
-          value={rule.when || ""}
-          onChange={(e) => patch({ when: e.target.value })}
-          rows={2}
-          spellCheck={false}
-          placeholder={'dolbyVision and not hdrFallback'}
-          className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          aria-label="Condition"
-        />
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[11px] text-muted-foreground">
-            {action === "limit"
-              ? `Of the releases matching this, the best ${rule.count ?? 3} are offered and the rest are dropped.`
-              : skipNote}
-          </p>
-          <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />
+      {!open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="block w-full truncate px-3 pb-2 text-left font-mono text-[11px] text-muted-foreground/80 hover:text-foreground"
+        >
+          {(rule.when || "").replace(/\s+/g, " ").trim() || "no condition yet"}
+        </button>
+      )}
+
+      {open && (
+        <div className="space-y-1.5 px-3 py-2.5">
+          <textarea
+            ref={registerInput}
+            value={rule.when || ""}
+            onChange={(e) => patch({ when: e.target.value })}
+            rows={2}
+            spellCheck={false}
+            placeholder={'dolbyVision and not hdrFallback'}
+            className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label="Condition"
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground">
+              {action === "limit"
+                ? `Of the releases matching this, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} are offered and the rest are dropped.`
+                : skipNote}
+            </p>
+            <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -286,11 +312,55 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
 export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount = 0, error = "" }) {
   const inputsRef = useRef({})
 
+  // Cards are one rule at a time; text is all of them at once. The text is
+  // seeded from the rules on the way in and committed back on every parse that
+  // succeeds — saving upstream is debounced, so there is nothing to press and
+  // no way to leave valid text uncommitted. Text that does not parse is simply
+  // not committed, and says which line stopped it.
+  const [mode, setMode] = useState("cards")
+  const [ruleText, setRuleText] = useState("")
+  const [ruleTextError, setRuleTextError] = useState("")
+  const textRef = useRef(null)
+
+  const showText = () => {
+    setRuleText(rulesToText(values))
+    setRuleTextError("")
+    setMode("text")
+  }
+
+  const editText = (next) => {
+    setRuleText(next)
+    try {
+      onChange(rulesFromText(next))
+      setRuleTextError("")
+    } catch (err) {
+      setRuleTextError(err.message)
+    }
+  }
+
+  // In text mode there is one box and one caret, so an insert is the plain
+  // splice — no rule to find first.
+  const insertIntoText = (chunk) => {
+    const el = textRef.current
+    if (!el) return
+    const start = el.selectionStart ?? ruleText.length
+    const end = el.selectionEnd ?? start
+    const needsSpace = start > 0 && !/\s$/.test(ruleText.slice(0, start))
+    const piece = (needsSpace ? " " : "") + chunk
+    editText(ruleText.slice(0, start) + piece + ruleText.slice(end))
+    const caret = start + piece.length
+    window.requestAnimationFrame(() => {
+      el.focus()
+      el.setSelectionRange(caret, caret)
+    })
+  }
+
   // insert drops an attribute or operator into whichever condition was last
   // focused, at the caret. With no condition focused it appends to the last
   // rule, which is almost always the one just added.
   const focusedRef = useRef(null)
   const insert = (text) => {
+    if (mode === "text") return insertIntoText(text)
     const index = focusedRef.current ?? values.length - 1
     const rule = values[index]
     if (!rule) return
@@ -318,7 +388,14 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
     })
   }
 
+  // A preset is a rule either way: a card at the end of the list, or its line
+  // at the end of the text.
   const add = (preset) => {
+    if (mode === "text") {
+      if (!preset) return
+      editText([ruleText.replace(/\s+$/, ""), rulesToText([preset])].filter(Boolean).join("\n"))
+      return
+    }
     onChange([...values, { ...(preset || { name: "", when: "", points: 0 }) }])
     focusedRef.current = values.length
   }
@@ -344,11 +421,45 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
 
   return (
     <SettingGroup
-      description="A condition over everything known about a release, and what to do when it holds: move its score, remove it, or cap how many like it you are offered. This is where the things one pattern cannot say live — “Dolby Vision but only without an HDR fallback”, “over 30 GB unless it is 4K”, “at most three in 4K”."
       actions={
-        <Button type="button" variant="secondary" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={() => add()}>
-          <Plus className="h-3.5 w-3.5" /> Add rule
-        </Button>
+        <div className="flex items-center gap-1.5">
+          {/* Both of these are worth reading once and then out of the way: the
+              editor below is what the space is for. */}
+          <Hint side="bottom">
+            <p>
+              A condition over everything known about a release, and what to do when it holds: move its score,
+              remove it, or cap how many like it you are offered. This is where the things one pattern cannot
+              say live — “Dolby Vision but only without an HDR fallback”, “over 30 GB unless it is 4K”, “at most
+              three in 4K”.
+            </p>
+            <p className="mt-2">
+              Rules reading <code className="font-mono">probed.*</code> or <code className="font-mono">avail.*</code>{" "}
+              skip releases that carry nothing in that tier — a release that was never probed, or that nobody
+              has reported. Without that, one rule like <code className="font-mono">probed.height &lt; 1080</code>{" "}
+              would empty every result list of everything except library hits.
+            </p>
+          </Hint>
+          {mode === "cards" && (
+            <Button type="button" variant="secondary" size="sm" className="h-7 gap-1.5 px-2.5 text-xs" onClick={() => add()}>
+              <Plus className="h-3.5 w-3.5" /> Add rule
+            </Button>
+          )}
+          <div className="flex overflow-hidden rounded-md border border-border/60">
+            {[["cards", "Cards"], ["text", "Text"]].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => (key === "text" ? showText() : setMode("cards"))}
+                className={cn(
+                  "px-2.5 py-1 text-[11px] transition-colors",
+                  mode === key ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       }
     >
       {/* A condition that will not compile is reported by the same preview
@@ -363,36 +474,6 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
           </div>
         </SettingBlock>
       )}
-
-      <SettingBlock>
-        {values.length > 0 ? (
-          <div className="space-y-2">
-            {values.map((rule, index) => (
-              <RuleCard
-                key={index}
-                rule={rule}
-                stat={ruleStats[rule.name]}
-                sampleCount={sampleCount}
-                onChange={(next) => onChange(values.map((r, i) => (i === index ? next : r)))}
-                onRemove={() => onChange(values.filter((_, i) => i !== index))}
-                onDuplicate={() => duplicate(index)}
-                registerInput={(el) => {
-                  if (el) {
-                    inputsRef.current[index] = el
-                    el.onfocus = () => { focusedRef.current = index }
-                  } else {
-                    delete inputsRef.current[index]
-                  }
-                }}
-              />
-            ))}
-          </div>
-        ) : (
-          <p className="rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
-            No rules yet. Start from one below, or add an empty one and write your own.
-          </p>
-        )}
-      </SettingBlock>
 
       {availablePresets.length > 0 && (
         <SettingBlock label="Start from" description="Adds the rule so you can rename and adjust it.">
@@ -418,22 +499,69 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
         </SettingBlock>
       )}
 
+      <SettingBlock
+        description={mode === "text"
+          ? "One rule per line: a name, what it does, and the same condition the cards take. Tags in brackets set the scope and switch a rule off."
+          : undefined}
+      >
+        {mode === "text" ? (
+          <div className="space-y-2">
+            <textarea
+              ref={textRef}
+              value={ruleText}
+              onChange={(e) => editText(e.target.value)}
+              rows={Math.min(24, Math.max(8, ruleText.split("\n").length + 1))}
+              spellCheck={false}
+              placeholder={'Atmos: score -800 if "atmos" in traits\n3D: reject if threeD\n4K cap [movie]: keep 3 if resolution == "2160p"'}
+              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label="All rules as text"
+            />
+            {ruleTextError ? (
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2">
+                <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+                <p className="text-xs text-destructive">{ruleTextError} Nothing is saved until that line parses.</p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                {values.length === 0
+                  ? "No rules — this profile filters on its preset alone."
+                  : `${values.length} rule${values.length === 1 ? "" : "s"}, saved as you type.`}
+              </p>
+            )}
+          </div>
+        ) : values.length > 0 ? (
+          <div className="space-y-2">
+            {values.map((rule, index) => (
+              <RuleCard
+                key={index}
+                rule={rule}
+                stat={ruleStats[rule.name]}
+                sampleCount={sampleCount}
+                onChange={(next) => onChange(values.map((r, i) => (i === index ? next : r)))}
+                onRemove={() => onChange(values.filter((_, i) => i !== index))}
+                onDuplicate={() => duplicate(index)}
+                registerInput={(el) => {
+                  if (el) {
+                    inputsRef.current[index] = el
+                    el.onfocus = () => { focusedRef.current = index }
+                  } else {
+                    delete inputsRef.current[index]
+                  }
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
+            No rules yet. Start from one above, or add an empty one and write your own.
+          </p>
+        )}
+      </SettingBlock>
+
       <SettingBlock>
         <AttributeReference onInsert={insert} />
       </SettingBlock>
 
-      <SettingBlock>
-        <div className="flex items-start gap-2 rounded-lg border border-border/60 px-3 py-2.5">
-          <Label className="sr-only">About fail-open</Label>
-          <SkipForward className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <p className="max-w-prose text-[11px] text-muted-foreground">
-            Rules reading <code className="font-mono">probed.*</code> or <code className="font-mono">avail.*</code>{" "}
-            skip releases that carry nothing in that tier — a release that was never probed, or that nobody has
-            reported. Without that, one rule like <code className="font-mono">probed.height &lt; 1080</code> would
-            empty every result list of everything except library hits.
-          </p>
-        </div>
-      </SettingBlock>
     </SettingGroup>
   )
 }

@@ -45,6 +45,33 @@ copied between anime shows and anime films with only the scope changed.
 A condition that will not compile rejects the save and names the rule, the same
 way a broken regex always has.
 
+## Writing them as text
+
+Cards are one rule at a time. **Text** is all of them at once — the same rules
+as lines, which is the shape that suits writing ten in a sitting, reordering
+them, or pasting a set someone shared:
+
+```
+Atmos: score -800 if "atmos" in traits
+DV without HDR fallback: reject if dolbyVision and not hdrFallback
+At most 3 in 4K [movie]: keep 3 if resolution == "2160p"
+Old experiment [off]: score 100 if "remux" in traits
+```
+
+A line is `Name: action if condition`. The action is `score <points>` —
+negative allowed — `reject`, or `keep <n>`. Brackets before the colon carry the
+scope (`movie`, `series`, `anime_movie`, `anime_show`) and `off` for a disabled
+rule, in either order and both optional. Everything after `if` is the
+condition, handed to the expression language exactly as written: this grammar
+wraps conditions, it never parses them.
+
+Both views are the same rules. Switching to text seeds it from the cards, and
+every edit that parses is applied as you type. A line that does not parse is
+reported with its number and **not** applied, so a half-typed rule never
+replaces a working one. Two things are normalized on the way in: a condition
+written across several lines in a card is folded onto one, and a score rule
+that never had points recorded is written as `score 0`.
+
 ## Limits
 
 A condition describes one release, so it cannot say "at most three of these" —
