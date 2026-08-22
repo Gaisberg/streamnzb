@@ -18,7 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ComposedChart, Area, Line, XAxis, YAxis } from "recharts"
-import { Activity, ChevronDown, Globe, ListFilter, X, MonitorPlay, Loader2 } from "lucide-react"
+import { Activity, ChevronDown, Globe, ListFilter, X, MonitorPlay, Loader2, Settings2 } from "lucide-react"
 import { isAvailNZBEnabled } from "@/lib/availnzb"
 import { cn, formatBytes, streamSeriesKey } from "@/lib/utils"
 import { DEFAULT_STREAM_NAME } from "@/hooks/useAdminRuntime"
@@ -53,7 +53,7 @@ function formatDownloadedMb(mb) {
   return { value: n.toFixed(1), unit: 'MB' }
 }
 
-export function DashboardPage({ stats, chartData, sendCommand, config, availNZBStatus, availNZBStatusLoading, availNZBStatusError }) {
+export function DashboardPage({ stats, chartData, sendCommand, config, onNavigate, availNZBStatus, availNZBStatusLoading, availNZBStatusError }) {
   const [activeSessionToClose, setActiveSessionToClose] = useState(null)
   // Hidden rather than selected names, so a stream that starts playing mid-session
   // shows up without the user having to re-open the filter.
@@ -209,10 +209,10 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Badge variant="outline" className="h-5 min-w-5 rounded-full px-1.5">
-                      <span className={cn("h-1.5 w-1.5 rounded-full", availNZBEnabled ? "bg-green-600" : "bg-destructive")} />
+                      <span className={cn("h-1.5 w-1.5 rounded-full", availNZBEnabled ? "bg-green-600" : "bg-muted-foreground")} />
                     </Badge>
                   </TooltipTrigger>
-                  <TooltipContent>{availNZBEnabled ? 'Active' : 'Inactive'}</TooltipContent>
+                  <TooltipContent>{availNZBEnabled ? 'Active' : 'Not enabled'}</TooltipContent>
                 </Tooltip>
               </TooltipProvider>
             </div>
@@ -234,7 +234,22 @@ export function DashboardPage({ stats, chartData, sendCommand, config, availNZBS
                 )}
               </>
             ) : (
-              <CardTitle className="tabular-nums text-muted-foreground">0%</CardTitle>
+              // AvailNZB is opt-in, so "off" is the normal state, not a fault:
+              // say so and point at the switch rather than showing a 0% score
+              // that reads like the integration is failing.
+              <>
+                <CardTitle className="text-lg text-muted-foreground">Not enabled</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 h-7 w-fit gap-1.5 px-2 text-xs"
+                  onClick={() => onNavigate?.('settings-advanced')}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />
+                  Enable
+                </Button>
+              </>
             )}
           </CardHeader>
         </Card>

@@ -505,14 +505,16 @@ func (c *Config) IsErrorVideoMuted() bool {
 	return false
 }
 
+// NormalizeAvailNZBMode collapses the stored mode onto "on" or "off". AvailNZB
+// is opt-in: only a mode that explicitly names it resolves to "on", so an empty
+// or unrecognized value stays off and the service is never contacted for a user
+// who never asked for it. See issue #194.
 func NormalizeAvailNZBMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", "full", "status_only", "on":
+	case "on", "full", "status_only":
 		return "on"
-	case "disabled", "off":
-		return "off"
 	default:
-		return "on"
+		return "off"
 	}
 }
 
@@ -731,9 +733,11 @@ type Config struct {
 	// so old configs unmarshal and migrate their value into profiles on load.
 	LibraryScoreBonus int `json:"library_score_bonus,omitempty"`
 
-	// AvailNZBMode controls how the AvailNZB integration behaves.
+	// AvailNZBMode controls how the AvailNZB integration behaves. It is
+	// opt-in — an install that never turned it on never contacts the service,
+	// not even to register an API key.
 	// "on"  - fetch availability status and report playback results.
-	// "off" - disable AvailNZB entirely (no GET, no POST).
+	// "off" - disable AvailNZB entirely (no GET, no POST, no registration).
 	AvailNZBMode string `json:"availnzb_mode,omitempty"`
 
 	// MuteErrorVideo controls whether the "Failed to start video" playback error stream is muted.
@@ -1123,7 +1127,10 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	// unprivileged on purpose: 119 needs root, which no container that drops
 	// privileges has, and an NNTP relay nobody asked for should not be
 	// listening at all. See issue #192. The Newznab endpoint is off for the
-	// same reason: an API that spends indexer quota should be asked for.
+	// same reason: an API that spends indexer quota should be asked for. And
+	// AvailNZB is off because enabling it registers a key with a third-party
+	// service — outbound contact nobody consented to reads as phoning home,
+	// whatever the feature is worth. See issue #194.
 	cfg := &Config{
 		AddonPort:                        7000,
 		AddonBaseURL:                     "http://localhost:7000",
@@ -1134,6 +1141,7 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 		ProxyHost:                        "0.0.0.0",
 		ProxyEnabled:                     false,
 		NewznabEnabled:                   false,
+		AvailNZBMode:                     "off",
 		MemoryLimitMB:                    512,
 		KeepLogFiles:                     9,
 		NZBHistoryRetentionDays:          90,

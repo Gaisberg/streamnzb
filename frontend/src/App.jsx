@@ -340,6 +340,7 @@ function App() {
               chartData={chartData}
               sendCommand={sendCommand}
               config={config}
+              onNavigate={handleNavigate}
               availNZBStatus={availNZBStatus}
               availNZBStatusLoading={availNZBStatusLoading}
               availNZBStatusError={availNZBStatusError}

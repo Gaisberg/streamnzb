@@ -199,13 +199,17 @@ func main() {
 		}
 	}
 
+	// AvailNZB is opt-in, and registering a key is itself outbound contact —
+	// so the bootstrap only runs once the user has turned the integration on.
+	// Enabling it later registers through ensureAvailNZBReadyForReload without
+	// a restart. See issue #194.
 	if config.NormalizeAvailNZBMode(cfg.AvailNZBMode) != "off" {
 		availNZBAPIKey, err = availnzb.ResolveAPIKey(stateMgr, availNZBUrl, availNZBAPIKey, availnzb.DefaultAppName)
 		if err != nil {
 			initialization.WaitForInputAndExit(fmt.Errorf("failed to resolve AvailNZB API key: %w", err))
 		}
 	} else {
-		logger.Debug("AvailNZB key bootstrap skipped", "reason", "disabled mode")
+		logger.Debug("AvailNZB key bootstrap skipped", "reason", "not enabled")
 	}
 
 	application := app.New()

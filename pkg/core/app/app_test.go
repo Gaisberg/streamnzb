@@ -1,7 +1,10 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/services/availnzb"
@@ -82,4 +85,53 @@ func TestConfigChangedScopesAreIndependent(t *testing.T) {
 	if scope := ConfigChanged(base(), configOnly); scope.Any() {
 		t.Fatalf("non-structural edit scope = %+v, want empty", scope)
 	}
+}
+
+func TestPrefetchAvailNZBBackbonesRespectsOptIn(t *testing.T) {
+	t.Parallel()
+
+	newProbe := func(t *testing.T) (string, chan struct{}) {
+		t.Helper()
+		hit := make(chan struct{}, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			select {
+			case hit <- struct{}{}:
+			default:
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL, hit
+	}
+
+	t.Run("off makes no request", func(t *testing.T) {
+		url, hit := newProbe(t)
+		prefetchAvailNZBBackbones(&config.Config{AvailNZBMode: "off"}, availnzb.NewClient(url, "key"))
+		select {
+		case <-hit:
+			t.Fatal("AvailNZB was contacted while the integration is off")
+		case <-time.After(250 * time.Millisecond):
+		}
+	})
+
+	t.Run("unset mode makes no request", func(t *testing.T) {
+		url, hit := newProbe(t)
+		prefetchAvailNZBBackbones(&config.Config{}, availnzb.NewClient(url, "key"))
+		select {
+		case <-hit:
+			t.Fatal("AvailNZB was contacted by an install that never enabled it")
+		case <-time.After(250 * time.Millisecond):
+		}
+	})
+
+	t.Run("on refreshes backbones", func(t *testing.T) {
+		url, hit := newProbe(t)
+		prefetchAvailNZBBackbones(&config.Config{AvailNZBMode: "on"}, availnzb.NewClient(url, "key"))
+		select {
+		case <-hit:
+		case <-time.After(5 * time.Second):
+			t.Fatal("AvailNZB was not contacted after opting in")
+		}
+	})
 }

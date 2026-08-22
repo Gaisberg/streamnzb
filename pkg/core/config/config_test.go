@@ -934,3 +934,47 @@ func TestProxyDefaultsOnlyApplyToFreshInstalls(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeAvailNZBModeIsOptIn(t *testing.T) {
+	cases := map[string]string{
+		"":            "off",
+		"   ":         "off",
+		"off":         "off",
+		"disabled":    "off",
+		"nonsense":    "off",
+		"on":          "on",
+		"  ON  ":      "on",
+		"full":        "on",
+		"status_only": "on",
+	}
+	for mode, want := range cases {
+		if got := NormalizeAvailNZBMode(mode); got != want {
+			t.Fatalf("NormalizeAvailNZBMode(%q) = %q, want %q", mode, got, want)
+		}
+	}
+}
+
+// A config written before AvailNZB became opt-in has no availnzb_mode key at
+// all; it must land on "off" so an upgrade never registers a key unasked. An
+// install that already enabled it keeps its setting.
+func TestLoadWithPathAvailNZBModeDefaultsOff(t *testing.T) {
+	load := func(t *testing.T, body string) *Config {
+		t.Helper()
+		configPath := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(configPath, []byte(body), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		cfg, err := LoadWithPath(configPath)
+		if err != nil {
+			t.Fatalf("LoadWithPath: %v", err)
+		}
+		return cfg
+	}
+
+	if got := load(t, `{"addon_port":7000}`).AvailNZBMode; got != "off" {
+		t.Fatalf("AvailNZBMode without the key = %q, want %q", got, "off")
+	}
+	if got := load(t, `{"addon_port":7000,"availnzb_mode":"on"}`).AvailNZBMode; got != "on" {
+		t.Fatalf("AvailNZBMode of an enabled install = %q, want %q", got, "on")
+	}
+}

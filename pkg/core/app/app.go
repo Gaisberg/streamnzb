@@ -125,6 +125,22 @@ func (a *App) SetAvailNZBAPIKey(apiKey string) {
 
 const validationSampleSize = 5
 
+// prefetchAvailNZBBackbones warms the provider-to-backbone map on the shared
+// client. AvailNZB is opt-in, so an install that never enabled it must not be
+// contacted here either — this prefetch was the one call that ran regardless of
+// the mode, which is what made a fresh install look like it phones home. See
+// issue #194.
+func prefetchAvailNZBBackbones(cfg *config.Config, client *availnzb.Client) {
+	if client == nil || config.NormalizeAvailNZBMode(cfg.AvailNZBMode) == "off" {
+		return
+	}
+	go func() {
+		if err := client.RefreshBackbones(); err != nil {
+			logger.Debug("AvailNZB backbones refresh", "source", "app_build", "err", err)
+		}
+	}()
+}
+
 func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error) {
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 	base, err := initialization.BuildComponents(cfg)
@@ -134,12 +150,10 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 
 	validator := validation.NewChecker(base.UsenetPool, validationSampleSize, 6)
 	triageSvc := triage.NewService()
+	// The client is always built so a reload can turn AvailNZB on without a
+	// rebuild; whether anything goes out over it is the prefetch's call.
 	availClient := availnzb.NewClient(opts.AvailNZBURL, opts.AvailNZBAPIKey)
-	go func(client *availnzb.Client) {
-		if err := client.RefreshBackbones(); err != nil {
-			logger.Debug("AvailNZB backbones refresh", "source", "app_build", "err", err)
-		}
-	}(availClient)
+	prefetchAvailNZBBackbones(cfg, availClient)
 	dataDir := resolveDataDir(opts.DataDir, cfg.LoadedPath)
 	// Display language is a per-call parameter on the shared clients, derived
 	// from each stream's metadata profile — never client state.

@@ -403,7 +403,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                           />
                         </FormControl>
                       </div>
-                      <FormDescription className="mt-3">Controls whether StreamNZB uses AvailNZB. API key management is automatic.</FormDescription>
+                      <FormDescription className="mt-3">Off by default. Turning this on contacts <span className="font-mono">check.snzb.stream</span> to register an anonymous API key, then shares playback success and failure so the community database stays current. While it is off StreamNZB never contacts AvailNZB.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )} />
@@ -422,7 +422,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                         <div className="flex-1">
                           <PasswordInput
                             readOnly
-                            value={availKeyInfo.key || (availKeyInfo.loading ? 'Loading key...' : 'Auto-generated on startup')}
+                            value={availKeyInfo.key || (availKeyInfo.loading ? 'Loading key...' : 'Generated when AvailNZB is enabled')}
                             className="h-9 w-full font-mono text-xs"
                           />
                         </div>
