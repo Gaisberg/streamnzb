@@ -14,8 +14,20 @@ updates:
       interval: weekly
     open-pull-requests-limit: 3
     groups:
-      # Split so a React or Vite major lands on its own and gets read, while
-      # the weekly patch noise arrives as one reviewable diff.
+      # Listed first so it wins: a package matched here is excluded from the
+      # groups below. vite, its plugins and vitest are peer-locked to each
+      # other — @vitejs/plugin-react 6 requires vite ^8, and vitest 3 does not
+      # support vite 8 at all — so a major that moves one without the others
+      # produces a tree npm cannot even install. That happened once; this makes
+      # the whole family arrive as one pull request instead.
+      vite:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "vitest"
+          - "@vitest/*"
+      # Split so a React major lands on its own and gets read, while the weekly
+      # patch noise arrives as one reviewable diff.
       production:
         dependency-type: production
         update-types: [minor, patch]
