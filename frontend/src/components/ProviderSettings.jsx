@@ -146,6 +146,7 @@ function normalizeProviderDraft(draft) {
     use_ssl: value.use_ssl !== false,
     priority: Number(value.priority || 1),
     enabled: value.enabled !== false,
+    backup: value.backup === true,
     // Left undefined when unset, so it is dropped from the payload and the
     // provider keeps inheriting the deployment default rather than pinning
     // whatever number happened to be on screen.
@@ -176,6 +177,7 @@ function summarizeProvider(provider) {
   if (provider.host) parts.push(`${provider.host}:${provider.port || 563}`)
   parts.push(provider.use_ssl !== false ? 'SSL' : 'No SSL')
   parts.push(`Connections: ${provider.connections || 30}`)
+  if (provider.backup === true) parts.push('Backup only')
   const pipeline = describePipelineDepth(provider.pipeline_depth)
   if (pipeline) parts.push(pipeline)
   return parts
@@ -483,6 +485,24 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
             </p>
             <p className="mt-1 text-[10px] text-muted-foreground">
               Using too many connections may lead to slower speeds or errors. If performance drops or connection issues occur, try lowering the number of connections.
+            </p>
+
+            <div className={`${rowClass} mt-4 border-t border-border/60 pt-4`}>
+              <div className={labelClass}>
+                <Label className="text-sm font-medium">Backup only</Label>
+              </div>
+              <div className={controlSwitchClass}>
+                <Switch
+                  checked={draft.backup === true}
+                  onCheckedChange={(checked) => update('backup', checked === true)}
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              Hold this provider back for failover. It is never asked for an article while another provider can serve one, so a metered block account is charged only for what the others are missing.
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Priority orders the providers that share the work; this takes one out of that rotation entirely. Turn it on for pay-per-GB block accounts, off for the unlimited providers you stream from.
             </p>
 
             <div className={`${rowClass} mt-4 border-t border-border/60 pt-4`}>

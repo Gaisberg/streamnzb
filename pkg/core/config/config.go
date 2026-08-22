@@ -70,6 +70,12 @@ type Provider struct {
 	Priority    *int   `json:"priority,omitempty"`
 	Enabled     *bool  `json:"enabled,omitempty"`
 
+	// Backup holds the provider back for failover only: it is never raced for
+	// a first segment and never picked while a non-backup provider can serve,
+	// so a metered block account is charged for what the primaries could not
+	// deliver and nothing else. Nil and false both mean an ordinary provider.
+	Backup *bool `json:"backup,omitempty"`
+
 	// PipelineDepth is how many article requests this provider may have
 	// outstanding on one connection. Nil inherits the deployment default; 1
 	// switches pipelining off for this provider alone. It is per-provider
@@ -1695,7 +1701,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
-// Priority/Enabled storage.
+// Priority/Enabled/Backup/PipelineDepth storage.
 func cloneProviders(in []Provider) []Provider {
 	out := make([]Provider, len(in))
 	for i, p := range in {
@@ -1707,6 +1713,14 @@ func cloneProviders(in []Provider) []Provider {
 		if p.Enabled != nil {
 			v := *p.Enabled
 			out[i].Enabled = &v
+		}
+		if p.Backup != nil {
+			v := *p.Backup
+			out[i].Backup = &v
+		}
+		if p.PipelineDepth != nil {
+			v := *p.PipelineDepth
+			out[i].PipelineDepth = &v
 		}
 	}
 	return out
@@ -1771,6 +1785,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 			UseSSL:        p.UseSSL,
 			Priority:      p.Priority,
 			Enabled:       p.Enabled,
+			Backup:        p.Backup,
 			PipelineDepth: p.PipelineDepth,
 		}
 	}

@@ -33,7 +33,7 @@ Point SABnzbd/NZBGet at StreamNZB as if it were a Usenet provider:
 ## Behavior
 
 - **Download-only, by message-ID.** The proxy serves `ARTICLE`, `BODY`, `HEAD` and `STAT` by message-ID — exactly what NZB-driven downloaders use. Posting is not supported, and group browsing/header overviews (`XOVER`, article numbers) are not implemented, so it is not a server for newsreaders.
-- **Failover across providers.** Each article command tries your enabled providers in priority order and only reports "no such article" after all of them miss. Success and failure feed the same provider health tracking the addon uses.
+- **Failover across providers.** Each article command tries your enabled providers in priority order — [backup-only providers](providers.md#backup-only) last — and only reports "no such article" after all of them miss. Success and failure feed the same provider health tracking the addon uses.
 - **Saturation is transient, not a missing article.** When every provider connection is busy, the command waits up to 30 seconds for a slot and then answers `400` and closes that connection, which clients retry. It is never reported as "no such article", so an oversubscribed proxy cannot make a downloader mark good articles bad or trigger a needless repair.
 - **Occasional connection drops are by design.** Article bodies are streamed straight through; if a provider fails mid-article, the proxy cannot splice in another provider without corrupting the stream, so it drops that client connection and the downloader re-requests the article (which then starts on the next provider).
 - Changing proxy settings or providers restarts the listener, briefly dropping active connections.

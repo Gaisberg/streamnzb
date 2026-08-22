@@ -503,13 +503,35 @@ func cacheStats(cache SegmentCache) CacheStats {
 	return CacheStats{}
 }
 
+// normalizeBackupTier clears the backup flag when every provider carries it. A
+// backup tier with no primary above it has nothing to fall back from, and left
+// as-is the view could serve nothing at all: every fetch path asks the primary
+// tier first and only reaches for backups once that tier is spent.
+func normalizeBackupTier(providers []ProviderConfig) {
+	for i := range providers {
+		if !providers[i].IsBackup {
+			return
+		}
+	}
+	for i := range providers {
+		providers[i].IsBackup = false
+	}
+}
+
 func NewPool(cfg *Config) (*Pool, error) {
 	if cfg == nil || len(cfg.Providers) == 0 {
 		return nil, ErrNoProvidersConfigured
 	}
 	providers := make([]ProviderConfig, len(cfg.Providers))
 	copy(providers, cfg.Providers)
+	normalizeBackupTier(providers)
 	sort.Slice(providers, func(i, j int) bool {
+		// A backup is behind every primary by definition, whatever priority
+		// number it carries: the tier decides the order, priority only orders
+		// within a tier.
+		if providers[i].IsBackup != providers[j].IsBackup {
+			return !providers[i].IsBackup
+		}
 		return providers[i].Priority < providers[j].Priority
 	})
 	cache := cfg.SegmentCache
@@ -655,6 +677,41 @@ func (p *Pool) providerInCooloff(providerID string) bool {
 	return ok && time.Now().Before(until)
 }
 
+// HasBackupProviders reports whether this view holds a provider kept back for
+// failover. Callers use it to decide whether "no provider could serve" is the
+// end of the road or only the end of the primary tier.
+func (p *Pool) HasBackupProviders() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for i := range p.providers {
+		if p.providers[i].IsBackup {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBackupProvider reports whether the named provider is held back for
+// failover, so a caller that asks for one connection by name can request the
+// tier it actually lives in.
+func (p *Pool) IsBackupProvider(providerID string) bool {
+	if p == nil {
+		return false
+	}
+	providerID = strings.TrimSpace(providerID)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for i := range p.providers {
+		if p.providers[i].ID == providerID {
+			return p.providers[i].IsBackup
+		}
+	}
+	return false
+}
+
 func (p *Pool) ProviderArticleStats() []ProviderArticleStats {
 	if p == nil || p.articleStats == nil {
 		return nil
@@ -704,9 +761,15 @@ func (p *Pool) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []
 	return v.(SegmentData), nil
 }
 
-// FetchSegmentFirst tries all providers in parallel for the first segment (e.g. segment 0).
-// It returns as soon as one provider succeeds, or the last error if all fail.
-// Call this for segment 0 to reduce latency when the article is missing on all providers.
+// FetchSegmentFirst races the primary providers for the first segment (e.g.
+// segment 0). It returns as soon as one provider succeeds, or the last error if
+// all fail, so an article missing everywhere is settled in one round trip
+// instead of a walk down the list.
+//
+// Backups sit the race out. Every racer downloads the whole article, so racing
+// a metered backup would charge it for the first segment of every file of every
+// release rather than for the ones the primaries could not deliver. They are
+// walked one at a time, in order, only once every primary has failed.
 func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, groups []string) (SegmentData, error) {
 	messageID := strings.TrimSpace(segment.ID)
 	if messageID == "" {
@@ -733,11 +796,19 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		providerIDs[i] = providers[i].ID
 	}
 
+	primaries := make([]int, 0, len(providers))
+	for i := range providers {
+		if providers[i].IsBackup {
+			continue
+		}
+		primaries = append(primaries, i)
+	}
+
 	// Skip providers in 430 cooloff: racing a provider that provably does not
 	// carry this release pays a wasted round-trip on every new volume. If every
-	// provider is cooling off, race them all anyway rather than failing.
-	eligible := make([]int, 0, len(providers))
-	for i := range providers {
+	// primary is cooling off, race them all anyway rather than failing.
+	eligible := make([]int, 0, len(primaries))
+	for _, i := range primaries {
 		if p.providerInCooloff(providers[i].ID) {
 			logger.Trace("fetch segment first: skipping provider in 430 cooloff", "provider", providers[i].ID)
 			continue
@@ -745,9 +816,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		eligible = append(eligible, i)
 	}
 	if len(eligible) == 0 {
-		for i := range providers {
-			eligible = append(eligible, i)
-		}
+		eligible = primaries
 	}
 
 	type segResult struct {
@@ -772,8 +841,6 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				return
 			}
 			host := p.Host(providerID)
-			p.activeFetches.Add(1)
-			defer p.activeFetches.Add(-1)
 
 			// Connection leak guard: if fetchCtx is cancelled (e.g. another provider succeeded
 			// or the caller gave up), discard the connection to interrupt the blocking read.
@@ -790,39 +857,8 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 				release()
 			}()
 
-			if len(groups) > 0 {
-				if err := conn.Group(groups[0]); err != nil {
-					logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
-					ch <- segResult{err: err, host: host, providerID: providerID}
-					return
-				}
-			}
-			r, err := conn.Body(messageID)
-			if err != nil {
-				logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
-				ch <- segResult{err: err, host: host, providerID: providerID}
-				return
-			}
-			cr := &countReader{Reader: r}
-			frame, err := decode.DecodeToBytes(cr)
-			// Close ensures EndResponse is called even if decode stopped before EOF.
-			r.Close()
-			// Charged whether or not the decode succeeded: the bytes crossed the wire.
-			p.recordStreamBytes(cr.n)
-			if err != nil {
-				// A failed decode leaves unread body bytes on the wire; the
-				// connection is desynced and must not go back to the pool.
-				discard()
-				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
-				ch <- segResult{err: err, host: host, providerID: providerID}
-				return
-			}
-			ch <- segResult{data: SegmentData{
-				Body:         frame.Data,
-				Size:         int64(len(frame.Data)),
-				ProviderHost: host,
-				FileName:     frame.FileName,
-			}, providerID: providerID}
+			data, err := p.fetchArticleBody(fetchCtx, conn, discard, providerID, host, messageID, groups)
+			ch <- segResult{data: data, err: err, host: host, providerID: providerID}
 		}(exclude)
 	}
 
@@ -836,14 +872,10 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		if res.err == nil {
 			p.recordArticleResult(res.providerID, true)
 			p.recordSuccess(res.providerID)
-			if !shouldCacheFetchedSegment(fetchCtx) {
+			if err := p.storeFetched(fetchCtx, messageID, res.data); err != nil {
 				cancel()
-				return SegmentData{}, fetchCtx.Err()
+				return SegmentData{}, err
 			}
-			cached := res.data
-			cached.ProviderHost = ""
-			p.cache.Set(messageID, cached)
-			p.clearKnownMissing(messageID)
 			cancel()
 			logger.Trace("fetch segment ok (parallel)", "message_id", messageID, "size", res.data.Size)
 			return res.data, nil
@@ -862,6 +894,27 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		}
 		sawNonArticleNotFound = true
 	}
+
+	// The primary tier is spent, which is the one thing a backup exists for.
+	data, tier, ok := p.fetchFromBackups(fetchCtx, messageID, groups)
+	attempted = appendUniqueHosts(attempted, tier.hosts...)
+	if ok {
+		if err := p.storeFetched(fetchCtx, messageID, data); err != nil {
+			return SegmentData{}, err
+		}
+		logger.Trace("fetch segment ok (backup)", "message_id", messageID, "size", data.Size)
+		return data, nil
+	}
+	if tier.notFoundErr != nil && articleNotFoundErr == nil {
+		articleNotFoundErr = tier.notFoundErr
+	}
+	if tier.otherErr {
+		sawNonArticleNotFound = true
+	}
+	if tier.lastErr != nil {
+		lastErr = tier.lastErr
+	}
+
 	if articleNotFoundErr != nil && !sawNonArticleNotFound {
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
@@ -869,6 +922,148 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr), attempted)
 	}
 	return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries", messageID)
+}
+
+// fetchArticleBody runs GROUP + BODY + yEnc decode on a leased connection and
+// charges the wire bytes to the stream whether or not the decode worked. A
+// failed decode leaves unread body bytes on the wire, so the connection is
+// discarded here rather than handed back; every other outcome leaves the
+// caller's release/discard bookkeeping alone.
+func (p *Pool) fetchArticleBody(ctx context.Context, conn *nntp.Client, discard func(), providerID, host, messageID string, groups []string) (SegmentData, error) {
+	p.activeFetches.Add(1)
+	defer p.activeFetches.Add(-1)
+
+	if len(groups) > 0 {
+		if err := conn.Group(groups[0]); err != nil {
+			if nntp.IsBenignDisconnect(err) || ctx.Err() != nil {
+				logger.Trace("fetch segment group cancelled", "provider", providerID, "err", err)
+			} else {
+				logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
+			}
+			return SegmentData{}, err
+		}
+	}
+
+	r, err := conn.Body(messageID)
+	if err != nil {
+		switch {
+		case isArticleNotFound(err):
+			// 430 per-provider is expected during failover; the aggregated
+			// "missing on all providers" summary is logged once by the caller.
+			logger.Trace("fetch segment body 430", "provider", providerID, "message_id", messageID)
+		case nntp.IsBenignDisconnect(err) || ctx.Err() != nil:
+			logger.Trace("fetch segment body cancelled", "provider", providerID, "err", err)
+		default:
+			logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
+		}
+		return SegmentData{}, err
+	}
+
+	cr := &countReader{Reader: r}
+	frame, err := decode.DecodeToBytes(cr)
+	// Close ensures EndResponse is called even if decode stopped before EOF.
+	r.Close()
+	// Charged whether or not the decode succeeded: the bytes crossed the wire.
+	p.recordStreamBytes(cr.n)
+	if err != nil {
+		discard()
+		logSegmentDecodeFailure(ctx, providerID, messageID, err, cr.n)
+		return SegmentData{}, err
+	}
+
+	return SegmentData{
+		Body:         frame.Data,
+		Size:         int64(len(frame.Data)),
+		ProviderHost: host,
+		FileName:     frame.FileName,
+	}, nil
+}
+
+// storeFetched caches a freshly fetched segment and clears any missing marker.
+// It reports the context's error when the fetch outlived the caller that wanted
+// it, in which case nothing is cached.
+func (p *Pool) storeFetched(ctx context.Context, messageID string, data SegmentData) error {
+	if !shouldCacheFetchedSegment(ctx) {
+		return ctx.Err()
+	}
+	cached := data
+	cached.ProviderHost = ""
+	p.cache.Set(messageID, cached)
+	p.clearKnownMissing(messageID)
+	return nil
+}
+
+// tierResult is what one walk of the backup tier saw, so the caller can fold it
+// into its own accounting: which providers answered, and whether what came back
+// was a definitive 430 or something weaker.
+type tierResult struct {
+	hosts       []string
+	providerIDs []string
+	notFoundErr error
+	lastErr     error
+	otherErr    bool
+}
+
+// fetchFromBackups walks the backup tier one provider at a time, in order, and
+// returns the first body it gets. It runs only once the primaries have had
+// their turn, so a metered account is charged for the segments they could not
+// deliver and for nothing else. A view with no backups returns immediately.
+func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []string) (SegmentData, tierResult, bool) {
+	var tier tierResult
+	if !p.HasBackupProviders() {
+		return SegmentData{}, tier, false
+	}
+
+	var exclude []string
+	for {
+		conn, release, discard, providerID, err := p.getConnection(ctx, exclude, 999, true)
+		if err != nil {
+			if !errors.Is(err, ErrNoProvidersAvailable) {
+				tier.lastErr = err
+				tier.otherErr = true
+			}
+			return SegmentData{}, tier, false
+		}
+		host := p.Host(providerID)
+		tier.hosts = appendUniqueHosts(tier.hosts, host)
+		tier.providerIDs = appendUniqueHosts(tier.providerIDs, providerID)
+		// Excluded whatever happens next: one turn per backup, no second lap.
+		exclude = append(exclude, providerID)
+
+		data, err := func() (SegmentData, error) {
+			// Interrupt pending body read if session is closed/cancelled.
+			stopWatch := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					discard()
+				case <-stopWatch:
+				}
+			}()
+			defer func() {
+				close(stopWatch)
+				release()
+			}()
+
+			return p.fetchArticleBody(ctx, conn, discard, providerID, host, messageID, groups)
+		}()
+		if err == nil {
+			p.recordArticleResult(providerID, true)
+			p.recordSuccess(providerID)
+			return data, tier, true
+		}
+
+		tier.lastErr = err
+		if isArticleNotFound(err) {
+			p.recordArticleResult(providerID, false)
+			p.record430Error(providerID)
+			if tier.notFoundErr == nil {
+				tier.notFoundErr = err
+			}
+			continue
+		}
+		tier.otherErr = true
+	}
 }
 
 func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *nzb.Segment, groups []string) (SegmentData, error) {
@@ -883,8 +1078,16 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// The retry loop walks primaries only; the backup tier gets a single ordered
+	// pass afterwards, so backups must not be counted into the rounds here or
+	// the loop keeps re-asking primaries that already answered 430.
 	p.mu.RLock()
-	providerCount := len(p.providers)
+	primaryCount := 0
+	for i := range p.providers {
+		if !p.providers[i].IsBackup {
+			primaryCount++
+		}
+	}
 	p.mu.RUnlock()
 
 	var exclude []string
@@ -893,7 +1096,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	var attemptedIDs []string
 	var articleNotFoundErr error
 	sawNonArticleNotFound := false
-	maxAttempts := providerCount
+	maxAttempts := primaryCount
 	if maxAttempts < 3 {
 		maxAttempts = 3
 	}
@@ -901,22 +1104,27 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		conn, release, discard, providerID, err := p.getConnection(fetchCtx, exclude, 999, false)
 		if err != nil {
 			if errors.Is(err, ErrNoProvidersAvailable) && len(exclude) > 0 {
-				if articleNotFoundErr != nil && !sawNonArticleNotFound && providerCount > 0 && len(exclude) >= providerCount {
+				if articleNotFoundErr != nil && !sawNonArticleNotFound && primaryCount > 0 && len(exclude) >= primaryCount {
 					break
 				}
 				exclude = nil
 				continue
 			}
-			return SegmentData{}, err
+			// Nothing in the primary tier can serve. The backup pass below is
+			// the last word on whether this segment is reachable at all; carry
+			// the reason so a pool that handed out nothing still says so rather
+			// than reporting a bare "failed after retries".
+			if !errors.Is(err, ErrNoProvidersAvailable) {
+				return SegmentData{}, err
+			}
+			lastErr = err
+			break
 		}
 		host := p.Host(providerID)
 		attempted = appendUniqueHosts(attempted, host)
 		attemptedIDs = appendUniqueHosts(attemptedIDs, providerID)
 
-		data, articleNotFound, err := func() (SegmentData, bool, error) {
-			p.activeFetches.Add(1)
-			defer p.activeFetches.Add(-1)
-
+		data, err := func() (SegmentData, error) {
 			// Interrupt pending body read if session is closed/cancelled.
 			stopWatch := make(chan struct{})
 			go func() {
@@ -931,54 +1139,11 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 				release()
 			}()
 
-			if len(groups) > 0 {
-				if err := conn.Group(groups[0]); err != nil {
-					if nntp.IsBenignDisconnect(err) || fetchCtx.Err() != nil {
-						logger.Trace("fetch segment group cancelled", "provider", providerID, "err", err)
-					} else {
-						logger.Debug("fetch segment group failed", "provider", providerID, "err", err)
-					}
-					return SegmentData{}, false, err
-				}
-			}
-
-			r, err := conn.Body(messageID)
-			if err != nil {
-				switch {
-				case isArticleNotFound(err):
-					// 430 per-provider is expected during failover; the aggregated
-					// "missing on all providers" summary is logged once by the caller.
-					logger.Trace("fetch segment body 430", "provider", providerID, "message_id", messageID)
-				case nntp.IsBenignDisconnect(err) || fetchCtx.Err() != nil:
-					logger.Trace("fetch segment body cancelled", "provider", providerID, "err", err)
-				default:
-					logger.Debug("fetch segment body failed", "provider", providerID, "err", err)
-				}
-				return SegmentData{}, isArticleNotFound(err), err
-			}
-
-			cr := &countReader{Reader: r}
-			frame, err := decode.DecodeToBytes(cr)
-			// Close ensures EndResponse is called even if decode stopped before EOF.
-			r.Close()
-			// Charged whether or not the decode succeeded: the bytes crossed the wire.
-			p.recordStreamBytes(cr.n)
-			if err != nil {
-				discard()
-				logSegmentDecodeFailure(fetchCtx, providerID, messageID, err, cr.n)
-				return SegmentData{}, false, err
-			}
-
-			return SegmentData{
-				Body:         frame.Data,
-				Size:         int64(len(frame.Data)),
-				ProviderHost: host,
-				FileName:     frame.FileName,
-			}, false, nil
+			return p.fetchArticleBody(fetchCtx, conn, discard, providerID, host, messageID, groups)
 		}()
 		if err != nil {
 			lastErr = err
-			if articleNotFound {
+			if isArticleNotFound(err) {
 				p.recordArticleResult(providerID, false)
 				p.record430Error(providerID)
 				if articleNotFoundErr == nil {
@@ -993,15 +1158,32 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		p.recordArticleResult(providerID, true)
 		p.recordSuccess(providerID)
 
-		if !shouldCacheFetchedSegment(fetchCtx) {
-			return SegmentData{}, fetchCtx.Err()
+		if err := p.storeFetched(fetchCtx, messageID, data); err != nil {
+			return SegmentData{}, err
 		}
-		cached := data
-		cached.ProviderHost = ""
-		p.cache.Set(messageID, cached)
-		p.clearKnownMissing(messageID)
 		logger.Trace("fetch segment ok", "message_id", messageID, "size", data.Size)
 		return data, nil
+	}
+
+	// The primary tier is spent, which is the one thing a backup exists for.
+	data, tier, ok := p.fetchFromBackups(fetchCtx, messageID, groups)
+	attempted = appendUniqueHosts(attempted, tier.hosts...)
+	attemptedIDs = appendUniqueHosts(attemptedIDs, tier.providerIDs...)
+	if ok {
+		if err := p.storeFetched(fetchCtx, messageID, data); err != nil {
+			return SegmentData{}, err
+		}
+		logger.Trace("fetch segment ok (backup)", "message_id", messageID, "size", data.Size)
+		return data, nil
+	}
+	if tier.notFoundErr != nil && articleNotFoundErr == nil {
+		articleNotFoundErr = tier.notFoundErr
+	}
+	if tier.otherErr {
+		sawNonArticleNotFound = true
+	}
+	if tier.lastErr != nil {
+		lastErr = tier.lastErr
 	}
 
 	if articleNotFoundErr != nil && !sawNonArticleNotFound {
@@ -1063,8 +1245,13 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 				exclude = append(exclude, providerIDs[j])
 			}
 		}
+		// STAT costs a connection and no bytes, so the backup tier answers here
+		// on the same terms as any other provider: knowing whether it carries
+		// the article is exactly what makes it usable as a fallback, and what
+		// lets a unanimous 430 be cached.
+		useBackup := providers[i].IsBackup
 		go func(exclude []string) {
-			conn, release, discard, providerID, getErr := p.getConnection(statCtx, exclude, 999, false)
+			conn, release, discard, providerID, getErr := p.getConnection(statCtx, exclude, 999, useBackup)
 			if getErr != nil {
 				ch <- statResult{err: getErr}
 				return
@@ -1492,6 +1679,10 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 	if len(subset) == 0 {
 		return nil
 	}
+	// A stream may select only what the parent holds back for failover. That
+	// view has no tier above it, so the flag is dropped rather than leaving the
+	// stream with nothing it is allowed to fetch from.
+	normalizeBackupTier(subset)
 
 	return &Pool{
 		providers:            subset,

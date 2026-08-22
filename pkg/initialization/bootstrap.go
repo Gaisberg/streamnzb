@@ -281,6 +281,18 @@ func BuildProviderPools(cfg, prevCfg *config.Config, prevPools map[string]*nntp.
 // providerConnEqual reports whether two provider entries dial the same
 // upstream identically. Priority and Enabled are excluded: they affect
 // ordering and membership, not the established connections.
+// countBackups reports how many of the built provider configs are held back for
+// failover.
+func countBackups(providers []pool.ProviderConfig) int {
+	n := 0
+	for i := range providers {
+		if providers[i].IsBackup {
+			n++
+		}
+	}
+	return n
+}
+
 func providerConnEqual(a, b config.Provider) bool {
 	return a.Host == b.Host &&
 		a.Port == b.Port &&
@@ -338,6 +350,9 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 	// Pipeline depth follows the round-trip time to one particular server, so it
 	// is carried per provider rather than folded into the shared pool default.
 	providerDepths := make(map[string]int, len(providers))
+	// Backup providers are held back for failover, so the pool needs to know
+	// which ones they are before it hands out a single connection.
+	providerBackups := make(map[string]bool, len(providers))
 	for _, provider := range providers {
 		poolName := provider.Name
 		if poolName == "" {
@@ -345,6 +360,9 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 		}
 		if provider.PipelineDepth != nil {
 			providerDepths[poolName] = *provider.PipelineDepth
+		}
+		if provider.Backup != nil && *provider.Backup {
+			providerBackups[poolName] = true
 		}
 
 		if prev, ok := prevByName[poolName]; ok && providerConnEqual(prev, provider) {
@@ -410,10 +428,15 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 			providerConfigs = append(providerConfigs, pool.ProviderConfig{
 				ID:            name,
 				Priority:      i,
-				IsBackup:      false,
+				IsBackup:      providerBackups[name],
 				ClientPool:    cp,
 				PipelineDepth: providerDepths[name],
 			})
+		}
+		if backups := countBackups(providerConfigs); backups > 0 && backups == len(providerConfigs) {
+			// The pool drops the flag in this case; say so once here rather
+			// than leaving the operator to wonder why nothing is held back.
+			logger.Warn("Every enabled provider is marked backup — treating them all as primaries", "providers", backups)
 		}
 		if len(providerConfigs) > 0 {
 			var err error

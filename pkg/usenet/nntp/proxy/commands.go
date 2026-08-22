@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -152,9 +153,16 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 
 	var exclude []string
 	reached := false
+	// Primaries first, then the backup tier: a backup is paid for by the byte,
+	// so it answers only what the primaries could not.
+	useBackup := false
 	for s.usenet != nil {
-		client, release, discard, pid, err := s.usenet.GetConnection(ctx, exclude, 999, false)
+		client, release, discard, pid, err := s.usenet.GetConnection(ctx, exclude, 999, useBackup)
 		if err != nil {
+			if !useBackup && errors.Is(err, pool.ErrNoProvidersAvailable) && s.usenet.HasBackupProviders() {
+				useBackup = true
+				continue
+			}
 			logger.Debug("NNTP proxy: GetConnection failed", "err", err)
 			if !reached {
 				// No provider was ever reached — the pool is saturated or every

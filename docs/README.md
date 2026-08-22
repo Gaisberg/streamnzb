@@ -7,6 +7,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Configuration](configuration.md) — startup flags, data directory, and the full environment variable reference
 - [Database backends](database.md) — SQLite (default), Postgres, and switching between them
 - [Remote access](remote-access.md) — VPN and reverse proxy setups for streaming away from home
+- [Providers](providers.md) — priority, failover, and holding a metered account back as a backup
 - [Provider speed test](speed-test.md) — measuring provider throughput and finding the right connection count
 - [Easynews advanced search](easynews.md) — server-side filtering options for Easynews indexers
 

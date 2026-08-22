@@ -862,11 +862,13 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 }
 
 // TestCopyEnvOverridesFromDeepCopiesProviders guards against the two configs
-// sharing Priority/Enabled pointer storage after a copy.
+// sharing Priority/Enabled/Backup/PipelineDepth pointer storage after a copy.
 func TestCopyEnvOverridesFromDeepCopiesProviders(t *testing.T) {
 	pri := 3
 	on := true
-	src := &Config{Providers: []Provider{{Name: "p", Priority: &pri, Enabled: &on}}}
+	backup := true
+	depth := 4
+	src := &Config{Providers: []Provider{{Name: "p", Priority: &pri, Enabled: &on, Backup: &backup, PipelineDepth: &depth}}}
 	dst := &Config{}
 	copyEnvKeys(dst, src, []string{env.KeyProviders})
 
@@ -878,6 +880,18 @@ func TestCopyEnvOverridesFromDeepCopiesProviders(t *testing.T) {
 	}
 	if dst.Providers[0].Enabled == src.Providers[0].Enabled {
 		t.Error("Enabled pointer is shared between configs")
+	}
+	if dst.Providers[0].Backup == nil || *dst.Providers[0].Backup != true {
+		t.Errorf("Backup not copied: %#v", dst.Providers[0].Backup)
+	}
+	if dst.Providers[0].Backup == src.Providers[0].Backup {
+		t.Error("Backup pointer is shared between configs")
+	}
+	if dst.Providers[0].PipelineDepth == nil || *dst.Providers[0].PipelineDepth != depth {
+		t.Errorf("PipelineDepth not copied: %#v", dst.Providers[0].PipelineDepth)
+	}
+	if dst.Providers[0].PipelineDepth == src.Providers[0].PipelineDepth {
+		t.Error("PipelineDepth pointer is shared between configs")
 	}
 }
 

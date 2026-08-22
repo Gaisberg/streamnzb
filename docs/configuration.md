@@ -115,6 +115,7 @@ For provisioned deployments, up to 10 providers and 10 indexers can be defined e
 | `PROVIDER_<n>_USERNAME`, `PROVIDER_<n>_PASSWORD` | Credentials |
 | `PROVIDER_<n>_CONNECTIONS` | Connection count (default 10) |
 | `PROVIDER_<n>_SSL` | Use SSL (default true) |
+| `PROVIDER_<n>_BACKUP` | Hold this provider back for failover only (default false). See [Providers](providers.md#backup-only) |
 | `PROVIDER_<n>_PIPELINE_DEPTH` | Articles per request for this provider; unset inherits the default, `1` switches pipelining off. See [Article pipelining](speed-test.md#article-pipelining) |
 | `PROVIDER_<n>_NAME`, `PROVIDER_<n>_PRIORITY`, `PROVIDER_<n>_ENABLED` | Optional display name, priority (default `<n>`), enabled flag |
 | `INDEXER_<n>_URL` | Newznab indexer URL (required) |

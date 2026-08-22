@@ -298,6 +298,7 @@ type Provider struct {
 	UseSSL        bool
 	Priority      *int
 	Enabled       *bool
+	Backup        *bool
 	PipelineDepth *int
 }
 
@@ -426,6 +427,7 @@ func readProvidersFromEnv() []Provider {
 		}
 		priority := getEnvInt(prefix+"PRIORITY", i)
 		enabled := getEnvBool(prefix+"ENABLED", true)
+		backup := getEnvBool(prefix+"BACKUP", false)
 		// Absent leaves the provider on the deployment default rather than
 		// pinning it to a number the operator never chose.
 		var pipelineDepth *int
@@ -442,6 +444,7 @@ func readProvidersFromEnv() []Provider {
 			UseSSL:        getEnvBool(prefix+"SSL", true),
 			Priority:      &priority,
 			Enabled:       &enabled,
+			Backup:        &backup,
 			PipelineDepth: pipelineDepth,
 		})
 	}

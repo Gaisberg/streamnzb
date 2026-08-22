@@ -70,6 +70,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Configuration](docs/configuration.md) — startup flags, data directory, and the full environment variable reference
 - [Database backends](docs/database.md) — SQLite (default), Postgres, and switching between them
 - [Remote access](docs/remote-access.md) — VPN and reverse proxy setups for streaming away from home
+- [Providers](docs/providers.md) — priority, failover, and holding a metered account back as a backup
 - [Provider speed test](docs/speed-test.md) — measuring provider throughput and finding the right connection count
 - [Easynews advanced search](docs/easynews.md) — server-side filtering options for Easynews indexers
 - [Metadata & catalogs](docs/metadata.md) — StreamNZB as a full Stremio metadata provider

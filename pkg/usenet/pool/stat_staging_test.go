@@ -10,10 +10,12 @@ import (
 	"streamnzb/pkg/usenet/nntp"
 )
 
-// countingNNTPServer answers STAT and reports how many it saw, so a test can
-// tell which providers were actually consulted.
+// countingNNTPServer answers STAT and BODY and reports how many of each it saw,
+// so a test can tell which providers were actually consulted and which ones
+// were charged for an article.
 type countingNNTPServer struct {
 	stats      atomic.Int64
+	bodies     atomic.Int64
 	allMissing bool
 }
 
@@ -49,6 +51,13 @@ func startCountingNNTPServer(t *testing.T, allMissing bool) (*countingNNTPServer
 						_, _ = c.Write([]byte("281 Authentication accepted\r\n"))
 					case strings.HasPrefix(cmd, "GROUP"):
 						_, _ = c.Write([]byte("211 group selected\r\n"))
+					case strings.HasPrefix(cmd, "BODY"):
+						srv.bodies.Add(1)
+						if srv.allMissing {
+							_, _ = c.Write([]byte("430 No Such Article\r\n"))
+						} else {
+							_, _ = c.Write([]byte("222 Body follows\r\n=ybegin size=10 line=128 name=test\r\ndata\r\n=yend size=10\r\n.\r\n"))
+						}
 					case strings.HasPrefix(cmd, "STAT"):
 						srv.stats.Add(1)
 						if srv.allMissing {

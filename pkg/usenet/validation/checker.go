@@ -78,7 +78,7 @@ func (c *Checker) ValidateNZBSingleProviderForEpisode(ctx context.Context, nzbDa
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("usenet pool not configured")}
 	}
 	exclude := excludeProvider(up.ProviderOrder(), providerName)
-	client, release, _, _, err := up.GetConnection(ctx, exclude, 999, false)
+	client, release, _, _, err := up.GetConnection(ctx, exclude, 999, up.IsBackupProvider(providerName))
 	if err != nil {
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("get connection: %w", err)}
 	}
@@ -99,7 +99,7 @@ func (c *Checker) ValidateNZBSingleProviderExtendedForEpisode(ctx context.Contex
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("usenet pool not configured")}
 	}
 	exclude := excludeProvider(up.ProviderOrder(), providerName)
-	client, release, discard, _, err := up.GetConnection(ctx, exclude, 999, false)
+	client, release, discard, _, err := up.GetConnection(ctx, exclude, 999, up.IsBackupProvider(providerName))
 	if err != nil {
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("get connection: %w", err)}
 	}
@@ -141,7 +141,7 @@ func (c *Checker) ValidateNZBForEpisode(ctx context.Context, nzbData *nzb.NZB, s
 		go func(name string) {
 			defer wg.Done()
 			exclude := excludeProvider(providerOrder, name)
-			client, release, discard, _, err := up.GetConnection(ctx, exclude, 999, false)
+			client, release, discard, _, err := up.GetConnection(ctx, exclude, 999, up.IsBackupProvider(providerName))
 			if err != nil {
 				mu.Lock()
 				results[name] = &ValidationResult{Provider: name, Error: err}
