@@ -304,17 +304,29 @@ func (p *Profile) ApplyWithRejected(req Request, candidates []triage.Candidate, 
 	return kept, rejected
 }
 
+// capBucket identifies one counter. A cap that groups keeps its count per
+// bucket rather than across the whole set, so the rule alone no longer says
+// what a release is competing with.
+type capBucket struct {
+	rule  string
+	group string
+}
+
 // applyCaps walks the sorted list and drops what falls past a limit rule's
 // count. Rules are counted independently, and a release already dropped by one
 // cap does not count against another — it is gone, so it is not taking a slot.
+//
+// A grouped cap counts per bucket, which is the whole of what grouping does:
+// the walk is still one pass in score order, so each bucket keeps its own best
+// Count for the same reason an ungrouped cap keeps the set's.
 func applyCaps(sorted []Result) (kept, dropped []Result) {
-	seen := map[string]int{}
+	seen := map[capBucket]int{}
 	kept = sorted[:0]
 	for _, r := range sorted {
 		over := ""
 		for _, limit := range r.limits {
-			if seen[limit.Name] >= limit.Count {
-				over = fmt.Sprintf("%s%s (over the limit of %d)", diag.RuleRejectionPrefix, limit.Name, limit.Count)
+			if seen[capBucketOf(limit)] >= limit.Count {
+				over = capRejection(limit)
 				break
 			}
 		}
@@ -326,11 +338,25 @@ func applyCaps(sorted []Result) (kept, dropped []Result) {
 			continue
 		}
 		for _, limit := range r.limits {
-			seen[limit.Name]++
+			seen[capBucketOf(limit)]++
 		}
 		kept = append(kept, r)
 	}
 	return kept, dropped
+}
+
+func capBucketOf(limit rules.LimitMatch) capBucket {
+	return capBucket{rule: limit.Name, group: limit.Group}
+}
+
+// capRejection phrases why a cap turned a release away. A grouped cap names
+// its bucket, because "over the limit of 3" on a rule that kept nine releases
+// across three resolutions reads as a contradiction without it.
+func capRejection(limit rules.LimitMatch) string {
+	if limit.Group == "" {
+		return fmt.Sprintf("%s%s (over the limit of %d)", diag.RuleRejectionPrefix, limit.Name, limit.Count)
+	}
+	return fmt.Sprintf("%s%s (over the limit of %d for %s)", diag.RuleRejectionPrefix, limit.Name, limit.Count, limit.Group)
 }
 
 // applyLibraryBonus lifts releases already in the library so proven-playable
@@ -504,11 +530,21 @@ type Explanation struct {
 	// not it survived them. A cap that matched five releases and dropped two
 	// did something; reporting only the drops would make a cap with room to
 	// spare look like a rule that never fires.
-	Limited []string `json:"limited,omitempty"`
+	Limited []LimitedRule `json:"limited,omitempty"`
 	// SkippedRules are rules that could not be judged from a title alone,
 	// each with the reason. A bench that silently omitted them would make a
 	// rule reading probed.* or avail.* look broken.
 	SkippedRules []string `json:"skipped_rules,omitempty"`
+}
+
+// LimitedRule is one cap a previewed release counts against, and the bucket it
+// counts in. The bucket travels because how many of a cap's matches survive is
+// a question per bucket: twelve releases under a cap of three keep three, or
+// nine, depending on how they group.
+type LimitedRule struct {
+	Name string `json:"name"`
+	// Group is empty for a cap that does not group, which is one bucket.
+	Group string `json:"group,omitempty"`
 }
 
 // Explain runs a set of release names through the whole profile and reports
@@ -588,7 +624,7 @@ func (p *Profile) explainResult(r *Result) *Explanation {
 		Matched:       r.Matched,
 	}
 	for _, limit := range r.limits {
-		out.Limited = append(out.Limited, limit.Name)
+		out.Limited = append(out.Limited, LimitedRule{Name: limit.Name, Group: limit.Group})
 	}
 	for _, m := range r.Matched {
 		out.Contributions = append(out.Contributions, rank.Contribution{Source: "rule:" + m.Name, Rank: m.Score})

@@ -80,30 +80,38 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
   const ruleStats = useMemo(() => {
     const stats = {}
     if (!results) return stats
+    // A cap counts per bucket, so the buckets are tallied separately rather
+    // than only in total: twelve releases under a cap of three keep three or
+    // nine depending on how they group, and "12 match, 3 kept" would be a
+    // plain lie about a grouped one.
+    const statFor = (name) => {
+      stats[name] = stats[name] || { matched: 0, skipped: 0, rejected: 0, limited: 0, limitedGroups: {} }
+      return stats[name]
+    }
     results.forEach((result) => {
       (result.matched || []).forEach((m) => {
-        stats[m.name] = stats[m.name] || { matched: 0, skipped: 0, rejected: 0, limited: 0 }
-        stats[m.name].matched += 1
+        statFor(m.name).matched += 1
       })
       ;(result.skipped_rules || []).forEach((note) => {
-        const name = note.split(":")[0]
-        stats[name] = stats[name] || { matched: 0, skipped: 0, rejected: 0, limited: 0 }
-        stats[name].skipped += 1
+        statFor(note.split(":")[0]).skipped += 1
       })
-      ;(result.limited || []).forEach((name) => {
-        stats[name] = stats[name] || { matched: 0, skipped: 0, rejected: 0, limited: 0 }
-        stats[name].limited += 1
+      ;(result.limited || []).forEach((entry) => {
+        if (!entry?.name) return
+        const stat = statFor(entry.name)
+        stat.limited += 1
+        const group = entry.group || ""
+        stat.limitedGroups[group] = (stat.limitedGroups[group] || 0) + 1
       })
       ;(result.rejections || []).forEach((reason) => {
         if (!reason.startsWith("rule: ")) return
-        // A cap reads "rule: <name> (over the limit of 3)".
+        // A cap reads "rule: <name> (over the limit of 3)", or
+        // "... (over the limit of 3 for 2160p)" when it groups.
         const body = reason.slice(6)
-        const capped = body.match(/^(.*) \(over the limit of \d+\)$/)
+        const capped = body.match(/^(.*) \(over the limit of \d+(?: for [\s\S]*)?\)$/)
         // A capped release is already counted under `limited`, which covers
         // everything falling under the cap rather than only what it dropped.
         if (capped) return
-        stats[body] = stats[body] || { matched: 0, skipped: 0, rejected: 0, limited: 0 }
-        stats[body].rejected += 1
+        statFor(body).rejected += 1
       })
     })
     return stats

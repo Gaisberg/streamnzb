@@ -237,6 +237,163 @@ func TestLimitRuleKeepsTheBest(t *testing.T) {
 	}
 }
 
+// The point of grouping: one cap standing in for the run of near-identical
+// rules a user would otherwise write, one per resolution.
+func TestGroupedLimitCapsEachBucket(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Per resolution",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{
+				Name:    "Two per resolution",
+				When:    "true",
+				Action:  config.RuleActionLimit,
+				Count:   2,
+				GroupBy: "resolution",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEB-DL H265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEBRip x265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p BluRay REMUX-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 720p WEB-DL H264-GRP"}},
+	}
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+
+	byResolution := map[string]int{}
+	for _, r := range kept {
+		byResolution[string(r.Torrent.Resolution())]++
+	}
+	// Two of the three 4K, both 1080p, the single 720p: each bucket capped on
+	// its own rather than the six competing for two slots between them.
+	if byResolution["2160p"] != 2 || byResolution["1080p"] != 2 || byResolution["720p"] != 1 {
+		t.Errorf("kept %v, want two 2160p, two 1080p and one 720p", byResolution)
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("rejected %d, want 1", len(rejected))
+	}
+	// The bucket is named, because "over the limit of 2" on a rule that kept
+	// five releases reads as a contradiction on its own.
+	reason := strings.Join(rejected[0].Torrent.Rejections, " ")
+	if !strings.Contains(reason, "over the limit of 2 for 2160p") {
+		t.Errorf("rejection %q does not name the bucket it was over", reason)
+	}
+}
+
+// Each bucket keeps its own best, for the same reason an ungrouped cap keeps
+// the set's: the cap walks the list already in final score order.
+func TestGroupedLimitKeepsTheBestOfEachBucket(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Best per resolution",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{
+				Name:    "One per resolution",
+				When:    "true",
+				Action:  config.RuleActionLimit,
+				Count:   1,
+				GroupBy: "resolution",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// In both buckets the remux is last in the input and scores highest.
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p WEBRip x265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p WEBRip x264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p BluRay REMUX-GRP"}},
+	}
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+
+	if len(kept) != 2 {
+		t.Fatalf("kept %d, want 2", len(kept))
+	}
+	for _, r := range kept {
+		if !strings.Contains(r.Candidate.Release.Title, "REMUX") {
+			t.Errorf("kept %q, want the remux of its bucket", r.Candidate.Release.Title)
+		}
+	}
+}
+
+// Grouping by more than one attribute is what saves the user from writing a
+// rule per combination: top N 2160p Remux, top N 2160p WEB-DL, and so on.
+func TestGroupedLimitCombinesAttributes(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Per resolution and quality",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{
+				Name:    "One per resolution and quality",
+				When:    "true",
+				Action:  config.RuleActionLimit,
+				Count:   1,
+				GroupBy: `resolution + " " + quality`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-OTHER"}},
+		{Release: &release.Release{Title: "Movie 2020 2160p WEB-DL H265-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p BluRay REMUX-GRP"}},
+	}
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+
+	// Three buckets: 2160p remux, 2160p web-dl, 1080p remux. Only the two
+	// 2160p remuxes share one.
+	if len(kept) != 3 {
+		t.Errorf("kept %d, want 3 — one per resolution-and-quality bucket", len(kept))
+	}
+}
+
+// An ungrouped cap is the same rule with one bucket, so nothing a user already
+// has changes behaviour.
+func TestUngroupedLimitStillCapsTheWholeSet(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Ungrouped",
+		Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{
+			{Name: "Two in total", When: "true", Action: config.RuleActionLimit, Count: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []triage.Candidate{
+		{Release: &release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}},
+		{Release: &release.Release{Title: "Movie 2020 720p WEB-DL H264-GRP"}},
+	}
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, cands, rank.RankOptions{})
+	if len(kept) != 2 {
+		t.Errorf("kept %d, want 2", len(kept))
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("rejected %d, want 1", len(rejected))
+	}
+	// No bucket to name, so the wording is the one it has always been.
+	reason := strings.Join(rejected[0].Torrent.Rejections, " ")
+	if !strings.HasSuffix(reason, "over the limit of 2)") {
+		t.Errorf("rejection %q should not name a bucket", reason)
+	}
+}
+
 // A limit rule with no count is a rule that would silently drop everything, so
 // it fails the profile instead.
 func TestLimitRuleNeedsACount(t *testing.T) {

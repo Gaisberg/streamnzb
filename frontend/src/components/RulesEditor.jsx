@@ -7,8 +7,8 @@ import { Hint, NumberField, ScoreInput, SettingBlock, SettingGroup } from "@/com
 import { ConfidenceChip } from "@/components/ConfidenceChip"
 import { Check, ChevronDown, Copy, Plus, SkipForward, Trash2, TriangleAlert } from "lucide-react"
 import {
-  DEFAULT_LIMIT_COUNT, RULE_ACTIONS, RULE_ATTRIBUTES, RULE_PRESETS, RULE_SCOPES,
-  formatScore, ruleAction, rulesFromText, rulesToText,
+  DEFAULT_LIMIT_COUNT, RULE_ACTIONS, RULE_ATTRIBUTES, RULE_GROUP_BY_PRESETS, RULE_PRESETS, RULE_SCOPES,
+  formatScore, ruleAction, ruleGroupBy, rulesFromText, rulesToText,
 } from "@/lib/profiles"
 import { cn, selectClass } from "@/lib/utils"
 
@@ -66,6 +66,17 @@ const SKIP_NOTE = {
   // result. It is the preview that cannot answer it, and saying so is the
   // difference between "my rule is broken" and "my rule is untestable here".
   reported: "Reads size, age or grabs, which come from the NZB. Runs on every real result, but the preview below cannot judge it from a release name alone.",
+}
+
+// The grouping menu offers the handful worth a menu; anything else is written
+// as an expression, which is what grouping is underneath. CUSTOM_GROUP_BY is
+// the menu entry that reveals the field rather than a value a rule can carry:
+// it never reaches a rule, and no grouping can collide with it, because a
+// grouping is an expression and this is not one.
+const CUSTOM_GROUP_BY = "__custom__"
+
+function isCustomGroupBy(groupBy) {
+  return !!groupBy && !RULE_GROUP_BY_PRESETS.some((preset) => preset.key === groupBy)
 }
 
 // AttributeReference is the rules counterpart to the formatter's field list:
@@ -162,12 +173,17 @@ function RuleStat({ stat, sampleCount, action, count }) {
 
   // A cap is about how many releases fall under it, not how many it paid out
   // on: "4 match, 3 kept" is the thing you need to see to know it is working.
+  // A grouped cap keeps its count per bucket, so the buckets are counted one
+  // at a time — summing them first would report a cap of three as keeping
+  // three when it is keeping nine.
   if (action === "limit") {
     const under = stat?.limited || 0
     if (under === 0) {
       return <span className="text-[11px] text-muted-foreground">nothing falls under this</span>
     }
-    const kept = Math.min(under, count || 0)
+    const buckets = Object.values(stat?.limitedGroups || {})
+    const perBucket = buckets.length ? buckets : [under]
+    const kept = perBucket.reduce((total, inBucket) => total + Math.min(inBucket, count || 0), 0)
     return (
       <span className={cn(
         "flex items-center gap-1 text-[11px]",
@@ -175,6 +191,7 @@ function RuleStat({ stat, sampleCount, action, count }) {
       )}>
         <Check className="h-3 w-3" />
         {under} match, {kept} kept
+        {perBucket.length > 1 && ` across ${perBucket.length} groups`}
       </span>
     )
   }
@@ -197,8 +214,15 @@ function RuleStat({ stat, sampleCount, action, count }) {
 function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, registerInput }) {
   const action = ruleAction(rule)
   const enabled = rule.enabled !== false
-  const tier = tierOf(rule.when)
+  const groupBy = ruleGroupBy(rule)
+  // The grouping is judged alongside the condition, so a cap grouped by a
+  // probed attribute is as measured-only as one that tests it.
+  const tier = tierOf(`${rule.when || ""} ${groupBy}`)
   const skipNote = SKIP_NOTE[tier]
+  // The menu shows the field rather than a value, so whether it is open is
+  // state: a grouping the user has cleared back to empty should keep the box
+  // they were typing in.
+  const [customGroup, setCustomGroup] = useState(() => isCustomGroupBy(groupBy))
 
   // A rule with no condition yet is one just added, and it opens: everything
   // else stays folded, because a list of twenty is easier to move around when
@@ -246,9 +270,12 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
           value={action}
           onChange={(e) => {
             const next = e.target.value
+            // A grouping is only meaningful on a cap — the server refuses it
+            // elsewhere — so it goes when the action does.
             patch({
               action: next === "score" ? undefined : next,
               count: next === "limit" ? (rule.count || DEFAULT_LIMIT_COUNT) : undefined,
+              group_by: next === "limit" ? rule.group_by : undefined,
             })
           }}
           aria-label="Action"
@@ -279,6 +306,27 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
               className="h-8 w-16"
               aria-label="How many to keep"
             />
+            per
+            <select
+              className={cn(selectClass, "h-8 w-auto py-1 text-xs")}
+              value={customGroup ? CUSTOM_GROUP_BY : groupBy}
+              onChange={(e) => {
+                const next = e.target.value
+                if (next === CUSTOM_GROUP_BY) {
+                  // Nothing to patch yet: the rule keeps whatever grouping it
+                  // had until something is typed into the field this opens.
+                  setCustomGroup(true)
+                  setOpen(true)
+                  return
+                }
+                setCustomGroup(false)
+                patch({ group_by: next || undefined })
+              }}
+              aria-label="Group the cap by"
+            >
+              {RULE_GROUP_BY_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value={CUSTOM_GROUP_BY}>Custom expression…</option>
+            </select>
           </span>
         )}
         <button
@@ -323,10 +371,25 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
             className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label="Condition"
           />
+          {action === "limit" && customGroup && (
+            <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="whitespace-nowrap">Group by</span>
+              <Input
+                value={rule.group_by || ""}
+                onChange={(e) => patch({ group_by: e.target.value || undefined })}
+                placeholder={'resolution + " " + quality'}
+                spellCheck={false}
+                className="h-8 flex-1 font-mono text-xs"
+                aria-label="Group the cap by"
+              />
+            </label>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[11px] text-muted-foreground">
               {action === "limit"
-                ? `Of the releases matching this, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} are offered and the rest are dropped.`
+                ? groupBy
+                  ? `For each value of ${groupBy}, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} of the matching releases are offered and the rest are dropped.`
+                  : `Of the releases matching this, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} are offered and the rest are dropped.`
                 : skipNote}
             </p>
             <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />

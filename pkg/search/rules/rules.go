@@ -24,6 +24,9 @@ type Rule struct {
 	Count int
 
 	program *vm.Program
+	// groupProgram splits a limit rule's cap into buckets. Nil caps the
+	// matching releases as one set.
+	groupProgram *vm.Program
 	// needsProbe, needsAvail, needsIndexer and needsSeadex record that the
 	// condition reads a tier the release may not have. Such a rule is skipped
 	// rather than evaluated against zero values — see Evaluate.
@@ -148,6 +151,15 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
+		groupProgram, groupTiers, err := compileGroupBy(rc)
+		if err != nil {
+			return nil, &Error{Rule: name, Err: err}
+		}
+		// A grouped cap is judged by its condition and its grouping together,
+		// so it reads whichever tiers either half touches: grouping by
+		// probed.height has to skip an unprobed release for the same reason a
+		// condition reading it does.
+		tiers = tiers.merge(groupTiers)
 		set.rules = append(set.rules, Rule{
 			Name:         name,
 			Scope:        rc.EffectiveScope(),
@@ -155,6 +167,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 			Points:       rc.Points,
 			Count:        rc.Count,
 			program:      program,
+			groupProgram: groupProgram,
 			needsProbe:   tiers.probe,
 			needsAvail:   tiers.avail,
 			needsIndexer: tiers.indexer,
@@ -166,6 +179,40 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		return nil, nil
 	}
 	return set, nil
+}
+
+// compileGroupBy compiles a limit rule's grouping expression and reports which
+// attribute tiers it reads. A rule without one groups nothing and compiles to
+// nil, which is every rule written before grouping existed.
+//
+// The expression is not required to yield any particular type — resolution is
+// a string, year an int, hdr a list — because what a bucket needs is an
+// identity, not a value, and every type has one once it is written out. It is
+// checked against the same environment a condition sees, so a grouping naming
+// an attribute that does not exist is caught at save time rather than turning
+// every release into its own bucket at search time.
+//
+// Grouping is refused on anything but a limit rule. There is nothing sensible
+// for a score or reject rule to do with it, and accepting it silently would
+// leave a user who set it on the wrong rule looking at a cap that never
+// buckets, with nothing anywhere saying why.
+func compileGroupBy(rc config.RuleConfig) (*vm.Program, tierUse, error) {
+	groupBy := strings.TrimSpace(rc.GroupBy)
+	if groupBy == "" {
+		return nil, tierUse{}, nil
+	}
+	if rc.EffectiveAction() != config.RuleActionLimit {
+		return nil, tierUse{}, fmt.Errorf("only a limit rule can group by %s", groupBy)
+	}
+	program, err := expr.Compile(groupBy, expr.Env(Env{}))
+	if err != nil {
+		return nil, tierUse{}, fmt.Errorf("group by: %w", err)
+	}
+	tiers, err := tiersUsed(groupBy)
+	if err != nil {
+		return nil, tierUse{}, fmt.Errorf("group by: %w", err)
+	}
+	return program, tiers, nil
 }
 
 // Outcome is what a set's rules did to one release.
@@ -193,6 +240,11 @@ type Outcome struct {
 type LimitMatch struct {
 	Name  string
 	Count int
+	// Group is the bucket the release falls in, for a cap that groups. Count
+	// is kept per bucket, so two releases counting against the same rule with
+	// different groups are not competing. Empty for an ungrouped cap, which
+	// puts every match in one bucket.
+	Group string
 }
 
 // Evaluate runs the rules that apply to this content kind.
@@ -260,13 +312,42 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 		case config.RuleActionReject:
 			out.Rejections = append(out.Rejections, diag.RuleRejectionPrefix+r.Name)
 		case config.RuleActionLimit:
-			out.Limits = append(out.Limits, LimitMatch{Name: r.Name, Count: r.Count})
+			group, ok := r.groupOf(env)
+			if !ok {
+				// A grouping that fails at run time cannot say which bucket
+				// this release belongs in, and a cap that does not know that
+				// cannot count it. Dropping the match rather than guessing at
+				// a bucket keeps the same promise the tier checks above make:
+				// a rule that cannot be judged never removes a release.
+				continue
+			}
+			out.Limits = append(out.Limits, LimitMatch{Name: r.Name, Count: r.Count, Group: group})
 		default:
 			out.Points += r.Points
 			out.Matched = append(out.Matched, triage.RuleMatch{Name: r.Name, Score: r.Points})
 		}
 	}
 	return out
+}
+
+// groupOf is the bucket this release falls in for a grouped cap, and whether
+// the grouping could be answered at all. An ungrouped rule reports the empty
+// bucket, which every one of its matches shares.
+//
+// The value is written out rather than compared as itself because a bucket
+// only ever needs to tell two releases apart, and because the expression may
+// yield any type: "2160p", 2020, or the whole of hdr as a list. A grouping on
+// a list therefore buckets by the entire list, which is rarely what a user
+// means but is at least what they wrote.
+func (r *Rule) groupOf(env Env) (string, bool) {
+	if r.groupProgram == nil {
+		return "", true
+	}
+	value, err := expr.Run(r.groupProgram, env)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprint(value), true
 }
 
 // indexerAttributes are the attributes that come from the NZB rather than from
@@ -283,6 +364,18 @@ type tierUse struct {
 	avail   bool
 	indexer bool
 	seadex  bool
+}
+
+// merge is the union of two tier uses, for a rule whose condition and grouping
+// read different tiers. Every tier has to be carried: this runs for every rule,
+// grouped or not, so a tier dropped here is a tier no rule ever reports.
+func (t tierUse) merge(other tierUse) tierUse {
+	return tierUse{
+		probe:   t.probe || other.probe,
+		avail:   t.avail || other.avail,
+		indexer: t.indexer || other.indexer,
+		seadex:  t.seadex || other.seadex,
+	}
 }
 
 // tiersUsed reports which optional attribute tiers a condition reads. It walks

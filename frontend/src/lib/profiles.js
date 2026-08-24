@@ -194,6 +194,7 @@ export const RULE_PRESETS = [
   { name: "Measured 10-bit", when: "probed.bitDepth >= 10", points: 400 },
   { name: "At most 3 in 4K", when: 'resolution == "2160p"', action: "limit", count: 3 },
   { name: "At most 5 in 1080p", when: 'resolution == "1080p"', action: "limit", count: 5 },
+  { name: "Best 3 per resolution", when: "true", action: "limit", count: 3, group_by: "resolution" },
 ]
 
 // What a rule can do. Scoring moves a release, rejecting removes it, and
@@ -204,6 +205,20 @@ export const RULE_ACTIONS = [
   { key: "score", label: "Score" },
   { key: "reject", label: "Reject" },
   { key: "limit", label: "Limit" },
+]
+
+// What a limit rule can bucket by. Grouping is an expression over the same
+// attributes a condition reads, so anything is writable; these are the ones
+// worth a menu, because "keep the best 3 of each resolution" is the whole
+// reason grouping exists and should not cost you an expression.
+export const RULE_GROUP_BY_PRESETS = [
+  { key: "", label: "Nothing — one cap for every match" },
+  { key: "resolution", label: "Resolution" },
+  { key: "quality", label: "Quality" },
+  { key: 'resolution + " " + quality', label: "Resolution and quality" },
+  { key: "codec", label: "Codec" },
+  { key: "group", label: "Release group" },
+  { key: "indexer", label: "Indexer" },
 ]
 
 // A rule can be limited to one content kind. "all" is the default.
@@ -406,6 +421,15 @@ function limitCount(value) {
   return Number.isFinite(count) && count >= 1 ? count : DEFAULT_LIMIT_COUNT
 }
 
+// What a limit rule buckets by, or "" for a cap that does not group. Only a
+// limit rule can carry one — the server refuses a grouped score or reject rule
+// rather than ignoring the field — so reading it through here keeps a stale
+// grouping left behind by an action change from ever being sent.
+export function ruleGroupBy(rule) {
+  if (ruleAction(rule) !== "limit") return ""
+  return typeof rule?.group_by === "string" ? rule.group_by.trim() : ""
+}
+
 // exportedProfile is the form a profile travels in: a preset plus rules, with
 // only the fields that survive a round trip. It is what a share code carries,
 // and profileFromParsed is what reads it back — one shape, written and read in
@@ -423,6 +447,8 @@ function exportedProfile(profile) {
       } else if (action === "limit") {
         out.action = "limit"
         out.count = limitCount(rule.count)
+        const groupBy = ruleGroupBy(rule)
+        if (groupBy) out.group_by = groupBy
       } else if (rule.points) {
         out.points = rule.points
       }
@@ -555,6 +581,8 @@ function profileFromParsed(parsed) {
       }
       out.action = "limit"
       out.count = count
+      const groupBy = ruleGroupBy(rule)
+      if (groupBy) out.group_by = groupBy
     } else if (Number.isFinite(rule.points)) {
       out.points = rule.points
     }
@@ -575,6 +603,7 @@ function profileFromParsed(parsed) {
 //   Atmos [movie]: score -800 if "atmos" in traits
 //   DV without HDR fallback: reject if dolbyVision and not hdrFallback
 //   4K cap [off]: keep 3 if resolution == "2160p"
+//   Per resolution: keep 3 per resolution if true
 //
 // Everything after `if` is the condition, carried through untouched. This
 // grammar wraps conditions and never parses them, so there is still exactly
@@ -585,7 +614,12 @@ const scopeKeys = new Set(CONTENT_KINDS.map((kind) => kind.key))
 
 // A rule line is NAME [tags]: ACTION if CONDITION. Tags are the scope, "off",
 // or both; the brackets and the name are optional.
-const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|keep\s+(\d+))\s+if\b\s*([\s\S]*)$/i
+//
+// A cap may say what it groups by: "keep 3 per resolution if ...". The
+// grouping is read lazily, up to the first " if ", because it is an
+// expression and a greedy read would swallow the condition of every line that
+// has one.
+const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|keep\s+(\d+)(?:\s+per\s+([\s\S]+?))?)\s+if\b\s*([\s\S]*)$/i
 const ruleTagsRE = /^(.*?)\s*\[([^\]]*)\]\s*$/
 
 function ruleToText(rule) {
@@ -593,8 +627,9 @@ function ruleToText(rule) {
   if (rule.scope && rule.scope !== "all") tags.push(rule.scope)
   if (rule.enabled === false) tags.push("off")
   const action = ruleAction(rule)
+  const groupBy = ruleGroupBy(rule).replace(/\s+/g, " ")
   const verb = action === "reject" ? "reject"
-    : action === "limit" ? `keep ${limitCount(rule.count)}`
+    : action === "limit" ? `keep ${limitCount(rule.count)}${groupBy ? ` per ${groupBy}` : ""}`
     : `score ${Math.trunc(Number(rule.points)) || 0}`
   // A condition written across several lines folds onto one: the text form is
   // a line per rule, and the expression language does not care where the
@@ -649,7 +684,7 @@ export function rulesFromText(text) {
     if (!split) {
       throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / keep 3 in place of score.`)
     }
-    const [, points, count, when] = split.body
+    const [, points, count, groupBy, when] = split.body
     if (!when.trim()) throw new Error(`${at}: the rule has no condition.`)
 
     const tags = parseRuleTags(split.head)
@@ -658,6 +693,11 @@ export function rulesFromText(text) {
       if (Number(count) < 1) throw new Error(`${at}: a limit has to keep at least one release.`)
       rule.action = "limit"
       rule.count = Number(count)
+      if (groupBy !== undefined) {
+        const grouping = groupBy.trim()
+        if (!grouping) throw new Error(`${at}: the limit says "per" but not what to group by.`)
+        rule.group_by = grouping
+      }
     } else if (points !== undefined) {
       rule.points = Number(points)
     } else {

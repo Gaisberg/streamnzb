@@ -277,6 +277,24 @@ func TestCompileErrorsNameTheRule(t *testing.T) {
 		{"not a boolean", config.RuleConfig{Name: "Not bool", When: `sizeGB`}},
 		{"syntax error", config.RuleConfig{Name: "Syntax", When: `sizeGB >`}},
 		{"empty condition", config.RuleConfig{Name: "Empty", When: "  "}},
+		{"unknown group attribute", config.RuleConfig{
+			Name: "Bad group", When: "true",
+			Action: config.RuleActionLimit, Count: 3, GroupBy: "seeders",
+		}},
+		{"group syntax error", config.RuleConfig{
+			Name: "Group syntax", When: "true",
+			Action: config.RuleActionLimit, Count: 3, GroupBy: `resolution +`,
+		}},
+		// Grouping a score rule is a rule set to the wrong action. Accepting
+		// it silently would leave the user with a cap that never buckets and
+		// nothing anywhere saying why.
+		{"group on a score rule", config.RuleConfig{
+			Name: "Grouped score", When: "true", Points: 100, GroupBy: "resolution",
+		}},
+		{"group on a reject rule", config.RuleConfig{
+			Name: "Grouped reject", When: "true",
+			Action: config.RuleActionReject, GroupBy: "resolution",
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -452,5 +470,75 @@ func TestSeadexFailsOpenWithoutLookup(t *testing.T) {
 	}
 	if uncataloged.Points != -100 {
 		t.Errorf("Points = %d for an uncataloged title, want -100", uncataloged.Points)
+	}
+}
+
+// A cap grouped by a measured attribute reads a tier the release may not have,
+// so it skips for the same reason a condition reading it would. Judging it
+// against a zero height would bucket every unprobed release together and cap
+// them as though they were one resolution.
+func TestGroupByInheritsTierSkipping(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name:    "Two per probed height",
+		When:    "true",
+		Action:  config.RuleActionLimit,
+		Count:   2,
+		GroupBy: "probed.height",
+	})
+
+	got := set.Evaluate(envFor("Movie 2020 2160p WEB-DL-GRP", nil), "movie")
+	if len(got.Limits) != 0 {
+		t.Errorf("Limits = %+v, want none — the release was never probed", got.Limits)
+	}
+	if len(got.Skipped) != 1 {
+		t.Fatalf("Skipped = %v, want one note explaining the rule did not run", got.Skipped)
+	}
+
+	probed := set.Evaluate(envFor("Movie 2020 2160p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{Height: 2160}
+	}), "movie")
+	if len(probed.Limits) != 1 || probed.Limits[0].Group != "2160" {
+		t.Errorf("Limits = %+v, want one bucketed by the probed height", probed.Limits)
+	}
+}
+
+// The bucket is whatever the grouping expression says, written out. Two
+// releases sharing a bucket compete; two in different buckets do not.
+func TestGroupByBucketsByValue(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name:    "Per resolution and quality",
+		When:    "true",
+		Action:  config.RuleActionLimit,
+		Count:   3,
+		GroupBy: `resolution + " " + quality`,
+	})
+
+	uhd := set.Evaluate(envFor("Movie 2020 2160p WEB-DL H265-GRP", nil), "movie")
+	if len(uhd.Limits) != 1 {
+		t.Fatalf("Limits = %+v, want one", uhd.Limits)
+	}
+	if uhd.Limits[0].Group != "2160p WEB-DL" {
+		t.Errorf("Group = %q, want %q", uhd.Limits[0].Group, "2160p WEB-DL")
+	}
+
+	hd := set.Evaluate(envFor("Movie 2020 1080p WEB-DL H264-GRP", nil), "movie")
+	if len(hd.Limits) != 1 || hd.Limits[0].Group == uhd.Limits[0].Group {
+		t.Errorf("Limits = %+v, want a bucket of its own", hd.Limits)
+	}
+}
+
+// A cap that does not group puts every match in one bucket, which is what a
+// limit rule has always done.
+func TestUngroupedLimitReportsNoBucket(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name: "Three in total", When: "true", Action: config.RuleActionLimit, Count: 3,
+	})
+
+	got := set.Evaluate(envFor("Movie 2020 2160p WEB-DL-GRP", nil), "movie")
+	if len(got.Limits) != 1 {
+		t.Fatalf("Limits = %+v, want one", got.Limits)
+	}
+	if got.Limits[0].Group != "" {
+		t.Errorf("Group = %q, want empty", got.Limits[0].Group)
 	}
 }

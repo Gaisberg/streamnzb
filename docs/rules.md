@@ -39,6 +39,7 @@ upscaled and exists("remux" in traits)             → reject
 | **Applies to** | All content, or one kind (Movies, Shows, Anime films, Anime shows). |
 | **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. |
 | **Keep best** | For limit rules: how many survive. The best that many by final score are kept, the rest dropped. |
+| **Per** | For limit rules: what the cap is counted per. Nothing caps every match together; pick a grouping and the cap is kept once per value of it. |
 | **Enabled** | Turn a rule off without deleting it. A disabled rule is not compiled, so a half-written one never blocks a save. |
 
 Every field is editable in place, and **Duplicate** drops a copy directly below
@@ -58,11 +59,13 @@ them, or pasting a set someone shared:
 Atmos: score -800 if "atmos" in traits
 DV without HDR fallback: reject if dolbyVision and not hdrFallback
 At most 3 in 4K [movie]: keep 3 if resolution == "2160p"
+Best 3 of each resolution: keep 3 per resolution if true
 Old experiment [off]: score 100 if "remux" in traits
 ```
 
 A line is `Name: action if condition`. The action is `score <points>` —
-negative allowed — `reject`, or `keep <n>`. Brackets before the colon carry the
+negative allowed — `reject`, `keep <n>`, or `keep <n> per <grouping>`.
+Brackets before the colon carry the
 scope (`movie`, `series`, `anime_movie`, `anime_show`) and `off` for a disabled
 rule, in either order and both optional. Everything after `if` is the
 condition, handed to the expression language exactly as written: this grammar
@@ -97,6 +100,45 @@ Rules count independently. A release dropped by one cap does not take a slot in
 another: it is gone, so it is not competing. A release that falls past a cap is
 rejected like any other, with a reason that says so —
 `rule: At most 3 in 4K (over the limit of 3)`.
+
+### Keeping N of each
+
+A cap can be counted **per group** instead of across the whole result set, which
+is what turns a run of near-identical rules into one:
+
+```
+resolution == "2160p"  →  keep best 5
+resolution == "1080p"  →  keep best 5     becomes    true  →  keep best 5 per resolution
+resolution == "720p"   →  keep best 5
+```
+
+**Per** is a menu of the usual groupings — resolution, quality, codec,
+release group, indexer — plus **Custom expression**, which takes anything the
+[attributes](#confidence-what-a-rule-can-read-and-how-much-to-trust-it) above can
+express. Combining two is the case worth knowing:
+
+```
+Best 3 of each flavour: keep 3 per resolution + " " + quality if true
+```
+
+That keeps the top three 2160p Remux, the top three 2160p WEB-DL, the top three
+1080p BluRay, and so on, without a rule per combination.
+
+Each group keeps its own best, for the same reason an ungrouped cap keeps the
+set's: the cap is applied to the finished list, already in score order. A cap
+that groups names the group when it turns a release away —
+`rule: Best 3 of each resolution (over the limit of 3 for 2160p)` — because
+"over the limit of 3" on a rule that offered nine releases reads as a
+contradiction on its own.
+
+Two things to know about a grouping:
+
+- It is judged with the condition, not after it. Grouping by `probed.height`
+  makes the whole rule measured-only, so it skips releases that have never been
+  opened rather than bucketing them all together as height zero.
+- Every distinct value is its own group, including the empty one. Grouping by an
+  attribute a release name does not carry puts every such release in one group,
+  which is usually what you want and is worth knowing when it is not.
 
 This is separate from the stream's own **Results limit**, which truncates the
 finished list. A limit rule shapes *what* is in the list; the stream setting

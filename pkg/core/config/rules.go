@@ -51,6 +51,14 @@ type RuleConfig struct {
 	// Count by final score are kept and the rest are dropped, so a limit is
 	// always a cap on the tail rather than an arbitrary selection.
 	Count int `json:"count,omitempty"`
+	// GroupBy splits a limit rule's cap into one bucket per value, so that
+	// Count is kept per bucket rather than across the whole result set. It is
+	// an expression over the same attributes a condition reads, which is what
+	// lets one rule cap per resolution, per release group, or per combination
+	// of the two without a separate rule for every value. Empty caps the
+	// matching releases as a single set, which is what a limit rule has
+	// always done.
+	GroupBy string `json:"group_by,omitempty"`
 	// Enabled turns the rule off without deleting it. Nil means enabled, so
 	// a rule written before the flag existed keeps working.
 	Enabled *bool `json:"enabled,omitempty"`
