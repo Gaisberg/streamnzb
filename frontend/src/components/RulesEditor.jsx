@@ -16,8 +16,34 @@ import { cn, selectClass } from "@/lib/utils"
 // mirrors the AST walk the server does, minus string literals, so the editor
 // can warn about a rule that will skip most releases while it is being typed
 // rather than after it is saved.
+// stripSetCalls removes the body of every result-set call — count(...),
+// exists(...), any(...), none(...). What those read decides whether the set
+// can answer them, not whether this release will be judged, so their contents
+// must not trip the per-release tier warning.
+function stripSetCalls(s) {
+  const re = /\b(?:count|exists|any|none)\s*\(/g
+  let out = ""
+  let last = 0
+  let m
+  while ((m = re.exec(s))) {
+    let depth = 1
+    let i = re.lastIndex
+    while (i < s.length && depth > 0) {
+      if (s[i] === "(") depth++
+      else if (s[i] === ")") depth--
+      i++
+    }
+    out += s.slice(last, m.index)
+    last = i
+    re.lastIndex = i
+  }
+  return out + s.slice(last)
+}
+
 function tierOf(when = "") {
-  const stripped = when.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, "")
+  const stripped = stripSetCalls(
+    when.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, ""),
+  )
   if (/\bprobed\./.test(stripped)) return "measured"
   if (/\bavail\./.test(stripped)) return "community"
   if (/\b(sizeGB|ageDays|grabs|passworded|indexer|releaseName|querySource|library)\b/.test(stripped)) {
@@ -64,7 +90,7 @@ function AttributeReference({ onInsert }) {
             <div key={group.title} className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-medium text-foreground">{group.title}</span>
-                <ConfidenceChip tier={group.tier} />
+                {group.tier && <ConfidenceChip tier={group.tier} />}
               </div>
               {group.note && <p className="max-w-prose text-[11px] text-muted-foreground">{group.note}</p>}
               <div className="flex flex-wrap gap-1">
@@ -73,7 +99,7 @@ function AttributeReference({ onInsert }) {
                     key={item.name}
                     type="button"
                     title={item.example ? `${item.type} — ${item.example}` : item.type}
-                    onClick={() => onInsert(item.name)}
+                    onClick={() => onInsert(item.insert || item.name)}
                     className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                   >
                     {item.name}

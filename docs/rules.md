@@ -15,9 +15,11 @@ They exist because some things cannot be said with one pattern:
 - *Over 30 GB, unless it is 4K.*
 - *Confirmed alive on a backbone my providers actually use.*
 - *Measured 10-bit, not just claimed 10-bit in the name.*
+- *The shaky 4K encode, but only when a remux stands ready to replace it.*
 
 A regular expression sees one string. A rule sees everything known about the
-release.
+release — and, through the [result-set functions](#about-the-result-set),
+what else the search turned up.
 
 ```
 dolbyVision and not hdrFallback                    → reject
@@ -25,6 +27,7 @@ sizeGB > 30 and resolution != "2160p"              → reject
 avail.onMyBackbone                                 → +500
 probed.bitDepth >= 10                              → +400
 releaseName matches "(?i)\bIMAX\b"                 → +2000
+upscaled and exists("remux" in traits)             → reject
 ```
 
 ## Anatomy
@@ -74,9 +77,10 @@ that never had points recorded is written as `score 0`.
 
 ## Limits
 
-A condition describes one release, so it cannot say "at most three of these" —
-that is about the result set. Limit is therefore an **action**, not a function
-inside a condition:
+"At most three of these" is about the **final score order** — which three are
+best is only known after every point is in and the list is sorted, later than
+any condition runs. Limit is therefore an **action**, not a function inside a
+condition:
 
 ```
 resolution == "2160p"                     → keep best 3
@@ -217,6 +221,46 @@ This is what makes rules a complete replacement for the old per-trait controls:
 
 `kind` `isAnime` `season` `episode` `title`
 
+### About the result set
+
+`count(condition)` `exists(condition)` `none(condition)`
+
+Everything above describes the release being judged. These three ask about the
+**whole result set**, which is what turns an unconditional rejection into a
+conditional one — the main reason to want them is *reject X only when a better
+Y exists*, rather than rejecting X and hoping:
+
+```
+upscaled and exists(resolution == "2160p" and "remux" in traits)   → reject
+count(resolution == "2160p") < 3                                   → +500
+none(quality == "WEB-DL")                                          → +200
+```
+
+The condition inside reads the same attributes, but against every release in
+the set: `count()` is how many satisfy it, `exists()` whether any does, and
+`none()` whether none does. `any()` is accepted as another name for `exists()`.
+They cannot nest.
+
+The set they see is fixed before any rule fires: every release still standing
+after the eligibility patterns and the NZB limits, **including the one being
+judged** — a 4K remux always has `count(resolution == "2160p") >= 1`. Because
+the counts are taken first, a rule that rejects can never change what another
+rule counted, so the order of your rules does not matter. What they cannot see
+is the final ordering; "the best three of these" is still the [limit
+action](#limits).
+
+Fail-open extends to the set. A release missing a tier the inner condition
+reads is not counted — `count(probed.height >= 2000)` counts probed releases
+only — and when **no** release in the set carries that tier the question is
+unanswerable, so the rule is skipped rather than fed a zero: on a fresh search
+where nothing has been probed, `none(probed.height >= 2000)` must not read as
+"there is no good 4K" and reject everything.
+
+One name-sharing note: expr's own collection builtins keep their meaning. The
+two-argument forms over a list attribute — `any(hdr, # == "DV")` — and
+`count([proper, repack])` over a literal list still judge the single release,
+exactly as before. Only the one-argument condition form reads the result set.
+
 ## Fail-open
 
 **A rule that reads `probed.*` or `avail.*` does not run on a release that has
@@ -308,7 +352,8 @@ compatibility layer:
 | `cached()` / `uncached()` | `avail.status`, `avail.onMyBackbone` | **Not equivalent.** SEL's `cached` is a guarantee from a debrid service; ours is a community report that can be months stale and is per backbone. |
 | `service(...)`, `type(...)`, `seadex(...)` | — | No analogue. StreamNZB has one source type. |
 | `regexMatched()` / `regexScore()` | `releaseName matches "…"` | |
-| `count()`, `max()`, `avg()`, `median()`, … | — | Rules judge one release at a time, so there is no list to aggregate. |
+| `count()` | `count(condition)` | Over the [result set](#about-the-result-set); `exists()` and `none()` alongside it. |
+| `max()`, `avg()`, `median()`, … | — | No analogue: rules ask about the set, they do not select from it. |
 | — | `probed.*` | No SEL analogue: measured from the file. |
 | — | `avail.onMyBackbone` | No SEL analogue. |
 | — | `passworded`, `avail.compression` | No SEL analogue. |

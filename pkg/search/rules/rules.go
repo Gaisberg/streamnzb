@@ -30,11 +30,18 @@ type Rule struct {
 	needsProbe   bool
 	needsAvail   bool
 	needsIndexer bool
+	// aggIndices are the set-wide result-set conditions this rule reads. A
+	// rule whose aggregate could not be judged is skipped the same way a rule
+	// reading a missing tier is.
+	aggIndices []int
 }
 
 // Set is a profile's rules, compiled once and reused for every request.
 type Set struct {
 	rules []Rule
+	// aggs are the result-set conditions lifted out of the rules, shared
+	// across them and computed once per request — see ComputeAggregates.
+	aggs []aggregate
 }
 
 // Len reports how many enabled rules the set holds.
@@ -68,6 +75,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		return nil, nil
 	}
 	set := &Set{}
+	aggBySource := map[string]int{}
 	for _, rc := range cfgs {
 		if !rc.IsEnabled() {
 			continue
@@ -83,10 +91,44 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		if rc.EffectiveAction() == config.RuleActionLimit && rc.Count < 1 {
 			return nil, &Error{Rule: name, Err: fmt.Errorf("a limit rule has to keep at least one release")}
 		}
+		// Result-set calls are lifted out first: the rule is compiled against
+		// their precomputed values, and the inner conditions become their own
+		// per-release programs. Identical conditions share one aggregate, so
+		// two rules asking about the same thing count it once.
+		var ruleAggs []int
+		when, err := rewriteAggregates(when, func(inner string) (int, error) {
+			idx, ok := aggBySource[inner]
+			if !ok {
+				program, err := expr.Compile(inner, expr.Env(Env{}), expr.AsBool())
+				if err != nil {
+					return 0, err
+				}
+				tiers, err := tiersUsed(inner)
+				if err != nil {
+					return 0, err
+				}
+				idx = len(set.aggs)
+				set.aggs = append(set.aggs, aggregate{program: program, tiers: tiers})
+				aggBySource[inner] = idx
+			}
+			for _, have := range ruleAggs {
+				if have == idx {
+					return idx, nil
+				}
+			}
+			ruleAggs = append(ruleAggs, idx)
+			return idx, nil
+		})
+		if err != nil {
+			return nil, &Error{Rule: name, Err: err}
+		}
 		program, err := expr.Compile(when, expr.Env(Env{}), expr.AsBool())
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
+		// Tiers are judged on the rewritten condition: a rule asking whether
+		// the set holds a probed release does not itself need this release to
+		// be probed.
 		tiers, err := tiersUsed(when)
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
@@ -101,6 +143,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 			needsProbe:   tiers.probe,
 			needsAvail:   tiers.avail,
 			needsIndexer: tiers.indexer,
+			aggIndices:   ruleAggs,
 		})
 	}
 	if len(set.rules) == 0 {
@@ -145,6 +188,11 @@ type LimitMatch struct {
 // of what the user asked for. This is the same fail-open contract the NZB
 // attribute limits already keep, made explicit because here it is the common
 // case rather than the exception.
+//
+// A set with result-set conditions expects the caller to have computed them —
+// ComputeAggregates over the whole set, Inject into each environment — before
+// evaluating. Rules reading an aggregate nobody could judge are skipped under
+// the same contract.
 func (s *Set) Evaluate(env Env, kind string) Outcome {
 	var out Outcome
 	if s == nil {
@@ -171,6 +219,10 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 		// when it will.
 		if r.needsIndexer && !env.HasIndexerData {
 			out.Skipped = append(out.Skipped, r.Name+": needs size, age or grabs, which a release name does not carry")
+			continue
+		}
+		if msg := s.aggregateSkip(r, env); msg != "" {
+			out.Skipped = append(out.Skipped, r.Name+": "+msg)
 			continue
 		}
 		result, err := expr.Run(r.program, env)

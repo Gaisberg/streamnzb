@@ -197,8 +197,9 @@ export const RULE_PRESETS = [
 ]
 
 // What a rule can do. Scoring moves a release, rejecting removes it, and
-// limiting caps how many of the matching ones you are offered — the one thing a
-// condition about a single release cannot say on its own.
+// limiting caps how many of the matching ones you are offered — the one thing
+// no condition can say, because "the best three" is about the final score
+// order, which only exists after every rule has run.
 export const RULE_ACTIONS = [
   { key: "score", label: "Score" },
   { key: "reject", label: "Reject" },
@@ -327,6 +328,15 @@ export const RULE_ATTRIBUTES = [
     title: "Detected traits",
     note: "Every trait the parser found, by key. `\"remux\" in traits` reaches anything the baseline has an opinion about, without a separate control for each one.",
     items: TRAIT_KEYS.map((key) => ({ name: key, type: "trait" })),
+  },
+  {
+    title: "About the result set",
+    note: "count(), exists() and none() judge the whole result set instead of one release, so a rule can hold back unless something better is actually on offer — reject the shaky 4K only when exists(resolution == \"2160p\" and \"remux\" in traits). The condition inside reads the same attributes; releases missing a tier it needs are not counted, and the rule skips when no release in the set carries it. any() is exists() under another name.",
+    items: [
+      { name: "count(…)", insert: "count()", type: "number", example: 'count(resolution == "2160p") < 3' },
+      { name: "exists(…)", insert: "exists()", type: "yes/no", example: "exists(library)" },
+      { name: "none(…)", insert: "none()", type: "yes/no", example: 'none(quality == "WEB-DL")' },
+    ],
   },
   {
     tier: "inferred",

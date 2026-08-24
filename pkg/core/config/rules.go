@@ -10,10 +10,10 @@ import (
 //
 // Score and reject are the split the profile as a whole is built on, made
 // explicit per rule so a user can see which of the two a rule does without
-// reading its condition. Limit is the one thing a per-release condition cannot
-// say on its own — "at most three of these" is about the result set, not about
-// any release in it — so it is an action rather than a function inside a
-// condition.
+// reading its condition. Limit is the one thing no condition can say — even a
+// result-set condition: "at most three of these" is about the final score
+// order, which only exists after every rule has run — so it is an action
+// rather than a function inside a condition.
 const (
 	RuleActionScore  = "score"
 	RuleActionReject = "reject"

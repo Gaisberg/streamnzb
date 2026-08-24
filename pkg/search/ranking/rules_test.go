@@ -378,3 +378,84 @@ func TestSampleVouchesForZeroes(t *testing.T) {
 		t.Error("a release vouched for with no grabs was not rejected")
 	}
 }
+
+// A result-set condition lets a rule reject conditionally on what else is in
+// the set: the WEB-DL goes only when a remux stands ready to replace it.
+func TestAggregateRejectsOnlyWithFallback(t *testing.T) {
+	p := rulesProfile(t, config.RuleConfig{
+		Name:   "WEB-DL when a remux exists",
+		When:   `quality == "WEB-DL" and exists("remux" in traits)`,
+		Action: config.RuleActionReject,
+	})
+
+	webdl := func() []triage.Candidate {
+		return candidateWith(&release.Release{Title: "Movie 2020 2160p WEB-DL HEVC-GRP", Size: 8e9})
+	}
+	both := append(webdl(), candidateWith(&release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP", Size: 40e9})...)
+
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, both, rank.RankOptions{})
+	if len(kept) != 1 || !strings.Contains(kept[0].Candidate.Release.Title, "REMUX") {
+		t.Fatalf("kept %d, want just the remux", len(kept))
+	}
+	if len(rejected) != 1 || len(rejected[0].Torrent.Rejections) == 0 {
+		t.Fatalf("rejected = %+v, want the WEB-DL with a reason", rejected)
+	}
+
+	kept, _ = p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, webdl(), rank.RankOptions{})
+	if len(kept) != 1 {
+		t.Fatal("the only release was rejected although nothing better exists")
+	}
+}
+
+// Releases something earlier already rejected are not in the set the
+// aggregates count: a remux the size limits threw out is no fallback.
+func TestAggregatesIgnoreAlreadyRejectedReleases(t *testing.T) {
+	p, err := ranking.Compile(config.FilterProfileConfig{
+		Name:   "Sized",
+		Limits: map[string]*config.LimitsConfig{config.LimitKindDefault: {MaxSizeGB: 30}},
+		Rules: []config.RuleConfig{{
+			Name:   "WEB-DL when a remux exists",
+			When:   `quality == "WEB-DL" and exists("remux" in traits)`,
+			Action: config.RuleActionReject,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidates := candidateWith(&release.Release{Title: "Movie 2020 2160p WEB-DL HEVC-GRP", Size: 8e9})
+	candidates = append(candidates, candidateWith(&release.Release{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP", Size: 60e9})...)
+
+	kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie}, candidates, rank.RankOptions{})
+	if len(kept) != 1 || !strings.Contains(kept[0].Candidate.Release.Title, "WEB-DL") {
+		t.Fatalf("kept %v, want the WEB-DL: its only fallback fell to the size limit", kept)
+	}
+}
+
+// The preview runs the same aggregate pass as a live search, so a result-set
+// condition fires there too, and one that cannot be judged reports why.
+func TestExplainReportsAggregates(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "Remux available", When: `exists("remux" in traits)`, Points: 77},
+		config.RuleConfig{Name: "Probed 4K nearby", When: `exists(probed.height >= 2000)`, Points: 5},
+	)
+
+	out := p.Explain(
+		[]string{"Movie 2020 1080p WEB-DL H264-GRP", "Movie 2020 2160p BluRay REMUX HEVC-GRP"},
+		ranking.Request{Kind: ranking.KindMovie},
+		rank.RankOptions{},
+	)
+	paid := false
+	for _, m := range out[0].Matched {
+		if m.Name == "Remux available" {
+			paid = true
+		}
+	}
+	if !paid {
+		t.Errorf("the aggregate rule did not pay out in the preview: %+v", out[0].Matched)
+	}
+	skipped := strings.Join(out[0].SkippedRules, "; ")
+	if !strings.Contains(skipped, "Probed 4K nearby") || !strings.Contains(skipped, "probed") {
+		t.Errorf("SkippedRules = %v, want the probe-tier aggregate reported", out[0].SkippedRules)
+	}
+}

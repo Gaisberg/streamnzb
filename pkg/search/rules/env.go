@@ -121,6 +121,17 @@ type Env struct {
 	// whether it can be answered.
 	HasIndexerData bool `expr:"-"`
 
+	// ---- result set ----
+
+	// Aggs holds the values of the profile's result-set conditions, computed
+	// once over the whole set before any rule runs. The compiled rewrite
+	// reads them by index; the name is reserved and refused in conditions.
+	Aggs []int `expr:"__aggs"`
+	// AggsKnown mirrors Aggs: whether anyone in the set carried the tiers the
+	// condition reads, so a fresh unprobed search skips rather than counts
+	// zero. Not exposed — like HasIndexerData, the engine decides.
+	AggsKnown []bool `expr:"-"`
+
 	// ---- request context ----
 
 	Library bool   `expr:"library"`

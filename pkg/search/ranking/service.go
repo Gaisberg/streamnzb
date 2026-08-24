@@ -205,6 +205,10 @@ type Result struct {
 	Matched []triage.RuleMatch
 	// limits are the caps this release counts against, resolved after sorting.
 	limits []rules.LimitMatch
+	// skipped are the rules that could not be judged for this release, kept
+	// from the one evaluation applyRules runs so the preview reports exactly
+	// what the pipeline did.
+	skipped []string
 }
 
 // Request is what a profile needs to know about the search behind a result
@@ -353,13 +357,33 @@ func (p *Profile) applyRules(req Request, results []Result) {
 		Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
 		IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
 	}
+	envs := make([]rules.Env, len(results))
+	for i := range results {
+		envs[i] = rules.BuildEnv(results[i].Candidate, results[i].Torrent.Data, ctx)
+	}
+	// Result-set conditions are counted once, over the releases still in
+	// contention as the rules find them. The snapshot is taken before any
+	// rule fires, so a rule rejecting a release never changes what another
+	// rule counted and the order of the rules stays irrelevant.
+	if p.rules.HasAggregates() {
+		inSet := make([]rules.Env, 0, len(results))
+		for i := range results {
+			if results[i].Torrent.Fetch {
+				inSet = append(inSet, envs[i])
+			}
+		}
+		state := p.rules.ComputeAggregates(inSet)
+		for i := range envs {
+			state.Inject(&envs[i])
+		}
+	}
 	for i := range results {
 		r := &results[i]
-		env := rules.BuildEnv(r.Candidate, r.Torrent.Data, ctx)
-		outcome := p.rules.Evaluate(env, req.Kind)
+		outcome := p.rules.Evaluate(envs[i], req.Kind)
 		r.Torrent.Rank += outcome.Points
 		r.Matched = outcome.Matched
 		r.limits = outcome.Limits
+		r.skipped = outcome.Skipped
 		if len(outcome.Rejections) > 0 {
 			r.Torrent.Fetch = false
 			r.Torrent.Rejections = append(r.Torrent.Rejections, outcome.Rejections...)
@@ -494,7 +518,7 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) [
 	out := make([]*Explanation, 0, len(kept)+len(rejected))
 	for _, group := range [][]Result{kept, rejected} {
 		for i := range group {
-			out = append(out, p.explainResult(&group[i], req))
+			out = append(out, p.explainResult(&group[i]))
 		}
 	}
 	return out
@@ -524,7 +548,7 @@ func (r Request) sampleCandidate(title string) triage.Candidate {
 
 // explainResult renders one judged release. Rule contributions are appended to
 // the ranker's own so the breakdown adds up to the score shown.
-func (p *Profile) explainResult(r *Result, req Request) *Explanation {
+func (p *Profile) explainResult(r *Result) *Explanation {
 	title := ""
 	if r.Candidate.Release != nil {
 		title = r.Candidate.Release.Title
@@ -546,17 +570,6 @@ func (p *Profile) explainResult(r *Result, req Request) *Explanation {
 	for _, m := range r.Matched {
 		out.Contributions = append(out.Contributions, rank.Contribution{Source: "rule:" + m.Name, Rank: m.Score})
 	}
-	if p.rules.Len() > 0 {
-		env := rules.BuildEnv(r.Candidate, r.Torrent.Data, rules.Context{
-			Kind:             req.Kind,
-			IsAnime:          req.IsAnime,
-			Season:           req.Season,
-			Episode:          req.Episode,
-			Title:            req.Title,
-			Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
-			IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
-		})
-		out.SkippedRules = p.rules.Evaluate(env, req.Kind).Skipped
-	}
+	out.SkippedRules = r.skipped
 	return out
 }
