@@ -78,6 +78,8 @@ export function normalizeStreamDraft(draft) {
     username: (draft?.username || '').trim(),
     combine_results: draft?.combine_results !== false,
     enable_failover: draft?.enable_failover !== false,
+    merge_variants: draft?.merge_variants !== false,
+    variant_attempts: normalizeVariantAttempts(draft?.variant_attempts),
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
     auto_add_providers: draft?.auto_add_providers === true,
     auto_add_indexers: draft?.auto_add_indexers === true,
@@ -107,6 +109,8 @@ export function buildStreamDraft(stream) {
     username: stream?.username || '',
     combine_results: stream?.combine_results,
     enable_failover: stream?.enable_failover,
+    merge_variants: stream?.merge_variants,
+    variant_attempts: stream?.variant_attempts,
     results_mode: stream?.results_mode,
     auto_add_providers: stream?.auto_add_providers,
     auto_add_indexers: stream?.auto_add_indexers,
@@ -144,6 +148,8 @@ export function buildStreamStateFromDraft(username, token, draft, existingOverri
     indexer_mode: draft.indexer_mode,
     combine_results: draft.combine_results,
     enable_failover: draft.enable_failover,
+    merge_variants: draft.merge_variants,
+    variant_attempts: draft.variant_attempts,
     results_mode: draft.results_mode,
     auto_add_providers: draft.auto_add_providers,
     auto_add_indexers: draft.auto_add_indexers,
@@ -173,6 +179,7 @@ export function generalCompactValues(stream) {
 export function generalDetailValues(stream) {
   return [
     `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
+    `Variants ${stream?.merge_variants === false ? 'Off' : variantAttemptsLabel(stream?.variant_attempts)}`,
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
     `Search ${stream?.combine_results !== false ? 'Combine' : 'First hit'}`,
     `Results ${stream?.results_mode === 'display_all' ? 'All' : 'Combine'}`,
@@ -221,6 +228,25 @@ export function indexerModeLabel(value) {
 
 export function resultsModeLabel(value) {
   return value === 'display_all' ? 'Display all' : 'Combined stream'
+}
+
+// VARIANT_ATTEMPTS_UNLIMITED matches config.VariantAttemptsUnlimited: -1 asks
+// for every copy the merge kept, 0 means the backend default.
+export const VARIANT_ATTEMPTS_UNLIMITED = -1
+
+export function normalizeVariantAttempts(value) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return 0
+  if (parsed === VARIANT_ATTEMPTS_UNLIMITED) return VARIANT_ATTEMPTS_UNLIMITED
+  if (parsed < 1) return 0
+  return parsed
+}
+
+export function variantAttemptsLabel(value) {
+  const attempts = normalizeVariantAttempts(value)
+  if (attempts === VARIANT_ATTEMPTS_UNLIMITED) return 'All copies'
+  if (attempts === 1) return 'Merge only'
+  return `${attempts || 2} copies`
 }
 
 export function applyFilterSortingMode(current, nextMode, profileName = '') {

@@ -56,7 +56,7 @@ func TestInconclusiveFailureLeavesNoPersistentVerdict(t *testing.T) {
 	sess := &session.Session{ID: "stream:default:series:tt1:1:1:0"}
 	sess.SetRelease(&release.Release{Title: "Some.Release-GRP", DetailsURL: detailsURL})
 
-	server.purgeFailedRelease(sess, "startup timeout", false)
+	server.purgeFailedRelease(sess, "startup timeout", false, false)
 
 	if badReleaseRecorded(t, mgr, detailsURL) {
 		t.Fatal("an inconclusive failure recorded a persistent bad-release verdict")
@@ -70,7 +70,7 @@ func TestConclusiveFailureStillRecordsPersistentVerdict(t *testing.T) {
 	sess := &session.Session{ID: "stream:default:series:tt1:1:1:0"}
 	sess.SetRelease(&release.Release{Title: "Dead.Release-GRP", DetailsURL: detailsURL})
 
-	server.purgeFailedRelease(sess, "first segment not found (430)", true)
+	server.purgeFailedRelease(sess, "first segment not found (430)", true, false)
 
 	if !badReleaseRecorded(t, mgr, detailsURL) {
 		t.Fatal("a proven-bad release was not persisted, so it will be re-offered forever")

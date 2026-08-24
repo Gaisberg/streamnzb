@@ -79,15 +79,30 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 		if !isFatalStreamErr(readErr) {
 			return
 		}
-		s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
 		errSess, _ := s.sessionManager.GetSession(playbackSessionID)
 		if errSess == nil {
+			s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
 			return
 		}
+		// Mid-stream the slot can still have an untried copy of the same
+		// release. Moving the cursor on instead of marking the slot failed
+		// keeps the player on the release it was playing: the session goes, so
+		// the reconnect rebuilds this slot against the next NZB rather than
+		// being redirected to a different release.
+		nextCopy := streamFailoverEnabled(streamConfig) &&
+			s.sessionManager.AdvanceSlotCopy(playbackSessionID, streamConfig.EffectiveVariantAttempts())
+		if !nextCopy {
+			s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
+		}
 		errSess.ResetPlaybackStream()
-		availOutcome := s.reportBadReleaseOutcome(errSess, readErr, true)
+		availOutcome := s.reportBadReleaseOutcome(errSess, readErr, true, nextCopy)
 		if !errSess.OnceDone(onceSuccessRecorded) && errSess.Once(onceFailureRecorded) {
 			s.recordFailureAttempt(errSess, readErr, availOutcome)
+		}
+		if nextCopy {
+			logger.Info("Mid-stream failure; the slot moves to another copy of the same release",
+				"slot", playbackSessionID, "err", readErr)
+			s.sessionManager.DeleteSession(playbackSessionID)
 		}
 		if playbackSessionID == sessionID {
 			serveFailureRecorded = true

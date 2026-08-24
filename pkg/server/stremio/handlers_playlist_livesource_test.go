@@ -192,3 +192,39 @@ func TestFilterPlaylistToAvailableForAIOStreamsKeepsSlotPathsInLockstep(t *testi
 		}
 	}
 }
+
+func TestApplyLiveSourceStatePromotesACopyFromAnIndexerWithBudget(t *testing.T) {
+	spent := &budgetIndexer{name: "Spent", limit: 10, remaining: 0}
+	healthy := &budgetIndexer{name: "Healthy", limit: 10, remaining: 4}
+
+	srv := &Server{config: &config.Config{}}
+	key := StreamSlotKey{StreamID: "default", ContentType: "movie", ID: "tt0111161"}
+	merged := candidateFrom("A", "https://x/a", spent)
+	variant := candidateFrom("A", "https://x/a-copy", healthy).Release
+	merged.Release.Variants = []*release.Release{variant}
+	list := &playlistResult{Candidates: []triage.Candidate{
+		merged,
+		candidateFrom("B", "https://x/b", spent),
+	}}
+
+	got := srv.applyLiveSourceState(list, key)
+
+	if len(got.Candidates) != 1 {
+		t.Fatalf("kept %d candidates, want only the release with a grabbable copy", len(got.Candidates))
+	}
+	kept := got.Candidates[0].Release
+	if kept.DetailsURL != "https://x/a-copy" {
+		t.Fatalf("expected the copy with budget to lead, got %q", kept.DetailsURL)
+	}
+	// The spent copy stays behind it: a daily budget comes back, and the copy
+	// is one failover hop away either way.
+	if kept.CopyCount() != 2 || kept.CopyAt(1).DetailsURL != "https://x/a" {
+		t.Fatalf("expected the spent copy to survive as a variant, got %d copies", kept.CopyCount())
+	}
+	if got.SlotPaths[0] != key.SlotPath(0) {
+		t.Fatalf("slot path = %q, want %q", got.SlotPaths[0], key.SlotPath(0))
+	}
+	if len(list.Candidates[0].Release.Variants) != 1 || list.Candidates[0].Release.DetailsURL != "https://x/a" {
+		t.Fatal("the cached list must not be mutated by the promotion")
+	}
+}

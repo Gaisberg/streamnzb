@@ -145,7 +145,7 @@ func TestApplyReportedBadReleaseToCachesMarksCachedReleaseUnavailable(t *testing
 
 	failedSess := &session.Session{ID: key.SlotPath(0)}
 	failedSess.SetRelease(&release.Release{DetailsURL: failedDetailsURL})
-	server.applyReportedBadReleaseToCaches(failedSess, availnzb.SentOutcome(false), true)
+	server.applyReportedBadReleaseToCaches(failedSess, availnzb.SentOutcome(false), true, false)
 
 	cachedPlaylistValue, ok := server.playlistCache.Load(key.CacheKey())
 	if !ok {

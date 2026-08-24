@@ -322,3 +322,119 @@ func TestMergeAndDedupeSearchResultsPrioritizesLibrary(t *testing.T) {
 		t.Fatalf("expected library release to win during deduplication, got %#v", got[0])
 	}
 }
+
+func TestMergeSameReleaseVariantsKeepsDuplicatesAsVariants(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Movie.2160p.Remux.HDR10-FraMeSToR", DetailsURL: "https://geek/1", Indexer: "NZBGeek", Grabs: 12},
+		{Title: "Movie.2160p.Remux.HDR10-FraMeSToR", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug", Grabs: 40},
+		{Title: "Other.Movie.1080p.WEB-DL-GRP", DetailsURL: "https://geek/3", Indexer: "NZBGeek"},
+	}
+
+	got := MergeSameReleaseVariants(releases, VariantMergeOptions{})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 merged releases, got %d: %+v", len(got), got)
+	}
+	if got[0].CopyCount() != 2 {
+		t.Fatalf("expected the merged release to keep 2 copies, got %d", got[0].CopyCount())
+	}
+	// No ranker: the first-seen copy stays primary only if it also wins the
+	// grab tiebreaker, which it does not here.
+	if got[0].Indexer != "DrunkenSlug" {
+		t.Fatalf("expected the most-grabbed copy to lead, got %q", got[0].Indexer)
+	}
+	if got[0].Grabs != 40 {
+		t.Fatalf("expected merged grabs 40, got %d", got[0].Grabs)
+	}
+	if variant := got[0].CopyAt(1); variant == nil || variant.Indexer != "NZBGeek" {
+		t.Fatalf("expected the other copy to survive as a variant, got %+v", variant)
+	}
+	if got[1].CopyCount() != 1 {
+		t.Fatalf("expected the unrelated release to stay single, got %d copies", got[1].CopyCount())
+	}
+}
+
+func TestMergeSameReleaseVariantsUsesRankForPrimary(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek", Grabs: 99},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug"},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://ninja/3", Indexer: "NinjaCentral"},
+	}
+
+	got := MergeSameReleaseVariants(releases, VariantMergeOptions{
+		Rank: func(rel *release.Release) int {
+			if rel.Indexer == "DrunkenSlug" {
+				return 10
+			}
+			return 0
+		},
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 merged release, got %d", len(got))
+	}
+	if got[0].Indexer != "DrunkenSlug" {
+		t.Fatalf("expected the highest-ranked copy to lead, got %q", got[0].Indexer)
+	}
+	// Grabs still order the copies the ranker was indifferent about.
+	if variant := got[0].CopyAt(1); variant == nil || variant.Indexer != "NZBGeek" {
+		t.Fatalf("expected the most-grabbed remaining copy first, got %+v", variant)
+	}
+	if got[0].CopyCount() != 3 {
+		t.Fatalf("expected 3 copies, got %d", got[0].CopyCount())
+	}
+}
+
+func TestMergeSameReleaseVariantsIsIdempotent(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek"},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug"},
+	}
+
+	once := MergeSameReleaseVariants(releases, VariantMergeOptions{})
+	twice := MergeSameReleaseVariants(once, VariantMergeOptions{})
+	if len(twice) != 1 || twice[0].CopyCount() != 2 {
+		t.Fatalf("expected re-merging to be a no-op, got %d releases with %d copies", len(twice), twice[0].CopyCount())
+	}
+}
+
+func TestMergeSameReleaseVariantsDoesNotMutateInput(t *testing.T) {
+	original := &release.Release{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek"}
+	releases := []*release.Release{
+		original,
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug"},
+	}
+
+	MergeSameReleaseVariants(releases, VariantMergeOptions{})
+	if len(original.Variants) != 0 {
+		t.Fatalf("expected the input release to be left alone, got %d variants", len(original.Variants))
+	}
+}
+
+func TestDropCopiesPromotesSurvivingVariant(t *testing.T) {
+	merged := MergeSameReleaseVariants([]*release.Release{
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek", Grabs: 5},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug", Grabs: 1},
+	}, VariantMergeOptions{})[0]
+
+	got, removed := DropCopies(merged, map[string]bool{"https://geek/1": true})
+	if !removed {
+		t.Fatal("expected the bad copy to be reported as removed")
+	}
+	if got == nil {
+		t.Fatal("expected the surviving copy to be promoted, got nil")
+	}
+	if got.DetailsURL != "https://slug/2" || got.CopyCount() != 1 {
+		t.Fatalf("expected only the surviving copy to remain, got %q with %d copies", got.DetailsURL, got.CopyCount())
+	}
+}
+
+func TestDropCopiesRemovesReleaseWhenEveryCopyIsBad(t *testing.T) {
+	merged := MergeSameReleaseVariants([]*release.Release{
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1"},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2"},
+	}, VariantMergeOptions{})[0]
+
+	got, removed := DropCopies(merged, map[string]bool{"https://geek/1": true, "https://slug/2": true})
+	if !removed || got != nil {
+		t.Fatalf("expected the release to disappear, got %+v (removed=%v)", got, removed)
+	}
+}

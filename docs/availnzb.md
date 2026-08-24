@@ -1,6 +1,6 @@
 # AvailNZB
 
-[AvailNZB](https://check.snzb.stream) is a community availability database. StreamNZB doesn't download or validate NZBs before showing results — it builds an ordered play list from indexer search plus AvailNZB (skipping releases already reported bad), then tries on play. Success/failure is reported so the shared DB stays current.
+[AvailNZB](https://check.snzb.stream) is a community availability database. StreamNZB doesn't download or validate NZBs before showing results — it builds an ordered play list from indexer search plus AvailNZB (skipping releases already reported bad), then tries on play. Success/failure is reported so the shared DB stays current. Reports key on the details URL of the NZB that was played, so when several indexers' copies of one release have been merged into a single result, a verdict retires that copy and leaves the others playable — see [Same-release variants](search-queries.md#same-release-variants).
 
 ## Opt-in
 

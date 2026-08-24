@@ -444,6 +444,9 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         )}
         {droppedYear > 0 && <FunnelChip label="Year mismatch" value={`−${droppedYear}`} />}
         {snap.dedup_input > 0 && <FunnelChip label="Deduped" value={snap.dedup_output} />}
+        {/* Duplicates that were merged instead of discarded: they are not in
+            the result count, but playback can still fall back to them. */}
+        {snap.variants_kept > 0 && <FunnelChip label="Variants kept" value={snap.variants_kept} />}
         {snap.bad_filtered > 0 && <FunnelChip label="Known bad" value={`−${snap.bad_filtered}`} />}
         {shortCircuit && <FunnelChip label={shortCircuit.label} value={shortCircuit.detail} />}
         {/* A short-circuited search never reached the profile, so reporting

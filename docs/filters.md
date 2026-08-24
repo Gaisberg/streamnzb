@@ -225,7 +225,9 @@ everything else, and says it out loud.
 ## Seeing what a profile did
 
 The **History** page shows the full funnel per search: raw results → validated →
-deduped → known-bad removed → **Profile (name) input → kept**, with a separate
+deduped (with **Variants kept**, the duplicates that were merged into a result
+rather than discarded — see [Same-release variants](search-queries.md#same-release-variants)) →
+known-bad removed → **Profile (name) input → kept**, with a separate
 count for what rules rejected. Expanding **Rejected by profile** lists every
 dropped release with its reason codes (`trash`, `resolution:480p`,
 `language:missing_required`, `attribute:cam`, `rule: <name>`, …). Rule

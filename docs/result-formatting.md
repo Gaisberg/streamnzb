@@ -24,7 +24,7 @@ release's parsed data.
 | Group | Fields |
 |---|---|
 | Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.Kind` `.IsAnime` |
-| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
+| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` |
@@ -38,6 +38,16 @@ List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.Seasons`,
 media summary, present on library releases only. `.Duration` is the humanized
 runtime (`1h 52m`), filled only when the indexer reports one (e.g. Easynews) —
 newznab NZBs don't carry a runtime.
+
+`.Variants` is how many interchangeable copies of the release the search
+merged, counting the one that plays first — `1` means no other indexer listed
+it, anything higher is how many NZBs playback can fall back to without leaving
+this release (see [Same-release variants](search-queries.md#same-release-variants)).
+`.VariantIndexers` names them, the playing copy first.
+
+```
+{{if gt .Variants 1}}Variants: {{.Variants}}{{end}}
+```
 
 `.Library` is true once the release's NZB is stored locally, and `.Indexer`
 then reads `StreamNZB Library - <original indexer>`. A release that was an

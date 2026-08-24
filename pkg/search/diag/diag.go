@@ -67,7 +67,11 @@ type Snapshot struct {
 
 	DedupInput  int `json:"dedup_input,omitempty"`
 	DedupOutput int `json:"dedup_output,omitempty"`
-	BadFiltered int `json:"bad_filtered,omitempty"`
+	// VariantsKept is how many duplicates survived as same-release variants
+	// rather than being discarded. It is the difference between "deduplication
+	// removed 15 results" and "15 results are still there as fallbacks".
+	VariantsKept int `json:"variants_kept,omitempty"`
+	BadFiltered  int `json:"bad_filtered,omitempty"`
 
 	ProfileName string `json:"profile_name,omitempty"`
 	// ProfileInput and ProfileKept are not omitempty: a profile that saw
@@ -148,12 +152,12 @@ func (c *Collector) AddValidation(stat ValidationStat) {
 	c.mu.Unlock()
 }
 
-func (c *Collector) SetDedup(input, output int) {
+func (c *Collector) SetDedup(input, output, variantsKept int) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	c.snap.DedupInput, c.snap.DedupOutput = input, output
+	c.snap.DedupInput, c.snap.DedupOutput, c.snap.VariantsKept = input, output, variantsKept
 	c.mu.Unlock()
 }
 

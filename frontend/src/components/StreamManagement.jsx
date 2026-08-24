@@ -25,6 +25,8 @@ import {
   normalizeStreamDraft,
   resultsModeLabel,
   searchRequestsLabel,
+  VARIANT_ATTEMPTS_UNLIMITED,
+  variantAttemptsLabel,
   streamsFromMap,
   tabHasError,
   uniquePreserveOrder,
@@ -727,6 +729,49 @@ function StreamDialog({
               </div>
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Merge duplicate copies</div>
+                  <Switch
+                    checked={draft.merge_variants}
+                    onCheckedChange={(checked) => setDraft((current) => ({ ...current, merge_variants: checked === true }))}
+                  />
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Several indexers listing the same release become one result that keeps the other copies. Duplicates
+                  stop being clutter and become fallbacks, because two indexers&apos; NZBs for one release are not
+                  always the same NZB.
+                </p>
+                <div className="mt-3 flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Same-release attempts</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-40 justify-between" disabled={!draft.merge_variants}>
+                        <span>{variantAttemptsLabel(draft.variant_attempts)}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, variant_attempts: 1 }))}>
+                        Merge only
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, variant_attempts: 2 }))}>
+                        2 copies
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, variant_attempts: 3 }))}>
+                        3 copies
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, variant_attempts: VARIANT_ATTEMPTS_UNLIMITED }))}>
+                        All copies
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  How many copies of one release playback tries before moving on to a different release. Merge only
+                  keeps the de-cluttered list without ever switching copies.
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-medium">Filter AvailNZB unavailable</div>
                   <Switch
                     checked={availNZBEnabled && draft.filter_availnzb === true}
@@ -920,6 +965,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         indexer_mode: draft.indexer_mode,
         combine_results: draft.combine_results,
         enable_failover: draft.enable_failover,
+        merge_variants: draft.merge_variants,
+        variant_attempts: draft.variant_attempts,
         results_mode: draft.results_mode,
         auto_add_providers: draft.auto_add_providers,
         auto_add_indexers: draft.auto_add_indexers,

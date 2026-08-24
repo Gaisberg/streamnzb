@@ -24,22 +24,30 @@ import (
 // the request context. Library-only extras (Caps) are empty for fresh indexer
 // hits because their real media properties are unknown until playback.
 type FormatContext struct {
-	Service      string     // addon name override, or "StreamNZB"
-	Stream       string     // stream config name, e.g. "Standalone"
-	Content      string     // requested title, e.g. "Ted Lasso"
-	ReleaseTitle string     // full release name
-	Index        int        // 1-based position in the result list
-	Count        int        // total results in the list
-	Score        int        // final ranking score (library bonus included)
-	Avail        bool       // AvailNZB reports this release available
-	Library      bool       // served from the local release library
-	Size         int64      // bytes
-	Indexer      string     // indexer display name
-	Grabs        int        // indexer-reported grab count
-	Age          string     // humanized age from pub date, e.g. "2y", "37d"
-	Duration     string     // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
-	Languages    stringList // parsed language codes
-	Caps         string     // ffprobe-verified caps summary (library releases only)
+	Service      string // addon name override, or "StreamNZB"
+	Stream       string // stream config name, e.g. "Standalone"
+	Content      string // requested title, e.g. "Ted Lasso"
+	ReleaseTitle string // full release name
+	Index        int    // 1-based position in the result list
+	Count        int    // total results in the list
+	Score        int    // final ranking score (library bonus included)
+	Avail        bool   // AvailNZB reports this release available
+	Library      bool   // served from the local release library
+	Size         int64  // bytes
+	Indexer      string // indexer display name
+	// Variants is how many interchangeable copies of this release the merge
+	// kept, counting the one that plays first. 1 means no duplicate was
+	// found; anything higher is how many indexers' NZBs playback can fall
+	// back to without leaving this release.
+	Variants int
+	// VariantIndexers names the indexers behind those copies, best first,
+	// starting with the one that plays.
+	VariantIndexers stringList
+	Grabs           int        // indexer-reported grab count
+	Age             string     // humanized age from pub date, e.g. "2y", "37d"
+	Duration        string     // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
+	Languages       stringList // parsed language codes
+	Caps            string     // ffprobe-verified caps summary (library releases only)
 
 	// Kind is the content kind the request was ranked as: "movie", "series",
 	// "anime_movie" or "anime_show". IsAnime is the anime half of that
@@ -522,6 +530,12 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		ctx.Library = rel.IsLibraryResult()
 		ctx.Size = rel.Size
 		ctx.Indexer = indexerNameFromRelease(rel)
+		ctx.Variants = rel.CopyCount()
+		for _, c := range rel.Copies() {
+			if name := indexerNameFromRelease(c); name != "" {
+				ctx.VariantIndexers = append(ctx.VariantIndexers, name)
+			}
+		}
 		ctx.Grabs = rel.Grabs
 		ctx.Age = humanAge(rel.PubDate)
 		ctx.Duration = humanDuration(rel.Duration)
@@ -748,6 +762,9 @@ type formatPreviewFixture struct {
 	caps     string
 	duration float64
 	seadex   triage.SeadexState
+	// variants are the other indexers holding a copy of this release, so a
+	// preview of {{.Variants}} shows a merged result rather than a lone one.
+	variants []string
 }
 
 func formatPreviewFixtures() []formatPreviewFixture {
@@ -762,6 +779,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			pubDate:  time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
 			score:    4200,
 			duration: 165 * 60,
+			variants: []string{"NZBGeek", "NinjaCentral"},
 		},
 		{
 			label:   "1080p episode · AvailNZB verified",
@@ -835,6 +853,9 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			PubDate:   fx.pubDate,
 			Grabs:     fx.grabs,
 			Duration:  fx.duration,
+		}
+		for _, name := range fx.variants {
+			rel.Variants = append(rel.Variants, &release.Release{Title: fx.title, Size: fx.size, Indexer: name, PubDate: fx.pubDate})
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
 		cand.Verdict.Seadex = fx.seadex

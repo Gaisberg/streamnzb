@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search"
 	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/query"
@@ -222,16 +223,25 @@ func filterPlaylistToAvailableForAIOStreams(list *playlistResult) *playlistResul
 	}
 	var filtered []triage.Candidate
 	var filteredPaths []string
+	prunedCopies := false
 	for i, c := range list.Candidates {
-		if c.Release != nil && c.Release.DetailsURL != "" && list.UnavailableDetailsURLs[c.Release.DetailsURL] {
-			continue
+		if c.Release != nil {
+			// A reported-bad copy is dropped from the release rather than
+			// taking the release with it, so a candidate survives on the
+			// copies nobody has reported.
+			surviving, removed := search.DropCopies(c.Release.Clone(), list.UnavailableDetailsURLs)
+			if surviving == nil {
+				continue
+			}
+			prunedCopies = prunedCopies || removed
+			c.Release = surviving
 		}
 		filtered = append(filtered, c)
 		if paths != nil {
 			filteredPaths = append(filteredPaths, paths[i])
 		}
 	}
-	if len(filtered) == len(list.Candidates) {
+	if len(filtered) == len(list.Candidates) && !prunedCopies {
 		return list
 	}
 	firstAvail := false
@@ -611,18 +621,7 @@ func resolveFilterMode(stream *auth.Stream) (string, bool) {
 }
 
 func cloneReleaseForPlaylist(rel *release.Release) *release.Release {
-	if rel == nil {
-		return nil
-	}
-	next := *rel
-	if rel.Languages != nil {
-		next.Languages = append([]string(nil), rel.Languages...)
-	}
-	if rel.Available != nil {
-		available := *rel.Available
-		next.Available = &available
-	}
-	return &next
+	return rel.Clone()
 }
 
 func cloneAvailContext(availCtx *AvailContext) *AvailContext {
@@ -716,6 +715,7 @@ func clonePlaylistResult(list *playlistResult) *playlistResult {
 const (
 	liveSourceKeep = iota
 	liveSourceRebindLibrary
+	liveSourcePromoteCopy
 	liveSourceDrop
 )
 
@@ -738,17 +738,19 @@ func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *
 	libraryItems := s.libraryNZBsByDetailsURL(list.Params)
 	grabbable := make(map[indexer.Indexer]bool)
 	actions := make([]int, len(list.Candidates))
-	rebinds, drops := 0, 0
+	rebinds, promotions, drops := 0, 0, 0
 	for i, candidate := range list.Candidates {
 		actions[i] = s.liveSourceAction(candidate.Release, libraryItems, grabbable)
 		switch actions[i] {
 		case liveSourceRebindLibrary:
 			rebinds++
+		case liveSourcePromoteCopy:
+			promotions++
 		case liveSourceDrop:
 			drops++
 		}
 	}
-	if rebinds == 0 && drops == 0 {
+	if rebinds == 0 && promotions == 0 && drops == 0 {
 		return list
 	}
 
@@ -768,6 +770,12 @@ func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *
 			continue
 		case liveSourceRebindLibrary:
 			rebindReleaseToLibrary(candidate.Release, libraryItems[candidate.Release.DetailsURL])
+		case liveSourcePromoteCopy:
+			promoted := s.promoteGrabbableCopy(candidate.Release, grabbable)
+			if promoted == nil {
+				continue
+			}
+			candidate.Release = promoted
 		}
 		keptCandidates = append(keptCandidates, candidate)
 		if paths != nil {
@@ -782,6 +790,7 @@ func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *
 	logger.Debug("Playlist sources re-resolved",
 		"key", key.CacheKey(),
 		"rebound_to_library", rebinds,
+		"promoted_to_other_copy", promotions,
 		"dropped_no_download_budget", drops,
 		"candidates", len(next.Candidates),
 	)
@@ -805,7 +814,41 @@ func (s *Server) liveSourceAction(rel *release.Release, libraryItems map[string]
 	if s.releaseSourceCanGrab(rel, grabbable) {
 		return liveSourceKeep
 	}
+	// A spent budget kills the copy, not the release: another indexer's copy of
+	// the same release is a live source, and dropping the candidate would
+	// throw it away along with the dead one.
+	for i := 1; i < rel.CopyCount(); i++ {
+		if s.releaseSourceCanGrab(rel.CopyAt(i), grabbable) {
+			return liveSourcePromoteCopy
+		}
+	}
 	return liveSourceDrop
+}
+
+// promoteGrabbableCopy reorders a merged release so a copy that can still be
+// grabbed leads, keeping the spent ones behind it rather than dropping them —
+// a daily budget comes back, and the copies are only a failover hop away.
+// Returns nil when no copy can be grabbed at all.
+func (s *Server) promoteGrabbableCopy(rel *release.Release, grabbable map[indexer.Indexer]bool) *release.Release {
+	var live, spent []*release.Release
+	for _, c := range rel.Copies() {
+		if s.releaseSourceCanGrab(c, grabbable) {
+			live = append(live, c)
+			continue
+		}
+		spent = append(spent, c)
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	primary := live[0]
+	variants := append(append([]*release.Release(nil), live[1:]...), spent...)
+	for _, variant := range variants {
+		// The old primary is now a variant, and variants never nest.
+		variant.Variants = nil
+	}
+	primary.Variants = variants
+	return primary
 }
 
 // releaseSourceCanGrab reports whether the indexer behind rel can still fetch
@@ -944,12 +987,14 @@ func markRawSearchResultUnavailable(raw *rawSearchResult, detailsURL string) boo
 		}
 	}
 	for _, rel := range raw.IndexerReleases {
-		if rel == nil || rel.DetailsURL != detailsURL {
-			continue
-		}
-		if rel.Available == nil || *rel.Available {
-			rel.Available = &availFalse
-			changed = true
+		for _, c := range rel.Copies() {
+			if c == nil || c.DetailsURL != detailsURL {
+				continue
+			}
+			if c.Available == nil || *c.Available {
+				c.Available = &availFalse
+				changed = true
+			}
 		}
 	}
 	return changed
@@ -986,11 +1031,11 @@ func markPlaylistResultUnavailable(list *playlistResult, key StreamSlotKey, deta
 	filteredPaths := make([]string, 0, len(paths))
 	removed := false
 	for i, candidate := range list.Candidates {
-		candidateDetailsURL := ""
-		if candidate.Release != nil {
-			candidateDetailsURL = candidate.Release.DetailsURL
-		}
-		if (detailsURL != "" && candidateDetailsURL == detailsURL) || (slotPath != "" && paths[i] == slotPath) {
+		// Any copy matching retires the whole candidate: this runs once the
+		// release has been given up on, and by then the copy that failed last
+		// is not necessarily the one the candidate leads with.
+		matchesURL := detailsURL != "" && candidate.Release.HasCopyURL(detailsURL)
+		if matchesURL || (slotPath != "" && paths[i] == slotPath) {
 			removed = true
 			continue
 		}
@@ -1084,10 +1129,17 @@ func filterCandidates(merged []triage.Candidate, isAIOStreams, filteringActive b
 		if c.Release == nil {
 			continue
 		}
-		if c.Release.DetailsURL != "" {
-			if unavailableDetailsURLs != nil && unavailableDetailsURLs[c.Release.DetailsURL] {
+		if len(unavailableDetailsURLs) > 0 {
+			// Reported bad retires the copy that was reported, not the release
+			// it is a copy of: a release only drops out once every copy of it
+			// is reported bad.
+			surviving, _ := search.DropCopies(c.Release.Clone(), unavailableDetailsURLs)
+			if surviving == nil {
 				continue
 			}
+			c.Release = surviving
+		}
+		if c.Release.DetailsURL != "" {
 			if seenDetailsURL[c.Release.DetailsURL] {
 				continue
 			}
@@ -1460,11 +1512,22 @@ func countCandidatesByUnavailableDetailsURL(candidates []triage.Candidate, unava
 		if c.Release == nil || c.Release.DetailsURL == "" {
 			continue
 		}
-		if unavailableDetailsURLs[c.Release.DetailsURL] {
+		if allCopiesUnavailable(c.Release, unavailableDetailsURLs) {
 			filtered++
 		}
 	}
 	return filtered
+}
+
+// allCopiesUnavailable reports whether every copy of a release is reported bad,
+// which is what it takes for reported-bad filtering to drop the whole thing.
+func allCopiesUnavailable(rel *release.Release, unavailableDetailsURLs map[string]bool) bool {
+	for _, c := range rel.Copies() {
+		if c == nil || c.DetailsURL == "" || !unavailableDetailsURLs[c.DetailsURL] {
+			return false
+		}
+	}
+	return true
 }
 
 func logAvailReportedBadFiltering(stream *auth.Stream, enabled bool, availFilteredOut, unavailableKnown int) {

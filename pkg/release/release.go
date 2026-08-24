@@ -48,6 +48,89 @@ type Release struct {
 
 	Available *bool
 	Duration  float64
+
+	// Variants are other indexers' copies of the same release, best first.
+	// Deduplication used to discard them; keeping them makes a duplicate
+	// recovery ammunition instead — playback walks the copies of one release
+	// before moving on to a different release. A variant never carries
+	// variants of its own, so the copies of a release are always the primary
+	// plus this slice.
+	Variants []*Release
+}
+
+// CopyCount is how many interchangeable copies of this release are available,
+// counting the primary itself.
+func (r *Release) CopyCount() int {
+	if r == nil {
+		return 0
+	}
+	return 1 + len(r.Variants)
+}
+
+// Copies returns the primary followed by its variants.
+func (r *Release) Copies() []*Release {
+	if r == nil {
+		return nil
+	}
+	out := make([]*Release, 0, r.CopyCount())
+	out = append(out, r)
+	out = append(out, r.Variants...)
+	return out
+}
+
+// CopyAt returns the nth copy (0 is the primary), or nil when n is past the
+// last variant.
+func (r *Release) CopyAt(n int) *Release {
+	if r == nil || n < 0 {
+		return nil
+	}
+	if n == 0 {
+		return r
+	}
+	if n-1 >= len(r.Variants) {
+		return nil
+	}
+	return r.Variants[n-1]
+}
+
+// HasCopyURL reports whether any copy of this release carries detailsURL. The
+// caches key releases by details URL, so a lookup that only checked the
+// primary would miss a release that is being played through one of its
+// variants.
+func (r *Release) HasCopyURL(detailsURL string) bool {
+	if r == nil || detailsURL == "" {
+		return false
+	}
+	for _, c := range r.Copies() {
+		if c != nil && c.DetailsURL == detailsURL {
+			return true
+		}
+	}
+	return false
+}
+
+// Clone deep-copies a release, including its variants, so a cached result can
+// be handed out without a caller's edit reaching back into the cache.
+func (r *Release) Clone() *Release {
+	if r == nil {
+		return nil
+	}
+	next := *r
+	if r.Languages != nil {
+		next.Languages = append([]string(nil), r.Languages...)
+	}
+	if r.Available != nil {
+		available := *r.Available
+		next.Available = &available
+	}
+	if r.Variants != nil {
+		next.Variants = make([]*Release, 0, len(r.Variants))
+		for _, variant := range r.Variants {
+			// Variants never nest, so cloning one is a plain field copy.
+			next.Variants = append(next.Variants, variant.Clone())
+		}
+	}
+	return &next
 }
 
 // releaseDateLayouts are the formats indexers use for pubDate/usenetdate values.

@@ -559,11 +559,22 @@ type Manager struct {
 	mu                       sync.RWMutex
 	failoverOrder            sync.Map
 	slotFailedDuringPlayback sync.Map // slotPath -> *failedSlotEntry (430 during streaming)
+	slotCopyCursor           sync.Map // slotPath -> *slotCopyEntry (same-release variant failover)
 	stopCh                   chan struct{}
 	stopOnce                 sync.Once
 }
 
 type failedSlotEntry struct {
+	expiresAt time.Time
+}
+
+// slotCopyEntry tracks which of a release's interchangeable copies a slot is
+// currently playing. Merged results carry the other indexers' NZBs for the
+// same release as variants, and a slot walks them before the failover walk
+// gives up on the release and moves to a different one.
+type slotCopyEntry struct {
+	index     int
+	total     int
 	expiresAt time.Time
 }
 
@@ -1409,6 +1420,77 @@ func (m *Manager) GetSlotFailedDuringPlayback(slotPath string) bool {
 	return true
 }
 
+// NoteSlotCopies records how many copies of its release a slot has, refreshing
+// the entry without disturbing which copy is current.
+func (m *Manager) NoteSlotCopies(slotPath string, total int) {
+	if slotPath == "" || total <= 0 {
+		return
+	}
+	expiresAt := time.Now().Add(m.ttl)
+	index := 0
+	if val, ok := m.slotCopyCursor.Load(slotPath); ok {
+		if ent, _ := val.(*slotCopyEntry); ent != nil && time.Now().Before(ent.expiresAt) {
+			index = ent.index
+		}
+	}
+	if index >= total {
+		index = total - 1
+	}
+	m.slotCopyCursor.Store(slotPath, &slotCopyEntry{index: index, total: total, expiresAt: expiresAt})
+}
+
+// SlotCopyIndex is the copy the slot should play: 0 (the primary) until a
+// failed attempt moves it on.
+func (m *Manager) SlotCopyIndex(slotPath string) int {
+	val, ok := m.slotCopyCursor.Load(slotPath)
+	if !ok || val == nil {
+		return 0
+	}
+	ent, ok := val.(*slotCopyEntry)
+	if !ok || ent == nil || time.Now().After(ent.expiresAt) {
+		return 0
+	}
+	return ent.index
+}
+
+// AdvanceSlotCopy moves the slot to the next copy of the same release and
+// reports whether there was one. maxAttempts caps how many copies a slot may
+// try in total, so a release with five copies does not turn one failure into a
+// five-NZB startup.
+func (m *Manager) AdvanceSlotCopy(slotPath string, maxAttempts int) bool {
+	if slotPath == "" || maxAttempts <= 1 {
+		return false
+	}
+	val, ok := m.slotCopyCursor.Load(slotPath)
+	if !ok || val == nil {
+		return false
+	}
+	ent, ok := val.(*slotCopyEntry)
+	if !ok || ent == nil || time.Now().After(ent.expiresAt) {
+		return false
+	}
+	next := ent.index + 1
+	if next >= ent.total || next >= maxAttempts {
+		return false
+	}
+	m.slotCopyCursor.Store(slotPath, &slotCopyEntry{index: next, total: ent.total, expiresAt: time.Now().Add(m.ttl)})
+	return true
+}
+
+// ExhaustSlotCopies parks the slot past its last copy, so a retry that could
+// not be set up is not left looking like an untried copy.
+func (m *Manager) ExhaustSlotCopies(slotPath string) {
+	val, ok := m.slotCopyCursor.Load(slotPath)
+	if !ok || val == nil {
+		return
+	}
+	ent, ok := val.(*slotCopyEntry)
+	if !ok || ent == nil {
+		return
+	}
+	m.slotCopyCursor.Store(slotPath, &slotCopyEntry{index: ent.total, total: ent.total, expiresAt: ent.expiresAt})
+}
+
 func (m *Manager) ClearSlotFailedDuringPlayback(slotPath string) {
 	if slotPath == "" {
 		return
@@ -1750,6 +1832,13 @@ func (m *Manager) cleanup() {
 	m.slotFailedDuringPlayback.Range(func(key, val any) bool {
 		if ent, ok := val.(*failedSlotEntry); ok && now.After(ent.expiresAt) {
 			m.slotFailedDuringPlayback.Delete(key)
+		}
+		return true
+	})
+
+	m.slotCopyCursor.Range(func(key, val any) bool {
+		if ent, ok := val.(*slotCopyEntry); ok && now.After(ent.expiresAt) {
+			m.slotCopyCursor.Delete(key)
 		}
 		return true
 	})

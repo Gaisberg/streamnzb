@@ -106,6 +106,15 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 			return nil, false
 		}
 
+		// Another indexer's copy of the same release comes before a different
+		// release: the user picked this one, and the copy that would not open
+		// is not evidence about the copy next to it.
+		if nextSess, ok := s.retrySlotWithNextCopy(r.Context(), sess, sessionID, streamConfig, prepareErr); ok {
+			logger.Info("Trying another copy of the same release", "slot", sessionID, "err", prepareErr)
+			sess = nextSess
+			continue
+		}
+
 		s.recordFailedSlot(sess, sessionID, prepareErr)
 
 		nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
@@ -169,13 +178,53 @@ func (s *Server) recordFailedSlot(sess *session.Session, sessionID string, prepa
 	// marks the slot unconditionally and deliberately. Leaving the condition in
 	// place only made it read like a promise the code does not keep.
 	s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
-	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true)
+	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, false)
 	// Concurrent goroutines for the same session — Stremio re-requests a play
 	// URL on its own — must not each insert a Failure row. Only the first wins.
 	if sess.Once(onceFailureRecorded) {
 		s.recordFailureAttempt(sess, prepareErr, availOutcome)
 	}
 	s.sessionManager.DeleteSession(sessionID)
+}
+
+// retrySlotWithNextCopy answers a failed attempt with another copy of the same
+// release, when merging kept one and the stream's attempt budget still allows
+// it. It returns the session to carry on with, bound to the same slot id.
+//
+// Nothing about the slot is condemned here: the verdict, the AvailNZB report
+// and the persistent bad record all key on the details URL of the NZB that
+// failed, so the copies beside it stay playable. Because the slot id does not
+// change, the client is never redirected — it asked for this release and it
+// still gets this release, out of a different indexer's NZB.
+func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Session, sessionID string, streamConfig *auth.Stream, prepareErr error) (*session.Session, bool) {
+	if !streamFailoverEnabled(streamConfig) {
+		return nil, false
+	}
+	streamId, contentType, id, index, ok := parseStreamSlotID(sessionID)
+	if !ok {
+		return nil, false
+	}
+	if !s.sessionManager.AdvanceSlotCopy(sessionID, streamConfig.EffectiveVariantAttempts()) {
+		return nil, false
+	}
+	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, true)
+	if sess.Once(onceFailureRecorded) {
+		s.recordFailureAttempt(sess, prepareErr, availOutcome)
+	}
+	// The session is bound to the NZB that failed, so it has to go before the
+	// slot can be rebuilt against the next copy under the same id.
+	s.sessionManager.DeleteSession(sessionID)
+
+	key := StreamSlotKey{StreamID: streamId, ContentType: contentType, ID: id}
+	nextSess, err := s.resolveStreamSlot(ctx, key, index, streamConfig)
+	if err != nil {
+		// Park the cursor past the copies so the normal failure path treats
+		// this as the release giving up rather than as an untried copy.
+		logger.Debug("Could not resolve the next copy of the release", "slot", sessionID, "err", err)
+		s.sessionManager.ExhaustSlotCopies(sessionID)
+		return nil, false
+	}
+	return nextSess, true
 }
 
 // nextFallbackSlot returns the next candidate after sess, or ("" ) when

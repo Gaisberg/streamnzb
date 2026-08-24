@@ -23,7 +23,7 @@ const EXAMPLE_DESCRIPTION_TEMPLATE = `{{.ReleaseTitle}}
 // wrapped in {{ }}.
 const FORMAT_FIELDS = [
   { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count'] },
-  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
+  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Variants', '.VariantIndexers', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
   {
     group: 'Rules',
     raw: true,

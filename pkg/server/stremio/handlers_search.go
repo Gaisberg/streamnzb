@@ -17,6 +17,7 @@ import (
 	"streamnzb/pkg/search"
 	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/query"
+	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/session"
@@ -487,6 +488,90 @@ func singleIndexerFromReleases(releases []*release.Release) (string, bool) {
 	return "", false
 }
 
+// dedupeSearchResults collapses copies of the same release into one result.
+//
+// With variant merging on it always runs and keeps the losers as playback
+// fallbacks; the plain path only runs where deduplication always did, because
+// what it does to a duplicate is discard it, and doing that to a single
+// request's results would only lose redundancy the playlist builder collapses
+// for display anyway.
+func (s *Server) dedupeSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, executedRequests int, availCtx *AvailContext) []*release.Release {
+	if !stream.EffectiveMergeVariants() {
+		return dedupeCombinedSearchResults(streamLabel, stream, releases, executedRequests)
+	}
+	inputResults := len(releases)
+	merged := search.MergeSameReleaseVariants(releases, search.VariantMergeOptions{Rank: s.variantRank(stream, availCtx)})
+	variants := 0
+	for _, rel := range merged {
+		variants += rel.CopyCount() - 1
+	}
+	logger.Debug("Stream variant merge",
+		"stream", streamLabel,
+		"input_results", inputResults,
+		"final_results", len(merged),
+		"variants_retained", variants,
+	)
+	return merged
+}
+
+// variantRank orders the copies of one release as playback targets: what this
+// stream already has, then what the availability database says is there, then
+// the indexer this stream prefers, with grabs and age breaking the rest.
+//
+// It is the merge's only opinion about which copy leads. Everything after it —
+// filtering, ranking, formatting — sees one release, so a bad ordering here
+// costs a failover hop rather than a result.
+func (s *Server) variantRank(stream *auth.Stream, availCtx *AvailContext) func(*release.Release) int {
+	rt := s.runtime()
+	var byDetailsURL map[string]*availnzb.ReleaseWithStatus
+	if availCtx != nil {
+		byDetailsURL = availCtx.ByDetailsURL
+	}
+	var ourBackbones map[string]bool
+	if rt.availClient != nil && len(byDetailsURL) > 0 {
+		ourBackbones, _ = rt.availClient.OurBackbones(s.providerHostsForStream(stream))
+	}
+	indexerPriority := make(map[string]int)
+	names := streamIndexerSelections(stream)
+	if len(names) == 0 {
+		for _, idx := range rt.config.Indexers {
+			names = append(names, idx.Name)
+		}
+	}
+	for i, name := range names {
+		indexerPriority[strings.ToLower(strings.TrimSpace(name))] = len(names) - i
+	}
+
+	return func(rel *release.Release) int {
+		if rel == nil {
+			return 0
+		}
+		score := 0
+		if rel.IsLibraryResult() {
+			score += 1 << 20
+		}
+		state := availStateFor(byDetailsURL[rel.DetailsURL], ourBackbones)
+		switch state.Status {
+		case triage.AvailAvailable:
+			score += 1 << 16
+			if days := state.CheckedDaysAgo(); days >= 0 && days <= availRecentDays {
+				score += 1 << 14
+			}
+		case triage.AvailUnavailable:
+			score -= 1 << 18
+		}
+		if state.OnMyBackbone {
+			score += 1 << 18
+		}
+		score += indexerPriority[strings.ToLower(strings.TrimSpace(rel.Indexer))]
+		return score
+	}
+}
+
+// availRecentDays is how fresh an availability record has to be to count as a
+// confirmation rather than a memory when copies of one release are compared.
+const availRecentDays = 30
+
 func dedupeCombinedSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, executedRequests int) []*release.Release {
 	if !streamCombinesResults(stream) {
 		return releases
@@ -519,8 +604,13 @@ func alignAvailContextWithSearch(availCtx *AvailContext, indexerReleases []*rele
 	}
 	indexerDetailsURLs := make(map[string]bool)
 	for _, r := range indexerReleases {
-		if r != nil && r.DetailsURL != "" {
-			indexerDetailsURLs[r.DetailsURL] = true
+		// Every copy, not just the primary: a variant's availability record is
+		// what tells the merge which copy to lead with and the filter which
+		// copies are worth failing over to.
+		for _, c := range r.Copies() {
+			if c != nil && c.DetailsURL != "" {
+				indexerDetailsURLs[c.DetailsURL] = true
+			}
 		}
 	}
 	if len(indexerDetailsURLs) == 0 {
@@ -741,8 +831,15 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		indexerReleases = libraryReleases
 	}
 	dedupInput := len(indexerReleases)
-	indexerReleases = dedupeCombinedSearchResults(streamLabel, stream, indexerReleases, executedRequests)
-	diag.From(ctx).SetDedup(dedupInput, len(indexerReleases))
+	indexerReleases = s.dedupeSearchResults(streamLabel, stream, indexerReleases, executedRequests, availCtx)
+	variantsKept := 0
+	for _, rel := range indexerReleases {
+		if rel == nil {
+			continue
+		}
+		variantsKept += rel.CopyCount() - 1
+	}
+	diag.From(ctx).SetDedup(dedupInput, len(indexerReleases), variantsKept)
 	beforeBad := len(indexerReleases)
 	indexerReleases = s.filterBadReleases(streamLabel, indexerReleases)
 	diag.From(ctx).SetBadFiltered(beforeBad - len(indexerReleases))
@@ -777,28 +874,43 @@ func (s *Server) filterBadReleases(streamLabel string, releases []*release.Relea
 	}
 	urls := make([]string, 0, len(releases))
 	for _, r := range releases {
-		if r != nil && r.DetailsURL != "" {
-			urls = append(urls, r.DetailsURL)
+		for _, c := range r.Copies() {
+			if c != nil && c.DetailsURL != "" {
+				urls = append(urls, c.DetailsURL)
+			}
 		}
 	}
 	bad := badStore.BadSet(urls)
 	if len(bad) == 0 {
 		return releases
 	}
+	badURLs := make(map[string]bool, len(bad))
+	for url := range bad {
+		badURLs[url] = true
+	}
 	kept := releases[:0]
+	droppedCopies := 0
 	dropped := 0
 	for _, r := range releases {
-		if r != nil && r.DetailsURL != "" {
-			if _, isBad := bad[r.DetailsURL]; isBad {
-				dropped++
-				logger.Debug("Filtered known-bad release from results", "stream", streamLabel, "title", r.Title, "url", r.DetailsURL)
-				continue
-			}
+		if r == nil {
+			continue
 		}
-		kept = append(kept, r)
+		// A verdict is about one NZB, so it retires one copy. A release only
+		// leaves the results once every copy of it is known bad.
+		before := r.CopyCount()
+		next, removed := search.DropCopies(r, badURLs)
+		if removed {
+			droppedCopies += before - next.CopyCount()
+			logger.Debug("Filtered known-bad release copy from results", "stream", streamLabel, "title", r.Title, "url", r.DetailsURL)
+		}
+		if next == nil {
+			dropped++
+			continue
+		}
+		kept = append(kept, next)
 	}
-	if dropped > 0 {
-		logger.Info("Filtered known-bad releases from search results", "stream", streamLabel, "dropped", dropped, "remaining", len(kept))
+	if droppedCopies > 0 {
+		logger.Info("Filtered known-bad releases from search results", "stream", streamLabel, "dropped", dropped, "dropped_copies", droppedCopies, "remaining", len(kept))
 	}
 	return kept
 }

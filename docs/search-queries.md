@@ -26,6 +26,41 @@ Each stream lists its movie and TV requests in order (drag to reorder in the str
 - **Combine all** (default) — every request runs in parallel; results are merged in your configured order and deduplicated.
 - **Stop after first hit** — requests run in order and stop at the first one that returns results. Put your most precise request first and broader fallbacks after it.
 
+## Same-release variants
+
+Several indexers carrying the same release used to produce one result and a
+pile of discarded duplicates. With **Merge duplicate copies** on (the default,
+per stream), they still produce one result — but the other copies ride along on
+it as *variants*:
+
+```
+Movie.2160p.Remux.HDR10-FraMeSToR
+  ├─ NZBGeek copy      ← plays first
+  ├─ DrunkenSlug copy
+  └─ NinjaCentral copy
+```
+
+This matters because duplicate indexer entries are not always the same NZB. One
+can be short of articles where another is complete, so a duplicate is redundancy
+worth keeping rather than clutter worth deleting.
+
+- **Which copy leads** — what is already in your library first, then what the
+  availability database reports healthy on a backbone your providers use, then a
+  recent availability confirmation, then your indexer order, with grabs and post
+  age breaking the rest.
+- **What failover does with them** — a copy that will not open, or that dies
+  mid-stream, moves the slot to the next copy of the *same* release before the
+  failover walk gives up and moves to a different release. The slot id does not
+  change, so the client is never redirected: it asked for this release and it
+  still gets this release, out of another indexer's NZB. **Same-release
+  attempts** caps how many copies one release may spend (default 2).
+- **What a failure condemns** — the NZB that failed, not the release. The
+  AvailNZB report and the persistent bad-release record key on that copy's
+  details URL, so the copies beside it stay playable and stay offered.
+- **Seeing it** — the History funnel shows **Variants kept** next to the dedup
+  count, and result templates can render `{{.Variants}}` — see
+  [Custom result formats](result-formatting.md).
+
 Notes on execution:
 
 - An ID-mode request is skipped for content with no usable database ID, and a text-mode request is skipped when no title could be prepared — the History page shows what actually ran.
@@ -37,7 +72,7 @@ Notes on execution:
 
 Each indexer (Settings → Indexers) carries an **API hits** and a **Downloads** daily limit. API hits are spent by searches, downloads by fetching an NZB when playback starts. Live counters are on the Stats page, and the indexer's own `X-RateLimit-*` / `X-DNZBLimit-*` response headers correct them whenever it sends them.
 
-Either limit running out takes the indexer out of searches, not just out of grabs: a release that cannot be fetched is a dead result, and offering it would cost you a failover hop per candidate at playback time. Releases already sitting in a cached result list are dropped for the same reason, so streams from a spent indexer stop being offered without waiting for the cache to expire.
+Either limit running out takes the indexer out of searches, not just out of grabs: a release that cannot be fetched is a dead result, and offering it would cost you a failover hop per candidate at playback time. Releases already sitting in a cached result list are dropped for the same reason, so streams from a spent indexer stop being offered without waiting for the cache to expire — unless another indexer holds a copy of the same release, in which case that copy takes over and the release stays offered (see [Same-release variants](#same-release-variants)).
 
 Two things keep this from stranding a working indexer:
 

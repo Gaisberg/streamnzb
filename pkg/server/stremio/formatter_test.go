@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/triage"
 )
 
 // renderFormat compiles and executes a template over ctx, failing the test on
@@ -171,5 +174,30 @@ func TestFormatTemplateConditionals(t *testing.T) {
 		if got := renderFormat(t, c.text, c.ctx); got != c.want {
 			t.Errorf("%s over %+v = %q, want %q", c.text, c.ctx, got, c.want)
 		}
+	}
+}
+
+func TestFormatContextExposesMergedCopies(t *testing.T) {
+	rel := &release.Release{
+		Title:      "Movie.2160p.Remux-GRP",
+		DetailsURL: "https://geek.invalid/1",
+		Indexer:    "NZBGeek",
+		Variants: []*release.Release{
+			{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
+		},
+	}
+	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false)
+
+	if got := renderFormat(t, "{{.Variants}}", ctx); got != "2" {
+		t.Errorf("{{.Variants}} = %q, want %q", got, "2")
+	}
+	if got := renderFormat(t, "{{.VariantIndexers}}", ctx); got != "NZBGeek, DrunkenSlug" {
+		t.Errorf("{{.VariantIndexers}} = %q, want the playing copy first", got)
+	}
+	// A lone release still reads as one copy, so {{if gt .Variants 1}} is the
+	// natural guard rather than a zero check.
+	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false)
+	if got := renderFormat(t, "{{.Variants}}", lone); got != "1" {
+		t.Errorf("{{.Variants}} for a single copy = %q, want %q", got, "1")
 	}
 }

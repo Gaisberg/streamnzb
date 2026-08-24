@@ -23,6 +23,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/playback"
+	"streamnzb/pkg/release"
 	searchparser "streamnzb/pkg/search/parser"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
@@ -797,14 +798,15 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 		if len(list.SlotPaths) == n {
 			playPath = list.SlotPaths[i]
 		}
-		downloadURL := addAPIKeyToDownloadURL(cand.Release.Link, rt.config.Indexers)
+		rel := s.slotCopyForPlay(playPath, cand.Release)
+		downloadURL := addAPIKeyToDownloadURL(rel.Link, rt.config.Indexers)
 		idx := rt.indexer
-		if cand.Release.SourceIndexer != nil {
-			if ii, ok := cand.Release.SourceIndexer.(indexer.Indexer); ok {
+		if rel.SourceIndexer != nil {
+			if ii, ok := rel.SourceIndexer.(indexer.Indexer); ok {
 				idx = ii
 			}
 		}
-		_, outcome, err := s.sessionManager.CreateDeferredSessionWithFetcherOutcome(playPath, downloadURL, cand.Release, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
+		_, outcome, err := s.sessionManager.CreateDeferredSessionWithFetcherOutcome(playPath, downloadURL, rel, idx, list.Params.ContentIDs, list.Params.ContentType, list.Params.ID, list.Params.ContentTitle, streamID(stream), s.segmentFetcherForStream(stream), s.providerHostsForStream(stream))
 		if err != nil {
 			logger.Debug("Create deferred session for play list failed", "slot", playPath, "err", err)
 			continue
@@ -851,6 +853,22 @@ func (s *Server) resolveStreamSlot(ctx context.Context, key StreamSlotKey, index
 	return s.resolveStreamSlotFromPlaylist(key, index, list, stream)
 }
 
+// slotCopyForPlay picks which copy of a candidate's release the slot plays.
+// The primary leads; a failed attempt moves the slot's cursor on to one of the
+// same-release variants the merge kept, and the session is rebuilt against
+// that NZB under the same slot id — so this switch, unlike the walk to a
+// different release, never has to redirect the client.
+func (s *Server) slotCopyForPlay(slotPath string, rel *release.Release) *release.Release {
+	if rel == nil {
+		return nil
+	}
+	s.sessionManager.NoteSlotCopies(slotPath, rel.CopyCount())
+	if copyRel := rel.CopyAt(s.sessionManager.SlotCopyIndex(slotPath)); copyRel != nil {
+		return copyRel
+	}
+	return rel
+}
+
 func (s *Server) resolveStreamSlotFromPlaylist(key StreamSlotKey, index int, list *playlistResult, stream *auth.Stream) (*session.Session, error) {
 	rt := s.runtime()
 	requestedSlotPath := key.SlotPath(index)
@@ -868,7 +886,7 @@ func (s *Server) resolveStreamSlotFromPlaylist(key StreamSlotKey, index int, lis
 		return nil, fmt.Errorf("slot %s not found in play list", requestedSlotPath)
 	}
 	cand := list.Candidates[candidateIndex]
-	rel := cand.Release
+	rel := s.slotCopyForPlay(requestedSlotPath, cand.Release)
 	if rel == nil || rel.Link == "" {
 		return nil, fmt.Errorf("no release at slot %s", requestedSlotPath)
 	}
@@ -1371,7 +1389,7 @@ func (s *Server) getOrResolveSession(ctx context.Context, sessionID string, stre
 // inconclusive failure still fails the slot and drops the release from the
 // in-memory playlist so failover moves on, but leaves nothing behind — the
 // release is offered again on the next search.
-func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durable bool) {
+func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durable bool, copyOnly bool) {
 	rt := s.runtime()
 	if s == nil || sess == nil {
 		return
@@ -1395,7 +1413,10 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durabl
 				libStore.MarkStatusByDetailsURL(detailsURL, persistence.LibraryStatusBad, reason)
 				logger.Info("Marked release bad in library", "url", detailsURL, "title", releaseTitle, "reason", reason)
 			}
-			if releaseTitle != "" {
+			// Title marking condemns every copy of the release at once, so it
+			// waits until the release itself has been given up on. One copy's
+			// missing articles say nothing about another indexer's NZB.
+			if releaseTitle != "" && !copyOnly {
 				libStore.MarkStatusByTitle(releaseTitle, persistence.LibraryStatusBad, reason)
 			}
 		}
@@ -1412,6 +1433,16 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durabl
 				logger.Info("Recorded persistent bad-release verdict", "url", detailsURL, "title", releaseTitle, "ttl", ttl)
 			}
 		}
+	}
+
+	// A copy-scoped verdict stops here: the persistent record keeps this NZB
+	// out of future searches, while the slot stays playable through the copy
+	// the cursor has already moved to. Removing the candidate or marking the
+	// slot failed would throw away the copies that have not been tried.
+	if copyOnly {
+		logger.Info("Retired one copy of a release; slot continues with the next copy",
+			"url", detailsURL, "title", releaseTitle, "slot", sess.ID, "reason", reason)
+		return
 	}
 
 	// 2. Invalidate in-memory caches (playlistCache and rawSearchCache)
@@ -1457,11 +1488,11 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durabl
 	s.sessionManager.SetSlotFailedDuringPlayback(sess.ID)
 }
 
-func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome availnzb.ReportOutcome, durable bool) {
+func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome availnzb.ReportOutcome, durable, copyOnly bool) {
 	if s == nil || sess == nil {
 		return
 	}
-	s.purgeFailedRelease(sess, outcome.Reason, durable)
+	s.purgeFailedRelease(sess, outcome.Reason, durable, copyOnly)
 }
 
 // reportBadReleaseOutcome runs the shared bad-release ritual: derive the
@@ -1469,7 +1500,12 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 // to the playlist/raw caches. requireReportGate preserves the serve-path rule
 // that only definitive failures reach AvailNZB; the speculative pre-probe
 // path gates on preProbeConfirmsBadRelease before calling and passes false.
-func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error, requireReportGate bool) availnzb.ReportOutcome {
+//
+// copyOnly says the failure retires one NZB rather than the release behind it,
+// which is what a slot that still has an untried same-release copy needs: the
+// report and the persistent verdict are keyed by details URL and stay
+// accurate, while the candidate and the slot survive.
+func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error, requireReportGate, copyOnly bool) availnzb.ReportOutcome {
 	rt := s.runtime()
 	availOutcome := availOutcomeForFailure(streamErr)
 	canReport := rt.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
@@ -1480,7 +1516,7 @@ func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error,
 			availOutcome = rt.availReporter.ReportBad(sess, streamErr.Error())
 		}
 	}
-	s.applyReportedBadReleaseToCaches(sess, availOutcome, conclusiveBadRelease(streamErr))
+	s.applyReportedBadReleaseToCaches(sess, availOutcome, conclusiveBadRelease(streamErr), copyOnly)
 	return availOutcome
 }
 
@@ -1982,7 +2018,7 @@ func (s *Server) cancelPreProbeForContentSlot(slotPath string) {
 // reported; anything inconclusive just moves to the next slot. Runs in the
 // background under a 3-minute budget, cancellable via cacheKey when real
 // playback starts.
-func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts int) {
+func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts int, stream *auth.Stream) {
 	if maxAttempts <= 0 || len(slotPaths) == 0 {
 		return
 	}
@@ -2015,7 +2051,11 @@ func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts 
 			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate",
 				"attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 			if s.preProbeConfirmsBadRelease(probeErr) {
-				s.reportBadReleaseOutcome(sess, probeErr, false)
+				// Moving the slot on to another copy of the same release keeps
+				// the verdict on the NZB that failed. The real play then starts
+				// on a copy the probe never condemned.
+				copyOnly := s.sessionManager.AdvanceSlotCopy(sess.ID, stream.EffectiveVariantAttempts())
+				s.reportBadReleaseOutcome(sess, probeErr, false, copyOnly)
 			}
 		}
 	}()
@@ -2041,15 +2081,15 @@ func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, l
 		slotPaths[i] = key.SlotPath(i)
 	}
 
-	s.preProbeSlots(key.CacheKey(), slotPaths, rt.config.EffectiveSpeculativePreProbingMaxAttempts())
+	s.preProbeSlots(key.CacheKey(), slotPaths, rt.config.EffectiveSpeculativePreProbingMaxAttempts(), stream)
 }
 
-func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string) {
+func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string, stream *auth.Stream) {
 	rt := s.runtime()
 	if len(order) == 0 {
 		return
 	}
-	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, rt.config.EffectiveSpeculativePreProbingMaxAttempts())
+	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, rt.config.EffectiveSpeculativePreProbingMaxAttempts(), stream)
 }
 
 // saveSessionToLibrary upserts the session's NZB + blueprint into the library.
