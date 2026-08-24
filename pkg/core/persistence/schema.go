@@ -35,7 +35,8 @@ const (
 		has_season {INT} NOT NULL DEFAULT 0,
 		season {INT} NOT NULL DEFAULT 0,
 		episode_offset {INT} NOT NULL DEFAULT 0,
-		entry_type {TEXT}
+		entry_type {TEXT},
+		anilist_id {INT} NOT NULL DEFAULT 0
 	);`
 
 	nzbAttemptsSchema = `CREATE TABLE IF NOT EXISTS nzb_attempts (
@@ -264,6 +265,9 @@ var addedColumns = []addedColumn{
 	{"nzb_attempts", "avail_status", "{TEXT}"},
 	{"nzb_attempts", "avail_reason", "{TEXT}"},
 	{"nzb_attempts", "ttff_ms", "{INT} NOT NULL DEFAULT 0"},
+	// AniList id for the entry, keying external anime services (SeaDex). 0
+	// means the source published none.
+	{"anime_mappings", "anilist_id", "{INT} NOT NULL DEFAULT 0"},
 }
 
 // migratedIndexes are created after the column migrations, since several index

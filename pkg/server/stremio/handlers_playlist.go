@@ -1154,6 +1154,7 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 	req := rankingRequest(source)
 	profile := s.profileForKind(req.Kind, stream)
 	inputResults := len(candidates)
+	req.Seadex = s.seadexContext(ctx, source, stream, profile)
 
 	// What ffprobe measured and what the availability database reports are
 	// attached before any profile runs: stream descriptions render them
@@ -1167,6 +1168,9 @@ func (s *Server) applyRanking(ctx context.Context, candidates []triage.Candidate
 		// Unconditional: scoring happens to populate metadata today, but
 		// stream descriptions need it whatever that path does.
 		ensureCandidateMetadata(candidates)
+		// With no profile there is no recordVerdicts pass, so the SeaDex
+		// verdict a format template renders is attached here.
+		annotateSeadexVerdicts(candidates, req.Seadex)
 		logRankingSelection(source, stream, req.Kind, nil, inputResults, inputResults)
 		logStreamSorting(stream, filterMode, len(candidates), len(candidates))
 		return candidates

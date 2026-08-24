@@ -398,6 +398,7 @@ var aioFieldMap = map[string]aioField{
 	"stream.message":    {expr: `""`, kind: kindConst, note: "{stream.message} has no StreamNZB equivalent and renders empty"},
 	"stream.library":    {expr: ".Library", kind: kindBool},
 	"stream.indexer":    {expr: ".Indexer", kind: kindString},
+	"stream.seadex":     {expr: "(or .Seadex.Best .Seadex.Alternative)", kind: kindBool, note: "{stream.seadex} mapped to the per-title SeaDex recommendation (best or alternative)"},
 	"stream.filename":   {expr: ".ReleaseTitle", kind: kindString},
 	"stream.foldername": {expr: ".ReleaseTitle", kind: kindString, note: "{stream.folderName} mapped to {{.ReleaseTitle}}"},
 	"stream.title":      {expr: ".ParsedTitle", kind: kindString},

@@ -20,6 +20,7 @@ const sampleList = `[
 		"kitsu_id": 49016,
 		"imdb_id": ["tt9307686"],
 		"tvdb_id": 355480,
+		"anilist_id": 177191,
 		"themoviedb_id": {"tv": 88046},
 		"season": {"tvdb": 3, "tmdb": 3},
 		"episode_offset": {"tvdb": 12, "tmdb": 12}
@@ -121,10 +122,17 @@ func TestLoadProjectsEntries(t *testing.T) {
 	if !m.HasSeason || m.Season != 3 || m.EpisodeOffset != 12 {
 		t.Fatalf("season = %d (has=%v) offset = %d", m.Season, m.HasSeason, m.EpisodeOffset)
 	}
+	if m.AniListID != 177191 {
+		t.Fatalf("anilist id = %d, want 177191", m.AniListID)
+	}
 
 	movie, ok := s.LookupKitsu("4321")
 	if !ok || movie.TMDBID != "10238" {
 		t.Fatalf("movie tmdb id = %q (ok=%v), want 10238", movie.TMDBID, ok)
+	}
+	// An entry that publishes no anilist id reads as 0.
+	if movie.AniListID != 0 {
+		t.Fatalf("movie anilist id = %d, want 0", movie.AniListID)
 	}
 }
 

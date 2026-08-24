@@ -86,6 +86,12 @@ type Profile struct {
 	minRank int
 }
 
+// NeedsSeadex reports whether any of the profile's rules read the seadex
+// tier, so the caller can skip the SeaDex lookup when nothing would use it.
+func (p *Profile) NeedsSeadex() bool {
+	return p != nil && p.rules.NeedsSeadex()
+}
+
 func NewService() *Service {
 	return &Service{profiles: map[string]*Profile{}}
 }
@@ -221,6 +227,9 @@ type Request struct {
 	Season  int
 	Episode int
 	Title   string
+	// Seadex is the SeaDex recommendation resolved for the requested anime,
+	// nil when no lookup ran (not anime, no mapping, or SeaDex unreachable).
+	Seadex *rules.SeadexContext
 	// Sample stands in for the parts of a release a bare title cannot carry.
 	// It is set only by the preview: a live search has real releases and never
 	// needs to invent one.
@@ -356,6 +365,7 @@ func (p *Profile) applyRules(req Request, results []Result) {
 		Title:            req.Title,
 		Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
 		IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
+		Seadex:           req.Seadex,
 	}
 	envs := make([]rules.Env, len(results))
 	for i := range results {
@@ -417,6 +427,19 @@ func (p *Profile) recordVerdicts(req Request, results []Result) {
 		r.Candidate.Verdict.IsAnime = req.IsAnime
 		r.Candidate.Verdict.Matched = r.Matched
 		r.Candidate.Verdict.Rejections = r.Torrent.Rejections
+		if req.Seadex != nil {
+			group := ""
+			if r.Torrent.Data != nil {
+				group = r.Torrent.Data.Group
+			}
+			se := req.Seadex.For(group)
+			r.Candidate.Verdict.Seadex = triage.SeadexState{
+				Checked:     se.Checked,
+				Known:       se.Known,
+				Best:        se.Best,
+				Alternative: se.Alternative,
+			}
+		}
 	}
 }
 

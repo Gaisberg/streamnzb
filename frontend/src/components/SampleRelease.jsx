@@ -4,7 +4,7 @@ import { Switch } from "@/components/ui/switch"
 import { NumberField, SettingBlock, SettingGroup, SettingRow } from "@/components/ui/setting"
 import { ConfidenceChip } from "@/components/ConfidenceChip"
 import { ChevronDown } from "lucide-react"
-import { EMPTY_SAMPLE, sampleActiveCount } from "@/lib/sample"
+import { DEFAULT_SEADEX, EMPTY_SAMPLE, sampleActiveCount } from "@/lib/sample"
 import { cn, selectClass } from "@/lib/utils"
 
 const DEFAULT_PROBE = {
@@ -57,8 +57,8 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
         </span>
         <span className="text-[11px] text-muted-foreground/70">
           {active > 0
-            ? `${active} of 3 groups on`
-            : "nothing — rules about size, grabs, the file or availability cannot be judged"}
+            ? `${active} of 4 groups on`
+            : "nothing — rules about size, grabs, the file, availability or SeaDex cannot be judged"}
         </span>
       </button>
 
@@ -198,6 +198,54 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                     onCommit={(avail_checked_days) => patch({ avail_checked_days })}
                     min={0}
                     step={1}
+                  />
+                </SettingRow>
+              </>
+            )}
+          </SettingGroup>
+
+          <SettingGroup title="From SeaDex" badge={<ConfidenceChip tier="community" />}>
+            <SettingRow
+              label="Pretend a SeaDex lookup ran"
+              description="Only anime requested through Kitsu is looked up, so SeaDex rules skip everything else. This stands in for a request that was."
+            >
+              <Switch
+                checked={Boolean(sample.seadex)}
+                onCheckedChange={(v) => patch({ seadex: v ? { ...DEFAULT_SEADEX } : null })}
+              />
+            </SettingRow>
+
+            {sample.seadex && (
+              <>
+                <SettingRow
+                  label="SeaDex knows the title"
+                  description="Off simulates an anime SeaDex has not cataloged: rules still run, and seadex.known is no."
+                >
+                  <Switch
+                    checked={sample.seadex.known === true}
+                    onCheckedChange={(v) => patch({ seadex: { ...sample.seadex, known: v } })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Groups marked best"
+                  description="Comma-separated release groups. A sampled release matches when its parsed group is one of these."
+                >
+                  <Input
+                    value={sample.seadex.best_groups || ""}
+                    onChange={(e) => patch({ seadex: { ...sample.seadex, best_groups: e.target.value } })}
+                    placeholder="koala, SubsPlease"
+                    className="h-9 w-52 font-mono text-xs"
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Recommended alternatives"
+                  description="Groups SeaDex lists for the title without the best mark."
+                >
+                  <Input
+                    value={sample.seadex.alt_groups || ""}
+                    onChange={(e) => patch({ seadex: { ...sample.seadex, alt_groups: e.target.value } })}
+                    placeholder="Commie"
+                    className="h-9 w-52 font-mono text-xs"
                   />
                 </SettingRow>
               </>

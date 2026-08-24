@@ -110,6 +110,12 @@ type Env struct {
 
 	Avail AvailEnv `expr:"avail"`
 
+	// Seadex is SeaDex's (releases.moe) per-title recommendation, resolved for
+	// the requested anime and judged against this release's group. Empty for
+	// anything that is not anime and whenever the lookup could not run, which
+	// is why rules touching it fail open.
+	Seadex SeadexEnv `expr:"seadex"`
+
 	// ---- measured ----
 
 	Probed ProbedEnv `expr:"probed"`
@@ -169,6 +175,26 @@ type AvailEnv struct {
 	Compression string `expr:"compression"`
 }
 
+// SeadexEnv is the SeaDex recommendation for the requested anime, seen from
+// one release. best and alternative are per-title judgments: the same group
+// can be best for one anime and unlisted for the next.
+type SeadexEnv struct {
+	// Known is false when SeaDex has no entry for the requested title. That is
+	// an answer, not missing data — an uncataloged anime evaluates normally.
+	Known bool `expr:"known"`
+	// Best is true when this release's group produced a release SeaDex marks
+	// best for this title.
+	Best bool `expr:"best"`
+	// Alternative is true when the group is recommended for this title without
+	// the best mark.
+	Alternative bool `expr:"alternative"`
+	// Checked reports that the lookup ran at all. When it is false — not an
+	// anime request, no AniList mapping, or SeaDex unreachable — rules reading
+	// seadex.* are skipped rather than judged against zero values. Not exposed
+	// to conditions, same contract as HasIndexerData.
+	Checked bool `expr:"-"`
+}
+
 // ProbedEnv is what ffprobe measured. Every field is zero for a release that
 // has never been opened, which is why rules touching it fail open.
 type ProbedEnv struct {
@@ -209,6 +235,21 @@ type Context struct {
 	// simulated release with nothing grabbed yet is still a release whose grab
 	// count is known to be nought.
 	IndexerDataKnown bool
+	// Seadex is the resolved SeaDex recommendation for the requested title,
+	// nil when no lookup ran.
+	Seadex *SeadexContext
+}
+
+// SeadexContext is the per-request SeaDex answer: which release groups the
+// entry recommends, keyed by group name lowercased (the caller normalizes).
+type SeadexContext struct {
+	// Known is false when the lookup succeeded but SeaDex has no entry for
+	// the title.
+	Known bool
+	// Best holds the groups with a release marked best for this title, Alt
+	// the recommended groups without a best mark.
+	Best map[string]bool
+	Alt  map[string]bool
 }
 
 // BuildEnv assembles the environment for one release. parsed may be nil when
@@ -288,8 +329,25 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 
 	env.Avail = availEnv(cand.Verdict.Avail)
 	env.Probed = probedEnv(cand.Verdict.Probed)
+	env.Seadex = ctx.Seadex.For(env.Group)
 	applyMerged(&env, cand.Verdict.Probed)
 	return env
+}
+
+// For judges one release's group against the request's SeaDex answer. A nil
+// context means no lookup ran, which leaves Checked false so seadex.* rules
+// are skipped rather than evaluated against zeros.
+func (c *SeadexContext) For(group string) SeadexEnv {
+	if c == nil {
+		return SeadexEnv{}
+	}
+	g := strings.ToLower(strings.TrimSpace(group))
+	return SeadexEnv{
+		Checked:     true,
+		Known:       c.Known,
+		Best:        g != "" && c.Best[g],
+		Alternative: g != "" && c.Alt[g],
+	}
 }
 
 // applyMerged fills the bare attribute names: what the file measured when it

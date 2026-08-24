@@ -132,7 +132,7 @@ decides how to write a rule — and whether it can run at all.
 |---|---|---|
 | **inferred** | Read out of the release name | Every release. Never stale, frequently wrong. |
 | **reported** | Claimed by the indexer | Near-total. Fresh, unverified. |
-| **community** | AvailNZB, per backbone | Partial. A record can be months old. |
+| **community** | AvailNZB (per backbone) and SeaDex (per anime title) | Partial. An availability record can be months old; SeaDex covers cataloged anime only. |
 | **measured** | ffprobe, in the file itself | Library releases only. Ground truth. |
 
 ### inferred — from the release name
@@ -190,6 +190,34 @@ stream's own providers sit behind. A release alive somewhere you cannot reach
 is not a release you can play.
 
 `avail.checkedDaysAgo` is `-1` when the record has no timestamp.
+
+### community — from SeaDex
+
+`seadex.known` `seadex.best` `seadex.alternative`
+
+[SeaDex](https://releases.moe) curates, per anime title, which release groups
+produced the best and the notable alternative releases of *that* title — a
+per-title judgment no static group tier can reproduce. The same group can be
+best for one anime and unlisted for the next, which is exactly what these
+attributes carry:
+
+```
+seadex.best                                → +1000
+seadex.alternative                         → +500
+```
+
+`seadex.best` is true when this release's group made a release SeaDex marks
+best for the requested title; `seadex.alternative` when the group is
+recommended without the best mark; `seadex.known` when SeaDex has an entry for
+the title at all. Matching is by release-group name, case-insensitively —
+SeaDex catalogs torrents, so the recommendation transfers to usenet whenever
+the same group's release circulates under its group tag.
+
+The lookup runs only for anime requested through Kitsu (SeaDex is keyed by
+AniList id, which the anime-lists import maps per Kitsu entry), and only when
+a rule or a [custom result format](result-formatting.md) actually reads these
+attributes. Answers are cached for a day. The base URL can be overridden with
+`STREAMNZB_SEADEX_BASE_URL`.
 
 ### measured — from ffprobe
 
@@ -263,8 +291,12 @@ exactly as before. Only the one-argument condition form reads the result set.
 
 ## Fail-open
 
-**A rule that reads `probed.*` or `avail.*` does not run on a release that has
-nothing in that tier.** It is skipped, not failed.
+**A rule that reads `probed.*`, `avail.*` or `seadex.*` does not run on a
+release that has nothing in that tier.** It is skipped, not failed. For
+`seadex.*` the tier is per request rather than per release: the rules run when
+the lookup ran — an anime SeaDex has not cataloged is then an honest
+`seadex.known == false` — and are skipped when it could not (not a Kitsu
+request, no AniList mapping, SeaDex unreachable).
 
 Without this, one rule like `probed.height < 1080 → reject` would empty every
 result list of everything except library hits — every fresh indexer hit has a
@@ -294,6 +326,7 @@ that, in three opt-in groups matching the three tiers:
 | From the indexer | `sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`, `library` |
 | From ffprobe | every `probed.*` attribute |
 | From AvailNZB | every `avail.*` attribute |
+| From SeaDex | every `seadex.*` attribute — name the pretend best/alternative groups and each sampled release is matched by its own parsed group |
 
 Each group is off by default, because pretending by default would be the same
 trap in a different coat. Turn one on and its rules are answered with the values
@@ -350,7 +383,8 @@ compatibility layer:
 | `library(...)` | `library` | |
 | `seeders(...)` | `grabs` | Closest usenet analogue: how many people fetched it. |
 | `cached()` / `uncached()` | `avail.status`, `avail.onMyBackbone` | **Not equivalent.** SEL's `cached` is a guarantee from a debrid service; ours is a community report that can be months stale and is per backbone. |
-| `service(...)`, `type(...)`, `seadex(...)` | — | No analogue. StreamNZB has one source type. |
+| `service(...)`, `type(...)` | — | No analogue. StreamNZB has one source type. |
+| `seadex(...)` | `seadex.best`, `seadex.alternative`, `seadex.known` | Matched per title by release group, and skipped when no lookup could run. |
 | `regexMatched()` / `regexScore()` | `releaseName matches "…"` | |
 | `count()` | `count(condition)` | Over the [result set](#about-the-result-set); `exists()` and `none()` alongside it. |
 | `max()`, `avg()`, `median()`, … | — | No analogue: rules ask about the set, they do not select from it. |

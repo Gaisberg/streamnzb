@@ -22,13 +22,14 @@ type AnimeMapping struct {
 	HasSeason     bool
 	EpisodeOffset int
 	EntryType     string
+	AniListID     int
 }
 
 // animeMappingInsertChunk is how many rows go into one multi-row INSERT. The
 // list is ~22k rows and a row-at-a-time loop costs a round trip each, which is
 // cheap in-process and expensive over a socket — 11s against Postgres, against
 // well under a second batched on either backend. The chunk stays small enough
-// that 8 columns fit Postgres's 65535-parameter ceiling many times over, and
+// that 9 columns fit Postgres's 65535-parameter ceiling many times over, and
 // SQLite's default 32766 likewise.
 const animeMappingInsertChunk = 500
 
@@ -77,18 +78,18 @@ func (as *AnimeMappingStore) Replace(mappings []AnimeMapping, updatedAt time.Tim
 
 // insertAnimeMappings writes one chunk as a single multi-row INSERT.
 func insertAnimeMappings(tx *txn, chunk []AnimeMapping) error {
-	const cols = 8
+	const cols = 9
 	var sb strings.Builder
 	sb.WriteString(`INSERT INTO anime_mappings
-		(kitsu_id, imdb_id, tvdb_id, tmdb_id, has_season, season, episode_offset, entry_type) VALUES `)
+		(kitsu_id, imdb_id, tvdb_id, tmdb_id, has_season, season, episode_offset, entry_type, anilist_id) VALUES `)
 	args := make([]any, 0, len(chunk)*cols)
 	for i, m := range chunk {
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
+		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args, m.KitsuID, m.IMDbID, m.TVDBID, m.TMDBID,
-			boolToInt(m.HasSeason), m.Season, m.EpisodeOffset, m.EntryType)
+			boolToInt(m.HasSeason), m.Season, m.EpisodeOffset, m.EntryType, m.AniListID)
 	}
 	_, err := tx.Exec(sb.String(), args...)
 	return err
@@ -109,9 +110,9 @@ func (as *AnimeMappingStore) LookupKitsu(kitsuID int) (*AnimeMapping, bool) {
 		hasSeason int
 	)
 	err := as.db.QueryRow(`
-		SELECT kitsu_id, imdb_id, tvdb_id, tmdb_id, has_season, season, episode_offset, entry_type
+		SELECT kitsu_id, imdb_id, tvdb_id, tmdb_id, has_season, season, episode_offset, entry_type, anilist_id
 		FROM anime_mappings WHERE kitsu_id = ?`, kitsuID).
-		Scan(&m.KitsuID, &imdb, &tvdb, &tmdb, &hasSeason, &m.Season, &m.EpisodeOffset, &entryType)
+		Scan(&m.KitsuID, &imdb, &tvdb, &tmdb, &hasSeason, &m.Season, &m.EpisodeOffset, &entryType, &m.AniListID)
 	if err != nil {
 		return nil, false
 	}

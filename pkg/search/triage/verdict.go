@@ -58,6 +58,24 @@ func (a AvailState) CheckedDaysAgo() int {
 	return int(time.Since(a.CheckedAt).Hours() / 24)
 }
 
+// SeadexState is SeaDex's (releases.moe) judgment of one release for the
+// requested anime: whether the title has an entry at all, and whether this
+// release's group is the recommended best or a listed alternative for it. The
+// recommendation is per title — the same group can be best for one anime and
+// unlisted for the next.
+type SeadexState struct {
+	// Checked reports that a SeaDex lookup ran for the request. False for
+	// non-anime content and whenever the lookup could not run, in which case
+	// the other fields say nothing.
+	Checked bool
+	// Known reports that SeaDex has an entry for the requested title.
+	Known bool
+	// Best reports the release's group produced a release SeaDex marks best
+	// for this title; Alternative that it is recommended without the mark.
+	Best        bool
+	Alternative bool
+}
+
 // RuleMatch is one named scoring rule that fired on a release, in the shape
 // custom result formats consume: a name a user chose and the points it was
 // worth.
@@ -97,4 +115,7 @@ type Verdict struct {
 
 	// Avail is the community availability record.
 	Avail AvailState
+
+	// Seadex is SeaDex's per-title recommendation judged against this release.
+	Seadex SeadexState
 }

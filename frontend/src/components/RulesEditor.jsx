@@ -45,6 +45,7 @@ function tierOf(when = "") {
     when.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, ""),
   )
   if (/\bprobed\./.test(stripped)) return "measured"
+  if (/\bseadex\./.test(stripped)) return "seadex"
   if (/\bavail\./.test(stripped)) return "community"
   if (/\b(sizeGB|ageDays|grabs|passworded|indexer|releaseName|querySource|library)\b/.test(stripped)) {
     return "reported"
@@ -52,9 +53,15 @@ function tierOf(when = "") {
   return "inferred"
 }
 
+// The chip shows how far a value can be trusted; seadex is community-curated
+// data with its own skip behavior, so it keys its own note but wears the
+// community chip.
+const CHIP_TIER = { seadex: "community" }
+
 const SKIP_NOTE = {
   measured: "Only judges releases that have been probed — library items. Everything else passes untouched.",
   community: "Only judges releases AvailNZB has an opinion about. Everything else passes untouched.",
+  seadex: "Only judges anime requested through Kitsu, and only when the title could be looked up on SeaDex. Everything else passes untouched.",
   // Not a fail-open caveat like the two above: this one runs on every real
   // result. It is the preview that cannot answer it, and saying so is the
   // difference between "my rule is broken" and "my rule is untestable here".
@@ -224,7 +231,7 @@ function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, re
           className="h-8 w-44 text-xs"
           aria-label="Rule name"
         />
-        <ConfidenceChip tier={tier} />
+        <ConfidenceChip tier={CHIP_TIER[tier] || tier} />
         <div className="flex-1" />
         <select
           className={cn(selectClass, "h-8 w-auto py-1 text-xs")}

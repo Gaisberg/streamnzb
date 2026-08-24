@@ -27,6 +27,7 @@ release's parsed data.
 | Release | `.ReleaseTitle` `.Size` `.Indexer` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
+| SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` |
 | Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
 | Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
@@ -95,6 +96,22 @@ record is (`-1` when it carries no timestamp).
 ```
 {{if .Availability.OnMyBackbone}}✅{{else if eq .Availability.Status "unknown"}}·{{end}}
 ```
+
+### SeaDex
+
+`.Seadex` is [SeaDex's](https://releases.moe) recommendation for the requested
+anime, judged against this release's group — see [SeaDex in
+rules](rules.md#community--from-seadex) for how the lookup works. `.Best` and
+`.Alternative` are per-title judgments, so a badge built on them marks releases
+recommended for *this* anime rather than groups with a good name in general:
+
+```
+{{if .Seadex.Best}}🥇 SeaDex best{{else if .Seadex.Alternative}}🥈 SeaDex pick{{end}}
+```
+
+`.Checked` reports a lookup ran at all (only anime requested through Kitsu is
+looked up), and `.Known` that SeaDex has an entry for the title. Both are false
+for everything else, so the badge above simply renders nothing outside anime.
 
 ## Helpers
 

@@ -390,3 +390,67 @@ func TestLibraryReleaseCountsAsIndexerData(t *testing.T) {
 		t.Errorf("Points = %d, want 500 — a library release should be judged", got.Points)
 	}
 }
+
+// seadexEnvFor builds the environment for one release under a request that
+// resolved a SeaDex answer, the way ranking does for an anime search.
+func seadexEnvFor(title string, seadex *rules.SeadexContext) rules.Env {
+	cand := triage.Candidate{Release: &release.Release{Title: title}}
+	return rules.BuildEnv(cand, jhin.Parse(title), rules.Context{Kind: "anime_show", Seadex: seadex})
+}
+
+// SeaDex recommendations are per title: the request context names the groups,
+// and each release is judged by its own parsed group, case-insensitively —
+// SeaDex spells groups as they name themselves, release names as they were
+// typed.
+func TestSeadexJudgesByGroup(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "SeaDex best", When: `seadex.best`, Points: 1000},
+		config.RuleConfig{Name: "SeaDex alt", When: `seadex.alternative`, Points: 500},
+	)
+	seadex := &rules.SeadexContext{
+		Known: true,
+		Best:  map[string]bool{"koala": true},
+		Alt:   map[string]bool{"commie": true},
+	}
+
+	if got := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-KoaLa", seadex), "anime_show"); got.Points != 1000 {
+		t.Errorf("best group scored %d, want 1000", got.Points)
+	}
+	if got := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-Commie", seadex), "anime_show"); got.Points != 500 {
+		t.Errorf("alternative group scored %d, want 500", got.Points)
+	}
+	if got := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-OTHER", seadex), "anime_show"); got.Points != 0 {
+		t.Errorf("an unlisted group scored %d, want 0", got.Points)
+	}
+}
+
+// No lookup and no entry are different claims. Without a lookup, seadex rules
+// are skipped; with a lookup that found nothing, they run and seadex.known is
+// simply false.
+func TestSeadexFailsOpenWithoutLookup(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "SeaDex best", When: `seadex.best`, Points: 1000},
+		config.RuleConfig{Name: "Not on SeaDex", When: `not seadex.known`, Points: -100},
+	)
+
+	unchecked := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-KoaLa", nil), "anime_show")
+	if unchecked.Points != 0 {
+		t.Errorf("Points = %d without a lookup, want 0", unchecked.Points)
+	}
+	if len(unchecked.Skipped) != 2 {
+		t.Errorf("Skipped = %v, want both seadex rules reported", unchecked.Skipped)
+	}
+	for _, note := range unchecked.Skipped {
+		if !strings.Contains(note, "SeaDex") {
+			t.Errorf("skip reason %q does not name SeaDex", note)
+		}
+	}
+
+	uncataloged := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-KoaLa", &rules.SeadexContext{}), "anime_show")
+	if len(uncataloged.Skipped) != 0 {
+		t.Errorf("Skipped = %v after a successful lookup, want none", uncataloged.Skipped)
+	}
+	if uncataloged.Points != -100 {
+		t.Errorf("Points = %d for an uncataloged title, want -100", uncataloged.Points)
+	}
+}

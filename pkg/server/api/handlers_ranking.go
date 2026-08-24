@@ -12,6 +12,7 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/ranking"
+	"streamnzb/pkg/search/rules"
 	"streamnzb/pkg/search/triage"
 )
 
@@ -51,6 +52,42 @@ type explainSample struct {
 	AvailStatus       string `json:"avail_status,omitempty"`
 	AvailOnMyBackbone bool   `json:"avail_on_my_backbone,omitempty"`
 	AvailCheckedDays  int    `json:"avail_checked_days,omitempty"`
+
+	Seadex *explainSeadex `json:"seadex,omitempty"`
+}
+
+// explainSeadex is the pretend SeaDex answer for the request. Its presence
+// means "a lookup ran"; each preview title is then judged by matching its
+// parsed release group against these lists, exactly as a live request would
+// be, so the preview cannot claim something matching never delivers.
+type explainSeadex struct {
+	Known      bool     `json:"known,omitempty"`
+	BestGroups []string `json:"best_groups,omitempty"`
+	AltGroups  []string `json:"alt_groups,omitempty"`
+}
+
+// toSeadex builds the request-level SeaDex context, nil when the sample does
+// not simulate one. Naming any group implies the title is known.
+func (e *explainSample) toSeadex() *rules.SeadexContext {
+	if e == nil || e.Seadex == nil {
+		return nil
+	}
+	out := &rules.SeadexContext{
+		Known: e.Seadex.Known || len(e.Seadex.BestGroups) > 0 || len(e.Seadex.AltGroups) > 0,
+		Best:  make(map[string]bool, len(e.Seadex.BestGroups)),
+		Alt:   make(map[string]bool, len(e.Seadex.AltGroups)),
+	}
+	for _, g := range e.Seadex.BestGroups {
+		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
+			out.Best[g] = true
+		}
+	}
+	for _, g := range e.Seadex.AltGroups {
+		if g = strings.ToLower(strings.TrimSpace(g)); g != "" && !out.Best[g] {
+			out.Alt[g] = true
+		}
+	}
+	return out
 }
 
 type explainProbe struct {
@@ -155,6 +192,7 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		Kind:    kind,
 		IsAnime: kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
 		Title:   strings.TrimSpace(req.TargetTitle),
+		Seadex:  req.Sample.toSeadex(),
 		Sample:  req.Sample.toSample(),
 	}
 	results := profile.Explain(titles, explainReq, opts)

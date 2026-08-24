@@ -307,6 +307,16 @@ export const RULE_ATTRIBUTES = [
     ],
   },
   {
+    tier: "community",
+    title: "From SeaDex",
+    note: "SeaDex (releases.moe) recommends releases per anime title, matched here by release group. Only Kitsu-addressed anime requests are looked up, so rules reading these skip everything else.",
+    items: [
+      { name: "seadex.known", type: "yes/no", example: "SeaDex has an entry for this title" },
+      { name: "seadex.best", type: "yes/no", example: "this group made a release marked best for this title" },
+      { name: "seadex.alternative", type: "yes/no", example: "recommended for this title, without the best mark" },
+    ],
+  },
+  {
     tier: "measured",
     title: "From ffprobe",
     note: "Library releases only — a fresh indexer hit has never been opened. Rules reading these skip everything unprobed.",

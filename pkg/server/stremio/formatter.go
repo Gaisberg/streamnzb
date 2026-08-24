@@ -64,6 +64,11 @@ type FormatContext struct {
 	// use; this is the tri-state, the backbone match and the record age.
 	Availability AvailInfo
 
+	// Seadex is SeaDex's (releases.moe) recommendation for the requested
+	// anime, judged against this release's group. Zero unless a lookup ran —
+	// guard badges with the fields themselves ({{if .Seadex.Best}}…{{end}}).
+	Seadex SeadexInfo
+
 	ParsedTitle string // content title as parsed out of the release name
 	Resolution  string
 	Quality     string
@@ -137,6 +142,21 @@ type AvailInfo struct {
 	// timestamp.
 	CheckedDaysAgo int
 	Compression    string
+}
+
+// SeadexInfo is the SeaDex recommendation for one release. Best and
+// Alternative are per-title judgments: the same group can be best for one
+// anime and unlisted for the next.
+type SeadexInfo struct {
+	// Checked reports a SeaDex lookup ran for this request; false for
+	// non-anime content and when SeaDex could not be reached.
+	Checked bool
+	// Known reports SeaDex has an entry for the requested title.
+	Known bool
+	// Best reports this release's group produced a release SeaDex marks best
+	// for the title; Alternative that it is recommended without the mark.
+	Best        bool
+	Alternative bool
 }
 
 // stringList and intList render as comma-separated text instead of Go's
@@ -474,6 +494,12 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		IsAnime:      cand.Verdict.IsAnime,
 		MatchedRules: cand.Verdict.Matched,
 		Availability: availInfo(cand.Verdict.Avail),
+		Seadex: SeadexInfo{
+			Checked:     cand.Verdict.Seadex.Checked,
+			Known:       cand.Verdict.Seadex.Known,
+			Best:        cand.Verdict.Seadex.Best,
+			Alternative: cand.Verdict.Seadex.Alternative,
+		},
 	}
 	if probed := cand.Verdict.Probed; probed != nil {
 		ctx.Verified = true
@@ -591,18 +617,7 @@ func compileFormatTemplate(text string) (*template.Template, error) {
 // stale name must not resurrect whatever inline templates the migration
 // cleared.
 func (s *Server) resultFormatForStream(stream *auth.Stream) *resultFormat {
-	if stream == nil {
-		return nil
-	}
-	nameText := strings.TrimSpace(stream.ResultNameTemplate)
-	descText := strings.TrimSpace(stream.ResultDescriptionTemplate)
-	if profileName := strings.TrimSpace(stream.FormatProfileName); profileName != "" {
-		nameText, descText = "", ""
-		if fp := s.currentConfig().FormatProfileByName(profileName); fp != nil {
-			nameText = strings.TrimSpace(fp.ResultNameTemplate)
-			descText = strings.TrimSpace(fp.ResultDescriptionTemplate)
-		}
-	}
+	nameText, descText := s.resultTemplateTexts(stream)
 	if nameText == "" && descText == "" {
 		return nil
 	}
@@ -625,6 +640,25 @@ func (s *Server) resultFormatForStream(stream *auth.Stream) *resultFormat {
 		return nil
 	}
 	return rf
+}
+
+// resultTemplateTexts resolves the custom template texts for one stream: its
+// bound format profile first, the legacy inline templates as the fallback.
+// Both empty means the built-in format applies.
+func (s *Server) resultTemplateTexts(stream *auth.Stream) (nameText, descText string) {
+	if stream == nil {
+		return "", ""
+	}
+	nameText = strings.TrimSpace(stream.ResultNameTemplate)
+	descText = strings.TrimSpace(stream.ResultDescriptionTemplate)
+	if profileName := strings.TrimSpace(stream.FormatProfileName); profileName != "" {
+		nameText, descText = "", ""
+		if fp := s.currentConfig().FormatProfileByName(profileName); fp != nil {
+			nameText = strings.TrimSpace(fp.ResultNameTemplate)
+			descText = strings.TrimSpace(fp.ResultDescriptionTemplate)
+		}
+	}
+	return nameText, descText
 }
 
 // maxFormattedResultRunes caps template output so a runaway template cannot
@@ -713,6 +747,7 @@ type formatPreviewFixture struct {
 	library  bool
 	caps     string
 	duration float64
+	seadex   triage.SeadexState
 }
 
 func formatPreviewFixtures() []formatPreviewFixture {
@@ -738,6 +773,17 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
 			score:   2850,
 			avail:   true,
+		},
+		{
+			label:   "Anime episode · SeaDex best",
+			content: "86: Eighty Six",
+			title:   "86.Eighty.Six.S01E01.REPACK.1080p.Blu-ray.Opus2.0.x265-koala",
+			indexer: "animetosho",
+			size:    2_118_286_545,
+			grabs:   88,
+			pubDate: time.Now().Add(-300 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:   3600,
+			seadex:  triage.SeadexState{Checked: true, Known: true, Best: true},
 		},
 		{
 			label:   "Library hit · ffprobe verified",
@@ -791,6 +837,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			Duration:  fx.duration,
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
+		cand.Verdict.Seadex = fx.seadex
 		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail)
 
 		builtinName := "StreamNZB\nStandalone"

@@ -139,7 +139,7 @@ func TestConvertAIOStreamsRendersOverContext(t *testing.T) {
 func TestConvertAIOStreamsDropsUnknownFields(t *testing.T) {
 	// Unknown fields behave like missing fields: conditionals fall back to
 	// their false branch, bare expressions drop — nothing leaks into results.
-	res := ConvertAIOStreamsFormat(`{stream.seadex::istrue["best"||"alt"]} {debug.json}`)
+	res := ConvertAIOStreamsFormat(`{stream.rsematched::istrue["best"||"alt"]} {debug.json}`)
 	if res.Template != `alt ` {
 		t.Errorf("unknown fields should fall back/drop, got %q", res.Template)
 	}

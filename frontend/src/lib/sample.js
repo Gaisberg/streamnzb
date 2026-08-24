@@ -13,8 +13,16 @@ export const EMPTY_SAMPLE = {
   avail_status: "unknown",
   avail_on_my_backbone: false,
   avail_checked_days: 7,
+  seadex: null,
 }
 
+// DEFAULT_SEADEX seeds the pretend SeaDex answer when the group is switched
+// on. Group lists are comma-separated text here; sampleForRequest splits them.
+export const DEFAULT_SEADEX = {
+  known: true,
+  best_groups: "",
+  alt_groups: "",
+}
 
 // activeCount says how much of the release is being pretended about, so the
 // section header carries its own state while collapsed.
@@ -23,6 +31,23 @@ export function sampleActiveCount(sample) {
   if (sample?.indexer_data) n += 1
   if (sample?.probed) n += 1
   if (sample?.avail_status && sample.avail_status !== "unknown") n += 1
+  if (sample?.seadex) n += 1
   return n
+}
+
+// sampleForRequest converts the editor's sample state into the explain API
+// shape: the SeaDex group lists are typed as comma-separated text but the API
+// takes them as lists.
+export function sampleForRequest(sample) {
+  if (!sample?.seadex) return sample || undefined
+  const splitGroups = (text) => (text || "").split(",").map((g) => g.trim()).filter(Boolean)
+  return {
+    ...sample,
+    seadex: {
+      known: sample.seadex.known === true,
+      best_groups: splitGroups(sample.seadex.best_groups),
+      alt_groups: splitGroups(sample.seadex.alt_groups),
+    },
+  }
 }
 

@@ -24,12 +24,13 @@ type Rule struct {
 	Count int
 
 	program *vm.Program
-	// needsProbe, needsAvail and needsIndexer record that the condition reads
-	// a tier the release may not have. Such a rule is skipped rather than
-	// evaluated against zero values — see Evaluate.
+	// needsProbe, needsAvail, needsIndexer and needsSeadex record that the
+	// condition reads a tier the release may not have. Such a rule is skipped
+	// rather than evaluated against zero values — see Evaluate.
 	needsProbe   bool
 	needsAvail   bool
 	needsIndexer bool
+	needsSeadex  bool
 	// aggIndices are the set-wide result-set conditions this rule reads. A
 	// rule whose aggregate could not be judged is skipped the same way a rule
 	// reading a missing tier is.
@@ -50,6 +51,20 @@ func (s *Set) Len() int {
 		return 0
 	}
 	return len(s.rules)
+}
+
+// NeedsSeadex reports whether any rule reads the seadex tier, so a caller can
+// skip the SeaDex lookup for profiles that never ask about it.
+func (s *Set) NeedsSeadex() bool {
+	if s == nil {
+		return false
+	}
+	for i := range s.rules {
+		if s.rules[i].needsSeadex {
+			return true
+		}
+	}
+	return false
 }
 
 // Error is a rule that would not compile, named so the editor can point at the
@@ -143,6 +158,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 			needsProbe:   tiers.probe,
 			needsAvail:   tiers.avail,
 			needsIndexer: tiers.indexer,
+			needsSeadex:  tiers.seadex,
 			aggIndices:   ruleAggs,
 		})
 	}
@@ -212,6 +228,10 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 			out.Skipped = append(out.Skipped, r.Name+": availability is unknown")
 			continue
 		}
+		if r.needsSeadex && !env.Seadex.Checked {
+			out.Skipped = append(out.Skipped, r.Name+": no SeaDex lookup for this request")
+			continue
+		}
 		// Size, age and grab count come from the NZB, which a bare release
 		// name does not have. In a real search every release carries one, so
 		// this only ever fires in the preview — where evaluating against zeros
@@ -262,6 +282,7 @@ type tierUse struct {
 	probe   bool
 	avail   bool
 	indexer bool
+	seadex  bool
 }
 
 // tiersUsed reports which optional attribute tiers a condition reads. It walks
@@ -292,6 +313,8 @@ func (v *identVisitor) Visit(node *ast.Node) {
 		v.use.probe = true
 	case ident.Value == "avail":
 		v.use.avail = true
+	case ident.Value == "seadex":
+		v.use.seadex = true
 	case indexerAttributes[ident.Value]:
 		v.use.indexer = true
 	}

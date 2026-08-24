@@ -59,6 +59,10 @@ type Mapping struct {
 	EpisodeOffset int
 
 	Type string
+
+	// AniListID keys external anime services (SeaDex); 0 when the source
+	// published none.
+	AniListID int
 }
 
 // SpansSeries reports whether the entry covers the whole series rather than one
@@ -82,11 +86,12 @@ func (m *Mapping) ResolveEpisode(entryEpisode int) (season, episode int, ok bool
 // the source: imdb is a list, themoviedb is an object keyed by media kind, and
 // season/episode_offset are objects keyed by provider.
 type rawEntry struct {
-	Type     string   `json:"type"`
-	KitsuID  *int     `json:"kitsu_id"`
-	IMDbID   []string `json:"imdb_id"`
-	TVDBID   *int     `json:"tvdb_id"`
-	TheMovie *struct {
+	Type      string   `json:"type"`
+	KitsuID   *int     `json:"kitsu_id"`
+	IMDbID    []string `json:"imdb_id"`
+	TVDBID    *int     `json:"tvdb_id"`
+	AniListID *int     `json:"anilist_id"`
+	TheMovie  *struct {
 		TV    *int  `json:"tv"`
 		Movie []int `json:"movie"`
 	} `json:"themoviedb_id"`
@@ -105,6 +110,9 @@ func (r *rawEntry) toMapping() *persistence.AnimeMapping {
 		return nil
 	}
 	m := &persistence.AnimeMapping{KitsuID: *r.KitsuID, EntryType: strings.TrimSpace(r.Type)}
+	if r.AniListID != nil && *r.AniListID > 0 {
+		m.AniListID = *r.AniListID
+	}
 	if len(r.IMDbID) > 0 {
 		m.IMDbID = strings.TrimSpace(r.IMDbID[0])
 	}
@@ -291,6 +299,7 @@ func (s *Store) LookupKitsu(kitsuID string) (*Mapping, bool) {
 		HasSeason:     row.HasSeason,
 		EpisodeOffset: row.EpisodeOffset,
 		Type:          row.EntryType,
+		AniListID:     row.AniListID,
 	}, true
 }
 

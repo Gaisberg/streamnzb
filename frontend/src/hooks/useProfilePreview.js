@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { apiFetch } from "@/api"
+import { sampleForRequest } from "@/lib/sample"
 
 // SAMPLE_TITLES seed the preview with releases that exercise the settings most
 // worth seeing the effect of: a 4K remux with Dolby Vision, a clean 1080p
@@ -49,7 +50,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
           profile,
           kind: kind && kind !== "all" ? kind : undefined,
           target_title: targetTitle?.trim() || undefined,
-          sample: sample || undefined,
+          sample: sampleForRequest(sample),
         }),
       })
         .then((data) => {
