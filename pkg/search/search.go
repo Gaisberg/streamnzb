@@ -79,16 +79,16 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 	runIDSearch := strings.EqualFold(strings.TrimSpace(req.SearchMode), "id")
 	searchReq := req
 
+	// A text request is nothing without a title: the title *is* the query. An
+	// ID request is the opposite — it carries the id, and the title only ever
+	// fed validation, which no longer gates it. Indexers that support none of
+	// the request's ids sit the request out inside the client.
 	validationQueries := validationQueriesForRequest(req)
-	if len(validationQueries) == 0 {
-		mode := "text"
-		if runIDSearch {
-			mode = "id"
-		}
+	if len(validationQueries) == 0 && !runIDSearch {
 		logger.Debug("Skipping search request without validation basis",
 			"stream", req.StreamLabel,
 			"request", req.RequestLabel,
-			"mode", mode,
+			"mode", "text",
 		)
 		return nil, nil
 	}
@@ -170,15 +170,23 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 		}
 	}
 
+	// Title validation is enforced on text results only. An ID request named
+	// no title to the indexer, so a mismatch there says more about the metadata
+	// title than about the release — scene names diverge from TMDB/TVDB
+	// constantly ("Special Ops: Lioness" for "Lioness"). The mismatch is still
+	// counted and reported: an aggregator quietly turning an unsupported ID
+	// search into a title search shows up as a request that is nearly all
+	// mismatch. Season/episode and year validation are unaffected.
 	var valStats ValidationStats
-	releases, valStats = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
+	releases, valStats = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, !runIDSearch, req.EnableYearValidation)
 	diag.From(ctx).AddValidation(diag.ValidationStat{
-		Request:      req.RequestLabel,
-		Mode:         indexer.SearchModeLabel(searchReq.SearchMode),
-		Raw:          valStats.RawResults,
-		Kept:         valStats.FinalResults,
-		DroppedTitle: valStats.DroppedTitle,
-		DroppedYear:  valStats.DroppedYear,
+		Request:           req.RequestLabel,
+		Mode:              indexer.SearchModeLabel(searchReq.SearchMode),
+		Raw:               valStats.RawResults,
+		Kept:              valStats.FinalResults,
+		DroppedTitle:      valStats.DroppedTitle,
+		DroppedYear:       valStats.DroppedYear,
+		TitleMismatchKept: valStats.TitleMismatchKept,
 	})
 	// The per-profile pass re-validates ALL raw releases once per profile (a
 	// full title parse each) purely to produce per-profile debug stats — skip
@@ -201,7 +209,7 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 // that used to run unconditionally on the hot path.
 func logPerProfileValidationStats(req indexer.SearchRequest, contentType string, rawReleases []*release.Release, runIDSearch bool) {
 	for _, profile := range validationProfilesForRequest(req) {
-		_, profileStats := ValidateSearchResultsWithStatsForQueries(rawReleases, contentType, []string{profile.Query}, req.Season, req.Episode, req.AbsoluteEpisode, true, req.EnableYearValidation)
+		_, profileStats := ValidateSearchResultsWithStatsForQueries(rawReleases, contentType, []string{profile.Query}, req.Season, req.Episode, req.AbsoluteEpisode, !runIDSearch, req.EnableYearValidation)
 		validationAttrs := []any{
 			"stream", req.StreamLabel,
 			"request", req.RequestLabel,
@@ -211,6 +219,7 @@ func logPerProfileValidationStats(req indexer.SearchRequest, contentType string,
 			"final_results", profileStats.FinalResults,
 			"rejected_results", profileStats.RejectedResults,
 			"dropped_title", profileStats.DroppedTitle,
+			"title_mismatch_kept", profileStats.TitleMismatchKept,
 			"dropped_year", profileStats.DroppedYear,
 			"validation_query", profile.Query,
 		}

@@ -43,6 +43,11 @@ type ValidationStat struct {
 	Kept         int    `json:"kept"`
 	DroppedTitle int    `json:"dropped_title"`
 	DroppedYear  int    `json:"dropped_year"`
+	// TitleMismatchKept counts results whose title did not match the metadata
+	// but which were kept because the request did not enforce the title (ID
+	// requests). A high count against a low Raw is how an indexer answering an
+	// ID search with something else becomes visible.
+	TitleMismatchKept int `json:"title_mismatch_kept,omitempty"`
 }
 
 // RejectedRelease is one release the filter profile turned away, with jhin's

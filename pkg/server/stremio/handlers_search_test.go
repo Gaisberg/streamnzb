@@ -369,8 +369,11 @@ func TestBuildSearchParamsFromBaseIDModeBuildsValidationQueriesForMultipleLangua
 	if !reflect.DeepEqual(params.Req.ValidationQueries, []string{"The Lion King", "Koenig der Loewen"}) {
 		t.Fatalf("ValidationQueries = %#v, want %#v", params.Req.ValidationQueries, []string{"The Lion King", "Koenig der Loewen"})
 	}
+	// en-US rides along on every ID request's validation basis, so the request's
+	// own languages can only widen it. Here the English and original titles are
+	// the same string, so they group into one profile under both labels.
 	if !reflect.DeepEqual(params.Req.ValidationQueryProfiles, []indexer.ValidationQueryProfile{
-		{Languages: []string{"original"}, Query: "The Lion King"},
+		{Languages: []string{"original", "en-US"}, Query: "The Lion King"},
 		{Languages: []string{"de-DE"}, Query: "Koenig der Loewen"},
 	}) {
 		t.Fatalf("ValidationQueryProfiles = %#v", params.Req.ValidationQueryProfiles)

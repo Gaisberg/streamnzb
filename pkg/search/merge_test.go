@@ -41,9 +41,47 @@ func TestNormalizedTitleMatches(t *testing.T) {
 		{"Interstellar", "Interstellar.2014.2160p.BluRay", true},
 	}
 	for _, tt := range tests {
-		got := normalizedTitleMatches(tt.expect, tt.gotTitle)
+		got := normalizedTitleMatches(tt.expect, tt.gotTitle, false)
 		if got != tt.want {
 			t.Errorf("normalizedTitleMatches(%q, %q) = %v, want %v", tt.expect, tt.gotTitle, got, tt.want)
+		}
+	}
+}
+
+// With leading words allowed, the expected title may sit anywhere in the
+// release name. This is what a season/episode-backed request uses: scene names
+// keep prefixes the metadata title drops, and the episode number is the guard
+// the leading-word rule was standing in for. Trailing words stay strict —
+// no episode number tells a spin-off apart from its parent show.
+func TestNormalizedTitleMatchesAllowingLeadingWords(t *testing.T) {
+	logger.Init("ERROR")
+
+	tests := []struct {
+		expect   string
+		gotTitle string
+		want     bool
+	}{
+		{"Lioness", "Special.Ops.Lioness.S02E01.1080p.WEB.h264-ETHEL", true},
+		{"Lioness", "Special Ops Lioness", true},
+		{"Batman", "Batman", true},
+		// An article still is not noise in front of a one-word title: "The
+		// Batman" is its own show, and no episode number says otherwise.
+		{"Batman", "The Batman", false},
+		{"The Rings of Power", "The.Lord.of.the.Rings.The.Rings.of.Power.S01E01", true},
+		// The cost of the relaxation, stated outright: a documentary about a
+		// film now matches the film. Only requests that also pin a season or
+		// episode take this path, where such a release cannot survive anyway.
+		{"Interstellar", "The.Science.of.Interstellar", true},
+		{"Batman", "Batman Beyond", false},
+		{"The Rookie", "The Rookie Feds", false},
+		{"Star Trek: Starfleet Academy", "Starfleet Academy S01E01", false},
+		{"The Hunger Games: Mockingjay - Part 1", "The Hunger Games Mockingjay Part 2", false},
+		{"Some Show", "Other Show", false},
+	}
+	for _, tt := range tests {
+		got := normalizedTitleMatches(tt.expect, tt.gotTitle, true)
+		if got != tt.want {
+			t.Errorf("normalizedTitleMatches(%q, %q, leading) = %v, want %v", tt.expect, tt.gotTitle, got, tt.want)
 		}
 	}
 }

@@ -9,9 +9,9 @@ The **Search** page (under Settings) holds reusable search requests — one list
 | **Name** | Unique identifier; streams reference it. Fixed after creation. |
 | **Search Mode** | **ID Search** asks indexers by database ID (IMDb/TVDB/TMDB/Kitsu — whichever the indexer supports). **Text Search** sends the title as a text query. |
 | **Category** | Newznab category list, comma-separated (`2000` movies, `5000` TV). |
-| **Title Language** | Which title to use. *Original* uses the original-language title (Japanese titles are romanized). In text mode this picks the one title sent to indexers; in ID mode the request is ID-only, and the selected languages instead widen **validation**, so results named under any of them are accepted. |
+| **Title Language** *(Text mode)* | Which title to use — *Original* uses the original-language title (Japanese titles are romanized). It is both the title sent to indexers and the title results are checked against. ID requests have no such setting: they name an id, not a title, and do not gate on the answer. |
 | **Limit** | Max results per indexer; 0 = indexer maximum. |
-| **Year** | In text mode, *Search + Validation* appends the year to the query and checks results against it (±1 year); in ID mode only validation applies. *Ignore* does neither. |
+| **Year** | In text mode, *Search + Validation* appends the year to the query and checks results against it (±1 year); in ID mode only validation applies — unlike the title, the year stays enforced for ID requests. *Ignore* does neither. |
 | **Scope** *(TV)* | What episode information the request carries: **Season/Episode** (`S01E04` / `season=`+`ep=` params), **Season** (`S01` / `season=`), or **None** (title only). |
 | **Anime Absolute** *(TV)* | When the content looks like anime, *Supplement* adds extra text queries using the absolute episode number (`One Piece 63`) and widens the category to include TV/Anime (5070), for indexers that number that way. |
 
@@ -64,7 +64,15 @@ There is no separate "pack search" — one search's results are validated and pa
 
 ## Validation
 
-Results are checked against the metadata before anything else happens: the release title must match one of the expected titles (any selected title language, with fuzzy matching that tolerates leading articles and short franchise suffixes), and — when Year is enabled — the release year must be within ±1. Drops show up as *Title mismatch* / *Year mismatch* in the History funnel. If good releases are being dropped, adding the right **Title Language** to the request is usually the fix (e.g. results named under an original or localized title).
+Results are checked against the metadata before anything else happens. What is *enforced* depends on how the request asked:
+
+- **Season, episode and year** are enforced for every request. An episode request keeps only releases that can contain that episode; Year, when enabled, requires the release year to be within ±1.
+- **The title** is enforced for **text requests only**. A text query is just a keyword, so the indexer has no idea which title you meant and the check is what makes the answer yours.
+- **ID requests trust the indexer.** The request named an IMDb/TVDB/TMDB/Kitsu id and nothing else, so the indexer resolved the title itself. Release names diverge from TMDB/TVDB constantly — `Special.Ops.Lioness.S02E01` for a show TMDB calls *Lioness* — and dropping those meant losing correct results to a naming disagreement.
+
+An ID request still runs the title check, it just does not act on it: mismatches are counted and shown as *Title mismatch (kept)* in the History funnel. That number is worth a look. A handful is normal naming drift; a request where nearly everything is a mismatch is an indexer answering an ID search with something it was not asked for — typically an aggregator (NZBHydra2, Prowlarr) silently converting an unsupported ID search into a title search.
+
+Where the title *is* enforced, matching tolerates leading articles, short franchise suffixes (`SVU`), punctuation and `&`/`and`. A request that pins a season or episode also accepts a release whose name carries a prefix the metadata title dropped, because the episode number already proves the show. Drops show up as *Title mismatch* / *Year mismatch* in the History funnel. If good releases are being dropped from a text request, switching its **Title Language** is usually the fix (e.g. results named under an original or localized title) — or add a second text request under the other language. ID requests need no such tuning; they are checked against the English and original titles (plus every Kitsu title for anime) and drop nothing on a title anyway.
 
 ## Defaults
 

@@ -455,3 +455,35 @@ func TestSearchRequestNormalisationLogEntriesOmitSeriesScopeSuffix(t *testing.T)
 		t.Fatalf("entries = %#v, want %#v", entries, want)
 	}
 }
+
+// An ID request does not gate on the title, so its languages may only widen
+// what counts as a match. A stored narrowing must not survive as a stricter
+// basis than a freshly created request would use.
+func TestValidationTitleLanguagesForIDAlwaysIncludeDefaults(t *testing.T) {
+	tests := []struct {
+		name      string
+		language  string
+		languages []string
+		want      []string
+	}{
+		{name: "unset", want: []string{"en-US", ""}},
+		{name: "narrowed to one", languages: []string{"en-US"}, want: []string{"en-US", ""}},
+		{name: "narrowed to original", languages: []string{"original"}, want: []string{"", "en-US"}},
+		{name: "widened", languages: []string{"de-DE"}, want: []string{"de-DE", "en-US", ""}},
+		{name: "legacy single", language: "de-DE", want: []string{"de-DE", "en-US", ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ValidationTitleLanguages("id", tt.language, tt.languages)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ValidationTitleLanguages(id, %q, %v) = %#v, want %#v", tt.language, tt.languages, got, tt.want)
+			}
+		})
+	}
+
+	// Text requests are unchanged: they validate against the one language they
+	// searched under.
+	if got := ValidationTitleLanguages("text", "de-DE", []string{"en-US"}); !reflect.DeepEqual(got, []string{"de-DE"}) {
+		t.Fatalf("text mode = %#v, want [de-DE]", got)
+	}
+}

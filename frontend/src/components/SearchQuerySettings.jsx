@@ -55,7 +55,7 @@ const YEAR_HINT_ITEMS = [
   },
   {
     label: 'ID Search',
-    text: 'Does not change the ID request itself. It only affects validation.',
+    text: 'Does not change the ID request itself. It only affects validation, which still enforces the year.',
   },
 ]
 const TV_SCOPE_HINT_ITEMS = [
@@ -93,11 +93,11 @@ const ANIME_ABSOLUTE_HINT_ITEMS = [
 const TITLE_LANGUAGE_HINT_ITEMS = [
   {
     label: 'Text Search',
-    text: 'Uses exactly one metadata language for the outgoing query.',
+    text: 'Uses exactly one metadata language, both for the outgoing query and for the titles results are checked against.',
   },
   {
     label: 'ID Search',
-    text: 'Does not change the ID request itself. Selected languages are used only for validation.',
+    text: 'No setting: an ID search names an id, not a title, and trusts what the indexer answers.',
   },
   {
     label: 'Normalization',
@@ -228,16 +228,7 @@ function titleLanguageLabel(value) {
   return TITLE_LANGUAGE_OPTIONS.find((option) => option.value === normalizeSearchTitleLanguage(value))?.label || 'Original'
 }
 
-function titleLanguagesSummary(values) {
-  const labels = normalizeSearchTitleLanguages(values).map((value) => titleLanguageLabel(value))
-  if (labels.length === 0) return 'Original'
-  return labels.join(' + ')
-}
-
-function selectedTitleLanguagesForMode(searchMode, singleLanguage, languages) {
-  if (String(searchMode || '').trim().toLowerCase() === 'id') {
-    return draftTitleLanguages(searchMode, singleLanguage, languages)
-  }
+function selectedTextTitleLanguages(singleLanguage) {
   if (singleLanguage === null) return []
   return [normalizeSearchTitleLanguage(singleLanguage)]
 }
@@ -358,9 +349,7 @@ function summarizeQuery(query, kind) {
   if (kind === 'series' && query.tv_categories) primary.push(`TV: ${query.tv_categories}`)
   primary.push(`Limit: ${Number(query.search_result_limit || 0) === 0 ? 'Max' : query.search_result_limit}`)
 
-  if ((query.search_mode || 'id') === 'id') {
-    validation.push(`Title: ${titleLanguagesSummary(query.search_title_languages)}`)
-  } else {
+  if ((query.search_mode || 'id') !== 'id') {
     validation.push(`Title: ${titleLanguageLabel(query.search_title_language || '')}`)
   }
   validation.push(`Year: ${query.include_year === false ? 'Off' : 'On'}`)
@@ -448,18 +437,13 @@ function LabelWithHelp({ label, items = [] }) {
   )
 }
 
-function TitleLanguageSelector({ searchMode, singleLanguage, languages, onSingleChange, onLanguagesChange, onErrorChange, error }) {
-  const normalizedMode = String(searchMode || '').trim().toLowerCase()
-  const isIDMode = normalizedMode === 'id'
-  const selectedLanguages = selectedTitleLanguagesForMode(searchMode, singleLanguage, languages)
+// Text requests only: an ID request sends no title, so it has no title language
+// to pick.
+function TitleLanguageSelector({ singleLanguage, onSingleChange, onErrorChange, error }) {
+  const selectedLanguages = selectedTextTitleLanguages(singleLanguage)
   const availableValues = remainingTitleLanguageOptions(selectedLanguages)
 
   const handleAdd = (value) => {
-    if (isIDMode) {
-      onErrorChange?.('')
-      onLanguagesChange([...selectedLanguages, value])
-      return
-    }
     if (selectedLanguages.length > 0) {
       onErrorChange?.('Text search can use only one title language.')
       return
@@ -468,12 +452,7 @@ function TitleLanguageSelector({ searchMode, singleLanguage, languages, onSingle
     onSingleChange(value)
   }
 
-  const handleRemove = (value) => {
-    if (isIDMode) {
-      onErrorChange?.('')
-      onLanguagesChange(selectedLanguages.filter((currentValue) => currentValue !== value))
-      return
-    }
+  const handleRemove = () => {
     onErrorChange?.('')
     onSingleChange(null)
   }
@@ -517,12 +496,12 @@ function TitleLanguageSelector({ searchMode, singleLanguage, languages, onSingle
       <div className={`min-h-14 rounded-md border px-3 py-3 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'} flex items-center`}>
         <div className="flex w-full flex-wrap items-center gap-2">
           {selectedLanguages.map((language) => (
-            <Badge key={`${normalizedMode}-${language || 'original'}`} variant="secondary" className="flex items-center gap-1 rounded-full px-3 py-1">
+            <Badge key={language || 'original'} variant="secondary" className="flex items-center gap-1 rounded-full px-3 py-1">
               <span>{titleLanguageLabel(language)}</span>
               <button
                 type="button"
                 className="rounded-full text-muted-foreground transition hover:text-foreground"
-                onClick={() => handleRemove(language)}
+                onClick={handleRemove}
                 aria-label={`Remove ${titleLanguageLabel(language)}`}
               >
                 <X className="h-3 w-3" />
@@ -540,7 +519,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
   const normalizedScope = kind === 'series'
     ? normalizeSeriesScopeSelection(draft.series_search_scope)
     : ''
-  const titleLanguageFieldKey = draft.search_mode === 'id' ? 'search_title_languages' : 'search_title_language'
+  const isIDMode = draft.search_mode === 'id'
   const [titleLanguageUIError, setTitleLanguageUIError] = useState('')
 
   const clearTitleLanguageUIError = () => {
@@ -549,7 +528,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
   }
 
   const update = (key, value) => {
-    if (key === 'search_mode' || key === 'search_title_language' || key === 'search_title_languages') {
+    if (key === 'search_mode' || key === 'search_title_language') {
       clearTitleLanguageUIError()
     }
     setDraft((current) => {
@@ -577,20 +556,6 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
         return {
           ...current,
           search_title_language: normalizeDraftSearchTitleLanguage(value),
-        }
-      }
-      if (key === 'search_title_languages') {
-        if (String(current.search_mode || '').trim().toLowerCase() === 'text') {
-          const nextLanguages = normalizeSearchTitleLanguages(value)
-          return {
-            ...current,
-            search_title_languages: nextLanguages.slice(0, 1),
-            search_title_language: nextLanguages.length > 0 ? nextLanguages[0] : null,
-          }
-        }
-        return {
-          ...current,
-          search_title_languages: normalizeSearchTitleLanguages(value),
         }
       }
       const next = { ...current, [key]: value }
@@ -683,24 +648,23 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
       </div>
 
       <div className={sectionCardClass}>
-        <div className="relative p-3">
-          <div className={rowClass}>
-            <TitleLanguageSelector
-              searchMode={draft.search_mode}
-              singleLanguage={draft.search_title_language}
-              languages={draft.search_title_languages}
-              onSingleChange={(value) => update('search_title_language', value)}
-              onLanguagesChange={(value) => update('search_title_languages', value)}
-              onErrorChange={(message) => {
-                setTitleLanguageUIError(message || '')
-                onUIErrorChange?.(message || '')
-              }}
-              error={titleLanguageUIError || fieldErrors[titleLanguageFieldKey]}
-            />
+        {!isIDMode && (
+          <div className="relative p-3">
+            <div className={rowClass}>
+              <TitleLanguageSelector
+                singleLanguage={draft.search_title_language}
+                onSingleChange={(value) => update('search_title_language', value)}
+                onErrorChange={(message) => {
+                  setTitleLanguageUIError(message || '')
+                  onUIErrorChange?.(message || '')
+                }}
+                error={titleLanguageUIError || fieldErrors.search_title_language}
+              />
+            </div>
           </div>
-        </div>
+        )}
         <div className="relative p-3">
-          <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+          {!isIDMode && <div className="absolute left-3 right-3 top-0 border-t border-border/60" />}
           <div className={rowClass}>
             <div className={inlineRowClass}>
               <div className={inlineLabelClass}>
@@ -840,10 +804,7 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
     if (!category || category === '0') {
       nextFieldErrors[kind === 'movie' ? 'movie_categories' : 'tv_categories'] = 'Category is required.'
     }
-    if (next.search_mode === 'id' && draftTitleLanguages(next.search_mode, next.search_title_language, next.search_title_languages).length === 0) {
-      nextFieldErrors.search_title_languages = 'Add at least one title language.'
-    }
-    if (next.search_mode === 'text' && selectedTitleLanguagesForMode(next.search_mode, next.search_title_language, next.search_title_languages).length === 0) {
+    if (next.search_mode === 'text' && selectedTextTitleLanguages(next.search_title_language).length === 0) {
       nextFieldErrors.search_title_language = 'Add at least one title language.'
     }
     if (Number.isNaN(limit) || limit < 0) {

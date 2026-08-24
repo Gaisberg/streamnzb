@@ -88,7 +88,15 @@ func titleWordsForMatch(s string) []string {
 	return filterOptionalTitleWords(release.NormalizeTitleWordsForMatch(s))
 }
 
-func fuzzyTitleMatches(expect, gotTitle string) bool {
+// fuzzyTitleMatches looks for the expected words as a contiguous block in the
+// release title. allowLeadingWords decides what may sit in front of that block:
+// strict matching accepts only articles, which is why "Special Ops Lioness"
+// fails "Lioness". That guard exists for text queries, where a one-word title
+// keyword-matches anything containing the word ("The Science of Interstellar"
+// for "Interstellar"). When the caller can back the title up with a
+// season/episode check it is redundant, and all it costs is every show whose
+// scene name keeps a prefix the metadata title dropped.
+func fuzzyTitleMatches(expect, gotTitle string, allowLeadingWords bool) bool {
 	expectWords := titleWordsForMatch(expect)
 	gotWords := titleWordsForMatch(gotTitle)
 	if len(expectWords) == 0 {
@@ -100,16 +108,16 @@ func fuzzyTitleMatches(expect, gotTitle string) bool {
 	if len(gotWords) < len(expectWords) {
 		return false
 	}
-	if len(expectWords) == 1 {
-		return len(gotWords) == 1 && gotWords[0] == expectWords[0]
-	}
-	// Reject when the release title has far more words than expected
-	// (prevents "The Science of Interstellar" matching "Interstellar").
-	if len(gotWords) > len(expectWords)+2 {
-		return false
+	if !allowLeadingWords {
+		if len(expectWords) == 1 {
+			return len(gotWords) == 1 && gotWords[0] == expectWords[0]
+		}
+		// Reject when the release title has far more words than expected.
+		if len(gotWords) > len(expectWords)+2 {
+			return false
+		}
 	}
 	// Find expectWords as a contiguous block in gotWords.
-	// Words before the block must all be common articles.
 	for i := 0; i <= len(gotWords)-len(expectWords); i++ {
 		match := true
 		for j, w := range expectWords {
@@ -119,11 +127,25 @@ func fuzzyTitleMatches(expect, gotTitle string) bool {
 			}
 		}
 		if match {
+			leadingArticlesOnly := true
 			for _, pre := range gotWords[:i] {
 				if !titleArticles[pre] {
-					return false
+					leadingArticlesOnly = false
+					break
 				}
 			}
+			if !allowLeadingWords && !leadingArticlesOnly {
+				return false
+			}
+			// An article in front of a one-word title is part of the name, not
+			// noise: "The Batman" is not "Batman". A qualifier in front of it
+			// is a different thing, and is the whole point of the relaxation.
+			if allowLeadingWords && i > 0 && leadingArticlesOnly && len(expectWords) == 1 {
+				return false
+			}
+			// Trailing words stay strict either way: a spin-off is named by
+			// what follows the base title ("The Rookie Feds"), and no season
+			// or episode number tells those apart.
 			for _, post := range gotWords[i+len(expectWords):] {
 				if !isAllowedTrailingTitleWord(post) {
 					return false
@@ -144,7 +166,7 @@ func isAllowedTrailingTitleWord(word string) bool {
 	return len(word) > 0 && len(word) <= 3
 }
 
-func normalizedTitleMatches(expect, gotTitle string) bool {
+func normalizedTitleMatches(expect, gotTitle string, allowLeadingWords bool) bool {
 	expectNorm := release.NormalizeTitleForDedup(expect)
 	gotNorm := release.NormalizeTitleForDedup(gotTitle)
 	if gotNorm == "" {
@@ -176,7 +198,7 @@ func normalizedTitleMatches(expect, gotTitle string) bool {
 		}
 	}
 	// Fall back to fuzzy: every expected word must appear as a word in the release title.
-	return fuzzyTitleMatches(expect, gotTitle)
+	return fuzzyTitleMatches(expect, gotTitle, allowLeadingWords)
 }
 
 type ValidationStats struct {
@@ -202,6 +224,12 @@ type ValidationStats struct {
 	DroppedEpisodeRequest int
 	DroppedSeason         int
 	DroppedYear           int
+
+	// TitleMismatchKept counts releases whose title did not match but which
+	// were kept anyway, because the request was not enforcing the title. It is
+	// the only trace an ID request leaves of an indexer answering with
+	// something it was not asked for, so it is reported rather than dropped.
+	TitleMismatchKept int
 }
 
 type validationExpectation struct {
@@ -240,7 +268,7 @@ func validationExpectationsForQueries(contentType string, validationQueries []st
 	return expectations
 }
 
-func titleMatchesAnyExpectation(expectations []validationExpectation, gotTitle string) bool {
+func titleMatchesAnyExpectation(expectations []validationExpectation, gotTitle string, allowLeadingWords bool) bool {
 	if len(expectations) == 0 {
 		return true
 	}
@@ -248,7 +276,7 @@ func titleMatchesAnyExpectation(expectations []validationExpectation, gotTitle s
 		if expectation.Title == "" {
 			continue
 		}
-		if normalizedTitleMatches(expectation.Title, gotTitle) {
+		if normalizedTitleMatches(expectation.Title, gotTitle, allowLeadingWords) {
 			return true
 		}
 	}
@@ -326,10 +354,14 @@ func ValidateSearchResultsWithStats(releases []*release.Release, contentType, va
 }
 
 // ValidateSearchResultsWithStatsForQueries filters releases against the
-// expected title/year/season/episode. absoluteEpisode ("" when unknown) is the
-// anime absolute number of the requested episode; when set, a release that
-// carries the absolute number (with no season or season 1) is accepted even
-// though its parsed season/episode do not match the request.
+// expected title/year/season/episode. enableTitleValidation decides only
+// whether a title mismatch drops the release: the check runs either way, and a
+// mismatch that is not enforced is counted in TitleMismatchKept.
+//
+// absoluteEpisode ("" when unknown) is the anime absolute number of the
+// requested episode; when set, a release that carries the absolute number (with
+// no season or season 1) is accepted even though its parsed season/episode do
+// not match the request.
 func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, contentType string, validationQueries []string, season, episode, absoluteEpisode string, enableTitleValidation, enableYearValidation bool) ([]*release.Release, ValidationStats) {
 	stats := ValidationStats{}
 	if contentType != "movie" && contentType != "series" {
@@ -348,8 +380,15 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 		stats.ExpectedTitle = expectations[0].Title
 		stats.ExpectedYear = expectations[0].Year
 	}
-	stats.TitleValidationApplied = enableTitleValidation && len(expectations) > 0
+	// The title is checked whenever there is something to check it against;
+	// enableTitleValidation only decides whether a mismatch drops the release.
+	checkTitle := len(expectations) > 0
+	stats.TitleValidationApplied = enableTitleValidation && checkTitle
 	stats.YearValidationApplied = enableYearValidation && anyExpectationHasYear(expectations)
+	// A requested season or episode backs the title up, so the release does not
+	// have to *start* with the expected title to be the right show — scene
+	// names keep prefixes the metadata title drops ("Special Ops: Lioness").
+	allowLeadingTitleWords := contentType == "series" && (expectSeason > 0 || expectEpisode > 0)
 
 	var out []*release.Release
 	for _, rel := range releases {
@@ -366,8 +405,8 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 			continue
 		}
 
-		if contentType == "movie" {
-			if stats.TitleValidationApplied && !titleMatchesAnyExpectation(expectations, parsed.Title) {
+		if checkTitle && !titleMatchesAnyExpectation(expectations, parsed.Title, allowLeadingTitleWords) {
+			if stats.TitleValidationApplied {
 				stats.DroppedTitle++
 				logger.Trace("ValidateSearchResults dropped: title",
 					"expect_title", stats.ExpectedTitle,
@@ -376,16 +415,15 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 				)
 				continue
 			}
-		} else {
-			if stats.TitleValidationApplied && !titleMatchesAnyExpectation(expectations, parsed.Title) {
-				stats.DroppedTitle++
-				logger.Trace("ValidateSearchResults dropped: title",
-					"expect_title", stats.ExpectedTitle,
-					"got_title", parsed.Title,
-					"release", rel.Title,
-				)
-				continue
-			}
+			stats.TitleMismatchKept++
+			logger.Trace("ValidateSearchResults kept: title mismatch",
+				"expect_title", stats.ExpectedTitle,
+				"got_title", parsed.Title,
+				"release", rel.Title,
+			)
+		}
+
+		if contentType == "series" {
 			if expectEpisode > 0 {
 				matches := parsed.MatchesEpisodeRequest(expectSeason, expectEpisode)
 				if !matches && expectAbsolute > 0 {

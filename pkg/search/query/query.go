@@ -620,17 +620,21 @@ func BuildSeriesValidationQueryFromMetadata(metadata *ResolvedSearchMetadata, la
 	return title
 }
 
+// ValidationTitleLanguages picks the titles results are checked against. A text
+// request validates against the language it searched under. An ID request does
+// not gate on the title at all, so its configured languages only widen what
+// counts as a match in the funnel and in the text-mode absolute-episode
+// supplement — the defaults are always included, so a stored narrowing can no
+// longer make an ID request stricter than a fresh one.
 func ValidationTitleLanguages(searchMode, language string, languages []string) []string {
 	if strings.EqualFold(strings.TrimSpace(searchMode), "id") {
-		normalized := config.NormalizeSearchTitleLanguages(languages)
-		if len(normalized) > 0 {
-			return normalized
+		configured := config.NormalizeSearchTitleLanguages(languages)
+		if len(configured) == 0 {
+			if single := config.NormalizeSearchTitleLanguage(language); single != "" {
+				configured = []string{single}
+			}
 		}
-		single := config.NormalizeSearchTitleLanguage(language)
-		if single != "" {
-			return []string{single}
-		}
-		return config.DefaultIDSearchTitleLanguages()
+		return config.NormalizeSearchTitleLanguages(append(configured, config.DefaultIDSearchTitleLanguages()...))
 	}
 	single := config.NormalizeSearchTitleLanguage(language)
 	if single == "" {

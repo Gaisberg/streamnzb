@@ -412,10 +412,11 @@ func TestRunIndexerSearchesReturnsTextSearchErrors(t *testing.T) {
 	}
 }
 
-func TestRunIndexerSearchesSkipsWithoutValidationBasis(t *testing.T) {
+// A text request without a title has nothing to search for.
+func TestRunIndexerSearchesSkipsTextRequestWithoutValidationBasis(t *testing.T) {
 	idx := &recordingIndexer{name: "TestIndexer"}
 	req := indexer.SearchRequest{
-		SearchMode: "id",
+		SearchMode: "text",
 		Cat:        "2000",
 		IMDbID:     "tt1655441",
 	}
@@ -429,6 +430,102 @@ func TestRunIndexerSearchesSkipsWithoutValidationBasis(t *testing.T) {
 	}
 	if len(idx.reqs) != 0 {
 		t.Fatalf("expected no Search call without validation basis, got %d", len(idx.reqs))
+	}
+}
+
+// An ID request needs an id, not a title. Metadata that resolved an id but no
+// usable title used to sit the whole request out, which spent the one search
+// that did not need the title at all.
+func TestRunIndexerSearchesRunsIDRequestWithoutValidationBasis(t *testing.T) {
+	idx := &recordingIndexer{name: "TestIndexer"}
+	req := indexer.SearchRequest{
+		SearchMode: "id",
+		Cat:        "2000",
+		IMDbID:     "tt1655441",
+	}
+
+	if _, err := RunIndexerSearches(context.Background(), idx, req, "movie"); err != nil {
+		t.Fatalf("RunIndexerSearches() error = %v", err)
+	}
+	if len(idx.reqs) != 1 {
+		t.Fatalf("expected the id search to run, got %d Search calls", len(idx.reqs))
+	}
+	if idx.reqs[0].SearchMode != "id" {
+		t.Fatalf("expected an id request, got mode %q", idx.reqs[0].SearchMode)
+	}
+}
+
+// An ID request trusts the indexer: it asked by imdbid/tvdbid, so a release
+// whose scene name diverges from the metadata title is kept, and counted.
+func TestRunIndexerSearchesIDRequestKeepsTitleMismatches(t *testing.T) {
+	idx := &staticIndexer{
+		name: "SceneNZBs",
+		resp: &indexer.SearchResponse{
+			Channel: indexer.Channel{
+				Items: []indexer.Item{
+					{Title: "Special.Ops.Lioness.S02E01.1080p.WEB.h264-GROUP", ActualIndexer: "SceneNZBs"},
+				},
+			},
+		},
+	}
+	req := indexer.SearchRequest{
+		SearchMode:      "id",
+		Cat:             "5000",
+		TVDBID:          "420299",
+		Season:          "2",
+		Episode:         "1",
+		ValidationQuery: "Lioness",
+	}
+
+	got, err := RunIndexerSearches(context.Background(), idx, req, "series")
+	if err != nil {
+		t.Fatalf("RunIndexerSearches() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the id result to survive validation, got %d", len(got))
+	}
+}
+
+// The same release under a text request: the title is enforced there, but the
+// season/episode backs it up, so a prefix the metadata title dropped is fine.
+func TestValidateSearchResultsAcceptsPrefixedSceneTitleForEpisodeRequest(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Special.Ops.Lioness.S02E01.1080p.WEB.h264-GROUP"},
+		{Title: "Some.Other.Show.S02E01.1080p.WEB.h264-GROUP"},
+	}
+
+	filtered, stats := ValidateSearchResultsWithStats(releases, "series", "Lioness", "2", "1", true, false)
+
+	if len(filtered) != 1 || filtered[0] != releases[0] {
+		t.Fatalf("expected the prefixed scene title kept and the other show dropped, got %d: %+v", len(filtered), stats)
+	}
+	if stats.DroppedTitle != 1 {
+		t.Fatalf("expected 1 title rejection, got %+v", stats)
+	}
+}
+
+// Not enforcing the title keeps the mismatch, and counts it: an aggregator
+// that turned an unsupported id search into a title search shows up as a
+// request that is nearly all mismatch, not as a request that looked fine.
+func TestValidateSearchResultsCountsTitleMismatchWhenNotEnforced(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "The.Patriot.2000.1080p.BluRay.x264-GROUP"},
+		{Title: "Something.Else.Entirely.2000.1080p.BluRay.x264-GROUP"},
+	}
+
+	filtered, stats := ValidateSearchResultsWithStats(releases, "movie", "The Patriot 2000", "", "", false, true)
+
+	if len(filtered) != 2 {
+		t.Fatalf("expected both results kept when the title is not enforced, got %d", len(filtered))
+	}
+	if stats.TitleValidationApplied {
+		t.Fatalf("expected title validation not to be enforced, got %+v", stats)
+	}
+	if stats.DroppedTitle != 0 {
+		t.Fatalf("expected no title drops, got %+v", stats)
+	}
+	if stats.TitleMismatchKept != 1 {
+		t.Fatalf("expected 1 counted title mismatch, got %+v", stats)
 	}
 }
 

@@ -394,9 +394,9 @@ function parseDiagnosticPayload(diagnostic) {
   }
 }
 
-function FunnelChip({ label, value }) {
+function FunnelChip({ label, value, title }) {
   return (
-    <div className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/95 px-2 py-1 text-xs">
+    <div title={title} className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/95 px-2 py-1 text-xs">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium tabular-nums">{value}</span>
     </div>
@@ -416,6 +416,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
   const validatedTotal = validation.reduce((sum, v) => sum + (v.kept || 0), 0)
   const droppedTitle = validation.reduce((sum, v) => sum + (v.dropped_title || 0), 0)
   const droppedYear = validation.reduce((sum, v) => sum + (v.dropped_year || 0), 0)
+  const titleMismatchKept = validation.reduce((sum, v) => sum + (v.title_mismatch_kept || 0), 0)
 
   return (
     <div className="mb-3 rounded-lg border border-border/60 bg-background/95 px-3 py-3">
@@ -431,6 +432,16 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         {rawTotal > 0 && <FunnelChip label="Raw" value={rawTotal} />}
         {rawTotal > 0 && <FunnelChip label="Validated" value={validatedTotal} />}
         {droppedTitle > 0 && <FunnelChip label="Title mismatch" value={`−${droppedTitle}`} />}
+        {/* ID requests do not enforce the title — the indexer was asked by id,
+            not by name. The mismatch is still worth seeing: a request that is
+            nearly all mismatch is an indexer answering something else. */}
+        {titleMismatchKept > 0 && (
+          <FunnelChip
+            label="Title mismatch (kept)"
+            value={titleMismatchKept}
+            title="Results whose name did not match the metadata title, kept because the request searched by ID. A high count means the indexer answered an ID search with something else."
+          />
+        )}
         {droppedYear > 0 && <FunnelChip label="Year mismatch" value={`−${droppedYear}`} />}
         {snap.dedup_input > 0 && <FunnelChip label="Deduped" value={snap.dedup_output} />}
         {snap.bad_filtered > 0 && <FunnelChip label="Known bad" value={`−${snap.bad_filtered}`} />}
