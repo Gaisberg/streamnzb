@@ -341,7 +341,7 @@ func probeDirectPlayableCandidates(ctx context.Context, files []UnpackableFile) 
 		if err != nil {
 			continue
 		}
-		probeErr := ProbeMediaStreamByContent(stream, c.name, c.size)
+		probeErr := ProbeMediaStreamByContent(ctx, stream, c.name, c.size)
 		if probeErr == nil {
 			return stream, c.name, c.size, c.idx, true
 		}

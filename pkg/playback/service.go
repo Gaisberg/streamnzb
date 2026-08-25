@@ -503,6 +503,9 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: p.allowLargestDirectFallback(sess),
 	}
+	// Serve path: content probes inside the scan run bounded (quick), and with
+	// the operator's configured ffprobe binary rather than the default lookup.
+	ctx = unpack.WithProbeConfig(ctx, p.ffprobePath(), true)
 	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint(), password, target, hints)
 	CacheReturnedBlueprint(sess, bp)
 	if err != nil {
@@ -592,6 +595,9 @@ func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, er
 		AllowLargestDirectFallback: p.allowLargestDirectFallback(sess),
 	}
 
+	// Pre-probe runs off the serve path, so its content probes keep the
+	// thorough window; the configured binary still applies.
+	ctx = unpack.WithProbeConfig(ctx, p.ffprobePath(), false)
 	streamReader, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint(), password, target, hints)
 	if err != nil {
 		return false, fmt.Errorf("media stream mapping: %w", err)

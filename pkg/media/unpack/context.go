@@ -25,6 +25,35 @@ func NestDepthFromContext(ctx context.Context) int {
 	return depth
 }
 
+type probeConfigContextKey struct{}
+
+type probeConfig struct {
+	ffprobePath string
+	quick       bool
+}
+
+// WithProbeConfig records which ffprobe binary content probes should use and
+// whether they must bound their read window (the serve path, where a probe
+// precedes the first byte). It rides the context so nested-archive recursion
+// and the direct-candidate probe inherit it for free — the alternative was
+// threading two parameters through every scan signature.
+func WithProbeConfig(ctx context.Context, ffprobePath string, quick bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, probeConfigContextKey{}, probeConfig{ffprobePath: ffprobePath, quick: quick})
+}
+
+// probeConfigFrom returns the configured ffprobe path and quick-window flag,
+// or zero values when the caller never set them (tests, legacy entry points).
+func probeConfigFrom(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	cfg, _ := ctx.Value(probeConfigContextKey{}).(probeConfig)
+	return cfg.ffprobePath, cfg.quick
+}
+
 func WithArchiveScanIOTrace(ctx context.Context) context.Context {
 	return context.WithValue(ctx, archiveScanIOTraceContextKey{}, true)
 }

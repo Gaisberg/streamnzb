@@ -7,12 +7,16 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/ffprobe"
 )
 
 const ProbeSize = 256 * 1024
+
+// warnMissingFFprobeOnce keeps the no-ffprobe warning to one line per process.
+var warnMissingFFprobeOnce sync.Once
 
 // ContainerTrackInfo summarizes detected track types in a media container header.
 type ContainerTrackInfo struct {
@@ -127,7 +131,14 @@ func ValidateMediaStreamWithOptions(ctx context.Context, stream ReadSeekCloser, 
 		ctx = context.Background()
 	}
 
-	if binPath, ok := ffprobe.FindFFprobeBinary(customFFprobePath); ok {
+	if binPath, ok := ffprobe.FindFFprobeBinary(customFFprobePath); !ok {
+		// Once per process: without this the only trace of a missing ffprobe
+		// is a Debug line at startup, and the operator sees a permanently
+		// empty measured tier with no explanation.
+		warnMissingFFprobeOnce.Do(func() {
+			logger.Warn("No ffprobe binary found (config, PATH, embedded); validating with header heuristics only and skipping measured capabilities")
+		})
+	} else {
 		logger.Debug("Running ffprobe on media stream", "binary", binPath, "file", fileName, "force_decode", opts.ForceDecode)
 		res, err := ffprobe.ProbeStreamWithOptions(ctx, stream, binPath, ffprobe.ProbeOptions{
 			ForceDecode:  opts.ForceDecode,
@@ -192,9 +203,14 @@ func ValidateMediaStreamWithOptions(ctx context.Context, stream ReadSeekCloser, 
 	return nil, nil
 }
 
-// ProbeMediaStreamByContent probes a stream by content, verifying container structure and video track presence.
-func ProbeMediaStreamByContent(stream ReadSeekCloser, name string, size int64) error {
-	if err := ValidateMediaStreamHasVideoWithFFprobeCtx(context.Background(), stream, name, ""); err != nil {
+// ProbeMediaStreamByContent probes a stream by content, verifying container
+// structure and video track presence. The ffprobe binary and read-window
+// bound come from WithProbeConfig on the context — hardcoding "" here used to
+// bypass a configured ffprobe_path, and the unbounded window used to sit on
+// the serve path's time-to-first-byte.
+func ProbeMediaStreamByContent(ctx context.Context, stream ReadSeekCloser, name string, size int64) error {
+	ffprobePath, quick := probeConfigFrom(ctx)
+	if _, err := ValidateMediaStreamWithOptions(ctx, stream, name, ffprobePath, ValidateOptions{QuickHeader: quick}); err != nil {
 		return err
 	}
 	header := make([]byte, ProbeSize)

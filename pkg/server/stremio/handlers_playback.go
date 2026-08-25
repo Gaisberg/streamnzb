@@ -2044,34 +2044,37 @@ func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts 
 	if maxAttempts <= 0 || len(slotPaths) == 0 {
 		return
 	}
-	if maxAttempts > len(slotPaths) {
-		maxAttempts = len(slotPaths)
-	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		defer s.registerPreProbeCancel(cacheKey, cancel)()
 
-		for i := 0; i < maxAttempts; i++ {
-			sess, err := s.sessionManager.GetSession(slotPaths[i])
+		attempts := 0
+		for _, slotPath := range slotPaths {
+			if attempts >= maxAttempts {
+				return
+			}
+			sess, err := s.sessionManager.GetSession(slotPath)
 			// Library-sourced releases were already validated when stored, so
-			// re-probing buys nothing. They still consume an attempt, matching
-			// the previous behaviour.
+			// re-probing buys nothing — and skipping one no longer consumes an
+			// attempt, so the budget is spent on candidates a probe can
+			// actually tell us something about.
 			if rel := sess.Release(); err != nil || (rel != nil && rel.IsLibraryResult()) {
 				if err == nil {
 					logger.Debug("Skipping speculative pre-probing for library candidate", "title", sess.ReportReleaseName())
 				}
 				continue
 			}
+			attempts++
 			ok, probeErr := s.preProbeSessionSync(ctx, sess)
 			if ok {
 				logger.Info("Speculative failover pre-probing found ready stream candidate",
-					"attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.ReportReleaseName())
+					"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.ReportReleaseName())
 				return
 			}
 			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate",
-				"attempt", i+1, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
+				"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 			if s.preProbeConfirmsBadRelease(probeErr) {
 				// Moving the slot on to another copy of the same release keeps
 				// the verdict on the NZB that failed. The real play then starts

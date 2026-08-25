@@ -178,7 +178,11 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 			customPath = opts.Config.EffectiveFFprobePath()
 		}
 		if _, err := ffprobe.EnsureFFprobe(context.Background(), customPath); err != nil {
-			logger.Debug("EnsureFFprobe background check", "err", err)
+			// Warn, not Debug: playback survives without ffprobe, but the
+			// measured tier — stream capability badges, .Probed template
+			// fields, probed.* rules — stays silently empty, and this line is
+			// the only place the operator learns why.
+			logger.Warn("ffprobe is unavailable and could not be downloaded; measured capabilities (badges, probed.* rules) will stay empty", "err", err)
 		}
 	}()
 

@@ -44,6 +44,23 @@ func TestGetRARVolumeNumber(t *testing.T) {
 	}
 }
 
+func TestProbeConfigRidesTheContext(t *testing.T) {
+	path, quick := probeConfigFrom(context.Background())
+	if path != "" || quick {
+		t.Fatalf("unset context should carry zero config, got %q/%v", path, quick)
+	}
+	ctx := WithProbeConfig(context.Background(), "/opt/ffprobe", true)
+	path, quick = probeConfigFrom(ctx)
+	if path != "/opt/ffprobe" || !quick {
+		t.Fatalf("probeConfigFrom = %q/%v, want /opt/ffprobe/true", path, quick)
+	}
+	// Derived contexts — the nested-archive recursion — inherit it.
+	path, quick = probeConfigFrom(WithNestDepth(ctx, 1))
+	if path != "/opt/ffprobe" || !quick {
+		t.Fatalf("derived context lost the probe config: %q/%v", path, quick)
+	}
+}
+
 func TestSelectLargestStoredISOPrefersTheBigUncompressedImage(t *testing.T) {
 	parts := []filePart{
 		{name: "movie.iso", packedSize: 500, isCompressed: false},
