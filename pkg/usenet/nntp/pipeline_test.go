@@ -18,11 +18,16 @@ import (
 type pipelineTestServer struct {
 	ln net.Listener
 	// reply maps a message ID to the raw bytes sent for its BODY, so a test can
-	// script a 430, a truncated body, or a dropped connection per article.
+	// script a 430 or a truncated body per article. An empty string means the
+	// command is read but never answered, which is what the tail of a batch
+	// looks like on a connection that dies with replies still owed.
 	reply map[string]string
-	// closeAfter drops the connection once this many BODY commands have been
-	// answered. Zero never drops.
-	closeAfter int
+	// drop is closed by dropConnections to hang up on the client. The hangup is
+	// driven by the test rather than by a served-command count so that it cannot
+	// race the client's writes: a server that closes while the client is still
+	// issuing turns a mid-batch disconnect into a write error on an unrelated
+	// command, or into an RST that discards a reply the client had not read yet.
+	drop chan struct{}
 
 	mu       sync.Mutex
 	received []string
@@ -38,6 +43,7 @@ func startPipelineServer(t *testing.T, s *pipelineTestServer) *pipelineTestServe
 		t.Fatalf("listen: %v", err)
 	}
 	s.ln = ln
+	s.drop = make(chan struct{})
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -60,11 +66,29 @@ func startPipelineServer(t *testing.T, s *pipelineTestServer) *pipelineTestServe
 	return s
 }
 
+// dropConnections hangs up on every connection the server is holding, standing
+// in for a peer that dies mid-batch. Call it only once per server.
+func (s *pipelineTestServer) dropConnections() { close(s.drop) }
+
 func (s *pipelineTestServer) handle(conn net.Conn) {
 	defer conn.Close()
+
+	// The hangup runs from its own goroutine because the command loop below is
+	// parked in a read at the moment a test decides the connection should die.
+	served := make(chan struct{})
+	defer close(served)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		select {
+		case <-s.drop:
+			_ = conn.Close()
+		case <-served:
+		}
+	}()
+
 	_, _ = conn.Write([]byte("200 ready\r\n"))
 	r := bufio.NewReader(conn)
-	bodies := 0
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -93,11 +117,10 @@ func (s *pipelineTestServer) handle(conn net.Conn) {
 			if !ok {
 				out = fmt.Sprintf(pipelineTestBody, id)
 			}
-			if _, err := conn.Write([]byte(out)); err != nil {
-				return
+			if out == "" {
+				continue
 			}
-			bodies++
-			if s.closeAfter > 0 && bodies >= s.closeAfter {
+			if _, err := conn.Write([]byte(out)); err != nil {
 				return
 			}
 		default:
@@ -259,7 +282,12 @@ func TestBodyPipelineBreaksOnUndrainedBody(t *testing.T) {
 // failure, so the caller discards the connection instead of concluding the
 // remaining articles are missing.
 func TestBodyPipelineReportsConnectionLoss(t *testing.T) {
-	s := startPipelineServer(t, &pipelineTestServer{closeAfter: 1})
+	// b and c are read but never answered, so the batch is genuinely mid-flight
+	// when the connection goes; the hangup itself waits for the test, which
+	// keeps the disconnect from landing on an Issue still on the wire.
+	s := startPipelineServer(t, &pipelineTestServer{
+		reply: map[string]string{"b@x": "", "c@x": ""},
+	})
 	c := s.client(t)
 
 	p := c.NewBodyPipeline(3)
@@ -273,6 +301,8 @@ func TestBodyPipelineReportsConnectionLoss(t *testing.T) {
 	if first.Err != nil {
 		t.Fatalf("first article: %v", first.Err)
 	}
+
+	s.dropConnections()
 
 	reply, err := p.Next()
 	if err == nil {
