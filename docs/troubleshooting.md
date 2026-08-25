@@ -6,6 +6,20 @@ If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg
 
 Exposing StreamNZB through a Cloudflare Tunnel (`cloudflared`) is not recommended. The playback path streams large amounts of video data continuously, and routing it through the tunnel can throttle sustained throughput and cause unnecessary buffering — even when the server itself is keeping up. If you see buffering that doesn't match the connection speeds on the dashboard, try playing directly against the server (LAN address or a direct reverse proxy) to rule the tunnel out. For remote access, prefer a VPN (e.g. WireGuard/Tailscale) or a plain reverse proxy on a directly reachable host. Proxying large volumes of video traffic through Cloudflare may also violate their terms of service.
 
+## Playback takes several seconds to start
+
+Starting a release means measuring things that are not written down anywhere. The NZB has to be fetched, its volumes STAT-sampled for holes, the archive mapped, the container header run past ffprobe — and, for every volume, one article has to be downloaded just to learn how large a decoded segment actually is, because the NZB only records the encoded size. On a large multi-volume release those measurements are most of the wait before the first frame.
+
+**Within a release, an article size is measured once.** Volumes of one release share a posting, so the size measured on the first volume is reused by the rest — a `Segment map probe plan` line reporting `known_from_estimator=1` measured only what it had not seen before. Only the final, short article of each volume is genuinely its own.
+
+**They are paid once per release, not once per play.** The plan and the measured segment maps are stored with the release in the library, so a later play of the same release restores both and goes straight to reading — for a multi-volume archive and for a directly-posted file alike. The log says `Reused persisted blueprint from library` and `Restored persisted segment maps with blueprint` when that happens; a release still being measured logs `Segment map probe plan` instead.
+
+**The end of the file is warmed while the beginning is being probed.** Players read the container index — Matroska cues, a trailing MP4 `moov` — before they show a frame, and that read lands where nothing else has touched: the last volume of an archive, or the final articles of a direct file. Both are prepared alongside the ffprobe run rather than after it (`Warmed playback tail during startup`), so the seek that follows startup does not stall on its own round trips.
+
+**Where the time went is in the log.** At DEBUG, `Play resolve timing`, `Playback open source timing` and `Playback prepare timing` break one startup into its phases in milliseconds — slot recovery, NZB download, the volume STAT sweep, archive mapping, header validation, probe and open. A slow start is one of those numbers, and they say which.
+
+**A cold search is a separate cost.** If the play URL outlived its cached search — a long pause, or a restart — the indexers are queried again before the release can be resolved, logged as `Playback playlist cache miss` followed by `Play: recovered after cache/session eviction`. That is the search fan-out, not the release; the numbers above start after it.
+
 ## Playback glitches or drops on a damaged release
 
 Usenet releases decay: individual articles go missing from providers over time. StreamNZB tiers its response by how much of a file is actually gone, rather than treating every miss the same way.
@@ -21,6 +35,14 @@ Usenet releases decay: individual articles go missing from providers over time. 
 **Encrypted archives play when the password is in the NZB.** AES-encrypted RAR and 7z sets are decrypted as they stream, using the `password` meta field indexers put in the NZB head. A set whose password lives only in a forum post or a `.nfo` cannot be opened — there is nowhere to enter one.
 
 **Ranges are proven before they are promised.** Before writing a response header, StreamNZB reads the first byte of the range the player asked for. A release that cannot deliver that byte gets a redirect to the next candidate — logged as `Refusing to advertise a range this release cannot deliver` — instead of a `206` that advertises a full length and then delivers nothing. Players fail over promptly rather than waiting on a response that will never arrive.
+
+## Stalls after a seek, on a release with very large articles
+
+Read-ahead — how much of the file is being fetched ahead of what the player is reading — is sized as a fraction of the file, which works out to a fraction of its runtime whatever the bitrate, and is then clamped to a sane number of megabytes and of articles.
+
+It has to be, because the size of a single article is a poster's choice and varies by more than an order of magnitude between releases. Fetches in flight share the line, so a window counted in articles rather than bytes means a release posted in 4 MiB articles queues several times more data ahead of the player than one posted in 700 KB articles — and the article the player is actually waiting on arrives no sooner than the dozens it does not need yet. In the log that looks like a wave of `Slow segment fetch` warnings all reporting a similar duration, finishing at the same moment, with `Serve window` showing `read_blocked` close to the whole window.
+
+Nothing is configurable here and nothing needs to be. If you see that pattern with modest article sizes, the bottleneck is the link or the providers rather than the window — check the connection speeds on the dashboard and the **Buffering behind Cloudflare Tunnel** note above.
 
 ## An episode still shows no streams after it aired
 

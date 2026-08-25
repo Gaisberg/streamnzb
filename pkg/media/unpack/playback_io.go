@@ -13,6 +13,25 @@ type playbackPrefetcher interface {
 	PrefetchPlaybackOffset(ctx context.Context, offset int64)
 }
 
+// playbackRangePrefetcher is offered by files that can warm a bounded byte
+// range, rather than a whole read-ahead window, from an offset.
+type playbackRangePrefetcher interface {
+	PrefetchPlaybackRange(ctx context.Context, offset, length int64)
+}
+
+func prefetchPlaybackRange(ctx context.Context, f UnpackableFile, offset, length int64) {
+	if offset < 0 {
+		length += offset
+		offset = 0
+	}
+	if length <= 0 {
+		return
+	}
+	if p, ok := f.(playbackRangePrefetcher); ok {
+		p.PrefetchPlaybackRange(ctx, offset, length)
+	}
+}
+
 type playbackStreamOpener interface {
 	OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, error)
 }

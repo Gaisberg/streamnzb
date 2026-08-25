@@ -170,7 +170,12 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 	// of full segments — force a real probe of a full segment too. Without this,
 	// a 23,538-segment file had the last segment's 711,755 painted across every
 	// segment (~5KB/segment cumulative offset drift), desyncing the demuxer.
-	if lastIdx > 0 {
+	//
+	// A known size is a full-segment size and satisfies the same requirement, so
+	// the forced probe is only needed when nothing else can supply one.
+	// Otherwise the second volume of a release re-measures a class the first
+	// volume already measured, which is the whole point of the estimator.
+	if lastIdx > 0 && len(knownByNZBBytes) == 0 {
 		hasNonLast := false
 		for _, idx := range indices {
 			if idx != lastIdx {

@@ -363,7 +363,7 @@ func (s *Server) bootstrapPlaylistForPlay(ctx context.Context, key StreamSlotKey
 	for _, slotPath := range list.SlotPaths {
 		s.sessionManager.ClearSlotFailedDuringPlayback(slotPath)
 	}
-	s.ensureDeferredSessionsForPlaylist(list, key, stream)
+	s.refreshLiveDeferredSessionsForPlaylist(list, key, stream)
 	return list, nil
 }
 
@@ -799,9 +799,16 @@ func getStreamSinkFromContext(ctx context.Context) StreamSink {
 	return nil
 }
 
-// ensureDeferredSessionsForPlaylist creates deferred sessions for every candidate in the play list,
-// keyed by the same slot path used in stream URLs, so handlePlay can serve without resolving or hitting indexers.
-func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key StreamSlotKey, stream *auth.Stream) {
+// refreshLiveDeferredSessionsForPlaylist re-binds the deferred sessions that
+// already exist to a freshly built play list, so a slot whose release moved
+// under it is replaced instead of serving what it was bound to before.
+//
+// Slots with no session are deliberately left alone. Creating one per candidate
+// meant a hundred manager-lock round trips — plus a gzip inflate for every
+// candidate the library had cached — on a play path that needs exactly one of
+// them, and every route to a slot (the play request itself, the failover walk,
+// the fallback prefetch) already resolves it from this same list on demand.
+func (s *Server) refreshLiveDeferredSessionsForPlaylist(list *playlistResult, key StreamSlotKey, stream *auth.Stream) {
 	rt := s.runtime()
 	if list == nil || list.Params == nil {
 		return
@@ -810,6 +817,7 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 	createdCount := 0
 	reusedCount := 0
 	replacedCount := 0
+	skippedCount := 0
 	for i := 0; i < n; i++ {
 		cand := list.Candidates[i]
 		if cand.Release == nil || cand.Release.Link == "" {
@@ -818,6 +826,10 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 		playPath := key.SlotPath(i)
 		if len(list.SlotPaths) == n {
 			playPath = list.SlotPaths[i]
+		}
+		if s.sessionManager.PeekSession(playPath) == nil {
+			skippedCount++
+			continue
 		}
 		rel := s.slotCopyForPlay(playPath, cand.Release)
 		downloadURL := addAPIKeyToDownloadURL(rel.Link, rt.config.Indexers)
@@ -851,6 +863,7 @@ func (s *Server) ensureDeferredSessionsForPlaylist(list *playlistResult, key Str
 			"created", createdCount,
 			"reused", reusedCount,
 			"replaced", replacedCount,
+			"deferred_to_first_play", skippedCount,
 		)
 	}
 }
@@ -1256,6 +1269,28 @@ type preparedPlaybackStream = playback.Prepared
 
 func (s *Server) preparePlaybackStream(ctx context.Context, sess *session.Session) (preparedPlaybackStream, error) {
 	return s.playback.Prepare(ctx, sess)
+}
+
+// prefetchNextFallbackAfterStart warms the next fallback once the client has
+// bytes in hand.
+//
+// Deriving the next slot and pulling its NZB used to happen before the stream
+// was even opened, which put a second NZB download — and the archive scan
+// behind it — in the way of the play the user is waiting on. Failover is a
+// contingency; it can be warmed on the far side of first byte.
+func (s *Server) prefetchNextFallbackAfterStart(sessionID string, stream *auth.Stream) {
+	if sessionID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		nextSlotID, err := s.deriveNextSlotID(ctx, sessionID, stream)
+		if err != nil || nextSlotID == "" {
+			return
+		}
+		s.prefetchNextFallbackNZB(nextSlotID, stream)
+	}()
 }
 
 // prefetchNextFallbackNZB starts a background goroutine to resolve the next fallback slot and
@@ -2117,6 +2152,17 @@ func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string, stream *a
 	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, rt.config.EffectiveSpeculativePreProbingMaxAttempts(), stream)
 }
 
+// sessionUnpackFiles adapts a session's loader files to the archive layer's
+// interface, which is how a blueprint reaches the files it was built from.
+func sessionUnpackFiles(sess *session.Session) []unpack.UnpackableFile {
+	files := sess.Files()
+	unpackFiles := make([]unpack.UnpackableFile, len(files))
+	for i := range files {
+		unpackFiles[i] = files[i]
+	}
+	return unpackFiles
+}
+
 // saveSessionToLibrary upserts the session's NZB + blueprint into the library.
 // status follows the lifecycle: LibraryStatusPending as soon as the NZB and
 // blueprint are known (so nothing is lost if validation/playback is interrupted),
@@ -2137,8 +2183,9 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint
 	}
 
 	bpJSON := ""
-	if data, ok := unpack.SerializeArchiveBlueprint(bp); ok {
-		// Reusable serialized form (plaintext STORE-mode RAR) — rehydrated on replay.
+	if data, ok := unpack.SerializeBlueprint(bp, sessionUnpackFiles(sess)); ok {
+		// Reusable serialized form (plaintext STORE-mode RAR, or a direct file
+		// and its segment map) — rehydrated on replay.
 		bpJSON = string(data)
 	} else if bp != nil {
 		// Non-reusable blueprint type: keep a raw marshal so the HasBlueprint flag

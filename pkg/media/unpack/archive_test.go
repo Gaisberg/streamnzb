@@ -282,3 +282,105 @@ func TestMaybeMarkArchiveFastProbePassesNilThrough(t *testing.T) {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
+
+// warmableStubFile records what a tail warm asks of a volume.
+type warmableStubFile struct {
+	stubFile
+	ensured    int
+	prefetches [][2]int64
+	err        error
+}
+
+func (f *warmableStubFile) EnsureSegmentMapCtx(context.Context) error {
+	f.ensured++
+	return f.err
+}
+
+func (f *warmableStubFile) PrefetchPlaybackRange(_ context.Context, offset, length int64) {
+	f.prefetches = append(f.prefetches, [2]int64{offset, length})
+}
+
+func TestWarmPlaybackTailMapsAndPullsTheVolumeTheMediaEndsIn(t *testing.T) {
+	head := &warmableStubFile{stubFile: stubFile{name: "x.part01.rar", size: 1000}}
+	tail := &warmableStubFile{stubFile: stubFile{name: "x.part02.rar", size: 64 << 20}}
+	bp := &ArchiveBlueprint{
+		MainFileName: "movie.mkv",
+		Parts: []VirtualPartDef{
+			{VirtualStart: 0, VirtualEnd: 999, VolFile: head},
+			{VirtualStart: 1000, VirtualEnd: 1999, VolFile: tail},
+		},
+	}
+	if !WarmPlaybackTail(context.Background(), bp, nil) {
+		t.Fatal("expected the tail volume to be warmed")
+	}
+	if tail.ensured != 1 {
+		t.Fatalf("tail volume mapped %d times, want 1", tail.ensured)
+	}
+	if len(tail.prefetches) != 1 {
+		t.Fatalf("tail volume prefetched %d ranges, want 1", len(tail.prefetches))
+	}
+	if got := tail.prefetches[0]; got[0] != tail.Size()-playbackTailWarmBytes || got[1] != playbackTailWarmBytes {
+		t.Fatalf("prefetched %v, want the last %d bytes", got, int64(playbackTailWarmBytes))
+	}
+	// The head is already mapped and being read by startup; warming it again
+	// would spend articles the opening bytes need.
+	if head.ensured != 0 || len(head.prefetches) != 0 {
+		t.Fatalf("head volume was warmed: ensured=%d prefetches=%d", head.ensured, len(head.prefetches))
+	}
+}
+
+// A directly-posted release has no volumes to map — its cost is the cold
+// articles at the end of the one file, which is what the player reads first.
+func TestWarmPlaybackTailPullsTheEndOfADirectFile(t *testing.T) {
+	other := &warmableStubFile{stubFile: stubFile{name: "sample.mkv", size: 1 << 20}}
+	media := &warmableStubFile{stubFile: stubFile{name: "movie.mkv", size: 32 << 20}}
+	bp := &DirectBlueprint{FileName: "movie.mkv", FileIndex: 1}
+
+	if !WarmPlaybackTail(context.Background(), bp, []UnpackableFile{other, media}) {
+		t.Fatal("expected the direct file to be warmed")
+	}
+	if len(media.prefetches) != 1 {
+		t.Fatalf("media prefetched %d ranges, want 1", len(media.prefetches))
+	}
+	if got := media.prefetches[0]; got[0] != media.Size()-playbackTailWarmBytes {
+		t.Fatalf("prefetched from %d, want the last %d bytes", got[0], int64(playbackTailWarmBytes))
+	}
+	if len(other.prefetches) != 0 {
+		t.Fatal("warmed a file the blueprint does not play")
+	}
+}
+
+// The recorded index belongs to the file list the blueprint was built from; a
+// replay rebuilds that list, so the name has to win.
+func TestWarmPlaybackTailResolvesDirectFileByName(t *testing.T) {
+	media := &warmableStubFile{stubFile: stubFile{name: "movie.mkv", size: 32 << 20}}
+	decoy := &warmableStubFile{stubFile: stubFile{name: "extras.mkv", size: 32 << 20}}
+	bp := &DirectBlueprint{FileName: "movie.mkv", FileIndex: 1}
+
+	if !WarmPlaybackTail(context.Background(), bp, []UnpackableFile{media, decoy}) {
+		t.Fatal("expected the named file to be warmed")
+	}
+	if len(media.prefetches) != 1 || len(decoy.prefetches) != 0 {
+		t.Fatalf("warm followed the stale index: media=%d decoy=%d", len(media.prefetches), len(decoy.prefetches))
+	}
+}
+
+func TestWarmPlaybackTailIsBestEffort(t *testing.T) {
+	failing := &warmableStubFile{stubFile: stubFile{name: "x.part01.rar"}, err: errors.New("no article")}
+	bp := &ArchiveBlueprint{Parts: []VirtualPartDef{{VolFile: failing}}}
+	if WarmPlaybackTail(context.Background(), bp, nil) {
+		t.Fatal("a failed warm must report itself, not claim success")
+	}
+	if len(failing.prefetches) != 0 {
+		t.Fatal("prefetched a volume whose map could not be built")
+	}
+	if WarmPlaybackTail(context.Background(), &ArchiveBlueprint{}, nil) {
+		t.Fatal("a blueprint with no parts has no tail to warm")
+	}
+	if WarmPlaybackTail(context.Background(), &DirectBlueprint{FileName: "gone.mkv"}, nil) {
+		t.Fatal("a direct blueprint with no matching file has nothing to warm")
+	}
+	if WarmPlaybackTail(context.Background(), &FailedBlueprint{}, nil) {
+		t.Fatal("a failed blueprint has nothing to warm")
+	}
+}

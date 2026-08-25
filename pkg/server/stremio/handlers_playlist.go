@@ -133,7 +133,29 @@ func (s *Server) playlistCacheTTL() time.Duration {
 type playlistCacheEntry struct {
 	result *playlistResult
 	until  time.Time
+	// live is result with live-source state applied: releases rebound to a
+	// library copy, candidates whose indexer has no download budget left
+	// promoted to another copy or dropped.
+	//
+	// Deriving it walks every candidate and asks the library for the content's
+	// stored NZBs, and it is derived on every read of the playlist — which a
+	// single play does several times (slot recovery, the failover walk, the
+	// fallback prefetch). On a 103-candidate list that measured ~215 ms per
+	// read, most of one play's slot-resolution budget, for state that changes
+	// when the library or a daily budget does — not between two reads a
+	// millisecond apart.
+	//
+	// A writer that changes result drops this instead of updating it: a nil
+	// memo is simply re-derived on the next read.
+	live      *playlistResult
+	liveUntil time.Time
 }
+
+// liveSourceMemoTTL is how long a derived live-source view is reused. Long
+// enough to cover one play's burst of playlist reads, short enough that a
+// release that has just landed in the library, or a budget that has just come
+// back, is picked up while the player is still on the same title.
+const liveSourceMemoTTL = 10 * time.Second
 
 type rawSearchCacheEntry struct {
 	raw   *rawSearchResult
@@ -273,10 +295,21 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 				candidateCount = len(ent.result.Candidates)
 			}
 			logger.Debug("Playback playlist cache hit", "key", cacheKey, "candidates", candidateCount)
+			now := time.Now()
+			live, liveUntil := ent.live, ent.liveUntil
+			if live == nil || !now.Before(liveUntil) {
+				live = s.applyLiveSourceState(ent.result, key)
+				liveUntil = now.Add(liveSourceMemoTTL)
+			}
 			// Sliding expiry: keep the entry alive while it is being used (reconnects, seeks, failover resolution).
 			// CompareAndSwap so a concurrent update (e.g. bad-release filtering) is never clobbered by the refresh.
-			s.playlistCache.CompareAndSwap(cacheKey, v, &playlistCacheEntry{result: ent.result, until: time.Now().Add(s.playlistCacheTTL())})
-			return s.applyLiveSourceState(ent.result, key), nil
+			s.playlistCache.CompareAndSwap(cacheKey, v, &playlistCacheEntry{
+				result:    ent.result,
+				until:     now.Add(s.playlistCacheTTL()),
+				live:      live,
+				liveUntil: liveUntil,
+			})
+			return live, nil
 		}
 	}
 	logger.Debug("Playback playlist cache miss", "key", cacheKey)
@@ -287,8 +320,15 @@ func (s *Server) buildPlaylist(ctx context.Context, key StreamSlotKey, isAIOStre
 	// Cache the full list and filter the view: a fresh build can also be stale
 	// by the time it is replayed, and a quota that comes back should simply
 	// stop filtering rather than force a re-search.
-	s.playlistCache.Store(cacheKey, &playlistCacheEntry{result: list, until: time.Now().Add(s.playlistCacheTTL())})
-	return s.applyLiveSourceState(list, key), nil
+	now := time.Now()
+	live := s.applyLiveSourceState(list, key)
+	s.playlistCache.Store(cacheKey, &playlistCacheEntry{
+		result:    list,
+		until:     now.Add(s.playlistCacheTTL()),
+		live:      live,
+		liveUntil: now.Add(liveSourceMemoTTL),
+	})
+	return live, nil
 }
 
 func (s *Server) buildPlaylistUncached(ctx context.Context, key StreamSlotKey, isAIOStreams bool, stream *auth.Stream) (*playlistResult, error) {
@@ -735,6 +775,7 @@ func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *
 	if list == nil || len(list.Candidates) == 0 {
 		return list
 	}
+	started := time.Now()
 	libraryItems := s.libraryNZBsByDetailsURL(list.Params)
 	grabbable := make(map[indexer.Indexer]bool)
 	actions := make([]int, len(list.Candidates))
@@ -789,6 +830,7 @@ func (s *Server) applyLiveSourceState(list *playlistResult, key StreamSlotKey) *
 	recomputePlaylistAvailability(next)
 	logger.Debug("Playlist sources re-resolved",
 		"key", key.CacheKey(),
+		"took_ms", time.Since(started).Milliseconds(),
 		"rebound_to_library", rebinds,
 		"promoted_to_other_copy", promotions,
 		"dropped_no_download_budget", drops,

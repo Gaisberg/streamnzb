@@ -552,8 +552,10 @@ var (
 	_ originalNamer                 = (*renamedFile)(nil)
 	_ contextAwareSegmentMapEnsurer = (*renamedFile)(nil)
 	_ uniformSegmentMapPrimer       = (*renamedFile)(nil)
+	_ segmentMapSnapshotter         = (*renamedFile)(nil)
 	_ playbackReaderAt              = (*renamedFile)(nil)
 	_ playbackPrefetcher            = (*renamedFile)(nil)
+	_ playbackRangePrefetcher       = (*renamedFile)(nil)
 	_ interface{ IsFailed() bool }  = (*renamedFile)(nil)
 	_ yencNamer                     = (*renamedFile)(nil)
 	_ firstSegmentReader            = (*renamedFile)(nil)
@@ -573,6 +575,20 @@ func (f *renamedFile) PrimeUniformSegmentMapFromEstimator() bool {
 	return false
 }
 
+func (f *renamedFile) SegmentMapSnapshotJSON() ([]byte, bool) {
+	if s, ok := f.UnpackableFile.(segmentMapSnapshotter); ok {
+		return s.SegmentMapSnapshotJSON()
+	}
+	return nil, false
+}
+
+func (f *renamedFile) RestoreSegmentMapJSON(data []byte) bool {
+	if s, ok := f.UnpackableFile.(segmentMapSnapshotter); ok {
+		return s.RestoreSegmentMapJSON(data)
+	}
+	return false
+}
+
 func (f *renamedFile) OpenPlaybackReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
 	return openPlaybackReaderAt(f.UnpackableFile, ctx, offset)
 }
@@ -587,6 +603,12 @@ func (f *renamedFile) OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekClo
 func (f *renamedFile) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if p, ok := f.UnpackableFile.(playbackPrefetcher); ok {
 		p.PrefetchPlaybackOffset(ctx, offset)
+	}
+}
+
+func (f *renamedFile) PrefetchPlaybackRange(ctx context.Context, offset, length int64) {
+	if p, ok := f.UnpackableFile.(playbackRangePrefetcher); ok {
+		p.PrefetchPlaybackRange(ctx, offset, length)
 	}
 }
 

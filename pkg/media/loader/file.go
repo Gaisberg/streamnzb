@@ -144,6 +144,12 @@ type File struct {
 
 	segmentDetectMu sync.Mutex
 
+	// What produced the segment map, kept so it can be persisted and replayed
+	// on a later session instead of re-probing (see SegmentMapSnapshotJSON).
+	mapProbes  map[int]int64
+	mapKnown   map[int64]int64
+	mapSkipGap bool
+
 	firstStatMu      sync.Mutex
 	firstStatChecked bool
 	firstStatExists  bool
@@ -481,6 +487,7 @@ func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
+	f.recordSegmentMapInputsLocked(nil, knownByNZBBytes, true)
 	logger.Trace("Primed uniform segment map from estimator",
 		"name", f.Name(),
 		"size", f.totalSize,
@@ -552,6 +559,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		}
 	}
 
+	lastIdx := len(f.segments) - 1
 	for idx, decoded := range probedByIndex {
 		if idx < 0 || idx >= len(f.segments) {
 			continue
@@ -561,8 +569,21 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 			"index", idx,
 			"size", decoded,
 			"nzb_size", f.segments[idx].Bytes)
-		if idx == 0 && f.estimator != nil {
-			f.estimator.Set(f.segments[0].Bytes, decoded)
+		// Teach the estimator every class this probe measured, so the next
+		// volume of the same release can skip re-measuring it.
+		//
+		// This used to seed only from index 0, which on a non-uniform post is
+		// almost never probed — the planner picks whichever segment first
+		// represents each size class. An 87-volume release therefore logged
+		// known_from_estimator=0 on every single volume and paid a full-class
+		// probe for each, having already measured that exact class.
+		//
+		// The physical last segment is excluded for the same reason
+		// buildSegmentDecodedSizesFromProbes excludes it from class matching:
+		// it is remainder-sized, and letting it stand for the full-segment
+		// class would paint a short size across whole files.
+		if f.estimator != nil && decoded > 0 && !(idx == lastIdx && lastIdx > 0) {
+			f.estimator.Set(f.segments[idx].Bytes, decoded)
 		}
 	}
 
@@ -581,6 +602,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
+	f.recordSegmentMapInputsLocked(probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx))
 	nzbSum := sumNZBSegmentBytes(f.segments)
 	logSegmentMapSizeCheck(f.Name(), f.segments, nzbSum, f.totalSize, probedByIndex)
 	logger.Debug("Recalculated total decoded size",
@@ -972,7 +994,26 @@ func (f *File) OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, er
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
 	}
-	return NewSegmentReaderWithReadAhead(ctx, f, 0, PlaybackReadAheadSegments), nil
+	return NewSegmentReaderWithReadAhead(ctx, f, 0, f.PlaybackReadAhead()), nil
+}
+
+// PlaybackReadAhead is this file's read-ahead window, sized against its own
+// article size rather than assumed to be the sub-megabyte common case.
+func (f *File) PlaybackReadAhead() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return PlaybackReadAheadFor(f.totalSize, f.averageSegmentSizeLocked())
+}
+
+// averageSegmentSizeLocked reports the mean decoded segment size, which is what
+// the window has to be measured in. The mean rather than segment zero: a file
+// can open with a short article, and one unlucky sample would size the whole
+// window wrong. Returns 0 before the map is built, which reads as "unknown".
+func (f *File) averageSegmentSizeLocked() int64 {
+	if !f.detected || len(f.segments) == 0 || f.totalSize <= 0 {
+		return 0
+	}
+	return f.totalSize / int64(len(f.segments))
 }
 
 func (f *File) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
@@ -988,7 +1029,7 @@ func (f *File) OpenPlaybackReaderAt(ctx context.Context, offset int64) (io.ReadC
 	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return nil, err
 	}
-	return NewSegmentReaderWithReadAhead(ctx, f, offset, PlaybackReadAheadSegments), nil
+	return NewSegmentReaderWithReadAhead(ctx, f, offset, f.PlaybackReadAhead()), nil
 }
 
 // PrefetchPlaybackOffset warms the segment cache ahead of an upcoming volume switch.
@@ -1000,7 +1041,7 @@ func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 	if idx < 0 {
 		return
 	}
-	end := idx + PlaybackReadAheadSegments
+	end := idx + f.PlaybackReadAhead()
 	if end > len(f.segments) {
 		end = len(f.segments)
 	}
@@ -1011,6 +1052,39 @@ func (f *File) PrefetchPlaybackOffset(ctx context.Context, offset int64) {
 		bgCtx = context.Background()
 	}
 	f.ReadAheadRange(bgCtx, idx, end)
+}
+
+// PrefetchPlaybackRange warms only the segments covering [offset, offset+length),
+// instead of the full playback window PrefetchPlaybackOffset opens.
+//
+// The caller that needs this is a tail warm: a player reads the container index
+// at the end of the file and then seeks straight back to the start, so pulling a
+// whole window in behind it would spend the bandwidth the opening bytes need.
+func (f *File) PrefetchPlaybackRange(ctx context.Context, offset, length int64) {
+	if length <= 0 {
+		return
+	}
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	from := f.FindSegmentIndex(offset)
+	if from < 0 {
+		return
+	}
+	to := f.FindSegmentIndex(offset + length - 1)
+	if to < from {
+		to = len(f.segments) - 1
+	}
+	// Same binding as PrefetchPlaybackOffset: the session context, so a closed
+	// session stops the fetch but a finished HTTP request does not.
+	bgCtx := f.ctx
+	if bgCtx == nil {
+		bgCtx = context.Background()
+	}
+	f.ReadAheadRange(bgCtx, from, to+1)
 }
 
 // MaxSegmentSizeEstimatorEntries caps the number of size entries to prevent unbounded growth.

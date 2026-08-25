@@ -1306,9 +1306,9 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 					for i := range loaderFiles {
 						unpackables[i] = loaderFiles[i]
 					}
-					if bp, ok := unpack.RehydrateArchiveBlueprint([]byte(s.libraryBlueprintJSON), unpackables); ok {
+					if bp, ok := unpack.RehydrateBlueprint([]byte(s.libraryBlueprintJSON), unpackables); ok {
 						s.blueprint = bp
-						logger.Debug("Reused persisted archive blueprint from library (skipped rescan)", "id", s.ID, "file", bp.MainFileName, "parts", len(bp.Parts))
+						logger.Debug("Reused persisted blueprint from library (skipped rescan)", "id", s.ID, "kind", bp.Kind(), "target", bp.TargetEpisode())
 					}
 				}
 			}

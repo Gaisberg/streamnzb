@@ -36,6 +36,11 @@ type CacheInvalidator interface {
 	InvalidateCache(hash string)
 }
 
+// onceTailWarmed keeps the tail warm to one per session: Prepare starts it for
+// a session replaying a cached plan, OpenSource for one that just built its
+// plan, and both run for a session that had a blueprint all along.
+const onceTailWarmed session.OnceKey = "playback-tail-warmed"
+
 // LibraryStatus values mirrored from persistence to avoid a store dependency.
 const (
 	LibraryStatusPending = "pending"
@@ -146,12 +151,21 @@ func (p *Service) Prepare(ctx context.Context, sess *session.Session) (Prepared,
 	}
 
 	needProbe := !haveSnapshot || !snapshot.HasStartupInfo
+	probeMS := int64(0)
 	if needProbe {
+		// The container tail is warmed alongside the probe, not after it: the
+		// probe reads the head for the better part of a second, and the player
+		// asks for the tail the instant it has a header. A session replaying a
+		// cached plan can start here; one still being mapped starts as soon as
+		// OpenSource knows its blueprint, which is still inside this probe.
+		p.warmPlaybackTail(sess)
 		startupTimeout := p.startupTimeout()
+		probeStart := time.Now()
 		probeCtx, cancel := context.WithTimeout(ctx, startupTimeout)
 		spec, startupInfo, err := p.Probe(probeCtx, sess)
 		err = ClassifyStartupErr("probe", startupTimeout, probeCtx, err)
 		cancel()
+		probeMS = time.Since(probeStart).Milliseconds()
 		if err != nil {
 			return Prepared{}, err
 		}
@@ -164,16 +178,58 @@ func (p *Service) Prepare(ctx context.Context, sess *session.Session) (Prepared,
 		return Prepared{}, fmt.Errorf("playback stream spec missing for session %s", sess.ID)
 	}
 
+	openStart := time.Now()
 	stream, err := p.openExpectedSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, p.startupTimeout())
 	if err != nil {
 		sess.ResetPlaybackStream()
 		return Prepared{}, err
 	}
+	logger.Debug("Playback prepare timing",
+		"session", sess.ID,
+		"probed", needProbe,
+		"probe_ms", probeMS,
+		"open_ms", time.Since(openStart).Milliseconds())
 
 	preparedStream.Stream = stream
 	preparedStream.Mode = "per_request"
 	sess.CachePlaybackStreamSnapshot(preparedStream.Spec, preparedStream.StartupInfo, preparedStream.HasStartupInfo)
 	return preparedStream, nil
+}
+
+// warmPlaybackTail prepares the end of the media on its own goroutine, bound to
+// the session context so it survives the probe request that started it.
+// Best-effort throughout: it only ever saves the player's first seek from
+// paying what it would otherwise pay.
+func (p *Service) warmPlaybackTail(sess *session.Session) bool {
+	bp := sess.Blueprint()
+	if bp == nil {
+		// Nothing to warm against yet. The claim is deliberately not taken, so
+		// the caller that does have a blueprint still gets its turn.
+		return false
+	}
+	if !sess.Once(onceTailWarmed) {
+		return false
+	}
+	files := sess.Files()
+	unpackFiles := make([]unpack.UnpackableFile, len(files))
+	for i := range files {
+		unpackFiles[i] = files[i]
+	}
+	sessCtx := sess.Context()
+	if sessCtx == nil {
+		sessCtx = context.Background()
+	}
+	timeout := p.startupTimeout()
+	go func() {
+		ctx, cancel := context.WithTimeout(sessCtx, timeout)
+		defer cancel()
+		started := time.Now()
+		if unpack.WarmPlaybackTail(ctx, bp, unpackFiles) {
+			logger.Debug("Warmed playback tail during startup",
+				"session", sess.ID, "kind", bp.Kind(), "took_ms", time.Since(started).Milliseconds())
+		}
+	}()
+	return true
 }
 
 func (p *Service) openExpectedSourceWithStartupTimeout(ctx context.Context, sess *session.Session, spec session.PlaybackStreamSpec, startupTimeout time.Duration) (io.ReadSeekCloser, error) {
@@ -438,10 +494,18 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 // as the request-local body stream for a single /play response.
 func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.ReadSeekCloser, string, int64, error) {
 	sessionID := sess.ID
+	// Phase timings: opening a source is an NZB download, a STAT sweep over the
+	// volumes, the archive mapping and a header validation, each of which can
+	// own a second of a cold start on its own. Without them the whole stretch
+	// between "loader files created" and "serving stream" is one unexplained
+	// gap in the log.
+	nzbStart := time.Now()
 	if _, err := sess.GetOrDownloadNZBWithContext(ctx, p.Sessions); err != nil {
 		logger.Error("Failed to lazy load NZB", "id", sessionID, "err", err)
 		return nil, "", 0, err
 	}
+	nzbMS := time.Since(nzbStart).Milliseconds()
+	statMS, mapMS, validateMS := int64(0), int64(0), int64(0)
 
 	files := sess.Files()
 	sessNZB := sess.NZB()
@@ -461,7 +525,9 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	// continue and let the read surface a real 430, because a slow or flaky
 	// provider is not evidence about the release.
 	if len(files) > 0 {
+		statStart := time.Now()
 		exists, statErr := VerifyRequiredArchivesExist(ctx, files)
+		statMS = time.Since(statStart).Milliseconds()
 		switch {
 		case errors.Is(statErr, ErrFirstSegmentUnavailable):
 			logger.Debug("Stat archive volume segment missing", "id", sessionID, "err", statErr)
@@ -506,13 +572,18 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	// Serve path: content probes inside the scan run bounded (quick), and with
 	// the operator's configured ffprobe binary rather than the default lookup.
 	ctx = unpack.WithProbeConfig(ctx, p.ffprobePath(), true)
+	mapStart := time.Now()
 	stream, name, size, bp, err := unpack.GetMediaStreamForEpisodeWithHints(ctx, unpackFiles, sess.Blueprint(), password, target, hints)
+	mapMS = time.Since(mapStart).Milliseconds()
 	CacheReturnedBlueprint(sess, bp)
 	if err != nil {
 		logger.Error("Failed to open media stream", "id", sessionID, "err", err)
 		p.invalidateValidatorCache(sess)
 		return nil, "", 0, err
 	}
+	// The plan exists now, and the ffprobe validation below spends seconds at
+	// the head of the file. That is the window the tail warm wants.
+	p.warmPlaybackTail(sess)
 	// Persist NZB + blueprint immediately (status pending) so the mapping work is
 	// kept even when playback later fails or is abandoned; the good/bad verdict
 	// is applied once known. Library-sourced sessions already have their entry.
@@ -528,16 +599,25 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 		// the first byte could be served — most of our cold-open latency in
 		// the field. The bounded window still catches audio-only and garbage;
 		// what it cannot settle degrades to the permissive header heuristic.
+		validateStart := time.Now()
 		if _, err := unpack.ValidateMediaStreamWithOptions(ctx, stream, name, p.ffprobePath(), unpack.ValidateOptions{QuickHeader: true}); err != nil {
 			logger.Warn("Media stream container track validation failed", "id", sessionID, "name", name, "err", err)
 			stream.Close()
 			return nil, "", 0, fmt.Errorf("container track validation failed: %w", err)
 		}
+		validateMS = time.Since(validateStart).Milliseconds()
 		p.Sessions.MarkPlaybackValidated(sessionID)
 	} else {
 		logger.Debug("Skipping redundant FFprobe validation (session already validated)", "id", sessionID)
 	}
 	sess.SetSelectedPlaybackFile(name)
+	logger.Debug("Playback open source timing",
+		"session", sessionID,
+		"nzb_ms", nzbMS,
+		"volume_stat_ms", statMS,
+		"stream_map_ms", mapMS,
+		"validate_ms", validateMS,
+		"files", len(files))
 	return stream, name, size, nil
 }
 

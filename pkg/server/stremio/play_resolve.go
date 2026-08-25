@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
@@ -44,10 +45,12 @@ type resolvedPlayback struct {
 // release.
 func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream, requestedSessionID string) (*resolvedPlayback, bool) {
 	rt := s.runtime()
+	openStart := time.Now()
 	sess, sessionID, ok := s.openPlaySession(w, r, streamConfig, requestedSessionID)
 	if !ok {
 		return nil, false
 	}
+	openMS := time.Since(openStart).Milliseconds()
 
 	for {
 		// Skip slots already known to have failed, so a retry never walks back
@@ -63,10 +66,6 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 			continue
 		}
 
-		if nextSlotID, deriveErr := s.deriveNextSlotID(r.Context(), sess.ID, streamConfig); deriveErr == nil {
-			s.prefetchNextFallbackNZB(nextSlotID, streamConfig)
-		}
-
 		ctx, cancel := s.playbackContext(r, sess)
 
 		// Record preload at most once per session: subsequent HTTP requests
@@ -74,13 +73,26 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		// "Preload" row that would never be resolved. The flag lives on the
 		// session, so a later play of the same slot — a new session behind a
 		// reused ID — records its own row.
+		preloadStart := time.Now()
 		if sess.Once(oncePreloadRecorded) {
 			s.recordPreloadAttempt(sess)
 		}
+		preloadMS := time.Since(preloadStart).Milliseconds()
 
+		prepareStart := time.Now()
 		s.sessionManager.BeginPlaybackStartup(sessionID)
 		prepared, prepareErr := s.preparePlaybackStream(ctx, sess)
 		s.sessionManager.EndPlaybackStartup(sessionID)
+
+		// Startup is a chain of independently slow steps (slot recovery, the
+		// preload row, NZB download, probe) and a log that only reports the
+		// total leaves the slow one to be guessed at.
+		logger.Debug("Play resolve timing",
+			"session", sessionID,
+			"open_session_ms", openMS,
+			"preload_row_ms", preloadMS,
+			"prepare_ms", time.Since(prepareStart).Milliseconds(),
+			"err", prepareErr)
 
 		if prepareErr == nil {
 			resolved := &resolvedPlayback{

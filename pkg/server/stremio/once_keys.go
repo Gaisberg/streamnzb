@@ -28,6 +28,9 @@ const (
 	onceThresholdLogged session.OnceKey = "threshold-skip-logged"
 	// The pending (pre-verdict) library entry, saved from the serve path.
 	oncePendingLibrarySaved session.OnceKey = "pending-library-saved"
+	// The next fallback's NZB, warmed once the client has bytes. Every range
+	// request reaches the same trigger; the release only needs fetching once.
+	onceFallbackPrefetched session.OnceKey = "fallback-prefetched"
 )
 
 // slotCommitted reports whether the session behind slotID recorded a successful

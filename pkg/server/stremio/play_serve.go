@@ -126,7 +126,14 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	bufW := newMediaResponseWriter(w, resolved.name)
 	var ttffOnce sync.Once
 	bufW.onFirstWrite = func() {
-		ttffOnce.Do(func() { s.recordTTFF(sess, sessionID, resolved.mode, playStart) })
+		ttffOnce.Do(func() {
+			s.recordTTFF(sess, sessionID, resolved.mode, playStart)
+			// The client is playing; now is the time to spend connections on
+			// the release it would fail over to, not before.
+			if sess.Once(onceFallbackPrefetched) {
+				s.prefetchNextFallbackAfterStart(sessionID, streamConfig)
+			}
+		})
 	}
 
 	serveStartedAt := time.Now()

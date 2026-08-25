@@ -298,3 +298,100 @@ func TestBuildSegmentDecodedSizesFromProbesPreservesEstimator(t *testing.T) {
 		}
 	}
 }
+
+// A release's volumes share an article size, so measuring it once should be
+// enough. The planner probes whichever segment first represents each size
+// class, which on a non-uniform post is rarely index 0 — seeding only from
+// index 0 meant an 87-volume release re-measured the same class 87 times.
+func TestSegmentMapSeedsEstimatorFromAnyProbedClass(t *testing.T) {
+	ctx := WithSkipGapProbing(context.Background(), true)
+	estimator := NewSegmentSizeEstimator()
+
+	// Full articles vary slightly in encoded size; the tail article is a
+	// genuinely different, remainder-sized class.
+	encoded := []int64{737351, 737400, 737300, 317171}
+	decoded := []int64{716800, 716800, 716800, 307200}
+
+	first := &varyingSizeSegmentFetcher{sizes: decoded}
+	volume1 := NewFile(ctx, testNZBFileWithSegments(encoded...), estimator, first)
+	if err := volume1.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx: %v", err)
+	}
+	firstProbes := len(first.Calls())
+	if firstProbes < 2 {
+		t.Fatalf("first volume probed %d segments, expected it to measure both classes", firstProbes)
+	}
+	if got, ok := estimator.Get(737351); !ok || got != 716800 {
+		t.Fatalf("estimator learned (%d, %v) for the full class, want 716800", got, ok)
+	}
+
+	second := &varyingSizeSegmentFetcher{sizes: decoded}
+	volume2 := NewFile(ctx, testNZBFileWithSegments(encoded...), estimator, second)
+	if err := volume2.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx (second volume): %v", err)
+	}
+	if got := len(second.Calls()); got >= firstProbes {
+		t.Fatalf("second volume probed %d segments, want fewer than the first volume's %d", got, firstProbes)
+	}
+	if volume2.Size() != volume1.Size() {
+		t.Fatalf("second volume mapped to %d, want the same %d as the first", volume2.Size(), volume1.Size())
+	}
+}
+
+// The last segment is remainder-sized. Letting it teach the estimator would
+// paint a short article across every full segment of the next volume.
+func TestSegmentMapNeverSeedsEstimatorFromTheTailArticle(t *testing.T) {
+	ctx := WithSkipGapProbing(context.Background(), true)
+	estimator := NewSegmentSizeEstimator()
+
+	encoded := []int64{737351, 737400, 317171}
+	fetcher := &varyingSizeSegmentFetcher{sizes: []int64{716800, 716800, 307200}}
+	f := NewFile(ctx, testNZBFileWithSegments(encoded...), estimator, fetcher)
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx: %v", err)
+	}
+
+	if got, ok := estimator.Get(317171); ok {
+		t.Fatalf("estimator learned the remainder article as a class (%d)", got)
+	}
+}
+
+// The forced full-segment probe exists so the remainder-sized last article can
+// never stand for the full class. A class already measured on an earlier volume
+// satisfies that requirement just as well, so the plan may skip the probe — but
+// only if the map it builds is still right.
+func TestKnownClassReplacesTheForcedFullSegmentProbe(t *testing.T) {
+	const (
+		fullEncoded  = 739600
+		fullDecoded  = 716800
+		lastEncoded  = 734057
+		lastDecoded  = 711755
+		segmentCount = 500
+	)
+	segments := make([]*Segment, segmentCount)
+	for i := 0; i < segmentCount-1; i++ {
+		// Same shape as the incident: every full segment sits within 3% of the
+		// last one, so clustering merges them into a single class.
+		segments[i] = &Segment{Segment: nzbSegment(int64(fullEncoded + (i%9)*700 - 2800))}
+	}
+	segments[segmentCount-1] = &Segment{Segment: nzbSegment(lastEncoded)}
+
+	known := map[int64]int64{segments[0].Bytes: fullDecoded}
+	indices := segmentProbeIndices(segments, known, false, true)
+	if len(indices) != 1 || indices[0] != segmentCount-1 {
+		t.Fatalf("probe plan %v re-measured a class the estimator already knew", indices)
+	}
+
+	// The saving is only legitimate if the map is identical to the probed one:
+	// full segments take the known size, the last takes its own.
+	probed := map[int]int64{segmentCount - 1: lastDecoded}
+	sizes := buildSegmentDecodedSizesFromProbes(segments, probed, known, true)
+	for i := 0; i < segmentCount-1; i++ {
+		if sizes[i] != fullDecoded {
+			t.Fatalf("segment %d sized %d, want the known full class %d", i, sizes[i], fullDecoded)
+		}
+	}
+	if sizes[segmentCount-1] != lastDecoded {
+		t.Fatalf("last segment sized %d, want its own %d", sizes[segmentCount-1], lastDecoded)
+	}
+}
