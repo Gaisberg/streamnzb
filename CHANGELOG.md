@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.11.0](https://github.com/Gaisberg/streamnzb/compare/v5.10.0...v5.11.0) (2026-08-25)
+
+
+### Features
+
+* **history:** add a button to clear history ([ee8fa8f](https://github.com/Gaisberg/streamnzb/commit/ee8fa8ff686a8ba7b19967ff35af6e761276108f))
+* **library:** add a button to clear library ([ee8fa8f](https://github.com/Gaisberg/streamnzb/commit/ee8fa8ff686a8ba7b19967ff35af6e761276108f))
+
+
+### Bug Fixes
+
+* **formatter:** populate .Bitrate — measured for probed library items, estimated otherwise, Closes [#226](https://github.com/Gaisberg/streamnzb/issues/226) ([ee8fa8f](https://github.com/Gaisberg/streamnzb/commit/ee8fa8ff686a8ba7b19967ff35af6e761276108f))
+
 ## [5.10.0](https://github.com/Gaisberg/streamnzb/compare/v5.9.0...v5.10.0) (2026-08-25)
 
 
