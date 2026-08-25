@@ -1,5 +1,29 @@
 # Changelog
 
+## [5.10.0](https://github.com/Gaisberg/streamnzb/compare/v5.9.0...v5.10.0) (2026-08-25)
+
+
+### Features
+
+* **filters:** let a rule reuse another rule with matched() ([0d8b97b](https://github.com/Gaisberg/streamnzb/commit/0d8b97bc2125df8f69f65a5cfe1cb50b4aaaa26f))
+* **playback:** keep duplicate copies of a release as failover variants ([aa90a69](https://github.com/Gaisberg/streamnzb/commit/aa90a69a036100eb81d322a47f8cf4c3fa5d07a9)), closes [#223](https://github.com/Gaisberg/streamnzb/issues/223)
+* **rules:** let a limit rule keep N per group ([ac511e2](https://github.com/Gaisberg/streamnzb/commit/ac511e23a4178c784f54bb3dd44fb85229c6377c)), closes [#222](https://github.com/Gaisberg/streamnzb/issues/222)
+* **rules:** result-set conditions count(), exists() and none() ([d121e5c](https://github.com/Gaisberg/streamnzb/commit/d121e5c77708a563afc44d6d950cc03f44928db5))
+* **rules:** SeaDex per-title anime recommendations as rule and format attributes ([68183c4](https://github.com/Gaisberg/streamnzb/commit/68183c4ced71d206d8fbdf3fe8c30796794126f3))
+
+
+### Bug Fixes
+
+* correctness and startup fixes from the nzb-streaming benchmark ([65717d2](https://github.com/Gaisberg/streamnzb/commit/65717d241bf4642291e0e5eac3d89066b758c7fe))
+* **filters:** stop the baseline preferring English ([32c22cd](https://github.com/Gaisberg/streamnzb/commit/32c22cdb594aa40337921140078dceb1b4c35ffd))
+* **media:** honor configured ffprobe everywhere and stop wasting probe budget ([8adb63f](https://github.com/Gaisberg/streamnzb/commit/8adb63f32218321d3ee3cd579b984babc6fff5e1))
+* **search:** trust the indexer for ID requests instead of enforcing titles ([037b9ed](https://github.com/Gaisberg/streamnzb/commit/037b9edae6cbb89001f6cbb26cabdece44004560))
+
+
+### Performance Improvements
+
+* **playback:** reuse startup measurements, defer speculative work ([d27d048](https://github.com/Gaisberg/streamnzb/commit/d27d0488167cb1f869ced5d460241a3ac58e626b))
+
 ## [5.9.0](https://github.com/Gaisberg/streamnzb/compare/v5.8.0...v5.9.0) (2026-08-22)
 
 
