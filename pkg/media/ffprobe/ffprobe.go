@@ -45,8 +45,17 @@ type FFprobeStream struct {
 	Disposition      ffprobeDisposition `json:"disposition"`
 }
 
+// FFprobeFormat carries the container-level fields we ask for. Duration comes
+// from the container header (MKV Segment Info, MP4 moov), so it is usually
+// known even on a piped probe that never reads the whole file — and absent
+// when the header does not state one (e.g. a moov-at-end MP4 on a pipe).
+type FFprobeFormat struct {
+	Duration string `json:"duration"`
+}
+
 type FFprobeOutput struct {
 	Streams []FFprobeStream `json:"streams"`
+	Format  FFprobeFormat   `json:"format"`
 }
 
 // FFprobeResult summarizes the probed media. The capability fields (Profile,
@@ -71,6 +80,10 @@ type FFprobeResult struct {
 	HDR            string // "", "HDR10", "HDR10+", "HLG"
 	DolbyVision    bool
 	FramesDecoded  int // nb_read_frames of the chosen video stream (only when ForceDecode)
+
+	// DurationSeconds is the container-reported duration, 0 when the header
+	// does not state one.
+	DurationSeconds float64
 }
 
 // ProbeOptions tunes how aggressively ProbeStream inspects the input.
@@ -135,7 +148,8 @@ func FindFFprobeBinary(customPath string) (string, bool) {
 // playability and capture client-relevant capabilities (profile, bit depth, HDR).
 const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt," +
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
-	"stream_disposition=attached_pic"
+	"stream_disposition=attached_pic:" +
+	"format=duration"
 
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
 func ProbeStream(ctx context.Context, stream io.Reader, customPath string) (*FFprobeResult, error) {
@@ -206,6 +220,9 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	}
 
 	res := summarizeStreams(output.Streams)
+	if seconds, err := strconv.ParseFloat(strings.TrimSpace(output.Format.Duration), 64); err == nil && seconds > 0 {
+		res.DurationSeconds = seconds
+	}
 
 	logger.Debug("FFprobe stream inspection completed",
 		"binary", binaryPath,
@@ -223,6 +240,7 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 		"frames_decoded", res.FramesDecoded,
 		"has_audio", res.HasAudio,
 		"audio_codec", res.AudioCodec,
+		"duration_s", res.DurationSeconds,
 	)
 
 	return res, nil

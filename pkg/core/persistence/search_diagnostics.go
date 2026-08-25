@@ -55,6 +55,29 @@ func (m *StateManager) RecordSearchDiagnostic(d SearchDiagnostic) {
 	})
 }
 
+// DeleteSearchDiagnostics removes the search-funnel records for one stream, or
+// all of them when streamName is empty. Diagnostics decorate history groups, so
+// they are cleared alongside the attempts they belong to.
+func (m *StateManager) DeleteSearchDiagnostics(streamName string) (int64, error) {
+	if m == nil || m.db == nil {
+		return 0, nil
+	}
+	where, args := streamScopeClause(streamName)
+	var deleted int64
+	err := m.withWriteLock(func(db *connRef) error {
+		res, err := db.Exec(`DELETE FROM search_diagnostics`+where, args...)
+		if err != nil {
+			return err
+		}
+		deleted, _ = res.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 // ListSearchDiagnosticsOptions filters diagnostics rows; zero values mean "any".
 type ListSearchDiagnosticsOptions struct {
 	StreamName  string

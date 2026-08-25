@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import {
   Search, Pin, PinOff, Trash2, Loader2, ChevronLeft, ChevronRight,
-  Film, Tv, Library, RefreshCw, CheckCircle2, Clock, XCircle, Play
+  Film, Tv, Library, RefreshCw, CheckCircle2, Clock, XCircle, Play, Eraser
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -87,6 +87,8 @@ export function LibraryPage({ onPlay } = {}) {
   const limit = 25
 
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [clearOpen, setClearOpen] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [actionInFlight, setActionInFlight] = useState('')
 
   // Debounce search query
@@ -180,6 +182,24 @@ export function LibraryPage({ onPlay } = {}) {
     }
   }
 
+  const handleClearConfirm = async () => {
+    setClearing(true)
+    try {
+      const data = await apiFetch('/api/library/clear', { method: 'DELETE' })
+      if (data) {
+        setItems([])
+        setTotal(0)
+        setPage(1)
+        fetchStats()
+      }
+    } catch (err) {
+      console.error('Failed to clear library', err)
+    } finally {
+      setClearing(false)
+      setClearOpen(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / limit) || 1
   const quotaPercent = stats && stats.max_items > 0
     ? Math.min(100, Math.round((stats.total_items / stats.max_items) * 100))
@@ -200,16 +220,27 @@ export function LibraryPage({ onPlay } = {}) {
                 Manage cached NZBs and archive blueprints stored in the local database.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => { fetchStats(); fetchItems(); }}
-              disabled={loading}
-              className="shrink-0"
-            >
-              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-              Refresh
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { fetchStats(); fetchItems(); }}
+                disabled={loading}
+              >
+                {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                Refresh
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setClearOpen(true)}
+                disabled={clearing || (stats?.total_items ?? 0) === 0}
+                title="Delete every cached release, pinned ones included"
+              >
+                {clearing ? <Loader2 className="size-4 animate-spin" /> : <Eraser className="size-4" />}
+                Clear Library
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="flex min-w-0 flex-1 min-h-0 flex-col gap-4 overflow-hidden">
@@ -451,11 +482,22 @@ export function LibraryPage({ onPlay } = {}) {
           onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
           title="Delete Cached Release"
           description={`Are you sure you want to remove "${deleteTarget.release_title || deleteTarget.releaseTitle}" from the local library?`}
-          confirmText="Delete"
-          destructive
+          confirmLabel="Delete"
           onConfirm={handleDeleteConfirm}
+          confirming={actionInFlight === deleteTarget.id}
         />
       )}
+
+      {/* Clear Library Confirmation Dialog */}
+      <ConfirmDialog
+        open={clearOpen}
+        onOpenChange={setClearOpen}
+        title="Clear Entire Library"
+        description={`This permanently deletes all ${stats?.total_items ?? 0} cached releases, including pinned ones, along with their stored NZBs and blueprints. Playback will have to search and probe again from scratch.`}
+        confirmLabel="Delete Everything"
+        onConfirm={handleClearConfirm}
+        confirming={clearing}
+      />
     </div>
   )
 }

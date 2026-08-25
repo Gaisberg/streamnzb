@@ -83,3 +83,35 @@ func TestSearchDiagnosticsPruneKeepsNewestRows(t *testing.T) {
 		t.Fatal("oldest row survived pruning past the retention bound")
 	}
 }
+
+func TestDeleteSearchDiagnosticsScopesToStream(t *testing.T) {
+	mgr := newTestStateManager(t)
+
+	for _, stream := range []string{"living-room", "phone"} {
+		mgr.RecordSearchDiagnostic(SearchDiagnostic{
+			StreamName:  stream,
+			ContentType: "movie",
+			ContentID:   "tt1",
+			Payload:     `{"total_ms":1}`,
+		})
+	}
+
+	deleted, err := mgr.DeleteSearchDiagnostics("phone")
+	if err != nil {
+		t.Fatalf("DeleteSearchDiagnostics: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	rest, _ := mgr.ListSearchDiagnostics(ListSearchDiagnosticsOptions{})
+	if len(rest) != 1 || rest[0].StreamName != "living-room" {
+		t.Fatalf("wrong rows survived: %+v", rest)
+	}
+
+	if deleted, err := mgr.DeleteSearchDiagnostics(""); err != nil || deleted != 1 {
+		t.Fatalf("clear all: deleted=%d err=%v", deleted, err)
+	}
+	if rest, _ := mgr.ListSearchDiagnostics(ListSearchDiagnosticsOptions{}); len(rest) != 0 {
+		t.Fatalf("expected no diagnostics, got %d", len(rest))
+	}
+}

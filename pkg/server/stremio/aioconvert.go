@@ -404,7 +404,7 @@ var aioFieldMap = map[string]aioField{
 	"stream.title":      {expr: ".ParsedTitle", kind: kindString},
 	"stream.size":       {expr: ".Size", kind: kindNumber},
 	"stream.foldersize": {expr: ".Size", kind: kindNumber, note: "{stream.folderSize} mapped to {{.Size}}"},
-	"stream.bitrate":    {expr: ".Bitrate", kind: kindString, note: "{stream.bitrate} mapped to the parsed {{.Bitrate}} text"},
+	"stream.bitrate":    {expr: ".Bitrate", kind: kindString, note: "{stream.bitrate} mapped to the {{.Bitrate}} text (parsed or estimated)"},
 	"stream.container":  {expr: ".Container", kind: kindString},
 	"stream.extension":  {expr: ".Extension", kind: kindString},
 
@@ -988,7 +988,7 @@ func (e *aioEmitter) applyTransform(cur string, kind aioKind, mod aioModifier) (
 		}
 		return cur, kind
 	case "bitrate", "sbitrate", "rbitrate":
-		// The parsed {{.Bitrate}} text is already display-formatted.
+		// The {{.Bitrate}} text is already display-formatted.
 		if cur != ".Bitrate" {
 			e.warnf("::%s has no StreamNZB equivalent; value rendered without it", mod.name)
 		}

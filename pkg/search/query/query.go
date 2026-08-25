@@ -204,6 +204,29 @@ func MetadataDisplayYear(metadata *ResolvedSearchMetadata, contentType string) s
 	return ""
 }
 
+// ContentRuntimeSeconds returns the requested title's runtime in seconds —
+// the film's for movie-like content, one episode's for episodic content — or
+// 0 when no provider reported one. TMDB reports runtimes in minutes.
+func ContentRuntimeSeconds(metadata *ResolvedSearchMetadata, contentType string) float64 {
+	if metadata == nil {
+		return 0
+	}
+	if MovieLike(metadata, contentType) {
+		if metadata.MovieDetails != nil && metadata.MovieDetails.Runtime > 0 {
+			return float64(metadata.MovieDetails.Runtime) * 60
+		}
+		return 0
+	}
+	if metadata.TVDetails != nil {
+		for _, minutes := range metadata.TVDetails.EpisodeRunTime {
+			if minutes > 0 {
+				return float64(minutes) * 60
+			}
+		}
+	}
+	return 0
+}
+
 func MetadataLanguageCount(metadata *ResolvedSearchMetadata, contentType string) int {
 	if metadata == nil {
 		return 0

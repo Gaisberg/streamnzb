@@ -172,16 +172,44 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.clearLibraryDerivedCaches()
+	logger.Info("Library item deleted and playback/search caches cleared", "id", id)
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": id})
+}
+
+func (s *Server) handleClearLibrary(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r, "Only admin can clear the library", http.MethodDelete, http.MethodPost) {
+		return
+	}
+
+	if s.attemptLister == nil || s.attemptLister.LibraryStore() == nil {
+		http.Error(w, "Library store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	deleted, err := s.attemptLister.LibraryStore().DeleteAll()
+	if err != nil {
+		logger.Error("Failed to clear library", "err", err)
+		http.Error(w, "Failed to clear library", http.StatusInternalServerError)
+		return
+	}
+
+	s.clearLibraryDerivedCaches()
+	logger.Info("Library cleared and playback/search caches cleared", "deleted", deleted)
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": deleted})
+}
+
+// clearLibraryDerivedCaches drops the in-memory state derived from library rows
+// so a deletion cannot be served back from a cached search result or blueprint.
+func (s *Server) clearLibraryDerivedCaches() {
 	if s.strmServer != nil {
 		s.strmServer.ClearSearchCaches()
 	}
 	if s.sessionMgr != nil {
 		s.sessionMgr.ClearBlueprintCache()
 	}
-
-	logger.Info("Library item deleted and playback/search caches cleared", "id", id)
-
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": id})
 }
 
 func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {

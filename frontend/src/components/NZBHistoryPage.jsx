@@ -4,8 +4,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal } from 'lucide-react'
+import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal, Eraser } from 'lucide-react'
 import { apiFetch } from '@/api'
 import { cn } from '@/lib/utils'
 
@@ -672,6 +673,9 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
   const [streamFilter, setStreamFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [filtersDialogOpen, setFiltersDialogOpen] = useState(false)
+  const [clearOpen, setClearOpen] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [clearSelection, setClearSelection] = useState(() => new Set())
   const attemptDetailScrollRef = useRef(null)
 
 
@@ -711,6 +715,14 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
 
   const streamOptions = useMemo(() => {
     return Array.from(new Set(attempts.map((attempt) => attempt.stream_name || 'default'))).sort((a, b) => a.localeCompare(b))
+  }, [attempts])
+
+  const attemptsPerStream = useMemo(() => {
+    return attempts.reduce((counts, attempt) => {
+      const name = attempt.stream_name || 'default'
+      counts[name] = (counts[name] || 0) + 1
+      return counts
+    }, {})
   }, [attempts])
 
   const filteredAttempts = useMemo(() => {
@@ -778,6 +790,50 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
     attemptDetailScrollRef.current.scrollTop = 0
   }, [selectedAttempt])
 
+  const allStreamsSelected = streamOptions.length > 0 && clearSelection.size === streamOptions.length
+
+  // The dialog opens pre-ticked with whatever stream the page is filtered to,
+  // so the common "clear what I'm looking at" case stays one click.
+  const openClearDialog = useCallback(() => {
+    setClearSelection(streamFilter && streamFilter !== 'all' ? new Set([streamFilter]) : new Set())
+    setClearOpen(true)
+  }, [streamFilter])
+
+  const toggleClearStream = useCallback((streamName) => {
+    setClearSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(streamName)) next.delete(streamName)
+      else next.add(streamName)
+      return next
+    })
+  }, [])
+
+  const toggleAllClearStreams = useCallback(() => {
+    setClearSelection((prev) => (prev.size === streamOptions.length ? new Set() : new Set(streamOptions)))
+  }, [streamOptions])
+
+  const handleClearConfirm = useCallback(async () => {
+    if (clearSelection.size === 0) return
+    setClearing(true)
+    try {
+      // Every stream ticked means "wipe the table", which also takes rows from
+      // streams whose attempts are older than the window this page loaded.
+      const params = new URLSearchParams()
+      if (allStreamsSelected) params.append('stream', 'all')
+      else clearSelection.forEach((streamName) => params.append('stream', streamName))
+
+      const data = await apiFetch(`/api/nzb-attempts/clear?${params.toString()}`, { method: 'DELETE' })
+      if (data) {
+        fetchAttempts(false)
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to clear history')
+    } finally {
+      setClearing(false)
+      setClearOpen(false)
+    }
+  }, [clearSelection, allStreamsSelected, fetchAttempts])
+
   const resetFilters = useCallback(() => {
     setTimeframe('7d')
     setStreamFilter('all')
@@ -815,16 +871,27 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                 Browse recent searches and play attempts grouped by requested movie or episode — including searches nothing was played from. Filters and summary reflect the currently visible set.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fetchAttempts(false)}
-              disabled={refreshing || loading}
-              className="shrink-0"
-            >
-              {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-              Refresh
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fetchAttempts(false)}
+                disabled={refreshing || loading}
+              >
+                {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                Refresh
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={openClearDialog}
+                disabled={clearing || loading || attempts.length === 0}
+                title="Choose which streams to clear history for"
+              >
+                {clearing ? <Loader2 className="size-4 animate-spin" /> : <Eraser className="size-4" />}
+                Clear History
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="flex min-w-0 flex-1 min-h-0 flex-col gap-4 overflow-hidden">
@@ -1204,6 +1271,61 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                 </Button>
                 <Button type="button" variant="destructive" onClick={() => setFiltersDialogOpen(false)} aria-label="Close filters dialog">
                   Close
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={clearOpen} onOpenChange={(open) => { if (!clearing) setClearOpen(open) }}>
+            <DialogContent className="w-[calc(100vw-2rem)] max-w-md rounded-2xl px-5 sm:px-6" onOpenAutoFocus={focusDialogCloseButton}>
+              <DialogHeader>
+                <DialogTitle>Clear History</DialogTitle>
+                <DialogDescription>
+                  Pick the streams to clear. Deleting a stream&apos;s history also resets its Continue Watching and Because You Watched rows. Cached releases in the Library are not touched.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col gap-1 rounded-lg border border-border/60 bg-muted/20 p-2">
+                <label className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm font-medium hover:bg-muted/40">
+                  <Checkbox
+                    checked={allStreamsSelected ? true : (clearSelection.size > 0 ? 'indeterminate' : false)}
+                    onCheckedChange={toggleAllClearStreams}
+                    disabled={clearing}
+                  />
+                  All streams
+                </label>
+                <div className="max-h-64 overflow-y-auto">
+                  {streamOptions.map((streamName) => (
+                    <label
+                      key={streamName}
+                      className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-muted/40"
+                    >
+                      <Checkbox
+                        checked={clearSelection.has(streamName)}
+                        onCheckedChange={() => toggleClearStream(streamName)}
+                        disabled={clearing}
+                      />
+                      <span className="min-w-0 flex-1 truncate" title={streamName}>{streamName}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {attemptsPerStream[streamName] || 0}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter className="flex-row justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setClearOpen(false)} disabled={clearing}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={handleClearConfirm}
+                  disabled={clearing || clearSelection.size === 0}
+                >
+                  {clearing ? <Loader2 className="size-4 animate-spin" /> : null}
+                  {allStreamsSelected
+                    ? 'Delete All History'
+                    : `Delete History (${clearSelection.size})`}
                 </Button>
               </DialogFooter>
             </DialogContent>

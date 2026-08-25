@@ -26,6 +26,9 @@ type MediaCaps struct {
 	DolbyVision   bool
 	ColorTransfer string
 	CodecTag      string
+	// DurationSeconds is the container-reported duration, 0 when the probe
+	// could not see one (and on library items saved before it was captured).
+	DurationSeconds float64
 }
 
 // Summary renders a short human-readable capability string suitable for a

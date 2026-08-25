@@ -349,6 +349,47 @@ func (m *StateManager) DeleteAttemptsBefore(cutoff time.Time) (int64, error) {
 	return deleted, nil
 }
 
+// DefaultStreamLabel is the name the history UI shows for rows written before
+// streams were named, whose stream_name is empty. Scoping a delete to it has to
+// cover those rows too, or clearing "default" would leave them behind.
+const DefaultStreamLabel = "default"
+
+// streamScopeClause builds the WHERE fragment restricting a history delete to
+// one stream. An empty name means every stream, so it yields no restriction.
+func streamScopeClause(streamName string) (string, []any) {
+	streamName = strings.TrimSpace(streamName)
+	switch {
+	case streamName == "":
+		return "", nil
+	case streamName == DefaultStreamLabel:
+		return ` WHERE stream_name = ? OR stream_name IS NULL OR stream_name = ''`, []any{streamName}
+	default:
+		return ` WHERE stream_name = ?`, []any{streamName}
+	}
+}
+
+// DeleteAttempts removes NZB attempts for one stream, or every attempt when
+// streamName is empty.
+func (m *StateManager) DeleteAttempts(streamName string) (int64, error) {
+	if m == nil || m.db == nil {
+		return 0, nil
+	}
+	where, args := streamScopeClause(streamName)
+	var deleted int64
+	err := m.withWriteLock(func(db *connRef) error {
+		res, err := db.Exec(`DELETE FROM nzb_attempts`+where, args...)
+		if err != nil {
+			return err
+		}
+		deleted, _ = res.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 // RenameStreamReferences repoints history rows at a stream's new name.
 //
 // Both the NZB attempt log and the search diagnostics store the stream name as

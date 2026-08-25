@@ -5,7 +5,12 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/dreulavelle/jhin"
+
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 )
 
@@ -177,6 +182,103 @@ func TestFormatTemplateConditionals(t *testing.T) {
 	}
 }
 
+// Release titles almost never spell out a bitrate, so {{.Bitrate}} estimates
+// one: from the indexer-reported file duration when there is one, else from
+// the requested title's metadata runtime — judging packs per episode and
+// staying silent when the episode count is unknown.
+func TestFormatContextEstimatesBitrate(t *testing.T) {
+	metaFor := func(res *jhin.Result) *parser.ParsedRelease {
+		return parser.FromResult("x", res)
+	}
+	cases := []struct {
+		name    string
+		cand    triage.Candidate
+		runtime float64
+		want    string
+	}{
+		{
+			name: "indexer-reported duration",
+			cand: triage.Candidate{Release: &release.Release{Title: "Movie 2160p", Size: 15_000_000_000, Duration: 6000}},
+			want: "20.0 Mbps",
+		},
+		{
+			name:    "metadata runtime for a movie",
+			cand:    triage.Candidate{Release: &release.Release{Title: "Movie 2160p", Size: 9_000_000_000}, Verdict: triage.Verdict{Kind: ranking.KindMovie}},
+			runtime: 3600,
+			want:    "20.0 Mbps",
+		},
+		{
+			name: "multi-episode release judged per episode",
+			cand: triage.Candidate{
+				Release:  &release.Release{Title: "Show S01E01-E02", Size: 4_500_000_000},
+				Metadata: metaFor(&jhin.Result{Seasons: []int{1}, Episodes: []int{1, 2}}),
+				Verdict:  triage.Verdict{Kind: ranking.KindSeries},
+			},
+			runtime: 1800,
+			want:    "10.0 Mbps",
+		},
+		{
+			name: "season pack of unknown episode count stays silent",
+			cand: triage.Candidate{
+				Release:  &release.Release{Title: "Show S01", Size: 40_000_000_000},
+				Metadata: metaFor(&jhin.Result{Seasons: []int{1}}),
+				Verdict:  triage.Verdict{Kind: ranking.KindSeries},
+			},
+			runtime: 1800,
+			want:    "",
+		},
+		{
+			name: "probed library duration and media file size beat the estimate",
+			cand: triage.Candidate{
+				Release: &release.Release{
+					Title: "Movie 2160p", Size: 10_000_000_000, IsLibrary: true,
+					SourceIndexer: &persistence.LibraryItem{MediaFileSize: 9_000_000_000},
+				},
+				Verdict: triage.Verdict{Kind: ranking.KindMovie, Probed: &release.MediaCaps{DurationSeconds: 3600}},
+			},
+			runtime: 7200, // the metadata runtime would halve it; the measurement wins
+			want:    "20.0 Mbps",
+		},
+		{
+			name: "bitrate parsed from the title wins",
+			cand: triage.Candidate{
+				Release:  &release.Release{Title: "Movie", Size: 15_000_000_000, Duration: 6000},
+				Metadata: metaFor(&jhin.Result{Bitrate: "448kbps"}),
+			},
+			want: "448kbps",
+		},
+		{
+			name: "no duration and no runtime says nothing",
+			cand: triage.Candidate{Release: &release.Release{Title: "Movie 2160p", Size: 9_000_000_000}},
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		ctx := newFormatContext(c.cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, c.runtime)
+		if ctx.Bitrate != c.want {
+			t.Errorf("%s: Bitrate = %q, want %q", c.name, ctx.Bitrate, c.want)
+		}
+	}
+}
+
+// A probed library release fills {{.Duration}} from the container's own
+// duration; an indexer-reported one (e.g. Easynews) still wins when present.
+func TestFormatContextProbedDurationFillsDuration(t *testing.T) {
+	probed := triage.Verdict{Probed: &release.MediaCaps{DurationSeconds: 6900}}
+	cand := triage.Candidate{
+		Release: &release.Release{Title: "Movie 2160p", Size: 9_000_000_000, IsLibrary: true},
+		Verdict: probed,
+	}
+	if ctx := newFormatContext(cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "1h 55m" {
+		t.Errorf("Duration = %q, want %q", ctx.Duration, "1h 55m")
+	}
+
+	cand.Release.Duration = 7200
+	if ctx := newFormatContext(cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "2h 0m" {
+		t.Errorf("Duration with an indexer-reported runtime = %q, want %q", ctx.Duration, "2h 0m")
+	}
+}
+
 func TestFormatContextExposesMergedCopies(t *testing.T) {
 	rel := &release.Release{
 		Title:      "Movie.2160p.Remux-GRP",
@@ -186,7 +288,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 			{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
 		},
 	}
-	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false)
+	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 
 	if got := renderFormat(t, "{{.Variants}}", ctx); got != "2" {
 		t.Errorf("{{.Variants}} = %q, want %q", got, "2")
@@ -196,7 +298,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 	}
 	// A lone release still reads as one copy, so {{if gt .Variants 1}} is the
 	// natural guard rather than a zero check.
-	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false)
+	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 	if got := renderFormat(t, "{{.Variants}}", lone); got != "1" {
 		t.Errorf("{{.Variants}} for a single copy = %q, want %q", got, "1")
 	}

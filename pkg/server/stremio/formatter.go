@@ -11,10 +11,13 @@ import (
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 
+	"github.com/dreulavelle/jhin"
+
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
 )
 
@@ -466,6 +469,47 @@ func humanDuration(seconds float64) string {
 	}
 }
 
+// approxBitrateText estimates a release's average bitrate when its title does
+// not carry one: from the indexer-reported file duration when there is one
+// (e.g. Easynews), else from the requested title's metadata runtime against
+// the size a viewer actually streams — the per-episode share for a
+// multi-episode release, and nothing for a season pack whose episode count the
+// title does not reveal. The number is approximate either way: release size
+// includes container and posting overhead.
+func approxBitrateText(rel *release.Release, meta *parser.ParsedRelease, contentRuntime float64, episodic bool) string {
+	if rel == nil || rel.Size <= 0 {
+		return ""
+	}
+	if rel.Duration > 0 {
+		return humanBitrate(float64(rel.Size) * 8 / rel.Duration)
+	}
+	if contentRuntime <= 0 {
+		return ""
+	}
+	var parsed *jhin.Result
+	if meta != nil {
+		parsed = meta.Result
+	}
+	size, ok := parser.EffectiveEpisodeSize(rel.Size, episodic, parsed)
+	if !ok {
+		return ""
+	}
+	return humanBitrate(float64(size) * 8 / contentRuntime)
+}
+
+// humanBitrate renders bits per second as "21.5 Mbps" or "850 kbps", or ""
+// when there is nothing to say.
+func humanBitrate(bps float64) string {
+	switch {
+	case bps <= 0:
+		return ""
+	case bps >= 1e6:
+		return fmt.Sprintf("%.1f Mbps", bps/1e6)
+	default:
+		return fmt.Sprintf("%.0f kbps", bps/1e3)
+	}
+}
+
 // humanAge renders how long ago a newznab pubDate was, or "" when unparseable.
 func humanAge(pubDate string) string {
 	parsed, ok := release.ParseDate(pubDate)
@@ -485,7 +529,10 @@ func humanAge(pubDate string) string {
 	}
 }
 
-func newFormatContext(cand triage.Candidate, index, count int, service, streamID, contentTitle, caps string, avail bool) FormatContext {
+// contentRuntime is the requested title's metadata runtime in seconds (one
+// episode's for episodic content), used to estimate a bitrate when neither the
+// release title nor the indexer supplies one. Zero means unknown.
+func newFormatContext(cand triage.Candidate, index, count int, service, streamID, contentTitle, caps string, avail bool, contentRuntime float64) FormatContext {
 	if service == "" {
 		service = DefaultServiceName
 	}
@@ -590,6 +637,34 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		if len(meta.Languages) > 0 {
 			ctx.Languages = meta.Languages
 		}
+	}
+	if probed := cand.Verdict.Probed; probed != nil && probed.DurationSeconds > 0 {
+		// A probed library release is measured, not estimated: the container's
+		// own duration, against the media file's exact size when the library
+		// recorded one (the release size includes par2 and posting overhead).
+		if ctx.Duration == "" {
+			ctx.Duration = humanDuration(probed.DurationSeconds)
+		}
+		if ctx.Bitrate == "" && rel != nil {
+			size := rel.Size
+			if media := libraryMediaFileSize(rel); media > 0 {
+				size = media
+			}
+			ctx.Bitrate = humanBitrate(float64(size) * 8 / probed.DurationSeconds)
+		}
+	}
+	if ctx.Bitrate == "" {
+		// Titles almost never spell out a bitrate, so estimate one. Ranking's
+		// episodic flag decides whether a pack is judged per episode; an
+		// unranked candidate (preview, no profile) falls back to what the
+		// title parse says, so a season pack's full size is never divided by
+		// a single episode's runtime.
+		kind := cand.Verdict.Kind
+		episodic := kind == ranking.KindSeries || kind == ranking.KindAnimeShow
+		if kind == "" && meta != nil {
+			episodic = len(meta.Episodes) > 0 || len(meta.Seasons) > 0 || meta.Complete
+		}
+		ctx.Bitrate = approxBitrateText(rel, meta, contentRuntime, episodic)
 	}
 	return ctx
 }
@@ -761,7 +836,10 @@ type formatPreviewFixture struct {
 	library  bool
 	caps     string
 	duration float64
-	seadex   triage.SeadexState
+	// runtime is the requested title's metadata runtime in seconds, so
+	// fixtures without an indexer-reported duration still preview {{.Bitrate}}.
+	runtime float64
+	seadex  triage.SeadexState
 	// variants are the other indexers holding a copy of this release, so a
 	// preview of {{.Variants}} shows a merged result rather than a lone one.
 	variants []string
@@ -791,6 +869,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
 			score:   2850,
 			avail:   true,
+			runtime: 34 * 60,
 		},
 		{
 			label:   "Anime episode · SeaDex best",
@@ -801,6 +880,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			grabs:   88,
 			pubDate: time.Now().Add(-300 * 24 * time.Hour).Format(time.RFC1123Z),
 			score:   3600,
+			runtime: 24 * 60,
 			seadex:  triage.SeadexState{Checked: true, Known: true, Best: true},
 		},
 		{
@@ -815,6 +895,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			avail:   true,
 			library: true,
 			caps:    "hevc Main 10 1080p 10-bit",
+			runtime: 34 * 60,
 		},
 	}
 }
@@ -859,7 +940,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
 		cand.Verdict.Seadex = fx.seadex
-		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail)
+		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
 
 		builtinName := "StreamNZB\nStandalone"
 		if fx.avail {

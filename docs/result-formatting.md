@@ -36,8 +36,19 @@ List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.Seasons`,
 `.Episodes`, `.Volumes`) render comma-separated by default and work with
 `range`, `index`, and the list helpers below. `.Caps` is the ffprobe-verified
 media summary, present on library releases only. `.Duration` is the humanized
-runtime (`1h 52m`), filled only when the indexer reports one (e.g. Easynews) —
-newznab NZBs don't carry a runtime.
+runtime (`1h 52m`), filled when the indexer reports one (e.g. Easynews — newznab
+NZBs don't carry a runtime) or, for probed library releases, from the ffprobe
+measurement of the file itself.
+
+`.Bitrate` is the release's average bitrate as text (`21.5 Mbps`). Titles
+almost never spell one out, so it is derived instead. For a probed library
+release it is measured: the media file's exact size over the container's own
+duration. For everything else it is an estimate: release size against the
+indexer-reported duration when there is one, else against the title's
+metadata runtime (per episode for multi-episode releases). It stays empty when
+none of those are known, or for a season pack whose episode count the title
+does not reveal — and the estimates are approximate, since release size
+includes container and posting overhead.
 
 `.Variants` is how many interchangeable copies of the release the search
 merged, counting the one that plays first — `1` means no other indexer listed

@@ -27,6 +27,20 @@ func libraryCapsForRelease(rel *release.Release) *session.MediaCapabilities {
 	return &caps
 }
 
+// libraryMediaFileSize returns the exact size of the media file a library
+// release plays, or 0 when unknown (non-library releases, rows saved before it
+// was recorded). The release's own Size is the whole NZB payload, par2
+// included, so this is the number a bitrate should be computed from.
+func libraryMediaFileSize(rel *release.Release) int64 {
+	if rel == nil || !rel.IsLibraryResult() {
+		return 0
+	}
+	if item, ok := rel.SourceIndexer.(*persistence.LibraryItem); ok && item != nil {
+		return item.MediaFileSize
+	}
+	return 0
+}
+
 // capsSummaryLine renders the authoritative ffprobe capability summary for a
 // library release (e.g. "hevc Main 10 2160p 10-bit HDR10"), or "" when caps are
 // unknown (fresh indexer releases).

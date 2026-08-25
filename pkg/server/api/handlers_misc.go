@@ -210,6 +210,84 @@ func (s *Server) handleNZBAttempts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleClearNZBAttempts wipes play history for the streams the caller ticked.
+// The stream parameter repeats, one value per stream; no value at all — or the
+// sentinel "all" — clears every stream, including any whose rows the history
+// page never loaded.
+func (s *Server) handleClearNZBAttempts(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r, "Only admin can clear NZB attempts", http.MethodDelete, http.MethodPost) {
+		return
+	}
+	s.mu.RLock()
+	lister := s.attemptLister
+	s.mu.RUnlock()
+	if lister == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": 0})
+		return
+	}
+
+	// An empty scope list means "every stream", which is what DeleteAttempts
+	// takes an empty name for.
+	scopes := []string{""}
+	if named := clearStreamScopes(r.URL.Query()["stream"]); len(named) > 0 {
+		scopes = named
+	}
+
+	var deleted, diagnostics int64
+	for _, scope := range scopes {
+		n, err := lister.DeleteAttempts(scope)
+		if err != nil {
+			logger.Error("DeleteAttempts failed", "stream", scope, "err", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		deleted += n
+		// Diagnostics are decoration on the attempts; leaving them behind would
+		// keep cleared requests visible as search-only groups.
+		d, err := lister.DeleteSearchDiagnostics(scope)
+		if err != nil {
+			logger.Error("DeleteSearchDiagnostics failed", "stream", scope, "err", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		diagnostics += d
+	}
+
+	logger.Info("History cleared", "streams", clearScopeLabel(scopes), "attempts", deleted, "diagnostics", diagnostics)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": deleted, "diagnostics_deleted": diagnostics})
+}
+
+// clearStreamScopes normalizes the requested stream names, dropping blanks and
+// duplicates. "all" among them widens the request back to every stream, which
+// it signals by returning nothing.
+func clearStreamScopes(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	scopes := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if v == "all" {
+			return nil
+		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		scopes = append(scopes, v)
+	}
+	return scopes
+}
+
+// clearScopeLabel renders the cleared scope for the log line.
+func clearScopeLabel(scopes []string) string {
+	if len(scopes) == 1 && scopes[0] == "" {
+		return "(all streams)"
+	}
+	return strings.Join(scopes, ",")
+}
+
 // handleSearchDiagnostics serves the persisted search-funnel records the
 // history page attaches to its request groups.
 func (s *Server) handleSearchDiagnostics(w http.ResponseWriter, r *http.Request) {

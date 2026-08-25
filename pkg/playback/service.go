@@ -738,16 +738,17 @@ func MediaCapabilitiesFromProbe(res *ffprobe.FFprobeResult) *session.MediaCapabi
 		return nil
 	}
 	return &session.MediaCapabilities{
-		VideoCodec:    res.VideoCodec,
-		AudioCodec:    res.AudioCodec,
-		Width:         res.Width,
-		Height:        res.Height,
-		Profile:       res.Profile,
-		PixFmt:        res.PixFmt,
-		BitDepth:      res.BitDepth,
-		HDR:           res.HDR,
-		DolbyVision:   res.DolbyVision,
-		ColorTransfer: res.ColorTransfer,
-		CodecTag:      res.CodecTag,
+		VideoCodec:      res.VideoCodec,
+		AudioCodec:      res.AudioCodec,
+		Width:           res.Width,
+		Height:          res.Height,
+		Profile:         res.Profile,
+		PixFmt:          res.PixFmt,
+		BitDepth:        res.BitDepth,
+		HDR:             res.HDR,
+		DolbyVision:     res.DolbyVision,
+		ColorTransfer:   res.ColorTransfer,
+		CodecTag:        res.CodecTag,
+		DurationSeconds: res.DurationSeconds,
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/search/query"
 )
 
 func (s *Server) SetupRoutes(mux *http.ServeMux) {
@@ -423,6 +424,10 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		nameLeft = key.StreamID
 	}
 	useSlotPaths := len(list.SlotPaths) == len(list.Candidates)
+	var contentRuntime float64
+	if list.Params != nil {
+		contentRuntime = query.ContentRuntimeSeconds(list.Params.Metadata, list.Params.ContentType)
+	}
 	var streams []Stream
 	if showAll {
 		for i, cand := range list.Candidates {
@@ -445,7 +450,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			capsLine := capsSummaryLine(cand.Release)
 			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
 			if format != nil {
-				ctx := newFormatContext(cand, i+1, len(list.Candidates), service, key.StreamID, contentTitle, capsLine, isAvail)
+				ctx := newFormatContext(cand, i+1, len(list.Candidates), service, key.StreamID, contentTitle, capsLine, isAvail, contentRuntime)
 				sName = renderResultTemplate(format.name, ctx, sName)
 				desc = renderResultTemplate(format.description, ctx, desc)
 			}

@@ -8,6 +8,42 @@ import (
 	"streamnzb/pkg/services/metadata/tmdb"
 )
 
+func TestContentRuntimeSeconds(t *testing.T) {
+	cases := []struct {
+		name        string
+		metadata    *ResolvedSearchMetadata
+		contentType string
+		want        float64
+	}{
+		{"nil metadata", nil, "movie", 0},
+		{
+			"movie runtime in minutes",
+			&ResolvedSearchMetadata{MovieDetails: &tmdb.MovieDetails{Runtime: 166}},
+			"movie", 166 * 60,
+		},
+		{
+			"movie without a reported runtime",
+			&ResolvedSearchMetadata{MovieDetails: &tmdb.MovieDetails{}},
+			"movie", 0,
+		},
+		{
+			"series episode runtime skips zero entries",
+			&ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{EpisodeRunTime: []int{0, 45}}},
+			"series", 45 * 60,
+		},
+		{
+			"series without episode runtimes",
+			&ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{}},
+			"series", 0,
+		},
+	}
+	for _, c := range cases {
+		if got := ContentRuntimeSeconds(c.metadata, c.contentType); got != c.want {
+			t.Errorf("%s: ContentRuntimeSeconds() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestSearchRequestNormalisationLogEntriesSplitMultipleLanguages(t *testing.T) {
 	metadata := &ResolvedSearchMetadata{
 		TVDetails: &tmdb.TVDetails{

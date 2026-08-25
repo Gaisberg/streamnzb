@@ -1,8 +1,19 @@
 package ffprobe
 
 import (
+	"encoding/json"
 	"testing"
 )
+
+func TestFFprobeOutputParsesFormatDuration(t *testing.T) {
+	var out FFprobeOutput
+	if err := json.Unmarshal([]byte(`{"streams":[],"format":{"duration":"6900.032000"}}`), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Format.Duration != "6900.032000" {
+		t.Errorf("Format.Duration = %q, want %q", out.Format.Duration, "6900.032000")
+	}
+}
 
 func TestFFprobeDownloadURL(t *testing.T) {
 	url, targetName, err := FFprobeDownloadURL()

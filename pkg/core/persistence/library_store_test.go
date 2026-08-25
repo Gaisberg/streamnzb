@@ -300,3 +300,41 @@ func TestLibraryStoreRoundTripMediaCaps(t *testing.T) {
 		t.Fatalf("empty-caps upsert clobbered stored caps: got %q", got2[0].MediaCapsJSON)
 	}
 }
+
+func TestLibraryDeleteAllRemovesPinnedAndBlueprints(t *testing.T) {
+	ls := newTestLibraryStore(t)
+
+	items := []*LibraryItem{
+		{ContentType: "movie", ContentID: "tt1", ReleaseTitle: "one", NZBData: []byte("<nzb/>"), MediaFileName: "one.mkv"},
+		{ContentType: "movie", ContentID: "tt2", ReleaseTitle: "two", NZBData: []byte("<nzb/>"), Pinned: true, MediaFileName: "two.mkv"},
+	}
+	for _, item := range items {
+		if err := ls.StoreItem(item); err != nil {
+			t.Fatalf("store %s: %v", item.ContentID, err)
+		}
+	}
+
+	deleted, err := ls.DeleteAll()
+	if err != nil {
+		t.Fatalf("delete all: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected 2 rows deleted, got %d", deleted)
+	}
+
+	// Pinned rows go too, and their blueprints leave nothing behind.
+	stats, _ := ls.GetStats()
+	if stats.TotalItems != 0 || stats.PinnedItems != 0 {
+		t.Fatalf("library not empty: %+v", stats)
+	}
+	var blueprints int
+	ls.db.QueryRow(`SELECT COUNT(*) FROM library_blueprints`).Scan(&blueprints)
+	if blueprints != 0 {
+		t.Fatalf("expected no blueprint rows, got %d", blueprints)
+	}
+
+	// Clearing an already empty library is a no-op, not an error.
+	if deleted, err := ls.DeleteAll(); err != nil || deleted != 0 {
+		t.Fatalf("second delete all: deleted=%d err=%v", deleted, err)
+	}
+}

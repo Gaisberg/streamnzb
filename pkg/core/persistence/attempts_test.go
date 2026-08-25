@@ -235,3 +235,52 @@ func TestDeleteAttemptsBeforeRemovesOlderRows(t *testing.T) {
 		t.Fatalf("remaining attempt content_id = %q, want %q", list[0].ContentID, "tt-new")
 	}
 }
+
+func TestDeleteAttemptsScopesToStream(t *testing.T) {
+	mgr := newTestStateManager(t)
+
+	nowMs := time.Now().UnixMilli()
+	// Three rows: one named stream, one other stream, and a legacy row whose
+	// stream_name was never written — the UI labels that one "default".
+	_, err := mgr.db.Exec(`INSERT INTO nzb_attempts (tried_at, stream_name, content_type, content_id, release_title, success, preload)
+		VALUES (?, ?, 'movie', 'tt-a', 'A', 1, 0),
+		       (?, ?, 'movie', 'tt-b', 'B', 1, 0),
+		       (?, '',  'movie', 'tt-c', 'C', 1, 0)`,
+		nowMs, "living-room", nowMs, "phone", nowMs)
+	if err != nil {
+		t.Fatalf("insert attempts: %v", err)
+	}
+
+	deleted, err := mgr.DeleteAttempts("living-room")
+	if err != nil {
+		t.Fatalf("DeleteAttempts: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	list, _ := mgr.ListAttempts(ListAttemptsOptions{Limit: 10})
+	if len(list) != 2 {
+		t.Fatalf("expected 2 remaining attempts, got %d", len(list))
+	}
+
+	// "default" also covers the row with no stream name at all.
+	deleted, err = mgr.DeleteAttempts(DefaultStreamLabel)
+	if err != nil {
+		t.Fatalf("DeleteAttempts default: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("default scope deleted = %d, want 1", deleted)
+	}
+
+	// Empty scope clears whatever is left.
+	deleted, err = mgr.DeleteAttempts("")
+	if err != nil {
+		t.Fatalf("DeleteAttempts all: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("all scope deleted = %d, want 1", deleted)
+	}
+	if list, _ := mgr.ListAttempts(ListAttemptsOptions{Limit: 10}); len(list) != 0 {
+		t.Fatalf("expected empty history, got %d", len(list))
+	}
+}

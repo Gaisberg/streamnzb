@@ -180,7 +180,7 @@ func TestFormatContextExposesVerdict(t *testing.T) {
 		},
 	}
 
-	ctx := newFormatContext(cand, 1, 1, "StreamNZB", "Standalone", "Movie", "", true)
+	ctx := newFormatContext(cand, 1, 1, "StreamNZB", "Standalone", "Movie", "", true, 0)
 
 	if ctx.Kind != ranking.KindMovie {
 		t.Errorf("Kind = %q, want %q", ctx.Kind, ranking.KindMovie)
@@ -209,7 +209,7 @@ func TestFormatContextExposesVerdict(t *testing.T) {
 // rather than zero values that read as real ones.
 func TestFormatContextUnprobedRelease(t *testing.T) {
 	cand := triage.Candidate{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}}
-	ctx := newFormatContext(cand, 1, 1, "StreamNZB", "Standalone", "Movie", "", false)
+	ctx := newFormatContext(cand, 1, 1, "StreamNZB", "Standalone", "Movie", "", false, 0)
 
 	if ctx.Verified {
 		t.Error("Verified = true for a release that was never probed")

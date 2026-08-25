@@ -90,3 +90,29 @@ func TestHandleDownloadLogsRejectsNonGet(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
 	}
 }
+
+func TestClearStreamScopesNormalizesTickedStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{"no selection means every stream", nil, nil},
+		{"blanks are dropped", []string{"", "  "}, nil},
+		{"all widens back to every stream", []string{"phone", "all"}, nil},
+		{"duplicates collapse", []string{"phone", "phone", "tv"}, []string{"phone", "tv"}},
+		{"values are trimmed", []string{" living-room "}, []string{"living-room"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clearStreamScopes(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}

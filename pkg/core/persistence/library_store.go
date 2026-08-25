@@ -630,6 +630,28 @@ func (ls *LibraryStore) DeleteItem(id string) error {
 	return err
 }
 
+// DeleteAll empties the library, pinned rows included: it is only reached from
+// an explicit admin "clear everything" action, where pinning (an LRU-eviction
+// guard) should not veto the request. Returns the number of rows removed.
+func (ls *LibraryStore) DeleteAll() (int, error) {
+	if ls == nil || ls.db == nil {
+		return 0, nil
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+
+	var count int
+	_ = ls.db.QueryRow(`SELECT COUNT(*) FROM library_nzbs`).Scan(&count)
+
+	if _, err := ls.wdb.Exec(`DELETE FROM library_blueprints`); err != nil {
+		return 0, err
+	}
+	if _, err := ls.wdb.Exec(`DELETE FROM library_nzbs`); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (ls *LibraryStore) DeleteByDetailsURL(detailsURL string) error {
 	detailsURL = strings.TrimSpace(detailsURL)
 	if ls == nil || ls.db == nil || detailsURL == "" {
