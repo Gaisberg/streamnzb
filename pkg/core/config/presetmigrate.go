@@ -98,7 +98,11 @@ func (fp *FilterProfileConfig) MigrateToPreset() bool {
 		add("Require language", "not ("+anyLanguage(required)+")", RuleActionReject, 0)
 	}
 	for _, code := range trimmed(spec.Languages.Preferred) {
-		// English is preferred by the baseline already.
+		// English is dropped rather than carried into a rule. It was the
+		// baseline's own default rather than something anyone chose, and the
+		// bonus only ever paid on a release whose title says so — so
+		// migrating it would make a default nobody set permanent and visible.
+		// Any other language was a deliberate choice and becomes a rule.
 		if strings.EqualFold(code, "en") {
 			continue
 		}

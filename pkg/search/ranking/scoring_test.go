@@ -218,3 +218,27 @@ func TestScoringNegativeWeightInvertsPreference(t *testing.T) {
 		t.Fatalf("negative weight scored %d, want -150", got)
 	}
 }
+
+// The baseline scores no language. It used to add 10000 for English, which
+// paid only on a release whose title happens to name a language — so an
+// untagged English release, which is most of them, lost to a tagged one for
+// saying nothing. A profile that wants a language ranked writes a rule.
+func TestBaselinePrefersNoLanguage(t *testing.T) {
+	p := limitsProfile(t, config.FilterProfileConfig{Name: "plain", Preset: config.PresetUHD})
+
+	untagged := rankOf(t, p, ranking.KindMovie, &release.Release{Title: "Movie 2020 1080p BluRay x264-GRP"})
+	english := rankOf(t, p, ranking.KindMovie, &release.Release{Title: "Movie 2020 1080p BluRay x264 ENGLISH-GRP"})
+	if untagged != english {
+		t.Errorf("English scored %d and an untagged release %d; the baseline must not price a language", english, untagged)
+	}
+
+	// And a rule is how you get it back, using the ISO 639-1 code the parser
+	// emits — "en", never "eng".
+	ruled := limitsProfile(t, config.FilterProfileConfig{
+		Name: "prefers en", Preset: config.PresetUHD,
+		Rules: []config.RuleConfig{{Name: "Prefer English", When: `"en" in languages`, Points: 500}},
+	})
+	if got := rankOf(t, ruled, ranking.KindMovie, &release.Release{Title: "Movie 2020 1080p BluRay x264 ENGLISH-GRP"}); got != english+500 {
+		t.Errorf("a language rule earned %d, want %d", got-english, 500)
+	}
+}

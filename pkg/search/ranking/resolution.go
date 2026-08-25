@@ -13,7 +13,7 @@ import (
 // release past a higher-resolution one however large they were.
 //
 // The step is wider than the whole spread of the baseline's other points — a
-// remux is 1500, HEVC 700, the preferred-language bonus 10000 — so nothing the
+// remux is 1500, HEVC 700 — so nothing the
 // baseline has an opinion about crosses a tier on its own, and the default
 // order is still every 4K release, then every 1080p one. It is narrow enough
 // that a rule can name a number that means "I want this more than I want the

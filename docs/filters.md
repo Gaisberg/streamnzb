@@ -41,6 +41,13 @@ a name nobody could read is not evidence of a bad release.
 
 There is no score floor. Rejecting is what rules are for, and a rule says why.
 
+**The baseline scores no language.** It used to add 10000 for English, but that
+bonus only paid on a release whose *title* names a language — and most English
+releases never say so, which made it a coin flip between an untagged English
+release and a tagged one rather than a preference for English. A profile that
+wants a language ranked writes a rule: `"en" in languages → +500`. See
+[the languages note](rules.md#inferred--from-the-release-name) for the codes.
+
 The preset decides which resolutions are offered. It does not decide the order
 they arrive in — the score does, and only the score. A resolution is worth
 20000 points per tier, so 4K leads a list nobody has written a rule about, but a
@@ -122,9 +129,8 @@ Nothing sorts ahead of the total.
 Resolution is priced at **20000 points a tier** — 2160p 60000, 1440p 40000,
 1080p 20000, 720p 0, and an unparsable resolution alongside 720p. The step is
 deliberately wider than everything else the baseline scores (a remux is 1500,
-HEVC 700, the preferred-language bonus 10000), so no combination of them
-crosses a tier and the default order is still every 4K release, then every
-1080p one. What it buys you is a price to beat: a rule worth 20000 moves its
+HEVC 700), so no combination of them crosses a tier and the default order is
+still every 4K release, then every 1080p one. What it buys you is a price to beat: a rule worth 20000 moves its
 releases up one tier, 80000 moves them past the lot.
 
 That is worth stating plainly because it used to be untrue. Resolution sorted

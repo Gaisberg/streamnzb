@@ -166,15 +166,17 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
-// English is preferred by the baseline, so it does not need a rule of its own.
-func TestMigrateSkipsBaselinePreferredLanguage(t *testing.T) {
+// English was the old baseline's own default rather than a choice anyone made,
+// so it is dropped rather than migrated into a rule that would make it
+// permanent. Any other language was deliberate and is carried.
+func TestMigrateDropsEnglishAndKeepsOtherPreferredLanguages(t *testing.T) {
 	spec := PresetSpec(PresetUHD)
 	spec.Languages.Preferred = []string{"en", "ja"}
 	fp := FilterProfileConfig{Name: "Langs", Ranking: &spec}
 	fp.MigrateToPreset()
 
 	if _, ok := ruleNamed(fp.Rules, "Prefer en"); ok {
-		t.Error("English got a rule despite already being preferred by the baseline")
+		t.Error("English got a rule; the baseline default is meant to be dropped")
 	}
 	if _, ok := ruleNamed(fp.Rules, "Prefer ja"); !ok {
 		t.Errorf("Japanese did not get a rule: %+v", fp.Rules)

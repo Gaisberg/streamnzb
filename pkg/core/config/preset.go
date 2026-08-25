@@ -123,8 +123,13 @@ func PresetSpec(preset string) rank.Profile {
 	// several traits should sort last, not fall through a floor. Rejecting is
 	// what rules are for, and a rule says why.
 	profile.Options.MinRank = noScoreFloor
-	profile.Options.PreferredBonus = 10000
-	profile.Languages.Preferred = []string{"en"}
+	// No preferred language. The baseline used to add 10000 for English, but
+	// the bonus only ever landed on a release whose *title* names a language,
+	// and most English releases never say so — which made it a coin flip
+	// between an untagged English release and a tagged one rather than a
+	// preference for English. A profile that wants a language ranked writes a
+	// rule for it (`"en" in languages` — the codes are ISO 639-1), which says
+	// so on the screen and can be scoped, scored and switched off.
 	profile.Attributes = defaultAttributePolicies()
 
 	return profile

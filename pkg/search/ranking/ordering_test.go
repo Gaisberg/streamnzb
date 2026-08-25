@@ -82,10 +82,10 @@ func TestBetterResolutionStillLeadsByScore(t *testing.T) {
 	}
 }
 
-// A resolution is worth one tier step, and the step is wide enough that
-// nothing the baseline scores — a remux is 1500, the preferred-language bonus
-// 10000 — crosses it. That is what keeps "4K first" true by default now that
-// resolution competes for the order in points rather than outranking them.
+// A resolution is worth one tier step, and the step is wide enough that nothing
+// the baseline scores — a remux is 1500 — crosses it. That is what keeps "4K
+// first" true by default now that resolution competes for the order in points
+// rather than outranking them.
 func TestResolutionIsWorthOneTierStep(t *testing.T) {
 	p := orderingProfile(t, "tiers", config.PresetSpec(config.PresetUHD), nil)
 

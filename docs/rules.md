@@ -205,6 +205,19 @@ the same thing whichever tier answered, and `hdrFallback` is the one that
 matters: it is false for SDR and for DV-with-no-base-layer alike, which is
 exactly the distinction a device without Dolby Vision support cares about.
 
+Two on `languages`. It holds **ISO 639-1 codes** — `"en"`, `"ja"`, `"fr"` —
+so `"eng"` and `"English"` match nothing and a rule written with either
+compiles cleanly and then never fires. And it is **empty unless the title says
+otherwise**: most English releases carry no language tag at all, so
+`"en" in languages` finds the ones that announce it, not the ones that are in
+English. To demote other languages rather than reward English, say so directly:
+
+```
+"en" in languages                      # the title claims English
+not ("en" in languages)                # everything else, untagged included
+"ja" in languages and not dubbed       # the ones you actually want to demote
+```
+
 ### reported — from the indexer
 
 `releaseName` `sizeGB` `sizePerEpisodeGB` `ageDays` `grabs` `passworded`
