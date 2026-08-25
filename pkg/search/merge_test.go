@@ -279,7 +279,7 @@ func TestFilterResultsMovieRejectsWrongIMDBMetadata(t *testing.T) {
 	}
 }
 
-func TestMergeAndDedupeSearchResultsKeepsFirstOccurrenceOrder(t *testing.T) {
+func TestMergeSameReleaseVariantsKeepsFirstOccurrenceOrder(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "First A", DetailsURL: "https://idx/details/a"},
 		{Title: "First B", GUID: "https://idx/details/b"},
@@ -288,38 +288,48 @@ func TestMergeAndDedupeSearchResultsKeepsFirstOccurrenceOrder(t *testing.T) {
 		{Title: "Unique C", DetailsURL: "https://idx/details/c"},
 	}
 
-	got := MergeAndDedupeSearchResults(releases)
+	got := MergeSameReleaseVariants(releases, VariantMergeOptions{})
 	if len(got) != 3 {
-		t.Fatalf("expected 3 deduped releases, got %d: %+v", len(got), got)
+		t.Fatalf("expected 3 merged releases, got %d: %+v", len(got), got)
 	}
 	if got[0].Title != "First A" || got[1].Title != "First B" || got[2].Title != "Unique C" {
 		t.Fatalf("expected first occurrences to remain in order, got titles %q, %q, %q", got[0].Title, got[1].Title, got[2].Title)
 	}
 }
 
-func TestMergeAndDedupeSearchResultsDoesNotUseTitleMatching(t *testing.T) {
+func TestMergeSameReleaseVariantsDoesNotUseTitleMatching(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "The.Patriot.2000.1080p.BluRay", DetailsURL: "https://idx/details/1"},
 		{Title: "The Patriot (2000) 1080p", DetailsURL: "https://idx/details/2"},
 	}
 
-	got := MergeAndDedupeSearchResults(releases)
+	got := MergeSameReleaseVariants(releases, VariantMergeOptions{})
 	if len(got) != 2 {
 		t.Fatalf("expected both distinct detail URLs to remain, got %d: %+v", len(got), got)
 	}
 }
 
-func TestMergeAndDedupeSearchResultsPrioritizesLibrary(t *testing.T) {
+func TestMergeSameReleaseVariantsPrioritizesLibrary(t *testing.T) {
 	indexerRel := &release.Release{Title: "House.Of.The.Dragon.S01E01.1080p", DetailsURL: "https://idx/details/hotd1", Indexer: "NZBGeek"}
 	libraryRel := &release.Release{Title: "House.Of.The.Dragon.S01E01.1080p", DetailsURL: "https://idx/details/hotd1", Indexer: "StreamNZB Library - NZBGeek", SourceIndexer: "library_struct", IsLibrary: true}
 
 	releases := []*release.Release{indexerRel, libraryRel}
-	got := MergeAndDedupeSearchResults(releases)
+	got := MergeSameReleaseVariants(releases, VariantMergeOptions{Rank: func(rel *release.Release) int {
+		if rel.IsLibraryResult() {
+			return 1
+		}
+		return 0
+	}})
 	if len(got) != 1 {
-		t.Fatalf("expected 1 deduped release, got %d", len(got))
+		t.Fatalf("expected 1 merged release, got %d", len(got))
 	}
 	if !got[0].IsLibraryResult() {
-		t.Fatalf("expected library release to win during deduplication, got %#v", got[0])
+		t.Fatalf("expected library release to lead the merge, got %#v", got[0])
+	}
+	// The indexer copy is not thrown away for losing: it is still a grabbable
+	// NZB if the library copy turns out not to be there.
+	if got[0].CopyCount() != 2 {
+		t.Fatalf("expected the indexer copy to survive as a variant, got %d copies", got[0].CopyCount())
 	}
 }
 

@@ -55,7 +55,6 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"filter_availnzb":             d.FilterAvailNZB,
 		"combine_results":             d.CombineResults,
 		"enable_failover":             d.EnableFailover,
-		"merge_variants":              d.MergeVariants,
 		"variant_attempts":            d.VariantAttempts,
 		"results_mode":                d.ResultsMode,
 		"auto_add_providers":          d.AutoAddProviders,
@@ -230,7 +229,6 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		FilterAvailNZB            *bool                                 `json:"filter_availnzb"`
 		CombineResults            *bool                                 `json:"combine_results"`
 		EnableFailover            *bool                                 `json:"enable_failover"`
-		MergeVariants             *bool                                 `json:"merge_variants"`
 		VariantAttempts           int                                   `json:"variant_attempts"`
 		ResultsMode               string                                `json:"results_mode"`
 		AutoAddProviders          *bool                                 `json:"auto_add_providers"`
@@ -299,7 +297,6 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			FilterAvailNZB:            dc.FilterAvailNZB,
 			CombineResults:            dc.CombineResults,
 			EnableFailover:            dc.EnableFailover,
-			MergeVariants:             dc.MergeVariants,
 			VariantAttempts:           dc.VariantAttempts,
 			ResultsMode:               dc.ResultsMode,
 			AutoAddProviders:          dc.AutoAddProviders,

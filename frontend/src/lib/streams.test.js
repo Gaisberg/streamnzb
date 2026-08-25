@@ -9,6 +9,7 @@ import {
   streamsFromMap,
   tabHasError,
   uniquePreserveOrder,
+  variantAttemptsLabel,
 } from '@/lib/streams'
 
 describe('uniquePreserveOrder', () => {
@@ -104,5 +105,18 @@ describe('tabHasError', () => {
     expect(tabHasError('providers', { providers: 'required' })).toBe(true)
     // A tab with no fields of its own can never be the one at fault.
     expect(tabHasError('general', { providers: 'required' })).toBe(false)
+  })
+})
+
+describe('variantAttemptsLabel', () => {
+  it('reads an unset value as the backend default, which is merge only', () => {
+    expect(variantAttemptsLabel(undefined)).toBe('Merge only')
+    expect(variantAttemptsLabel(0)).toBe('Merge only')
+    expect(variantAttemptsLabel(1)).toBe('Merge only')
+  })
+
+  it('names the walking modes', () => {
+    expect(variantAttemptsLabel(3)).toBe('3 copies')
+    expect(variantAttemptsLabel(-1)).toBe('All copies')
   })
 })

@@ -47,7 +47,8 @@ func TestResolveStreamSlotPlaysTheCopyTheCursorPointsAt(t *testing.T) {
 	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
 	slotPath := key.SlotPath(0)
 	list := variantTestPlaylist(key, mergedTestRelease())
-	stream := &auth.Stream{Username: key.StreamID}
+	// Walking copies is opt-in, so this stream asks for it.
+	stream := &auth.Stream{Username: key.StreamID, VariantAttempts: 2}
 
 	sess, err := server.resolveStreamSlotFromPlaylist(key, 0, list, stream)
 	if err != nil {
@@ -202,9 +203,7 @@ func TestDedupeSearchResultsMergesCopiesOfOneRelease(t *testing.T) {
 	}
 	stream := &auth.Stream{Username: "stream_test"}
 
-	// One executed request: plain deduplication would not have run at all, so
-	// this is also the case where merging changes what the list looks like.
-	got := server.dedupeSearchResults("stream_test", stream, releases, 1, nil)
+	got := server.dedupeSearchResults("stream_test", stream, releases, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 merged releases, got %d", len(got))
 	}
@@ -213,25 +212,23 @@ func TestDedupeSearchResultsMergesCopiesOfOneRelease(t *testing.T) {
 	}
 }
 
-func TestDedupeSearchResultsWithMergingOffKeepsOldBehaviour(t *testing.T) {
+func TestDefaultStreamMergesWithoutWalkingCopies(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
 
-	server := &Server{config: &config.Config{}}
-	releases := []*release.Release{
-		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek.invalid/1", Indexer: "NZBGeek"},
-		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
+	// The default is Merge only: the list is de-cluttered and the copies are
+	// there for search-time swaps, but playback never spends a second startup
+	// on another copy of the same release.
+	stream := &auth.Stream{Username: "stream_test"}
+	if got := stream.EffectiveVariantAttempts(); got != 1 {
+		t.Fatalf("expected one attempt per release by default, got %d", got)
 	}
-	off := false
-	stream := &auth.Stream{Username: "stream_test", MergeVariants: &off}
 
-	got := server.dedupeSearchResults("stream_test", stream, releases, 1, nil)
-	if len(got) != 2 {
-		t.Fatalf("expected deduplication to sit out a single request, got %d releases", len(got))
-	}
-	for _, rel := range got {
-		if rel.CopyCount() != 1 {
-			t.Fatalf("expected no variants without merging, got %d copies", rel.CopyCount())
-		}
+	manager := session.NewManager(nil, time.Minute)
+	t.Cleanup(manager.Shutdown)
+	slotPath := "stream_test:movie:tt123:0"
+	manager.NoteSlotCopies(slotPath, 3)
+	if manager.AdvanceSlotCopy(slotPath, stream.EffectiveVariantAttempts()) {
+		t.Fatal("a default stream must not walk to another copy of the same release")
 	}
 }

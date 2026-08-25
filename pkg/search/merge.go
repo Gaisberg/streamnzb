@@ -25,44 +25,6 @@ func dedupeReleaseKeys(rel *release.Release) []string {
 	return keys
 }
 
-func MergeAndDedupeSearchResults(releases []*release.Release) []*release.Release {
-	seenIndex := make(map[string]int)
-	var result []*release.Release
-
-	for _, rel := range releases {
-		if rel == nil {
-			continue
-		}
-		keys := dedupeReleaseKeys(rel)
-		existingIdx := -1
-		for _, k := range keys {
-			if idx, found := seenIndex[k]; found {
-				existingIdx = idx
-				break
-			}
-		}
-
-		if existingIdx >= 0 {
-			// If existing candidate in result is NOT from library, but new candidate IS from library,
-			// replace the existing non-library candidate with the library release!
-			if !result[existingIdx].IsLibraryResult() && rel.IsLibraryResult() {
-				result[existingIdx] = rel
-				for _, k := range keys {
-					seenIndex[k] = existingIdx
-				}
-			}
-			continue
-		}
-
-		newIdx := len(result)
-		for _, k := range keys {
-			seenIndex[k] = newIdx
-		}
-		result = append(result, rel)
-	}
-	return result
-}
-
 // VariantMergeOptions configures MergeSameReleaseVariants.
 type VariantMergeOptions struct {
 	// Rank scores one copy as a playback target; the highest-ranked copy of a

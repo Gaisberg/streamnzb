@@ -443,11 +443,12 @@ const (
 	DefaultLibraryVerifyTTLHours = 168 // 7 days
 	DefaultBadReleaseTTLHours    = 336 // 14 days
 	// DefaultVariantAttempts is how many copies of one release playback tries
-	// before moving on to a different release. Two covers the common case —
-	// one indexer's NZB is short of articles, another's is not — without
-	// spending a long startup walking every copy of a release that is simply
-	// gone.
-	DefaultVariantAttempts = 2
+	// before moving on to a different release. One by default: the copies are
+	// worth merging so the list is not cluttered with them, but a release that
+	// is gone is gone in all of its copies, and walking a second one costs a
+	// playback startup the failover walk would have spent on a different
+	// release.
+	DefaultVariantAttempts = 1
 	// VariantAttemptsUnlimited asks for every copy the merge kept.
 	VariantAttemptsUnlimited = -1
 )
@@ -860,11 +861,6 @@ type StreamEntry struct {
 	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
 	CombineResults    *bool  `json:"combine_results,omitempty"`
 	EnableFailover    *bool  `json:"enable_failover,omitempty"`
-	// MergeVariants folds several indexers' copies of one release into a
-	// single result that keeps the others as playback fallbacks, so a
-	// duplicate stops being clutter and becomes a retry target. nil means
-	// enabled.
-	MergeVariants *bool `json:"merge_variants,omitempty"`
 	// VariantAttempts caps how many copies of one release playback may try
 	// before moving on to a different release. 0 means the default
 	// (DefaultVariantAttempts), -1 means every copy the merge kept.
@@ -1520,7 +1516,6 @@ func (c *Config) ensureDefaultMigratedStream() bool {
 		UseAvailNZB:         ptrBool(true),
 		CombineResults:      ptrBool(true),
 		EnableFailover:      ptrBool(true),
-		MergeVariants:       ptrBool(true),
 		VariantAttempts:     DefaultVariantAttempts,
 		ResultsMode:         "display_all",
 		AutoAddProviders:    ptrBool(true),

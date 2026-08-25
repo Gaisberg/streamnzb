@@ -26,7 +26,7 @@ Each stream configuration defines:
 - **Metadata Profile** — Which catalogs, display language and rating limit the stream serves. None means the classic stream-only manifest — see [Metadata & Catalogs](metadata.md).
 - **Format Profile** — How the stream's results render in Stremio. None means the built-in format — see [Custom result formats](result-formatting.md).
 - **Failover & AvailNZB** — Automatic stream fallback walking and community availability checking. See [AvailNZB](availnzb.md).
-- **Merge duplicate copies** — Several indexers listing the same release become one result that keeps the other copies as playback fallbacks, instead of the duplicates being discarded. On by default. **Same-release attempts** caps how many copies of one release playback tries before moving on to a different release (`Merge only` never switches copies, `All copies` walks every one). See [Same-release variants](search-queries.md#same-release-variants).
+- **Same-release attempts** — Several indexers listing the same release always become one result that keeps the other copies. This caps how many of those copies playback tries before moving on to a different release: `Merge only` (the default) never switches copies, `All copies` walks every one. See [Same-release variants](search-queries.md#same-release-variants).
 
 This architecture allows running multiple distinct Stremio manifests from a single StreamNZB instance, each tailored with different search rules, filters, or provider selections.
 

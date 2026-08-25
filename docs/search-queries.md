@@ -29,9 +29,8 @@ Each stream lists its movie and TV requests in order (drag to reorder in the str
 ## Same-release variants
 
 Several indexers carrying the same release used to produce one result and a
-pile of discarded duplicates. With **Merge duplicate copies** on (the default,
-per stream), they still produce one result — but the other copies ride along on
-it as *variants*:
+pile of discarded duplicates. They still produce one result — but the other
+copies ride along on it as *variants*:
 
 ```
 Movie.2160p.Remux.HDR10-FraMeSToR
@@ -53,10 +52,20 @@ worth keeping rather than clutter worth deleting.
   failover walk gives up and moves to a different release. The slot id does not
   change, so the client is never redirected: it asked for this release and it
   still gets this release, out of another indexer's NZB. **Same-release
-  attempts** caps how many copies one release may spend (default 2).
+  attempts** caps how many copies one release may spend, and it is `Merge only`
+  by default — see below.
 - **What a failure condemns** — the NZB that failed, not the release. The
   AvailNZB report and the persistent bad-release record key on that copy's
   details URL, so the copies beside it stay playable and stay offered.
+- **What it costs, and the default** — walking copies costs time to first
+  frame: a release that is simply gone is gone in all of its copies, and each
+  copy playback tries is another startup spent before failover moves to a
+  different release. So **Same-release attempts** defaults to `Merge only` —
+  the duplicates are still folded into one result, still swapped in at search
+  time when a copy is reported bad or its indexer has spent its daily limit,
+  but playback never walks them. Raise it to `2 copies` or more if a stalled or
+  article-short NZB is the failure you actually hit, and you would rather spend
+  a second startup on the same release than move to a worse one.
 - **Seeing it** — the History funnel shows **Variants kept** next to the dedup
   count, and result templates can render `{{.Variants}}` — see
   [Custom result formats](result-formatting.md).

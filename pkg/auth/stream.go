@@ -45,11 +45,6 @@ type Stream struct {
 	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
 	CombineResults    *bool  `json:"combine_results,omitempty"`
 	EnableFailover    *bool  `json:"enable_failover,omitempty"`
-	// MergeVariants folds several indexers' copies of one release into a
-	// single result that keeps the others as playback fallbacks. nil means
-	// enabled. See config.StreamEntry; the two structs are converted into
-	// each other, so their fields must stay in step.
-	MergeVariants *bool `json:"merge_variants,omitempty"`
 	// VariantAttempts caps how many copies of one release playback may try
 	// before it moves on to a different release. 0 means the default, -1
 	// means every copy. See config.StreamEntry; the two structs are
@@ -143,24 +138,13 @@ func (s *Stream) EffectiveUnairedSearchGate() bool {
 	return *s.UnairedSearchGate
 }
 
-// EffectiveMergeVariants reports whether this stream folds duplicate copies of
-// a release into one result. Default true: deduplication already collapsed
-// them, so the only thing this turns on top of that is keeping the losers
-// instead of dropping them.
-func (s *Stream) EffectiveMergeVariants() bool {
-	if s == nil || s.MergeVariants == nil {
-		return true
-	}
-	return *s.MergeVariants
-}
-
 // EffectiveVariantAttempts is how many copies of one release playback may try
-// before moving on to a different release. One means the copies are kept for
-// display but never played through, which is what merging without failover
-// amounts to.
+// before moving on to a different release. One — the default — means the
+// copies are merged for the list and used when a source dies at search time,
+// but playback never spends a second startup walking them.
 func (s *Stream) EffectiveVariantAttempts() int {
-	if s == nil || !s.EffectiveMergeVariants() {
-		return 1
+	if s == nil {
+		return config.DefaultVariantAttempts
 	}
 	switch {
 	case s.VariantAttempts == config.VariantAttemptsUnlimited:
@@ -542,7 +526,6 @@ func (dm *StreamManager) CreateStream(username, password string, adminUsername s
 		IndexerMode:         "combine",
 		UseAvailNZB:         ptrBool(true),
 		CombineResults:      ptrBool(true),
-		MergeVariants:       ptrBool(true),
 		VariantAttempts:     config.DefaultVariantAttempts,
 		AutoAddProviders:    ptrBool(true),
 		AutoAddIndexers:     ptrBool(true),
@@ -728,7 +711,6 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.FilterAvailNZB = streamConfig.FilterAvailNZB
 	stream.CombineResults = streamConfig.CombineResults
 	stream.EnableFailover = streamConfig.EnableFailover
-	stream.MergeVariants = streamConfig.MergeVariants
 	stream.VariantAttempts = streamConfig.VariantAttempts
 	stream.ResultsMode = strings.TrimSpace(streamConfig.ResultsMode)
 	stream.AutoAddProviders = streamConfig.AutoAddProviders

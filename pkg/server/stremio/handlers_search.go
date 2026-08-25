@@ -490,15 +490,12 @@ func singleIndexerFromReleases(releases []*release.Release) (string, bool) {
 
 // dedupeSearchResults collapses copies of the same release into one result.
 //
-// With variant merging on it always runs and keeps the losers as playback
-// fallbacks; the plain path only runs where deduplication always did, because
-// what it does to a duplicate is discard it, and doing that to a single
-// request's results would only lose redundancy the playlist builder collapses
-// for display anyway.
-func (s *Server) dedupeSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, executedRequests int, availCtx *AvailContext) []*release.Release {
-	if !stream.EffectiveMergeVariants() {
-		return dedupeCombinedSearchResults(streamLabel, stream, releases, executedRequests)
-	}
+// It replaces plain deduplication and runs everywhere, including on a single
+// request's results: the old path sat those out because collapsing a duplicate
+// meant discarding it, and a discarded copy is redundancy lost. Nothing is
+// discarded here — the losers ride along on the winner — so there is no reason
+// left to keep a duplicate in the list.
+func (s *Server) dedupeSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, availCtx *AvailContext) []*release.Release {
 	inputResults := len(releases)
 	merged := search.MergeSameReleaseVariants(releases, search.VariantMergeOptions{Rank: s.variantRank(stream, availCtx)})
 	variants := 0
@@ -571,32 +568,6 @@ func (s *Server) variantRank(stream *auth.Stream, availCtx *AvailContext) func(*
 // availRecentDays is how fresh an availability record has to be to count as a
 // confirmation rather than a memory when copies of one release are compared.
 const availRecentDays = 30
-
-func dedupeCombinedSearchResults(streamLabel string, stream *auth.Stream, releases []*release.Release, executedRequests int) []*release.Release {
-	if !streamCombinesResults(stream) {
-		return releases
-	}
-	if executedRequests <= 1 {
-		return releases
-	}
-	inputResults := len(releases)
-	missingDetailsURL := 0
-	for _, rel := range releases {
-		if rel == nil || rel.DetailsURL != "" {
-			continue
-		}
-		missingDetailsURL++
-	}
-	releases = search.MergeAndDedupeSearchResults(releases)
-	logger.Debug("Stream deduplication",
-		"stream", streamLabel,
-		"search_requests_mode", "combine",
-		"input_results", inputResults,
-		"missing_details_url", missingDetailsURL,
-		"final_results", len(releases),
-	)
-	return releases
-}
 
 func alignAvailContextWithSearch(availCtx *AvailContext, indexerReleases []*release.Release) *AvailContext {
 	if availCtx == nil || availCtx.Result == nil {
@@ -831,7 +802,7 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 		indexerReleases = libraryReleases
 	}
 	dedupInput := len(indexerReleases)
-	indexerReleases = s.dedupeSearchResults(streamLabel, stream, indexerReleases, executedRequests, availCtx)
+	indexerReleases = s.dedupeSearchResults(streamLabel, stream, indexerReleases, availCtx)
 	variantsKept := 0
 	for _, rel := range indexerReleases {
 		if rel == nil {
