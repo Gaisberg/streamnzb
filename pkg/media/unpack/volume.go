@@ -13,6 +13,11 @@ var (
 	rarFirstRegex    = regexp.MustCompile(`(?i)\.rar$`)
 	sevenZipPartReg  = regexp.MustCompile(`(?i)\.7z\.(\d+)$`)
 	sevenZipFirstReg = regexp.MustCompile(`(?i)\.7z$`)
+	// numericPartRegex matches bare numeric split extensions (.001, .002, …)
+	// — a posting style some groups use for RAR volumes with no .rar anywhere
+	// in the name. `.7z.NNN` is excluded at the call sites; it belongs to the
+	// 7z path.
+	numericPartRegex = regexp.MustCompile(`\.(\d{3})$`)
 )
 
 type ArchiveKind string
@@ -43,6 +48,13 @@ func GetRARVolumeNumber(filename string) int {
 	}
 	if rarFirstRegex.MatchString(name) {
 		return 0
+	}
+	if m := numericPartRegex.FindStringSubmatch(name); len(m) > 1 {
+		if strings.HasSuffix(strings.ToLower(strings.TrimSuffix(name, m[0])), ".7z") {
+			return -1
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
 	}
 	return -1
 }

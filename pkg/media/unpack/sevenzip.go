@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"streamnzb/pkg/core/logger"
 
@@ -58,7 +59,7 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 		r, err = sevenzip.NewReader(mr, mr.Size())
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to open 7z archive: %w", err)
+		return nil, diagnose7zOpenErr(err, password)
 	}
 
 	fileInfos, err := r.ListFilesWithOffsets()
@@ -70,7 +71,7 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	compressedMedia := ""
 	candidates := make([]namedEpisodeCandidate, 0, len(fileInfos))
 	for i, fi := range fileInfos {
-		if !IsVideoFile(fi.Name) || IsSampleFile(fi.Name) {
+		if !isSevenZipMediaCandidate(fi.Name, int64(fi.Size)) {
 			continue
 		}
 		if fi.Compressed {
@@ -120,6 +121,37 @@ func CreateSevenZipBlueprint(ctx context.Context, files []UnpackableFile, firstV
 	return bp, nil
 }
 
+// diagnose7zOpenErr keeps the raw cause but names the likeliest reason a 7z
+// header fails to parse: an encrypted header opened without (or with the
+// wrong) password decodes to garbage ids, which the library can only report
+// as a bare "unexpected id". Contrast the RAR path, which has diagnosed this
+// for a long time.
+func diagnose7zOpenErr(err error, password string) error {
+	if password == "" {
+		return fmt.Errorf("failed to open 7z archive (headers may be encrypted, and no password came with the NZB): %w", err)
+	}
+	return fmt.Errorf("failed to open 7z archive (the password may be wrong, or the header is damaged): %w", err)
+}
+
+// isSevenZipMediaCandidate mirrors the RAR side's isMediaFile: media by name,
+// or large and not archive-suffixed. An obfuscated release's inner file
+// carries no useful extension, and size is the only signal left — requiring a
+// video extension here was exactly why extensionless 7z media selected
+// nothing while the equivalent RAR streamed.
+func isSevenZipMediaCandidate(name string, size int64) bool {
+	if IsSampleFile(name) {
+		return false
+	}
+	if IsVideoFile(name) {
+		return true
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ExtIso) || isArchiveLikeSuffix(lower) {
+		return false
+	}
+	return size > minLargeMediaBytes
+}
+
 // sevenZipNoMediaErr separates "every media file in here is compressed" — a
 // structural verdict the release can never recover from — from "nothing in here
 // looked like media", which only says our name matching came up empty and must
@@ -159,7 +191,7 @@ func TrySevenZipNestedArchive(ctx context.Context, files []UnpackableFile, passw
 		r, err = sevenzip.NewReader(mr, mr.Size())
 	}
 	if err != nil {
-		return nil, "", 0, nil, fmt.Errorf("failed to open 7z for nested scanning: %w", err)
+		return nil, "", 0, nil, fmt.Errorf("failed to open 7z for nested scanning: %w", diagnose7zOpenErr(err, password))
 	}
 
 	fileInfos, err := r.ListFilesWithOffsets()
@@ -249,10 +281,23 @@ func filesToPartsFast(ctx context.Context, files []UnpackableFile) ([]Part, erro
 	}
 
 	middleSize := firstSize
+	uniformMiddles := true
 	if len(files) > 2 {
 		middleSize, err = resolved7zVolumeSize(ctx, files[1])
 		if err != nil {
 			return nil, err
+		}
+		// The fast path paints volume 1's size across every middle volume,
+		// which is only right for the uniform splits `-v` produces. One extra
+		// probe of the last middle catches the non-uniform case; when the two
+		// disagree, every middle is measured — slower, but the alternative is
+		// a wrong concatenated offset map and garbage bytes.
+		if len(files) > 3 {
+			lastMiddle, err := resolved7zVolumeSize(ctx, files[len(files)-2])
+			if err != nil {
+				return nil, err
+			}
+			uniformMiddles = lastMiddle == middleSize
 		}
 	}
 
@@ -263,6 +308,13 @@ func filesToPartsFast(ctx context.Context, files []UnpackableFile) ([]Part, erro
 			size = firstSize
 		case len(files) - 1:
 			size = lastSize
+		default:
+			if !uniformMiddles {
+				size, err = resolved7zVolumeSize(ctx, f)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 		parts[i] = Part{Reader: f, Offset: 0, Size: size}
 	}

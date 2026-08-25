@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sort"
@@ -8,6 +9,36 @@ import (
 )
 
 var ErrNo7zFiles = errors.New("no 7z files found")
+
+// Identify7zSplitPartsBySignature finds a 7z posted with bare numeric
+// extensions (name.001, name.002, …): nothing in those names says 7z, so the
+// lowest-numbered part's first bytes decide. It costs one segment read, so
+// callers reach for it only after name-based routing has already failed.
+func Identify7zSplitPartsBySignature(files []UnpackableFile) ([]UnpackableFile, error) {
+	var parts []UnpackableFile
+	for _, f := range files {
+		name := strings.ToLower(ExtractFilename(f.Name()))
+		if !IsSplitArchivePart(name) || strings.Contains(name, ".7z") || IsRarPart(name) {
+			continue
+		}
+		parts = append(parts, f)
+	}
+	if len(parts) == 0 {
+		return nil, ErrNo7zFiles
+	}
+	// Fixed-width numeric extensions order correctly by name.
+	sort.SliceStable(parts, func(i, j int) bool {
+		return strings.ToLower(ExtractFilename(parts[i].Name())) < strings.ToLower(ExtractFilename(parts[j].Name()))
+	})
+	header := make([]byte, len(sevenZipMagic))
+	if _, err := parts[0].ReadAt(header, 0); err != nil {
+		return nil, ErrNo7zFiles
+	}
+	if !bytes.Equal(header, sevenZipMagic) {
+		return nil, ErrNo7zFiles
+	}
+	return parts, nil
+}
 
 func Identify7zParts(files []UnpackableFile) ([]UnpackableFile, error) {
 	var candidates []UnpackableFile

@@ -10,9 +10,20 @@ import (
 	"strings"
 
 	"streamnzb/pkg/auth"
+	"streamnzb/pkg/server/stremio"
 )
 
-const maxPlayNZBUploadBytes = 16 << 20
+// maxPlayNZBUploadBytes mirrors the session layer's cap so an upload the
+// handler accepts is never refused one call later.
+const maxPlayNZBUploadBytes = stremio.MaxDirectPlayNZBSize
+
+// nzbTooLargeError marks the one parse failure that deserves 413 rather than
+// 400: the payload was well-formed, just bigger than the cap allows.
+type nzbTooLargeError struct{}
+
+func (nzbTooLargeError) Error() string {
+	return fmt.Sprintf("NZB upload exceeds the %d MiB limit", maxPlayNZBUploadBytes>>20)
+}
 
 type directPlayResponse struct {
 	SessionID       string `json:"session_id"`
@@ -38,7 +49,12 @@ func (s *Server) handleDirectPlayNZB(w http.ResponseWriter, r *http.Request) {
 
 	sourceURL, sourceName, libraryID, nzbData, err := parseDirectPlayRequest(w, r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		var tooLarge nzbTooLargeError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
@@ -84,7 +100,14 @@ func parseDirectPlayRequest(w http.ResponseWriter, r *http.Request) (sourceURL s
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		r.Body = http.MaxBytesReader(w, r.Body, maxPlayNZBUploadBytes+1024*64)
-		if parseErr := r.ParseMultipartForm(maxPlayNZBUploadBytes + 1024*64); parseErr != nil {
+		// The small maxMemory spills big NZB parts to temp files instead of
+		// holding a few hundred MB of form data in RAM; the MaxBytesReader
+		// above still bounds the total body.
+		if parseErr := r.ParseMultipartForm(16 << 20); parseErr != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(parseErr, &tooLarge) {
+				return "", "", "", nil, nzbTooLargeError{}
+			}
 			return "", "", "", nil, fmt.Errorf("invalid multipart form payload")
 		}
 		sourceURL = strings.TrimSpace(r.FormValue("url"))
@@ -127,7 +150,7 @@ func readLimitedNZB(reader io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("uploaded file is empty")
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("uploaded file exceeds max size")
+		return nil, nzbTooLargeError{}
 	}
 	return data, nil
 }

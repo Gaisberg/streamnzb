@@ -598,7 +598,25 @@ func buildBlueprint(ctx context.Context, parts []filePart, allRarFiles []Unpacka
 
 	if bestName == "" {
 		logger.Debug("RAR blueprint found no direct media match, trying nested archive", "target", target, "parts", len(parts))
-		return tryNestedArchive(ctx, parts, allRarFiles, password, target)
+		bp, nestedErr := tryNestedArchive(ctx, parts, allRarFiles, password, target)
+		if nestedErr == nil {
+			return bp, nil
+		}
+		// Definitive verdicts propagate untouched; only a nested scan that
+		// found nothing playable falls through to the ISO.
+		if errors.Is(nestedErr, ErrCompressedArchive) || errors.Is(nestedErr, ErrEpisodeTargetNotFound) {
+			return nil, nestedErr
+		}
+		// A stored .iso is not media by name, and it is not a scannable
+		// archive either — but its bytes are a payload most players open
+		// (BD/DVD images), and serving them beats a dead end. The client
+		// decides what it can play; see the codec-responsibility rule.
+		if isoName := selectLargestStoredISO(parts); isoName != "" {
+			logger.Info("No media or nested archive found; streaming the stored ISO payload", "target", target, "name", isoName)
+			bestName = isoName
+		} else {
+			return nil, nestedErr
+		}
 	}
 
 	logger.Info("Selected main media", "target", target, "name", bestName)
@@ -701,6 +719,27 @@ func primeUniformSegmentMapsForPlayback(files []UnpackableFile) {
 	}
 }
 
+// selectLargestStoredISO picks the biggest uncompressed .iso among the
+// scanned parts, summing packed size across its volumes the way selectMainFile
+// does for media. Sample images never qualify.
+func selectLargestStoredISO(parts []filePart) string {
+	sizes := make(map[string]int64)
+	for _, p := range parts {
+		lower := strings.ToLower(p.name)
+		if !strings.HasSuffix(lower, ExtIso) || p.isCompressed || IsSampleFile(p.name) {
+			continue
+		}
+		sizes[p.name] += p.packedSize
+	}
+	best, bestSize := "", int64(0)
+	for name, size := range sizes {
+		if size > bestSize {
+			best, bestSize = name, size
+		}
+	}
+	return best
+}
+
 func selectMainFile(parts []filePart, target EpisodeTarget) (string, error) {
 	type mediaChoice struct {
 		size  int64
@@ -801,7 +840,9 @@ func aggregateRemainingVolumes(ctx context.Context, mainParts []filePart, allRar
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
-	sort.Slice(allRarFiles, func(i, j int) bool {
+	// Stable: names with no recognizable volume number all compare equal, and
+	// an unstable sort would permute them out of NZB order.
+	sort.SliceStable(allRarFiles, func(i, j int) bool {
 		return GetRARVolumeNumber(allRarFiles[i].Name()) < GetRARVolumeNumber(allRarFiles[j].Name())
 	})
 
@@ -931,10 +972,7 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 	if contPackedSize > 0 {
 		var sumNonLastContPacked int64
 		for i := startIdx + 1; i < len(allRarFiles)-1; i++ {
-			volIdx := int64(GetRARVolumeNumber(allRarFiles[i].Name()) - firstVolNum)
-			if volIdx < 0 {
-				volIdx = int64(i - startIdx)
-			}
+			volIdx := volumeIndexFrom(allRarFiles[i].Name(), firstVolNum, i-startIdx)
 			volDataOffset := contDataOffset + uvarintSize(uint64(volIdx)) - 1
 			sumNonLastContPacked += contPackedSize - (volDataOffset - contDataOffset)
 		}
@@ -958,10 +996,7 @@ func aggregateRemainingVolumesFromStart(ctx context.Context, mainParts []filePar
 			}
 		}
 
-		volIdx := int64(GetRARVolumeNumber(f.Name()) - firstVolNum)
-		if volIdx < 0 {
-			volIdx = int64(i - startIdx)
-		}
+		volIdx := volumeIndexFrom(f.Name(), firstVolNum, i-startIdx)
 		volDataOffset := contDataOffset + uvarintSize(uint64(volIdx)) - 1
 
 		isLastVolume := i == len(allRarFiles)-1
@@ -1451,10 +1486,8 @@ func isMediaFile(info rardecode.ArchiveFileInfo) bool {
 		return false
 	}
 	isVideo := IsVideoFile(name)
-	isLarge := info.TotalUnpackedSize > 50*1024*1024
-	isArchive := strings.HasSuffix(lower, ExtRar) || strings.HasSuffix(lower, ExtZip) ||
-		strings.HasSuffix(lower, Ext7z) || strings.HasSuffix(lower, ExtPar2) || IsRarPart(lower)
-	return isVideo || (isLarge && !isArchive)
+	isLarge := info.TotalUnpackedSize > minLargeMediaBytes
+	return isVideo || (isLarge && !isArchiveLikeSuffix(lower))
 }
 
 func archiveSetName(name string) string {
@@ -1471,8 +1504,26 @@ func archiveSetName(name string) string {
 	return name
 }
 
+// volumeIndexFrom is a continuation volume's ordinal relative to the set's
+// first volume. Names with no recognizable number fall back to their position
+// in the (stably) sorted list — the old subtraction produced -1 - -1 = 0 for
+// every unnumbered volume, so the positional fallback was dead code and every
+// continuation was priced as volume zero.
+func volumeIndexFrom(name string, firstVolNum, positional int) int64 {
+	n := GetRARVolumeNumber(name)
+	if n < 0 || firstVolNum < 0 {
+		return int64(positional)
+	}
+	if idx := int64(n - firstVolNum); idx >= 0 {
+		return idx
+	}
+	return int64(positional)
+}
+
 func sortByVolume(parts []filePart) {
-	sort.Slice(parts, func(i, j int) bool {
+	// Stable for the same reason as aggregateRemainingVolumes: unnumbered
+	// names compare equal and must keep their NZB order.
+	sort.SliceStable(parts, func(i, j int) bool {
 		return GetRARVolumeNumber(parts[i].volName) < GetRARVolumeNumber(parts[j].volName)
 	})
 }

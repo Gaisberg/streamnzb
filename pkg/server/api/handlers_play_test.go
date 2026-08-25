@@ -3,10 +3,14 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"streamnzb/pkg/server/stremio"
 )
 
 func TestParseDirectPlayRequestFromJSON(t *testing.T) {
@@ -98,6 +102,31 @@ func TestHandleDirectPlayNZBMethodNotAllowed(t *testing.T) {
 func TestReadLimitedNZBRejectsEmptyPayload(t *testing.T) {
 	if _, err := readLimitedNZB(bytes.NewBufferString("   "), 1024); err == nil {
 		t.Fatal("expected empty payload to fail")
+	}
+}
+
+func TestReadLimitedNZBOverLimitIsTooLarge(t *testing.T) {
+	_, err := readLimitedNZB(bytes.NewBufferString("<nzb>bigger than limit</nzb>"), 4)
+	if err == nil {
+		t.Fatal("expected over-limit payload to fail")
+	}
+	var tooLarge nzbTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("err = %v, want nzbTooLargeError", err)
+	}
+	if !strings.Contains(err.Error(), "MiB limit") {
+		t.Fatalf("error should name the limit, got %q", err.Error())
+	}
+}
+
+func TestUploadCapAdmitsLargeNZBs(t *testing.T) {
+	// An NZB's XML runs ~0.3-0.5 MB per GiB posted; the old 16 MiB cap
+	// refused every very large release. Guard the floor, not the exact value.
+	if maxPlayNZBUploadBytes < 256<<20 {
+		t.Fatalf("maxPlayNZBUploadBytes = %d, want at least 256 MiB", maxPlayNZBUploadBytes)
+	}
+	if got := int64(stremio.MaxDirectPlayNZBSize); got != int64(maxPlayNZBUploadBytes) {
+		t.Fatalf("handler cap %d != session cap %d; an accepted upload would be refused a call later", maxPlayNZBUploadBytes, got)
 	}
 }
 

@@ -357,9 +357,23 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 	sampleIndicesMap[0] = true
 	sampleIndicesMap[n-1] = true
 
-	// Sample up to 11 points across the RAR volume list (decile sampling)
-	step := float64(n-1) / 10.0
-	for i := 0; i <= 10; i++ {
+	// Sample volumes evenly, scaling with the set: a fixed 11 points let a
+	// many-volume release with damage clustered in unsampled volumes stream
+	// until it broke mid-body. One in eight volumes, floored at the historical
+	// 11 and capped to keep the pre-flight bounded; each sampled volume STATs
+	// its own spread of segments (see CheckFirstSegmentExists).
+	samples := n / 8
+	if samples < 11 {
+		samples = 11
+	}
+	if samples > 24 {
+		samples = 24
+	}
+	if samples > n {
+		samples = n
+	}
+	step := float64(n-1) / float64(samples-1)
+	for i := 0; i < samples; i++ {
 		idx := int(float64(i) * step)
 		if idx >= 0 && idx < n {
 			sampleIndicesMap[idx] = true
@@ -506,7 +520,12 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 		p.NotePendingLibrarySave(sess, bp, name, size)
 	}
 	if !sess.IsPlaybackValidated() {
-		if err := unpack.ValidateMediaStreamHasVideoWithFFprobe(stream, name, p.ffprobePath()); err != nil {
+		// QuickHeader: this validation sits on time-to-first-byte, and the
+		// full-width probe pulled up to 50 MB through the segment pool before
+		// the first byte could be served — most of our cold-open latency in
+		// the field. The bounded window still catches audio-only and garbage;
+		// what it cannot settle degrades to the permissive header heuristic.
+		if _, err := unpack.ValidateMediaStreamWithOptions(ctx, stream, name, p.ffprobePath(), unpack.ValidateOptions{QuickHeader: true}); err != nil {
 			logger.Warn("Media stream container track validation failed", "id", sessionID, "name", name, "err", err)
 			stream.Close()
 			return nil, "", 0, fmt.Errorf("container track validation failed: %w", err)

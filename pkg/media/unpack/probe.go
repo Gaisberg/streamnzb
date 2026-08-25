@@ -102,6 +102,11 @@ type ValidateOptions struct {
 	// Appropriate for pre-probing (a false reject just tries the next candidate);
 	// NOT for serve-time validation (a false reject breaks live playback).
 	StrictFFprobe bool
+	// QuickHeader bounds the ffprobe read window tightly. For serve-time
+	// validation the probe sits on time-to-first-byte and only needs the
+	// container header; anything it cannot settle in the small window falls
+	// back to the permissive heuristic exactly as an ffprobe error would.
+	QuickHeader bool
 }
 
 // ValidateMediaStreamHasVideoWithFFprobeCtx inspects the stream with ffprobe (if configured/available),
@@ -127,6 +132,7 @@ func ValidateMediaStreamWithOptions(ctx context.Context, stream ReadSeekCloser, 
 		res, err := ffprobe.ProbeStreamWithOptions(ctx, stream, binPath, ffprobe.ProbeOptions{
 			ForceDecode:  opts.ForceDecode,
 			DecodeFrames: opts.DecodeFrames,
+			QuickHeader:  opts.QuickHeader,
 		})
 		if _, seekErr := stream.Seek(0, io.SeekStart); seekErr != nil {
 			logger.Warn("Failed to seek stream back after ffprobe", "err", seekErr)

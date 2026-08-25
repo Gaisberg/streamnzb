@@ -195,6 +195,9 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if err := r.file.verifyMappedSegmentLength(segIdx, data); err != nil {
+			return 0, err
+		}
 		r.mu.Lock()
 		if !r.closed && r.segIdx == segIdx {
 			r.currentSegIdx = segIdx

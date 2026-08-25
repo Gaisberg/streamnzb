@@ -234,7 +234,7 @@ func (s *Server) primeRangeOrFailover(
 			s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,
 				"Redirecting to next fallback (requested range unavailable)")
 		} else {
-			forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
+			failPlayback(w, r, resolved.session, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), primeErr)
 		}
 		return false
 	case primeErr != nil:

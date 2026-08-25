@@ -19,3 +19,17 @@ func TestExtractFilenamePrefersNonEmptyQuotedName(t *testing.T) {
 		t.Fatalf("ExtractFilename() = %q, want %q", got, want)
 	}
 }
+
+func TestIsVideoFileKnowsTransportStreams(t *testing.T) {
+	for _, name := range []string{"capture.ts", "BDMV/STREAM/00000.m2ts", "cam.MTS"} {
+		if !IsVideoFile(name) {
+			t.Fatalf("IsVideoFile(%q) = false, want true", name)
+		}
+	}
+	// The .ts suffix must not swallow names that merely end in "ts".
+	for _, name := range []string{"release.parts", "notes.txts"} {
+		if IsVideoFile(name) {
+			t.Fatalf("IsVideoFile(%q) = true, want false", name)
+		}
+	}
+}

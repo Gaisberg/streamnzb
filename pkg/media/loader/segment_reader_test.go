@@ -91,13 +91,19 @@ func TestSegmentReaderDoesNotAdvanceBeforeMappedEnd(t *testing.T) {
 	r := NewSegmentReader(context.Background(), f, 0)
 	defer func() { _ = r.Close() }()
 
+	// A segment that decodes shorter than its mapped span is a wrong map, and
+	// serving anything from it would precede a shifted stream: the read must
+	// fail loudly up front rather than advance past the mapped end.
 	buf := make([]byte, 16)
 	n, err := r.Read(buf)
-	if n != 8 {
-		t.Fatalf("expected first read of 8 bytes, got %d", n)
-	}
 	if err == nil {
-		t.Fatal("expected short-segment error on second segment, got nil")
+		t.Fatal("expected a map-mismatch error, got nil")
+	}
+	if n != 0 {
+		t.Fatalf("expected no bytes from a mismatched segment, got %d", n)
+	}
+	if !strings.Contains(err.Error(), "mapped") {
+		t.Fatalf("error should name the map mismatch, got: %v", err)
 	}
 }
 

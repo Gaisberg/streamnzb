@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/textproto"
+	"strings"
 	"sync"
 	"testing"
 
@@ -159,6 +160,96 @@ func TestZeroFilledSegmentIsNotRefetched(t *testing.T) {
 	}
 	if holes := f.ZeroFilledSegments(); holes != 1 {
 		t.Fatalf("re-reading one hole counted %d holes, want 1", holes)
+	}
+}
+
+// transientFailureFetcher fails the indices in failing with a non-430 error —
+// a timeout, a reset, an exhausted pool — the kinds of failure that say nothing
+// about whether the article exists.
+type transientFailureFetcher struct {
+	segmentSize int
+	failing     map[int]struct{}
+}
+
+func (f *transientFailureFetcher) FetchSegment(_ context.Context, segment *nzb.Segment, _ []string) (pool.SegmentData, error) {
+	index := segment.Number - 1
+	if _, bad := f.failing[index]; bad {
+		return pool.SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries: read tcp: i/o timeout", segment.ID)
+	}
+	return pool.SegmentData{Body: segmentPayload(index, f.segmentSize)}, nil
+}
+
+func TestTransientFetchFailureIsAnErrorNotAHole(t *testing.T) {
+	const segmentSize = 1024
+	fetcher := &transientFailureFetcher{segmentSize: segmentSize, failing: map[int]struct{}{2: {}}}
+	f := NewFile(context.Background(), damagedNZBFile(6, segmentSize), nil, fetcher)
+
+	_, err := f.DownloadSegment(context.Background(), 2)
+	if err == nil {
+		t.Fatal("a transient fetch failure must surface as an error, not zeros")
+	}
+	if nntp.IsArticleNotFound(err) {
+		t.Fatalf("a transient failure must not read as a missing article: %v", err)
+	}
+	if holes := f.ZeroFilledSegments(); holes != 0 {
+		t.Fatalf("a transient failure must not be zero-filled, got %d holes", holes)
+	}
+	if f.IsFailed() {
+		t.Fatal("a transient failure must not count toward the zero-fill cap")
+	}
+}
+
+// mismatchedSegmentFetcher serves every segment at def bytes except the
+// indices in sizes — a post whose articles decode to lengths the estimated
+// segment map did not predict.
+type mismatchedSegmentFetcher struct {
+	def   int
+	sizes map[int]int
+}
+
+func (f *mismatchedSegmentFetcher) FetchSegment(_ context.Context, segment *nzb.Segment, _ []string) (pool.SegmentData, error) {
+	index := segment.Number - 1
+	size := f.def
+	if s, ok := f.sizes[index]; ok {
+		size = s
+	}
+	return pool.SegmentData{Body: segmentPayload(index, size)}, nil
+}
+
+// A segment that decodes longer than the map predicted used to have its
+// surplus silently dropped, shifting every byte after it. It must be a loud
+// error instead.
+func TestSegmentLongerThanMapFailsLoudly(t *testing.T) {
+	const segmentSize = 1024
+	fetcher := &mismatchedSegmentFetcher{def: segmentSize, sizes: map[int]int{2: segmentSize + 76}}
+	f := NewFile(context.Background(), damagedNZBFile(6, segmentSize), nil, fetcher)
+
+	stream, err := f.OpenStreamCtx(playbackCtx())
+	if err != nil {
+		t.Fatalf("OpenStreamCtx returned error: %v", err)
+	}
+	defer stream.Close()
+
+	_, err = io.ReadAll(stream)
+	if err == nil {
+		t.Fatal("a segment longer than its mapped size must error, not silently drop bytes")
+	}
+	if !strings.Contains(err.Error(), "mapped") {
+		t.Fatalf("error should name the map mismatch, got: %v", err)
+	}
+}
+
+func TestSegmentLengthMismatchFailsLoudlyOnReadAt(t *testing.T) {
+	const segmentSize = 1024
+	fetcher := &mismatchedSegmentFetcher{def: segmentSize, sizes: map[int]int{2: segmentSize + 76}}
+	f := NewFile(context.Background(), damagedNZBFile(6, segmentSize), nil, fetcher)
+	if err := f.EnsureSegmentMapCtx(playbackCtx()); err != nil {
+		t.Fatalf("EnsureSegmentMapCtx returned error: %v", err)
+	}
+
+	buf := make([]byte, 3*segmentSize)
+	if _, err := f.ReadAt(buf, 2*segmentSize); err == nil {
+		t.Fatal("ReadAt through a mismatched segment must error, not shift bytes")
 	}
 }
 

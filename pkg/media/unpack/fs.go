@@ -181,5 +181,11 @@ func archivePrefix(filename string) string {
 	if strings.HasSuffix(lower, ".7z") {
 		return lower[:len(lower)-3]
 	}
+	if len(lower) >= 4 {
+		ext := lower[len(lower)-4:]
+		if ext[0] == '.' && ext[1] >= '0' && ext[1] <= '9' && ext[2] >= '0' && ext[2] <= '9' && ext[3] >= '0' && ext[3] <= '9' {
+			return lower[:len(lower)-4]
+		}
+	}
 	return lower
 }

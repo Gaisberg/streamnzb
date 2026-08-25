@@ -43,6 +43,22 @@ func IsArchiveFile(name string) bool {
 		IsSplitArchivePart(lower)
 }
 
+// minLargeMediaBytes is the size above which a file with no recognizable
+// extension is presumed to be the media: obfuscated releases leave size as the
+// only signal, and nothing else in a release comes close to the video's bulk.
+const minLargeMediaBytes = 50 * 1024 * 1024
+
+// isArchiveLikeSuffix reports whether a lowercased name carries an archive or
+// parity suffix — the guard that keeps size-based media selection from picking
+// a nested archive as the media itself.
+func isArchiveLikeSuffix(lower string) bool {
+	return strings.HasSuffix(lower, ExtRar) ||
+		strings.HasSuffix(lower, ExtZip) ||
+		strings.HasSuffix(lower, Ext7z) ||
+		strings.HasSuffix(lower, ExtPar2) ||
+		IsRarPart(lower)
+}
+
 func IsSampleFile(name string) bool {
 	return strings.Contains(strings.ToLower(name), "sample")
 }
@@ -71,6 +87,15 @@ func IsMiddleRarVolume(name string) bool {
 		last := name[len(name)-2:]
 		if last != "ar" {
 			return true
+		}
+	}
+
+	// Bare numeric split volumes: .001 opens the set, everything after it is a
+	// continuation. `.7z.NNN` is the 7z path's business, not a RAR volume.
+	if len(name) >= 4 && !strings.Contains(name, ".7z") {
+		ext := name[len(name)-4:]
+		if ext[0] == '.' && isDigit(ext[1]) && isDigit(ext[2]) && isDigit(ext[3]) {
+			return ext != ".001"
 		}
 	}
 	return false

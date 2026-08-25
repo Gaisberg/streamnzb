@@ -98,12 +98,38 @@ func TestFilesToPartsSplitSevenZipProbesFirstMiddleAndLastOnly(t *testing.T) {
 	if parts[0].Size != 100 || parts[1].Size != 120 || parts[2].Size != 120 || parts[3].Size != 80 {
 		t.Fatalf("expected part sizes [100 120 120 80], got [%d %d %d %d]", parts[0].Size, parts[1].Size, parts[2].Size, parts[3].Size)
 	}
-	if first.ensureCalls != 1 || middle.ensureCalls != 1 || last.ensureCalls != 1 {
-		t.Fatalf("expected first/middle/last probes only, got first=%d middle=%d extra=%d last=%d",
+	// First, one leading middle, one trailing middle (the uniformity check)
+	// and last are probed — exactly once each, however many middles sit
+	// between them.
+	if first.ensureCalls != 1 || middle.ensureCalls != 1 || extraMiddle.ensureCalls != 1 || last.ensureCalls != 1 {
+		t.Fatalf("expected one probe each, got first=%d middle=%d extra=%d last=%d",
 			first.ensureCalls, middle.ensureCalls, extraMiddle.ensureCalls, last.ensureCalls)
 	}
-	if extraMiddle.ensureCalls != 0 {
-		t.Fatalf("expected trailing middle volume to reuse probed size, got %d ensure calls", extraMiddle.ensureCalls)
+}
+
+func TestFilesToPartsMeasuresAllMiddlesWhenSplitIsNotUniform(t *testing.T) {
+	mk := func(name string, size, resolved int64) *sizedUnpackableFile {
+		return &sizedUnpackableFile{
+			memoryUnpackableFile: &memoryUnpackableFile{name: name},
+			size:                 size,
+			resolvedSize:         resolved,
+		}
+	}
+	first := mk("release.7z.001", 110, 100)
+	m1 := mk("release.7z.002", 130, 120)
+	m2 := mk("release.7z.003", 140, 125)
+	m3 := mk("release.7z.004", 150, 130)
+	last := mk("release.7z.005", 90, 80)
+
+	parts, err := filesToParts(context.Background(), []UnpackableFile{first, m1, m2, m3, last})
+	if err != nil {
+		t.Fatalf("filesToParts returned error: %v", err)
+	}
+	want := []int64{100, 120, 125, 130, 80}
+	for i, w := range want {
+		if parts[i].Size != w {
+			t.Fatalf("part %d size = %d, want %d (non-uniform middles must be measured, not painted)", i, parts[i].Size, w)
+		}
 	}
 }
 
@@ -210,5 +236,70 @@ func TestSevenZipNoMediaErrOnlyBlamesCompressionWhenCompressedMediaWasSeen(t *te
 	unrecognized := sevenZipNoMediaErr("")
 	if errors.Is(unrecognized, ErrCompressedArchive) {
 		t.Fatal("an archive with no recognizable media was blamed on compression")
+	}
+}
+
+// headerStubFile is a stubFile whose first bytes are readable, for
+// signature-identification tests.
+type headerStubFile struct {
+	stubFile
+	header []byte
+}
+
+func (f *headerStubFile) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(f.header)) {
+		return 0, nil
+	}
+	return copy(p, f.header[off:]), nil
+}
+
+func TestIdentify7zSplitPartsBySignature(t *testing.T) {
+	sevenZip := []byte{'7', 'z', 0xBC, 0xAF, 0x27, 0x1C}
+	files := []UnpackableFile{
+		&headerStubFile{stubFile: stubFile{name: "b2.002", size: 100}},
+		&headerStubFile{stubFile: stubFile{name: "b2.001", size: 100}, header: sevenZip},
+		&stubFile{name: "b2.par2", size: 10},
+		&stubFile{name: "readme.nfo", size: 1},
+	}
+	parts, err := Identify7zSplitPartsBySignature(files)
+	if err != nil {
+		t.Fatalf("Identify7zSplitPartsBySignature returned error: %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("identified %d parts, want 2", len(parts))
+	}
+	if ExtractFilename(parts[0].Name()) != "b2.001" {
+		t.Fatalf("first part = %q, want b2.001", parts[0].Name())
+	}
+
+	// The same names fronting a RAR signature must not be claimed as 7z.
+	rarFiles := []UnpackableFile{
+		&headerStubFile{stubFile: stubFile{name: "b2.001", size: 100}, header: []byte("Rar!\x1a\x07\x01\x00")},
+		&headerStubFile{stubFile: stubFile{name: "b2.002", size: 100}},
+	}
+	if _, err := Identify7zSplitPartsBySignature(rarFiles); err == nil {
+		t.Fatal("a RAR-signature set must not identify as 7z")
+	}
+}
+
+func TestSevenZipMediaCandidateAcceptsLargeExtensionlessNames(t *testing.T) {
+	cases := []struct {
+		name string
+		size int64
+		want bool
+	}{
+		{"movie.mkv", 10, true},                     // video by name, size irrelevant
+		{"a9f3c2d1e4b78812", 200 << 20, true},       // obfuscated: size is the only signal
+		{"BDMV/STREAM/00000.m2ts", 200 << 20, true}, // disc structure is video by name
+		{"sample-movie.mkv", 200 << 20, false},      // samples never
+		{"inner.rar", 200 << 20, false},             // a nested archive is not media
+		{"inner.7z", 200 << 20, false},
+		{"disc.iso", 200 << 20, false}, // iso is the nested path's business
+		{"readme.nfo", 4 << 10, false}, // small and not video
+	}
+	for _, tc := range cases {
+		if got := isSevenZipMediaCandidate(tc.name, tc.size); got != tc.want {
+			t.Errorf("isSevenZipMediaCandidate(%q, %d) = %v, want %v", tc.name, tc.size, got, tc.want)
+		}
 	}
 }

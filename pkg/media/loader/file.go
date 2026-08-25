@@ -254,6 +254,25 @@ func (f *File) SegmentCount() int { return len(f.segments) }
 
 // CheckFirstSegmentExists returns whether the required segments (start, middle, end) exist on the server via STAT.
 // Used before opening a stream to fail fast when release segments are missing (430).
+// statSampleSpread is how many evenly spaced STAT points a file of the given
+// segment count gets: one per ~1000 segments (~700 MB at typical article
+// sizes), floored at the historical nine and capped so the pre-flight stays
+// bounded on very large single-file posts.
+func statSampleSpread(segments int) int {
+	const (
+		base       = 9
+		maxSamples = 32
+	)
+	n := segments / 1000
+	if n < base {
+		return base
+	}
+	if n > maxSamples {
+		return maxSamples
+	}
+	return n
+}
+
 func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 	if len(f.segments) == 0 {
 		return false, nil
@@ -271,16 +290,28 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 		return f.recordFirstStat(true, nil)
 	}
 
+	// The head segments and the tail are always checked — they catch a
+	// truncated post — and the rest of the sample is spread evenly, scaling
+	// with the file so scattered damage on a large release is overwhelmingly
+	// likely to surface here rather than mid-stream after Content-Length has
+	// been promised. Nine fixed points let a post with holes in the low
+	// percents through most of the time; the census stays cheap because STATs
+	// are batched at the fetcher's concurrency.
 	sampleIndices := map[int]bool{
-		0:                         true,
-		1:                         true,
-		2:                         true,
-		3:                         true,
-		4:                         true,
-		len(f.segments) / 4:       true,
-		len(f.segments) / 2:       true,
-		(3 * len(f.segments)) / 4: true,
-		len(f.segments) - 1:       true,
+		0:                   true,
+		1:                   true,
+		2:                   true,
+		3:                   true,
+		4:                   true,
+		len(f.segments) - 1: true,
+	}
+	spread := statSampleSpread(len(f.segments))
+	for i := 0; i < spread; i++ {
+		denom := spread - 1
+		if denom < 1 {
+			denom = 1
+		}
+		sampleIndices[i*(len(f.segments)-1)/denom] = true
 	}
 
 	indices := make([]int, 0, len(sampleIndices))
@@ -607,6 +638,31 @@ func (f *File) segmentDecodedLen(idx int) int64 {
 	return s.Bytes
 }
 
+// verifyMappedSegmentLength refuses a downloaded segment whose decoded length
+// disagrees with the segment map. The map can be estimated — gap probing is
+// skipped on archive reads, and unprobed segments inherit a class
+// representative's size — and serving through a mismatch silently shifts every
+// byte after it: the demuxer desyncs and the served range no longer matches
+// the release. A loud error turns that silent corruption into a failover, and
+// the Warn names the segment so the estimator can be fixed from the field.
+// Before the map is detected, mapped lengths are still encoded sizes, so a
+// mismatch there is expected and not checked.
+func (f *File) verifyMappedSegmentLength(index int, data []byte) error {
+	f.mu.Lock()
+	detected := f.detected
+	f.mu.Unlock()
+	if !detected {
+		return nil
+	}
+	mapped := f.segmentDecodedLen(index)
+	if int64(len(data)) == mapped {
+		return nil
+	}
+	logger.Warn("Segment decoded length disagrees with the segment map",
+		"file", f.Name(), "index", index, "mapped", mapped, "decoded", len(data))
+	return fmt.Errorf("segment %d decoded %d bytes but is mapped as %d: refusing to serve shifted bytes", index, len(data), mapped)
+}
+
 func (f *File) FindSegmentIndex(offset int64) int {
 	idx := sort.Search(len(f.segments), func(i int) bool {
 		return f.segments[i].EndOffset > offset
@@ -767,7 +823,9 @@ func (f *File) finalizeSegmentDownload(index int, data []byte, err error, countF
 	}
 	f.zeroFillMu.Unlock()
 
-	logger.Debug("Segment unavailable, zero-filling gap", "file", f.Name(), "index", index, "holes", count, "max", MaxZeroFills, "err", eligible.cause)
+	// Warn, not Debug: every zero-filled segment is wrong bytes served to a
+	// player, and the operator should be able to find that after the fact.
+	logger.Warn("Segment unavailable, zero-filling gap", "file", f.Name(), "index", index, "holes", count, "max", MaxZeroFills, "err", eligible.cause)
 	return f.zeroSegment(index), nil
 }
 
@@ -811,7 +869,12 @@ func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]by
 			}
 			return nil, err
 		}
-		return nil, &zeroFillEligibleError{cause: err}
+		// Anything else — a timeout, a connection reset, a decode failure, an
+		// exhausted pool — is inconclusive: the bytes may well exist, so
+		// substituting zeros would serve provably wrong data for a transient
+		// fault. Only a 430 from every provider is evidence of a hole; the
+		// rest propagates so the playback layer can retry or fail over.
+		return nil, fmt.Errorf("segment fetch failed: %w", err)
 	}
 	if !shouldPersistDownloadedSegment(downloadCtx) {
 		return nil, downloadCtx.Err()
@@ -849,6 +912,9 @@ func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
 
 		data, err := f.DownloadSegment(f.ctx, i)
 		if err != nil {
+			return totalRead, err
+		}
+		if err := f.verifyMappedSegmentLength(i, data); err != nil {
 			return totalRead, err
 		}
 

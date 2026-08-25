@@ -72,6 +72,86 @@ func startMockNNTPServer(t *testing.T) (string, int, func()) {
 	return addr.IP.String(), addr.Port, cleanup
 }
 
+// startScriptedNNTPServer answers every BODY with the given response line, so a
+// test can stand up providers with distinct failure modes.
+func startScriptedNNTPServer(t *testing.T, bodyResponse string) (string, int, func()) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().(*net.TCPAddr)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = c.Write([]byte("200 Welcome\r\n"))
+				buf := make([]byte, 1024)
+				for {
+					n, err := c.Read(buf)
+					if err != nil {
+						return
+					}
+					cmd := string(buf[:n])
+					switch {
+					case strings.HasPrefix(cmd, "AUTHINFO USER"):
+						_, _ = c.Write([]byte("381 PASS required\r\n"))
+					case strings.HasPrefix(cmd, "AUTHINFO PASS"):
+						_, _ = c.Write([]byte("281 Authentication accepted\r\n"))
+					case strings.HasPrefix(cmd, "GROUP"):
+						_, _ = c.Write([]byte("211 group selected\r\n"))
+					case strings.HasPrefix(cmd, "BODY"):
+						_, _ = c.Write([]byte(bodyResponse))
+					case strings.HasPrefix(cmd, "QUIT"):
+						_, _ = c.Write([]byte("205 Bye\r\n"))
+						return
+					default:
+						_, _ = c.Write([]byte("500 Unknown command\r\n"))
+					}
+				}
+			}(conn)
+		}
+	}()
+	return addr.IP.String(), addr.Port, func() { _ = ln.Close() }
+}
+
+// A mixed outcome — one provider says 430, another fails for a weaker reason —
+// must not surface as a missing-article error: the caller would zero-fill a
+// segment nobody proved absent.
+func TestMixedFetchOutcomeIsNotReportedAsMissing(t *testing.T) {
+	hostA, portA, cleanupA := startScriptedNNTPServer(t, "430 No Such Article\r\n")
+	defer cleanupA()
+	hostB, portB, cleanupB := startScriptedNNTPServer(t, "502 transient server hiccup\r\n")
+	defer cleanupB()
+
+	poolA := nntp.NewClientPool(hostA, portA, false, "user", "pass", 2)
+	poolB := nntp.NewClientPool(hostB, portB, false, "user", "pass", 2)
+	defer poolA.Shutdown()
+	defer poolB.Shutdown()
+
+	p, err := NewPool(&Config{Providers: []ProviderConfig{
+		{ID: "provider-430", Priority: 0, ClientPool: poolA},
+		{ID: "provider-flaky", Priority: 1, ClientPool: poolB},
+	}})
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+
+	_, err = p.fetchSegmentOnce(context.Background(), "mixed-1", &nzb.Segment{ID: "mixed-1"}, []string{"alt.binaries.test"})
+	if err == nil {
+		t.Fatal("expected the fetch to fail")
+	}
+	if nntp.IsArticleNotFound(err) {
+		t.Fatalf("mixed outcome must not read as missing-everywhere: %v", err)
+	}
+	if p.isKnownMissing("mixed-1") {
+		t.Fatal("mixed outcome must not cache the segment as known-missing")
+	}
+}
+
 func TestProviderDemotion_430(t *testing.T) {
 	host, port, cleanup := startMockNNTPServer(t)
 	defer cleanup()

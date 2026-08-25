@@ -459,6 +459,27 @@ func (s *Server) GetStreams(ctx context.Context, contentType, id string, stream 
 	return streams, nil
 }
 
+// failPlayback answers a request whose candidates have run out. A Stremio
+// player gets the error video — a human sees "stream failed" instead of a
+// spinner — but a direct-play session's consumer is an API client, a script
+// or an external player: those need a real status code and a cause, not
+// 2.4 MB of placeholder bytes behind a 200 that read as success. The split is
+// by the session's origin (the /api/play surface stamps ContentType
+// "direct"), never by sniffing the client.
+func failPlayback(w http.ResponseWriter, r *http.Request, sess *session.Session, baseURL string, muted bool, cause error) {
+	if sess != nil && sess.ContentType == "direct" {
+		msg := "playback failed: no playable stream and no remaining candidates"
+		if cause != nil {
+			msg = "playback failed: " + cause.Error()
+		}
+		logger.Info("Direct-play session failed; answering with an error status", "session", sess.ID, "err", cause)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		http.Error(w, msg, http.StatusBadGateway)
+		return
+	}
+	forceDisconnect(w, r, baseURL, muted)
+}
+
 func forceDisconnect(w http.ResponseWriter, r *http.Request, baseURL string, muted bool) {
 	filename := "failure.mp4"
 	if muted {
@@ -1176,7 +1197,8 @@ func (s *Server) redirectToNextSlotOrFail(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusFound)
 		return
 	}
-	forceDisconnect(w, r, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config))
+	sess, _ := s.sessionManager.GetSession(sessionID)
+	failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
 }
 
 // handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,

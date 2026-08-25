@@ -26,6 +26,14 @@ func TestGetRARVolumeNumber(t *testing.T) {
 		{"movie.z99", 900},
 		{"movie.mkv", -1},
 		{"movie.txt", -1},
+		// Bare numeric split volumes number by their extension...
+		{"a9f3c2d1.001", 1},
+		{"a9f3c2d1.002", 2},
+		{"a9f3c2d1.037", 37},
+		// ...but .7z.NNN belongs to the 7z path, and a year before a real
+		// extension is not a volume.
+		{"archive.7z.001", -1},
+		{"movie.2001.mkv", -1},
 	}
 
 	for _, tt := range tests {
@@ -33,6 +41,37 @@ func TestGetRARVolumeNumber(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("GetRARVolumeNumber(%q) = %d; want %d", tt.filename, got, tt.expected)
 		}
+	}
+}
+
+func TestSelectLargestStoredISOPrefersTheBigUncompressedImage(t *testing.T) {
+	parts := []filePart{
+		{name: "movie.iso", packedSize: 500, isCompressed: false},
+		{name: "movie.iso", packedSize: 400, isCompressed: false}, // second volume of the same image
+		{name: "sample-movie.iso", packedSize: 5000},
+		{name: "other.iso", packedSize: 600, isCompressed: true},
+		{name: "notes.nfo", packedSize: 10},
+	}
+	if got := selectLargestStoredISO(parts); got != "movie.iso" {
+		t.Fatalf("selectLargestStoredISO = %q, want movie.iso", got)
+	}
+	if got := selectLargestStoredISO(nil); got != "" {
+		t.Fatalf("empty parts should select nothing, got %q", got)
+	}
+}
+
+func TestNumericSplitVolumeClassification(t *testing.T) {
+	if IsMiddleRarVolume("a9f3c2d1.001") {
+		t.Error(".001 opens the set and must not read as a middle volume")
+	}
+	if !IsMiddleRarVolume("a9f3c2d1.002") {
+		t.Error(".002 is a continuation and must read as a middle volume")
+	}
+	if IsMiddleRarVolume("archive.7z.002") {
+		t.Error("a .7z split part is not a RAR middle volume")
+	}
+	if got := archivePrefix("A9F3C2D1.001"); got != "a9f3c2d1" {
+		t.Errorf("archivePrefix(A9F3C2D1.001) = %q, want a9f3c2d1", got)
 	}
 }
 

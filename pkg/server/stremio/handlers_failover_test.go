@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -249,6 +251,40 @@ func TestForceDisconnectRedirectsToErrorVideo(t *testing.T) {
 	responseMuted := recorderMuted.Result()
 	if got := responseMuted.Header.Get("Location"); got != "http://localhost:11470/error/failure_muted.mp4" {
 		t.Fatalf("Muted Location = %q, want %q", got, "http://localhost:11470/error/failure_muted.mp4")
+	}
+}
+
+func TestFailPlaybackAnswersDirectSessionsWithAnErrorStatus(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	// A direct-play session's consumer needs a status code, not the error video.
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:11470/play/direct-1", nil)
+	directSess := &session.Session{ID: "direct-1", ContentType: "direct"}
+	failPlayback(recorder, req, directSess, "http://localhost:11470/", false, errors.New("compressed 7z archive"))
+	response := recorder.Result()
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusBadGateway)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if !strings.Contains(string(body), "compressed 7z archive") {
+		t.Fatalf("body should carry the cause, got %q", string(body))
+	}
+
+	// A Stremio session keeps the error-video redirect.
+	recorder = httptest.NewRecorder()
+	stremioSess := &session.Session{ID: "movie-1", ContentType: "movie"}
+	failPlayback(recorder, req, stremioSess, "http://localhost:11470/", false, errors.New("x"))
+	if got := recorder.Result().StatusCode; got != http.StatusTemporaryRedirect {
+		t.Fatalf("stremio status = %d, want %d", got, http.StatusTemporaryRedirect)
+	}
+
+	// No session at hand (evicted) defaults to the video, never to a guess.
+	recorder = httptest.NewRecorder()
+	failPlayback(recorder, req, nil, "http://localhost:11470/", false, nil)
+	if got := recorder.Result().StatusCode; got != http.StatusTemporaryRedirect {
+		t.Fatalf("nil-session status = %d, want %d", got, http.StatusTemporaryRedirect)
 	}
 }
 

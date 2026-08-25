@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/textproto"
 	"sort"
 	"sync"
 	"testing"
@@ -194,7 +195,7 @@ func TestDownloadSegmentDeduplicatesConcurrentCalls(t *testing.T) {
 }
 
 func TestConcurrentDownloadFailureCountsOnce(t *testing.T) {
-	fetcher := newDedupBlockingSegmentFetcher(nil, errors.New("boom"))
+	fetcher := newDedupBlockingSegmentFetcher(nil, fmt.Errorf("fetch segment: %w", &textproto.Error{Code: 430, Msg: "No Such Article"}))
 	f := NewFile(context.Background(), testNZBFileWithSegments(3, 4), nil, fetcher)
 
 	results := make(chan []byte, 2)
@@ -623,10 +624,22 @@ func TestCheckFirstSegmentExistsAllPresent(t *testing.T) {
 	if err != nil || !exists {
 		t.Fatalf("expected the file to validate, got exists=%v err=%v", exists, err)
 	}
-	// Nine sampled indices: head 0-4 plus the quarter, half, three-quarter and
-	// final segments.
-	if calls, _ := fetcher.stats(); calls != 9 {
-		t.Fatalf("expected the 9 sampled segments to be probed, got %d", calls)
+	// Head 0-4 and the last segment, plus nine evenly spread points; the
+	// overlaps collapse to 12 distinct indices for a 40-segment file.
+	if calls, _ := fetcher.stats(); calls != 12 {
+		t.Fatalf("expected the 12 sampled segments to be probed, got %d", calls)
+	}
+}
+
+func TestStatSampleSpreadScalesWithFileSize(t *testing.T) {
+	if got := statSampleSpread(500); got != 9 {
+		t.Fatalf("statSampleSpread(500) = %d, want the floor of 9", got)
+	}
+	if got := statSampleSpread(20_000); got != 20 {
+		t.Fatalf("statSampleSpread(20000) = %d, want 20", got)
+	}
+	if got := statSampleSpread(1_000_000); got != 32 {
+		t.Fatalf("statSampleSpread(1000000) = %d, want the cap of 32", got)
 	}
 }
 

@@ -54,6 +54,9 @@ var videoExtensions = map[string]bool{
 	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
 	".mov": true, ".wmv": true, ".flv": true, ".webm": true,
 	".mpg": true, ".mpeg": true, ".vob": true,
+	// MPEG transport streams: plain captures and the Blu-ray disc structure
+	// (BDMV/STREAM/*.m2ts) that header-encrypted disc releases unpack to.
+	".ts": true, ".m2ts": true, ".mts": true,
 }
 
 func IsVideoExtension(ext string) bool {

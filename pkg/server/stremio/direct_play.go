@@ -17,7 +17,12 @@ import (
 	"streamnzb/pkg/media/nzb"
 )
 
-const maxDirectPlayNZBSize = 16 << 20
+// MaxDirectPlayNZBSize bounds any NZB accepted for direct play — uploaded,
+// fetched from a URL, or handed over by the API layer. An NZB's XML grows with
+// the post's article count, roughly 0.3–0.5 MB per GiB posted, so a tight cap
+// refuses exactly the largest releases; 512 MiB clears a multi-TiB post while
+// still bounding what one request can make the server buffer.
+const MaxDirectPlayNZBSize = 512 << 20
 
 func (s *Server) CreateDirectPlaySessionFromURL(ctx context.Context, nzbURL string, stream *auth.Stream) (string, error) {
 	trimmedURL := strings.TrimSpace(nzbURL)
@@ -43,8 +48,8 @@ func (s *Server) CreateDirectPlaySessionFromNZBData(ctx context.Context, sourceN
 	if len(nzbData) == 0 {
 		return "", fmt.Errorf("empty NZB payload")
 	}
-	if len(nzbData) > maxDirectPlayNZBSize {
-		return "", fmt.Errorf("NZB payload too large")
+	if len(nzbData) > MaxDirectPlayNZBSize {
+		return "", fmt.Errorf("NZB payload exceeds the %d MiB limit", MaxDirectPlayNZBSize>>20)
 	}
 
 	parsedNZB, err := nzb.ParseWithContext(ctx, bytes.NewReader(nzbData))
@@ -99,8 +104,8 @@ func (s *Server) downloadNZBForDirectPlay(ctx context.Context, nzbURL string) ([
 	if rt.indexer != nil {
 		nzbData, err = rt.indexer.DownloadNZB(dlCtx, nzbURL)
 		if err == nil && len(nzbData) > 0 {
-			if len(nzbData) > maxDirectPlayNZBSize {
-				return nil, fmt.Errorf("downloaded NZB exceeds max size")
+			if len(nzbData) > MaxDirectPlayNZBSize {
+				return nil, fmt.Errorf("downloaded NZB exceeds the %d MiB limit", MaxDirectPlayNZBSize>>20)
 			}
 			return nzbData, nil
 		}
@@ -123,15 +128,15 @@ func (s *Server) downloadNZBForDirectPlay(ctx context.Context, nzbURL string) ([
 		return nil, fmt.Errorf("failed to download NZB (HTTP %d)", resp.StatusCode)
 	}
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxDirectPlayNZBSize+1))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxDirectPlayNZBSize+1))
 	if readErr != nil {
 		return nil, fmt.Errorf("failed to read NZB body: %w", readErr)
 	}
 	if len(body) == 0 {
 		return nil, fmt.Errorf("downloaded NZB is empty")
 	}
-	if len(body) > maxDirectPlayNZBSize {
-		return nil, fmt.Errorf("downloaded NZB exceeds max size")
+	if len(body) > MaxDirectPlayNZBSize {
+		return nil, fmt.Errorf("downloaded NZB exceeds the %d MiB limit", MaxDirectPlayNZBSize>>20)
 	}
 	return body, nil
 }

@@ -82,6 +82,14 @@ type ProbeOptions struct {
 	ForceDecode bool
 	// DecodeFrames overrides the number of frames to force-decode. 0 => DefaultDecodeFrames.
 	DecodeFrames int
+	// QuickHeader caps -probesize/-analyzeduration far below the thorough
+	// defaults. On a network-backed stream the default 50M probesize can pull
+	// tens of MB before the caller gets an answer — over a second of wall
+	// clock that lands directly on time-to-first-byte when the probe sits on
+	// the serve path. Track headers live in the first few MB of every
+	// container we serve; anything the small window misses degrades to the
+	// caller's permissive fallback, not to a rejection.
+	QuickHeader bool
 }
 
 func FindFFprobeBinary(customPath string) (string, bool) {
@@ -149,10 +157,15 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// -analyzeduration is microseconds of content, -probesize is bytes.
+	probesize, analyzeduration := "50M", "20M"
+	if opts.QuickHeader {
+		probesize, analyzeduration = "5M", "5M"
+	}
 	args := []string{
 		"-v", "error",
-		"-probesize", "50M",
-		"-analyzeduration", "20M",
+		"-probesize", probesize,
+		"-analyzeduration", analyzeduration,
 		"-show_entries", showEntries,
 		"-of", "json",
 	}

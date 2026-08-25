@@ -863,6 +863,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	}
 
 	var lastErr error
+	var lastTransientErr error
 	var attempted []string
 	var articleNotFoundErr error
 	sawNonArticleNotFound := false
@@ -893,6 +894,7 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 			continue
 		}
 		sawNonArticleNotFound = true
+		lastTransientErr = res.err
 	}
 
 	// The primary tier is spent, which is the one thing a backup exists for.
@@ -910,6 +912,9 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	}
 	if tier.otherErr {
 		sawNonArticleNotFound = true
+		if tier.transientErr != nil {
+			lastTransientErr = tier.transientErr
+		}
 	}
 	if tier.lastErr != nil {
 		lastErr = tier.lastErr
@@ -919,6 +924,12 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
 	if lastErr != nil {
+		// A mixed outcome — some providers said 430, another failed weaker —
+		// is not a proven hole. Surface the transient failure so the caller
+		// retries rather than reading the wrapped 430 as missing-everywhere.
+		if sawNonArticleNotFound && lastTransientErr != nil && isArticleNotFound(lastErr) {
+			lastErr = lastTransientErr
+		}
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr), attempted)
 	}
 	return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries", messageID)
@@ -1002,6 +1013,9 @@ type tierResult struct {
 	notFoundErr error
 	lastErr     error
 	otherErr    bool
+	// transientErr keeps the last non-430 failure so a mixed outcome can be
+	// reported as transient rather than as a proven hole.
+	transientErr error
 }
 
 // fetchFromBackups walks the backup tier one provider at a time, in order, and
@@ -1021,6 +1035,7 @@ func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []
 			if !errors.Is(err, ErrNoProvidersAvailable) {
 				tier.lastErr = err
 				tier.otherErr = true
+				tier.transientErr = err
 			}
 			return SegmentData{}, tier, false
 		}
@@ -1063,6 +1078,7 @@ func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []
 			continue
 		}
 		tier.otherErr = true
+		tier.transientErr = err
 	}
 }
 
@@ -1092,6 +1108,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 
 	var exclude []string
 	var lastErr error
+	var lastTransientErr error
 	var attempted []string
 	var attemptedIDs []string
 	var articleNotFoundErr error
@@ -1151,6 +1168,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 				}
 			} else {
 				sawNonArticleNotFound = true
+				lastTransientErr = err
 			}
 			exclude = append(exclude, providerID)
 			continue
@@ -1181,6 +1199,9 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	}
 	if tier.otherErr {
 		sawNonArticleNotFound = true
+		if tier.transientErr != nil {
+			lastTransientErr = tier.transientErr
+		}
 	}
 	if tier.lastErr != nil {
 		lastErr = tier.lastErr
@@ -1195,6 +1216,12 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
 	}
 	if lastErr != nil {
+		// A mixed outcome — some providers said 430, another failed weaker —
+		// is not a proven hole. Surface the transient failure so the caller
+		// retries rather than reading the wrapped 430 as missing-everywhere.
+		if sawNonArticleNotFound && lastTransientErr != nil && isArticleNotFound(lastErr) {
+			lastErr = lastTransientErr
+		}
 		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: failed after retries: %w", messageID, lastErr), attempted)
 	}
 	return SegmentData{}, fmt.Errorf("fetch segment %s: failed after retries", messageID)

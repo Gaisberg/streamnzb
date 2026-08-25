@@ -150,14 +150,13 @@ func (s *aes7zStream) Read(p []byte) (int, error) {
 	}
 
 	for toReturn > 0 && s.pos < s.limit {
+		// A short read at the ciphertext tail still carries the final blocks:
+		// ErrUnexpectedEOF means "fewer than a full buffer", not "nothing".
+		// Discarding it dropped the last partial buffer of every archive whose
+		// payload was not a multiple of the read size, truncating the stream
+		// short of its advertised length.
 		cipherRead, err := io.ReadFull(s.src, s.cipherBuf)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				if totalCopied > 0 {
-					return totalCopied, nil
-				}
-				return 0, io.EOF
-			}
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			return totalCopied, err
 		}
 		if cipherRead == 0 {
