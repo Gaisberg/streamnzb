@@ -100,8 +100,17 @@ resolution == "2160p"                                  → keep best 3
 
 `traits` is the whole vocabulary the baseline scores by — `"remux"`, `"webrip"`,
 `"cam"`, `"hevc"`, `"10bit"`, `"dual_audio"` and so on — so a rule can reach
-anything the baseline has an opinion about. See **[Rules](rules.md)** for the
-complete attribute reference, the operators, and the fail-open contract.
+anything the baseline has an opinion about.
+
+Rules also compose. `exists(…)`, `count(…)` and `none(…)` ask about the whole
+result set rather than one release, which is what turns an unconditional
+rejection into *reject this only when something better turned up*; and
+`matched("Other rule")` holds when that rule's own condition holds, so a tier
+list of trusted release groups is written once and referred to from everywhere
+else that cares about it.
+
+See **[Rules](rules.md)** for the complete attribute reference, the operators,
+and the fail-open contract.
 
 ## Order is score, and only score
 

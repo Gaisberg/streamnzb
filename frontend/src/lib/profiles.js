@@ -709,3 +709,53 @@ export function rulesFromText(text) {
   })
   return rules
 }
+
+// MATCHED_RE finds a rule reference — matched("Other rule"). The name has to
+// be a plain literal, which is all the compiler accepts, so a regex reads them
+// as reliably here as the parser does there. Kept unflagged and cloned per
+// use, because a shared /g regex carries its lastIndex between calls.
+const MATCHED_RE = /\bmatched\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/
+const matchedRE = () => new RegExp(MATCHED_RE.source, "g")
+
+export const ruleKey = (name) => String(name || "").trim().toLowerCase()
+
+// inlineRuleRefs replaces every reference with the referenced rule's condition,
+// the same expansion the server does at compile time. It is what lets the tier
+// chip tell the truth about a rule whose real dependency is two rules away. A
+// reference to a rule that is switched off, missing, or already on the way in
+// — a circle the server would refuse — contributes nothing.
+export function inlineRuleRefs(when = "", rules = [], seen = []) {
+  if (seen.length > 8) return ""
+  return String(when).replace(matchedRE(), (whole, name) => {
+    const key = ruleKey(name)
+    if (!key || seen.includes(key)) return ""
+    const target = rules.find((rule) => ruleKey(rule.name) === key)
+    if (!target || target.enabled === false) return ""
+    return `(${inlineRuleRefs(target.when || "", rules, [...seen, key])})`
+  })
+}
+
+// renameRuleRefs rewrites every reference to a rule that has just been
+// renamed. A reference is by name, so without this a rename would quietly
+// break each rule that used the old one and the profile would stop compiling
+// at the next save.
+export function renameRuleRefs(rules, from, to) {
+  const before = ruleKey(from)
+  const after = String(to || "").trim()
+  if (!before || !after || before === ruleKey(after)) return rules
+  const rewrite = (text) => (text
+    ? String(text).replace(matchedRE(),
+      (whole, name) => (ruleKey(name) === before ? `matched(${JSON.stringify(after)})` : whole))
+    : text)
+  return rules.map((rule) => {
+    const when = rewrite(rule.when)
+    const groupBy = rewrite(rule.group_by)
+    if (when === rule.when && groupBy === rule.group_by) return rule
+    // Spread first so a rule that never had a grouping does not gain the key:
+    // an undefined field is not the same shape as an absent one everywhere it
+    // gets compared.
+    const next = { ...rule, when }
+    if (groupBy !== rule.group_by) next.group_by = groupBy
+    return next
+  })
+}

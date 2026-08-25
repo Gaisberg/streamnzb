@@ -94,27 +94,34 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 	}
 	set := &Set{}
 	aggBySource := map[string]int{}
-	for _, rc := range cfgs {
+	// References are resolved against every rule, disabled ones included, so
+	// that switching a rule off changes what a reference to it means rather
+	// than breaking the rules that refer to it.
+	refs := newRefExpander(cfgs)
+	for i, rc := range cfgs {
 		if !rc.IsEnabled() {
 			continue
 		}
-		when := strings.TrimSpace(rc.When)
-		name := strings.TrimSpace(rc.Name)
-		if name == "" {
-			name = "unnamed"
-		}
-		if when == "" {
+		name := ruleLabel(rc)
+		if strings.TrimSpace(rc.When) == "" {
 			return nil, &Error{Rule: name, Err: fmt.Errorf("condition is empty")}
 		}
 		if rc.EffectiveAction() == config.RuleActionLimit && rc.Count < 1 {
 			return nil, &Error{Rule: name, Err: fmt.Errorf("a limit rule has to keep at least one release")}
+		}
+		// matched("Other rule") is inlined before anything else looks at the
+		// condition, so a reference works wherever a condition does and the
+		// tiers it reads are the tiers of everything it pulls in.
+		when, err := refs.condition(i)
+		if err != nil {
+			return nil, &Error{Rule: name, Err: err}
 		}
 		// Result-set calls are lifted out first: the rule is compiled against
 		// their precomputed values, and the inner conditions become their own
 		// per-release programs. Identical conditions share one aggregate, so
 		// two rules asking about the same thing count it once.
 		var ruleAggs []int
-		when, err := rewriteAggregates(when, func(inner string) (int, error) {
+		when, err = rewriteAggregates(when, func(inner string) (int, error) {
 			idx, ok := aggBySource[inner]
 			if !ok {
 				program, err := expr.Compile(inner, expr.Env(Env{}), expr.AsBool())
@@ -151,7 +158,11 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
-		groupProgram, groupTiers, err := compileGroupBy(rc)
+		groupBy, err := refs.expand(strings.TrimSpace(rc.GroupBy))
+		if err != nil {
+			return nil, &Error{Rule: name, Err: fmt.Errorf("group by: %w", err)}
+		}
+		groupProgram, groupTiers, err := compileGroupBy(rc, groupBy)
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
@@ -196,13 +207,14 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 // for a score or reject rule to do with it, and accepting it silently would
 // leave a user who set it on the wrong rule looking at a cap that never
 // buckets, with nothing anywhere saying why.
-func compileGroupBy(rc config.RuleConfig) (*vm.Program, tierUse, error) {
-	groupBy := strings.TrimSpace(rc.GroupBy)
+func compileGroupBy(rc config.RuleConfig, groupBy string) (*vm.Program, tierUse, error) {
 	if groupBy == "" {
 		return nil, tierUse{}, nil
 	}
 	if rc.EffectiveAction() != config.RuleActionLimit {
-		return nil, tierUse{}, fmt.Errorf("only a limit rule can group by %s", groupBy)
+		// Named as the user wrote it, not as it expanded: a grouping that
+		// pulled in another rule reads back as pages of inlined condition.
+		return nil, tierUse{}, fmt.Errorf("only a limit rule can group by %s", strings.TrimSpace(rc.GroupBy))
 	}
 	program, err := expr.Compile(groupBy, expr.Env(Env{}))
 	if err != nil {

@@ -18,8 +18,9 @@ They exist because some things cannot be said with one pattern:
 - *The shaky 4K encode, but only when a remux stands ready to replace it.*
 
 A regular expression sees one string. A rule sees everything known about the
-release — and, through the [result-set functions](#about-the-result-set),
-what else the search turned up.
+release — through the [result-set functions](#about-the-result-set), what else
+the search turned up, and through [`matched()`](#referring-to-another-rule),
+what your other rules already say about it.
 
 ```
 dolbyVision and not hdrFallback                    → reject
@@ -331,6 +332,65 @@ two-argument forms over a list attribute — `any(hdr, # == "DV")` — and
 `count([proper, repack])` over a literal list still judge the single release,
 exactly as before. Only the one-argument condition form reads the result set.
 
+### Referring to another rule
+
+`matched("Rule name")`
+
+Everything above is read off the release. This one reads your own rules: it
+holds when the named rule's condition holds for the release being judged, so a
+classification is written once and referred to from wherever else it matters.
+
+The case it exists for is a tier list. Three rules already say which release
+groups are trusted; a fourth rejects an untrusted 4K encode when a remux is on
+offer, without a fourth copy of the group patterns:
+
+```
+Movies UHD BluRay T1: score 3000 if group in ["FraMeSToR", …]
+Movies UHD BluRay T2: score 2000 if group in [ … ]
+Movies UHD BluRay T3: score 1000 if group in [ … ]
+
+Untrusted UHD encode: reject if
+    resolution == "2160p" and "bluray" in traits
+    and not (
+        matched("Movies UHD BluRay T1")
+        or matched("Movies UHD BluRay T2")
+        or matched("Movies UHD BluRay T3")
+    )
+    and exists(resolution == "2160p" and "remux" in traits)
+```
+
+Change a tier list afterwards and the rejection follows it, which is the whole
+point: the alternative is the same regexes in four places and three of them
+going stale.
+
+A reference is resolved when the profile is compiled, by copying the other
+rule's condition into this one. Four consequences follow from that:
+
+- **A reference works wherever a condition does** — on its own, inside a
+  result-set call (`exists(matched("Movies Remux T1"))`), inside a limit's
+  grouping. Nothing is evaluated twice.
+- **Order does not matter, and neither does the other rule's action.** A rule
+  may name one written below it. What it asks is whether that rule's
+  *condition* holds, not what its action did with the release — for a score or
+  reject rule those are the same thing; on a cap it means "counts against it",
+  which is the only part of a cap knowable before the final ordering exists.
+- **The referenced rule's scope comes with it.** A reference to a rule that
+  applies to movies only is false for a series, whatever scope the referring
+  rule has.
+- **So does its tier.** Referring to a rule that reads `probed.*` makes the
+  referring rule probe-dependent, and it is [skipped](#fail-open) on a release
+  that was never opened rather than judged as not matching.
+
+A rule that is switched off classifies nothing, so a reference to it is simply
+never true — and its condition is never looked at, which is what keeps a broken
+rule you have turned off from blocking a save.
+
+Rules are referenced by name. Renaming one in the editor rewrites the
+references to it, and the reference panel under the editor lists your rules to
+click. A reference to a name no rule has, to a name two rules share, or one
+that closes a circle is refused when the profile is saved, naming the rule that
+carries it.
+
 ## Fail-open
 
 **A rule that reads `probed.*`, `avail.*` or `seadex.*` does not run on a
@@ -430,6 +490,7 @@ compatibility layer:
 | `regexMatched()` / `regexScore()` | `releaseName matches "…"` | |
 | `count()` | `count(condition)` | Over the [result set](#about-the-result-set); `exists()` and `none()` alongside it. |
 | `max()`, `avg()`, `median()`, … | — | No analogue: rules ask about the set, they do not select from it. |
+| — | `matched("Rule name")` | No SEL analogue: a rule may reuse another rule's condition rather than repeat it. |
 | — | `probed.*` | No SEL analogue: measured from the file. |
 | — | `avail.onMyBackbone` | No SEL analogue. |
 | — | `passworded`, `avail.compression` | No SEL analogue. |

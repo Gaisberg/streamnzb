@@ -136,28 +136,39 @@ func (s *Set) aggregateSkip(r *Rule, env Env) string {
 // aggAlloc registers one lifted condition and returns its set-wide index.
 type aggAlloc func(inner string) (int, error)
 
+// parseCondition parses a rule condition.
+//
+// It parses twice at most. expr's own parser owns any, none and count as
+// collection builtins and refuses their one-argument form outright, so when
+// the plain parse fails the source is re-parsed with those names overridden
+// into ordinary calls. A condition that only uses the collection forms parses
+// plainly and is left exactly as written. Source that fails both ways reports
+// the plain parser's error, which is the one the compiler downstream will
+// give.
+func parseCondition(source string) (*exprparser.Tree, error) {
+	tree, err := exprparser.Parse(source)
+	if err == nil {
+		return tree, nil
+	}
+	cfg := conf.CreateNew()
+	for name := range aggregateNames {
+		cfg.Functions[name] = &builtin.Function{Name: name}
+	}
+	retry, retryErr := exprparser.ParseWithConfig(source, cfg)
+	if retryErr != nil {
+		return nil, err
+	}
+	return retry, nil
+}
+
 // rewriteAggregates lifts the result-set calls out of a condition. It returns
 // the condition with each call replaced by a read of its precomputed value,
 // or the source untouched when there is nothing to lift — including when it
 // does not parse, so the compiler downstream reports the canonical error.
-//
-// The condition is parsed twice at most. expr's own parser owns any, none and
-// count as collection builtins and refuses their one-argument form outright,
-// so when the plain parse fails the source is re-parsed with those names
-// overridden into ordinary calls. A condition that only uses the collection
-// forms parses plainly and is left exactly as written.
 func rewriteAggregates(source string, alloc aggAlloc) (string, error) {
-	tree, err := exprparser.Parse(source)
+	tree, err := parseCondition(source)
 	if err != nil {
-		cfg := conf.CreateNew()
-		for name := range aggregateNames {
-			cfg.Functions[name] = &builtin.Function{Name: name}
-		}
-		retry, retryErr := exprparser.ParseWithConfig(source, cfg)
-		if retryErr != nil {
-			return source, nil
-		}
-		tree = retry
+		return source, nil
 	}
 	v := &aggPatcher{alloc: alloc}
 	ast.Walk(&tree.Node, v)

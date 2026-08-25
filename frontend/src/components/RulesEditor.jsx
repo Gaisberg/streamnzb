@@ -8,7 +8,7 @@ import { ConfidenceChip } from "@/components/ConfidenceChip"
 import { Check, ChevronDown, Copy, Plus, SkipForward, Trash2, TriangleAlert } from "lucide-react"
 import {
   DEFAULT_LIMIT_COUNT, RULE_ACTIONS, RULE_ATTRIBUTES, RULE_GROUP_BY_PRESETS, RULE_PRESETS, RULE_SCOPES,
-  formatScore, ruleAction, ruleGroupBy, rulesFromText, rulesToText,
+  formatScore, inlineRuleRefs, renameRuleRefs, ruleAction, ruleGroupBy, ruleKey, rulesFromText, rulesToText,
 } from "@/lib/profiles"
 import { cn, selectClass } from "@/lib/utils"
 
@@ -40,9 +40,12 @@ function stripSetCalls(s) {
   return out + s.slice(last)
 }
 
-function tierOf(when = "") {
+function tierOf(when = "", rules = []) {
+  // References are inlined before literals are dropped: the name inside
+  // matched("…") is a literal, and stripping it first would leave nothing to
+  // resolve.
   const stripped = stripSetCalls(
-    when.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, ""),
+    inlineRuleRefs(when, rules).replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, ""),
   )
   if (/\bprobed\./.test(stripped)) return "measured"
   if (/\bseadex\./.test(stripped)) return "seadex"
@@ -83,8 +86,14 @@ function isCustomGroupBy(groupBy) {
 // everything a condition can read, grouped by how far it can be trusted.
 // Clicking a name inserts it into the condition you were last editing, which
 // is the part the formatter's read-only list makes you do by hand.
-function AttributeReference({ onInsert }) {
+function AttributeReference({ onInsert, rules = [] }) {
   const [open, setOpen] = useState(false)
+  // Referable rules are the named ones, deduplicated: a name two rules share
+  // has no answer to which was meant, and the compiler refuses it, so it is
+  // not offered as something to click.
+  const referable = rules
+    .map((rule) => String(rule.name || "").trim())
+    .filter((name, i, all) => name && all.findIndex((other) => ruleKey(other) === ruleKey(name)) === i)
 
   return (
     <div className="rounded-lg border border-border/60 bg-card/40">
@@ -126,6 +135,30 @@ function AttributeReference({ onInsert }) {
               </div>
             </div>
           ))}
+
+          {referable.length > 0 && (
+            <div className="space-y-1.5 border-t border-border/50 pt-3">
+              <span className="text-[11px] font-medium text-foreground">Your other rules</span>
+              <p className="max-w-prose text-[11px] text-muted-foreground">
+                <code className="font-mono">matched(&quot;Name&quot;)</code> holds when that rule&apos;s own
+                condition holds, so a list of trusted groups is written once and referred to from everywhere
+                else. Renaming a rule rewrites the references to it.
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {referable.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    title={`matched(${JSON.stringify(name)})`}
+                    onClick={() => onInsert(`matched(${JSON.stringify(name)})`)}
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1.5 border-t border-border/50 pt-3">
             <span className="text-[11px] font-medium text-foreground">Operators</span>
@@ -211,13 +244,13 @@ function RuleStat({ stat, sampleCount, action, count }) {
   )
 }
 
-function RuleCard({ rule, stat, sampleCount, onChange, onRemove, onDuplicate, registerInput }) {
+function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplicate, registerInput }) {
   const action = ruleAction(rule)
   const enabled = rule.enabled !== false
   const groupBy = ruleGroupBy(rule)
   // The grouping is judged alongside the condition, so a cap grouped by a
   // probed attribute is as measured-only as one that tests it.
-  const tier = tierOf(`${rule.when || ""} ${groupBy}`)
+  const tier = tierOf(`${rule.when || ""} ${groupBy}`, rules)
   const skipNote = SKIP_NOTE[tier]
   // The menu shows the field rather than a value, so whether it is open is
   // state: a grouping the user has cleared back to empty should keep the box
@@ -631,9 +664,15 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
               <RuleCard
                 key={index}
                 rule={rule}
+                rules={values}
                 stat={ruleStats[rule.name]}
                 sampleCount={sampleCount}
-                onChange={(next) => onChange(values.map((r, i) => (i === index ? next : r)))}
+                onChange={(next) => {
+                  const list = values.map((r, i) => (i === index ? next : r))
+                  // A rename carries its references with it, so the rules that
+                  // named this one keep naming it while it is being retyped.
+                  onChange(next.name === rule.name ? list : renameRuleRefs(list, rule.name, next.name))
+                }}
                 onRemove={() => onChange(values.filter((_, i) => i !== index))}
                 onDuplicate={() => duplicate(index)}
                 registerInput={(el) => {
@@ -655,7 +694,7 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
       </SettingBlock>
 
       <SettingBlock>
-        <AttributeReference onInsert={insert} />
+        <AttributeReference onInsert={insert} rules={values} />
       </SettingBlock>
 
     </SettingGroup>

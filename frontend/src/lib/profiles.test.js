@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rulesFromText, rulesToText } from '@/lib/profiles'
+import { inlineRuleRefs, renameRuleRefs, rulesFromText, rulesToText } from '@/lib/profiles'
 
 // The rules editor is a text box the user types into freehand, so parsing is
 // the place a typo turns into a silently wrong ruleset.
@@ -108,5 +108,53 @@ describe('rulesToText', () => {
   it('is empty for no rules', () => {
     expect(rulesToText([])).toBe('')
     expect(rulesToText()).toBe('')
+  })
+})
+
+// A rule reference is by name, so the editor has to follow one to tell what a
+// rule really depends on, and rewrite one when the rule it names is renamed.
+describe('rule references', () => {
+  const tiers = [
+    { name: 'Trusted', when: 'group == "GRP"' },
+    { name: 'Probed', when: 'probed.height >= 2000' },
+    { name: 'Off', when: 'probed.height < 100', enabled: false },
+  ]
+
+  it('inlines what a reference pulls in', () => {
+    expect(inlineRuleRefs('matched("Probed") and resolution == "2160p"', tiers))
+      .toBe('(probed.height >= 2000) and resolution == "2160p"')
+  })
+
+  it('follows a chain and matches names case-insensitively', () => {
+    const rules = [...tiers, { name: 'Middle', when: 'matched("probed") and year > 2000' }]
+    expect(inlineRuleRefs('matched("Middle")', rules))
+      .toBe('((probed.height >= 2000) and year > 2000)')
+  })
+
+  it('drops a reference to a rule that is off, missing, or circular', () => {
+    expect(inlineRuleRefs('matched("Off")', tiers)).toBe('')
+    expect(inlineRuleRefs('matched("Nothing")', tiers)).toBe('')
+    const loop = [{ name: 'A', when: 'matched("B")' }, { name: 'B', when: 'matched("A")' }]
+    expect(inlineRuleRefs('matched("A")', loop)).not.toContain('matched(')
+  })
+
+  it('rewrites references when a rule is renamed', () => {
+    const rules = [
+      { name: 'Trusted UHD', when: 'group == "GRP"' },
+      { name: 'Uses it', when: 'not matched("Trusted UHD") and resolution == "2160p"' },
+      { name: 'Cap', when: 'true', action: 'limit', count: 3, group_by: 'matched("trusted uhd")' },
+      { name: 'Untouched', when: 'year > 2000' },
+    ]
+    const renamed = renameRuleRefs(rules, 'Trusted UHD', 'Trusted 4K')
+    expect(renamed[1].when).toBe('not matched("Trusted 4K") and resolution == "2160p"')
+    expect(renamed[2].group_by).toBe('matched("Trusted 4K")')
+    expect(renamed[3]).toBe(rules[3])
+  })
+
+  it('leaves everything alone when the rename is empty or a no-op', () => {
+    const rules = [{ name: 'Uses it', when: 'matched("Trusted")' }]
+    expect(renameRuleRefs(rules, 'Trusted', '  ')).toBe(rules)
+    expect(renameRuleRefs(rules, '', 'Trusted')).toBe(rules)
+    expect(renameRuleRefs(rules, 'Trusted', 'trusted')).toBe(rules)
   })
 })

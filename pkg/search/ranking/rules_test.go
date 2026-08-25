@@ -133,6 +133,28 @@ func TestRuleScopeAppliesPerKind(t *testing.T) {
 	}
 }
 
+// The preview is where a rule reference is written and read back, so what it
+// reports has to name the rule that fired rather than the one it borrowed its
+// condition from.
+func TestExplainNamesTheReferringRule(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "Trusted group", When: `group == "GRP"`, Points: 100},
+		config.RuleConfig{Name: "Trusted and 4K", When: `matched("Trusted group") and resolution == "2160p"`, Points: 900},
+	)
+
+	out := p.Explain([]string{"Movie 2020 2160p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	if len(out) != 1 {
+		t.Fatalf("Explain returned %d results, want 1", len(out))
+	}
+	names := make([]string, 0, len(out[0].Matched))
+	for _, m := range out[0].Matched {
+		names = append(names, m.Name)
+	}
+	if len(names) != 2 || names[0] != "Trusted group" || names[1] != "Trusted and 4K" {
+		t.Errorf("Matched = %v, want both rules named in configuration order", names)
+	}
+}
+
 // The bench evaluates rules too, and reports the ones a bare title cannot
 // answer instead of letting them look broken.
 func TestExplainReportsRulesAndSkips(t *testing.T) {
