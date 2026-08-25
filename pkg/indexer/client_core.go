@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"streamnzb/pkg/core/health"
 )
 
 // ClientCore centralizes the per-indexer bookkeeping every concrete client
@@ -156,6 +158,7 @@ func (c *ClientCore) CheckAPILimit(displayName string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.apiLimit > 0 && c.apiRemaining <= 0 {
+		c.reportDegraded(health.ReasonQuotaExhausted, "daily API hit budget spent")
 		return fmt.Errorf("API limit reached for %s: %w", displayName, ErrRateLimited)
 	}
 	return nil
@@ -169,6 +172,7 @@ func (c *ClientCore) CheckDownloadLimit(displayName string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.downloadLimit > 0 && c.downloadRemaining <= 0 {
+		c.reportDegraded(health.ReasonQuotaExhausted, "daily NZB download budget spent")
 		return fmt.Errorf("download limit reached for %s: %w", displayName, ErrRateLimited)
 	}
 	return nil
@@ -212,6 +216,7 @@ func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.T
 		c.downloadProbeAfter = now.Add(DownloadExhaustedProbeInterval)
 		return nil
 	}
+	c.reportDegraded(health.ReasonQuotaExhausted, "daily NZB download budget spent")
 	return fmt.Errorf("download limit reached for %s, skipping search until %s: %w",
 		displayName, c.downloadProbeAfter.Sub(now).Round(time.Second), ErrRateLimited)
 }
@@ -312,7 +317,18 @@ func (c *ClientCore) CheckThrottled(displayName string, now time.Time) error {
 	if until.IsZero() || !now.Before(until) {
 		return nil
 	}
+	c.reportDegraded(health.ReasonThrottled, "indexer asked us to back off")
 	return fmt.Errorf("%s is in a rate-limit cooldown for another %s: %w", displayName, until.Sub(now).Round(time.Second), ErrRateLimited)
+}
+
+// reportDegraded records a self-healing limit against this indexer's health.
+//
+// Both conditions end on their own — a cooldown expires, a daily budget resets
+// — so they never block the indexer; they exist so the user can see why an
+// indexer went quiet instead of guessing. Repeat reports of an unchanged state
+// stay in memory, so calling this from the per-search preflight is cheap.
+func (c *ClientCore) reportDegraded(reason, detail string) {
+	health.Global().Report(health.KindIndexer, c.name, health.StateDegraded, reason, detail)
 }
 
 // ThrottledUntil exposes the cooldown deadline for status reporting.

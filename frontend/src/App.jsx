@@ -89,6 +89,8 @@ function App() {
     version,
     logs,
     indexerCaps,
+    componentHealth,
+    refreshComponentHealth,
     nzbAttemptsRefreshTrigger,
     sendCommand,
   } = useAdminRuntime({
@@ -336,6 +338,8 @@ function App() {
                 availNZBStatus={availNZBStatus}
                 availNZBStatusLoading={availNZBStatusLoading}
                 availNZBStatusError={availNZBStatusError}
+                componentHealth={componentHealth}
+                onRefreshComponentHealth={refreshComponentHealth}
               />
             )}
             {activePage === 'statistics' && (
@@ -420,7 +424,7 @@ function App() {
                   saveStatus={saveStatus}
                   clearSaveStatus={clearSaveStatus}
                   indexerCaps={indexerCaps}
-                  stats={stats}
+                  componentHealth={componentHealth}
                   activeTab={settingsTabMap[activePage] || 'general'}
                   hideTabs={true}
                 />

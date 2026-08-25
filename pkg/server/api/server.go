@@ -13,6 +13,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/app"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
@@ -117,9 +118,11 @@ func NewServerWithApp(cfg *config.Config, pools map[string]*nntp.ClientPool, ses
 
 	logger.SetBroadcast(s.logCh)
 	s.stopCh = make(chan struct{})
-	s.bgDone.Add(2)
+	s.bgDone.Add(3)
 	go s.broadcastLogs()
 	go s.collectStatsLoop()
+	go s.healthProbeLoop()
+	health.Global().Subscribe(s.broadcastComponentHealth)
 
 	return s
 }
@@ -522,6 +525,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/library/delete", authMiddleware(http.HandlerFunc(s.handleDeleteLibrary)))
 	mux.Handle("/api/library/clear", authMiddleware(http.HandlerFunc(s.handleClearLibrary)))
 	mux.Handle("/api/library/stats", authMiddleware(http.HandlerFunc(s.handleLibraryStats)))
+	mux.Handle("/api/health/components", authMiddleware(http.HandlerFunc(s.handleComponentHealth)))
+	mux.Handle("/api/health/components/retry", authMiddleware(http.HandlerFunc(s.handleComponentHealthRetry)))
 
 	return mux
 }

@@ -7,6 +7,8 @@ import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { ComponentHealthBadge } from "@/components/ComponentHealth"
+import { healthFor, healthReasonLabel, indexHealth, isBlocked } from "@/lib/health"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { apiFetch } from "@/api"
 import { AlertTriangle, Download, Plus, Settings, Trash2 } from "lucide-react"
@@ -609,32 +611,13 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
   )
 }
 
-export function IndexerSettings({ fields = [], append, update, replace, defaultProxyURL = '', onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
+export function IndexerSettings({ fields = [], append, update, replace, defaultProxyURL = '', onPersist, onClearStatus, onStatus, componentHealth, streamsByName = {} }) {
   const indexers = fields
   const [editingIndex, setEditingIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
-  const [knownOnlineIndexers, setKnownOnlineIndexers] = useState({})
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteBlockedName, setDeleteBlockedName] = useState('')
-  const indexerStatusByName = useMemo(() => {
-    const map = new Map()
-      ; (stats?.indexers || []).forEach((indexer) => {
-        map.set((indexer.name || '').trim(), true)
-      })
-    return map
-  }, [stats])
-
-  useEffect(() => {
-    if (!stats?.indexers?.length) return
-    setKnownOnlineIndexers((current) => {
-      const next = { ...current }
-      stats.indexers.forEach((indexer) => {
-        const name = (indexer.name || '').trim()
-        if (name) next[name] = true
-      })
-      return next
-    })
-  }, [stats])
+  const healthByName = useMemo(() => indexHealth(componentHealth), [componentHealth])
 
   useEffect(() => () => {
     onClearStatus?.()
@@ -729,7 +712,22 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
                 const normalized = normalizeIndexerDraft(indexer)
                 const summary = summarizeIndexer(normalized, defaultProxyURL)
                 const nameKey = (normalized.name || '').trim()
-                const isOnline = indexerStatusByName.has(nameKey) || (normalized.enabled === false && knownOnlineIndexers[nameKey] === true)
+                const healthRecord = healthFor(healthByName, 'indexer', nameKey)
+                // The dot shows exactly two synchronous facts: the switch next
+                // to it (disabled = gray, instantly) and the health verdict
+                // (red blocked / amber degraded / green). It deliberately does
+                // NOT consult the stats snapshot: presence there lags the
+                // enabled toggle through a debounced save, an async reload and
+                // a stats tick, which is how the dot and the switch used to
+                // disagree for seconds at a time.
+                const isDisabled = normalized.enabled === false
+                const dotClass = isDisabled ? 'bg-muted-foreground/40'
+                  : isBlocked(healthRecord) ? 'bg-red-500'
+                    : healthRecord ? 'bg-amber-500'
+                      : 'bg-green-500'
+                const dotTitle = isDisabled ? 'Disabled'
+                  : healthRecord ? healthReasonLabel(healthRecord.reason)
+                    : 'Active'
                 return (
                   <Card
                     key={`${normalized.name || normalized.url || 'indexer'}-${index}`}
@@ -778,10 +776,11 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
                         </div>
                         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">
-                            <span className="rounded-full border border-border px-2 py-1">
+                            <span className="rounded-full border border-border px-2 py-1" title={dotTitle}>
                               Status:{' '}
-                              <span className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+                              <span className={`inline-block h-2 w-2 rounded-full ${dotClass}`} />
                             </span>
+                            <ComponentHealthBadge record={healthRecord} />
                             {summary.map((part) => (
                               <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
                             ))}

@@ -7,6 +7,8 @@ import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { ComponentHealthBadge } from "@/components/ComponentHealth"
+import { healthFor, healthReasonLabel, indexHealth, isBlocked } from "@/lib/health"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { ProviderSpeedTestDialog } from "@/components/ProviderSpeedTestDialog"
 import { apiFetch } from "@/api"
@@ -568,33 +570,14 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
   )
 }
 
-export function ProviderSettings({ fields = [], replace, onPersist, onClearStatus, onStatus, stats, streamsByName = {} }) {
+export function ProviderSettings({ fields = [], replace, onPersist, onClearStatus, onStatus, componentHealth, streamsByName = {} }) {
   const providers = fields
   const [editingIndex, setEditingIndex] = useState(null)
   const [speedTestIndex, setSpeedTestIndex] = useState(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
-  const [knownOnlineHosts, setKnownOnlineHosts] = useState({})
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteBlockedName, setDeleteBlockedName] = useState('')
-  const providerStatusByHost = useMemo(() => {
-    const map = new Map()
-    ;(stats?.providers || []).forEach((provider) => {
-      map.set((provider.host || '').toLowerCase(), true)
-    })
-    return map
-  }, [stats])
-
-  useEffect(() => {
-    if (!stats?.providers?.length) return
-    setKnownOnlineHosts((current) => {
-      const next = { ...current }
-      stats.providers.forEach((provider) => {
-        const host = (provider.host || '').toLowerCase()
-        if (host) next[host] = true
-      })
-      return next
-    })
-  }, [stats])
+  const healthByName = useMemo(() => indexHealth(componentHealth), [componentHealth])
 
   useEffect(() => () => {
     onClearStatus?.()
@@ -731,8 +714,19 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
               providers.map((provider, index) => {
                 const normalized = normalizeProviderDraft(provider)
                 const summary = summarizeProvider(normalized)
-                const hostKey = (normalized.host || '').toLowerCase()
-                const isOnline = providerStatusByHost.has(hostKey) || (normalized.enabled === false && knownOnlineHosts[hostKey] === true)
+                const healthRecord = healthFor(healthByName, 'provider', (normalized.name || '').trim())
+                // Same contract as the indexer dot: the switch and the health
+                // verdict, nothing derived or delayed. Matching by name also
+                // ends the by-host lookup that made two providers on one host
+                // share a status.
+                const isDisabled = normalized.enabled === false
+                const dotClass = isDisabled ? 'bg-muted-foreground/40'
+                  : isBlocked(healthRecord) ? 'bg-red-500'
+                    : healthRecord ? 'bg-amber-500'
+                      : 'bg-green-500'
+                const dotTitle = isDisabled ? 'Disabled'
+                  : healthRecord ? healthReasonLabel(healthRecord.reason)
+                    : 'Active'
                 return (
                   <Card
                     key={`${normalized.name || normalized.host || 'provider'}-${index}`}
@@ -792,10 +786,11 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
                           </div>
                           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground min-w-0">
-                              <span className="rounded-full border border-border px-2 py-1">
+                              <span className="rounded-full border border-border px-2 py-1" title={dotTitle}>
                                 Status:{' '}
-                                <span className={`inline-block h-2 w-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+                                <span className={`inline-block h-2 w-2 rounded-full ${dotClass}`} />
                               </span>
+                              <ComponentHealthBadge record={healthRecord} />
                               {summary.map((part) => (
                                 <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
                               ))}

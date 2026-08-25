@@ -19,7 +19,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ComposedChart, Area, Line, XAxis, YAxis } from "recharts"
 import { Activity, ChevronDown, Globe, ListFilter, X, MonitorPlay, Loader2, Settings2 } from "lucide-react"
+import { ComponentHealthNotice } from "@/components/ComponentHealth"
 import { isAvailNZBEnabled } from "@/lib/availnzb"
+import { healthFor, healthReasonLabel, indexHealth, isBlocked } from "@/lib/health"
 import { cn, formatBytes, streamSeriesKey } from "@/lib/utils"
 import { DEFAULT_STREAM_NAME } from "@/hooks/useAdminRuntime"
 
@@ -53,7 +55,7 @@ function formatDownloadedMb(mb) {
   return { value: n.toFixed(1), unit: 'MB' }
 }
 
-export function DashboardPage({ stats, chartData, sendCommand, config, onNavigate, availNZBStatus, availNZBStatusLoading, availNZBStatusError }) {
+export function DashboardPage({ stats, chartData, sendCommand, config, onNavigate, availNZBStatus, availNZBStatusLoading, availNZBStatusError, componentHealth, onRefreshComponentHealth }) {
   const [activeSessionToClose, setActiveSessionToClose] = useState(null)
   // Hidden rather than selected names, so a stream that starts playing mid-session
   // shows up without the user having to re-open the filter.
@@ -61,6 +63,8 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
   const availNZBEnabled = isAvailNZBEnabled(config?.availnzb_mode)
 
   const activeSessions = useMemo(() => stats?.active_sessions || [], [stats])
+
+  const healthByName = useMemo(() => indexHealth(componentHealth), [componentHealth])
 
   // One entry per configured stream, not per playing release: sessions arrive
   // oldest-first, so a stream holds its slot (and its colour) while it plays.
@@ -468,6 +472,8 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
               {displayedProviders.map((p) => {
                 const loadPct = (p.active_conns / (p.max_conns || 1)) * 100
                 const isEnabled = p.enabled !== false
+                const healthRecord = healthFor(healthByName, 'provider', (p.name || '').trim())
+                const healthBlocked = isBlocked(healthRecord)
                 return (
                   <Card
                     key={p.name}
@@ -480,10 +486,15 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Badge variant="outline" className="ml-auto h-5 min-w-5 rounded-full px-1.5">
-                                <span className={cn("h-1.5 w-1.5 rounded-full", isEnabled ? "bg-green-600" : "bg-destructive")} />
+                                <span className={cn("h-1.5 w-1.5 rounded-full",
+                                  !isEnabled || healthBlocked ? "bg-destructive"
+                                    : healthRecord ? "bg-amber-500"
+                                      : "bg-green-600")} />
                               </Badge>
                             </TooltipTrigger>
-                            <TooltipContent>{isEnabled ? 'Active' : 'Inactive'}</TooltipContent>
+                            <TooltipContent>
+                              {!isEnabled ? 'Inactive' : healthRecord ? healthReasonLabel(healthRecord.reason) : 'Active'}
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       </div>
@@ -514,6 +525,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                           </Tooltip>
                         </TooltipProvider>
                       </div>
+                      <ComponentHealthNotice record={healthRecord} onRefresh={onRefreshComponentHealth} />
                     </CardContent>
                   </Card>
                 )
@@ -545,6 +557,8 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                 const hasDlLimit = idx.downloads_limit > 0
                 const isEnabled = idx.enabled !== false
                 const indexerUrl = indexerUrls.get((idx.name || '').trim()) || ''
+                const healthRecord = healthFor(healthByName, 'indexer', (idx.name || '').trim())
+                const healthBlocked = isBlocked(healthRecord)
                 return (
                   <Card
                     key={idx.name}
@@ -557,10 +571,15 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Badge variant="outline" className="ml-auto h-5 min-w-5 rounded-full px-1.5">
-                                <span className={cn("h-1.5 w-1.5 rounded-full", isEnabled ? "bg-green-600" : "bg-destructive")} />
+                                <span className={cn("h-1.5 w-1.5 rounded-full",
+                                  !isEnabled || healthBlocked ? "bg-destructive"
+                                    : healthRecord ? "bg-amber-500"
+                                      : "bg-green-600")} />
                               </Badge>
                             </TooltipTrigger>
-                            <TooltipContent>{isEnabled ? 'Active' : 'Inactive'}</TooltipContent>
+                            <TooltipContent>
+                              {!isEnabled ? 'Inactive' : healthRecord ? healthReasonLabel(healthRecord.reason) : 'Active'}
+                            </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
                       </div>
@@ -593,6 +612,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                           </p>
                         </div>
                       </div>
+                      <ComponentHealthNotice record={healthRecord} onRefresh={onRefreshComponentHealth} />
                     </CardContent>
                   </Card>
                 )

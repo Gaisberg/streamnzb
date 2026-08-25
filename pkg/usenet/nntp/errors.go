@@ -72,3 +72,46 @@ func IsBenignDisconnect(err error) bool {
 	return strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "context canceled")
 }
+
+// IsAuthFailure reports whether err is the server rejecting our credentials.
+//
+// 481 is "authentication failed/rejected" and 482 "authentication commands
+// issued out of sequence"; both come back from the AUTHINFO exchange and both
+// mean this account cannot log in as configured. Callers must only ask this
+// about an error from Authenticate — the same codes elsewhere in a session
+// would say something else entirely, and a verdict on the account is exactly
+// the kind of thing that must not be inferred loosely.
+//
+// 502 is deliberately excluded: providers answer it both for "permission
+// denied" and for "too many connections", and the second is a plan mismatch
+// the user fixes by lowering the connection count, not a dead account. See
+// IsConnectionLimit.
+func IsAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		return tpErr.Code == 481 || tpErr.Code == 482
+	}
+	return false
+}
+
+// IsConnectionLimit reports whether err is the provider refusing another
+// connection because the account is already at its limit.
+//
+// This is not credential death — the account works, we simply asked for more
+// connections than the plan allows — so it surfaces as a degraded state that
+// names the fix rather than parking the provider.
+func IsConnectionLimit(err error) bool {
+	if err == nil {
+		return false
+	}
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) && tpErr.Code == 502 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "too many connections") ||
+		strings.Contains(msg, "connection limit")
+}

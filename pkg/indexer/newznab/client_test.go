@@ -396,8 +396,11 @@ func TestNewznabPing(t *testing.T) {
 	var gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserAgent = r.Header.Get("User-Agent")
-		if r.URL.Query().Get("t") == "caps" {
-			w.WriteHeader(http.StatusOK)
+		// Ping must issue a real search: caps is often served without
+		// authentication, so it cannot vouch for the API key.
+		if r.URL.Query().Get("t") == "search" && r.URL.Query().Get("apikey") == "test-api-key" {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -1155,5 +1158,33 @@ func TestDownloadNZBOn404DoesNotOpenCooldown(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("indexer received %d requests, want 2; 404 must not open a cooldown", requests)
+	}
+}
+
+func TestCheckNewznabErrorClassifiesCredentialCodes(t *testing.T) {
+	c := &Client{cfg: config.IndexerConfig{Name: "test-indexer"}}
+
+	// The 1xx block is newznab's credential range.
+	err := c.checkNewznabError([]byte(`<error code="100" description="Incorrect user credentials"/>`))
+	if err == nil || !errors.Is(err, indexer.ErrAuthFailed) {
+		t.Fatalf("code 100 = %v, want ErrAuthFailed", err)
+	}
+	if errors.Is(err, indexer.ErrRateLimited) {
+		t.Fatal("a credential rejection must not read as a rate limit")
+	}
+
+	// 201 is a quota, which passes with time and must stay separate.
+	err = c.checkNewznabError([]byte(`<error code="201" description="Request limit reached"/>`))
+	if err == nil || !errors.Is(err, indexer.ErrRateLimited) {
+		t.Fatalf("code 201 = %v, want ErrRateLimited", err)
+	}
+	if errors.Is(err, indexer.ErrAuthFailed) {
+		t.Fatal("a quota error must not park the indexer")
+	}
+
+	// A server-side fault is inconclusive: neither sentinel applies.
+	err = c.checkNewznabError([]byte(`<error code="300" description="No such item"/>`))
+	if err == nil || errors.Is(err, indexer.ErrAuthFailed) || errors.Is(err, indexer.ErrRateLimited) {
+		t.Fatalf("code 300 = %v, want an unclassified error", err)
 	}
 }

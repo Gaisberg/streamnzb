@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 )
 
@@ -52,11 +53,128 @@ func NewClientPool(host string, port int, ssl bool, user, pass string, maxConn i
 	return p
 }
 
+// SetProviderName names the pool for health reporting.
+//
+// It exists separately from SetUsageManager because the startup Validate dial
+// happens before usage wiring, and that dial is the one most likely to meet a
+// changed password: without a name at that point the rejection would be logged
+// and the provider dropped, with nothing left for the user to see.
+func (p *ClientPool) SetProviderName(name string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.providerName = name
+}
+
 func (p *ClientPool) SetUsageManager(name string, mgr *ProviderUsageManager) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.providerName = name
 	p.usageManager = mgr
+}
+
+// dial opens one authenticated connection and reports what the handshake said
+// about the account.
+//
+// Every caller took a slot before getting here and hands it back on failure,
+// which is why this returns rather than releasing: the slot bookkeeping stays
+// with the select arms that own it.
+//
+// The health verdict is taken here because this is the only place the AUTHINFO
+// exchange happens, and an authentication code means something specific only in
+// that exchange. A successful handshake clears any stored verdict — the account
+// working is the one piece of evidence that outranks a stored complaint.
+func (p *ClientPool) dial() (*Client, error) {
+	c, err := NewClient(p.host, p.port, p.ssl)
+	if err != nil {
+		// A connect failure is inconclusive about credentials: the box may be
+		// down, DNS may be lying, the network may be out. It never blocks. The
+		// one exception worth recording is a 502 greeting — providers answer it
+		// when the account is already at its connection limit, which is a
+		// self-healing degraded state, not an outage.
+		if IsConnectionLimit(err) {
+			p.reportConnLimit(err)
+		}
+		return nil, err
+	}
+	c.SetPool(p)
+	if err := c.Authenticate(p.user, p.pass); err != nil {
+		c.Quit()
+		p.reportAuthResult(err)
+		return nil, err
+	}
+	p.reportAuthResult(nil)
+	return c, nil
+}
+
+// reportConnLimit records a connection-limit refusal seen at the greeting.
+func (p *ClientPool) reportConnLimit(err error) {
+	p.mu.Lock()
+	name := p.providerName
+	p.mu.Unlock()
+	if name == "" {
+		return
+	}
+	health.Global().Report(health.KindProvider, name, health.StateDegraded, health.ReasonConnectionLimit, err.Error())
+}
+
+// reportAuthResult translates an AUTHINFO outcome into a health verdict.
+func (p *ClientPool) reportAuthResult(err error) {
+	p.mu.Lock()
+	name := p.providerName
+	p.mu.Unlock()
+	if name == "" {
+		return
+	}
+	reg := health.Global()
+	switch {
+	case err == nil:
+		reg.MarkOK(health.KindProvider, name)
+	case IsAuthFailure(err):
+		reg.Report(health.KindProvider, name, health.StateBlocked, health.ReasonAuthFailed, err.Error())
+	case IsConnectionLimit(err):
+		reg.Report(health.KindProvider, name, health.StateDegraded, health.ReasonConnectionLimit, err.Error())
+	}
+}
+
+// Probe opens a throwaway authenticated connection to find out whether a
+// blocked provider has started working again, then drops it.
+//
+// It deliberately bypasses the idle pool and the slot budget: a probe must not
+// wait behind playback for a connection, and must not consume one either. The
+// answer is the health verdict dial already recorded.
+func (p *ClientPool) Probe(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	type result struct {
+		c   *Client
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := p.dial()
+		done <- result{c: c, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		// The dial outlives the cancelled probe; close whatever it produces so
+		// a slow provider cannot leak a connection per probe.
+		go func() {
+			if r := <-done; r.c != nil {
+				r.c.Quit()
+			}
+		}()
+		return ctx.Err()
+	case r := <-done:
+		if r.c != nil {
+			r.c.Quit()
+		}
+		return r.err
+	}
 }
 
 func (p *ClientPool) RestoreTotalBytes(total int64) {
@@ -141,14 +259,8 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 		return nil, ctx.Err()
 	case <-p.slots:
 
-		c, err := NewClient(p.host, p.port, p.ssl)
+		c, err := p.dial()
 		if err != nil {
-			p.slots <- struct{}{}
-			return nil, err
-		}
-		c.SetPool(p)
-		if err := c.Authenticate(p.user, p.pass); err != nil {
-			c.Quit()
 			p.slots <- struct{}{}
 			return nil, err
 		}
@@ -177,14 +289,8 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 	case <-p.slots:
 		wait := time.Since(waitStarted)
 
-		c, err := NewClient(p.host, p.port, p.ssl)
+		c, err := p.dial()
 		if err != nil {
-			p.slots <- struct{}{}
-			return nil, err
-		}
-		c.SetPool(p)
-		if err := c.Authenticate(p.user, p.pass); err != nil {
-			c.Quit()
 			p.slots <- struct{}{}
 			return nil, err
 		}
@@ -213,14 +319,8 @@ func (p *ClientPool) TryGet(ctx context.Context) (*Client, bool) {
 	case <-ctx.Done():
 		return nil, false
 	case <-p.slots:
-		c, err := NewClient(p.host, p.port, p.ssl)
+		c, err := p.dial()
 		if err != nil {
-			p.slots <- struct{}{}
-			return nil, false
-		}
-		c.SetPool(p)
-		if err := c.Authenticate(p.user, p.pass); err != nil {
-			c.Quit()
 			p.slots <- struct{}{}
 			return nil, false
 		}

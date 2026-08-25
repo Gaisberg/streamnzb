@@ -51,7 +51,7 @@ function Settings({
   saveStatus,
   clearSaveStatus,
   indexerCaps,
-  stats,
+  componentHealth,
   activeTab: activeTabProp,
   hideTabs = false,
 }) {
@@ -384,7 +384,7 @@ function Settings({
               fields={indexerFields}
               defaultProxyURL={globalIndexerProxyURL}
               indexerCaps={indexerCaps || {}}
-              stats={stats}
+              componentHealth={componentHealth}
               streamsByName={liveStreamsByName}
               append={appendIndexer}
               update={updateIndexer}
@@ -409,7 +409,7 @@ function Settings({
             )}
             <ProviderSettings
               fields={fields}
-              stats={stats}
+              componentHealth={componentHealth}
               streamsByName={liveStreamsByName}
               append={append}
               remove={remove}

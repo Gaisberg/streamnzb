@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"strings"
@@ -143,6 +144,29 @@ func shouldSkipIndexer(req SearchRequest, overrides *config.IndexerSearchConfig)
 // search preflight now also declines on an exhausted download budget, warning
 // about it would fill the log with one line per indexer per search for the rest
 // of the day. Anything else is a real failure and stays at Warn.
+// ReportHealth turns one indexer request outcome into a health verdict.
+//
+// Only a rejected credential parks the indexer. Rate limits are self-healing
+// and merely degrade it; everything else — timeouts, malformed XML, a 500 —
+// stays unrecorded, because none of it says the indexer is unusable and a
+// verdict that outlives the blip would be worse than the blip.
+//
+// Exported because searches are not the only authenticated request we make:
+// the capability fetch that runs whenever the indexer stack is rebuilt reaches
+// the indexer with the same API key, and is usually the first thing to find out
+// that the key stopped working.
+func ReportHealth(name string, err error) {
+	reg := health.Global()
+	switch {
+	case err == nil:
+		reg.MarkOK(health.KindIndexer, name)
+	case errors.Is(err, ErrAuthFailed):
+		reg.Report(health.KindIndexer, name, health.StateBlocked, health.ReasonAuthFailed, err.Error())
+	case errors.Is(err, ErrRateLimited):
+		reg.Report(health.KindIndexer, name, health.StateDegraded, health.ReasonThrottled, err.Error())
+	}
+}
+
 func logIndexerSearchFailure(name string, err error) {
 	if errors.Is(err, ErrRateLimited) {
 		logger.Debug("Indexer skipped: limit reached", "indexer", name, "err", err)
@@ -319,7 +343,16 @@ func searchItemsForIndexer(ctx context.Context, idx Indexer, req SearchRequest) 
 		)
 		return []Item{}, nil
 	}
+	// A blocked indexer is one whose credentials the server rejected. Asking it
+	// again on every search cannot produce results and only burns a request, so
+	// it sits out until a probe or a credential edit clears the verdict.
+	if health.Global().Blocked(health.KindIndexer, idx.Name()) {
+		logger.Debug("Indexer skipped: blocked by health state",
+			"stream", reqCopy.StreamLabel, "request", reqCopy.RequestLabel, "indexer", idx.Name())
+		return []Item{}, nil
+	}
 	resp, err := idx.Search(ctx, reqCopy)
+	ReportHealth(idx.Name(), err)
 	if err != nil {
 		return nil, err
 	}

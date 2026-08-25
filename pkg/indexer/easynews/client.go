@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,8 +65,10 @@ func buildFileExtensionList(exts map[string]bool) string {
 	return strings.Join(list, ",")
 }
 
-// errCredentialsRejected is a 401/403 from Easynews.
-var errCredentialsRejected = errors.New("easynews rejected credentials")
+// errCredentialsRejected is a 401/403 from Easynews. It wraps the shared
+// sentinel so the health layer sees the same verdict it gets from a newznab
+// 1xx, while the existing errors.Is checks against this variable keep working.
+var errCredentialsRejected = fmt.Errorf("easynews rejected credentials: %w", indexer.ErrAuthFailed)
 
 type Client struct {
 	username        string

@@ -90,7 +90,13 @@ func (s *Server) handleRefreshIndexerCaps(w http.ResponseWriter, r *http.Request
 				wg.Add(1)
 				go func(name string, fetcher indexer.IndexerWithCaps) {
 					defer wg.Done()
-					if result, err := fetcher.GetCaps(); err == nil {
+					result, err := fetcher.GetCaps()
+					// Failures only: public caps make success meaningless as
+					// evidence, so it must not clear a stored verdict.
+					if err != nil {
+						indexer.ReportHealth(name, err)
+					}
+					if err == nil {
 						mu.Lock()
 						caps[name] = result
 						mu.Unlock()

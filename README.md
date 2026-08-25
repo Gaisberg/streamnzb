@@ -5,7 +5,9 @@
 
 **StreamNZB is the one place you configure Usenet.** Providers, indexers, filter and ranking rules, search requests and metadata all live in a single binary — and everything else consumes that configuration. Set a provider up once and every app you point at StreamNZB gets it, with your credentials and API keys staying on the server.
 
-The playback engine underneath streams releases on-the-fly from your providers, recovers obfuscated releases from their own bytes, and repairs a missing archive volume from PAR2 rather than giving up on the release.
+The playback engine underneath streams releases on-the-fly from your providers, recovers obfuscated releases from their own bytes, and rebuilds a missing first RAR volume from PAR2 recovery data rather than giving up on the release.
+
+It also watches what it is configured with: when a provider rejects your password or an indexer revokes your API key, StreamNZB says so on the dashboard, routes around it, and re-checks until it works again.
 
 
 ## Consume it from
@@ -23,6 +25,7 @@ One config, one IP, no extra containers — just your Usenet provider(s) and ind
 ## What it does
 
 - **Configure once, use everywhere** — Define global providers, indexers, search queries and filter profiles once, then create one or more streams that decide which of those resources belong to each manifest. The same configuration backs the Newznab endpoint and the NNTP proxy, so adding a provider or swapping an indexer is one edit, not one per app.
+- **Knows when a provider or indexer stops working** — Rejected credentials, a lapsed subscription, a spent daily quota or a connection limit are detected from what the server actually answered, shown on the dashboard and on the affected card, and routed around until they clear. See [Indexer & provider health](docs/component-health.md).
 - **The only addon you need** — StreamNZB serves catalogs and full metadata alongside streams: trending/popular/top-rated rows, search, series pages with episode lists and exact air dates, plus per-stream **Continue Watching** and **Because You Watched** rows built from your own playback history. Works out of the box in any Stremio-compatible client, including ones without Cinemeta.
 - **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
 - **Newznab endpoint** — Every configured indexer re-served as a single Newznab API (off by default), so Prowlarr, Sonarr, Radarr or any Newznab client searches the whole set through one URL and one key. Your indexers' own API keys are never handed to the client.
@@ -31,6 +34,27 @@ One config, one IP, no extra containers — just your Usenet provider(s) and ind
 - **Search history & diagnostics** — The **History** page shows every search with its play attempts nested under it: per-indexer API timings, what validation/dedup/filtering dropped and why, including searches that returned nothing. An optional **Search debug stream** toggle (under Advanced) prepends the same summary as a result row in Stremio — selecting it just plays the top real result.
 - **SQLite or Postgres** — A local file by default, or point it at an existing Postgres server. Switching migrates your data either way, without a restart.
 - **Single binary** — Docker image or native Windows/Linux/macOS. No other containers required.
+
+
+## When credentials go bad
+
+**Enabled is not the same as working.** A password changed at your provider, an API key revoked by an indexer, a subscription that lapsed on a card that expired — none of those flip a switch in your configuration. Without something watching for them, they surface as searches quietly returning less and playback quietly failing over, days after the fact.
+
+StreamNZB tracks whether each provider and indexer is *actually usable* as a fact separate from whether you enabled it. Your switch is never touched, so it always means what you set it to.
+
+| State | What it means | What happens |
+|---|---|---|
+| **OK** | Nothing to report. | Normal use. Nothing is shown — an unhealthy list that is empty when all is well is one you can trust when it isn't. |
+| **Degraded** | Working, but limited: daily quota spent, or the indexer asked us to back off. | Keeps being used where it can be. Ends on its own. |
+| **Blocked** | The server rejected the account itself. | Blocked indexers sit out searches; blocked providers drop behind healthy ones instead of being raced first. |
+
+**Only a definitive rejection blocks anything.** A newznab `1xx` credential code, an HTTP 401, an NNTP 481 — those are verdicts on the account. Timeouts, 5xx responses and rate limits are not, and never retire a working key over one bad afternoon at an indexer.
+
+**It is shown where you would look for it:** a *Usenet health* panel on the dashboard naming what is wrong, since when, and what to do about it; a badge on the indexer or provider card in Settings; and a live push to the open UI, so a subscription that lapses mid-session appears while you are watching rather than on your next refresh.
+
+**And it recovers by itself.** Blocked components are re-checked automatically — 15 minutes after the failure, backing off to hourly while the answer stays no — so a renewed subscription heals with nobody clicking anything. Fixing the credentials in Settings clears the verdict immediately, and **Check again** re-checks on the spot, including for a provider whose password was already wrong when StreamNZB started.
+
+Full behavior, reason codes and API in [Indexer & provider health](docs/component-health.md).
 
 
 ## What can and cannot be streamed
@@ -103,6 +127,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Remote access](docs/remote-access.md) — VPN and reverse proxy setups for streaming away from home
 - [Providers](docs/providers.md) — priority, failover, and holding a metered account back as a backup
 - [Provider speed test](docs/speed-test.md) — measuring provider throughput and finding the right connection count
+- [Indexer & provider health](docs/component-health.md) — how a rejected password, spent quota or lapsed subscription is detected, shown and recovered
 - [Easynews advanced search](docs/easynews.md) — server-side filtering options for Easynews indexers
 - [Metadata & catalogs](docs/metadata.md) — StreamNZB as a full Stremio metadata provider
 - [Stream model](docs/stream-model.md) — global configuration vs. per-stream behavior

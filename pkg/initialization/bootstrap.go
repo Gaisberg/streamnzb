@@ -7,6 +7,7 @@ import (
 	"sort"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/env"
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/metrics"
 	"streamnzb/pkg/core/paths"
@@ -78,6 +79,12 @@ func BuildComponents(cfg *config.Config) (*InitializedComponents, error) {
 	}
 
 	if stateMgr != nil {
+		// Restored before any pool dials or any search runs, so a verdict
+		// recorded before the last restart is honored instead of rediscovered
+		// by hammering a provider that already said no.
+		if _, err := health.Init(stateMgr); err != nil {
+			logger.Warn("Failed to restore component health", "err", err)
+		}
 		HydrateMetricsFromState(stateMgr)
 		stateRef := stateMgr
 		metrics.Default().SetOnStreamAPISample(func(s metrics.StreamAPISample) {
@@ -232,6 +239,15 @@ func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *
 			go func(name string, capsFetcher indexer.IndexerWithCaps) {
 				defer capsWg.Done()
 				caps, err := capsFetcher.GetCaps()
+				// A caps failure is worth reporting — the fetch runs right
+				// after a key is saved, so a rejection lands immediately. A
+				// caps SUCCESS proves nothing and must not clear a verdict:
+				// many indexers serve caps publicly, so the request succeeds
+				// with any key at all. Only a real authenticated request
+				// (search or ping) may mark the indexer healthy.
+				if err != nil {
+					indexer.ReportHealth(name, err)
+				}
 				if err != nil {
 					logger.Warn("Failed to fetch caps", "indexer", name, "err", err)
 					return
@@ -385,6 +401,8 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 			provider.Password,
 			provider.Connections,
 		)
+
+		pool.SetProviderName(poolName)
 
 		if err := pool.Validate(); err != nil {
 			logger.Error("Failed to initialize provider", "name", provider.Name, "host", provider.Host, "err", err)

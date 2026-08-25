@@ -98,6 +98,7 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 		return "", nil, "Failed to save config: " + err.Error()
 	}
 
+	syncComponentHealth(currentCfg, &newCfg)
 	cacheSuffix = s.clearCachesForScope(cacheClearScopeForPatch(patch))
 	s.reloadConfigAsync(&newCfg)
 	return cacheSuffix, nil, ""

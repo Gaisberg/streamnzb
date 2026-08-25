@@ -97,6 +97,12 @@ func encodeOrderedQuery(params url.Values, orderedKeys []string) string {
 var _ indexer.Indexer = (*Client)(nil)
 var _ indexer.IndexerWithCaps = (*Client)(nil)
 
+// maxPingReadBytes bounds how much of a ping response is read. An error
+// document is a few hundred bytes; 64 KB leaves room for any indexer's
+// framing while keeping a misbehaving one from streaming a result dump
+// into the credential check.
+const maxPingReadBytes = 64 << 10
+
 type APIError struct {
 	XMLName     xml.Name `xml:"error"`
 	Code        int      `xml:"code,attr"`
@@ -252,6 +258,21 @@ func (c *Client) waitForRateLimit(ctx context.Context) error {
 	return c.core.Limiter.Wait(ctx)
 }
 
+// Ping verifies the indexer is reachable AND that our API key works.
+//
+// It deliberately issues t=search rather than t=caps: many indexers serve caps
+// publicly, so a caps request succeeds with any key at all — which is how a
+// bogus key once sailed through save-time validation and the health probes
+// while every real search failed. A bare t=search (no query) is the newznab
+// "latest releases" listing, the cheapest request that actually exercises the
+// key; limit=1 keeps the answer small. It costs one API hit, which is the
+// price of an honest answer.
+//
+// The body read is capped as well: the only thing worth reading is a possible
+// error document (always tiny), so an indexer that ignores limit=1 and streams
+// a full result page cannot slow the check down past the cap. A truncated
+// success body decodes to "no error", which is the same verdict its full form
+// would have produced.
 func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := c.requestContext(ctx)
 	defer cancel()
@@ -259,7 +280,8 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 	params := url.Values{}
-	params.Set("t", "caps")
+	params.Set("t", "search")
+	params.Set("limit", "1")
 	params.Set("apikey", c.apiKey)
 	apiURL := c.buildAPIURL(params)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
@@ -273,10 +295,21 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPingReadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to read %s ping response: %w", c.Name(), err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("%s indexer returned error status %d: %w", c.Name(), resp.StatusCode, indexer.ErrAuthFailed)
+		}
 		return fmt.Errorf("%s indexer returned error status: %d", c.Name(), resp.StatusCode)
 	}
-	return nil
+	// Newznab answers a rejected API key with an error document under HTTP 200,
+	// so a status check alone reports a working indexer for a key the server
+	// just refused — which is precisely the case a ping exists to catch.
+	return c.checkNewznabError(body)
 }
 
 func (c *Client) GetCaps() (*indexer.Caps, error) {
@@ -304,6 +337,9 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("%s caps returned status %d: %w", c.Name(), resp.StatusCode, indexer.ErrAuthFailed)
+		}
 		return nil, fmt.Errorf("%s caps returned status %d", c.Name(), resp.StatusCode)
 	}
 
@@ -340,7 +376,10 @@ func (c *Client) checkNewznabError(bodyBytes []byte) error {
 
 		switch {
 		case apiErr.Code >= 100 && apiErr.Code <= 199:
-			return fmt.Errorf("%s authentication error (code %d): %s", c.Name(), apiErr.Code, apiErr.Description)
+			// The 1xx block is newznab's credential range: wrong api key, wrong
+			// user, account suspended. It is a verdict on the account, so it
+			// carries the sentinel that lets the health layer park the indexer.
+			return fmt.Errorf("%s authentication error (code %d): %s: %w", c.Name(), apiErr.Code, apiErr.Description, indexer.ErrAuthFailed)
 		case apiErr.Code == 201:
 			return fmt.Errorf("%s request limit reached (code %d): %s: %w", c.Name(), apiErr.Code, apiErr.Description, indexer.ErrRateLimited)
 		case apiErr.Code >= 200 && apiErr.Code <= 299:
@@ -732,6 +771,9 @@ func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, p
 		if isTransientDownloadStatus(resp.StatusCode) {
 			return nil, fmt.Errorf("%s returned status %d: %s: %w", c.Name(), resp.StatusCode, string(bodyBytes), indexer.ErrRateLimited)
 		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("%s returned status %d: %s: %w", c.Name(), resp.StatusCode, string(bodyBytes), indexer.ErrAuthFailed)
+		}
 		return nil, fmt.Errorf("%s returned status %d: %s", c.Name(), resp.StatusCode, string(bodyBytes))
 	}
 
@@ -829,6 +871,9 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 			c.noteThrottled(resp.Header, resp.StatusCode)
 			return nil, fmt.Errorf("%s NZB download returned status %d: %w", c.Name(), resp.StatusCode, indexer.ErrRateLimited)
 		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("%s NZB download returned status %d: %w", c.Name(), resp.StatusCode, indexer.ErrAuthFailed)
+		}
 		return nil, fmt.Errorf("%s NZB download returned status %d", c.Name(), resp.StatusCode)
 	}
 
@@ -842,6 +887,13 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	return data, nil
 }
 
+// 403 is deliberately not treated as an authentication verdict. Private
+// indexers sit behind WAFs that answer 403 to a request they disliked for
+// reasons having nothing to do with the API key, and blocking the indexer on
+// that would retire a working key over a user-agent check. A genuine newznab
+// credential rejection arrives as a 1xx error document, which
+// checkNewznabError classifies before this point.
+//
 // isTransientDownloadStatus reports whether an NZB download status means the
 // indexer declined to serve us right now rather than the NZB being gone. 404
 // and 410 are deliberately absent: those do implicate the release.

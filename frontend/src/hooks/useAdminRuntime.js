@@ -32,6 +32,7 @@ export function useAdminRuntime({
   const reconnectTimeoutRef = useRef(null)
   const [logs, setLogs] = useState([])
   const [indexerCaps, setIndexerCaps] = useState({})
+  const [componentHealth, setComponentHealth] = useState([])
   const [nzbAttemptsRefreshTrigger, setNzbAttemptsRefreshTrigger] = useState(0)
 
   const resetRuntime = useCallback(() => {
@@ -50,7 +51,17 @@ export function useAdminRuntime({
     window.ws = null
     setLogs([])
     setIndexerCaps({})
+    setComponentHealth([])
     setNzbAttemptsRefreshTrigger(0)
+  }, [])
+
+  const refreshComponentHealth = useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/health/components')
+      if (data) setComponentHealth(data.components || [])
+    } catch (err) {
+      console.error('Failed to fetch component health', err)
+    }
   }, [])
 
   const clearSaveStatus = useCallback(() => {
@@ -142,6 +153,15 @@ export function useAdminRuntime({
           case 'log_history':
             setLogs(msg.payload.slice(-MAX_LOGS))
             break
+          case 'component_health': {
+            const record = msg.payload
+            if (!record?.kind || !record?.name) break
+            setComponentHealth((prev) => {
+              const rest = prev.filter((c) => !(c.kind === record.kind && c.name === record.name))
+              return record.state === 'ok' ? rest : [...rest, record]
+            })
+            break
+          }
           case 'nzb_attempts_updated':
             setNzbAttemptsRefreshTrigger((value) => value + 1)
             break
@@ -172,6 +192,11 @@ export function useAdminRuntime({
               apiFetch('/api/indexer/caps')
                 .then((data) => {
                   if (data && isActiveSocket(currentSocket)) setIndexerCaps(data)
+                })
+                .catch(() => {})
+              apiFetch('/api/health/components')
+                .then((data) => {
+                  if (data && isActiveSocket(currentSocket)) setComponentHealth(data.components || [])
                 })
                 .catch(() => {})
             } else {
@@ -298,6 +323,8 @@ export function useAdminRuntime({
     version,
     logs,
     indexerCaps,
+    componentHealth,
+    refreshComponentHealth,
     nzbAttemptsRefreshTrigger,
     sendCommand,
   }

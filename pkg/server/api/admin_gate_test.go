@@ -55,6 +55,10 @@ func TestAdminOnlyRoutesRejectADeviceToken(t *testing.T) {
 			func(s *Server) http.HandlerFunc { return s.handleClearLibrary }},
 		{"library stats", http.MethodGet, "/api/library/stats",
 			func(s *Server) http.HandlerFunc { return s.handleLibraryStats }},
+		{"component health", http.MethodGet, "/api/health/components",
+			func(s *Server) http.HandlerFunc { return s.handleComponentHealth }},
+		{"component health retry", http.MethodPost, "/api/health/components/retry",
+			func(s *Server) http.HandlerFunc { return s.handleComponentHealthRetry }},
 		{"statistics delete", http.MethodDelete, "/api/stats/history?type=provider&name=x",
 			func(s *Server) http.HandlerFunc { return s.handleStatsHistory }},
 	} {

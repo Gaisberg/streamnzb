@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
@@ -46,6 +47,9 @@ func ReloadDatabase(stateMgr *persistence.StateManager, cfg *config.Config) erro
 	if err := nntp.FlushProviderUsage(); err != nil {
 		logger.Warn("Failed to flush provider usage before database swap", "err", err)
 	}
+	if err := health.Flush(); err != nil {
+		logger.Warn("Failed to flush component health before database swap", "err", err)
+	}
 
 	closeOld, err := stateMgr.Reopen(DatabaseSettingsFromConfig(cfg), paths.GetDataDir())
 	if err != nil {
@@ -57,6 +61,9 @@ func ReloadDatabase(stateMgr *persistence.StateManager, cfg *config.Config) erro
 	}
 	if err := nntp.ReloadProviderUsage(); err != nil {
 		logger.Warn("Failed to reload provider usage after database swap", "err", err)
+	}
+	if err := health.Reload(); err != nil {
+		logger.Warn("Failed to reload component health after database swap", "err", err)
 	}
 	HydrateMetricsFromState(stateMgr)
 

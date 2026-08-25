@@ -12,3 +12,14 @@ import "errors"
 // because the same condition arrives phrased half a dozen different ways
 // depending on which layer noticed it.
 var ErrRateLimited = errors.New("indexer rate limited")
+
+// ErrAuthFailed marks an indexer refusing us for who we are rather than for
+// what we asked: a rejected API key, a revoked login, an account whose
+// subscription ended. Unlike ErrRateLimited it does not pass with time, so it
+// is the one indexer failure allowed to park the indexer until a human or a
+// probe says otherwise.
+//
+// Only definitive rejections may carry it. A timeout or a 5xx says nothing
+// about the account and must stay unwrapped, or one bad afternoon on the
+// indexer's side would retire a perfectly good API key.
+var ErrAuthFailed = errors.New("indexer authentication failed")

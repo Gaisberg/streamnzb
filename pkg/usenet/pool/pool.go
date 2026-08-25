@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/decode"
 	"streamnzb/pkg/media/nzb"
@@ -677,6 +678,26 @@ func (p *Pool) providerInCooloff(providerID string) bool {
 	return ok && time.Now().Before(until)
 }
 
+// providerBenched reports whether the provider should sit out the first-choice
+// pass — either it is inside a 430 cooloff, or the provider rejected our
+// credentials the last time we dialled it.
+//
+// Blocked is deliberately a bench and not an exclusion. A provider whose
+// account we cannot log into contributes nothing, but the alternative to trying
+// it can be "nobody serves this segment", and a rejected AUTHINFO costs one
+// failed connect where a missing segment costs the stream. Last resort still
+// beats no resort — and if the account came back, the attempt clears the
+// verdict on the spot.
+func (p *Pool) providerBenched(providerID string) bool {
+	if p == nil {
+		return false
+	}
+	if p.providerInCooloff(providerID) {
+		return true
+	}
+	return health.Global().Blocked(health.KindProvider, providerID)
+}
+
 // HasBackupProviders reports whether this view holds a provider kept back for
 // failover. Callers use it to decide whether "no provider could serve" is the
 // end of the road or only the end of the primary tier.
@@ -804,13 +825,14 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 		primaries = append(primaries, i)
 	}
 
-	// Skip providers in 430 cooloff: racing a provider that provably does not
-	// carry this release pays a wasted round-trip on every new volume. If every
-	// primary is cooling off, race them all anyway rather than failing.
+	// Skip benched providers: racing a provider that provably does not carry
+	// this release — or that will not let us log in — pays a wasted round-trip
+	// on every new volume. If every primary is benched, race them all anyway
+	// rather than failing.
 	eligible := make([]int, 0, len(primaries))
 	for _, i := range primaries {
-		if p.providerInCooloff(providers[i].ID) {
-			logger.Trace("fetch segment first: skipping provider in 430 cooloff", "provider", providers[i].ID)
+		if p.providerBenched(providers[i].ID) {
+			logger.Trace("fetch segment first: skipping benched provider", "provider", providers[i].ID)
 			continue
 		}
 		eligible = append(eligible, i)
@@ -1482,8 +1504,8 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 	}
 
 	// Two passes. Pass 1 takes healthy providers — anyone not inside an active
-	// 430 cooloff window. Pass 2 falls back to benched providers as a last
-	// resort. The cooloff is time-boxed and self-healing: a raw
+	// 430 cooloff window and not blocked on credentials. Pass 2 falls back to
+	// benched providers as a last resort. The cooloff is time-boxed and self-healing: a raw
 	// consecutive-430 count skip was PERMANENT for a benched provider (it can
 	// only reset via successes, which require being selected), so one
 	// bad-release 430 storm funneled all traffic onto a single provider until
@@ -1505,7 +1527,7 @@ func (p *Pool) getConnection(ctx context.Context, exclude []string, maxPriority 
 			if prov.IsBackup != useBackup {
 				continue
 			}
-			if p.providerInCooloff(prov.ID) != wantCooloff {
+			if p.providerBenched(prov.ID) != wantCooloff {
 				continue
 			}
 
