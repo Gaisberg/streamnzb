@@ -95,6 +95,16 @@ type Provider struct {
 	UseSSL      bool
 }
 
+// auxPoolName is the name a benchmark pool registers its connections under,
+// mirroring how the streaming pools are named (provider name, host when the
+// name is blank) so the dashboard folds them into the right provider row.
+func auxPoolName(provider Provider) string {
+	if name := strings.TrimSpace(provider.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(provider.Host)
+}
+
 // Request is one benchmark run.
 type Request struct {
 	Provider Provider
@@ -197,6 +207,7 @@ func TestConnection(ctx context.Context, provider Provider) ConnectionResult {
 		return ConnectionResult{Error: "Host is required"}
 	}
 	pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, 1)
+	pool.TrackAux(auxPoolName(provider))
 	defer pool.Shutdown()
 
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -250,6 +261,7 @@ func (t *Tester) Run(ctx context.Context, req Request) (*Report, error) {
 
 	steps := rampSteps(provider.Connections, req.Quick)
 	pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, steps[len(steps)-1])
+	pool.TrackAux(auxPoolName(provider))
 	defer pool.Shutdown()
 	if req.UsageManager != nil && provider.Name != "" {
 		pool.SetUsageManager(provider.Name, req.UsageManager)

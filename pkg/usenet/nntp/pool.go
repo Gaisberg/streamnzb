@@ -3,6 +3,7 @@ package nntp
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"streamnzb/pkg/core/health"
@@ -20,6 +21,14 @@ type ClientPool struct {
 	idleClients chan *Client
 	slots       chan struct{}
 	stopCh      chan struct{} // closed once by Shutdown(); never re-used
+
+	// established counts connections that finished the handshake and are still
+	// open — idle, checked out, or probing. It moves only in dial (on success)
+	// and closeClient, so it tracks what the provider actually sees, where the
+	// slot count also includes dials still in progress. dialing counts those
+	// in-progress dials.
+	established atomic.Int64
+	dialing     atomic.Int64
 
 	bytesRead      int64
 	totalBytesRead int64
@@ -87,6 +96,8 @@ func (p *ClientPool) SetUsageManager(name string, mgr *ProviderUsageManager) {
 // that exchange. A successful handshake clears any stored verdict — the account
 // working is the one piece of evidence that outranks a stored complaint.
 func (p *ClientPool) dial() (*Client, error) {
+	p.dialing.Add(1)
+	defer p.dialing.Add(-1)
 	c, err := NewClient(p.host, p.port, p.ssl)
 	if err != nil {
 		// A connect failure is inconclusive about credentials: the box may be
@@ -106,7 +117,17 @@ func (p *ClientPool) dial() (*Client, error) {
 		return nil, err
 	}
 	p.reportAuthResult(nil)
+	p.established.Add(1)
 	return c, nil
+}
+
+// closeClient closes a connection this pool dialed and keeps the established
+// count in step with it. Every teardown of a successfully dialed connection
+// must go through here, not c.Quit() directly — a bypassed close leaves the
+// count claiming a connection the provider no longer sees.
+func (p *ClientPool) closeClient(c *Client) {
+	c.Quit()
+	p.established.Add(-1)
 }
 
 // reportConnLimit records a connection-limit refusal seen at the greeting.
@@ -165,13 +186,13 @@ func (p *ClientPool) Probe(ctx context.Context) error {
 		// a slow provider cannot leak a connection per probe.
 		go func() {
 			if r := <-done; r.c != nil {
-				r.c.Quit()
+				p.closeClient(r.c)
 			}
 		}()
 		return ctx.Err()
 	case r := <-done:
 		if r.c != nil {
-			r.c.Quit()
+			p.closeClient(r.c)
 		}
 		return r.err
 	}
@@ -232,7 +253,7 @@ func (p *ClientPool) checkoutIdle(c *Client) *Client {
 		return c
 	}
 	logger.Debug("NNTP pool discarding stale idle connection", "host", p.host)
-	c.Quit()
+	p.closeClient(c)
 	p.slots <- struct{}{}
 	return nil
 }
@@ -338,7 +359,7 @@ func (p *ClientPool) Put(c *Client) {
 	closed := p.closed
 	p.mu.Unlock()
 	if closed {
-		c.Quit()
+		p.closeClient(c)
 		p.slots <- struct{}{}
 		return
 	}
@@ -353,11 +374,11 @@ func (p *ClientPool) Put(c *Client) {
 		// returned to idle
 	case <-p.stopCh:
 		// shutdown raced with Put; close and return slot
-		c.Quit()
+		p.closeClient(c)
 		p.slots <- struct{}{}
 	default:
 		logger.VerboseNNTP("nntp pool Put idle full, closing connection", "host", p.host)
-		c.Quit()
+		p.closeClient(c)
 		p.slots <- struct{}{}
 	}
 }
@@ -367,7 +388,7 @@ func (p *ClientPool) Discard(c *Client) {
 		return
 	}
 	logger.VerboseNNTP("nntp pool Discard connection not returned to pool", "host", p.host)
-	c.Quit()
+	p.closeClient(c)
 	p.slots <- struct{}{}
 }
 
@@ -389,14 +410,14 @@ func (p *ClientPool) reaperLoop() {
 			select {
 			case c := <-p.idleClients:
 				if time.Since(c.LastUsed) > timeout {
-					c.Quit()
+					p.closeClient(c)
 					p.slots <- struct{}{}
 				} else {
 					// Put connection back, but respect a concurrent Shutdown().
 					select {
 					case p.idleClients <- c:
 					case <-p.stopCh:
-						c.Quit()
+						p.closeClient(c)
 						p.slots <- struct{}{}
 						return
 					}
@@ -426,19 +447,63 @@ func (p *ClientPool) MaxConn() int {
 	return p.maxConn
 }
 
+// ConnSnapshot is one coherent reading of the pool's connection counts.
+type ConnSnapshot struct {
+	// Max is the configured connection ceiling.
+	Max int
+	// Total is how many connections are actually established with the provider
+	// right now — idle, in use, or held by a probe. Dials still in progress are
+	// not connections yet and are excluded.
+	Total int
+	// Idle is how many established connections are parked in the pool.
+	Idle int
+	// Active is Total minus Idle: connections a command is (or is about to be)
+	// running on.
+	Active int
+	// Pending is how many dials are in flight — a slot is claimed but the
+	// handshake has not finished.
+	Pending int
+}
+
+// ConnStats reads all connection counters in one call so a caller gets a set
+// of numbers that agree with each other. The individual reads still are not one
+// atomic transaction, so the derived values are clamped: a connection finishing
+// its dial or its teardown between two loads must never produce idle > total or
+// a negative active count.
+func (p *ClientPool) ConnStats() ConnSnapshot {
+	total := int(p.established.Load())
+	idle := len(p.idleClients)
+	if idle > total {
+		idle = total
+	}
+	return ConnSnapshot{
+		Max:     p.maxConn,
+		Total:   total,
+		Idle:    idle,
+		Active:  total - idle,
+		Pending: int(p.dialing.Load()),
+	}
+}
+
+// TotalConnections reports connections actually established with the provider.
+// This is deliberately not "slots claimed": a slot held by a dial that has not
+// finished — or that is failing against a dead server — is not a connection
+// the provider sees, and counting it had the dashboard reporting connections
+// that did not exist.
 func (p *ClientPool) TotalConnections() int {
-	return p.maxConn - len(p.slots)
+	return int(p.established.Load())
 }
 
 func (p *ClientPool) IdleConnections() int {
-	return len(p.idleClients)
+	return p.ConnStats().Idle
 }
 
 func (p *ClientPool) ActiveConnections() int {
-	return p.TotalConnections() - p.IdleConnections()
+	return p.ConnStats().Active
 }
 
 func (p *ClientPool) Shutdown() {
+	p.untrackAux()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -462,7 +527,7 @@ func (p *ClientPool) Shutdown() {
 	for {
 		select {
 		case c := <-p.idleClients:
-			c.Quit()
+			p.closeClient(c)
 		default:
 			return
 		}

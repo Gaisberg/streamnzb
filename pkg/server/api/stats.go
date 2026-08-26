@@ -11,6 +11,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/session"
+	"streamnzb/pkg/usenet/nntp"
 	usenetpool "streamnzb/pkg/usenet/pool"
 )
 
@@ -49,10 +50,14 @@ type IndexerStats struct {
 }
 
 type ProviderStats struct {
-	Name                  string  `json:"name"`
-	Host                  string  `json:"host"`
-	ActiveConns           int     `json:"active_conns"`
-	IdleConns             int     `json:"idle_conns"`
+	Name        string `json:"name"`
+	Host        string `json:"host"`
+	ActiveConns int    `json:"active_conns"`
+	IdleConns   int    `json:"idle_conns"`
+	// PendingConns is dials in flight: a slot is claimed but no connection is
+	// established yet. Kept separate from ActiveConns so the dashboard reports
+	// only connections the provider actually sees.
+	PendingConns          int     `json:"pending_conns"`
 	MaxConns              int     `json:"max_conns"`
 	CurrentSpeed          float64 `json:"current_speed_mbps"`
 	DownloadedMB          float64 `json:"downloaded_mb"`
@@ -94,12 +99,20 @@ func (s *Server) collectStats() SystemStats {
 	for name, pool := range pools {
 		downloadedMB := pool.TotalMegabytes()
 
+		// One snapshot per provider, so active, idle and max in a row agree
+		// with each other instead of being read at three different instants.
+		// Auxiliary pools — a running speed test, a probe, settings validation —
+		// hold connections the provider counts against the same account, so
+		// they are folded into the row rather than left invisible.
+		conns := pool.ConnStats()
+		aux := nntp.AuxConnStats(name)
 		pStats := ProviderStats{
 			Name:         name,
 			Host:         pool.Host(),
-			ActiveConns:  pool.ActiveConnections(),
-			IdleConns:    pool.IdleConnections(),
-			MaxConns:     pool.MaxConn(),
+			ActiveConns:  conns.Active + aux.Active,
+			IdleConns:    conns.Idle + aux.Idle,
+			PendingConns: conns.Pending + aux.Pending,
+			MaxConns:     conns.Max,
 			CurrentSpeed: pool.GetSpeed(),
 			DownloadedMB: downloadedMB,
 		}

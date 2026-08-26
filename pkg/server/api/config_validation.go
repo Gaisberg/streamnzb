@@ -620,6 +620,17 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					return
 				}
 				pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, 1)
+				// Registered under the same name the streaming pool would use,
+				// so the dashboard folds this connection into the right row.
+				poolName := strings.TrimSpace(provider.Name)
+				if poolName == "" {
+					poolName = provider.Host
+				}
+				pool.TrackAux(poolName)
+				// Shutdown, not just Validate: without it the validation pool
+				// leaked its reaper goroutine and held its idle connection —
+				// a connection the provider counts against the account.
+				defer pool.Shutdown()
 				if err := pool.Validate(); err != nil {
 					setErr(fmt.Sprintf("providers.%d.host", idx), err.Error())
 				}

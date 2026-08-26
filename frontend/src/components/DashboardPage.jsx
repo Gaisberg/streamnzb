@@ -122,7 +122,10 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
     const rows = []
 
     ;(config?.providers || []).forEach((provider) => {
-      const name = String(provider.name || '').trim()
+      // The backend names a pool after the provider, falling back to its host
+      // when the name is blank — match that here or an unnamed provider's live
+      // stats never join its config row.
+      const name = String(provider.name || provider.host || '').trim()
       const stat = statMap.get(name)
       rows.push({
         name: stat?.name || name || provider.host || 'Provider',

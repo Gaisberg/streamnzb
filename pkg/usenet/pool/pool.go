@@ -1643,12 +1643,13 @@ func (p *Pool) TraceSnapshot() PoolTraceSnapshot {
 		if clientPool == nil {
 			continue
 		}
+		conns := clientPool.ConnStats()
 		snapshot.Providers = append(snapshot.Providers, PoolProviderTraceSnapshot{
 			ID:     provider.ID,
 			Host:   clientPool.Host(),
-			Total:  clientPool.TotalConnections(),
-			Idle:   clientPool.IdleConnections(),
-			Active: clientPool.ActiveConnections(),
+			Total:  conns.Total,
+			Idle:   conns.Idle,
+			Active: conns.Active,
 		})
 	}
 	return snapshot

@@ -134,6 +134,7 @@ func (s *Server) probeUnconnectedProvider(ctx context.Context, name string) erro
 		1,
 	)
 	probePool.SetProviderName(name)
+	probePool.TrackAux(name)
 	defer probePool.Shutdown()
 	return probePool.Probe(ctx)
 }
