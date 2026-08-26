@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.13.0](https://github.com/Gaisberg/streamnzb/compare/v5.12.0...v5.13.0) (2026-08-26)
+
+
+### Features
+
+* **profiles:** import filter and format profiles from a URL with manual refresh and a confirmation diff, Closes [#229](https://github.com/Gaisberg/streamnzb/issues/229) ([92ef646](https://github.com/Gaisberg/streamnzb/commit/92ef646fe450f5a3294d37052705536311a35c8d))
+* **rules:** add define action for reference-only rules, show what result-set conditions counted in the preview ([aab9f0f](https://github.com/Gaisberg/streamnzb/commit/aab9f0fdee0fc7fb38428ba4902388fab1935753))
+
 ## [5.12.0](https://github.com/Gaisberg/streamnzb/compare/v5.11.0...v5.12.0) (2026-08-26)
 
 
