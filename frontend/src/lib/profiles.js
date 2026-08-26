@@ -200,11 +200,14 @@ export const RULE_PRESETS = [
 // What a rule can do. Scoring moves a release, rejecting removes it, and
 // limiting caps how many of the matching ones you are offered — the one thing
 // no condition can say, because "the best three" is about the final score
-// order, which only exists after every rule has run.
+// order, which only exists after every rule has run. Defining does nothing at
+// all: the rule exists to be referenced through matched(), so a tier list of
+// release groups has one home instead of a copy in every rule that cares.
 export const RULE_ACTIONS = [
   { key: "score", label: "Score" },
   { key: "reject", label: "Reject" },
   { key: "limit", label: "Limit" },
+  { key: "define", label: "Define" },
 ]
 
 // What a limit rule can bucket by. Grouping is an expression over the same
@@ -403,12 +406,14 @@ export function formatScore(value) {
   return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString()
 }
 
-// What a rule does. Three actions, not two: anything unrecorded is a score
-// rule, but "reject" and "limit" are not interchangeable, and reading the
-// action as a boolean is what made a limit rule export as a score rule worth
-// nothing.
+// What a rule does. Four actions, not two: anything unrecorded is a score
+// rule, but "reject", "limit" and "define" are not interchangeable, and
+// reading the action as a boolean is what made a limit rule export as a score
+// rule worth nothing.
 export function ruleAction(rule) {
-  return rule?.action === "reject" || rule?.action === "limit" ? rule.action : "score"
+  return rule?.action === "reject" || rule?.action === "limit" || rule?.action === "define"
+    ? rule.action
+    : "score"
 }
 
 // What a limit rule keeps when it does not say. A limit of zero is not a limit
@@ -442,8 +447,8 @@ function exportedProfile(profile) {
     rules: (profile.rules || []).map((rule) => {
       const out = { name: rule.name || "", when: rule.when || "" }
       const action = ruleAction(rule)
-      if (action === "reject") {
-        out.action = "reject"
+      if (action === "reject" || action === "define") {
+        out.action = action
       } else if (action === "limit") {
         out.action = "limit"
         out.count = limitCount(rule.count)
@@ -569,8 +574,8 @@ function profileFromParsed(parsed) {
     }
     const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
     const action = ruleAction(rule)
-    if (action === "reject") {
-      out.action = "reject"
+    if (action === "reject" || action === "define") {
+      out.action = action
     } else if (action === "limit") {
       // The server refuses a profile whose limit keeps nothing, so a count
       // that would be dropped there is refused here, where it can still be
@@ -619,7 +624,7 @@ const scopeKeys = new Set(CONTENT_KINDS.map((kind) => kind.key))
 // grouping is read lazily, up to the first " if ", because it is an
 // expression and a greedy read would swallow the condition of every line that
 // has one.
-const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|keep\s+(\d+)(?:\s+per\s+([\s\S]+?))?)\s+if\b\s*([\s\S]*)$/i
+const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|(define)|keep\s+(\d+)(?:\s+per\s+([\s\S]+?))?)\s+if\b\s*([\s\S]*)$/i
 const ruleTagsRE = /^(.*?)\s*\[([^\]]*)\]\s*$/
 
 function ruleToText(rule) {
@@ -629,6 +634,7 @@ function ruleToText(rule) {
   const action = ruleAction(rule)
   const groupBy = ruleGroupBy(rule).replace(/\s+/g, " ")
   const verb = action === "reject" ? "reject"
+    : action === "define" ? "define"
     : action === "limit" ? `keep ${limitCount(rule.count)}${groupBy ? ` per ${groupBy}` : ""}`
     : `score ${Math.trunc(Number(rule.points)) || 0}`
   // A condition written across several lines folds onto one: the text form is
@@ -682,9 +688,9 @@ export function rulesFromText(text) {
     const at = `Line ${i + 1}`
     const split = splitRuleLine(line)
     if (!split) {
-      throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / keep 3 in place of score.`)
+      throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / keep 3 / define in place of score.`)
     }
-    const [, points, count, groupBy, when] = split.body
+    const [, points, defineWord, count, groupBy, when] = split.body
     if (!when.trim()) throw new Error(`${at}: the rule has no condition.`)
 
     const tags = parseRuleTags(split.head)
@@ -700,6 +706,8 @@ export function rulesFromText(text) {
       }
     } else if (points !== undefined) {
       rule.points = Number(points)
+    } else if (defineWord !== undefined) {
+      rule.action = "define"
     } else {
       rule.action = "reject"
     }

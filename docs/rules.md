@@ -38,7 +38,7 @@ upscaled and exists("remux" in traits)             → reject
 | **Name** | What the rule is called. Shows in the score breakdown, in History, and in [custom result formats](result-formatting.md) via `.MatchedRules`. |
 | **Condition** | An expression that answers yes or no. |
 | **Applies to** | All content, or one kind (Movies, Shows, Anime films, Anime shows). |
-| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. |
+| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. **Define** does nothing at all — the rule exists to be [referenced](#referring-to-another-rule) from other rules. |
 | **Keep best** | For limit rules: how many survive. The best that many by final score are kept, the rest dropped. |
 | **Per** | For limit rules: what the cap is counted per. Nothing caps every match together; pick a grouping and the cap is kept once per value of it. |
 | **Enabled** | Turn a rule off without deleting it. A disabled rule is not compiled, so a half-written one never blocks a save. |
@@ -61,11 +61,13 @@ Atmos: score -800 if "atmos" in traits
 DV without HDR fallback: reject if dolbyVision and not hdrFallback
 At most 3 in 4K [movie]: keep 3 if resolution == "2160p"
 Best 3 of each resolution: keep 3 per resolution if true
+UHD BluRay T1: define if group in ["FraMeSToR", "W4NK3R"]
 Old experiment [off]: score 100 if "remux" in traits
 ```
 
 A line is `Name: action if condition`. The action is `score <points>` —
-negative allowed — `reject`, `keep <n>`, or `keep <n> per <grouping>`.
+negative allowed — `reject`, `keep <n>`, `keep <n> per <grouping>`, or
+`define`.
 Brackets before the colon carry the
 scope (`movie`, `series`, `anime_movie`, `anime_show`) and `off` for a disabled
 rule, in either order and both optional. Everything after `if` is the
@@ -345,6 +347,12 @@ two-argument forms over a list attribute — `any(hdr, # == "DV")` — and
 `count([proper, repack])` over a literal list still judge the single release,
 exactly as before. Only the one-argument condition form reads the result set.
 
+The preview shows its work: each result-set condition is listed above the
+results with what it counted and **which releases it counted**, so
+`exists(...)` coming out true — or `none(...)` coming out false — is traceable
+to the releases that caused it rather than left to be inferred from the rules
+it fired.
+
 ### Referring to another rule
 
 `matched("Rule name")`
@@ -393,6 +401,30 @@ rule's condition into this one. Four consequences follow from that:
 - **So does its tier.** Referring to a rule that reads `probed.*` makes the
   referring rule probe-dependent, and it is [skipped](#fail-open) on a release
   that was never opened rather than judged as not matching.
+
+When a condition exists *only* to be referenced — a tier list nothing should
+score by itself, a release-group regex maintained in one place — give it the
+**Define** action. A define rule is a named condition and nothing more: it
+never pays out, never rejects, and never appears in a score breakdown or
+`.MatchedRules`, so it cannot leak points into results the way a
+zero-point score rule still leaks its name. It is validated as strictly as any
+other rule when the profile is saved, referenced whether or not anything names
+it yet, and it is the natural home for the patterns that track upstream tier
+lists:
+
+```
+UHD BluRay T1: define if group matches "(?i)^(FraMeSToR|W4NK3R|...)$"
+UHD BluRay T2: define if group matches "(?i)^(HiFi|Positive|...)$"
+
+Trusted 4K: score 3000 if resolution == "2160p" and matched("UHD BluRay T1")
+Known 4K: score 1500 if resolution == "2160p" and matched("UHD BluRay T2")
+Untrusted UHD encode: reject if
+    resolution == "2160p" and "bluray" in traits
+    and not (matched("UHD BluRay T1") or matched("UHD BluRay T2"))
+    and exists(resolution == "2160p" and "remux" in traits)
+```
+
+When the upstream list changes, one definition changes with it.
 
 A rule that is switched off classifies nothing, so a reference to it is simply
 never true — and its condition is never looked at, which is what keeps a broken

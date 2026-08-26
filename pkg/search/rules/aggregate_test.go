@@ -192,6 +192,41 @@ func TestAggregateCompileErrors(t *testing.T) {
 	}
 }
 
+// ReportAggregates names the releases each result-set condition counted, which
+// is what the preview shows so exists()/none()/count() can be debugged without
+// guessing where a number came from.
+func TestReportAggregates(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "thin 4K", When: `count(resolution == "2160p") < 3`, Points: 10},
+		config.RuleConfig{Name: "no probed 4K", When: `none(probed.height >= 2000)`, Points: 5},
+	)
+
+	envs := envsFor("Movie 2020 2160p BluRay-GRP", "Movie 2020 1080p WEB-DL-GRP")
+	state, reports := set.ReportAggregates(envs)
+	if state == nil {
+		t.Fatal("no state computed")
+	}
+	if len(reports) != 2 {
+		t.Fatalf("reports = %d, want 2", len(reports))
+	}
+
+	res := reports[0]
+	if res.Source == "" {
+		t.Error("the report carries no source condition")
+	}
+	if !res.Known || res.Count != 1 {
+		t.Errorf("report = %+v, want known with count 1", res)
+	}
+	if len(res.Matched) != 1 || res.Matched[0] != "Movie 2020 2160p BluRay-GRP" {
+		t.Errorf("Matched = %v, want the 4K release by name", res.Matched)
+	}
+
+	// Nothing is probed: the probe condition is unknowable and counted nothing.
+	if probe := reports[1]; probe.Known || probe.Count != 0 || len(probe.Matched) != 0 {
+		t.Errorf("probe report = %+v, want unknown and empty", probe)
+	}
+}
+
 // The rewrite must survive conditions whose string literals look like calls or
 // carry parentheses.
 func TestAggregateRewriteIgnoresStringLiterals(t *testing.T) {

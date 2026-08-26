@@ -143,6 +143,11 @@ func (e *explainSample) toSample() *ranking.Sample {
 type explainResponse struct {
 	Profile string                 `json:"profile"`
 	Results []*ranking.Explanation `json:"results"`
+	// Aggregates are the request's result-set conditions — exists(), none(),
+	// count() — with what each counted and which releases it counted. They are
+	// set-wide, so they travel beside the per-release results rather than
+	// inside any of them.
+	Aggregates []rules.AggregateReport `json:"aggregates,omitempty"`
 }
 
 // handleRankingExplain scores titles against a profile and returns the
@@ -195,9 +200,9 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		Seadex:  req.Sample.toSeadex(),
 		Sample:  req.Sample.toSample(),
 	}
-	results := profile.Explain(titles, explainReq, opts)
+	results, aggregates := profile.Explain(titles, explainReq, opts)
 
-	writeJSON(w, http.StatusOK, explainResponse{Profile: profile.Name, Results: results})
+	writeJSON(w, http.StatusOK, explainResponse{Profile: profile.Name, Results: results, Aggregates: aggregates})
 }
 
 func writeExplainError(w http.ResponseWriter, status int, msg string) {

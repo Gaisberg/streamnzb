@@ -116,6 +116,20 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}
+		// A define rule is a named condition kept for other rules to reference
+		// and nothing else. It is validated as strictly as any rule — a broken
+		// definition must fail the save whether or not something references it
+		// yet — but it never joins the set: no release is judged by it, so it
+		// pays nothing out, rejects nothing, and shows up nowhere.
+		if rc.EffectiveAction() == config.RuleActionDefine {
+			if strings.TrimSpace(rc.GroupBy) != "" {
+				return nil, &Error{Rule: name, Err: fmt.Errorf("only a limit rule can group by %s", strings.TrimSpace(rc.GroupBy))}
+			}
+			if err := validateCondition(when); err != nil {
+				return nil, &Error{Rule: name, Err: err}
+			}
+			continue
+		}
 		// Result-set calls are lifted out first: the rule is compiled against
 		// their precomputed values, and the inner conditions become their own
 		// per-release programs. Identical conditions share one aggregate, so
@@ -133,7 +147,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 					return 0, err
 				}
 				idx = len(set.aggs)
-				set.aggs = append(set.aggs, aggregate{program: program, tiers: tiers})
+				set.aggs = append(set.aggs, aggregate{program: program, tiers: tiers, source: inner})
 				aggBySource[inner] = idx
 			}
 			for _, have := range ruleAggs {
@@ -190,6 +204,25 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		return nil, nil
 	}
 	return set, nil
+}
+
+// validateCondition compiles a condition and discards the result — the strict
+// half of what Compile does for an acting rule, applied to one that exists
+// only to be referenced. Result-set calls are rewritten against a throwaway
+// index so the program type-checks; nothing is registered anywhere, so a
+// definition nobody references never costs a per-request aggregate.
+func validateCondition(when string) error {
+	rewritten, err := rewriteAggregates(when, func(inner string) (int, error) {
+		if _, err := expr.Compile(inner, expr.Env(Env{}), expr.AsBool()); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	})
+	if err != nil {
+		return err
+	}
+	_, err = expr.Compile(rewritten, expr.Env(Env{}), expr.AsBool())
+	return err
 }
 
 // compileGroupBy compiles a limit rule's grouping expression and reports which

@@ -13,11 +13,15 @@ import (
 // reading its condition. Limit is the one thing no condition can say — even a
 // result-set condition: "at most three of these" is about the final score
 // order, which only exists after every rule has run — so it is an action
-// rather than a function inside a condition.
+// rather than a function inside a condition. Define is the absence of an
+// action: a named condition kept only for other rules to reference through
+// matched(), so a tier list of release groups has one home instead of a copy
+// in every rule that cares.
 const (
 	RuleActionScore  = "score"
 	RuleActionReject = "reject"
 	RuleActionLimit  = "limit"
+	RuleActionDefine = "define"
 )
 
 // RuleScopeAll is the scope of a rule that applies to every content kind. The
@@ -74,6 +78,8 @@ func (r RuleConfig) EffectiveAction() string {
 		return RuleActionReject
 	case RuleActionLimit:
 		return RuleActionLimit
+	case RuleActionDefine:
+		return RuleActionDefine
 	default:
 		return RuleActionScore
 	}

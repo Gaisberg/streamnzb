@@ -142,7 +142,9 @@ function AttributeReference({ onInsert, rules = [] }) {
               <p className="max-w-prose text-[11px] text-muted-foreground">
                 <code className="font-mono">matched(&quot;Name&quot;)</code> holds when that rule&apos;s own
                 condition holds, so a list of trusted groups is written once and referred to from everywhere
-                else. Renaming a rule rewrites the references to it.
+                else. Renaming a rule rewrites the references to it. A rule whose action is{" "}
+                <span className="font-medium">Define</span> is only this: a named condition to reference,
+                doing nothing on its own.
               </p>
               <div className="flex flex-wrap gap-1">
                 {referable.map((name) => (
@@ -328,6 +330,11 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
             removes it
           </Badge>
         )}
+        {action === "define" && (
+          <Badge variant="outline" className="h-8 px-2 text-[11px] font-normal text-muted-foreground">
+            reference only
+          </Badge>
+        )}
         {action === "limit" && (
           <span className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
             keep best
@@ -423,9 +430,13 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
                 ? groupBy
                   ? `For each value of ${groupBy}, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} of the matching releases are offered and the rest are dropped.`
                   : `Of the releases matching this, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} are offered and the rest are dropped.`
-                : skipNote}
+                : action === "define"
+                  ? `Does nothing on its own — other rules use it with matched(${JSON.stringify(rule.name || "Name")}).`
+                  : skipNote}
             </p>
-            <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />
+            {action !== "define" && (
+              <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />
+            )}
           </div>
         </div>
       )}

@@ -142,7 +142,7 @@ func TestExplainNamesTheReferringRule(t *testing.T) {
 		config.RuleConfig{Name: "Trusted and 4K", When: `matched("Trusted group") and resolution == "2160p"`, Points: 900},
 	)
 
-	out := p.Explain([]string{"Movie 2020 2160p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	out, _ := p.Explain([]string{"Movie 2020 2160p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(out) != 1 {
 		t.Fatalf("Explain returned %d results, want 1", len(out))
 	}
@@ -163,7 +163,7 @@ func TestExplainReportsRulesAndSkips(t *testing.T) {
 		config.RuleConfig{Name: "Measured 10-bit", When: "probed.bitDepth >= 10", Points: 400},
 	)
 
-	out := p.Explain([]string{"Movie 2020 IMAX 1080p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	out, _ := p.Explain([]string{"Movie 2020 IMAX 1080p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(out) != 1 {
 		t.Fatalf("Explain returned %d results, want 1", len(out))
 	}
@@ -446,7 +446,7 @@ func TestExplainReflectsLimitRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := p.Explain([]string{
+	out, _ := p.Explain([]string{
 		"Movie 2020 2160p BluRay REMUX HEVC-GRP",
 		"Movie 2020 2160p WEB-DL H265-GRP",
 		"Movie 2020 1080p WEB-DL H264-GRP",
@@ -491,7 +491,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 	title := "Movie 2020 2160p WEB-DL HEVC-GRP"
 
 	// With nothing supplied both rules are unjudgeable and neither fires.
-	bare := p.Explain([]string{title}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	bare, _ := p.Explain([]string{title}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(bare) != 1 {
 		t.Fatalf("got %d results, want 1", len(bare))
 	}
@@ -503,7 +503,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 	}
 
 	// Supplying a grab count makes the grabs rule answerable, and it rejects.
-	sampled := p.Explain([]string{title}, ranking.Request{
+	sampled, _ := p.Explain([]string{title}, ranking.Request{
 		Kind:   ranking.KindMovie,
 		Sample: &ranking.Sample{IndexerData: true, SizeBytes: 20e9, Grabs: 2},
 	}, rank.RankOptions{})
@@ -513,7 +513,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 
 	// A grab count above the bar leaves it alone, and a probed file answers
 	// the other rule.
-	good := p.Explain([]string{title}, ranking.Request{
+	good, _ := p.Explain([]string{title}, ranking.Request{
 		Kind: ranking.KindMovie,
 		Sample: &ranking.Sample{
 			IndexerData: true, SizeBytes: 20e9, Grabs: 500,
@@ -549,7 +549,7 @@ func TestSampleVouchesForZeroes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := p.Explain([]string{"Movie 2020 2160p WEB-DL HEVC-GRP"}, ranking.Request{
+	out, _ := p.Explain([]string{"Movie 2020 2160p WEB-DL HEVC-GRP"}, ranking.Request{
 		Kind:   ranking.KindMovie,
 		Sample: &ranking.Sample{IndexerData: true},
 	}, rank.RankOptions{})
@@ -619,7 +619,7 @@ func TestExplainReportsAggregates(t *testing.T) {
 		config.RuleConfig{Name: "Probed 4K nearby", When: `exists(probed.height >= 2000)`, Points: 5},
 	)
 
-	out := p.Explain(
+	out, aggregates := p.Explain(
 		[]string{"Movie 2020 1080p WEB-DL H264-GRP", "Movie 2020 2160p BluRay REMUX HEVC-GRP"},
 		ranking.Request{Kind: ranking.KindMovie},
 		rank.RankOptions{},
@@ -636,5 +636,18 @@ func TestExplainReportsAggregates(t *testing.T) {
 	skipped := strings.Join(out[0].SkippedRules, "; ")
 	if !strings.Contains(skipped, "Probed 4K nearby") || !strings.Contains(skipped, "probed") {
 		t.Errorf("SkippedRules = %v, want the probe-tier aggregate reported", out[0].SkippedRules)
+	}
+
+	// The set-wide reports travel beside the per-release breakdowns: what each
+	// condition counted, and which releases it counted.
+	if len(aggregates) != 2 {
+		t.Fatalf("aggregates = %d, want 2", len(aggregates))
+	}
+	remux := aggregates[0]
+	if !remux.Known || remux.Count != 1 || len(remux.Matched) != 1 || !strings.Contains(remux.Matched[0], "REMUX") {
+		t.Errorf("remux report = %+v, want the remux counted by name", remux)
+	}
+	if probe := aggregates[1]; probe.Known || len(probe.Matched) != 0 {
+		t.Errorf("probe report = %+v, want unknown on an unprobed preview", probe)
 	}
 }

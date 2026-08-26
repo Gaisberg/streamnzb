@@ -4,7 +4,7 @@ import { inlineRuleRefs, renameRuleRefs, rulesFromText, rulesToText } from '@/li
 // The rules editor is a text box the user types into freehand, so parsing is
 // the place a typo turns into a silently wrong ruleset.
 describe('rulesFromText', () => {
-  it('reads the three actions', () => {
+  it('reads the four actions', () => {
     expect(rulesFromText('Prefer NTb: score 100 if group == "NTb"')).toEqual([
       { name: 'Prefer NTb', when: 'group == "NTb"', points: 100 },
     ])
@@ -13,6 +13,9 @@ describe('rulesFromText', () => {
     ])
     expect(rulesFromText('Top three: keep 3 if resolution == "2160p"')).toEqual([
       { name: 'Top three', when: 'resolution == "2160p"', action: 'limit', count: 3 },
+    ])
+    expect(rulesFromText('T1 groups: define if group in ["FraMeSToR", "NTb"]')).toEqual([
+      { name: 'T1 groups', when: 'group in ["FraMeSToR", "NTb"]', action: 'define' },
     ])
   })
 
@@ -75,6 +78,7 @@ describe('rulesToText', () => {
       { name: 'Prefer NTb', when: 'group == "NTb"', points: 100 },
       { name: 'No CAM', when: 'quality == "CAM"', action: 'reject' },
       { name: 'Top three', when: 'resolution == "2160p"', action: 'limit', count: 3 },
+      { name: 'T1 groups', when: 'group in ["FraMeSToR", "NTb"]', action: 'define' },
       { name: 'Anime only', when: 'true', points: 50, scope: 'anime_show' },
       { name: 'Paused', when: 'true', points: 50, enabled: false },
       { name: 'Per resolution', when: 'true', action: 'limit', count: 3, group_by: 'resolution' },

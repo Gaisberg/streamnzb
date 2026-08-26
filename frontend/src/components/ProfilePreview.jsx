@@ -165,7 +165,7 @@ export function ProfilePreview({
 }) {
   const [expanded, setExpanded] = useState({})
   const [sampleOpen, setSampleOpen] = useState(false)
-  const { results, loading, error } = preview
+  const { results, aggregates, loading, error } = preview
 
   // Offered first, then by score, matching what the addon returns.
   const ordered = results
@@ -252,6 +252,38 @@ export function ProfilePreview({
         {error && (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
+          </div>
+        )}
+
+        {ordered.length > 0 && aggregates?.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Result-set conditions
+            </p>
+            {aggregates.map((agg, i) => (
+              <div key={i} className="space-y-0.5">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <code className="font-mono text-[11px] text-foreground">{agg.source}</code>
+                  <span className={cn(
+                    "text-[11px]",
+                    !agg.known || agg.count === 0 ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-500",
+                  )}>
+                    {!agg.known
+                      ? "cannot be judged from these releases"
+                      : agg.count === 0
+                        ? "matches nothing in this set"
+                        : `matches ${agg.count === 1 ? "1 release" : `${agg.count} releases`}`}
+                  </span>
+                </div>
+                {(agg.matched || []).map((title, j) => (
+                  <p key={j} className="truncate pl-3 font-mono text-[10px] text-muted-foreground/80">{title}</p>
+                ))}
+              </div>
+            ))}
+            <p className="max-w-prose pt-0.5 text-[11px] text-muted-foreground/80">
+              Counted once over the whole set before any rule fires — these are the values count(), exists()
+              and none() read.
+            </p>
           </div>
         )}
 

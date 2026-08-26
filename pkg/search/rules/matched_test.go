@@ -246,3 +246,75 @@ func TestReferencesShareOneAggregate(t *testing.T) {
 		t.Errorf("Points = %d, want 5", outs[1].Points)
 	}
 }
+
+// A define rule is the reference target and nothing else: however many
+// releases satisfy its condition, it never pays out, never rejects, and never
+// shows in the outcome — only rules referencing it act on it.
+func TestDefineRuleActsOnlyThroughReferences(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Trusted groups", When: `group in ["FraMeSToR", "TayTo"]`, Action: config.RuleActionDefine, Points: 999},
+		config.RuleConfig{Name: "Trusted 4K", When: `resolution == "2160p" and matched("Trusted groups")`, Points: 100},
+	)
+
+	got := set.Evaluate(envFor("Movie 2020 2160p BluRay REMUX-FraMeSToR", nil), "movie")
+	if got.Points != 100 {
+		t.Errorf("Points = %d, want 100 — a definition must not pay its own points", got.Points)
+	}
+	for _, m := range got.Matched {
+		if m.Name == "Trusted groups" {
+			t.Error("the definition itself appears among the matched rules")
+		}
+	}
+
+	// The definition matches on its own (trusted group, wrong resolution):
+	// nothing may happen.
+	got = set.Evaluate(envFor("Movie 2020 1080p BluRay-TayTo", nil), "movie")
+	if got.Points != 0 || len(got.Matched) != 0 || len(got.Rejections) != 0 {
+		t.Errorf("outcome = %+v, want nothing from a definition alone", got)
+	}
+}
+
+// A definition may hold a result-set call; it is lifted where the reference
+// inlines it. And a profile holding only definitions is an empty set.
+func TestDefineWithResultSetCall(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Remux exists", When: `exists("remux" in traits)`, Action: config.RuleActionDefine},
+		config.RuleConfig{Name: "Upscale out", When: `upscaled and matched("Remux exists")`, Action: config.RuleActionReject},
+	)
+	outs := evalSet(set, envsFor("Movie 2020 2160p UPSCALED WEB-DL-GRP", "Movie 2020 2160p BluRay REMUX-GRP"), "movie")
+	if len(outs[0].Rejections) == 0 {
+		t.Error("the upscale survived although a remux exists")
+	}
+
+	defineOnly, err := rules.Compile([]config.RuleConfig{
+		{Name: "Groups", When: `group == "GRP"`, Action: config.RuleActionDefine},
+	})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if defineOnly.Len() != 0 {
+		t.Errorf("Len = %d, want 0 — definitions never join the set", defineOnly.Len())
+	}
+}
+
+// A definition is validated as strictly as an acting rule — a broken one fails
+// the save even when nothing references it yet — and grouping stays a
+// limit-rule thing.
+func TestDefineRuleValidation(t *testing.T) {
+	if _, err := rules.Compile([]config.RuleConfig{
+		{Name: "Broken", When: `group ==`, Action: config.RuleActionDefine},
+	}); err == nil {
+		t.Error("a definition that does not compile was accepted")
+	}
+	if _, err := rules.Compile([]config.RuleConfig{
+		{Name: "BadAgg", When: `exists(sizeGB)`, Action: config.RuleActionDefine},
+	}); err == nil {
+		t.Error("a definition with a non-boolean result-set condition was accepted")
+	}
+	_, err := rules.Compile([]config.RuleConfig{
+		{Name: "Grouped", When: `true`, Action: config.RuleActionDefine, GroupBy: "resolution"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("err = %v, want the group-by refusal", err)
+	}
+}

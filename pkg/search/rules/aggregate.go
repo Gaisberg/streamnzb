@@ -42,6 +42,9 @@ type aggregate struct {
 	// release missing one of them cannot be judged and does not count; a set
 	// where no release carries them leaves the aggregate unknown.
 	tiers tierUse
+	// source is the inner condition as its parsed form prints, kept so a
+	// report can say which condition a number belongs to.
+	source string
 }
 
 // AggregateState is one request's computed result-set values, shared by every
@@ -66,6 +69,25 @@ func (s *Set) HasAggregates() bool {
 	return s != nil && len(s.aggs) > 0
 }
 
+// AggregateReport is one result-set condition as a request computed it: the
+// inner condition, whether any release could be judged, how many satisfied it,
+// and which ones by name. It exists for the preview — a rule built on
+// exists()/none()/count() is otherwise debugged by guessing which releases the
+// number came from. See ReportAggregates.
+type AggregateReport struct {
+	// Source is the inner condition as its parsed form prints, so two
+	// spellings of the same condition read identically and are counted once.
+	Source string `json:"source"`
+	// Known is false when no release in the set carries the tiers the
+	// condition reads, which skips every rule depending on it.
+	Known bool `json:"known"`
+	// Count is how many releases satisfied the condition — the value count()
+	// reads, and what exists() and none() judge against zero.
+	Count int `json:"count"`
+	// Matched names the releases counted, in set order.
+	Matched []string `json:"matched,omitempty"`
+}
+
 // ComputeAggregates evaluates every lifted condition once against the given
 // releases. It runs before the per-release pass, so the counts are the same
 // for every release and no rule can change them by rejecting.
@@ -76,12 +98,29 @@ func (s *Set) HasAggregates() bool {
 // aggregate unknown, and rules reading it are skipped rather than fed a zero
 // that would fire them.
 func (s *Set) ComputeAggregates(envs []Env) *AggregateState {
+	st, _ := s.computeAggregates(envs, false)
+	return st
+}
+
+// ReportAggregates is ComputeAggregates plus the answer to "which releases
+// made it come out that way": one report per condition, naming the releases it
+// counted. The capture is what the preview shows; the live path calls
+// ComputeAggregates and pays nothing for it.
+func (s *Set) ReportAggregates(envs []Env) (*AggregateState, []AggregateReport) {
+	return s.computeAggregates(envs, true)
+}
+
+func (s *Set) computeAggregates(envs []Env, report bool) (*AggregateState, []AggregateReport) {
 	if !s.HasAggregates() {
-		return nil
+		return nil, nil
 	}
 	st := &AggregateState{
 		values: make([]int, len(s.aggs)),
 		known:  make([]bool, len(s.aggs)),
+	}
+	var reports []AggregateReport
+	if report {
+		reports = make([]AggregateReport, len(s.aggs))
 	}
 	for k := range s.aggs {
 		a := &s.aggs[k]
@@ -105,10 +144,18 @@ func (s *Set) ComputeAggregates(envs []Env) *AggregateState {
 			}
 			if matched, _ := result.(bool); matched {
 				st.values[k]++
+				if report {
+					reports[k].Matched = append(reports[k].Matched, env.ReleaseName)
+				}
 			}
 		}
+		if report {
+			reports[k].Source = a.source
+			reports[k].Known = st.known[k]
+			reports[k].Count = st.values[k]
+		}
 	}
-	return st
+	return st, reports
 }
 
 // aggregateSkip reports why a rule's result-set conditions cannot be judged

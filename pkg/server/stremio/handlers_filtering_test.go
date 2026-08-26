@@ -171,7 +171,7 @@ func TestExplainReportsRejection(t *testing.T) {
 		BlockedQualities: []string{"CAM"},
 	})
 
-	explained := profile.Explain([]string{"Movie 2020 1080p CAM x264-TRASH"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	explained, _ := profile.Explain([]string{"Movie 2020 1080p CAM x264-TRASH"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(explained) != 1 {
 		t.Fatalf("Explain returned %d results, want 1", len(explained))
 	}

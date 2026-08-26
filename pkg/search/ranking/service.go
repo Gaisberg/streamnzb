@@ -234,6 +234,11 @@ type Request struct {
 	// It is set only by the preview: a live search has real releases and never
 	// needs to invent one.
 	Sample *Sample
+	// AggregateTrace, when non-nil, receives one report per result-set
+	// condition once they are computed: what each counted and which releases
+	// it counted. Only the preview sets it — a live search never pays for the
+	// capture.
+	AggregateTrace *[]rules.AggregateReport
 }
 
 // Sample is a made-up release, used to answer rules the preview otherwise
@@ -408,7 +413,14 @@ func (p *Profile) applyRules(req Request, results []Result) {
 				inSet = append(inSet, envs[i])
 			}
 		}
-		state := p.rules.ComputeAggregates(inSet)
+		var state *rules.AggregateState
+		if req.AggregateTrace != nil {
+			var reports []rules.AggregateReport
+			state, reports = p.rules.ReportAggregates(inSet)
+			*req.AggregateTrace = reports
+		} else {
+			state = p.rules.ComputeAggregates(inSet)
+		}
 		for i := range envs {
 			state.Inject(&envs[i])
 		}
@@ -560,9 +572,14 @@ type LimitedRule struct {
 // reading those tiers report as skipped rather than being judged against
 // nothing — the same fail-open behaviour they have in a real search, made
 // visible.
-func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) []*Explanation {
+//
+// Alongside the per-release explanations it returns the request's result-set
+// conditions — what each counted and which releases it counted — because those
+// are computed once for the whole set and belong to no single release's
+// breakdown.
+func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) ([]*Explanation, []rules.AggregateReport) {
 	if p == nil || p.Ranker == nil || len(titles) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	candidates := make([]triage.Candidate, 0, len(titles))
@@ -570,6 +587,8 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) [
 		candidates = append(candidates, req.sampleCandidate(title))
 	}
 
+	var aggregates []rules.AggregateReport
+	req.AggregateTrace = &aggregates
 	kept, rejected := p.ApplyWithRejected(req, candidates, opts)
 
 	// Rejected releases are explained too: "why did this not show up" is the
@@ -580,7 +599,7 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) [
 			out = append(out, p.explainResult(&group[i]))
 		}
 	}
-	return out
+	return out, aggregates
 }
 
 // sampleCandidate builds the release the preview judges: the title, plus

@@ -21,6 +21,7 @@ export const SAMPLE_TITLES = [
 // disagree on screen, which is worse than either.
 export function useProfilePreview(profile, { titles, kind, targetTitle, sample } = {}) {
   const [results, setResults] = useState(null)
+  const [aggregates, setAggregates] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
@@ -35,6 +36,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
     const wanted = (titles || []).map((t) => t.trim()).filter(Boolean)
     if (!profile || wanted.length === 0) {
       setResults(null)
+      setAggregates([])
       setError("")
       return undefined
     }
@@ -57,11 +59,13 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
           // A slower earlier request must not overwrite a newer answer.
           if (token !== requestRef.current) return
           setResults(data?.results || [])
+          setAggregates(data?.aggregates || [])
           setError("")
         })
         .catch((err) => {
           if (token !== requestRef.current) return
           setResults(null)
+          setAggregates([])
           setError(err?.message || "Could not evaluate those release names.")
         })
         .finally(() => {
@@ -117,5 +121,5 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
     return stats
   }, [results])
 
-  return { results, ruleStats, loading, error, sampleCount: (titles || []).filter((t) => t.trim()).length }
+  return { results, aggregates, ruleStats, loading, error, sampleCount: (titles || []).filter((t) => t.trim()).length }
 }
