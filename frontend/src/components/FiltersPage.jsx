@@ -1,14 +1,15 @@
-import React, { useMemo, useState } from "react"
+import React, { useMemo } from "react"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Copy, Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
-import { Label } from "@/components/ui/label"
+import { Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
 import { ProfileManager } from "@/components/ProfileManager"
 import { ProfileEditor } from "@/components/ProfileEditor"
+import { RemoteSourceCard } from "@/components/RemoteSourceCard"
+import { useProfileSharing } from "@/components/useProfileSharing"
 import {
   CONTENT_KINDS, DEFAULT_PRESET, PRESETS, decodeProfileShareCode, defaultProfile,
   encodeProfileShareCode, withoutLegacyFields,
 } from "@/lib/profiles"
+import { fetchRemoteProfile } from "@/lib/remoteProfiles"
 
 // summarize gives each profile card a one-line read of what it does. A profile
 // is a preset plus rules, so that is the whole summary.
@@ -68,62 +69,21 @@ function normalizeOnSave(profile) {
   }
 }
 
-// One box style for every share-code textarea in this page.
-const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-
 export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
   const anyInUse = Object.keys(usage).length > 0
-  const [exportCode, setExportCode] = useState(null)
-  const [exportName, setExportName] = useState("")
-  const [exportCopied, setExportCopied] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
-  const [importCode, setImportCode] = useState("")
-  const [importError, setImportError] = useState("")
-
-  const exportProfile = async (draft) => {
-    if (!draft) return
-    try {
-      setExportCopied(false)
-      setExportName(draft.name || "")
-      const code = await encodeProfileShareCode(draft)
-      setExportCode(code)
-    } catch {
-      setExportCode("")
-    }
-  }
-
-  const copyText = async (text) => {
-    if (!text) return
-    try {
-      await navigator.clipboard.writeText(text)
-      setExportCopied(true)
-    } catch {
-      // Clipboard needs a secure context; the textarea is still selectable.
-    }
-  }
-
-  const importProfile = async () => {
-    try {
-      const profile = await decodeProfileShareCode(importCode)
-
-      const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
-      let name = (profile.name || "").trim() || "Imported Profile"
-      if (taken.has(name.toLowerCase())) {
-        let n = 2
-        while (taken.has(`${name} ${n}`.toLowerCase())) n += 1
-        name = `${name} ${n}`
-      }
-      profile.name = name
-      onSave([...profiles, profile])
-      setImportOpen(false)
-      setImportCode("")
-      setImportError("")
-    } catch (err) {
-      setImportError(err?.message || "Could not read that profile.")
-    }
-  }
+  const sharing = useProfileSharing({
+    profiles,
+    onSave,
+    isSaving,
+    codec: {
+      encode: encodeProfileShareCode,
+      decode: decodeProfileShareCode,
+      fetchRemote: fetchRemoteProfile,
+      placeholder: "SNZBP1:…",
+    },
+  })
 
   return (
     <div className="space-y-6">
@@ -137,11 +97,7 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
             Assign one to a stream from the Streams page.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => { setImportCode(""); setImportError(""); setImportOpen(true) }}
-        >
+        <Button variant="outline" size="sm" onClick={sharing.openImport}>
           <Import className="mr-2 h-4 w-4" /> Import
         </Button>
       </div>
@@ -168,81 +124,27 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
         isSaving={isSaving}
         saveStatus={saveStatus}
         normalizeOnSave={normalizeOnSave}
-        normalizeOnDuplicate={withoutLegacyFields}
+        // A duplicate is a fork: it drops the remote link along with the
+        // legacy fields, so two profiles never refresh from the same URL.
+        normalizeOnDuplicate={(profile) => {
+          const copy = withoutLegacyFields(profile)
+          delete copy.source
+          return copy
+        }}
         renderActions={(draft) => (
-          <Button variant="ghost" size="sm" onClick={() => exportProfile(draft)}>
+          <Button variant="ghost" size="sm" onClick={() => sharing.exportProfile(draft)}>
             <Share2 className="mr-2 h-3.5 w-3.5" /> Export
           </Button>
         )}
-        renderEditor={(draft, setDraft) => <ProfileEditor profile={draft} onChange={setDraft} />}
+        renderEditor={(draft, setDraft) => (
+          <>
+            {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="filter" />}
+            <ProfileEditor profile={draft} onChange={setDraft} />
+          </>
+        )}
       />
 
-      <Dialog open={exportCode !== null} onOpenChange={(open) => { if (!open) setExportCode(null) }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Export “{exportName}”</DialogTitle>
-            <DialogDescription>
-              The whole profile — preset and rules — as one string. It pastes into a chat window intact, and
-              whoever receives it imports it from this page.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <Label className="text-sm">Share code</Label>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                disabled={!exportCode}
-                onClick={() => copyText(exportCode)}
-              >
-                <Copy className="mr-1.5 h-3 w-3" /> Copy
-              </Button>
-            </div>
-            <textarea
-              readOnly
-              value={exportCode || "This browser cannot generate share codes."}
-              onFocus={(e) => e.target.select()}
-              rows={4}
-              className={shareBoxClass}
-            />
-          </div>
-
-          <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between sm:space-x-0">
-            <span className="text-xs text-muted-foreground">{exportCopied ? "Copied to clipboard." : ""}</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => setExportCode(null)}>Done</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Import profile</DialogTitle>
-            <DialogDescription>
-              Paste a share code. It is added as a new profile and never overwrites an existing one.
-            </DialogDescription>
-          </DialogHeader>
-          <textarea
-            value={importCode}
-            onChange={(e) => { setImportCode(e.target.value); setImportError("") }}
-            rows={6}
-            placeholder="SNZBP1:…"
-            className="w-full resize-none rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
-          {importError && <p className="text-xs text-destructive">{importError}</p>}
-          <DialogFooter className="flex-row items-center justify-end gap-2 sm:space-x-0">
-            <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="button" size="sm" disabled={!importCode.trim() || isSaving} onClick={importProfile}>
-              <Import className="mr-2 h-3.5 w-3.5" /> Import
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {sharing.dialogs}
     </div>
   )
 }

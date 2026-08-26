@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { Copy, Loader2, Plus, Trash2 } from "lucide-react"
+import { Copy, Link2, Loader2, Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 // uniqueProfileName appends a counter until the name is free.
@@ -241,8 +241,20 @@ export function ProfileManager({
                 : "border-border hover:border-muted-foreground/40"
             )}
           >
-            <div className="truncate text-sm font-medium">
-              {index === selected && draft ? draft.name || profile.name : profile.name}
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-medium">
+                {index === selected && draft ? draft.name || profile.name : profile.name}
+              </span>
+              {profile.source?.url && (
+                // The badge marks a profile subscribed to a remote source; the
+                // linked card in the editor carries the details.
+                <span
+                  title={`Linked to ${profile.source.url}`}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-[10px] text-muted-foreground"
+                >
+                  <Link2 className="h-2.5 w-2.5" /> Linked
+                </span>
+              )}
             </div>
             {summarize && (
               <div className="mt-0.5 truncate text-xs text-muted-foreground">{summarize(profile)}</div>

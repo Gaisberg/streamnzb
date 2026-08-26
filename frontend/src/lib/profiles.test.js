@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { inlineRuleRefs, renameRuleRefs, rulesFromText, rulesToText } from '@/lib/profiles'
+import {
+  decodeProfileShareCode, encodeProfileShareCode, inlineRuleRefs, renameRuleRefs,
+  resolveProfileShareCode, rulesFromText, rulesToText,
+} from '@/lib/profiles'
 
 // The rules editor is a text box the user types into freehand, so parsing is
 // the place a typo turns into a silently wrong ruleset.
@@ -112,6 +115,62 @@ describe('rulesToText', () => {
   it('is empty for no rules', () => {
     expect(rulesToText([])).toBe('')
     expect(rulesToText()).toBe('')
+  })
+})
+
+// Share codes now arrive from URLs as well as from a paste, so the decoder is
+// a trust boundary: whatever a fetched blob claims to be, only a bounded,
+// well-shaped profile may come out of it.
+describe('share codes', () => {
+  const profile = {
+    name: 'Community 4K',
+    preset: '4k',
+    rules: [
+      { name: 'IMAX', when: 'releaseName matches "(?i)\\bIMAX\\b"', points: 2000 },
+      { name: 'No CAM', when: 'quality == "CAM"', action: 'reject' },
+    ],
+  }
+
+  it('round-trips a profile', async () => {
+    const code = await encodeProfileShareCode(profile)
+    expect(await decodeProfileShareCode(code)).toEqual(profile)
+  })
+
+  it('reports the exact candidate that decoded, for snapshot comparison', async () => {
+    const code = await encodeProfileShareCode(profile)
+    const resolved = await resolveProfileShareCode(`Try this one!\n${code}\nenjoy`)
+    expect(resolved.code).toBe(code)
+    expect(resolved.profile).toEqual(profile)
+  })
+
+  it('refuses a profile with too many rules', async () => {
+    const bloated = {
+      name: 'Bloat',
+      preset: '4k',
+      rules: Array.from({ length: 501 }, (_, i) => ({ name: `R${i}`, when: 'true', points: 1 })),
+    }
+    await expect(decodeProfileShareCode(await encodeProfileShareCode(bloated)))
+      .rejects.toThrow(/most a profile can hold/)
+  })
+
+  it('refuses an oversized condition and an oversized name', async () => {
+    const longWhen = {
+      name: 'Long', preset: '4k',
+      rules: [{ name: 'A', when: `true || ${'x'.repeat(10001)}`, points: 1 }],
+    }
+    await expect(decodeProfileShareCode(await encodeProfileShareCode(longWhen)))
+      .rejects.toThrow(/condition longer/)
+    const longName = { name: 'n'.repeat(201), preset: '4k', rules: [] }
+    await expect(decodeProfileShareCode(await encodeProfileShareCode(longName)))
+      .rejects.toThrow(/name is too long/)
+  })
+
+  it('refuses a decompression bomb', async () => {
+    // A few bytes of code inflating to megabytes is not a profile. The bomb
+    // here is a hugely repetitive name, which gzip shrinks to almost nothing.
+    const bomb = { name: 'a'.repeat(6 * 1024 * 1024), preset: '4k', rules: [] }
+    await expect(decodeProfileShareCode(await encodeProfileShareCode(bomb)))
+      .rejects.toThrow(/damaged or incomplete/)
   })
 })
 

@@ -1,6 +1,61 @@
 package config
 
-import "github.com/dreulavelle/jhin/rank"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/dreulavelle/jhin/rank"
+)
+
+// ProfileSourceConfig links a profile — filter or format — to the remote
+// share code it was imported from, so the UI can offer a manual Refresh. The
+// frontend owns the whole flow — fetching, merging, the confirmation diff —
+// and the server never requests the URL; it only keeps the record and refuses
+// one it could not have written.
+type ProfileSourceConfig struct {
+	// URL serves the profile's current share code. It is the trust anchor:
+	// the address the user typed, and the only one a refresh ever consults.
+	URL string `json:"url"`
+	// Code is the upstream share code last applied, verbatim. It is both the
+	// cheap up-to-date check (string compare against a fresh fetch) and the
+	// merge baseline that tells a user-added rule from an upstream-deleted one.
+	Code string `json:"code,omitempty"`
+	// CheckedAt and AppliedAt are RFC3339 timestamps, display-only.
+	CheckedAt string `json:"checked_at,omitempty"`
+	AppliedAt string `json:"applied_at,omitempty"`
+}
+
+// maxSourceCodeBytes bounds the stored snapshot. A real code is a few
+// kilobytes; the cap only exists so a hostile save cannot bloat the config.
+const maxSourceCodeBytes = 256 * 1024
+
+// Validate refuses a source record the importer could not have produced.
+// Nil is valid: most profiles are not linked to anything.
+func (ps *ProfileSourceConfig) Validate() error {
+	if ps == nil {
+		return nil
+	}
+	u, err := url.Parse(strings.TrimSpace(ps.URL))
+	if err != nil {
+		return fmt.Errorf("invalid source URL: %w", err)
+	}
+	// https only: the URL is a standing "this host can propose config
+	// changes" grant, and a plain-http one could be rewritten on the path.
+	if strings.ToLower(u.Scheme) != "https" || u.Host == "" {
+		return fmt.Errorf("source URL must be https:// with a host")
+	}
+	if len(ps.URL) > 2048 {
+		return fmt.Errorf("source URL is too long")
+	}
+	if len(ps.Code) > maxSourceCodeBytes {
+		return fmt.Errorf("source share code is too large")
+	}
+	if ps.Code != "" && !strings.HasPrefix(strings.ToUpper(ps.Code), "SNZBP1:") {
+		return fmt.Errorf("source share code must start with SNZBP1:")
+	}
+	return nil
+}
 
 // DefaultFilterProfileName is the profile seeded into a fresh config.
 const DefaultFilterProfileName = "Default Profile"

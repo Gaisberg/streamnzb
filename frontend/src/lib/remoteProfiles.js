@@ -1,0 +1,117 @@
+// Remote filter-profile sources: a filter profile can be linked to a URL that
+// serves its share code, so a community-maintained profile is updated by
+// pressing Refresh instead of re-pasting a code. The container, the fetch and
+// the trust model live in shareCodes.js; this module owns what is specific to
+// filter profiles — the merge-by-rule-name contract and its diff.
+
+import { DEFAULT_PRESET, resolveProfileShareCode, ruleKey, rulesToText } from "@/lib/profiles"
+import { fetchShareCodeText, resolveFetched, validateSourceUrl } from "@/lib/shareCodes"
+
+// fetchRemoteProfile is the whole of importing from a URL: validate, fetch,
+// decode. It returns the profile plus the exact code it decoded, which the
+// caller stores as the upstream snapshot.
+export async function fetchRemoteProfile(rawUrl) {
+  const url = validateSourceUrl(rawUrl)
+  const { code, profile } = await resolveFetched(resolveProfileShareCode, await fetchShareCodeText(url))
+  return { url, code, profile }
+}
+
+// mergeUpstream folds a new upstream profile into the local one, by rule name:
+//
+//   - a rule named in upstream: upstream's version wins, local edits and all;
+//   - a rule named only locally, and not in the previous upstream snapshot:
+//     the user's own — kept, appended after upstream's rules in its old order;
+//   - a rule named only in the snapshot: the maintainer deleted it — gone,
+//     even if the user edited it, or it would linger as a phantom forever.
+//
+// The contract in one line: customize by adding your own rules; edits to
+// upstream rules last until the next refresh. Everything a share code does not
+// carry — limits, scoring, the profile's local name — stays the user's.
+export function mergeUpstream(local, upstream, previousUpstream) {
+  const upstreamRules = upstream.rules || []
+  const upstreamKeys = new Set(upstreamRules.map((rule) => ruleKey(rule.name)))
+  // No readable snapshot (a profile linked by hand, a corrupted config) fails
+  // open: every unrecognized local rule is treated as the user's own, because
+  // dropping a rule that might be theirs is the worse mistake.
+  const prevKeys = previousUpstream
+    ? new Set((previousUpstream.rules || []).map((rule) => ruleKey(rule.name)))
+    : null
+  const keptLocal = (local.rules || []).filter((rule) => {
+    const key = ruleKey(rule.name)
+    if (upstreamKeys.has(key)) return false
+    return !prevKeys || !prevKeys.has(key)
+  })
+  return {
+    profile: {
+      ...local,
+      preset: upstream.preset || DEFAULT_PRESET,
+      rules: [...upstreamRules, ...keptLocal],
+    },
+    keptLocal,
+  }
+}
+
+// diffLinkedProfiles is what the confirmation dialog shows: every rule the
+// refresh would change, add or remove, as the same one-line text form the
+// rules editor uses. Rules are matched by name, the same identity the merge
+// uses, so the diff and the merge cannot disagree about what happens.
+export function diffLinkedProfiles(current, merged) {
+  const byKey = (rules) => new Map((rules || []).map((rule) => [ruleKey(rule.name), rule]))
+  const line = (rule) => rulesToText([rule])
+  const currentRules = byKey(current.rules)
+  const mergedRules = byKey(merged.rules)
+
+  const changed = []
+  const added = []
+  const removed = []
+  for (const [key, rule] of mergedRules) {
+    const before = currentRules.get(key)
+    if (!before) {
+      added.push(line(rule))
+    } else if (line(before) !== line(rule)) {
+      changed.push({ name: rule.name, before: line(before), after: line(rule) })
+    }
+  }
+  for (const [key, rule] of currentRules) {
+    if (!mergedRules.has(key)) removed.push(line(rule))
+  }
+  const preset = current.preset !== merged.preset ? { from: current.preset, to: merged.preset } : null
+  return {
+    changed,
+    added,
+    removed,
+    preset,
+    empty: !changed.length && !added.length && !removed.length && !preset,
+  }
+}
+
+// checkForUpdate is the whole of the Refresh button: fetch, decode, merge,
+// diff. "Current" means the merge would change nothing — never that the bytes
+// match the snapshot, because the local profile drifts on its own: deleting an
+// imported rule and pressing Refresh is asking for it back, and an unchanged
+// upstream must not read as "nothing to do". The byte compare still earns its
+// keep in the other direction — a matching code means the upstream just
+// decoded *is* the snapshot, sparing a second decode — and a maintainer
+// re-encoding the same profile into different bytes still comes back
+// "current", because the diff is what gates applying.
+export async function checkForUpdate(profile) {
+  const text = await fetchShareCodeText(profile.source.url)
+  const { code, profile: upstream } = await resolveFetched(resolveProfileShareCode, text)
+  let previousUpstream = null
+  if (code === (profile.source.code || "")) {
+    previousUpstream = upstream
+  } else if (profile.source.code) {
+    try {
+      previousUpstream = (await resolveProfileShareCode(profile.source.code)).profile
+    } catch {
+      // An unreadable snapshot only costs the merge its memory of what came
+      // from upstream; mergeUpstream fails open on that.
+    }
+  }
+  const { profile: merged, keptLocal } = mergeUpstream(profile, upstream, previousUpstream)
+  const diff = diffLinkedProfiles(profile, merged)
+  if (diff.empty) {
+    return { status: "current" }
+  }
+  return { status: "update", code, merged, diff, keptLocal, remoteName: upstream.name }
+}

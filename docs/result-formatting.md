@@ -185,6 +185,23 @@ Lines that render empty are removed from the output, so a false conditional on
 its own line never leaves a blank line behind. Output is capped at 1000
 characters per template.
 
+## Sharing format profiles
+
+**Export** turns a format profile — name and both templates — into one
+`SNZBF1:` string, the same shape filter profiles use. Copy shares it through a
+chat window; **Download** writes it to a file for hosting.
+
+**Import** takes a code, or the `https://` URL of a raw file that serves one,
+and adds it as a new profile — a name collision gets a numeric suffix.
+
+A profile imported from a URL stays **linked**: it shows the host it came
+from, and a manual **Refresh** button fetches the current code and shows what
+would change before anything is applied. Applying replaces the templates with
+the maintainer's version; the profile's local name is yours and never follows
+a rename upstream. **Unlink** keeps the profile as it is and removes the
+connection. The trust rules and hosting notes are the same as for filter
+profiles — see [Remote profiles](filters.md#remote-profiles).
+
 ## Importing an AIOStreams formatter
 
 The format editor has an **Import from AIOStreams** section that converts an

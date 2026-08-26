@@ -198,6 +198,10 @@ type FilterProfileConfig struct {
 	// what ffprobe measured or what the availability database reports.
 	Rules []RuleConfig `json:"rules,omitempty"`
 
+	// Source links the profile to the remote share code it was imported from,
+	// for the manual Refresh flow. Nil for a profile made or pasted locally.
+	Source *ProfileSourceConfig `json:"source,omitempty"`
+
 	AllowedResolutions []string `json:"allowed_resolutions,omitempty"`
 	BlockedResolutions []string `json:"blocked_resolutions,omitempty"`
 	AllowedQualities   []string `json:"allowed_qualities,omitempty"`

@@ -17,6 +17,10 @@ type FormatProfileConfig struct {
 	// for that half.
 	ResultNameTemplate        string `json:"result_name_template,omitempty"`
 	ResultDescriptionTemplate string `json:"result_description_template,omitempty"`
+
+	// Source links the profile to the remote share code it was imported from,
+	// for the manual Refresh flow. Nil for a profile made or pasted locally.
+	Source *ProfileSourceConfig `json:"source,omitempty"`
 }
 
 // FormatProfileByName finds a profile by name, case-insensitively. Returns

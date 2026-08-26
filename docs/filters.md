@@ -202,6 +202,45 @@ importing something this editor cannot express.
 To version a profile or review one in a pull request, paste its code — it is a
 single line, and importing it is how it gets read back.
 
+### Remote profiles
+
+A profile can be imported **from a URL** instead of a paste: host a file that
+contains nothing but the share code at a raw `https://` address, and give
+Import the URL. The profile is then *linked* — it remembers the address, shows
+the host it came from and a **Linked** badge in the profile list, and gains a
+**Refresh** button. [Format profiles](result-formatting.md#sharing-format-profiles)
+share the same mechanism with their own `SNZBF1:` codes.
+
+Refresh is always manual. It fetches the current code and either says the
+profile is up to date or shows exactly what would change; nothing is applied
+until you confirm the diff. Updates merge **by rule name**:
+
+- a rule whose name exists upstream is the maintainer's — the update replaces
+  it, local edits and all;
+- a rule you added under your own name is yours — it survives every refresh,
+  appended after the maintainer's rules;
+- a rule the maintainer deleted is removed, even if you had edited it.
+
+The contract in one line: customize by adding your own rules; edits to
+upstream rules last until the next refresh. The profile's local name is also
+yours — a rename upstream is shown in the diff but never applied. Everything a
+share code does not carry (NZB limits, attribute scoring) stays untouched.
+**Unlink** keeps the profile as it is and removes the connection.
+
+The trust model is deliberately narrow. Only `https://` URLs are accepted, the
+address you typed is the only one ever consulted — nothing inside a fetched
+file can point future refreshes elsewhere — and the fetch happens in your
+browser with no credentials attached, so the server never requests the URL.
+Whoever controls that URL can *propose* profile changes forever; the visible
+diff is what keeps that honest, which is why there is no automatic sync.
+
+**Hosting a profile:** Export → **Download** writes the code to a file; commit
+it anywhere that serves raw files over https. The host has to allow
+cross-origin reads (CORS) since the browser does the fetching —
+`raw.githubusercontent.com` and gist raw URLs both do. GitHub's raw CDN caches
+for a few minutes, so a push may take that long to show up in Refresh. One
+code per file; surrounding whitespace and prose are tolerated.
+
 ## Upgrading from the old editor
 
 Profiles tuned before presets existed are converted on first load, and **nothing

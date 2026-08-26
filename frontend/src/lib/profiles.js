@@ -1,6 +1,8 @@
 // Shape and vocabulary of a filter profile, mirrored for the Filters UI.
 // Keys here must match the JSON the backend stores.
 
+import { encodeShareCode, maxSharedNameLength, resolveShareCode } from "@/lib/shareCodes"
+
 // Release traits grouped the way people reason about them. The policy behind
 // each is { fetch, rank } on the wire; the UI calls rank "score".
 export const ATTRIBUTE_GROUPS = [
@@ -464,95 +466,40 @@ function exportedProfile(profile) {
   }
 }
 
-// Profile share codes: the profile JSON, gzip-compressed and base64url-encoded
-// behind a versioned prefix, so a whole profile travels as one pasteable string.
+// Filter profile share codes ride the shared container in shareCodes.js
+// behind their own versioned prefix.
 const SHARE_CODE_PREFIX = "SNZBP1:"
 
-function toBase64Url(bytes) {
-  let binary = ""
-  const chunk = 0x8000
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
-}
-
-function fromBase64Url(text) {
-  const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"))
-  return Uint8Array.from(binary, (c) => c.charCodeAt(0))
-}
-
 export async function encodeProfileShareCode(profile) {
-  const json = JSON.stringify(exportedProfile(profile))
-  const stream = new Blob([new TextEncoder().encode(json)]).stream().pipeThrough(new CompressionStream("gzip"))
-  const packed = new Uint8Array(await new Response(stream).arrayBuffer())
-  return SHARE_CODE_PREFIX + toBase64Url(packed)
+  return encodeShareCode(SHARE_CODE_PREFIX, exportedProfile(profile))
 }
 
-// Share codes travel through chats and phone keyboards that quietly rewrite
-// them: zero-width/invisible characters get injected around pasted text,
-// "smart punctuation" turns the hyphens of base64url into en/em dashes, and a
-// long code arrives wrapped across several lines. Undo all of that, then pick
-// the code out of any surrounding prose.
-const invisibleCharsRE = /[\u00AD\u200B-\u200F\u2060\uFEFF]/g
-const dashVariantsRE = /[\u2010-\u2015\u2212]/g
-
-// How many whitespace-separated pieces of a paste are worth trying. Each one
-// costs a decode attempt, and no chat client wraps a code into more lines than
-// this.
-const maxShareCodeSegments = 8
-
-// shareCodeCandidates lists the payloads a pasted blob might hold, longest
-// first. Whitespace inside a code is ambiguous — it separates the code from a
-// trailing "enjoy!" as readily as it wraps the code across two lines — and only
-// a decode attempt can tell those apart, so every prefix that ends at a break
-// is a candidate.
-function shareCodeCandidates(code) {
-  const cleaned = (code || "")
-    .replace(invisibleCharsRE, "")
-    .replace(dashVariantsRE, "-")
-  const match = cleaned.match(/SNZBP1:[A-Za-z0-9\-_+/=\s]+/i)
-  const picked = (match ? match[0] : cleaned).trim()
-  const segments = picked.split(/\s+/).slice(0, maxShareCodeSegments)
-  const candidates = []
-  for (let n = segments.length; n >= 1; n--) candidates.push(segments.slice(0, n).join(""))
-  return candidates
-}
-
-// unpackShareCode returns the profile a payload carries, or undefined if it
-// does not carry one. gzip is self-checking, so this doubles as the test of
-// whether a candidate is the whole code and nothing else.
-async function unpackShareCode(payload) {
-  try {
-    const bytes = fromBase64Url(payload)
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
-    return JSON.parse(await new Response(stream).text())
-  } catch {
-    return undefined
-  }
-}
-
-export async function decodeProfileShareCode(code) {
-  const candidates = shareCodeCandidates(code)
-  if (candidates[0].slice(0, SHARE_CODE_PREFIX.length).toUpperCase() !== SHARE_CODE_PREFIX) {
-    throw new Error("Not a StreamNZB profile code.")
-  }
-  let parsed
-  for (const candidate of candidates) {
-    parsed = await unpackShareCode(candidate.slice(SHARE_CODE_PREFIX.length))
-    if (parsed !== undefined) break
-  }
-  if (parsed === undefined) {
-    throw new Error("The code is damaged or incomplete.")
-  }
+// resolveProfileShareCode decodes a pasted or fetched blob and also reports
+// which exact candidate string carried the profile. That canonical form is
+// what a linked profile stores as its upstream snapshot, so a later fetch can
+// be compared string-to-string before anything is decoded.
+export async function resolveProfileShareCode(code) {
+  const { code: matched, parsed } = await resolveShareCode(
+    SHARE_CODE_PREFIX, code, "Not a StreamNZB profile code.")
   // A code made before presets carries a hand-tuned ranking profile that this
   // editor can no longer express, so say that rather than complain about a
   // missing marker the code was never going to have.
   if (parsed && typeof parsed === "object" && parsed.streamnzb_profile !== 1 && parsed.ranking) {
     throw new Error("That code predates filter presets and can no longer be imported.")
   }
-  return profileFromParsed(parsed)
+  return { code: matched, profile: profileFromParsed(parsed) }
 }
+
+export async function decodeProfileShareCode(code) {
+  return (await resolveProfileShareCode(code)).profile
+}
+
+// What an imported profile may carry. Real profiles sit far under all three;
+// anything past them is a hostile or corrupted code, and refusing it here is
+// cheaper than letting it bloat the config and slow every search. The bounds
+// exist because codes now arrive from URLs as well as from a paste.
+const maxProfileRules = 500
+const maxConditionLength = 10000
 
 // profileFromParsed reads what a share code carried. It is strict about the
 // shape and says which rule is wrong when one is: a code that arrives damaged
@@ -563,14 +510,24 @@ function profileFromParsed(parsed) {
   }
   const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
   if (!name) throw new Error("The profile needs a name.")
+  if (name.length > maxSharedNameLength) throw new Error("The profile name is too long.")
 
   const preset = PRESETS.some((p) => p.key === parsed.preset) ? parsed.preset : DEFAULT_PRESET
   const rawRules = Array.isArray(parsed.rules) ? parsed.rules : []
+  if (rawRules.length > maxProfileRules) {
+    throw new Error(`The profile carries ${rawRules.length} rules; the most a profile can hold is ${maxProfileRules}.`)
+  }
   const rules = rawRules.map((rule, i) => {
     if (!rule || typeof rule !== "object") throw new Error(`Rule ${i + 1} is not an object.`)
     const label = `Rule ${i + 1}${rule.name ? ` (${rule.name})` : ""}`
     if (typeof rule.when !== "string" || !rule.when.trim()) {
       throw new Error(`${label} has no condition.`)
+    }
+    if (rule.when.length > maxConditionLength) {
+      throw new Error(`${label} has a condition longer than ${maxConditionLength} characters.`)
+    }
+    if (String(rule.name || "").length > maxSharedNameLength) {
+      throw new Error(`Rule ${i + 1} has a name longer than ${maxSharedNameLength} characters.`)
     }
     const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
     const action = ruleAction(rule)
