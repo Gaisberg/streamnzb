@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.12.0](https://github.com/Gaisberg/streamnzb/compare/v5.11.0...v5.12.0) (2026-08-26)
+
+
+### Features
+
+* **health:** detect, surface and recover indexer and provider failures ([5097e2c](https://github.com/Gaisberg/streamnzb/commit/5097e2c1d490dc68d320cd8137334fdd209077ca))
+
+
+### Bug Fixes
+
+* **stats:** count every established provider connection, including speed tests and probes ([7be8c5a](https://github.com/Gaisberg/streamnzb/commit/7be8c5a8e482dc2c1b124a7efe401e6ffeb264fe))
+
 ## [5.11.0](https://github.com/Gaisberg/streamnzb/compare/v5.10.0...v5.11.0) (2026-08-25)
 
 
