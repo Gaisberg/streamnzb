@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.13.1](https://github.com/Gaisberg/streamnzb/compare/v5.13.0...v5.13.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **profiles:** validate source share codes with their own kind's prefix ([2b7ff70](https://github.com/Gaisberg/streamnzb/commit/2b7ff70db023d69ba16c257037ea7fe564923762))
+
 ## [5.13.0](https://github.com/Gaisberg/streamnzb/compare/v5.12.0...v5.13.0) (2026-08-26)
 
 
