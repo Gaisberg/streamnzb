@@ -82,14 +82,28 @@ func (s *Server) buildMeta(ctx context.Context, profile *config.MetadataProfileC
 	if err != nil {
 		return nil, err
 	}
+	var meta *MetaObject
 	switch {
 	case rid.kitsuID != "":
-		return s.buildAnimeMeta(ctx, profile, contentType, rid)
+		meta, err = s.buildAnimeMeta(ctx, profile, contentType, rid)
+		// Anime never resolves an IMDb id on its own; the anime-lists mapping
+		// provides the series-level one — exactly the granularity overlay
+		// services key on, so it feeds the poster overlay and nothing else.
+		rid.imdbID = s.animeSeriesIMDbID(rid.kitsuID)
 	case contentType == "movie":
-		return s.buildMovieMeta(ctx, profile, rid)
+		meta, err = s.buildMovieMeta(ctx, profile, rid)
 	default:
-		return s.buildSeriesMeta(ctx, profile, contentType, rid)
+		meta, err = s.buildSeriesMeta(ctx, profile, contentType, rid)
 	}
+	if err != nil {
+		return nil, err
+	}
+	// After the builders: they fill rid.imdbID best-effort from the source's
+	// external ids even when the request carried another id form.
+	if overlay := profile.PosterOverlayURL(rid.imdbID); overlay != "" {
+		meta.Poster = overlay
+	}
+	return meta, nil
 }
 
 // resolvedMetaID is the outcome of the lightweight id resolution the meta

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
@@ -599,6 +600,13 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			case "", "tvdb", "tmdb":
 			default:
 				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
+			}
+			if pattern := strings.TrimSpace(mp.PosterURLPattern); pattern != "" {
+				if !strings.Contains(pattern, "{imdb_id}") {
+					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Must contain the {imdb_id} placeholder"
+				} else if u, err := url.Parse(strings.ReplaceAll(pattern, "{imdb_id}", "tt0000001")); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Not a valid http(s) URL"
+				}
 			}
 			for j, toggle := range mp.Catalogs {
 				if !knownCatalogIDs[toggle.ID] {

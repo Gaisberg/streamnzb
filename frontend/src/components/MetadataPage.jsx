@@ -101,6 +101,9 @@ function summarize(profile, registry, certOptions) {
     const opt = certOptions.find((o) => o.id === profile.max_certification)
     bits.push(opt ? opt.label : `max ${profile.max_certification}`)
   }
+  if ((profile.poster_url_pattern || "").trim()) {
+    bits.push("overlay posters")
+  }
   return bits.join(" · ")
 }
 
@@ -339,6 +342,30 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               Titles, overviews, episode names and catalog rows display in this language where the sources
               have a translation, falling back to English where they don&apos;t. Clients cache title pages for a
               few hours, so a change shows up on already-visited titles after the cache expires.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="metadata-poster-url" className="text-sm">Poster overlay URL</Label>
+            <Input
+              id="metadata-poster-url"
+              className="h-9 w-full font-mono text-xs"
+              value={draft.poster_url_pattern || ""}
+              onChange={(e) => {
+                const value = e.target.value
+                const next = { ...draft }
+                if (value.trim()) next.poster_url_pattern = value
+                else delete next.poster_url_pattern
+                onChange(next)
+              }}
+              placeholder="https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg"
+            />
+            <p className="text-xs text-muted-foreground">
+              Replace posters with an overlay service&apos;s — ratings, quality and genre badges baked into
+              the artwork. Paste a URL template containing <span className="font-mono">{"{imdb_id}"}</span>;{" "}
+              <a href="https://btttr.cc/configure" target="_blank" rel="noreferrer" className="underline underline-offset-2">BetterPosters</a>{" "}
+              (free, no key) and RatingPosterDB both generate one. Anime maps to its series-level IMDb id,
+              so every season of a show shares one overlay poster; titles without a resolvable IMDb id
+              keep their original artwork.
             </p>
           </div>
           <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5">

@@ -35,6 +35,13 @@ type MetadataProfileConfig struct {
 	// as a TMDB-style tag ("de-DE"). Empty means English.
 	Language string `json:"language,omitempty"`
 
+	// PosterURLPattern, when set, swaps poster URLs for an overlay service's
+	// (BetterPosters, RatingPosterDB): an http(s) URL template whose {imdb_id}
+	// placeholder is substituted per title. Overlay services key on IMDb ids,
+	// so titles resolvable only to kitsu:/tvdb:/tmdb: ids keep their source
+	// artwork. Empty means posters come from the metadata sources untouched.
+	PosterURLPattern string `json:"poster_url_pattern,omitempty"`
+
 	// MaxCertification caps content by age certification, as an id from
 	// certification.Options ("0", "7", "13", "16", "18"). Empty means no cap.
 	// The cap gates catalogs, meta pages and stream resolution.
@@ -77,6 +84,20 @@ func (p *MetadataProfileConfig) EffectiveTVMazeAirDates() bool {
 		return true
 	}
 	return *p.TVMazeAirDates
+}
+
+// PosterOverlayURL returns the overlay poster URL for one title, or "" when
+// the profile has no pattern configured or the id is not an IMDb id — the
+// caller keeps the source artwork in that case.
+func (p *MetadataProfileConfig) PosterOverlayURL(imdbID string) string {
+	if p == nil || !strings.HasPrefix(imdbID, "tt") {
+		return ""
+	}
+	pattern := strings.TrimSpace(p.PosterURLPattern)
+	if pattern == "" {
+		return ""
+	}
+	return strings.ReplaceAll(pattern, "{imdb_id}", imdbID)
 }
 
 // EffectiveAllowUnrated reports whether unrated content passes this profile's

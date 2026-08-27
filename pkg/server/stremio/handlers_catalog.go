@@ -116,6 +116,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	if req.Search == "" && len(metas) > 0 {
 		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, profile, def))
 	}
+	s.applyPosterOverlays(profile, metas)
 	if metas == nil {
 		metas = []MetaPreview{}
 	}
@@ -366,6 +367,39 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		})
 	}
 	return previews, nil
+}
+
+// applyPosterOverlays swaps catalog posters for the profile's overlay
+// service's. Rows that resolved a tt id carry it as their preview id; kitsu:
+// rows resolve to the series-level id through the anime-lists mapping — the
+// granularity overlay services key on, so every cour of a series shares one
+// overlay poster. tvdb:/tmdb: fallbacks and unmapped anime keep their source
+// artwork.
+func (s *Server) applyPosterOverlays(profile *config.MetadataProfileConfig, metas []MetaPreview) {
+	if profile == nil || strings.TrimSpace(profile.PosterURLPattern) == "" {
+		return
+	}
+	for i := range metas {
+		id := metas[i].ID
+		if kitsuID, ok := strings.CutPrefix(id, "kitsu:"); ok {
+			id = s.animeSeriesIMDbID(kitsuID)
+		}
+		if overlay := profile.PosterOverlayURL(id); overlay != "" {
+			metas[i].Poster = overlay
+		}
+	}
+}
+
+// animeSeriesIMDbID resolves a Kitsu id to its series-level IMDb id via the
+// anime-lists mapping, or "" when unmapped.
+func (s *Server) animeSeriesIMDbID(kitsuID string) string {
+	if s.animeLists == nil {
+		return ""
+	}
+	if mapping, ok := s.animeLists.LookupKitsu(kitsuID); ok {
+		return mapping.IMDbID
+	}
+	return ""
 }
 
 // baseContentID collapses an attempt's request id ("tt123:1:5",

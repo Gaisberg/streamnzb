@@ -302,6 +302,42 @@ func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
 	}
 }
 
+// Overlay services key on IMDb ids, so kitsu: rows resolve through the
+// series-level mapping; unmapped anime and non-tt fallbacks keep their art.
+func TestApplyPosterOverlaysMapsKitsuRows(t *testing.T) {
+	srv := &Server{animeLists: animeListsStore(t)}
+	profile := &config.MetadataProfileConfig{
+		PosterURLPattern: "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg",
+	}
+	metas := []MetaPreview{
+		{ID: "tt0111161", Poster: "https://image.tmdb.org/t/p/w500/orig.jpg"},
+		{ID: "kitsu:49016", Poster: "https://kitsu.example/mapped.jpg"},
+		{ID: "kitsu:999999", Poster: "https://kitsu.example/unmapped.jpg"},
+		{ID: "tmdb:278", Poster: "https://image.tmdb.org/t/p/w500/fallback.jpg"},
+	}
+	srv.applyPosterOverlays(profile, metas)
+
+	if want := "https://btttr.cc/poster/imdb/poster-default/tt0111161.jpg"; metas[0].Poster != want {
+		t.Errorf("tt row poster = %q, want %q", metas[0].Poster, want)
+	}
+	if want := "https://btttr.cc/poster/imdb/poster-default/tt9307686.jpg"; metas[1].Poster != want {
+		t.Errorf("mapped kitsu row poster = %q, want %q", metas[1].Poster, want)
+	}
+	if want := "https://kitsu.example/unmapped.jpg"; metas[2].Poster != want {
+		t.Errorf("unmapped kitsu row poster = %q, want untouched %q", metas[2].Poster, want)
+	}
+	if want := "https://image.tmdb.org/t/p/w500/fallback.jpg"; metas[3].Poster != want {
+		t.Errorf("tmdb fallback row poster = %q, want untouched %q", metas[3].Poster, want)
+	}
+
+	// Without a pattern nothing is touched (and no lookups happen at all).
+	bare := []MetaPreview{{ID: "tt0111161", Poster: "https://image.tmdb.org/t/p/w500/orig.jpg"}}
+	srv.applyPosterOverlays(&config.MetadataProfileConfig{}, bare)
+	if want := "https://image.tmdb.org/t/p/w500/orig.jpg"; bare[0].Poster != want {
+		t.Errorf("pattern-less profile changed poster to %q", bare[0].Poster)
+	}
+}
+
 // The mapped request must build the same query as the equivalent tt request —
 // that equivalence is the whole point of the mapping.
 func TestKitsuMappedRequestBuildsAiredSeasonQuery(t *testing.T) {

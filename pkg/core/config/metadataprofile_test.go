@@ -147,6 +147,29 @@ func TestMetadataProfilesRoundTripAsEmptyNotNull(t *testing.T) {
 	}
 }
 
+func TestPosterOverlayURL(t *testing.T) {
+	pattern := "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg?lang=de"
+	p := &MetadataProfileConfig{PosterURLPattern: pattern}
+	if got, want := p.PosterOverlayURL("tt0111161"), "https://btttr.cc/poster/imdb/poster-default/tt0111161.jpg?lang=de"; got != want {
+		t.Errorf("PosterOverlayURL = %q, want %q", got, want)
+	}
+	for name, args := range map[string]struct {
+		profile *MetadataProfileConfig
+		id      string
+	}{
+		"nil profile":   {nil, "tt0111161"},
+		"no pattern":    {&MetadataProfileConfig{}, "tt0111161"},
+		"blank pattern": {&MetadataProfileConfig{PosterURLPattern: "  "}, "tt0111161"},
+		"kitsu id":      {p, "kitsu:1376"},
+		"tmdb id":       {p, "tmdb:278"},
+		"empty id":      {p, ""},
+	} {
+		if got := args.profile.PosterOverlayURL(args.id); got != "" {
+			t.Errorf("%s: PosterOverlayURL = %q, want empty", name, got)
+		}
+	}
+}
+
 func TestMetadataProfileByName(t *testing.T) {
 	cfg := &Config{MetadataProfiles: []MetadataProfileConfig{{Name: "Kids"}, {Name: "Default"}}}
 	if p := cfg.MetadataProfileByName("kids"); p == nil || p.Name != "Kids" {
