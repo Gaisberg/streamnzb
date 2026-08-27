@@ -305,6 +305,31 @@ func TestClassifyPlaybackStartupErrWrapsOwnTimeout(t *testing.T) {
 	}
 }
 
+func TestClassifyPlaybackStartupErrKeepsProvenMissingArticleVerdict(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+
+	// The field shape from the logs: the STAT sweep proves a 430 but the verdict
+	// lands after the startup budget expired. The 430 must survive as-is — once
+	// wrapped as a timeout it reads "may be temporary", records no durable bad
+	// verdict, and the dead release is re-tried at full budget on every play.
+	statVerdict := fmt.Errorf("archive volume part20.rar segment unavailable: %w", playback.ErrFirstSegmentUnavailable)
+	err := playback.ClassifyStartupErr("probe", 5*time.Second, ctx, statVerdict)
+	if !errors.Is(err, ErrFirstSegmentUnavailable) {
+		t.Fatalf("expected the missing-article verdict to pass through, got %v", err)
+	}
+	if errors.Is(err, ErrPlaybackStartupTimeout) {
+		t.Fatalf("a proven 430 was rebranded as a startup timeout: %v", err)
+	}
+	if !conclusiveBadRelease(err) {
+		t.Fatalf("a proven 430 after the deadline must stay a conclusive bad-release verdict, got %v", err)
+	}
+}
+
 func TestClassifyPlaybackStartupErrPreservesParentCancellation(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()

@@ -119,9 +119,19 @@ func (p *Service) allowLargestDirectFallback(sess *session.Session) bool {
 
 // ClassifyStartupErr maps a phase error onto the startup-timeout sentinel
 // when the phase deadline elapsed; other errors pass through unchanged.
+//
+// A proven-missing article outranks the deadline: ErrFirstSegmentUnavailable is
+// only ever built from a real 430, never from an unanswered probe, so a verdict
+// that lands after the budget expired is still a verdict. Rebranding it as a
+// timeout downgraded it to "may be temporary" — no durable bad record, no
+// AvailNZB report — and the dead release burned the full startup budget again
+// on every future play.
 func ClassifyStartupErr(phase string, startupTimeout time.Duration, startupCtx context.Context, err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, ErrFirstSegmentUnavailable) {
+		return err
 	}
 	if errors.Is(startupCtx.Err(), context.DeadlineExceeded) {
 		return StartupTimeoutErr(startupTimeout, phase, err)
