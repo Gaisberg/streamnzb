@@ -76,6 +76,7 @@ function App() {
   const {
     stats,
     config,
+    applyStreams,
     saveStatus,
     clearSaveStatus,
     isSaving,
@@ -369,6 +370,11 @@ function App() {
                   movieSearchQueries={config?.movie_search_queries || []}
                   seriesSearchQueries={config?.series_search_queries || []}
                   initialStreamsByName={config?.streams || {}}
+                  // Stream saves go through /api/streams/*, not the config
+                  // endpoint, so the fresh bindings are folded into the shared
+                  // config here — the "In use" hints on the Filters,
+                  // Formatting and Metadata pages read config.streams.
+                  onStreamsChange={applyStreams}
                 />
               </div>
             )}

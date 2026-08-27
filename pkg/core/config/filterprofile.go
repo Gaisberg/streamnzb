@@ -30,9 +30,18 @@ type ProfileSourceConfig struct {
 // kilobytes; the cap only exists so a hostile save cannot bloat the config.
 const maxSourceCodeBytes = 256 * 1024
 
+// Share code prefixes, one per profile kind. They mirror the frontend's
+// SHARE_CODE_PREFIX constants: a filter profile's snapshot can only ever be a
+// filter code, and a format profile's a format code.
+const (
+	FilterShareCodePrefix = "SNZBP1:"
+	FormatShareCodePrefix = "SNZBF1:"
+)
+
 // Validate refuses a source record the importer could not have produced.
+// codePrefix is the share-code prefix of the profile kind carrying the record.
 // Nil is valid: most profiles are not linked to anything.
-func (ps *ProfileSourceConfig) Validate() error {
+func (ps *ProfileSourceConfig) Validate(codePrefix string) error {
 	if ps == nil {
 		return nil
 	}
@@ -51,8 +60,8 @@ func (ps *ProfileSourceConfig) Validate() error {
 	if len(ps.Code) > maxSourceCodeBytes {
 		return fmt.Errorf("source share code is too large")
 	}
-	if ps.Code != "" && !strings.HasPrefix(strings.ToUpper(ps.Code), "SNZBP1:") {
-		return fmt.Errorf("source share code must start with SNZBP1:")
+	if ps.Code != "" && !strings.HasPrefix(strings.ToUpper(ps.Code), codePrefix) {
+		return fmt.Errorf("source share code must start with %s", codePrefix)
 	}
 	return nil
 }

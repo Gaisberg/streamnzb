@@ -71,8 +71,10 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
   }
 
   // addImported gives the profile a free name and saves it. Import never
-  // overwrites: a name collision gets a numeric suffix.
-  const addImported = (profile) => {
+  // overwrites: a name collision gets a numeric suffix. The save is awaited so
+  // a rejection keeps the dialog open with the reason, instead of closing over
+  // a profile that never landed.
+  const addImported = async (profile) => {
     const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
     let name = (profile.name || "").trim() || "Imported Profile"
     if (taken.has(name.toLowerCase())) {
@@ -81,7 +83,7 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
       name = `${name} ${n}`
     }
     profile.name = name
-    onSave([...profiles, profile])
+    await onSave([...profiles, profile])
     setImportOpen(false)
     setImportCode("")
     setImportUrl("")
@@ -98,12 +100,15 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
         const { url, code, profile } = await codec.fetchRemote(importUrl)
         const stamp = new Date().toISOString()
         profile.source = { url, code, checked_at: stamp, applied_at: stamp }
-        addImported(profile)
+        await addImported(profile)
       } else {
-        addImported(await codec.decode(importCode))
+        await addImported(await codec.decode(importCode))
       }
     } catch (err) {
-      setImportError(err?.message || "Could not read that profile.")
+      // A save the server refused carries the specific complaint per field;
+      // that beats the generic "Validation failed" headline.
+      const fieldError = err?.fieldErrors && Object.values(err.fieldErrors)[0]
+      setImportError(fieldError || err?.message || "Could not read that profile.")
     } finally {
       setImportBusy(false)
     }

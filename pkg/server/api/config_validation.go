@@ -469,7 +469,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			if _, err := ranking.Compile(fp); err != nil {
 				errors[fmt.Sprintf("filter_profiles.%d.ranking", i)] = err.Error()
 			}
-			if err := fp.Source.Validate(); err != nil {
+			if err := fp.Source.Validate(config.FilterShareCodePrefix); err != nil {
 				errors[fmt.Sprintf("filter_profiles.%d.source", i)] = err.Error()
 			}
 			for key, lim := range fp.Limits {
@@ -559,7 +559,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			if err := stremio.ValidateResultTemplates(fp.ResultNameTemplate, fp.ResultDescriptionTemplate); err != nil {
 				errors[fmt.Sprintf("format_profiles.%d.templates", i)] = err.Error()
 			}
-			if err := fp.Source.Validate(); err != nil {
+			if err := fp.Source.Validate(config.FormatShareCodePrefix); err != nil {
 				errors[fmt.Sprintf("format_profiles.%d.source", i)] = err.Error()
 			}
 		}

@@ -55,6 +55,18 @@ export function useAdminRuntime({
     setNzbAttemptsRefreshTrigger(0)
   }, [])
 
+  // applyStreams folds a fresh streams-by-username map into the shared config.
+  // Stream saves go through /api/streams/*, not the config endpoint, so the
+  // shared config never hears about them — yet the "In use" hints on the
+  // Filters, Formatting and Metadata pages read config.streams. The Streams
+  // page already holds the post-save truth, so it is adopted as-is rather than
+  // refetched: a refetch would also come back in the config's alphabetical
+  // map order and visibly reshuffle a custom-ordered stream list.
+  const applyStreams = useCallback((streamsByName) => {
+    if (!streamsByName) return
+    setConfig((prev) => (prev ? { ...prev, streams: streamsByName } : prev))
+  }, [])
+
   const refreshComponentHealth = useCallback(async () => {
     try {
       const data = await apiFetch('/api/health/components')
@@ -310,6 +322,7 @@ export function useAdminRuntime({
   return {
     stats,
     config,
+    applyStreams,
     saveStatus,
     clearSaveStatus,
     isSaving,
