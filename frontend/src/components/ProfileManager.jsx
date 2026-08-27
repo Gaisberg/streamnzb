@@ -35,6 +35,10 @@ export function ProfileManager({
   describeDelete,
   renderEditor,
   entityLabel = "profile",
+  // heading titles the editor card; addButtonLabel the list's add button —
+  // "Profile"/"New profile" everywhere except the define-library manager.
+  heading = "Profile",
+  addButtonLabel = "New profile",
   newProfileBaseName = "New Profile",
   emptyText = "No profiles yet.",
   isSaving,
@@ -210,6 +214,12 @@ export function ProfileManager({
     setConfirmDelete(null)
   }
 
+  // The specific complaint beats the "Validation failed" headline: a refused
+  // save carries per-field errors, and the first one names the rule at fault.
+  const saveError = saveStatus?.type === "error"
+    ? String((saveStatus.errors && Object.values(saveStatus.errors)[0]) || saveStatus.msg || "Save failed")
+    : ""
+
   if (profiles.length === 0) {
     return (
       <Card className="border border-dashed border-border bg-card">
@@ -227,7 +237,7 @@ export function ProfileManager({
     <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
       <div className="space-y-2">
         <Button onClick={addProfile} size="sm" className="w-full">
-          <Plus className="mr-2 h-4 w-4" /> New profile
+          <Plus className="mr-2 h-4 w-4" /> {addButtonLabel}
         </Button>
         {profiles.map((profile, index) => (
           <button
@@ -276,14 +286,24 @@ export function ProfileManager({
             <CardHeader className="pb-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <CardTitle className="text-base font-semibold">Profile</CardTitle>
+                  <CardTitle className="text-base font-semibold">{heading}</CardTitle>
                   <CardDescription>Changes save automatically.</CardDescription>
                 </div>
                 <div className="flex h-8 items-center text-xs text-muted-foreground">
-                  {isSaving || dirty ? (
+                  {isSaving ? (
+                    <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</span>
+                  ) : saveError ? (
+                    // A refused save leaves the draft dirty forever, so the
+                    // error must outrank the spinner or it is never seen —
+                    // "Saving…" until the heat death of the universe was how a
+                    // rejected rule actually presented.
+                    <span className="max-w-md truncate text-destructive" title={saveError}>
+                      {saveError.split("\n")[0]}
+                    </span>
+                  ) : dirty ? (
                     <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</span>
                   ) : saveStatus?.msg ? (
-                    <span className={cn(saveStatus.type === "error" && "text-destructive")}>{saveStatus.msg}</span>
+                    <span>{saveStatus.msg}</span>
                   ) : null}
                 </div>
               </div>

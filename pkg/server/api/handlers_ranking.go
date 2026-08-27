@@ -213,15 +213,20 @@ func writeExplainError(w http.ResponseWriter, status int, msg string) {
 // one by name when no definition was sent.
 func (s *Server) explainProfile(req explainRequest) (*ranking.Profile, error) {
 	fp := req.Profile
-	if fp == nil {
-		name := strings.TrimSpace(req.ProfileName)
-		if name == "" {
-			return nil, errNoProfile
-		}
-		// Copy the profile while holding the lock: a config save replaces the
-		// whole slice, so a pointer into it would outlive what it points at.
-		s.mu.RLock()
-		if s.config != nil {
+	name := strings.TrimSpace(req.ProfileName)
+	if fp == nil && name == "" {
+		return nil, errNoProfile
+	}
+	// Copy while holding the lock: a config save replaces the whole slices,
+	// so a pointer into them would outlive what it points at. The slice
+	// header itself is safe to keep — a save never mutates the old backing
+	// array. Libraries always come from the saved config, so a previewed
+	// profile resolves matched() against the same defines a saved one would.
+	var libraries []config.DefineLibraryConfig
+	s.mu.RLock()
+	if s.config != nil {
+		libraries = s.config.DefineLibraries
+		if fp == nil {
 			for i := range s.config.FilterProfiles {
 				if strings.EqualFold(s.config.FilterProfiles[i].Name, name) {
 					found := s.config.FilterProfiles[i]
@@ -230,17 +235,19 @@ func (s *Server) explainProfile(req explainRequest) (*ranking.Profile, error) {
 				}
 			}
 		}
-		s.mu.RUnlock()
-
-		if fp == nil {
-			return nil, errUnknownProfile
-		}
+	}
+	s.mu.RUnlock()
+	if fp == nil {
+		return nil, errUnknownProfile
 	}
 
 	// Compile in isolation: this is a preview, so it must never disturb the
 	// rankers the addon is serving from.
 	svc := ranking.NewService()
-	if errs := svc.Reload(&config.Config{FilterProfiles: []config.FilterProfileConfig{*fp}}); len(errs) > 0 {
+	if errs := svc.Reload(&config.Config{
+		FilterProfiles:  []config.FilterProfileConfig{*fp},
+		DefineLibraries: libraries,
+	}); len(errs) > 0 {
 		return nil, errs[0]
 	}
 	profile, ok := svc.Get(fp.Name)

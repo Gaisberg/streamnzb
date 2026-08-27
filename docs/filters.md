@@ -241,6 +241,47 @@ cross-origin reads (CORS) since the browser does the fetching —
 for a few minutes, so a push may take that long to show up in Refresh. One
 code per file; surrounding whitespace and prose are tolerated.
 
+## Define libraries
+
+The bottom of the Filters page holds **define libraries**: named bundles of
+[define rules](rules.md#define-libraries) — release-group tiers, community
+classifications — kept once and referenced from every profile with
+`matched("Name")`. The library maintains the data; what a tier is worth stays
+each profile's own rule:
+
+```
+Library (maintained upstream):
+Movies Remux T1 Groups: define if group matches "(?i)^(FraMeSToR|W4NK3R|...)$"
+
+Your profile:
+Trusted remux: score 500 if "remux" in traits and matched("Movies Remux T1 Groups")
+```
+
+Libraries can only carry defines — a score or reject rule in an imported
+library is refused — and a profile rule under the same name shadows the
+library's, so one entry can be overridden locally without forking the library.
+Editing is text-only, one define per line in the rules editor's
+[text form](rules.md#referring-to-another-rule); lines starting with `#` are
+comments.
+
+Sharing works like profiles: Export produces a `SNZBD1:` code, Import takes a
+code or an https URL, and an imported-from-URL library is linked with the same
+manual **Refresh** → confirmation diff → apply flow and the same
+[trust model](#remote-profiles). Two differences:
+
+- **A URL may serve plain rule text** instead of a share code — one define per
+  line, `#` comments allowed — which is the natural output of a generator or a
+  synced upstream list. The library is then named after the file.
+- **Refresh replaces the defines wholesale.** A library is the maintainer's
+  data; local edits to it last until the next refresh. A lasting override
+  belongs in the profile, where your rule shadows the library's.
+
+A save that would break a profile is refused either way: every profile
+recompiles against the new library set when a library is saved, so a refresh
+that renames or removes a define some profile still references fails
+validation with the unknown-name error instead of silently landing. Deleting a
+library warns with the list of profiles that reference it.
+
 ## Upgrading from the old editor
 
 Profiles tuned before presets existed are converted on first load, and **nothing

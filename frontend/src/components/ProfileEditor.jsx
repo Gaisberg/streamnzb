@@ -74,7 +74,7 @@ function PresetPicker({ value, onChange }) {
   )
 }
 
-export function ProfileEditor({ profile, onChange }) {
+export function ProfileEditor({ profile, onChange, libraryRules = [] }) {
   const [sampleInput, setSampleInput] = useState(SAMPLE_TITLES.join("\n"))
   const [previewKind, setPreviewKind] = useState("movie")
   const [targetTitle, setTargetTitle] = useState("")
@@ -135,6 +135,7 @@ export function ProfileEditor({ profile, onChange }) {
           <RulesEditor
             values={profile.rules || []}
             onChange={(rules) => onChange({ ...profile, rules })}
+            libraryRules={libraryRules}
             ruleStats={preview.ruleStats}
             sampleCount={preview.sampleCount}
             error={preview.error}

@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/search/ranking"
+	"streamnzb/pkg/search/rules"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/usenet/nntp"
@@ -48,6 +49,7 @@ type configValidationPlan struct {
 	validateFilterProfiles         bool
 	validateMetadataProfiles       bool
 	validateFormatProfiles         bool
+	validateDefineLibraries        bool
 	validateDatabase               bool
 }
 
@@ -68,6 +70,7 @@ func fullConfigValidationPlan() configValidationPlan {
 		validateFilterProfiles:         true,
 		validateMetadataProfiles:       true,
 		validateFormatProfiles:         true,
+		validateDefineLibraries:        true,
 		validateDatabase:               true,
 	}
 }
@@ -127,8 +130,9 @@ var patchKeysNoCacheImpact = map[string]bool{
 // through to the full search-cache clear or a tightened cap could keep
 // serving pre-cap results for the cache TTL.
 var patchKeysPlaylistOnly = map[string]bool{
-	"filter_profiles": true,
-	"availnzb_mode":   true,
+	"filter_profiles":  true,
+	"define_libraries": true,
+	"availnzb_mode":    true,
 }
 
 // validationPlanFromPatch narrows validation to the fields a patch actually
@@ -207,6 +211,14 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	if _, ok := raw["format_profiles"]; ok {
 		plan.validateFormatProfiles = true
 		plan.validateDeviceAssignments = true
+	}
+	if _, ok := raw["define_libraries"]; ok {
+		plan.validateDefineLibraries = true
+		// A library edit can rename or remove a define that profiles
+		// reference, so every profile recompiles against the new library set
+		// — refusing the save beats silently skipping broken profiles at the
+		// next reload.
+		plan.validateFilterProfiles = true
 	}
 
 	return plan
@@ -452,6 +464,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 
 	if plan.validateFilterProfiles {
 		seen := make(map[string]bool)
+		library := config.DefineLibraryRules(cfg.DefineLibraries)
 		for i, fp := range cfg.FilterProfiles {
 			name := strings.TrimSpace(fp.Name)
 			if name == "" {
@@ -466,7 +479,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			// A profile that fails to compile would be skipped by the ranking
 			// reload, silently leaving its streams unfiltered — reject the save
 			// instead so the bad pattern never reaches the config.
-			if _, err := ranking.Compile(fp); err != nil {
+			if _, err := ranking.Compile(fp, library...); err != nil {
 				errors[fmt.Sprintf("filter_profiles.%d.ranking", i)] = err.Error()
 			}
 			if err := fp.Source.Validate(config.FilterShareCodePrefix); err != nil {
@@ -492,6 +505,63 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				if resolved.MinSizeGB > 0 && resolved.MaxSizeGB > 0 && resolved.MinSizeGB > resolved.MaxSizeGB {
 					errors[fmt.Sprintf("filter_profiles.%d.limits.%s", i, kind)] = "Min size cannot exceed max size"
 				}
+			}
+		}
+	}
+
+	if plan.validateDefineLibraries {
+		seenLibs := make(map[string]bool)
+		// Define names are one namespace across every library: a profile's
+		// matched("Name") could not say which library it meant, so a name two
+		// libraries share is refused here, naming both sides.
+		defineOwner := make(map[string]string)
+		for i, lib := range cfg.DefineLibraries {
+			name := strings.TrimSpace(lib.Name)
+			if name == "" {
+				errors[fmt.Sprintf("define_libraries.%d.name", i)] = "Name is required"
+			} else {
+				key := strings.ToLower(name)
+				if seenLibs[key] {
+					errors[fmt.Sprintf("define_libraries.%d.name", i)] = "Name must be unique"
+				}
+				seenLibs[key] = true
+			}
+			for _, rc := range lib.Rules {
+				path := fmt.Sprintf("define_libraries.%d.rules", i)
+				// A library is data for profiles to reference, never policy: a
+				// score or reject rule riding in on a refresh would change what
+				// every profile does without any profile saying so.
+				if rc.EffectiveAction() != config.RuleActionDefine {
+					errors[path] = fmt.Sprintf("Rule %q is a %s rule; a define library may only contain define rules", rc.Name, rc.EffectiveAction())
+					break
+				}
+				ruleName := strings.ToLower(strings.TrimSpace(rc.Name))
+				if ruleName == "" {
+					errors[path] = "Every define needs a name; an unnamed one can never be referenced"
+					break
+				}
+				if owner, taken := defineOwner[ruleName]; taken {
+					if owner == name {
+						errors[path] = fmt.Sprintf("More than one define is named %q", rc.Name)
+					} else {
+						errors[path] = fmt.Sprintf("Define %q is already in library %q", rc.Name, owner)
+					}
+					break
+				}
+				defineOwner[ruleName] = name
+			}
+			// A library compiles on its own: every define is validated whether
+			// or not anything references it yet, and a define referencing a
+			// profile's rules fails here — a library must stay self-contained
+			// to serve profiles that do not have that rule.
+			if _, err := rules.Compile(lib.Rules); err != nil {
+				path := fmt.Sprintf("define_libraries.%d.rules", i)
+				if _, taken := errors[path]; !taken {
+					errors[path] = err.Error()
+				}
+			}
+			if err := lib.Source.Validate(config.DefineShareCodePrefix); err != nil {
+				errors[fmt.Sprintf("define_libraries.%d.source", i)] = err.Error()
 			}
 		}
 	}

@@ -497,9 +497,10 @@ export async function decodeProfileShareCode(code) {
 // What an imported profile may carry. Real profiles sit far under all three;
 // anything past them is a hostile or corrupted code, and refusing it here is
 // cheaper than letting it bloat the config and slow every search. The bounds
-// exist because codes now arrive from URLs as well as from a paste.
-const maxProfileRules = 500
-const maxConditionLength = 10000
+// exist because codes now arrive from URLs as well as from a paste. Define
+// libraries import rules through the same door, so they share the caps.
+export const maxProfileRules = 500
+export const maxConditionLength = 10000
 
 // profileFromParsed reads what a share code carried. It is strict about the
 // shape and says which rule is wrong when one is: a code that arrives damaged
@@ -698,6 +699,18 @@ export function inlineRuleRefs(when = "", rules = [], seen = []) {
     if (!target || target.enabled === false) return ""
     return `(${inlineRuleRefs(target.when || "", rules, [...seen, key])})`
   })
+}
+
+// matchedRuleNames lists every rule name a condition references, as written.
+// It is how the Filters page knows which profiles lean on a define library:
+// the library's defines are only ever consumed through matched().
+export function matchedRuleNames(text = "") {
+  const names = []
+  String(text).replace(matchedRE(), (whole, name) => {
+    names.push(name)
+    return whole
+  })
+  return names
 }
 
 // renameRuleRefs rewrites every reference to a rule that has just been

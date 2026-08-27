@@ -87,6 +87,107 @@ func TestValidateConfigRejectsBadProfileLimits(t *testing.T) {
 	}
 }
 
+// A define library is data for profiles to reference: define-only, one
+// namespace across every library, self-contained, and compiled as strictly as
+// a profile's own rules.
+func TestValidateConfigDefineLibraries(t *testing.T) {
+	s := &Server{}
+	define := func(name, when string) config.RuleConfig {
+		return config.RuleConfig{Name: name, When: when, Action: config.RuleActionDefine}
+	}
+	plan := configValidationPlan{validateDefineLibraries: true, validateFilterProfiles: true}
+
+	t.Run("a profile referencing a library define is valid", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{Name: "Tiers", Rules: []config.RuleConfig{define("T1", `group == "GRP"`)}}},
+			FilterProfiles:  []config.FilterProfileConfig{{Name: "Mine", Rules: []config.RuleConfig{{Name: "Bonus", When: `matched("T1")`, Points: 500}}}},
+		}
+		if errs := s.validateConfigWithPlan(cfg, plan); len(errs) > 0 {
+			t.Fatalf("expected no errors, got %#v", errs)
+		}
+	})
+
+	t.Run("only define rules are allowed", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{Name: "Tiers", Rules: []config.RuleConfig{
+				{Name: "Sneaky", When: "true", Action: config.RuleActionScore, Points: 500},
+			}}},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if got := errs["define_libraries.0.rules"]; !strings.Contains(got, "only contain define rules") {
+			t.Fatalf("expected the define-only refusal, got %#v", errs)
+		}
+	})
+
+	t.Run("define names are one namespace across libraries", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{
+				{Name: "A", Rules: []config.RuleConfig{define("T1", "true")}},
+				{Name: "B", Rules: []config.RuleConfig{define("t1", "true")}},
+			},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if got := errs["define_libraries.1.rules"]; !strings.Contains(got, `already in library "A"`) {
+			t.Fatalf("expected the cross-library collision, got %#v", errs)
+		}
+	})
+
+	t.Run("a broken define fails the library, not the profiles", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{Name: "Tiers", Rules: []config.RuleConfig{define("Broken", "group ==")}}},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if errs["define_libraries.0.rules"] == "" {
+			t.Fatalf("expected a compile error on the library, got %#v", errs)
+		}
+	})
+
+	t.Run("a library must be self-contained", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{Name: "Tiers", Rules: []config.RuleConfig{define("Leans", `matched("Profile rule")`)}}},
+			FilterProfiles:  []config.FilterProfileConfig{{Name: "Mine", Rules: []config.RuleConfig{{Name: "Profile rule", When: "true", Points: 1}}}},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if got := errs["define_libraries.0.rules"]; !strings.Contains(got, `no rule is named "Profile rule"`) {
+			t.Fatalf("expected the self-containment refusal, got %#v", errs)
+		}
+	})
+
+	t.Run("removing a referenced define breaks the profile save", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{Name: "Tiers"}},
+			FilterProfiles:  []config.FilterProfileConfig{{Name: "Mine", Rules: []config.RuleConfig{{Name: "Bonus", When: `matched("T1")`, Points: 500}}}},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if got := errs["filter_profiles.0.ranking"]; !strings.Contains(got, `no rule is named "T1"`) {
+			t.Fatalf("expected the profile to stop compiling, got %#v", errs)
+		}
+	})
+
+	t.Run("the source snapshot must be a define code", func(t *testing.T) {
+		cfg := &config.Config{
+			DefineLibraries: []config.DefineLibraryConfig{{
+				Name:   "Tiers",
+				Source: &config.ProfileSourceConfig{URL: "https://example.com/lib.txt", Code: "SNZBP1:abc"},
+			}},
+		}
+		errs := s.validateConfigWithPlan(cfg, plan)
+		if got := errs["define_libraries.0.source"]; !strings.Contains(got, "SNZBD1:") {
+			t.Fatalf("expected the prefix refusal, got %#v", errs)
+		}
+	})
+}
+
+// A define_libraries patch revalidates the filter profiles too: a library
+// edit can rename or remove a define a profile references.
+func TestDefineLibraryPatchRevalidatesProfiles(t *testing.T) {
+	body := []byte(`{"define_libraries": []}`)
+	plan := validationPlanFromPatch(body, &config.Config{}, &config.Config{})
+	if !plan.validateDefineLibraries || !plan.validateFilterProfiles {
+		t.Fatalf("plan = %+v, want define libraries and filter profiles validated", plan)
+	}
+}
+
 func TestValidateConfigRejectsUnresolvedProwlarrIndexerPlaceholder(t *testing.T) {
 	enabled := true
 	s := &Server{}

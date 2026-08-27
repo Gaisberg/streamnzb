@@ -84,11 +84,19 @@ func (e *Error) Unwrap() error { return e.Err }
 // are dropped here rather than skipped later, so a broken rule that is turned
 // off does not block a save.
 //
+// library carries the define rules of the config's shared define libraries.
+// They exist only to be referenced: matched() resolves against them after the
+// profile's own rules — a profile rule under the same name shadows the
+// library's — and they never join the set, judge nothing, and are not
+// validated here. A library is validated by compiling it on its own, which is
+// also what keeps it self-contained: its defines can reference each other but
+// never a profile's rules.
+//
 // Compilation is strict: the condition must type-check against the environment
 // and must yield a boolean. A rule that cannot compile fails the whole call,
 // because a profile that silently drops one of its rules filters differently
 // than the user configured and gives no sign of it.
-func Compile(cfgs []config.RuleConfig) (*Set, error) {
+func Compile(cfgs []config.RuleConfig, library ...config.RuleConfig) (*Set, error) {
 	if len(cfgs) == 0 {
 		return nil, nil
 	}
@@ -96,9 +104,20 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 	aggBySource := map[string]int{}
 	// References are resolved against every rule, disabled ones included, so
 	// that switching a rule off changes what a reference to it means rather
-	// than breaking the rules that refer to it.
-	refs := newRefExpander(cfgs)
-	for i, rc := range cfgs {
+	// than breaking the rules that refer to it. Library defines come first so
+	// the expander can tell them from the profile's own rules by index.
+	// Conditions are normalized once, up front, so raw regex notation reads
+	// the same everywhere a condition is parsed — see normalizeConditionEscapes.
+	all := make([]config.RuleConfig, 0, len(library)+len(cfgs))
+	all = append(all, library...)
+	all = append(all, cfgs...)
+	for i := range all {
+		all[i].When = normalizeConditionEscapes(all[i].When)
+		all[i].GroupBy = normalizeConditionEscapes(all[i].GroupBy)
+	}
+	refs := newRefExpander(all, len(library))
+	for i := range cfgs {
+		rc := all[len(library)+i]
 		if !rc.IsEnabled() {
 			continue
 		}
@@ -112,7 +131,7 @@ func Compile(cfgs []config.RuleConfig) (*Set, error) {
 		// matched("Other rule") is inlined before anything else looks at the
 		// condition, so a reference works wherever a condition does and the
 		// tiers it reads are the tiers of everything it pulls in.
-		when, err := refs.condition(i)
+		when, err := refs.condition(len(library) + i)
 		if err != nil {
 			return nil, &Error{Rule: name, Err: err}
 		}

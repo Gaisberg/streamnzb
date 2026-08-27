@@ -86,7 +86,7 @@ function isCustomGroupBy(groupBy) {
 // everything a condition can read, grouped by how far it can be trusted.
 // Clicking a name inserts it into the condition you were last editing, which
 // is the part the formatter's read-only list makes you do by hand.
-function AttributeReference({ onInsert, rules = [] }) {
+function AttributeReference({ onInsert, rules = [], libraryRules = [] }) {
   const [open, setOpen] = useState(false)
   // Referable rules are the named ones, deduplicated: a name two rules share
   // has no answer to which was meant, and the compiler refuses it, so it is
@@ -94,6 +94,12 @@ function AttributeReference({ onInsert, rules = [] }) {
   const referable = rules
     .map((rule) => String(rule.name || "").trim())
     .filter((name, i, all) => name && all.findIndex((other) => ruleKey(other) === ruleKey(name)) === i)
+  // Library defines a profile rule shadows are listed under the profile's own
+  // rules already — one name, one chip.
+  const referableLibrary = libraryRules
+    .map((rule) => String(rule.name || "").trim())
+    .filter((name, i, all) => name && all.findIndex((other) => ruleKey(other) === ruleKey(name)) === i)
+    .filter((name) => !referable.some((own) => ruleKey(own) === ruleKey(name)))
 
   return (
     <div className="rounded-lg border border-border/60 bg-card/40">
@@ -135,6 +141,30 @@ function AttributeReference({ onInsert, rules = [] }) {
               </div>
             </div>
           ))}
+
+          {referableLibrary.length > 0 && (
+            <div className="space-y-1.5 border-t border-border/50 pt-3">
+              <span className="text-[11px] font-medium text-foreground">Library defines</span>
+              <p className="max-w-prose text-[11px] text-muted-foreground">
+                Defines from the shared libraries below, referenced the same way —{" "}
+                <code className="font-mono">matched(&quot;Name&quot;)</code>. A rule of your own under the
+                same name shadows the library&apos;s version.
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {referableLibrary.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    title={`matched(${JSON.stringify(name)})`}
+                    onClick={() => onInsert(`matched(${JSON.stringify(name)})`)}
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {referable.length > 0 && (
             <div className="space-y-1.5 border-t border-border/50 pt-3">
@@ -449,8 +479,11 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
 // Built to the same anatomy as the result-format editor — an editing surface,
 // a reference of what can be read, and a live preview — because it is the same
 // job: hand-writing an expression against data you cannot see.
-export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount = 0, error = "" }) {
+export function RulesEditor({ values = [], onChange, libraryRules = [], ruleStats = {}, sampleCount = 0, error = "" }) {
   const inputsRef = useRef({})
+  // References resolve against the profile's own rules first, then the shared
+  // library defines — the same shadowing order the compiler applies.
+  const refRules = [...values, ...libraryRules]
 
   // Cards are one rule at a time; text is all of them at once. The text is
   // seeded from the rules on the way in and committed back on every parse that
@@ -675,7 +708,7 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
               <RuleCard
                 key={index}
                 rule={rule}
-                rules={values}
+                rules={refRules}
                 stat={ruleStats[rule.name]}
                 sampleCount={sampleCount}
                 onChange={(next) => {
@@ -705,7 +738,7 @@ export function RulesEditor({ values = [], onChange, ruleStats = {}, sampleCount
       </SettingBlock>
 
       <SettingBlock>
-        <AttributeReference onInsert={insert} rules={values} />
+        <AttributeReference onInsert={insert} rules={values} libraryRules={libraryRules} />
       </SettingBlock>
 
     </SettingGroup>

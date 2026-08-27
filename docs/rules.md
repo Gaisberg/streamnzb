@@ -436,6 +436,30 @@ click. A reference to a name no rule has, to a name two rules share, or one
 that closes a circle is refused when the profile is saved, naming the rule that
 carries it.
 
+### Define libraries
+
+A set of defines every profile wants — release-group tiers, community lists —
+does not have to be copied into each profile. A **define library** (bottom of
+the Filters page) holds define rules once, and every filter profile references
+them with the same `matched("Name")`; the reference panel lists them under
+**Library defines**. Libraries carry *only* defines — a library cannot score,
+reject or cap anything, so the data it maintains and what your profile does
+with that data stay separate by construction.
+
+References resolve against the profile's own rules first: a rule you write
+under a library define's name **shadows** the library's version, which is how
+one entry is overridden without forking the library. Deleting a library (or
+refreshing away a define) that profiles still reference is refused at save
+with the usual unknown-name error, and the delete confirmation names the
+profiles that would break.
+
+Libraries share the remote-source mechanism of
+[linked profiles](filters.md#remote-profiles) — import from a URL, manual
+Refresh, a confirmation diff — with one difference: a library is the
+maintainer's data, so a refresh replaces its defines wholesale rather than
+merging. See [Define libraries](filters.md#define-libraries) for the file
+formats and the refresh contract.
+
 ## Fail-open
 
 **A rule that reads `probed.*`, `avail.*` or `seadex.*` does not run on a
@@ -504,6 +528,12 @@ Standard expression syntax, powered by
 `matches` takes a Go (RE2) regular expression. RE2 has no lookahead or
 lookbehind, and rules are the reason it does not need one: `\bDV\b(?!.*HDR10)`
 becomes `dolbyVision and not hdrFallback`.
+
+Write the regex as-is: backslashes in a condition string are taken literally,
+so `\+`, `\d` and `\b` mean what they mean in the regex — no doubling needed,
+though a defensively written `\\+` means the same thing. This is what lets a
+[define library](#define-libraries) generated from an upstream regex list be
+consumed without rewriting its escapes.
 
 ## Coming from AIOStreams
 

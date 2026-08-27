@@ -2,8 +2,8 @@
 // fetched from a URL. This is the container and the transport, shared by every
 // profile kind that can be exported — the payload JSON, gzip-compressed and
 // base64url-encoded behind a versioned prefix ("SNZBP1:" for filter profiles,
-// "SNZBF1:" for format profiles). What a payload may contain is each kind's
-// own business; nothing here interprets it.
+// "SNZBF1:" for format profiles, "SNZBD1:" for define libraries). What a
+// payload may contain is each kind's own business; nothing here interprets it.
 //
 // The trust model for remote sources, in one place because everything below
 // leans on it: the URL the user typed is the only source ever consulted —

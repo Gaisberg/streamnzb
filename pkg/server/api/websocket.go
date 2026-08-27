@@ -341,4 +341,7 @@ func clearPatchedFilterProfiles(body []byte, cfg *config.Config) {
 	if _, ok := raw["format_profiles"]; ok {
 		cfg.FormatProfiles = nil
 	}
+	if _, ok := raw["define_libraries"]; ok {
+		cfg.DefineLibraries = nil
+	}
 }

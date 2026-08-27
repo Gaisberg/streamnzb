@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { Link2, Loader2, RefreshCw, Unlink } from "lucide-react"
 import { checkForUpdate } from "@/lib/remoteProfiles"
 import { checkFormatForUpdate } from "@/lib/formatProfiles"
+import { checkDefineLibraryForUpdate } from "@/lib/defineLibraries"
 import { sourceHost } from "@/lib/shareCodes"
 
 function formatWhen(value) {
@@ -84,15 +85,27 @@ function FormatDiff({ pending }) {
 const FLAVORS = {
   filter: {
     check: checkForUpdate,
+    noun: "profile",
     blurb: "Refresh fetches the current share code and shows what would change before anything is applied. Rules the maintainer owns are updated in place; rules you added under your own names are kept.",
     dialogNote: "Nothing changes until you apply. Your own rules — names the maintainer never used — stay yours.",
     Diff: FilterDiff,
   },
   format: {
     check: checkFormatForUpdate,
+    noun: "profile",
     blurb: "Refresh fetches the current share code and shows what would change before anything is applied. Applying replaces the templates with the maintainer's current version.",
     dialogNote: "Nothing changes until you apply. The profile keeps its name; the templates become the maintainer's.",
     Diff: FormatDiff,
+  },
+  // A library diff is rule-shaped like the filter one, but the contract is
+  // wholesale: the rules are the maintainer's, and a lasting override belongs
+  // in the profile, whose own rule shadows the library's.
+  library: {
+    check: checkDefineLibraryForUpdate,
+    noun: "library",
+    blurb: "Refresh fetches the current file and shows what would change before anything is applied. Applying replaces the defines with the maintainer's current version; to override one for good, write a profile rule under the same name — it shadows the library's.",
+    dialogNote: "Nothing changes until you apply. The library keeps its name; the defines become the maintainer's.",
+    Diff: FilterDiff,
   },
 }
 
@@ -106,7 +119,7 @@ export function RemoteSourceCard({ profile, onChange, flavor = "filter" }) {
   const [pending, setPending] = useState(null)
   const [confirmUnlink, setConfirmUnlink] = useState(false)
 
-  const { check, blurb, dialogNote, Diff } = FLAVORS[flavor]
+  const { check, noun, blurb, dialogNote, Diff } = FLAVORS[flavor]
   const source = profile.source || {}
   const host = sourceHost(source.url)
   const now = () => new Date().toISOString()
@@ -192,7 +205,7 @@ export function RemoteSourceCard({ profile, onChange, flavor = "filter" }) {
           <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
             {renamed && (
               <p className="text-xs text-muted-foreground">
-                The maintainer calls this profile “{pending.remoteName}”. Your profile keeps its name, “{profile.name}”.
+                The maintainer calls this {noun} “{pending.remoteName}”. Your {noun} keeps its name, “{profile.name}”.
               </p>
             )}
             {pending && <Diff pending={pending} />}
@@ -208,8 +221,8 @@ export function RemoteSourceCard({ profile, onChange, flavor = "filter" }) {
       <ConfirmDialog
         open={confirmUnlink}
         onOpenChange={setConfirmUnlink}
-        title="Unlink profile"
-        description={`Unlink “${profile.name}” from ${host}? The profile keeps its current state and becomes fully yours; Refresh goes away until it is imported from a URL again.`}
+        title={`Unlink ${noun}`}
+        description={`Unlink “${profile.name}” from ${host}? The ${noun} keeps its current state and becomes fully yours; Refresh goes away until it is imported from a URL again.`}
         confirmLabel="Unlink"
         onConfirm={unlink}
       />

@@ -297,6 +297,76 @@ func TestDefineWithResultSetCall(t *testing.T) {
 	}
 }
 
+// A profile rule may reference a define that lives in a shared library rather
+// than in the profile, and the reference behaves exactly like one to a local
+// define: scope carried, disabled means never matches, chains resolve within
+// the library.
+func TestLibraryReferences(t *testing.T) {
+	library := []config.RuleConfig{
+		{Name: "Movies T1 Groups", Scope: "movie", When: `group == "FraMeSToR"`, Action: config.RuleActionDefine},
+		{Name: "Trusted", When: `matched("Movies T1 Groups") or group == "TayTo"`, Action: config.RuleActionDefine},
+		{Name: "Off tier", When: `nonsense +`, Action: config.RuleActionDefine, Enabled: boolPtr(false)},
+	}
+	set, err := rules.Compile([]config.RuleConfig{
+		{Name: "T1 bonus", When: `matched("Trusted")`, Points: 500},
+		{Name: "Off never matches", When: `matched("Off tier")`, Points: 7},
+	}, library...)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	if got := set.Evaluate(envFor("Movie 2020 2160p BluRay REMUX-FraMeSToR", nil), "movie"); got.Points != 500 {
+		t.Errorf("Points = %d, want 500 via the library chain", got.Points)
+	}
+	// The library tier is movie-scoped, so the reference to it does not hold
+	// for series — but the unscoped half of the chain still does.
+	env := envFor("Show 2020 S01E01 1080p WEB-DL-FraMeSToR", nil)
+	env.Kind = "series"
+	if got := set.Evaluate(env, "series"); got.Points != 0 {
+		t.Errorf("series Points = %d, want 0 — the library tier is movie-only", got.Points)
+	}
+	if got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-NOBODY", nil), "movie"); got.Points != 0 {
+		t.Errorf("Points = %d, want 0 — neither tier holds and the disabled define never matches", got.Points)
+	}
+}
+
+// A profile rule under a library define's name shadows it: the profile's own
+// version is what references resolve to, which is how a user overrides one
+// entry of a shared library without forking it.
+func TestProfileRuleShadowsLibraryDefine(t *testing.T) {
+	library := []config.RuleConfig{
+		{Name: "Tier", When: `group == "THEIRS"`, Action: config.RuleActionDefine},
+	}
+	set, err := rules.Compile([]config.RuleConfig{
+		{Name: "Tier", When: `group == "MINE"`, Action: config.RuleActionDefine},
+		{Name: "Uses it", When: `matched("Tier")`, Points: 5},
+	}, library...)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-MINE", nil), "movie"); got.Points != 5 {
+		t.Errorf("Points = %d, want 5 — the profile's own define wins", got.Points)
+	}
+	if got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-THEIRS", nil), "movie"); got.Points != 0 {
+		t.Errorf("Points = %d, want 0 — the shadowed library define must not resolve", got.Points)
+	}
+}
+
+// Ambiguity within the libraries stays an error: two libraries defining one
+// name have no answer to which was meant, and no profile rule shadows it.
+func TestLibraryReferenceErrors(t *testing.T) {
+	library := []config.RuleConfig{
+		{Name: "Tier", When: `group == "A"`, Action: config.RuleActionDefine},
+		{Name: "tier", When: `group == "B"`, Action: config.RuleActionDefine},
+	}
+	_, err := rules.Compile([]config.RuleConfig{
+		{Name: "Uses it", When: `matched("Tier")`, Points: 1},
+	}, library...)
+	if err == nil || !strings.Contains(err.Error(), `more than one library define is named "Tier"`) {
+		t.Errorf("err = %v, want the duplicate-library-define refusal", err)
+	}
+}
+
 // A definition is validated as strictly as an acting rule — a broken one fails
 // the save even when nothing references it yet — and grouping stays a
 // limit-rule thing.

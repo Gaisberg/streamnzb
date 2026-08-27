@@ -29,10 +29,13 @@ function downloadText(filename, text) {
 //   encode(profile) -> code, decode(code) -> profile,
 //   fetchRemote(url) -> { url, code, profile }, placeholder: "SNZBP1:…",
 // }
+// noun names the kind in the dialogs ("profile", "define library");
+// importNote overrides the import dialog's description where the default's
+// share-code framing does not fit the kind.
 // Returns { openImport, exportProfile, dialogs } — render `dialogs` once in
 // the page, hand `openImport` to a header button and `exportProfile` to the
 // per-profile action row.
-export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
+export function useProfileSharing({ profiles, onSave, isSaving, codec, noun = "profile", importNote }) {
   const [exportCode, setExportCode] = useState(null)
   const [exportName, setExportName] = useState("")
   const [exportCopied, setExportCopied] = useState(false)
@@ -76,7 +79,7 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
   // a profile that never landed.
   const addImported = async (profile) => {
     const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
-    let name = (profile.name || "").trim() || "Imported Profile"
+    let name = (profile.name || "").trim() || `Imported ${noun.replace(/\b\w/g, (c) => c.toUpperCase())}`
     if (taken.has(name.toLowerCase())) {
       let n = 2
       while (taken.has(`${name} ${n}`.toLowerCase())) n += 1
@@ -108,7 +111,7 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
       // A save the server refused carries the specific complaint per field;
       // that beats the generic "Validation failed" headline.
       const fieldError = err?.fieldErrors && Object.values(err.fieldErrors)[0]
-      setImportError(fieldError || err?.message || "Could not read that profile.")
+      setImportError(fieldError || err?.message || `Could not read that ${noun}.`)
     } finally {
       setImportBusy(false)
     }
@@ -121,7 +124,7 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
           <DialogHeader>
             <DialogTitle>Export “{exportName}”</DialogTitle>
             <DialogDescription>
-              The whole profile as one string. It pastes into a chat window intact, and whoever receives it
+              The whole {noun} as one string. It pastes into a chat window intact, and whoever receives it
               imports it from this page. Download writes it to a file; host that file at a raw https URL (a
               GitHub repo or gist works) and others can import from the URL and refresh later.
             </DialogDescription>
@@ -172,11 +175,11 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec }) {
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Import profile</DialogTitle>
+            <DialogTitle>Import {noun}</DialogTitle>
             <DialogDescription>
-              Paste a share code, or the https URL of a file that serves one. Either way it is added as a new
-              profile and never overwrites an existing one. A profile imported from a URL stays linked to it:
-              a Refresh button fetches updates, which apply only after you review them.
+              {importNote || `Paste a share code, or the https URL of a file that serves one. Either way it is added as a new
+              ${noun} and never overwrites an existing one. A ${noun} imported from a URL stays linked to it:
+              a Refresh button fetches updates, which apply only after you review them.`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

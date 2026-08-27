@@ -1,15 +1,20 @@
 import React, { useMemo } from "react"
 import { Button } from "@/components/ui/button"
-import { Import, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
+import { Import, Library, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
 import { ProfileManager } from "@/components/ProfileManager"
 import { ProfileEditor } from "@/components/ProfileEditor"
+import { DefineLibraryEditor } from "@/components/DefineLibraryEditor"
 import { RemoteSourceCard } from "@/components/RemoteSourceCard"
 import { useProfileSharing } from "@/components/useProfileSharing"
 import {
   CONTENT_KINDS, DEFAULT_PRESET, PRESETS, decodeProfileShareCode, defaultProfile,
-  encodeProfileShareCode, withoutLegacyFields,
+  encodeProfileShareCode, matchedRuleNames, ruleKey, withoutLegacyFields,
 } from "@/lib/profiles"
 import { fetchRemoteProfile } from "@/lib/remoteProfiles"
+import {
+  defineLibraryFromPaste, encodeDefineLibraryShareCode, fetchRemoteDefineLibrary,
+  summarizeDefineLibrary,
+} from "@/lib/defineLibraries"
 
 // summarize gives each profile card a one-line read of what it does. A profile
 // is a preset plus rules, so that is the whole summary.
@@ -69,9 +74,38 @@ function normalizeOnSave(profile) {
   }
 }
 
-export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
+// libraryUsage maps a library name to the profiles that reference any of its
+// defines through matched(). It is what the delete confirmation reads —
+// deleting a library a profile leans on stops that profile from compiling —
+// and what marks a library as in use in the list.
+function libraryUsage(libraries, profiles) {
+  const usage = {}
+  libraries.forEach((library) => {
+    const defines = new Set((library.rules || []).map((rule) => ruleKey(rule.name)))
+    const users = profiles.filter((profile) =>
+      (profile.rules || []).some((rule) =>
+        matchedRuleNames(`${rule.when || ""} ${rule.group_by || ""}`)
+          .some((name) => defines.has(ruleKey(name)))))
+    if (users.length) usage[ruleKey(library.name)] = users.map((profile) => profile.name)
+  })
+  return usage
+}
+
+function describeLibraryDelete(library, usage) {
+  const name = library?.name || ""
+  const used = usage[ruleKey(name)]
+  if (!used?.length) {
+    return `Delete “${name}”? No profile references its defines, so nothing else changes.`
+  }
+  return `Delete “${name}”? Its defines are referenced by ${used.join(", ")} — those profiles will stop compiling until the references are removed, and their next save will be refused.`
+}
+
+export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.filter_profiles || [], [config])
+  const libraries = useMemo(() => config?.define_libraries || [], [config])
   const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
+  const libUsage = useMemo(() => libraryUsage(libraries, profiles), [libraries, profiles])
+  const libraryRules = useMemo(() => libraries.flatMap((library) => library.rules || []), [libraries])
   const anyInUse = Object.keys(usage).length > 0
   const sharing = useProfileSharing({
     profiles,
@@ -82,6 +116,19 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
       decode: decodeProfileShareCode,
       fetchRemote: fetchRemoteProfile,
       placeholder: "SNZBP1:…",
+    },
+  })
+  const librarySharing = useProfileSharing({
+    profiles: libraries,
+    onSave: onSaveLibraries,
+    isSaving,
+    noun: "define library",
+    importNote: "Paste a share code or plain rule text — one define per line, # comments allowed — or give the https URL of a file serving either. It is added as a new library and never overwrites an existing one. A library imported from a URL stays linked to it: a Refresh button fetches updates, which apply only after you review them.",
+    codec: {
+      encode: encodeDefineLibraryShareCode,
+      decode: defineLibraryFromPaste,
+      fetchRemote: fetchRemoteDefineLibrary,
+      placeholder: "SNZBD1:…  — or paste defines, one per line",
     },
   })
 
@@ -139,12 +186,63 @@ export function FiltersPage({ config, onSave, isSaving, saveStatus }) {
         renderEditor={(draft, setDraft) => (
           <>
             {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="filter" />}
-            <ProfileEditor profile={draft} onChange={setDraft} />
+            <ProfileEditor profile={draft} onChange={setDraft} libraryRules={libraryRules} />
+          </>
+        )}
+      />
+
+      <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-6">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+            <Library className="h-4 w-4" /> Define libraries
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Shared bundles of define rules — release-group tiers, community lists — kept once and referenced
+            from every profile with <code className="font-mono text-xs">matched(&quot;Name&quot;)</code>. The
+            data lives here; what a tier is worth stays each profile&apos;s own rule.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={librarySharing.openImport}>
+          <Import className="mr-2 h-4 w-4" /> Import
+        </Button>
+      </div>
+
+      <ProfileManager
+        profiles={libraries}
+        onSave={onSaveLibraries}
+        usage={libUsage}
+        summarize={summarizeDefineLibrary}
+        newProfile={(name) => ({ name, rules: [] })}
+        describeDelete={describeLibraryDelete}
+        entityLabel="define library"
+        heading="Library"
+        addButtonLabel="New library"
+        newProfileBaseName="New Library"
+        emptyText="No define libraries yet. Import a community-maintained one from a URL, or create your own."
+        isSaving={isSaving}
+        saveStatus={saveStatus}
+        // A duplicate is a fork: it drops the remote link, so two libraries
+        // never refresh from the same URL.
+        normalizeOnDuplicate={(library) => {
+          const copy = { ...library }
+          delete copy.source
+          return copy
+        }}
+        renderActions={(draft) => (
+          <Button variant="ghost" size="sm" onClick={() => librarySharing.exportProfile(draft)}>
+            <Share2 className="mr-2 h-3.5 w-3.5" /> Export
+          </Button>
+        )}
+        renderEditor={(draft, setDraft) => (
+          <>
+            {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="library" />}
+            <DefineLibraryEditor library={draft} onChange={setDraft} />
           </>
         )}
       />
 
       {sharing.dialogs}
+      {librarySharing.dialogs}
     </div>
   )
 }

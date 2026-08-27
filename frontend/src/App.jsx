@@ -386,6 +386,7 @@ function App() {
                 <FiltersPage
                   config={config}
                   onSave={(filterProfiles) => sendCommand('save_config', { filter_profiles: filterProfiles })}
+                  onSaveLibraries={(defineLibraries) => sendCommand('save_config', { define_libraries: defineLibraries })}
                   isSaving={isSaving}
                   saveStatus={saveStatus}
                 />

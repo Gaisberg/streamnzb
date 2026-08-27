@@ -706,6 +706,9 @@ type Config struct {
 	// FormatProfiles are the named result-format profiles streams bind by
 	// name. Same nil-vs-empty marker semantics as MetadataProfiles.
 	FormatProfiles []FormatProfileConfig `json:"format_profiles"`
+	// DefineLibraries are shared bundles of define rules, available to every
+	// filter profile through matched("Name") — see DefineLibraryConfig.
+	DefineLibraries []DefineLibraryConfig `json:"define_libraries,omitempty"`
 
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.

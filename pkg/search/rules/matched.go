@@ -42,6 +42,11 @@ const maxExpandedCondition = 64 << 10
 // the profile that refers to it.
 type refExpander struct {
 	cfgs []config.RuleConfig
+	// libCount marks where cfgs stops being library defines and starts being
+	// the profile's own rules. Indices below it came from define libraries;
+	// on a name collision the profile's own rule wins — shadowing the shared
+	// data is how a user overrides one entry of a library without forking it.
+	libCount int
 	// byName maps a rule name — trimmed and lowercased, the same way the
 	// editor keeps names unique — to the rules carrying it.
 	byName map[string][]int
@@ -53,9 +58,10 @@ type refExpander struct {
 	stack []int
 }
 
-func newRefExpander(cfgs []config.RuleConfig) *refExpander {
+func newRefExpander(cfgs []config.RuleConfig, libCount int) *refExpander {
 	e := &refExpander{
 		cfgs:     cfgs,
+		libCount: libCount,
 		byName:   make(map[string][]int, len(cfgs)),
 		expanded: make(map[int]string, len(cfgs)),
 	}
@@ -138,16 +144,33 @@ func (e *refExpander) reference(name string) (ast.Node, error) {
 		return nil, fmt.Errorf("%s needs the name of another rule", matchedIdent)
 	}
 	found := e.byName[key]
-	switch {
-	case len(found) == 0:
-		return nil, fmt.Errorf("no rule is named %q", name)
-	case len(found) > 1:
-		// Two rules under one name have no answer to which one was meant, and
-		// picking either silently would make the reference mean whichever the
-		// user happened to write first.
-		return nil, fmt.Errorf("more than one rule is named %q", name)
+	// The profile's own rules shadow library defines: a user overrides one
+	// entry of a shared library by writing a rule under the same name, without
+	// forking the library. Ambiguity within one side stays an error — two
+	// rules under one name have no answer to which one was meant, and picking
+	// either silently would make the reference mean whichever the user
+	// happened to write first.
+	var own, lib []int
+	for _, i := range found {
+		if i >= e.libCount {
+			own = append(own, i)
+		} else {
+			lib = append(lib, i)
+		}
 	}
-	i := found[0]
+	var i int
+	switch {
+	case len(own) > 1:
+		return nil, fmt.Errorf("more than one rule is named %q", name)
+	case len(own) == 1:
+		i = own[0]
+	case len(lib) > 1:
+		return nil, fmt.Errorf("more than one library define is named %q", name)
+	case len(lib) == 1:
+		i = lib[0]
+	default:
+		return nil, fmt.Errorf("no rule is named %q", name)
+	}
 	rc := e.cfgs[i]
 	// A rule that is switched off classifies nothing. Reading a disabled rule
 	// as "never matches" is both the honest answer and what keeps the promise

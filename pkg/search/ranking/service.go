@@ -105,8 +105,11 @@ func (s *Service) Reload(cfg *config.Config) []error {
 	compiled := make(map[string]*Profile, len(cfg.FilterProfiles))
 	var errs []error
 
+	// Library defines are shared by every profile; flattened once here and
+	// resolved per profile, after the profile's own rules, by the compiler.
+	library := config.DefineLibraryRules(cfg.DefineLibraries)
 	for _, fp := range cfg.FilterProfiles {
-		profile, err := Compile(fp)
+		profile, err := Compile(fp, library...)
 		if err != nil {
 			errs = append(errs, &ProfileError{Name: fp.Name, Err: err})
 			continue
@@ -122,8 +125,10 @@ func (s *Service) Reload(cfg *config.Config) []error {
 
 // Compile builds the jhin ranker for one profile config. Config validation
 // uses it too, so a pattern that cannot compile is rejected at save time with
-// the same error Reload would report.
-func Compile(fp config.FilterProfileConfig) (*Profile, error) {
+// the same error Reload would report. library carries the config's shared
+// define libraries, flattened — rules resolve matched() against them after
+// the profile's own rules.
+func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Profile, error) {
 	// A profile is a preset plus rules. Ranking is only ever set on a config
 	// that has not been migrated yet, and the legacy fields only on one that
 	// predates jhin entirely; both are honoured so an in-memory profile built
@@ -149,7 +154,7 @@ func Compile(fp config.FilterProfileConfig) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	ruleSet, err := rules.Compile(fp.Rules)
+	ruleSet, err := rules.Compile(fp.Rules, library...)
 	if err != nil {
 		return nil, err
 	}

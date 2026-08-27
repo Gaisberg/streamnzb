@@ -32,10 +32,12 @@ const maxSourceCodeBytes = 256 * 1024
 
 // Share code prefixes, one per profile kind. They mirror the frontend's
 // SHARE_CODE_PREFIX constants: a filter profile's snapshot can only ever be a
-// filter code, and a format profile's a format code.
+// filter code, a format profile's a format code, and a define library's a
+// define code.
 const (
 	FilterShareCodePrefix = "SNZBP1:"
 	FormatShareCodePrefix = "SNZBF1:"
+	DefineShareCodePrefix = "SNZBD1:"
 )
 
 // Validate refuses a source record the importer could not have produced.
