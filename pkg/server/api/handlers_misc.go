@@ -31,18 +31,45 @@ type performanceStatsResponse struct {
 	RecentTTFF    []metrics.PlaybackTTFFSample     `json:"recent_ttff"`
 }
 
-func parseDateParam(raw string) (*time.Time, error) {
+func parseDateParam(raw string) (t *time.Time, dateOnly bool, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil, nil
+		return nil, false, nil
+	}
+	// RFC 3339 timestamps allow sub-day windows like the last 24 hours.
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return &ts, false, nil
 	}
 	// Parse date-only filters in local server time so the selected calendar day
 	// aligns with user expectations instead of being interpreted as UTC.
-	t, err := time.ParseInLocation("2006-01-02", raw, time.Local)
+	parsed, err := time.ParseInLocation("2006-01-02", raw, time.Local)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &t, nil
+	return &parsed, true, nil
+}
+
+// parseStatsRange reads the from/to query params shared by the stats-history
+// GET and DELETE paths. A date-only "to" is widened by a day so the range
+// covers that whole calendar day; a timestamp "to" is used as-is. A non-empty
+// errMsg is ready to hand to http.Error as a 400.
+func parseStatsRange(r *http.Request) (from, to *time.Time, errMsg string) {
+	from, _, err := parseDateParam(r.URL.Query().Get("from"))
+	if err != nil {
+		return nil, nil, "Invalid from date (expected YYYY-MM-DD or RFC 3339)"
+	}
+	to, toDateOnly, err := parseDateParam(r.URL.Query().Get("to"))
+	if err != nil {
+		return nil, nil, "Invalid to date (expected YYYY-MM-DD or RFC 3339)"
+	}
+	if to != nil && toDateOnly {
+		endExclusive := to.Add(24 * time.Hour)
+		to = &endExclusive
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return nil, nil, "Invalid date range"
+	}
+	return from, to, ""
 }
 
 func (s *Server) handleGetIndexerCaps(w http.ResponseWriter, r *http.Request) {
@@ -380,22 +407,9 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		from, err := parseDateParam(r.URL.Query().Get("from"))
-		if err != nil {
-			http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
-			return
-		}
-		to, err := parseDateParam(r.URL.Query().Get("to"))
-		if err != nil {
-			http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
-			return
-		}
-		if to != nil {
-			endExclusive := to.Add(24 * time.Hour)
-			to = &endExclusive
-		}
-		if from != nil && to != nil && !from.Before(*to) {
-			http.Error(w, "Invalid date range", http.StatusBadRequest)
+		from, to, rangeErr := parseStatsRange(r)
+		if rangeErr != "" {
+			http.Error(w, rangeErr, http.StatusBadRequest)
 			return
 		}
 
@@ -430,22 +444,9 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 		targetType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
 		name := strings.TrimSpace(r.URL.Query().Get("name"))
 
-		from, err := parseDateParam(r.URL.Query().Get("from"))
-		if err != nil {
-			http.Error(w, "Invalid from date (expected YYYY-MM-DD)", http.StatusBadRequest)
-			return
-		}
-		to, err := parseDateParam(r.URL.Query().Get("to"))
-		if err != nil {
-			http.Error(w, "Invalid to date (expected YYYY-MM-DD)", http.StatusBadRequest)
-			return
-		}
-		if to != nil {
-			endExclusive := to.Add(24 * time.Hour)
-			to = &endExclusive
-		}
-		if from != nil && to != nil && !from.Before(*to) {
-			http.Error(w, "Invalid date range", http.StatusBadRequest)
+		from, to, rangeErr := parseStatsRange(r)
+		if rangeErr != "" {
+			http.Error(w, rangeErr, http.StatusBadRequest)
 			return
 		}
 

@@ -16,6 +16,7 @@ import { apiFetch } from "@/api"
 import { cn } from "@/lib/utils"
 
 const PRESETS = [
+  { id: '24h', label: 'Last 24 Hours', description: 'Past 24 hours of snapshots' },
   { id: '7d', label: 'Last 7 Days', description: 'Past 7 days of snapshots' },
   { id: '30d', label: 'Last 30 Days', description: 'Past 30 days of snapshots' },
   { id: '90d', label: 'Last 90 Days', description: 'Past quarter of snapshots' },
@@ -94,6 +95,12 @@ function rangeFromPreset(preset) {
   const end = new Date()
   const todayStr = formatDateInput(end)
   if (preset === 'all') return { from: '', to: '' }
+  if (preset === '24h') {
+    // Full timestamp instead of a calendar date so the backend applies a
+    // rolling 24-hour window; empty "to" keeps the range open through now.
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+    return { from: start.toISOString(), to: '' }
+  }
   if (preset === 'mtd') {
     const start = new Date(end.getFullYear(), end.getMonth(), 1)
     return { from: formatDateInput(start), to: todayStr }
@@ -106,7 +113,6 @@ function rangeFromPreset(preset) {
 
 const indexerMetricOptions = {
   response: { label: 'Response (ms)', key: 'avgResponseMs', suffix: ' ms' },
-  speed: { label: 'Speed (req/s)', key: 'speedRps', suffix: ' req/s' },
   searches: { label: 'Searches', key: 'searchesCount', suffix: '' },
   downloads: { label: 'Downloads', key: 'downloadsCount', suffix: '' },
   uniqueHits: { label: 'Unique hits', key: 'uniqueHitsCount', suffix: '' },
@@ -117,9 +123,9 @@ const indexerMetricOptions = {
 export const StatisticsPage = memo(function StatisticsPage() {
   const [historyStats, setHistoryStats] = useState({ providers: [], indexers: [] })
   const [perfStats, setPerfStats] = useState(null)
-  const [preset, setPreset] = useState('30d')
+  const [preset, setPreset] = useState('24h')
   const [customRange, setCustomRange] = useState(defaultDateRange())
-  const [activeRange, setActiveRange] = useState(defaultDateRange())
+  const [activeRange, setActiveRange] = useState(() => rangeFromPreset('24h'))
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [indexerMetric, setIndexerMetric] = useState('response')
   const [loading, setLoading] = useState(false)
@@ -244,15 +250,19 @@ export const StatisticsPage = memo(function StatisticsPage() {
         const name = String(pick(indexer, 'indexer_name', 'IndexerName', '') || '').trim()
         if (!name) return null
         const avgResponseMs = toNumber(pick(indexer, 'avg_response_ms', 'AvgResponseMS'))
+        const availAvailableCount = toNumber(pick(indexer, 'avail_available_count', 'AvailAvailableCount'))
+        const availDiscardedCount = toNumber(pick(indexer, 'avail_discarded_count', 'AvailDiscardedCount'))
+        const availTotal = availAvailableCount + availDiscardedCount
         return {
           name,
           avgResponseMs,
-          speedRps: avgResponseMs > 0 ? 1000 / avgResponseMs : 0,
           searchesCount: toNumber(pick(indexer, 'searches_count', 'SearchesCount')),
           downloadsCount: toNumber(pick(indexer, 'downloads_used', 'DownloadsUsed')),
           uniqueHitsCount: toNumber(pick(indexer, 'unique_hits_count', 'UniqueHitsCount')),
-          availAvailableCount: toNumber(pick(indexer, 'avail_available_count', 'AvailAvailableCount')),
-          availDiscardedCount: toNumber(pick(indexer, 'avail_discarded_count', 'AvailDiscardedCount')),
+          availAvailableCount,
+          availDiscardedCount,
+          availTotal,
+          availabilityPercent: availTotal > 0 ? (availAvailableCount / availTotal) * 100 : 0,
         }
       })
       .filter(Boolean)
@@ -275,12 +285,17 @@ export const StatisticsPage = memo(function StatisticsPage() {
       .map((provider) => {
         const name = String(pick(provider, 'provider_name', 'ProviderName', '') || '').trim()
         if (!name) return null
+        const articleAvailableCount = toNumber(pick(provider, 'article_available_count', 'ArticleAvailableCount'))
+        const articleMissingCount = toNumber(pick(provider, 'article_missing_count', 'ArticleMissingCount'))
+        const articleTotal = articleAvailableCount + articleMissingCount
         return {
           name,
           host: String(pick(provider, 'host', 'Host', '')),
           downloadedMb: toNumber(pick(provider, 'downloaded_mb', 'DownloadedMB')),
-          articleAvailableCount: toNumber(pick(provider, 'article_available_count', 'ArticleAvailableCount')),
-          articleMissingCount: toNumber(pick(provider, 'article_missing_count', 'ArticleMissingCount')),
+          articleAvailableCount,
+          articleMissingCount,
+          articleTotal,
+          missingPercent: articleTotal > 0 ? (articleMissingCount / articleTotal) * 100 : 0,
         }
       })
       .filter(Boolean)
@@ -313,6 +328,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
   }), [indexerMetric])
 
   const rangeLabel = useMemo(() => {
+    if (preset === '24h') return 'Last 24 Hours'
     if (preset === 'all') return 'All Time'
     if (!activeRange.from && !activeRange.to) return 'All Time'
     const fromStr = formatDisplayDate(activeRange.from) || 'Beginning'
@@ -432,6 +448,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
               size="sm"
               className="hidden md:flex flex-wrap gap-1"
             >
+              <ToggleGroupItem value="24h" className="h-8 px-2.5 text-xs">24H</ToggleGroupItem>
               <ToggleGroupItem value="7d" className="h-8 px-2.5 text-xs">7D</ToggleGroupItem>
               <ToggleGroupItem value="30d" className="h-8 px-2.5 text-xs">30D</ToggleGroupItem>
               <ToggleGroupItem value="90d" className="h-8 px-2.5 text-xs">90D</ToggleGroupItem>
@@ -448,6 +465,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                 >
                   <CalendarDays className="h-4 w-4 text-primary shrink-0" />
                   <span className="font-medium text-xs sm:text-sm">
+                    {preset === '24h' && 'Last 24 Hours'}
                     {preset === '7d' && 'Last 7 Days'}
                     {preset === '30d' && 'Last 30 Days'}
                     {preset === '90d' && 'Last 90 Days'}
@@ -570,7 +588,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
               <Gauge className="h-5 w-5 text-primary" />
               <CardTitle>Indexer Statistics</CardTitle>
             </div>
-            <CardDescription>Average response time, speed estimate, searches, and downloads by indexer.</CardDescription>
+            <CardDescription>Response time, searches, downloads, and availability rate by indexer.</CardDescription>
             <div className="pt-2">
               <div className="sm:hidden">
                 <select
@@ -598,7 +616,6 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   className="justify-start flex-wrap gap-1"
                 >
                   <ToggleGroupItem value="response">Response</ToggleGroupItem>
-                  <ToggleGroupItem value="speed">Speed</ToggleGroupItem>
                   <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
                   <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
                   <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
@@ -625,12 +642,10 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Indexer</th>
                     <th className="px-3 py-2 text-right font-medium">Avg response</th>
-                    <th className="px-3 py-2 text-right font-medium">Speed</th>
                     <th className="px-3 py-2 text-right font-medium">Searches</th>
                     <th className="px-3 py-2 text-right font-medium">Downloads</th>
                     <th className="px-3 py-2 text-right font-medium">Unique hits</th>
-                    <th className="px-3 py-2 text-right font-medium">Available</th>
-                    <th className="px-3 py-2 text-right font-medium">Unavailable</th>
+                    <th className="px-3 py-2 text-right font-medium">Availability</th>
                     <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -639,12 +654,15 @@ export const StatisticsPage = memo(function StatisticsPage() {
                     <tr key={row.name} className="border-t border-border/50">
                       <td className="px-3 py-2"><span className="truncate">{row.name}</span></td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.avgResponseMs > 0 ? `${row.avgResponseMs.toFixed(0)} ms` : 'N/A'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.speedRps > 0 ? `${row.speedRps.toFixed(2)} req/s` : 'N/A'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.searchesCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.downloadsCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.uniqueHitsCount}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.availAvailableCount}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.availDiscardedCount}</td>
+                      <td
+                        className="px-3 py-2 text-right tabular-nums"
+                        title={row.availTotal > 0 ? `${row.availAvailableCount} available / ${row.availDiscardedCount} unavailable` : undefined}
+                      >
+                        {row.availTotal > 0 ? `${row.availabilityPercent.toFixed(1)}%` : 'N/A'}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <Button
                           type="button"
@@ -661,7 +679,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   ))}
                   {indexerRows.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
+                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
                     </tr>
                   )}
                 </tbody>
@@ -696,8 +714,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                     <th className="px-3 py-2 text-left font-medium">Provider</th>
                     <th className="px-3 py-2 text-right font-medium">Downloaded</th>
                     <th className="px-3 py-2 text-right font-medium">Usage</th>
-                    <th className="px-3 py-2 text-right font-medium">Article available</th>
-                    <th className="px-3 py-2 text-right font-medium">Article missing</th>
+                    <th className="px-3 py-2 text-right font-medium">Articles missing</th>
                     <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -710,8 +727,12 @@ export const StatisticsPage = memo(function StatisticsPage() {
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatDownloadedMb(row.downloadedMb)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.usagePercent.toFixed(1)}%</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.articleAvailableCount}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.articleMissingCount}</td>
+                      <td
+                        className="px-3 py-2 text-right tabular-nums"
+                        title={row.articleTotal > 0 ? `${row.articleAvailableCount} available / ${row.articleMissingCount} missing` : undefined}
+                      >
+                        {row.articleTotal > 0 ? `${row.missingPercent.toFixed(1)}%` : 'N/A'}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <Button
                           type="button"
@@ -728,7 +749,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   ))}
                   {providerRows.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">No provider statistics available.</td>
+                      <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">No provider statistics available.</td>
                     </tr>
                   )}
                 </tbody>
