@@ -1,5 +1,21 @@
 # Changelog
 
+## [5.14.0](https://github.com/Gaisberg/streamnzb/compare/v5.13.1...v5.14.0) (2026-08-28)
+
+
+### Features
+
+* **filters:** add shared define libraries with URL import, refresh diff, and profile shadowing, Closes [#236](https://github.com/Gaisberg/streamnzb/issues/236) ([ffac3b8](https://github.com/Gaisberg/streamnzb/commit/ffac3b88d2c2ca7f5f262927db7d079be8256a43))
+* **metadata:** add per-profile poster overlay URL for BetterPosters/RPDB, Closes [#237](https://github.com/Gaisberg/streamnzb/issues/237) ([df3158d](https://github.com/Gaisberg/streamnzb/commit/df3158d5feda1936c9e41cba5c7fbeda6ab58380))
+* **simkl:** add Simkl integration with watchlist catalogs and playback scrobbling, Closes [#238](https://github.com/Gaisberg/streamnzb/issues/238) ([8fb1db8](https://github.com/Gaisberg/streamnzb/commit/8fb1db8f79b861340f7b1e0ed0983a310086b5a0))
+* **stats:** add Last 24 Hours preset as default and simplify indexer and provider tables, Closes [#234](https://github.com/Gaisberg/streamnzb/issues/234) ([5733a4b](https://github.com/Gaisberg/streamnzb/commit/5733a4becd47a95abecb989b78fcab3117b1ac2c))
+
+
+### Bug Fixes
+
+* **indexer:** harden API/download limit accounting and cooldowns ([4ebb2c1](https://github.com/Gaisberg/streamnzb/commit/4ebb2c13a551ccada30cdf87aa3b08c167bb2394))
+* **playback:** keep proven 430 verdicts that land after the startup deadline ([36053e6](https://github.com/Gaisberg/streamnzb/commit/36053e68972b59df44d137260d70e86a545d43dd))
+
 ## [5.13.1](https://github.com/Gaisberg/streamnzb/compare/v5.13.0...v5.13.1) (2026-08-27)
 
 
