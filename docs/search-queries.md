@@ -79,14 +79,16 @@ Notes on execution:
 
 ## Daily limits
 
-Each indexer (Settings → Indexers) carries an **API hits** and a **Downloads** daily limit. API hits are spent by searches, downloads by fetching an NZB when playback starts. Live counters are on the Stats page, and the indexer's own `X-RateLimit-*` / `X-DNZBLimit-*` response headers correct them whenever it sends them.
+Each indexer (Settings → Indexers) carries an **API hits** and a **Downloads** daily limit. API hits are spent by searches (and the occasional credential ping or capability fetch, which count too), downloads by fetching an NZB when playback starts. Capability documents are cached for a week, so restarts and settings saves reuse them instead of re-asking every indexer — a fresh fetch happens only when the cache is stale or the indexer's URL or API key changed. Live counters are on the Stats page, and the indexer's own `X-RateLimit-*` / `X-DNZBLimit-*` response headers correct them whenever it sends them — downward only. Headers can reveal that the account has less budget left than our counter thought (another app sharing the account, say), but a server advertising a bigger quota than the configured limit never talks StreamNZB out of your cap, so a deliberately conservative limit holds.
 
 Either limit running out takes the indexer out of searches, not just out of grabs: a release that cannot be fetched is a dead result, and offering it would cost you a failover hop per candidate at playback time. Releases already sitting in a cached result list are dropped for the same reason, so streams from a spent indexer stop being offered without waiting for the cache to expire — unless another indexer holds a copy of the same release, in which case that copy takes over and the release stays offered (see [Same-release variants](#same-release-variants)).
 
 Two things keep this from stranding a working indexer:
 
-- Once the download limit is spent, one search every 15 minutes is let through anyway. Only the indexer's own headers can tell us the budget came back, and they only arrive on a request — so the probe is what re-opens it after a manual quota raise, or when the indexer's daily reset lands on a different clock than ours.
+- Once either limit is spent, one search every 15 minutes is let through anyway. Only the indexer's own headers can tell us the budget came back, and they only arrive on a request — so the probe is what re-opens it after a manual quota raise, or when the indexer's daily reset lands on a different clock than ours (our counters turn over at local midnight).
 - Nothing is discarded. Cached results are filtered, not purged, so when the limit resets the full result set is still there and no re-search (or fresh API hits) is needed.
+
+An indexer that itself answers *request limit reached* (newznab error 201) is paused for 30 minutes rather than the 60-second cooldown a transient 429 gets — a spent daily quota stays spent for hours, and some indexers count the refused retries against it too. A `Retry-After` from the server still wins when it sends one.
 
 Skipped indexers appear in Debug logs as *Indexer skipped: limit reached*. Releases held in the library are unaffected — their NZB is already stored locally, so they play without spending an indexer download at all.
 

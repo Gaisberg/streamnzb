@@ -20,7 +20,16 @@ type ClientCore struct {
 	usageManager *UsageManager
 	Limiter      *RequestLimiter
 
-	mu                 sync.RWMutex
+	mu sync.RWMutex
+	// The configured limits are what the operator typed and never change; the
+	// header limits are what the server last advertised about itself. The
+	// enforced apiLimit/downloadLimit is always the stricter of the two, so a
+	// server advertising a bigger quota than the operator allowed can never
+	// talk us out of the configured cap.
+	cfgAPILimit        int
+	cfgDownloadLimit   int
+	hdrAPILimit        int
+	hdrDownloadLimit   int
 	apiLimit           int
 	apiUsed            int
 	apiRemaining       int
@@ -30,6 +39,7 @@ type ClientCore struct {
 	searchesCount      int
 	totalResponseMS    int64
 	throttledUntil     time.Time
+	apiProbeAfter      time.Time
 	downloadProbeAfter time.Time
 }
 
@@ -42,21 +52,28 @@ const (
 	MaxThrottleCooldown     = 15 * time.Minute
 )
 
-// DownloadExhaustedProbeInterval bounds how long an indexer whose daily
+// QuotaExhaustedCooldown is the pause after an indexer states its daily quota
+// is spent (newznab error 201). Unlike a bare 429 — usually a burst limiter
+// that clears in seconds — a spent daily quota stays spent for hours, so
+// retrying every DefaultThrottleCooldown hammers the API all day for nothing,
+// and some indexers count the refused requests against the quota too.
+const QuotaExhaustedCooldown = 30 * time.Minute
+
+// BudgetExhaustedProbeInterval bounds how long an indexer whose daily API or
 // download budget is spent stays skipped for search before one request is let
 // through anyway.
 //
-// The skip itself is worth having: a result we can never grab is a dead
-// candidate, and offering it costs the user a failover hop per release. But the
-// skip is self-sealing if made absolute. The only trustworthy view of the
-// download budget is X-DNZBLimit-Daily-Remaining, which ApplyHeaderUsage reads
-// off a response — so it arrives only when we make a request. Our own counter
-// cannot stand in for it: the daily reset here turns over on local midnight
-// while indexers use their own clock or a rolling window, and downloadLimit may
-// be a conservative number the operator typed rather than the real quota. Left
-// to itself, a wrong counter would retire a working indexer until the local day
+// The skip itself is worth having: a search we cannot afford, or whose results
+// we could never grab, is dead weight. But the skip is self-sealing if made
+// absolute. The only trustworthy view of either budget is the server's own
+// response headers, which ApplyHeaderUsage reads off a response — so they
+// arrive only when we make a request. Our own counter cannot stand in for
+// them: the daily reset here turns over on local midnight while indexers use
+// their own clock or a rolling window, and a configured limit may be a
+// conservative number the operator typed rather than the real quota. Left to
+// itself, a wrong counter would retire a working indexer until the local day
 // rolled over. The periodic probe is what lets the indexer tell us otherwise.
-const DownloadExhaustedProbeInterval = 15 * time.Minute
+const BudgetExhaustedProbeInterval = 15 * time.Minute
 
 // NewClientCore builds the core and restores persisted usage counters for
 // name when a usage manager is available.
@@ -65,6 +82,8 @@ func NewClientCore(name string, apiLimit, downloadLimit, rateLimitRPS int, um *U
 		name:              name,
 		usageManager:      um,
 		Limiter:           NewRequestLimiter(rateLimitRPS),
+		cfgAPILimit:       apiLimit,
+		cfgDownloadLimit:  downloadLimit,
 		apiLimit:          apiLimit,
 		apiRemaining:      apiLimit,
 		downloadLimit:     downloadLimit,
@@ -74,16 +93,36 @@ func NewClientCore(name string, apiLimit, downloadLimit, rateLimitRPS int, um *U
 		usage := um.GetIndexerUsage(name)
 		c.apiUsed = usage.APIHitsUsed
 		c.downloadUsed = usage.DownloadsUsed
-		c.apiRemaining = apiLimit - usage.APIHitsUsed
-		c.downloadRemaining = downloadLimit - usage.DownloadsUsed
-		if c.apiRemaining < 0 && apiLimit > 0 {
-			c.apiRemaining = 0
+		if apiLimit > 0 {
+			c.apiRemaining = clampRemaining(apiLimit - c.apiUsed)
 		}
-		if c.downloadRemaining < 0 && downloadLimit > 0 {
-			c.downloadRemaining = 0
+		if downloadLimit > 0 {
+			c.downloadRemaining = clampRemaining(downloadLimit - c.downloadUsed)
 		}
 	}
 	return c
+}
+
+func clampRemaining(remaining int) int {
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// effectiveLimit returns the stricter of an operator-configured daily limit
+// and a server-advertised one; 0 means "no limit" on either side.
+func effectiveLimit(configured, advertised int) int {
+	switch {
+	case configured <= 0:
+		return advertised
+	case advertised <= 0:
+		return configured
+	case advertised < configured:
+		return advertised
+	default:
+		return configured
+	}
 }
 
 // Usage assembles the current usage snapshot, refreshing persisted counters
@@ -123,16 +162,10 @@ func (c *ClientCore) RefreshUsage() *UsageData {
 	c.apiUsed = ud.APIHitsUsed
 	c.downloadUsed = ud.DownloadsUsed
 	if c.apiLimit > 0 {
-		c.apiRemaining = c.apiLimit - c.apiUsed
-		if c.apiRemaining < 0 {
-			c.apiRemaining = 0
-		}
+		c.apiRemaining = clampRemaining(c.apiLimit - c.apiUsed)
 	}
 	if c.downloadLimit > 0 {
-		c.downloadRemaining = c.downloadLimit - c.downloadUsed
-		if c.downloadRemaining < 0 {
-			c.downloadRemaining = 0
-		}
+		c.downloadRemaining = clampRemaining(c.downloadLimit - c.downloadUsed)
 	}
 	c.mu.Unlock()
 
@@ -148,20 +181,6 @@ func (c *ClientCore) RecordSearchDuration(elapsed time.Duration) {
 	c.searchesCount++
 	c.totalResponseMS += ms
 	c.mu.Unlock()
-}
-
-// CheckAPILimit returns an error when the configured daily API budget is
-// exhausted; displayName appears in the error for the UI.
-func (c *ClientCore) CheckAPILimit(displayName string) error {
-	c.RefreshUsage()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.apiLimit > 0 && c.apiRemaining <= 0 {
-		c.reportDegraded(health.ReasonQuotaExhausted, "daily API hit budget spent")
-		return fmt.Errorf("API limit reached for %s: %w", displayName, ErrRateLimited)
-	}
-	return nil
 }
 
 // CheckDownloadLimit returns an error when the configured daily download
@@ -185,9 +204,9 @@ func (c *ClientCore) CheckSearchAllowed(displayName string, now time.Time) error
 	if err := c.CheckThrottled(displayName, now); err != nil {
 		return err
 	}
-	// Refreshes the persisted counters for both budgets, which the download
-	// check below then reads without a second round through the state manager.
-	if err := c.CheckAPILimit(displayName); err != nil {
+	// One refresh of the persisted counters serves both budget checks below.
+	c.RefreshUsage()
+	if err := c.checkAPIBudgetForSearch(displayName, now); err != nil {
 		return err
 	}
 	return c.checkDownloadBudgetForSearch(displayName, now)
@@ -202,10 +221,29 @@ func (c *ClientCore) CheckGrabAllowed(displayName string, now time.Time) error {
 	return c.CheckDownloadLimit(displayName)
 }
 
+// checkAPIBudgetForSearch skips a search once the daily API budget is spent,
+// letting one request through every BudgetExhaustedProbeInterval so the
+// indexer's own headers can re-open it — without the probe the block would be
+// self-sealing until local midnight even after the indexer's window reset.
+// Relies on the caller having just refreshed usage.
+func (c *ClientCore) checkAPIBudgetForSearch(displayName string, now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.apiLimit <= 0 || c.apiRemaining > 0 {
+		return nil
+	}
+	if !now.Before(c.apiProbeAfter) {
+		c.apiProbeAfter = now.Add(BudgetExhaustedProbeInterval)
+		return nil
+	}
+	c.reportDegraded(health.ReasonQuotaExhausted, "daily API hit budget spent")
+	return fmt.Errorf("API limit reached for %s, skipping search until %s: %w",
+		displayName, c.apiProbeAfter.Sub(now).Round(time.Second), ErrRateLimited)
+}
+
 // checkDownloadBudgetForSearch skips a search whose results could never be
-// grabbed, letting one request through every DownloadExhaustedProbeInterval so
-// the indexer's own headers can re-open it. Relies on the caller having just
-// refreshed usage.
+// grabbed, with the same probe-through valve as the API budget. Relies on the
+// caller having just refreshed usage.
 func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -213,7 +251,7 @@ func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.T
 		return nil
 	}
 	if !now.Before(c.downloadProbeAfter) {
-		c.downloadProbeAfter = now.Add(DownloadExhaustedProbeInterval)
+		c.downloadProbeAfter = now.Add(BudgetExhaustedProbeInterval)
 		return nil
 	}
 	c.reportDegraded(health.ReasonQuotaExhausted, "daily NZB download budget spent")
@@ -221,18 +259,8 @@ func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.T
 		displayName, c.downloadProbeAfter.Sub(now).Round(time.Second), ErrRateLimited)
 }
 
-// IncrementUsed records api/download hits against the persisted counters.
-func (c *ClientCore) IncrementUsed(apiDelta, downloadDelta int) {
-	if c.usageManager == nil || c.name == "" {
-		return
-	}
-	c.usageManager.IncrementUsed(c.name, apiDelta, downloadDelta)
-}
-
-// RecordAPIHit accounts one search/API request: local counters, response
-// header usage sync, and a persisted increment when no daily API limit is
-// configured (limit-ful indexers persist via ApplyHeaderUsage's derived
-// counts instead).
+// RecordAPIHit accounts one search/API request: local counters, then response
+// header sync and persistence via ApplyHeaderUsage.
 func (c *ClientCore) RecordAPIHit(h http.Header) {
 	c.mu.Lock()
 	c.apiUsed++
@@ -242,13 +270,6 @@ func (c *ClientCore) RecordAPIHit(h http.Header) {
 	c.mu.Unlock()
 
 	c.ApplyHeaderUsage(h)
-
-	c.mu.RLock()
-	apiLimit := c.apiLimit
-	c.mu.RUnlock()
-	if c.usageManager != nil && apiLimit == 0 {
-		c.IncrementUsed(1, 0)
-	}
 }
 
 // RecordGrab accounts one NZB download (an API hit plus a download) with the
@@ -266,18 +287,6 @@ func (c *ClientCore) RecordGrab(h http.Header) {
 	c.mu.Unlock()
 
 	c.ApplyHeaderUsage(h)
-
-	c.mu.RLock()
-	apiLimit, downloadLimit := c.apiLimit, c.downloadLimit
-	c.mu.RUnlock()
-	if c.usageManager == nil {
-		return
-	}
-	if apiLimit == 0 && downloadLimit == 0 {
-		c.IncrementUsed(1, 1)
-	} else if apiLimit == 0 {
-		c.IncrementUsed(1, 0)
-	}
 }
 
 // NoteThrottled opens a cooldown after an indexer refuses a request, honouring
@@ -297,11 +306,27 @@ func (c *ClientCore) NoteThrottled(h http.Header, now time.Time) time.Duration {
 	if cooldown <= 0 {
 		cooldown = DefaultThrottleCooldown
 	}
+	return c.extendCooldown(now, cooldown)
+}
 
+// NoteQuotaExhausted opens the longer cooldown for an indexer that stated its
+// daily quota is spent. A usable Retry-After still wins — the server knows its
+// own reset better than our default — but without one the pause is
+// QuotaExhaustedCooldown rather than the transient-throttle default.
+func (c *ClientCore) NoteQuotaExhausted(h http.Header, now time.Time) time.Duration {
+	if _, ok := parseRetryAfter(h.Get("Retry-After"), now); ok {
+		return c.NoteThrottled(h, now)
+	}
+	c.reportDegraded(health.ReasonQuotaExhausted, "indexer reported its daily quota spent")
+	return c.extendCooldown(now, QuotaExhaustedCooldown)
+}
+
+// extendCooldown pushes the throttle deadline out to now+cooldown, never
+// shortening one already in force: a burst of concurrent grabs all come back
+// 429 and the last one must not undercut the first.
+func (c *ClientCore) extendCooldown(now time.Time, cooldown time.Duration) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Never shorten a cooldown already in force: a burst of concurrent grabs
-	// all come back 429 and the last one must not undercut the first.
 	if until := now.Add(cooldown); until.After(c.throttledUntil) {
 		c.throttledUntil = until
 	}
@@ -362,51 +387,89 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 
 // ApplyHeaderUsage ingests the de-facto newznab rate-limit response headers,
 // preferring the standard X-RateLimit/X-DNZBLimit family over the x-api/x-grab
-// fallbacks, and persists derived used-counts when limits are configured.
+// fallbacks, and persists the resulting absolute counters.
+//
+// Headers may shrink a budget — the server sees consumption we cannot, like a
+// Sonarr sharing the account — but never expand it past the configured cap:
+// the enforced limit is the stricter of the configured and advertised limits,
+// and a remaining count from a server that never told us its own limit is only
+// honoured downward, since measuring it against our smaller cap would drive
+// the derived used count negative and disable the cap entirely.
 func (c *ClientCore) ApplyHeaderUsage(h http.Header) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	if val := h.Get("X-RateLimit-Daily-Limit"); val != "" {
-		if limit, err := strconv.Atoi(val); err == nil {
-			c.apiLimit = limit
-		}
+	if limit, ok := headerInt(h, "X-RateLimit-Daily-Limit"); ok {
+		c.hdrAPILimit = limit
 	}
-	if val := h.Get("X-RateLimit-Daily-Remaining"); val != "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.apiRemaining = remaining
-		}
+	if limit, ok := headerInt(h, "X-DNZBLimit-Daily-Limit"); ok {
+		c.hdrDownloadLimit = limit
 	}
+	c.apiLimit = effectiveLimit(c.cfgAPILimit, c.hdrAPILimit)
+	c.downloadLimit = effectiveLimit(c.cfgDownloadLimit, c.hdrDownloadLimit)
 
-	if val := h.Get("X-DNZBLimit-Daily-Limit"); val != "" {
-		if limit, err := strconv.Atoi(val); err == nil {
-			c.downloadLimit = limit
-		}
+	if remaining, ok := firstHeaderInt(h, "X-RateLimit-Daily-Remaining", "x-api-remaining"); ok {
+		c.apiUsed, c.apiRemaining = reconcileRemaining(c.apiUsed, c.apiRemaining, c.apiLimit, c.hdrAPILimit, remaining)
 	}
-	if val := h.Get("X-DNZBLimit-Daily-Remaining"); val != "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.downloadRemaining = remaining
-		}
+	if remaining, ok := firstHeaderInt(h, "X-DNZBLimit-Daily-Remaining", "x-grab-remaining"); ok {
+		c.downloadUsed, c.downloadRemaining = reconcileRemaining(c.downloadUsed, c.downloadRemaining, c.downloadLimit, c.hdrDownloadLimit, remaining)
 	}
 
-	if val := h.Get("x-api-remaining"); val != "" && h.Get("X-RateLimit-Daily-Remaining") == "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.apiRemaining = remaining
-		}
-	}
-	if val := h.Get("x-grab-remaining"); val != "" && h.Get("X-DNZBLimit-Daily-Remaining") == "" {
-		if remaining, err := strconv.Atoi(val); err == nil {
-			c.downloadRemaining = remaining
-		}
-	}
+	name, um := c.name, c.usageManager
+	apiUsed, downloadUsed := c.apiUsed, c.downloadUsed
+	c.mu.Unlock()
 
-	if c.usageManager != nil && (c.apiLimit > 0 || c.downloadLimit > 0) {
-		if c.apiLimit > 0 {
-			c.apiUsed = c.apiLimit - c.apiRemaining
-		}
-		if c.downloadLimit > 0 {
-			c.downloadUsed = c.downloadLimit - c.downloadRemaining
-		}
-		c.usageManager.UpdateUsage(c.name, c.apiUsed, c.downloadUsed)
+	if um != nil && name != "" {
+		um.UpdateUsage(name, apiUsed, downloadUsed)
 	}
+}
+
+// reconcileRemaining folds one remaining-count header into the local counters.
+//
+// With the server's own limit known, the pair states the server's full view —
+// including consumption by other apps on the account — so the server-derived
+// used count wins and remaining is re-measured against the enforced limit.
+// With only a remaining count, it is honoured only when it shrinks the budget.
+func reconcileRemaining(localUsed, localRemaining, limit, advertisedLimit, headerRemaining int) (used, remaining int) {
+	if headerRemaining < 0 {
+		headerRemaining = 0
+	}
+	if advertisedLimit > 0 {
+		used = clampRemaining(advertisedLimit - headerRemaining)
+		if limit <= 0 {
+			return used, headerRemaining
+		}
+		return used, clampRemaining(limit - used)
+	}
+	if limit <= 0 {
+		// Nothing to enforce; keep the local hit count for the stats and show
+		// the server's remaining as-is.
+		return localUsed, headerRemaining
+	}
+	if headerRemaining >= localRemaining {
+		return localUsed, localRemaining
+	}
+	return clampRemaining(limit - headerRemaining), headerRemaining
+}
+
+// headerInt reads one header as an integer; absent or malformed yields ok=false.
+func headerInt(h http.Header, key string) (int, bool) {
+	val := strings.TrimSpace(h.Get(key))
+	if val == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// firstHeaderInt returns the first of keys that parses as an integer.
+func firstHeaderInt(h http.Header, keys ...string) (int, bool) {
+	for _, key := range keys {
+		if n, ok := headerInt(h, key); ok {
+			return n, true
+		}
+	}
+	return 0, false
 }

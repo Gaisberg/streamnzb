@@ -1,6 +1,8 @@
 package initialization
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -156,6 +158,9 @@ func BuildIndexerStack(cfg *config.Config) *IndexerStack {
 func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *IndexerStack {
 	var indexers []indexer.Indexer
 	availNzbHosts := make(map[string]string)
+	// Which client each caps fetch belongs to, fingerprinted by endpoint and
+	// key; only clients with an entry here fetch caps at all.
+	capsIdentities := make(map[string]string)
 
 	usageMgr, err := indexer.GetUsageManager(stateMgr)
 	if err != nil {
@@ -215,6 +220,7 @@ func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *
 			client := newznab.NewClient(effectiveCfg, usageMgr)
 			cachedClient := indexer.NewCachedIndexer(client, queryCache, 10*time.Minute)
 			indexers = append(indexers, cachedClient)
+			capsIdentities[client.Name()] = newznabCapsIdentity(effectiveCfg)
 			logger.Info("Initialized Newznab indexer", "name", idxCfg.Name, "url", idxCfg.URL)
 			if h := hostFromIndexerURL(idxCfg.URL); h != "" {
 				if !isAggregator {
@@ -230,37 +236,75 @@ func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *
 
 	aggregator := indexer.NewAggregator(indexers...)
 
+	capsStore := indexer.NewCapsStore(stateMgr)
+
 	indexerCaps := make(map[string]*indexer.Caps)
 	var capsMu sync.Mutex
 	var capsWg sync.WaitGroup
+	cachedCount := 0
 	for _, idx := range indexers {
-		if c, ok := idx.(indexer.IndexerWithCaps); ok {
-			capsWg.Add(1)
-			go func(name string, capsFetcher indexer.IndexerWithCaps) {
-				defer capsWg.Done()
-				caps, err := capsFetcher.GetCaps()
-				// A caps failure is worth reporting — the fetch runs right
-				// after a key is saved, so a rejection lands immediately. A
-				// caps SUCCESS proves nothing and must not clear a verdict:
-				// many indexers serve caps publicly, so the request succeeds
-				// with any key at all. Only a real authenticated request
-				// (search or ping) may mark the indexer healthy.
-				if err != nil {
-					indexer.ReportHealth(name, err)
-				}
-				if err != nil {
-					logger.Warn("Failed to fetch caps", "indexer", name, "err", err)
-					return
-				}
-				capsMu.Lock()
-				indexerCaps[name] = caps
-				capsMu.Unlock()
-			}(idx.Name(), c)
+		capsFetcher, ok := idx.(indexer.IndexerWithCaps)
+		if !ok {
+			continue
 		}
+		name := idx.Name()
+		identity, hasIdentity := capsIdentities[name]
+		if !hasIdentity {
+			// No identity means the client has no caps to fetch (easynews),
+			// so asking would only produce a noisy error.
+			continue
+		}
+		// A fresh cache entry for the same endpoint and key answers the
+		// rebuild without spending an API hit; the fetch runs only when the
+		// entry is missing, stale, or the identity changed — the last of
+		// which is deliberate, so a just-saved key still gets probed.
+		if caps, fresh, ok := capsStore.Lookup(name, identity); ok && fresh {
+			seedIndexerCaps(idx, caps)
+			indexerCaps[name] = caps
+			cachedCount++
+			continue
+		}
+		capsWg.Add(1)
+		go func(name, identity string, idx indexer.Indexer, capsFetcher indexer.IndexerWithCaps) {
+			defer capsWg.Done()
+			caps, err := capsFetcher.GetCaps()
+			// A caps failure is worth reporting — the fetch runs right
+			// after a key is saved, so a rejection lands immediately. A
+			// caps SUCCESS proves nothing and must not clear a verdict:
+			// many indexers serve caps publicly, so the request succeeds
+			// with any key at all. Only a real authenticated request
+			// (search or ping) may mark the indexer healthy.
+			if err != nil {
+				indexer.ReportHealth(name, err)
+				logger.Warn("Failed to fetch caps", "indexer", name, "err", err)
+				// A stale cache entry beats running capless: without caps we
+				// lose movie/tv gating and id-parameter selection, and start
+				// sending indexers parameters they never asked for.
+				if caps, _, ok := capsStore.Lookup(name, identity); ok {
+					seedIndexerCaps(idx, caps)
+					capsMu.Lock()
+					indexerCaps[name] = caps
+					capsMu.Unlock()
+					logger.Info("Using cached capabilities after failed fetch", "indexer", name)
+				}
+				return
+			}
+			capsStore.Put(name, identity, caps)
+			capsMu.Lock()
+			indexerCaps[name] = caps
+			capsMu.Unlock()
+		}(name, identity, idx, capsFetcher)
 	}
 	capsWg.Wait()
+	configuredNames := make([]string, 0, len(cfg.Indexers))
+	for _, idxCfg := range cfg.Indexers {
+		if idxCfg.Name != "" {
+			configuredNames = append(configuredNames, idxCfg.Name)
+		}
+	}
+	capsStore.Sync(configuredNames)
 	if len(indexerCaps) > 0 {
-		logger.Info("Fetched indexer capabilities", "count", len(indexerCaps))
+		logger.Info("Resolved indexer capabilities", "count", len(indexerCaps), "from_cache", cachedCount)
 	}
 
 	return &IndexerStack{
@@ -268,6 +312,30 @@ func buildIndexerStack(cfg *config.Config, stateMgr *persistence.StateManager) *
 		QueryCache:           queryCache,
 		IndexerCaps:          indexerCaps,
 		AvailNZBIndexerHosts: availNzbHosts,
+	}
+}
+
+// newznabCapsIdentity fingerprints what a caps document was fetched with. The
+// key is hashed rather than stored: the cache row does not need to carry a
+// working credential just to notice one changed.
+func newznabCapsIdentity(cfg config.IndexerConfig) string {
+	sum := sha256.Sum256([]byte(cfg.APIKey))
+	return strings.TrimSpace(cfg.URL) + "|" + strings.TrimSpace(cfg.APIPath) + "|" + hex.EncodeToString(sum[:8])
+}
+
+// seedIndexerCaps pushes cached caps through the cache wrapper into the
+// concrete client, so search gating works exactly as if freshly fetched.
+func seedIndexerCaps(idx indexer.Indexer, caps *indexer.Caps) {
+	for idx != nil {
+		if seeder, ok := idx.(indexer.CapsSeeder); ok {
+			seeder.SetCaps(caps)
+			return
+		}
+		unwrapper, ok := idx.(interface{ Unwrap() indexer.Indexer })
+		if !ok {
+			return
+		}
+		idx = unwrapper.Unwrap()
 	}
 }
 

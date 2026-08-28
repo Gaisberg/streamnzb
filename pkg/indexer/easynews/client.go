@@ -208,6 +208,8 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("easynews credentials invalid: %w", err)
 	}
+	// The probe is a real search; account for it like one.
+	c.core.RecordAPIHit(nil)
 	return nil
 }
 

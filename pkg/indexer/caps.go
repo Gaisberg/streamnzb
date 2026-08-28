@@ -119,3 +119,10 @@ func parseSupportedParams(raw string) map[string]bool {
 type IndexerWithCaps interface {
 	GetCaps() (*Caps, error)
 }
+
+// CapsSeeder is implemented by clients whose capabilities can be restored from
+// the persisted cache instead of fetched, so a rebuild spends no API hit on
+// near-static data.
+type CapsSeeder interface {
+	SetCaps(*Caps)
+}

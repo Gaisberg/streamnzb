@@ -241,6 +241,17 @@ func (c *Client) noteThrottled(h http.Header, status int) {
 		"cooldown", remaining.Round(time.Second))
 }
 
+// noteQuotaExhausted opens the longer daily-quota cooldown for a newznab
+// "request limit reached" (code 201) verdict.
+func (c *Client) noteQuotaExhausted(h http.Header, status int) {
+	remaining := c.core.NoteQuotaExhausted(h, time.Now())
+	logger.Warn("Indexer reported daily quota exhausted; pausing requests",
+		"indexer", c.Name(),
+		"status", status,
+		"retry_after", h.Get("Retry-After"),
+		"cooldown", remaining.Round(time.Second))
+}
+
 // requestContext bounds parent with the client timeout so a caller
 // cancellation aborts the request while an absent deadline still cannot hang
 // past the configured indexer timeout.
@@ -306,6 +317,9 @@ func (c *Client) Ping(ctx context.Context) error {
 		}
 		return fmt.Errorf("%s indexer returned error status: %d", c.Name(), resp.StatusCode)
 	}
+	// The ping deliberately costs one API hit (see above) — account for it, so
+	// probe traffic shows up in the same budget it actually spends.
+	c.core.RecordAPIHit(resp.Header)
 	// Newznab answers a rejected API key with an error document under HTTP 200,
 	// so a status check alone reports a working indexer for a key the server
 	// just refused — which is precisely the case a ping exists to catch.
@@ -348,6 +362,10 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 		return nil, fmt.Errorf("failed to read caps from %s: %w", c.Name(), err)
 	}
 
+	// Some indexers serve caps free of charge, but plenty count it like any
+	// other API request; counting it locally is the conservative reading.
+	c.core.RecordAPIHit(resp.Header)
+
 	if err := c.checkNewznabError(body); err != nil {
 		return nil, err
 	}
@@ -368,6 +386,14 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 		"retention", caps.RetentionDays)
 
 	return caps, nil
+}
+
+// SetCaps seeds capabilities restored from the persisted cache, so search
+// gating and id-parameter selection work exactly as if freshly fetched.
+func (c *Client) SetCaps(caps *indexer.Caps) {
+	c.mu.Lock()
+	c.caps = caps
+	c.mu.Unlock()
 }
 
 func (c *Client) checkNewznabError(bodyBytes []byte) error {
@@ -762,11 +788,16 @@ func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, p
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if isTransientDownloadStatus(resp.StatusCode) {
+		bodyErr := c.checkNewznabError(bodyBytes)
+		// A code-201 error document means the daily quota is spent — a verdict
+		// that holds for hours, unlike a bare transient refusal.
+		if errors.Is(bodyErr, indexer.ErrRateLimited) {
+			c.noteQuotaExhausted(resp.Header, resp.StatusCode)
+		} else if isTransientDownloadStatus(resp.StatusCode) {
 			c.noteThrottled(resp.Header, resp.StatusCode)
 		}
-		if err := c.checkNewznabError(bodyBytes); err != nil {
-			return nil, err
+		if bodyErr != nil {
+			return nil, bodyErr
 		}
 		if isTransientDownloadStatus(resp.StatusCode) {
 			return nil, fmt.Errorf("%s returned status %d: %s: %w", c.Name(), resp.StatusCode, string(bodyBytes), indexer.ErrRateLimited)
@@ -781,7 +812,7 @@ func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, p
 		// Newznab reports quota exhaustion as an error document under HTTP 200,
 		// so the status check above never sees it.
 		if errors.Is(err, indexer.ErrRateLimited) {
-			c.noteThrottled(resp.Header, resp.StatusCode)
+			c.noteQuotaExhausted(resp.Header, resp.StatusCode)
 		}
 		return nil, err
 	}

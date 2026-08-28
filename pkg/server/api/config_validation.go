@@ -690,7 +690,10 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 
 	if plan.validateProviders && !plan.providerDeletionOnly {
 		for i, p := range cfg.Providers {
-			if len(plan.changedProviderIndexes) > 0 && !plan.changedProviderIndexes[i] {
+			// A nil map means "no diff computed — validate everything" (the
+			// full plan); an empty map means the patch changed nothing, and
+			// dialing every provider over an unrelated save is wasted traffic.
+			if plan.changedProviderIndexes != nil && !plan.changedProviderIndexes[i] {
 				continue
 			}
 			wg.Add(1)
@@ -724,7 +727,10 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 
 	if plan.validateIndexers && !plan.indexerDeletionOnly {
 		for i, idx := range cfg.Indexers {
-			if len(plan.changedIndexerIndexes) > 0 && !plan.changedIndexerIndexes[i] {
+			// Same nil-vs-empty distinction as the providers above — every ping
+			// here spends a real API hit at the indexer, so an unchanged entry
+			// must not be probed just because the patch carried the array.
+			if plan.changedIndexerIndexes != nil && !plan.changedIndexerIndexes[i] {
 				continue
 			}
 			wg.Add(1)

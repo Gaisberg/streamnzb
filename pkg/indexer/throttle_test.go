@@ -125,7 +125,7 @@ func TestCheckSearchAllowedSkipsWhenDownloadBudgetSpent(t *testing.T) {
 	if err := c.CheckSearchAllowed("Treasuremaps", now); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected search skipped inside the probe interval, got %v", err)
 	}
-	if err := c.CheckSearchAllowed("Treasuremaps", now.Add(DownloadExhaustedProbeInterval+time.Second)); err != nil {
+	if err := c.CheckSearchAllowed("Treasuremaps", now.Add(BudgetExhaustedProbeInterval+time.Second)); err != nil {
 		t.Fatalf("expected another probe once the interval elapsed, got %v", err)
 	}
 }

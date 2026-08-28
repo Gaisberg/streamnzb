@@ -57,8 +57,9 @@ func FlushUsageManager() error {
 		return nil
 	}
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.save()
+	snap := m.snapshotLocked()
+	m.mu.RUnlock()
+	return m.persist(snap)
 }
 
 // ReloadUsageManager re-reads usage after the database behind the state manager
@@ -98,13 +99,30 @@ func (m *UsageManager) load() error {
 		}
 	}
 	if needSave {
-		_ = m.state.Set("indexer_usage", m.data)
+		_ = m.persist(m.snapshotLocked())
 	}
 	return nil
 }
 
-func (m *UsageManager) save() error {
-	return m.state.Set("indexer_usage", m.data)
+// snapshotLocked deep-copies the usage map so it can be serialized after the
+// lock is released. Handing the live map to the state manager raced with
+// concurrent counter updates — a torn value at best, a concurrent map
+// iteration fault at worst. Callers must hold m.mu (read or write).
+func (m *UsageManager) snapshotLocked() map[string]*UsageData {
+	snap := make(map[string]*UsageData, len(m.data))
+	for name, data := range m.data {
+		if data == nil {
+			continue
+		}
+		cp := *data
+		snap[name] = &cp
+	}
+	return snap
+}
+
+// persist writes one snapshot to the state manager, outside any lock.
+func (m *UsageManager) persist(snap map[string]*UsageData) error {
+	return m.state.Set("indexer_usage", snap)
 }
 
 func (m *UsageManager) GetIndexerUsage(name string) *UsageData {
@@ -119,18 +137,18 @@ func (m *UsageManager) GetIndexerUsage(name string) *UsageData {
 		return data
 	}
 
-	reset := false
+	var snap map[string]*UsageData
 	if data.LastResetDay != today {
 		logger.Debug("Resetting daily usage for indexer", "name", name, "last_reset", data.LastResetDay, "today", today)
 		data.LastResetDay = today
 		data.APIHitsUsed = 0
 		data.DownloadsUsed = 0
-		reset = true
+		snap = m.snapshotLocked()
 	}
 	m.mu.Unlock()
 
-	if reset {
-		if err := m.save(); err != nil {
+	if snap != nil {
+		if err := m.persist(snap); err != nil {
 			logger.Error("Failed to save reset usage data", "name", name, "err", err)
 		}
 	}
@@ -164,35 +182,10 @@ func (m *UsageManager) UpdateUsage(name string, apiHits, downloads int) {
 	if deltaDls > 0 {
 		data.AllTimeDownloadsUsed += deltaDls
 	}
+	snap := m.snapshotLocked()
 	m.mu.Unlock()
 
-	if err := m.save(); err != nil {
-		logger.Error("Failed to save usage data", "err", err)
-	}
-}
-
-func (m *UsageManager) IncrementUsed(name string, hits, downloads int) {
-	m.mu.Lock()
-	today := time.Now().Format("2006-01-02")
-	data, ok := m.data[name]
-	if !ok {
-		data = &UsageData{LastResetDay: today}
-		m.data[name] = data
-	}
-
-	if data.LastResetDay != today {
-		data.LastResetDay = today
-		data.APIHitsUsed = hits
-		data.DownloadsUsed = downloads
-	} else {
-		data.APIHitsUsed += hits
-		data.DownloadsUsed += downloads
-	}
-	data.AllTimeAPIHitsUsed += hits
-	data.AllTimeDownloadsUsed += downloads
-	m.mu.Unlock()
-
-	if err := m.save(); err != nil {
+	if err := m.persist(snap); err != nil {
 		logger.Error("Failed to save usage data", "err", err)
 	}
 }
@@ -242,10 +235,14 @@ func (m *UsageManager) SyncUsage(activeNames []string) {
 			changed = true
 		}
 	}
+	var snap map[string]*UsageData
+	if changed {
+		snap = m.snapshotLocked()
+	}
 	m.mu.Unlock()
 
-	if changed {
-		if err := m.save(); err != nil {
+	if snap != nil {
+		if err := m.persist(snap); err != nil {
 			logger.Error("Failed to save usage data after sync", "err", err)
 		}
 	}
