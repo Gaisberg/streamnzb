@@ -63,6 +63,10 @@ type Mapping struct {
 	// AniListID keys external anime services (SeaDex); 0 when the source
 	// published none.
 	AniListID int
+
+	// MALID keys MAL-based sources (Simkl anime watchlists); 0 when the source
+	// published none.
+	MALID int
 }
 
 // SpansSeries reports whether the entry covers the whole series rather than one
@@ -91,6 +95,7 @@ type rawEntry struct {
 	IMDbID    []string `json:"imdb_id"`
 	TVDBID    *int     `json:"tvdb_id"`
 	AniListID *int     `json:"anilist_id"`
+	MALID     *int     `json:"mal_id"`
 	TheMovie  *struct {
 		TV    *int  `json:"tv"`
 		Movie []int `json:"movie"`
@@ -112,6 +117,9 @@ func (r *rawEntry) toMapping() *persistence.AnimeMapping {
 	m := &persistence.AnimeMapping{KitsuID: *r.KitsuID, EntryType: strings.TrimSpace(r.Type)}
 	if r.AniListID != nil && *r.AniListID > 0 {
 		m.AniListID = *r.AniListID
+	}
+	if r.MALID != nil && *r.MALID > 0 {
+		m.MALID = *r.MALID
 	}
 	if len(r.IMDbID) > 0 {
 		m.IMDbID = strings.TrimSpace(r.IMDbID[0])
@@ -290,6 +298,27 @@ func (s *Store) LookupKitsu(kitsuID string) (*Mapping, bool) {
 	if !ok {
 		return nil, false
 	}
+	return mappingFromRow(row), true
+}
+
+// LookupMAL resolves a MyAnimeList anime id to its entry, for MAL-keyed
+// sources (Simkl anime watchlists). Same miss semantics as LookupKitsu.
+func (s *Store) LookupMAL(malID string) (*Mapping, bool) {
+	if s == nil || s.mappings == nil {
+		return nil, false
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(malID))
+	if err != nil || id <= 0 {
+		return nil, false
+	}
+	row, ok := s.mappings.LookupMAL(id)
+	if !ok {
+		return nil, false
+	}
+	return mappingFromRow(row), true
+}
+
+func mappingFromRow(row *persistence.AnimeMapping) *Mapping {
 	return &Mapping{
 		KitsuID:       row.KitsuID,
 		IMDbID:        row.IMDbID,
@@ -300,7 +329,8 @@ func (s *Store) LookupKitsu(kitsuID string) (*Mapping, bool) {
 		EpisodeOffset: row.EpisodeOffset,
 		Type:          row.EntryType,
 		AniListID:     row.AniListID,
-	}, true
+		MALID:         row.MALID,
+	}
 }
 
 // Ready reports whether a list has been imported.

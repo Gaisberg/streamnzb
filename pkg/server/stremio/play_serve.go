@@ -51,6 +51,9 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	clientIP := httpx.ClientIP(r)
 	s.sessionManager.MarkPlaybackValidated(sessionID)
 	s.sessionManager.StartPlayback(sessionID, clientIP)
+	// Registered before the EndPlayback defer so it runs after it (LIFO) —
+	// the stop must see the decremented play count and the folded progress.
+	defer s.scrobbleSimklStopIfIdle(sess)
 	var endPlaybackOnce sync.Once
 	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
@@ -168,6 +171,13 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 			closeReasonText = v.(string)
 		}
 		probeLikeServe, probeLikeServeReason := classifyProbeLikeServe(r, resolved.size, effectiveRange, responseStats, streamStats, closeReasonText)
+		if !probeLikeServe {
+			// Watched-progress signal for scrobbling: how far into the file
+			// this serve actually delivered. Probe-like serves are excluded —
+			// a player sampling the tail for the moov atom would otherwise
+			// read as "watched to the end".
+			sess.NoteServedWindow(streamStats.MaxPos, resolved.size)
+		}
 
 		logger.Debug("Finished serving media",
 			"session", sessionID,

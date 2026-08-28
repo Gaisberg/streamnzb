@@ -458,10 +458,10 @@ func TestRedactForAPIStripsDatabasePassword(t *testing.T) {
 
 // Provider API keys must never reach a non-admin viewer.
 func TestRedactForAPIStripsMetadataKeys(t *testing.T) {
-	cfg := &Config{TMDBAPIKey: "tmdb-token", TVDBAPIKey: "tvdb-key"}
+	cfg := &Config{TMDBAPIKey: "tmdb-token", TVDBAPIKey: "tvdb-key", SimklClientID: "simkl-id"}
 	out := cfg.RedactForAPI()
-	if out.TMDBAPIKey != "" || out.TVDBAPIKey != "" {
-		t.Fatalf("RedactForAPI leaked metadata keys: tmdb=%q tvdb=%q", out.TMDBAPIKey, out.TVDBAPIKey)
+	if out.TMDBAPIKey != "" || out.TVDBAPIKey != "" || out.SimklClientID != "" {
+		t.Fatalf("RedactForAPI leaked metadata keys: tmdb=%q tvdb=%q simkl=%q", out.TMDBAPIKey, out.TVDBAPIKey, out.SimklClientID)
 	}
 }
 
@@ -831,7 +831,7 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyProxyPort, env.KeyProxyHost, env.KeyProxyEnabled, env.KeyProxyAuthUser,
 		env.KeyProxyAuthPass, env.KeyNewznabEnabled, env.KeyNewznabAPIKey,
 		env.KeyProviders, env.KeyIndexers, env.KeyAvailNZBURL,
-		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey,
+		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey, env.KeySimklClientID,
 		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
 		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
 		env.KeyDatabaseDriver, env.KeyDatabaseURL, env.KeyMetadataEnabled,

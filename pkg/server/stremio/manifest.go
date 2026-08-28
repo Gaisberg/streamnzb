@@ -76,15 +76,16 @@ func NewManifest(version string) *Manifest {
 // profile's enabled catalogs; with none (nil), the result is identical to the
 // stream-only manifest this addon always served. Derived per request so
 // config reloads and binding changes take effect without rebuilding the base
-// manifest.
+// manifest. dropProviders suppresses catalogs of providers that currently
+// cannot serve — see enabledCatalogs.
 //
 // The value copy is shallow — fresh slices are assigned, never appended, so
 // the shared base manifest's backing arrays are never written.
-func (m *Manifest) ForProfile(profile *config.MetadataProfileConfig) *Manifest {
+func (m *Manifest) ForProfile(profile *config.MetadataProfileConfig, dropProviders ...string) *Manifest {
 	out := *m
 	if profile != nil {
 		out.Resources = []string{"stream", "catalog", "meta"}
-		out.Catalogs = enabledCatalogs(profile)
+		out.Catalogs = enabledCatalogs(profile, dropProviders...)
 	}
 	return &out
 }

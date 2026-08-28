@@ -108,6 +108,14 @@ type Session struct {
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
 
+	// Watched-progress bookkeeping for the layers above (Simkl scrobbling):
+	// the highest byte offset a real (non-probe) serve delivered, the size of
+	// the file it indexes into, and the last progress percentage reported
+	// externally (stored in hundredths so it fits an atomic).
+	servedHighWater   atomic.Int64
+	servedTotal       atomic.Int64
+	reportedProgressH atomic.Int64
+
 	mediaCaps *MediaCapabilities // codec/profile/HDR metadata captured during probing
 
 	libraryBlueprintJSON string // serialized archive blueprint from the library, rehydrated onto Blueprint once loader files exist
@@ -495,6 +503,70 @@ func (s *Session) AddBytesRead(n int64) {
 	if n > 0 {
 		s.bytesRead.Add(n)
 	}
+}
+
+// NoteServedWindow folds one finished serve into the watched high-water mark:
+// the furthest byte offset actually delivered to the client, and the size of
+// the file those offsets index into. Callers only report real playback serves
+// — probe-like requests (players sampling the file tail for the moov atom)
+// would otherwise read as "watched to the end".
+func (s *Session) NoteServedWindow(maxOffset, totalSize int64) {
+	if s == nil || maxOffset <= 0 || totalSize <= 0 {
+		return
+	}
+	s.servedTotal.Store(totalSize)
+	for {
+		current := s.servedHighWater.Load()
+		if maxOffset <= current || s.servedHighWater.CompareAndSwap(current, maxOffset) {
+			return
+		}
+	}
+}
+
+// ServedProgressPercent reports the watched high-water mark as 0–100, or 0
+// while no real serve has been recorded.
+func (s *Session) ServedProgressPercent() float64 {
+	if s == nil {
+		return 0
+	}
+	total := s.servedTotal.Load()
+	high := s.servedHighWater.Load()
+	if total <= 0 || high <= 0 {
+		return 0
+	}
+	pct := float64(high) / float64(total) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
+}
+
+// LastReportedProgress returns the progress percentage the layers above last
+// reported externally for this session, 0 when none yet.
+func (s *Session) LastReportedProgress() float64 {
+	if s == nil {
+		return 0
+	}
+	return float64(s.reportedProgressH.Load()) / 100
+}
+
+// SetLastReportedProgress records pct as reported.
+func (s *Session) SetLastReportedProgress(pct float64) {
+	if s == nil {
+		return
+	}
+	s.reportedProgressH.Store(int64(pct * 100))
+}
+
+// CurrentActivePlays reports how many playback serves are currently open on
+// this session.
+func (s *Session) CurrentActivePlays() int32 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ActivePlays
 }
 
 // IsActivelyServing returns true if at least one goroutine is currently serving this session

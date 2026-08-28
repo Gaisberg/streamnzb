@@ -154,6 +154,20 @@ type StreamMonitor struct {
 	readBlocked   atomic.Int64 // ns spent in Read (usenet/reader backpressure)
 	sawEOF        atomic.Bool
 	lastReadErr   atomic.Value
+	// pos/maxPos track the byte offset ServeContent has read up to, via the
+	// Seek it performs for the Range header plus the reads that follow. maxPos
+	// is the furthest offset this serve delivered — the watched-progress
+	// signal, folded into the session by the serve bookkeeping.
+	pos    atomic.Int64
+	maxPos atomic.Int64
+}
+
+func (s *StreamMonitor) Seek(offset int64, whence int) (int64, error) {
+	n, err := s.ReadSeekCloser.Seek(offset, whence)
+	if err == nil {
+		s.pos.Store(n)
+	}
+	return n, err
 }
 
 func (s *StreamMonitor) Read(p []byte) (n int, err error) {
@@ -163,6 +177,13 @@ func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 	s.readBlocked.Add(time.Since(readStart).Nanoseconds())
 	if n > 0 {
 		s.bytesRead.Add(int64(n))
+		newPos := s.pos.Add(int64(n))
+		for {
+			max := s.maxPos.Load()
+			if newPos <= max || s.maxPos.CompareAndSwap(max, newPos) {
+				break
+			}
+		}
 		if s.manager != nil {
 			s.manager.AddBytesRead(s.sessionID, int64(n))
 		}
@@ -199,6 +220,7 @@ func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 type streamMonitorSnapshot struct {
 	BytesRead     int64
 	ReadCalls     int64
+	MaxPos        int64
 	SawEOF        bool
 	LastReadError string
 	ReadBlocked   time.Duration
@@ -212,6 +234,7 @@ func (s *StreamMonitor) Snapshot() streamMonitorSnapshot {
 	return streamMonitorSnapshot{
 		BytesRead:     s.bytesRead.Load(),
 		ReadCalls:     s.readCalls.Load(),
+		MaxPos:        s.maxPos.Load(),
 		SawEOF:        s.sawEOF.Load(),
 		LastReadError: lastReadErr,
 		ReadBlocked:   time.Duration(s.readBlocked.Load()),
@@ -1973,6 +1996,10 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 	}
 	s.recordAttempt(sess, true, "", availOutcome)
 	sess.ResetOnce(onceThresholdLogged)
+	// Playback is proven real at this point — the moment to tell Simkl the
+	// title is being watched (once per session; the stop with final progress
+	// comes from the serve teardown).
+	s.scrobbleSimklStart(sess)
 	// Populate the library from a real successful play, not just speculative
 	// pre-probe, so the cache reflects actual usage even when pre-probing is
 	// limited or disabled. Skip sessions already sourced from the library.

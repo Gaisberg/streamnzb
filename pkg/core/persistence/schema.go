@@ -268,6 +268,10 @@ var addedColumns = []addedColumn{
 	// AniList id for the entry, keying external anime services (SeaDex). 0
 	// means the source published none.
 	{"anime_mappings", "anilist_id", "{INT} NOT NULL DEFAULT 0"},
+	// MyAnimeList id for the entry, resolving MAL-keyed sources (Simkl anime
+	// watchlists) back to the Kitsu entry the anime pipeline runs on. 0 means
+	// the source published none.
+	{"anime_mappings", "mal_id", "{INT} NOT NULL DEFAULT 0"},
 }
 
 // migratedIndexes are created after the column migrations, since several index
@@ -279,6 +283,7 @@ var migratedIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_kitsu ON library_nzbs(kitsu_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_status ON library_nzbs(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_library_nzbs_verified ON library_nzbs(last_verified_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_anime_mappings_mal ON anime_mappings(mal_id)`,
 }
 
 // addColumn applies one ALTER TABLE ADD COLUMN, tolerating the column already

@@ -682,6 +682,15 @@ type Config struct {
 
 	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
 
+	// SimklClientID is the Simkl app the PIN account-link flow authorizes
+	// against. Empty means the key baked in at build time; the account's
+	// access token itself lives in the state store, not here.
+	SimklClientID string `json:"simkl_client_id,omitempty"`
+	// SimklScrobble reports playback to the linked Simkl account: watching-now
+	// on sustained playback, and watched progress when a play ends. Off by
+	// default — the account is server-wide, so reporting is opt-in.
+	SimklScrobble bool `json:"simkl_scrobble,omitempty"`
+
 	// DatabaseDriver selects the persistence backend: "sqlite" (default,
 	// <data dir>/streamnzb.db) or "postgres". DatabaseURL is the Postgres
 	// connection string. Changing either is applied by a config reload —
@@ -1734,6 +1743,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyAvailNZBAPIKey:     func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
 	env.KeyTMDBAPIKey:         func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
 	env.KeyTVDBAPIKey:         func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeySimklClientID:      func(d, s *Config) { d.SimklClientID = s.SimklClientID },
 	env.KeyIndexerQueryHeader: func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
 	env.KeyIndexerGrabHeader:  func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
 	env.KeyProviderHeader:     func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
@@ -1812,6 +1822,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		AvailNZBAPIKey:          o.AvailNZBAPIKey,
 		TMDBAPIKey:              o.TMDBAPIKey,
 		TVDBAPIKey:              o.TVDBAPIKey,
+		SimklClientID:           o.SimklClientID,
 		IndexerQueryHeader:      o.IndexerQueryHeader,
 		IndexerGrabHeader:       o.IndexerGrabHeader,
 		ProviderHeader:          o.ProviderHeader,
@@ -1908,6 +1919,7 @@ func (c *Config) RedactForAPI() Config {
 	out.AvailNZBAPIKey = ""
 	out.TMDBAPIKey = ""
 	out.TVDBAPIKey = ""
+	out.SimklClientID = ""
 	out.DatabaseURL = RedactDatabaseURLForAPI(c.DatabaseURL)
 	out.Providers = make([]Provider, len(c.Providers))
 	for i, provider := range c.Providers {

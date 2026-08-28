@@ -160,7 +160,7 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p dist/linux_amd64 dist/linux_arm64 dist/windows_amd64 dist/darwin_amd64 dist/darwin_arm64
-          LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.Version=${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-s -w -X main.TMDBKey=${{ secrets.TMDB_API_KEY }} -X main.TVDBKey=${{ secrets.TVDB_API_KEY }} -X main.SimklKey=${{ secrets.SIMKL_CLIENT_ID }} -X main.Version=${{ steps.version.outputs.VERSION }}"
           # -tags embedffprobe bundles the matching ffprobe binary (fetched above) into each build.
           pids=()
           build() {

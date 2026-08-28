@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/metacache"
+	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/usenet/nntp"
@@ -24,14 +25,16 @@ import (
 )
 
 type BuildOpts struct {
-	AvailNZBURL        string
-	AvailNZBAPIKey     string
-	TMDBAPIKey         string
-	TVDBAPIKey         string
-	FallbackTMDBAPIKey string
-	FallbackTVDBAPIKey string
-	DataDir            string
-	SessionTTL         time.Duration
+	AvailNZBURL           string
+	AvailNZBAPIKey        string
+	TMDBAPIKey            string
+	TVDBAPIKey            string
+	SimklClientID         string
+	FallbackTMDBAPIKey    string
+	FallbackTVDBAPIKey    string
+	FallbackSimklClientID string
+	DataDir               string
+	SessionTTL            time.Duration
 }
 
 type Components struct {
@@ -49,6 +52,7 @@ type Components struct {
 	AvailClient          *availnzb.Client
 	TMDBClient           *tmdb.Client
 	TVDBClient           *tvdb.Client
+	SimklClient          *simkl.Client
 	SegmentCacheBudget   *pool.SegmentCacheBudget
 }
 
@@ -97,6 +101,13 @@ func (a *App) EffectiveTVDBKey() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.effectiveTVDBKey()
+}
+
+func (a *App) effectiveSimklClientID() string {
+	if k := strings.TrimSpace(a.opts.SimklClientID); k != "" {
+		return k
+	}
+	return strings.TrimSpace(a.opts.FallbackSimklClientID)
 }
 
 func (a *App) Build(cfg *config.Config, opts BuildOpts) (*Components, error) {
@@ -159,6 +170,7 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 	// from each stream's metadata profile — never client state.
 	tmdbClient := tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
+	simklClient := a.simklClientFor(nil, dataDir)
 
 	return &Components{
 		Config:               base.Config,
@@ -175,8 +187,22 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 		AvailClient:          availClient,
 		TMDBClient:           tmdbClient,
 		TVDBClient:           tvdbClient,
+		SimklClient:          simklClient,
 		SegmentCacheBudget:   base.SegmentCacheBudget,
 	}, nil
+}
+
+// simklClientFor keeps the existing Simkl client across reloads whenever the
+// effective client id is unchanged: the instance carries the linked account's
+// token mirror and the cached watchlist, and Simkl's API terms punish clients
+// that refetch the full list gratuitously — every debounced settings save must
+// not cost one.
+func (a *App) simklClientFor(prev *simkl.Client, dataDir string) *simkl.Client {
+	clientID := a.effectiveSimklClientID()
+	if prev != nil && prev.ClientID() == clientID {
+		return prev
+	}
+	return simkl.NewClient(clientID, dataDir)
 }
 
 // ReloadScope describes which runtime subsystems a config change invalidates.
@@ -248,6 +274,7 @@ func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
 	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
 	comp.TMDBClient = tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
+	comp.SimklClient = a.simklClientFor(comp.SimklClient, dataDir)
 }
 
 func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
@@ -256,6 +283,7 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 
 	a.opts.TMDBAPIKey = strings.TrimSpace(newCfg.TMDBAPIKey)
 	a.opts.TVDBAPIKey = strings.TrimSpace(newCfg.TVDBAPIKey)
+	a.opts.SimklClientID = strings.TrimSpace(newCfg.SimklClientID)
 	env.SetRuntimeHeaders(newCfg.IndexerQueryHeader, newCfg.IndexerGrabHeader, newCfg.ProviderHeader)
 
 	old := a.components

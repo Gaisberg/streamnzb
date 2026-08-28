@@ -6,6 +6,7 @@ import (
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/usenet/validation"
@@ -14,7 +15,7 @@ import (
 // serverRuntime is the set of dependencies Reload replaces together when the
 // configuration is saved.
 //
-// It exists because these twelve fields are not independent. A config that
+// It exists because these thirteen fields are not independent. A config that
 // added an indexer arrives with the aggregator that can reach it; a config that
 // switched AvailNZB off arrives with a nil client. Reading them one at a time —
 // which is what 131 call sites used to do, none of them holding the lock —
@@ -37,6 +38,7 @@ type serverRuntime struct {
 	availNZBIndexerHosts map[string]string
 	tmdbClient           *tmdb.Client
 	tvdbClient           *tvdb.Client
+	simklClient          *simkl.Client
 	streamManager        *auth.StreamManager
 }
 
@@ -60,6 +62,7 @@ func (s *Server) runtime() serverRuntime {
 		availNZBIndexerHosts: s.availNZBIndexerHosts,
 		tmdbClient:           s.tmdbClient,
 		tvdbClient:           s.tvdbClient,
+		simklClient:          s.simklClient,
 		streamManager:        s.streamManager,
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
 	"streamnzb/pkg/services/metadata/kitsu"
+	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 )
@@ -122,7 +123,8 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	maxAge := catalogListingCacheMaxAge
 	switch {
-	case def.Provider == "local":
+	case def.Provider == "local" || def.Provider == "simkl":
+		// Personal rows — never client-cached.
 		maxAge = catalogLocalCacheMaxAge
 	case req.Search != "":
 		maxAge = catalogSearchCacheMaxAge
@@ -162,6 +164,8 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		return s.tvdbCatalog(ctx, def, req)
 	case "kitsu":
 		return s.kitsuCatalog(ctx, def, req)
+	case "simkl":
+		return s.simklCatalog(ctx, def, req)
 	case "local":
 		if def.Kind == "because-you-watched" {
 			return s.becauseYouWatchedCatalog(ctx, def, req)
@@ -367,6 +371,83 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		})
 	}
 	return previews, nil
+}
+
+// simklTypeForCatalog maps a catalog media type onto Simkl's list naming.
+func simklTypeForCatalog(contentType string) string {
+	switch contentType {
+	case "movie":
+		return "movies"
+	case "anime":
+		return "anime"
+	}
+	return "shows"
+}
+
+// simklCatalog serves one of the linked Simkl account's watchlists (def.Kind
+// is the Simkl status). Entries arrive with their cross-service ids plus
+// Simkl's own title and poster, so no per-item metadata fan-out is needed.
+// Without a linked account the build fails, which the handler degrades to an
+// empty page.
+func (s *Server) simklCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
+	if rt.simklClient == nil {
+		return nil, fmt.Errorf("simkl is not configured")
+	}
+	entries, err := rt.simklClient.Watchlist(ctx, simklTypeForCatalog(def.Type), def.Kind)
+	if err != nil {
+		return nil, err
+	}
+	previews := make([]MetaPreview, 0, len(entries))
+	for _, entry := range entries {
+		id := s.simklPreviewID(entry, def.Type)
+		if id == "" {
+			continue
+		}
+		previews = append(previews, MetaPreview{
+			ID:     id,
+			Type:   def.Type,
+			Name:   entry.Title,
+			Poster: simkl.PosterURL(entry.Poster),
+		})
+	}
+	if req.Skip >= len(previews) {
+		return nil, nil
+	}
+	previews = previews[req.Skip:]
+	if len(previews) > catalogPageSize {
+		previews = previews[:catalogPageSize]
+	}
+	if cap, capped := capForProfile(req.Profile); capped {
+		previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
+	}
+	return previews, nil
+}
+
+// simklPreviewID picks the preview id for one watchlist entry: tt ids first so
+// any other installed addon can serve the row too. Anime resolves through the
+// MAL→Kitsu mapping instead, landing on the same anime pipeline — and the same
+// ids, for cross-catalog dedup — as the Kitsu rows, with the entry's own tt id
+// as the fallback while the mapping has no answer.
+func (s *Server) simklPreviewID(entry simkl.Entry, contentType string) string {
+	if contentType == "anime" {
+		if mapping, ok := s.animeLists.LookupMAL(entry.MALID); ok && mapping.KitsuID > 0 {
+			return fmt.Sprintf("kitsu:%d", mapping.KitsuID)
+		}
+		if strings.HasPrefix(entry.IMDbID, "tt") {
+			return entry.IMDbID
+		}
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(entry.IMDbID, "tt"):
+		return entry.IMDbID
+	case entry.TMDBID != "":
+		return "tmdb:" + entry.TMDBID
+	case entry.TVDBID != "" && contentType == "series":
+		return "tvdb:" + entry.TVDBID
+	}
+	return ""
 }
 
 // applyPosterOverlays swaps catalog posters for the profile's overlay

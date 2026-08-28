@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
-import { Check, ChevronRight, Clapperboard, Info, KeyRound, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { cn, selectClass } from "@/lib/utils"
 
@@ -18,6 +18,7 @@ const PROVIDER_LABELS = {
   tmdb: "TMDB",
   tvdb: "TVDB",
   kitsu: "Kitsu",
+  simkl: "Simkl",
   local: "This server",
 }
 
@@ -142,7 +143,7 @@ function CatalogBadges({ def }) {
 
 // MetadataProfileEditor is the detail pane: everything one profile carries.
 // Pure controlled component — every edit flows up through onChange.
-function MetadataProfileEditor({ draft, onChange, registry, registryError, certOptions }) {
+function MetadataProfileEditor({ draft, onChange, registry, registryError, certOptions, simklCard }) {
   const [addOpen, setAddOpen] = useState(false)
   const [query, setQuery] = useState("")
 
@@ -391,6 +392,8 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
         </CardContent>
       </Card>
 
+      {simklCard}
+
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-w-lg p-4 sm:p-6">
           <DialogHeader>
@@ -467,6 +470,187 @@ function KeySaveStatus({ status }) {
   return <p className="text-xs text-destructive">{status.message}</p>
 }
 
+// SimklCard links a Simkl account through the PIN device flow: show the code,
+// send the user to simkl.com/pin, poll until Simkl confirms. The watchlist
+// catalogs only exist in the registry once an account is linked, so the parent
+// refetches the catalog list on every connect/disconnect. The account — and
+// the scrobble toggle — are server-wide, shared by every profile.
+function SimklCard({ onAccountChange, scrobble, onScrobbleChange }) {
+  const [status, setStatus] = useState(null)
+  const [pin, setPin] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  // Optimistic mirror of the saved toggle, cleared when the save echoes back.
+  const [scrobbleOverride, setScrobbleOverride] = useState(null)
+  useEffect(() => { setScrobbleOverride(null) }, [scrobble])
+  const scrobbleOn = scrobbleOverride ?? scrobble
+  // Polling state lives in refs: the interval callback must see the current
+  // code without re-arming the timer on every render.
+  const pollRef = useRef(null)
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch("/api/simkl/status")
+      .then((data) => { if (!cancelled) setStatus(data) })
+      .catch(() => { if (!cancelled) setStatus({ enabled: false, connected: false }) })
+    return () => { cancelled = true; stopPolling() }
+  }, [])
+
+  const finishLink = (nextStatus) => {
+    stopPolling()
+    setPin(null)
+    setStatus(nextStatus)
+    onAccountChange()
+  }
+
+  const startLink = async () => {
+    setError("")
+    setBusy(true)
+    try {
+      const data = await apiFetch("/api/simkl/pin", { method: "POST" })
+      setPin(data)
+      const expiresAt = Date.now() + (data.expires_in || 900) * 1000
+      pollRef.current = setInterval(async () => {
+        if (Date.now() > expiresAt) {
+          stopPolling()
+          setPin(null)
+          setError("The code expired before it was entered. Start over to get a new one.")
+          return
+        }
+        try {
+          const check = await apiFetch("/api/simkl/pin/check", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_code: data.user_code }),
+          })
+          if (check?.connected) finishLink(check.status)
+        } catch {
+          // Transient poll failures are retried on the next tick.
+        }
+      }, Math.max(data.interval || 5, 1) * 1000)
+    } catch (err) {
+      setError(err?.message || "Could not start the Simkl link.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancelLink = () => {
+    stopPolling()
+    setPin(null)
+  }
+
+  const disconnect = async () => {
+    setError("")
+    setBusy(true)
+    try {
+      const next = await apiFetch("/api/simkl/disconnect", { method: "POST" })
+      finishLink(next)
+    } catch (err) {
+      setError(err?.message || "Disconnect failed.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="border border-border bg-card">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <Link2 className="h-4 w-4 text-muted-foreground" /> Simkl
+            </CardTitle>
+            <CardDescription>
+              Link your Simkl account to serve its watchlists — Watching, Plan to Watch, On Hold,
+              Completed and Dropped — as catalog rows. Once linked, they appear in every profile&apos;s
+              &quot;Add catalog&quot; list.
+            </CardDescription>
+          </div>
+          {status?.connected ? (
+            <Button size="sm" variant="outline" onClick={disconnect} disabled={busy}>
+              Disconnect
+            </Button>
+          ) : (
+            <Button size="sm" onClick={startLink} disabled={busy || !status || !status.enabled || Boolean(pin)}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Connect
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {status?.connected && (
+          <>
+            <p className="flex items-center gap-1.5 text-sm text-emerald-500">
+              <Check className="h-4 w-4" /> Connected{status.user_name ? ` as ${status.user_name}` : ""}.
+            </p>
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5">
+              <div className="min-w-0">
+                <Label htmlFor="simkl-scrobble" className="text-sm">Scrobble playback to Simkl</Label>
+                <p className="text-xs text-muted-foreground">
+                  Report what gets played to the linked account: &quot;watching now&quot; while a title
+                  streams, watched progress when it stops — Simkl marks it watched past 80%, and keeps
+                  the resume position below that. Applies to every stream on this server.
+                </p>
+              </div>
+              <Switch
+                id="simkl-scrobble"
+                checked={scrobbleOn}
+                onCheckedChange={(value) => {
+                  setScrobbleOverride(value)
+                  onScrobbleChange(value)
+                }}
+              />
+            </div>
+          </>
+        )}
+        {status && !status.enabled && (
+          <p className="text-xs text-muted-foreground">
+            No Simkl client id is available in this build. Create an app at{" "}
+            <a href="https://simkl.com/settings/developer/" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+              simkl.com/settings/developer
+            </a>{" "}
+            and paste its client id under API keys below, then connect.
+          </p>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <Dialog open={Boolean(pin)} onOpenChange={(open) => { if (!open) cancelLink() }}>
+          <DialogContent className="max-w-sm p-4 sm:p-6">
+            <DialogHeader>
+              <DialogTitle>Link Simkl</DialogTitle>
+              <DialogDescription>
+                Enter this code at{" "}
+                <a
+                  href={pin?.verification_url || "https://simkl.com/pin/"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2"
+                >
+                  simkl.com/pin
+                </a>{" "}
+                and approve the app. This page updates by itself once you have.
+              </DialogDescription>
+            </DialogHeader>
+            <p className="select-all rounded-md border border-border bg-muted/30 py-4 text-center font-mono text-3xl tracking-[0.3em]">
+              {pin?.user_code}
+            </p>
+            <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Waiting for approval…
+            </p>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const envOverrides = config?.env_overrides ?? []
   // null means the backend has not migrated yet; treat as none, never PUT
@@ -481,21 +665,28 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   const [keysOpen, setKeysOpen] = useState(false)
   const [tmdbKey, setTmdbKey] = useState("")
   const [tvdbKey, setTvdbKey] = useState("")
+  const [simklId, setSimklId] = useState("")
   const [keyStatus, setKeyStatus] = useState({})
   // The last patch committed per group, so re-focusing a field does not fire
   // another provider round trip for a value that already landed.
   const committedRef = useRef({})
 
+  // Refetched on Simkl connect/disconnect too — the backend only lists the
+  // watchlist catalogs while an account is linked.
+  const loadRegistry = useCallback(() => {
+    apiFetch("/api/metadata/catalogs")
+      .then((data) => { setRegistry(Array.isArray(data) ? data : []); setRegistryError(false) })
+      .catch(() => setRegistryError(true))
+  }, [])
+
   useEffect(() => {
     let cancelled = false
-    apiFetch("/api/metadata/catalogs")
-      .then((data) => { if (!cancelled) setRegistry(Array.isArray(data) ? data : []) })
-      .catch(() => { if (!cancelled) setRegistryError(true) })
+    loadRegistry()
     apiFetch("/api/metadata/certifications")
       .then((data) => { if (!cancelled) setCertOptions(Array.isArray(data) ? data : []) })
       .catch(() => { /* the dropdown degrades to "No limit" only */ })
     return () => { cancelled = true }
-  }, [])
+  }, [loadRegistry])
 
   // API keys save on blur. The backend keeps a key the patch does not mention,
   // so a blank field means "leave the stored one alone" and is never sent.
@@ -520,6 +711,17 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
         }))
       })
   }
+
+  // Rendered inside the profile editor under Sources & language; the account
+  // itself is server-wide. Falls back to a standalone card while no profile
+  // exists yet, so linking stays reachable.
+  const simklCard = (
+    <SimklCard
+      onAccountChange={loadRegistry}
+      scrobble={Boolean(config?.simkl_scrobble)}
+      onScrobbleChange={(value) => onPersist({ simkl_scrobble: value })}
+    />
+  )
 
   return (
     <div className="space-y-6">
@@ -562,6 +764,7 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
             registry={registry}
             registryError={registryError}
             certOptions={certOptions}
+            simklCard={simklCard}
           />
         )}
       >
@@ -573,6 +776,8 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
           </p>
         </div>
       </ProfileManager>
+
+      {profiles.length === 0 && simklCard}
 
       <Card className="border border-border bg-card">
         <button
@@ -629,6 +834,23 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
                 Leave blank to use the built-in key, which has no quota you would need to escape.
               </p>
               <KeySaveStatus status={keyStatus.tvdb} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="metadata-simkl-id" className="flex items-center gap-1.5 text-sm">
+                Simkl Client ID <EnvOverrideIndicator show={envOverrides.includes("simkl_client_id")} />
+              </Label>
+              <PasswordInput
+                id="metadata-simkl-id"
+                className="h-9 w-full font-mono text-xs"
+                value={simklId}
+                onChange={(e) => setSimklId(e.target.value)}
+                onBlur={() => commitKeys("simkl", { simkl_client_id: simklId })}
+              />
+              <p className="text-xs text-muted-foreground">
+                The Simkl app the account link authorizes against. Leave blank to use the built-in
+                one; changing it unlinks the current account until it is re-linked.
+              </p>
+              <KeySaveStatus status={keyStatus.simkl} />
             </div>
             <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground/80">
               This product uses the TMDB API but is not endorsed or certified by TMDB. Series metadata is

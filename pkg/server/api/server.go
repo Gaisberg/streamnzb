@@ -439,6 +439,7 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 			AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 			TMDBClient:           comp.TMDBClient,
 			TVDBClient:           comp.TVDBClient,
+			SimklClient:          comp.SimklClient,
 			StreamManager:        s.streamManager,
 		})
 	}
@@ -508,6 +509,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/tmdb/tv/", authMiddleware(http.HandlerFunc(s.handleTMDBTV)))
 	mux.Handle("/api/metadata/catalogs", authMiddleware(http.HandlerFunc(s.handleMetadataCatalogs)))
 	mux.Handle("/api/metadata/certifications", authMiddleware(http.HandlerFunc(s.handleMetadataCertifications)))
+	mux.Handle("/api/simkl/status", authMiddleware(http.HandlerFunc(s.handleSimklStatus)))
+	mux.Handle("/api/simkl/pin", authMiddleware(http.HandlerFunc(s.handleSimklPin)))
+	mux.Handle("/api/simkl/pin/check", authMiddleware(http.HandlerFunc(s.handleSimklPinCheck)))
+	mux.Handle("/api/simkl/disconnect", authMiddleware(http.HandlerFunc(s.handleSimklDisconnect)))
 	mux.Handle("/api/search/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
 	mux.Handle("/api/search/releases", authMiddleware(http.HandlerFunc(s.handleSearchReleases)))
 	mux.Handle("/api/play/nzb", authMiddleware(http.HandlerFunc(s.handleDirectPlayNZB)))

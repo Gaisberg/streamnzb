@@ -16,7 +16,7 @@ import (
 var reloadSwappedFields = []string{
 	"config", "baseURL", "indexer", "queryCache", "validator", "triageService",
 	"availClient", "availReporter", "availNZBIndexerHosts", "tmdbClient",
-	"tvdbClient", "streamManager",
+	"tvdbClient", "simklClient", "streamManager",
 }
 
 // Reload swaps twelve fields under the write lock every time the config is

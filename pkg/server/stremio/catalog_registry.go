@@ -10,7 +10,7 @@ type CatalogDef struct {
 	ID             string `json:"id"`
 	Type           string `json:"type"`
 	Name           string `json:"name"`
-	Provider       string `json:"provider"` // "tmdb" | "tvdb" | "kitsu" | "local"
+	Provider       string `json:"provider"` // "tmdb" | "tvdb" | "kitsu" | "simkl" | "local"
 	SupportsSearch bool   `json:"supports_search"`
 	SupportsSkip   bool   `json:"supports_skip"`
 	DefaultEnabled bool   `json:"default_enabled"`
@@ -64,6 +64,24 @@ var catalogRegistry = []CatalogDef{
 	// stays dense under a cap; the ceiling tightens from G,PG to G when the
 	// profile caps below 7.
 	{ID: "kitsu.kids.anime", Type: "anime", Name: "Kids Anime", Provider: "kitsu", Kind: "kids", CertCeiling: "7", SupportsSkip: true},
+	// Simkl watchlists mirror the linked account's lists 1:1 — one row per
+	// Simkl status per media type (movies have no watching/hold on Simkl).
+	// They only surface for selection once an account is linked (the API
+	// handler filters them), but stay registered so saved toggles survive a
+	// disconnect/reconnect.
+	{ID: "simkl.watching.series", Type: "series", Name: "Simkl Watching", Provider: "simkl", Kind: "watching", SupportsSkip: true},
+	{ID: "simkl.plantowatch.series", Type: "series", Name: "Simkl Plan to Watch", Provider: "simkl", Kind: "plantowatch", SupportsSkip: true},
+	{ID: "simkl.hold.series", Type: "series", Name: "Simkl On Hold", Provider: "simkl", Kind: "hold", SupportsSkip: true},
+	{ID: "simkl.completed.series", Type: "series", Name: "Simkl Completed", Provider: "simkl", Kind: "completed", SupportsSkip: true},
+	{ID: "simkl.dropped.series", Type: "series", Name: "Simkl Dropped", Provider: "simkl", Kind: "dropped", SupportsSkip: true},
+	{ID: "simkl.plantowatch.movie", Type: "movie", Name: "Simkl Plan to Watch", Provider: "simkl", Kind: "plantowatch", SupportsSkip: true},
+	{ID: "simkl.completed.movie", Type: "movie", Name: "Simkl Completed", Provider: "simkl", Kind: "completed", SupportsSkip: true},
+	{ID: "simkl.dropped.movie", Type: "movie", Name: "Simkl Dropped", Provider: "simkl", Kind: "dropped", SupportsSkip: true},
+	{ID: "simkl.watching.anime", Type: "anime", Name: "Simkl Watching", Provider: "simkl", Kind: "watching", SupportsSkip: true},
+	{ID: "simkl.plantowatch.anime", Type: "anime", Name: "Simkl Plan to Watch", Provider: "simkl", Kind: "plantowatch", SupportsSkip: true},
+	{ID: "simkl.hold.anime", Type: "anime", Name: "Simkl On Hold", Provider: "simkl", Kind: "hold", SupportsSkip: true},
+	{ID: "simkl.completed.anime", Type: "anime", Name: "Simkl Completed", Provider: "simkl", Kind: "completed", SupportsSkip: true},
+	{ID: "simkl.dropped.anime", Type: "anime", Name: "Simkl Dropped", Provider: "simkl", Kind: "dropped", SupportsSkip: true},
 	{ID: "streamnzb.continue-watching.movie", Type: "movie", Name: "Continue Watching", Provider: "local", Kind: "continue-watching", SupportsSkip: true},
 	{ID: "streamnzb.continue-watching.series", Type: "series", Name: "Continue Watching", Provider: "local", Kind: "continue-watching", SupportsSkip: true},
 	{ID: "streamnzb.because-you-watched.movie", Type: "movie", Name: "Because You Watched", Provider: "local", Kind: "because-you-watched", SupportsSkip: true},
@@ -100,6 +118,17 @@ func CatalogRegistry() []CatalogDef {
 	out := make([]CatalogDef, len(catalogRegistry))
 	copy(out, catalogRegistry)
 	return out
+}
+
+// unavailableCatalogProviders lists the catalog providers that currently
+// cannot serve at all. Only Simkl qualifies today: its rows are personal, so
+// without a linked account they would render as permanently empty board rows.
+func (s *Server) unavailableCatalogProviders() []string {
+	rt := s.runtime()
+	if rt.simklClient == nil || !rt.simklClient.Connected() {
+		return []string{"simkl"}
+	}
+	return nil
 }
 
 func catalogDefByID(id string) (CatalogDef, bool) {
@@ -149,13 +178,23 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 // catalogs (with their skip extras), plus the hidden search carriers — their
 // required search extra keeps them off the client's board while making every
 // content type searchable regardless of which browse rows the profile picked.
-func enabledCatalogs(profile *config.MetadataProfileConfig) []Catalog {
+// dropProviders suppresses providers that currently cannot serve (a Simkl row
+// with no account linked would render as a permanently empty board row); the
+// toggles themselves stay saved for when the provider comes back.
+func enabledCatalogs(profile *config.MetadataProfileConfig, dropProviders ...string) []Catalog {
 	if profile == nil {
 		return nil
+	}
+	dropped := make(map[string]bool, len(dropProviders))
+	for _, provider := range dropProviders {
+		dropped[provider] = true
 	}
 	defs := enabledCatalogDefs(profile)
 	catalogs := make([]Catalog, 0, len(defs)+len(searchCatalogs))
 	for _, def := range defs {
+		if dropped[def.Provider] {
+			continue
+		}
 		cat := Catalog{Type: def.Type, ID: def.ID, Name: def.Name}
 		if def.SupportsSkip {
 			cat.Extra = append(cat.Extra, CatalogExtra{Name: "skip"})

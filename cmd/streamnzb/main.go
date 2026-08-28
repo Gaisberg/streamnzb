@@ -37,6 +37,8 @@ var (
 
 	TVDBKey = ""
 
+	SimklKey = ""
+
 	Version = "dev"
 )
 
@@ -118,6 +120,7 @@ func main() {
 	availNZBAPIKey := firstNonEmpty(os.Getenv(env.AvailNZBAPIKey), AvailNZBAPIKey)
 	userTMDBKey := firstNonEmpty(os.Getenv(env.TMDBAPIKey), strings.TrimSpace(cfg.TMDBAPIKey))
 	userTVDBKey := firstNonEmpty(os.Getenv(env.TVDBAPIKey), strings.TrimSpace(cfg.TVDBAPIKey))
+	userSimklID := firstNonEmpty(os.Getenv(env.SimklClientID), strings.TrimSpace(cfg.SimklClientID))
 	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
 	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
@@ -224,14 +227,16 @@ func main() {
 
 	application := app.New()
 	comp, err := application.Build(cfg, app.BuildOpts{
-		AvailNZBURL:        availNZBUrl,
-		AvailNZBAPIKey:     availNZBAPIKey,
-		TMDBAPIKey:         userTMDBKey,
-		TVDBAPIKey:         userTVDBKey,
-		FallbackTMDBAPIKey: TMDBKey,
-		FallbackTVDBAPIKey: TVDBKey,
-		DataDir:            dataDir,
-		SessionTTL:         30 * time.Minute,
+		AvailNZBURL:           availNZBUrl,
+		AvailNZBAPIKey:        availNZBAPIKey,
+		TMDBAPIKey:            userTMDBKey,
+		TVDBAPIKey:            userTVDBKey,
+		SimklClientID:         userSimklID,
+		FallbackTMDBAPIKey:    TMDBKey,
+		FallbackTVDBAPIKey:    TVDBKey,
+		FallbackSimklClientID: SimklKey,
+		DataDir:               dataDir,
+		SessionTTL:            30 * time.Minute,
 	})
 	if err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("failed to build components: %w", err))
@@ -261,6 +266,7 @@ func main() {
 		AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 		TMDBClient:           comp.TMDBClient,
 		TVDBClient:           comp.TVDBClient,
+		SimklClient:          comp.SimklClient,
 		StreamManager:        streamManager,
 		Version:              Version,
 		AttemptRecorder:      stateMgr,
