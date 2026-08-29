@@ -4,12 +4,16 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { EntityDialog } from "@/components/EntityDialog"
+import { useEntityDialog } from "@/hooks/useEntityDialog"
+import { UsageChips } from "@/components/UsageChips"
 import { apiFetch } from "@/api"
 import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from "@/lib/config"
+import { assignedStreams } from "@/lib/usage"
+import { mapStreamsByUsername } from "@/lib/streams"
 import { CircleHelp, Copy, Plus, Settings, Trash2, X } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
@@ -235,20 +239,7 @@ function selectedTextTitleLanguages(singleLanguage) {
 
 function assignedStreamsForQuery(streamsByName, kind, queryName) {
   const field = kind === 'movie' ? 'movie_search_queries' : 'series_search_queries'
-  const target = normalizeName(queryName)
-  if (!target || !streamsByName) return []
-  return Object.values(streamsByName)
-    .filter(Boolean)
-    .filter((stream) => Array.isArray(stream[field]) && stream[field].some((name) => normalizeName(name) === target))
-    .map((stream) => stream.username)
-}
-
-function mapStreamsByUsername(streams) {
-  return (Array.isArray(streams) ? streams : []).reduce((acc, stream) => {
-    if (!stream?.username) return acc
-    acc[stream.username] = stream
-    return acc
-  }, {})
+  return assignedStreams(streamsByName, field, queryName)
 }
 
 function emptyDraft(kind) {
@@ -750,137 +741,76 @@ function defaultQueryName(kind, index) {
 }
 
 function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [], existingQueries = [], onSave, saveLabel, editing = false, nextIndex = 0, onClearStatus }) {
-  const [draft, setDraft] = useState(() => normalizeDraft(kind, initialValue))
-  const [wasOpen, setWasOpen] = useState(open)
-  const [validationError, setValidationError] = useState('')
   const [uiValidationError, setUIValidationError] = useState('')
-  const [fieldErrors, setFieldErrors] = useState({})
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    if (open && !wasOpen) {
+  const dialog = useEntityDialog({
+    open,
+    onOpenChange,
+    initialValue,
+    makeDraft: () => {
       const nextDraft = normalizeDraft(kind, initialValue)
       if (!editing && (!nextDraft.name || nextDraft.name === 'MovieQuery01' || nextDraft.name === 'TVQuery01')) {
         nextDraft.name = defaultQueryName(kind, nextIndex)
       }
-      setDraft(nextDraft)
-      setValidationError('')
-      setUIValidationError('')
-      setFieldErrors({})
-    }
-    setWasOpen(open)
-  }, [open, wasOpen, kind, initialValue, editing, nextIndex])
+      return nextDraft
+    },
+    normalize: (value) => normalizeDraft(kind, value),
+    onClearStatus,
+    onClose: () => setUIValidationError(''),
+  })
+  const { draft, setDraft, fieldErrors } = dialog
 
-  const normalizedInitial = JSON.stringify(normalizeDraft(kind, initialValue))
-  const normalizedCurrent = JSON.stringify(normalizeDraft(kind, draft))
-  const isDirty = normalizedInitial !== normalizedCurrent
   const duplicateName = existingNames.some((name) => normalizeName(name) === normalizeName(draft.name))
   const duplicateQueryName = findDuplicateQueryName(kind, draft, existingQueries)
   const duplicateQuery = Boolean(duplicateQueryName)
 
-  const requestClose = () => {
-    if (saving) return
-    if (isDirty) {
-      setShowDiscardConfirm(true)
-      return
-    }
-    onClearStatus?.()
-    setUIValidationError('')
-    onOpenChange(false)
-  }
-
-  const handleSave = async () => {
+  const handleSave = () => {
     const next = normalizeDraft(kind, draft)
     if (kind === 'series') {
       next.series_search_scope = resolveSeriesSearchScope(next.series_search_scope)
     }
-    const nextFieldErrors = {}
-    if (!next.name) nextFieldErrors.name = 'Name is required.'
-    if (duplicateName) nextFieldErrors.name = 'Name already exists.'
-    if (duplicateQuery) nextFieldErrors.name = `An identical search request already exists: "${duplicateQueryName}".`
-    const category = kind === 'movie' ? String(next.movie_categories ?? '').trim() : String(next.tv_categories ?? '').trim()
     const limit = Number(next.search_result_limit)
-    if (!category || category === '0') {
-      nextFieldErrors[kind === 'movie' ? 'movie_categories' : 'tv_categories'] = 'Category is required.'
-    }
-    if (next.search_mode === 'text' && selectedTextTitleLanguages(next.search_title_language).length === 0) {
-      nextFieldErrors.search_title_language = 'Add at least one title language.'
-    }
-    if (Number.isNaN(limit) || limit < 0) {
-      nextFieldErrors.search_result_limit = 'Limit must be 0 or greater.'
-    }
-    if (Object.keys(nextFieldErrors).length > 0) {
-      setFieldErrors(nextFieldErrors)
-      setValidationError(Object.values(nextFieldErrors)[0])
-      return
-    }
-    setFieldErrors({})
-    setUIValidationError('')
-    setValidationError('')
-    next.search_result_limit = limit
-    setSaving(true)
-    try {
-      await onSave(next)
-      onOpenChange(false)
-    } catch (error) {
-      const scopedFieldErrors = extractScopedQueryFieldErrors(error?.fieldErrors, kind, nextIndex)
-      if (Object.keys(scopedFieldErrors).length > 0) {
-        setFieldErrors(scopedFieldErrors)
-        setValidationError(Object.values(scopedFieldErrors)[0] || error?.message || 'Save failed.')
-      } else {
-        const firstFieldError = error?.fieldErrors && Object.values(error.fieldErrors).find((message) => typeof message === 'string' && message.trim() !== '')
-        setFieldErrors({})
-        setValidationError(firstFieldError || error?.message || 'Save failed.')
-      }
-    } finally {
-      setSaving(false)
-    }
+    return dialog.runSave({
+      validate: () => {
+        const nextFieldErrors = {}
+        if (!next.name) nextFieldErrors.name = 'Name is required.'
+        if (duplicateName) nextFieldErrors.name = 'Name already exists.'
+        if (duplicateQuery) nextFieldErrors.name = `An identical search request already exists: "${duplicateQueryName}".`
+        const category = kind === 'movie' ? String(next.movie_categories ?? '').trim() : String(next.tv_categories ?? '').trim()
+        if (!category || category === '0') {
+          nextFieldErrors[kind === 'movie' ? 'movie_categories' : 'tv_categories'] = 'Category is required.'
+        }
+        if (next.search_mode === 'text' && selectedTextTitleLanguages(next.search_title_language).length === 0) {
+          nextFieldErrors.search_title_language = 'Add at least one title language.'
+        }
+        if (Number.isNaN(limit) || limit < 0) {
+          nextFieldErrors.search_result_limit = 'Limit must be 0 or greater.'
+        }
+        return nextFieldErrors
+      },
+      commit: () => {
+        setUIValidationError('')
+        next.search_result_limit = limit
+        return onSave(next)
+      },
+      mapError: (error) => extractScopedQueryFieldErrors(error?.fieldErrors, kind, nextIndex),
+    })
   }
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
-      if (nextOpen) {
-        onOpenChange(true)
-        return
-      }
-      requestClose()
-    }}>
-      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden" onOpenAutoFocus={focusDialogCloseButton}>
-        <DialogHeader>
-          <DialogTitle>{dialogTitle(kind, editing)}</DialogTitle>
-          <DialogDescription>{dialogDescription(kind)}</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          <QueryDraftFields kind={kind} draft={draft} setDraft={setDraft} editing={editing} fieldErrors={fieldErrors} onUIErrorChange={setUIValidationError} />
-        </div>
-        <DialogFooter className="flex items-center justify-between gap-3">
-          <div className="min-h-9 flex-1">
-            {(uiValidationError || validationError) && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{uiValidationError || validationError}</div>
-            )}
-          </div>
-          <div className="flex flex-row items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={requestClose} disabled={saving}>Cancel</Button>
-            <Button type="button" variant="destructive" onClick={() => void handleSave()} disabled={saving}>
-              {saving ? 'Saving...' : saveLabel}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-      <ConfirmDialog
-        open={showDiscardConfirm}
-        onOpenChange={setShowDiscardConfirm}
-        title="Discard changes?"
-        description="Your unsaved search request changes will be lost."
-        confirmLabel="Discard"
-        onConfirm={() => {
-          setShowDiscardConfirm(false)
-          onClearStatus?.()
-          onOpenChange(false)
-        }}
-      />
-    </Dialog>
+    <EntityDialog
+      dialog={dialog}
+      open={open}
+      onOpenChange={onOpenChange}
+      title={dialogTitle(kind, editing)}
+      description={dialogDescription(kind)}
+      saveLabel={saveLabel}
+      savingLabel="Saving..."
+      onSave={handleSave}
+      discardDescription="Your unsaved search request changes will be lost."
+      bannerError={uiValidationError || dialog.saveError}
+    >
+      <QueryDraftFields kind={kind} draft={draft} setDraft={setDraft} editing={editing} fieldErrors={fieldErrors} onUIErrorChange={setUIValidationError} />
+    </EntityDialog>
   )
 }
 
@@ -1019,6 +949,7 @@ function QuerySection({ title, description, kind, items, names, update, remove, 
                         <CompactRow items={summary.extra} />
                       </div>
                     )}
+                    <UsageChips labels={assignedStreamsForQuery(streamsByName, kind, query.name)} />
                   </div>
                 </CardContent>
                 <QueryDialog

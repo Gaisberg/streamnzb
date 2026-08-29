@@ -1,7 +1,6 @@
 import React, { useMemo } from "react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Import, Share2, Type } from "lucide-react"
+import { Type } from "lucide-react"
 import { ProfileManager } from "@/components/ProfileManager"
 import { ResultFormatEditor } from "@/components/ResultFormatEditor"
 import { RemoteSourceCard } from "@/components/RemoteSourceCard"
@@ -9,18 +8,7 @@ import { useProfileSharing } from "@/components/useProfileSharing"
 import {
   decodeFormatProfileShareCode, encodeFormatProfileShareCode, fetchRemoteFormatProfile,
 } from "@/lib/formatProfiles"
-
-// profileUsage maps a format profile name to the streams bound to it.
-function profileUsage(streams = {}) {
-  const usage = {}
-  Object.entries(streams).forEach(([streamName, stream]) => {
-    const key = (stream?.format_profile_name || "").trim().toLowerCase()
-    if (!key) return
-    if (!usage[key]) usage[key] = []
-    if (!usage[key].includes(streamName)) usage[key].push(streamName)
-  })
-  return usage
-}
+import { nameKey, usageByName } from "@/lib/usage"
 
 function summarize(profile) {
   const bits = []
@@ -31,7 +19,7 @@ function summarize(profile) {
 
 function describeDelete(profile, usage) {
   const name = profile?.name || ""
-  const used = usage[name.trim().toLowerCase()]
+  const used = usage[nameKey(name)]
   if (!used?.length) {
     return `Delete “${name}”? It is not in use, so nothing else changes.`
   }
@@ -40,7 +28,7 @@ function describeDelete(profile, usage) {
 
 export function FormattingPage({ config, onPersist, isSaving, saveStatus }) {
   const profiles = useMemo(() => config?.format_profiles || [], [config])
-  const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
+  const usage = useMemo(() => usageByName(config?.streams, (stream) => [stream.format_profile_name]), [config])
   const onSave = (next) => onPersist({ format_profiles: next })
   const sharing = useProfileSharing({
     profiles,
@@ -56,20 +44,15 @@ export function FormattingPage({ config, onPersist, isSaving, saveStatus }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
-            <Type className="h-4 w-4" /> Formatting
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            A format profile decides how a stream&apos;s results render in Stremio — name and description, in Go
-            template syntax over each release&apos;s parsed data. Bind one to a stream from the Streams page; a
-            stream without one uses the built-in format. AIOStreams responses keep their fixed format.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={sharing.openImport}>
-          <Import className="mr-2 h-4 w-4" /> Import
-        </Button>
+      <div>
+        <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+          <Type className="h-4 w-4" /> Formatting
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          A format profile decides how a stream&apos;s results render in Stremio — name and description, in Go
+          template syntax over each release&apos;s parsed data. Bind one to a stream from the Streams page; a
+          stream without one uses the built-in format. AIOStreams responses keep their fixed format.
+        </p>
       </div>
 
       <ProfileManager
@@ -90,11 +73,7 @@ export function FormattingPage({ config, onPersist, isSaving, saveStatus }) {
           delete copy.source
           return copy
         }}
-        renderActions={(draft) => (
-          <Button variant="ghost" size="sm" onClick={() => sharing.exportProfile(draft)}>
-            <Share2 className="mr-2 h-3.5 w-3.5" /> Export
-          </Button>
-        )}
+        sharing={sharing}
         renderEditor={(draft, setDraft) => (
           <>
             {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="format" />}
@@ -111,8 +90,6 @@ export function FormattingPage({ config, onPersist, isSaving, saveStatus }) {
           </>
         )}
       />
-
-      {sharing.dialogs}
     </div>
   )
 }

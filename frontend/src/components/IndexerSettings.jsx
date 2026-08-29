@@ -4,13 +4,20 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ComponentHealthBadge } from "@/components/ComponentHealth"
 import { healthFor, healthReasonLabel, indexHealth, isBlocked } from "@/lib/health"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { EntityDialog } from "@/components/EntityDialog"
+import {
+  useEntityDialog,
+  dialogRowClass, dialogLabelClass, dialogControlWideClass, dialogControlNameClass, dialogControlNarrowClass,
+} from "@/hooks/useEntityDialog"
+import { UsageChips } from "@/components/UsageChips"
 import { apiFetch } from "@/api"
+import { assignedStreams } from "@/lib/usage"
+import { mapStreamsByUsername } from "@/lib/streams"
 import { AlertTriangle, Download, Plus, Settings, Trash2 } from "lucide-react"
 
 function normalizeName(value) {
@@ -127,51 +134,24 @@ function summarizeIndexer(indexer, defaultProxyURL = '') {
   return parts
 }
 
-function mapStreamsByUsername(streams) {
-  return (Array.isArray(streams) ? streams : []).reduce((acc, stream) => {
-    if (!stream?.username) return acc
-    acc[stream.username] = stream
-    return acc
-  }, {})
-}
-
 function assignedStreamsForIndexer(streamsByName, indexerName) {
-  const target = normalizeName(indexerName)
-  if (!target || !streamsByName) return []
-  return Object.values(streamsByName)
-    .filter(Boolean)
-    .filter((stream) => Array.isArray(stream.indexer_selections) && stream.indexer_selections.some((name) => normalizeName(name) === target))
-    .map((stream) => stream.username)
-}
-
-function firstFieldErrorMessage(fieldErrors, fallback) {
-  const first = Object.values(fieldErrors || {}).find(Boolean)
-  return first || fallback
+  return assignedStreams(streamsByName, 'indexer_selections', indexerName)
 }
 
 function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus, title, description, saveLabel, existingNames = [], existingIndexers = [], editing = false }) {
-  const [draft, setDraft] = useState(() => normalizeIndexerDraft(initialValue))
-  const [wasOpen, setWasOpen] = useState(open)
-  const [saveError, setSaveError] = useState('')
-  const [fieldErrors, setFieldErrors] = useState({})
-  const [saving, setSaving] = useState(false)
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const [presetTooltipOpen, setPresetTooltipOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const nameInputRef = useRef(null)
+  const dialog = useEntityDialog({
+    open,
+    onOpenChange,
+    initialValue,
+    makeDraft: () => normalizeIndexerDraft(initialValue),
+    normalize: normalizeIndexerDraft,
+    onClearStatus,
+  })
+  const { draft, setDraft, update, fieldClass, setSaveError, setFieldErrors } = dialog
 
-  useEffect(() => {
-    if (open && !wasOpen) {
-      setDraft(normalizeIndexerDraft(initialValue))
-      setSaveError('')
-      setFieldErrors({})
-    }
-    setWasOpen(open)
-  }, [open, wasOpen, initialValue])
-
-  const normalizedInitial = JSON.stringify(normalizeIndexerDraft(initialValue))
-  const normalizedCurrent = JSON.stringify(normalizeIndexerDraft(draft))
-  const isDirty = normalizedInitial !== normalizedCurrent
   const isEasynews = draft.type === 'easynews'
   const hasProwlarrPlaceholder = typeof draft.api_path === 'string' && draft.api_path.includes(PROWLARR_INDEXER_ID_PLACEHOLDER)
   const duplicateName = existingNames.some((name) => normalizeName(name) === normalizeName(draft.name))
@@ -182,73 +162,46 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
   const selectedPresetName = presetForDraft?.name || ''
   const apiKeyOptional = !isEasynews && presetForDraft?.optional_api_key === true
 
-  const requestClose = () => {
-    if (saving) return
-    if (isDirty) {
-      setShowDiscardConfirm(true)
-      return
-    }
-    onClearStatus?.()
-    onOpenChange(false)
-  }
+  // The shared dialog row layout, under this file's historical names.
+  const rowClass = dialogRowClass
+  const labelClass = dialogLabelClass
+  const controlWideClass = dialogControlWideClass
+  const controlNameClass = dialogControlNameClass
+  const controlNarrowClass = dialogControlNarrowClass
 
-  const update = (key, value) => setDraft((current) => ({ ...current, [key]: value }))
-  const fieldClass = (key) => fieldErrors[key] ? "border-destructive focus-visible:ring-destructive" : ""
-  const rowClass = "flex flex-col gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:gap-4"
-  const labelClass = "min-w-0 min-[360px]:flex-1"
-  const controlBaseClass = "w-full min-[360px]:ml-auto min-[360px]:shrink-0"
-  const controlWideClass = `${controlBaseClass} min-[360px]:w-[14rem]`
-  const controlNameClass = `${controlBaseClass} flex items-center gap-2 min-[360px]:w-[16.5rem]`
-  const controlNarrowClass = `${controlBaseClass} min-[360px]:w-[9rem]`
-
-  const handleSave = async () => {
-    const nextFieldErrors = {}
-    if (!draft.name?.trim()) {
-      nextFieldErrors.name = 'Indexer name is required'
-    }
-    if (!isEasynews && !draft.url?.trim()) {
-      nextFieldErrors.url = 'URL is required'
-    }
-    if (!isEasynews && !apiKeyOptional && !draft.api_key?.trim()) {
-      nextFieldErrors.api_key = 'API key is required'
-    }
-    if (isEasynews && !draft.username?.trim()) {
-      nextFieldErrors.username = 'Username is required'
-    }
-    if (isEasynews && !draft.password?.trim()) {
-      nextFieldErrors.password = 'Password is required'
-    }
-    if (duplicateName) {
-      nextFieldErrors.name = 'Indexer name already exists'
-    }
-    if (duplicateIndexer) {
-      if (isEasynews) {
-        nextFieldErrors.username = `An identical Easynews indexer already exists: "${duplicateIndexer.name}".`
-      } else {
-        nextFieldErrors.url = `An identical indexer already exists: "${duplicateIndexer.name}".`
-        nextFieldErrors.api_key = `An identical indexer already exists: "${duplicateIndexer.name}".`
+  const handleSave = () => dialog.runSave({
+    validate: () => {
+      const nextFieldErrors = {}
+      if (!draft.name?.trim()) {
+        nextFieldErrors.name = 'Indexer name is required'
       }
-    }
-    if (Object.keys(nextFieldErrors).length > 0) {
-      setFieldErrors(nextFieldErrors)
-      setSaveError(
-        nextFieldErrors.name ||
-        nextFieldErrors.url ||
-        nextFieldErrors.api_key ||
-        nextFieldErrors.username ||
-        nextFieldErrors.password ||
-        nextFieldErrors.search_results_cache_time ||
-        'Please review the highlighted fields.'
-      )
-      return
-    }
-    setSaving(true)
-    setSaveError('')
-    setFieldErrors({})
-    try {
-      await onSave(normalizeIndexerDraft(draft))
-      onOpenChange(false)
-    } catch (error) {
+      if (!isEasynews && !draft.url?.trim()) {
+        nextFieldErrors.url = 'URL is required'
+      }
+      if (!isEasynews && !apiKeyOptional && !draft.api_key?.trim()) {
+        nextFieldErrors.api_key = 'API key is required'
+      }
+      if (isEasynews && !draft.username?.trim()) {
+        nextFieldErrors.username = 'Username is required'
+      }
+      if (isEasynews && !draft.password?.trim()) {
+        nextFieldErrors.password = 'Password is required'
+      }
+      if (duplicateName) {
+        nextFieldErrors.name = 'Indexer name already exists'
+      }
+      if (duplicateIndexer) {
+        if (isEasynews) {
+          nextFieldErrors.username = `An identical Easynews indexer already exists: "${duplicateIndexer.name}".`
+        } else {
+          nextFieldErrors.url = `An identical indexer already exists: "${duplicateIndexer.name}".`
+          nextFieldErrors.api_key = `An identical indexer already exists: "${duplicateIndexer.name}".`
+        }
+      }
+      return nextFieldErrors
+    },
+    commit: () => onSave(normalizeIndexerDraft(draft)),
+    mapError: (error) => {
       const nextErrors = {}
       Object.entries(error?.fieldErrors || {}).forEach(([path, message]) => {
         if (path.includes('.name')) nextErrors.name = message
@@ -264,28 +217,21 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         else if (path.includes('.proxy_url')) nextErrors.proxy_url = message
         else if (path.includes('.search_results_cache_time')) nextErrors.search_results_cache_time = message
       })
-      setFieldErrors(nextErrors)
-      setSaveError(firstFieldErrorMessage(nextErrors, error?.message || 'Save failed'))
-    } finally {
-      setSaving(false)
-    }
-  }
+      return nextErrors
+    },
+  })
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
-      if (nextOpen) {
-        onOpenChange(true)
-        return
-      }
-      requestClose()
-    }}>
-      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden" onOpenAutoFocus={focusDialogCloseButton}>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+    <EntityDialog
+      dialog={dialog}
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title}
+      description={description}
+      saveLabel={saveLabel}
+      onSave={handleSave}
+      discardDescription="Your unsaved indexer changes will be lost."
+    >
           <div className="space-y-4">
             <div className="rounded-md border border-border/60 p-3">
               <div className={rowClass}>
@@ -577,37 +523,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
               </div>
             </div>
           </div>
-        </div>
-
-        <DialogFooter className="flex items-center justify-between gap-3">
-          <div className="min-h-9 flex-1">
-            {saveError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {saveError}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-row items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
-            <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
-              {saveLabel}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-      <ConfirmDialog
-        open={showDiscardConfirm}
-        onOpenChange={setShowDiscardConfirm}
-        title="Discard changes?"
-        description="Your unsaved indexer changes will be lost."
-        confirmLabel="Discard"
-        onConfirm={() => {
-          setShowDiscardConfirm(false)
-          onClearStatus?.()
-          onOpenChange(false)
-        }}
-      />
-    </Dialog>
+    </EntityDialog>
   )
 }
 
@@ -786,6 +702,7 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
                             ))}
                           </div>
                         </div>
+                        <UsageChips labels={assignedStreamsForIndexer(streamsByName, normalized.name)} />
                       </div>
                     </CardContent>
 

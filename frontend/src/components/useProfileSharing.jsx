@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Copy, Download, Import } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { uniqueProfileName } from "@/hooks/useProfileDrafts"
 
 // One box style for every share-code textarea.
 const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -78,14 +79,8 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec, noun = "p
   // a rejection keeps the dialog open with the reason, instead of closing over
   // a profile that never landed.
   const addImported = async (profile) => {
-    const taken = new Set(profiles.map((p) => p.name.trim().toLowerCase()))
-    let name = (profile.name || "").trim() || `Imported ${noun.replace(/\b\w/g, (c) => c.toUpperCase())}`
-    if (taken.has(name.toLowerCase())) {
-      let n = 2
-      while (taken.has(`${name} ${n}`.toLowerCase())) n += 1
-      name = `${name} ${n}`
-    }
-    profile.name = name
+    const base = (profile.name || "").trim() || `Imported ${noun.replace(/\b\w/g, (c) => c.toUpperCase())}`
+    profile.name = uniqueProfileName(profiles, base)
     await onSave([...profiles, profile])
     setImportOpen(false)
     setImportCode("")

@@ -1,6 +1,5 @@
 import React, { useMemo } from "react"
-import { Button } from "@/components/ui/button"
-import { Import, Library, Share2, SlidersHorizontal, TriangleAlert } from "lucide-react"
+import { Library, SlidersHorizontal, TriangleAlert } from "lucide-react"
 import { ProfileManager } from "@/components/ProfileManager"
 import { ProfileEditor } from "@/components/ProfileEditor"
 import { DefineLibraryEditor } from "@/components/DefineLibraryEditor"
@@ -11,6 +10,7 @@ import {
   encodeProfileShareCode, matchedRuleNames, ruleKey, withoutLegacyFields,
 } from "@/lib/profiles"
 import { fetchRemoteProfile } from "@/lib/remoteProfiles"
+import { nameKey, usageByName } from "@/lib/usage"
 import {
   defineLibraryFromPaste, encodeDefineLibraryShareCode, fetchRemoteDefineLibrary,
   summarizeDefineLibrary,
@@ -31,32 +31,25 @@ function summarize(profile) {
 
 // profileUsage maps a profile name to where it is actually applied. A profile
 // that appears nowhere here never runs, whatever its settings say.
-function profileUsage(streams = {}) {
-  const usage = {}
-  const note = (name, label) => {
-    const key = (name || "").trim().toLowerCase()
-    if (!key) return
-    if (!usage[key]) usage[key] = []
-    if (!usage[key].includes(label)) usage[key].push(label)
-  }
-
-  Object.entries(streams).forEach(([streamName, stream]) => {
+function profileUsage(streams) {
+  return usageByName(streams, (stream, streamName) => {
     // AIOStreams mode returns everything unfiltered, so nothing is applied.
-    if (stream?.filter_sorting_mode === "aiostreams") return
-    note(stream?.filter_profile_name, `${streamName} · all content`)
-    Object.entries(stream?.filter_profile_by_type || {}).forEach(([kind, name]) => {
-      const label = CONTENT_KINDS.find((k) => k.key === kind)?.label || kind
-      note(name, `${streamName} · ${label.toLowerCase()}`)
-    })
+    if (stream.filter_sorting_mode === "aiostreams") return []
+    return [
+      { name: stream.filter_profile_name, label: `${streamName} · all content` },
+      ...Object.entries(stream.filter_profile_by_type || {}).map(([kind, name]) => ({
+        name,
+        label: `${streamName} · ${(CONTENT_KINDS.find((k) => k.key === kind)?.label || kind).toLowerCase()}`,
+      })),
+    ]
   })
-  return usage
 }
 
 // describeDelete spells out the knock-on effect, since deleting a profile
 // also clears it from any stream using it.
 function describeDelete(profile, usage) {
   const name = profile?.name || ""
-  const used = usage[name.trim().toLowerCase()]
+  const used = usage[nameKey(name)]
   if (!used?.length) {
     return `Delete “${name}”? It is not in use, so nothing else changes.`
   }
@@ -134,19 +127,14 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
-            <SlidersHorizontal className="h-4 w-4" /> Filters
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            A profile decides which releases you are offered, how they are scored, and what order they arrive in.
-            Assign one to a stream from the Streams page.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={sharing.openImport}>
-          <Import className="mr-2 h-4 w-4" /> Import
-        </Button>
+      <div>
+        <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+          <SlidersHorizontal className="h-4 w-4" /> Filters
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          A profile decides which releases you are offered, how they are scored, and what order they arrive in.
+          Assign one to a stream from the Streams page.
+        </p>
       </div>
 
       {profiles.length > 0 && !anyInUse && (
@@ -178,11 +166,7 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
           delete copy.source
           return copy
         }}
-        renderActions={(draft) => (
-          <Button variant="ghost" size="sm" onClick={() => sharing.exportProfile(draft)}>
-            <Share2 className="mr-2 h-3.5 w-3.5" /> Export
-          </Button>
-        )}
+        sharing={sharing}
         renderEditor={(draft, setDraft) => (
           <>
             {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="filter" />}
@@ -191,20 +175,15 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
         )}
       />
 
-      <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-6">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
-            <Library className="h-4 w-4" /> Define libraries
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Shared bundles of define rules — release-group tiers, community lists — kept once and referenced
-            from every profile with <code className="font-mono text-xs">matched(&quot;Name&quot;)</code>. The
-            data lives here; what a tier is worth stays each profile&apos;s own rule.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={librarySharing.openImport}>
-          <Import className="mr-2 h-4 w-4" /> Import
-        </Button>
+      <div className="border-t border-border pt-6">
+        <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+          <Library className="h-4 w-4" /> Define libraries
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Shared bundles of define rules — release-group tiers, community lists — kept once and referenced
+          from every profile with <code className="font-mono text-xs">matched(&quot;Name&quot;)</code>. The
+          data lives here; what a tier is worth stays each profile&apos;s own rule.
+        </p>
       </div>
 
       <ProfileManager
@@ -215,7 +194,6 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
         newProfile={(name) => ({ name, rules: [] })}
         describeDelete={describeLibraryDelete}
         entityLabel="define library"
-        heading="Library"
         addButtonLabel="New library"
         newProfileBaseName="New Library"
         emptyText="No define libraries yet. Import a community-maintained one from a URL, or create your own."
@@ -228,11 +206,7 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
           delete copy.source
           return copy
         }}
-        renderActions={(draft) => (
-          <Button variant="ghost" size="sm" onClick={() => librarySharing.exportProfile(draft)}>
-            <Share2 className="mr-2 h-3.5 w-3.5" /> Export
-          </Button>
-        )}
+        sharing={librarySharing}
         renderEditor={(draft, setDraft) => (
           <>
             {draft.source?.url && <RemoteSourceCard profile={draft} onChange={setDraft} flavor="library" />}
@@ -240,9 +214,6 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
           </>
         )}
       />
-
-      {sharing.dialogs}
-      {librarySharing.dialogs}
     </div>
   )
 }

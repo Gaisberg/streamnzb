@@ -12,6 +12,7 @@ import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
+import { nameKey, usageByName } from "@/lib/usage"
 import { cn, selectClass } from "@/lib/utils"
 
 const PROVIDER_LABELS = {
@@ -108,24 +109,11 @@ function summarize(profile, registry, certOptions) {
   return bits.join(" · ")
 }
 
-// profileUsage maps a profile name to the streams bound to it. A profile that
-// appears nowhere here serves nothing.
-function profileUsage(streams = {}) {
-  const usage = {}
-  Object.entries(streams).forEach(([streamName, stream]) => {
-    const key = (stream?.metadata_profile_name || "").trim().toLowerCase()
-    if (!key) return
-    if (!usage[key]) usage[key] = []
-    if (!usage[key].includes(streamName)) usage[key].push(streamName)
-  })
-  return usage
-}
-
 // describeDelete spells out the knock-on effect, since deleting a profile
 // also clears it from any stream bound to it.
 function describeDelete(profile, usage) {
   const name = profile?.name || ""
-  const used = usage[name.trim().toLowerCase()]
+  const used = usage[nameKey(name)]
   if (!used?.length) {
     return `Delete “${name}”? It is not in use, so nothing else changes.`
   }
@@ -656,7 +644,8 @@ export function MetadataPage({ config, onPersist, isSaving, saveStatus }) {
   // null means the backend has not migrated yet; treat as none, never PUT
   // null back — every save sends a real array.
   const profiles = useMemo(() => config?.metadata_profiles || [], [config])
-  const usage = useMemo(() => profileUsage(config?.streams || {}), [config])
+  // A metadata profile bound nowhere serves nothing.
+  const usage = useMemo(() => usageByName(config?.streams, (stream) => [stream.metadata_profile_name]), [config])
   const anyInUse = Object.keys(usage).length > 0
 
   const [registry, setRegistry] = useState([])
