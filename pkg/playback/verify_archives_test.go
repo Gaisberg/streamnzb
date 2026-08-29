@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,7 +115,13 @@ func TestVerifyRequiredArchivesExistRefusesNZBGapPastZeroFillBudget(t *testing.T
 		t.Fatalf("VerifyRequiredArchivesExist() exists = true, want false")
 	}
 	if !errors.Is(err, ErrFirstSegmentUnavailable) {
-		t.Fatalf("VerifyRequiredArchivesExist() err = %v, want ErrFirstSegmentUnavailable", err)
+		t.Fatalf("VerifyRequiredArchivesExist() err = %v, want the ErrFirstSegmentUnavailable classification", err)
+	}
+	// The classification is borrowed; the message must not be. The first
+	// segment of a gappy file is usually present, and a reason claiming it was
+	// not found sends whoever reads History after the wrong problem.
+	if strings.Contains(err.Error(), "first segment") {
+		t.Fatalf("VerifyRequiredArchivesExist() err = %q leaks the first-segment sentinel text", err)
 	}
 }
 

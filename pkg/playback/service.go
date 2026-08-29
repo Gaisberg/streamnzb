@@ -26,6 +26,16 @@ import (
 // the pre-open STAT checks; callers classify it as a reportable bad release.
 var ErrFirstSegmentUnavailable = errors.New("first segment not found (430)")
 
+// errNZBIncomplete is the missing-from-the-NZB-itself verdict. It classifies
+// as ErrFirstSegmentUnavailable — same consequences: definitive, reported bad,
+// failed over — without inheriting that sentinel's message, which would claim
+// a first segment was not found when the gap is elsewhere in the file.
+type errNZBIncomplete struct{ msg string }
+
+func (e *errNZBIncomplete) Error() string { return e.msg }
+
+func (e *errNZBIncomplete) Is(target error) bool { return target == ErrFirstSegmentUnavailable }
+
 // ErrPlaybackStartupTimeout is the sentinel wrapped into every startup-budget
 // failure; callers match it with errors.Is to distinguish timeouts from
 // cancellations and real media errors.
@@ -428,8 +438,8 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 			continue
 		}
 		if missing := f.MissingFromNZB(); missing > loader.MaxZeroFills {
-			return false, fmt.Errorf("archive volume %s is missing %d articles from the NZB itself: %w",
-				f.Name(), missing, ErrFirstSegmentUnavailable)
+			return false, &errNZBIncomplete{msg: fmt.Sprintf(
+				"archive volume %s is missing %d articles from the NZB itself", f.Name(), missing)}
 		}
 	}
 	if len(files) == 1 {
