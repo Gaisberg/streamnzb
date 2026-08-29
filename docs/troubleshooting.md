@@ -30,6 +30,8 @@ Usenet releases decay: individual articles go missing from providers over time. 
 
 **A missing first segment always fails immediately.** It carries the container and volume headers, and nothing downstream can make sense of a zero-filled one, so that miss stays a fast, definitive verdict about the release.
 
+**Articles missing from the NZB itself are treated the same way.** Some indexers serve NZBs whose segment numbering skips articles the indexer never saw — the post is incomplete in the document, so no provider can ever supply those bytes. Small gaps are kept at their declared offsets and zero-filled like any other hole (logged as `NZB file is missing articles`); a gap larger than the 10-hole budget fails the release before playback starts, and the player is sent to the next candidate. Previously such a release served a file shorter than its own container header declared, which left some players looping on requests past the end of the stream instead of failing over.
+
 **A missing first RAR volume is repaired, not refused.** Where the release ships a PAR2 recovery set with enough blocks, the volume is reconstructed from it in memory and playback proceeds — so a set that is missing the one file that opens it is still playable. The reconstruction is capped at 128 MB, which covers ordinary volume sizes; past that the release fails over as any other unplayable one would.
 
 **Encrypted archives play when the password is in the NZB.** AES-encrypted RAR and 7z sets are decrypted as they stream, using the `password` meta field indexers put in the NZB head. A set whose password lives only in a forum post or a `.nfo` cannot be opened — there is nowhere to enter one.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 
 	"streamnzb/pkg/core/logger"
@@ -84,9 +85,17 @@ func shouldProbeMiddleSegment(_ context.Context, segments []*Segment) bool {
 // known from the estimator), always probe the physical last segment (tail size
 // often differs while NZB bytes match an earlier article), and optionally probe
 // the middle segment when uniform NZB bytes need slow-mode calibration.
+//
+// Segments without a message id — numbering-gap placeholders and id-less
+// originals — are never chosen: a probe of one can only zero-fill, and its
+// filler length would then stand in for the real decoded size of a whole class.
 func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, includeMiddle bool, skipGapProbing bool) []int {
 	if len(segments) == 0 {
 		return nil
+	}
+
+	fetchable := func(i int) bool {
+		return strings.TrimSpace(segments[i].ID) != ""
 	}
 
 	lastIdx := len(segments) - 1
@@ -94,7 +103,7 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 	var indices []int
 
 	add := func(i int) {
-		if i < 0 || i >= len(segments) || seen[i] {
+		if i < 0 || i >= len(segments) || seen[i] || !fetchable(i) {
 			return
 		}
 		seen[i] = true
@@ -103,6 +112,9 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 
 	firstIndexByBytes := make(map[int64]int)
 	for i, seg := range segments {
+		if !fetchable(i) {
+			continue
+		}
 		if _, ok := firstIndexByBytes[seg.Bytes]; !ok {
 			firstIndexByBytes[seg.Bytes] = i
 		}
@@ -155,8 +167,14 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 		}
 	}
 
-	if lastIdx > 0 {
-		add(lastIdx)
+	// The physical last segment, or with a trailing gap the last article the
+	// NZB actually carries — that one is a full segment, so it is safe as a
+	// class representative where a true remainder tail would not be.
+	for i := lastIdx; i > 0; i-- {
+		if fetchable(i) {
+			add(i)
+			break
+		}
 	}
 
 	if includeMiddle {
@@ -184,7 +202,12 @@ func segmentProbeIndices(segments []*Segment, knownByNZBBytes map[int64]int64, i
 			}
 		}
 		if !hasNonLast {
-			add(0)
+			for i := 0; i < lastIdx; i++ {
+				if fetchable(i) {
+					add(i)
+					break
+				}
+			}
 		}
 	}
 
@@ -364,6 +387,12 @@ func (f *File) probeSegmentIndicesParallel(ctx context.Context, indices []int) (
 	)
 
 	for _, idx := range indices {
+		if idx < 0 || idx >= len(f.segments) || strings.TrimSpace(f.segments[idx].ID) == "" {
+			// An article the NZB does not carry cannot be probed; its size
+			// comes from class matching. Guards the slow-mode gap pass, which
+			// probes every unprobed index.
+			continue
+		}
 		idx := idx
 		wg.Add(1)
 		go func() {

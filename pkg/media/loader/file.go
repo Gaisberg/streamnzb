@@ -136,6 +136,11 @@ type File struct {
 	ownerID   string
 	mu        sync.Mutex
 
+	// missingFromNZB counts articles the NZB itself cannot deliver: numbering
+	// gaps (materialized as placeholders or not) and segments carrying no
+	// message id. Immutable after NewFile.
+	missingFromNZB int
+
 	downloadMu        sync.Mutex
 	inflightDownloads map[int]*inflightSegmentDownload
 
@@ -179,9 +184,18 @@ func (e *zeroFillEligibleError) Error() string { return e.cause.Error() }
 func (e *zeroFillEligibleError) Unwrap() error { return e.cause }
 
 func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, fetcher SegmentFetcher) *File {
-	segments := make([]*Segment, len(f.Segments))
+	nzbSegments, unmaterialized := normalizeNZBSegments(f.Subject, f.Segments)
+	segments := make([]*Segment, len(nzbSegments))
 	var offset int64
-	for i, s := range f.Segments {
+	// Unmaterialized gaps plus every segment without a message id — gap
+	// placeholders and id-less originals alike — can never be fetched from any
+	// provider; the count is what lets the pre-flight refuse a release that
+	// would exhaust the zero-fill budget.
+	missing := unmaterialized
+	for i, s := range nzbSegments {
+		if strings.TrimSpace(s.ID) == "" {
+			missing++
+		}
 		segments[i] = &Segment{
 			Segment:     s,
 			StartOffset: offset,
@@ -195,6 +209,7 @@ func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, 
 		estimator:         estimator,
 		segments:          segments,
 		totalSize:         offset,
+		missingFromNZB:    missing,
 		ctx:               ctx,
 		inflightDownloads: make(map[int]*inflightSegmentDownload),
 		zeroFilled:        make(map[int]struct{}),
@@ -257,6 +272,13 @@ func (f *File) Size() int64 {
 func (f *File) Segments() []*Segment { return f.segments }
 
 func (f *File) SegmentCount() int { return len(f.segments) }
+
+// MissingFromNZB reports how many of this file's declared articles the NZB
+// itself cannot deliver — numbering gaps and segments without a message id.
+// Anything above MaxZeroFills can never stream, which
+// playback.VerifyRequiredArchivesExist turns into a definitive pre-flight
+// verdict instead of letting an incomplete post serve a truncated file.
+func (f *File) MissingFromNZB() int { return f.missingFromNZB }
 
 // CheckFirstSegmentExists returns whether the required segments (start, middle, end) exist on the server via STAT.
 // Used before opening a stream to fail fast when release segments are missing (430).
@@ -335,11 +357,21 @@ func (f *File) CheckFirstSegmentExists(ctx context.Context) (bool, error) {
 	for _, idx := range indices {
 		msgID := strings.TrimSpace(f.segments[idx].ID)
 		if msgID == "" {
-			// An article with no message id can never be fetched, so the
-			// release is unplayable regardless of what the server holds.
-			return f.recordFirstStat(false, nil)
+			if idx == 0 {
+				// The header article can never be fetched, so the release is
+				// unplayable regardless of what the server holds.
+				return f.recordFirstStat(false, nil)
+			}
+			// A hole the NZB itself declares (a numbering-gap placeholder or
+			// an id-less segment) has nothing to STAT: the zero-fill policy
+			// owns it at read time, and MissingFromNZB caps how many of these
+			// a file may carry before the pre-flight refuses it outright.
+			continue
 		}
 		msgIDs = append(msgIDs, msgID)
+	}
+	if len(msgIDs) == 0 {
+		return f.recordFirstStat(false, nil)
 	}
 
 	// The sampled segments are independent of each other, so probe them
@@ -852,10 +884,23 @@ func (f *File) finalizeSegmentDownload(index int, data []byte, err error, countF
 }
 
 func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]byte, error) {
+	seg := f.segments[index]
+	if strings.TrimSpace(seg.ID) == "" {
+		// The NZB carries no article for this segment — a numbering-gap
+		// placeholder from normalizeNZBSegments, or a segment posted without a
+		// message id. No provider can ever serve it, so the verdict is
+		// immediate and needs no network. The first segment carries the
+		// container header and stays fatal, exactly like a 430 there; past it
+		// the zero-fill policy decides between a rideable glitch and
+		// ErrTooManyZeroFills.
+		if index == 0 {
+			return nil, fmt.Errorf("segment unavailable: article missing from NZB (segment %d)", seg.Number)
+		}
+		return nil, &zeroFillEligibleError{cause: fmt.Errorf("segment unavailable: article missing from NZB (segment %d)", seg.Number)}
+	}
+
 	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-
-	seg := f.segments[index]
 	var data pool.SegmentData
 	var err error
 	if index == 0 {

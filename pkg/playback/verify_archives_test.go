@@ -88,6 +88,36 @@ func TestVerifyRequiredArchivesExistDefinitiveMissIsSentinel(t *testing.T) {
 	}
 }
 
+// An NZB whose own segment numbering declares more articles than it carries is
+// incomplete in the document itself: no STAT can overturn that, and past the
+// zero-fill budget it can never stream. It used to serve a truncated,
+// byte-shifted file whose container header pointed players past EOF — an
+// endless 416 loop that nothing ever classified as a slot failure.
+func TestVerifyRequiredArchivesExistRefusesNZBGapPastZeroFillBudget(t *testing.T) {
+	files := statVolumes(&statFetcher{}, 3)
+
+	segments := make([]nzb.Segment, 0, 30)
+	for num := 1; num <= 30+loader.MaxZeroFills+1; num++ {
+		if num > 10 && num <= 10+loader.MaxZeroFills+1 {
+			continue // a MaxZeroFills+1 hole in the numbering
+		}
+		segments = append(segments, nzb.Segment{ID: fmt.Sprintf("gappy-seg-%d", num), Number: num, Bytes: 1024})
+	}
+	files = append(files, loader.NewFile(context.Background(), &nzb.File{
+		Subject:  "gappy",
+		Groups:   []string{"alt.test"},
+		Segments: segments,
+	}, nil, &statFetcher{}))
+
+	exists, err := VerifyRequiredArchivesExist(context.Background(), files)
+	if exists {
+		t.Fatalf("VerifyRequiredArchivesExist() exists = true, want false")
+	}
+	if !errors.Is(err, ErrFirstSegmentUnavailable) {
+		t.Fatalf("VerifyRequiredArchivesExist() err = %v, want ErrFirstSegmentUnavailable", err)
+	}
+}
+
 // The regression this whole change exists for: a STAT that never got an answer
 // must not come back wearing the missing-article verdict, because callers turn
 // that sentinel into an AvailNZB report and a multi-day ban.

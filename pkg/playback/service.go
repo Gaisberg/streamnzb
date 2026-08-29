@@ -414,6 +414,24 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 	if len(files) == 0 {
 		return false, errors.New("no files in release")
 	}
+	// A gap in the NZB's own segment numbering is a verdict no STAT can
+	// overturn: the missing articles were never indexed, so no provider can
+	// serve them. Past the zero-fill budget such a release cannot stream, so it
+	// fails here, before a Content-Length is promised. It used to serve a
+	// truncated, byte-shifted file whose container header pointed players past
+	// EOF — every reload answered 416 from the size alone, so nothing ever
+	// marked the slot failed and the player looped instead of failing over.
+	// Checked on every volume, not just the STAT-sampled ones, because it is
+	// free and a sampled sweep can miss the gappy volume.
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		if missing := f.MissingFromNZB(); missing > loader.MaxZeroFills {
+			return false, fmt.Errorf("archive volume %s is missing %d articles from the NZB itself: %w",
+				f.Name(), missing, ErrFirstSegmentUnavailable)
+		}
+	}
 	if len(files) == 1 {
 		return files[0].CheckFirstSegmentExists(ctx)
 	}

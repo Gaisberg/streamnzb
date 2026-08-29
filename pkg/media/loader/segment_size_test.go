@@ -241,7 +241,9 @@ func TestShouldProbeMiddleSegmentSkipsVariableNZBBytes(t *testing.T) {
 }
 
 func nzbSegment(bytes int64) nzb.Segment {
-	return nzb.Segment{Bytes: bytes, Number: 1}
+	// A message id is what makes a segment probe-able: the plan skips id-less
+	// segments (numbering-gap placeholders), so the fixtures carry one.
+	return nzb.Segment{ID: "<seg>", Bytes: bytes, Number: 1}
 }
 
 func TestSegmentProbeIndicesGroupsSimilarSizesInSkipGapProbing(t *testing.T) {
