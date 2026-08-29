@@ -33,6 +33,11 @@ const (
 	onceFallbackPrefetched session.OnceKey = "fallback-prefetched"
 )
 
+// countPastEOFRanges tallies GET requests whose Range started at or beyond the
+// served size (session.CountEvent, same lifecycle as the once-flags). See
+// failSlotOnRepeatedPastEOFRanges for why the count exists.
+const countPastEOFRanges session.OnceKey = "past-eof-ranges"
+
 // slotCommitted reports whether the session behind slotID recorded a successful
 // play.
 //

@@ -240,6 +240,10 @@ func (s *Server) primeRangeOrFailover(
 		return true
 	}
 
+	if s.failSlotOnRepeatedPastEOFRanges(w, r, streamConfig, resolved, effectiveRange, closeStream) {
+		return false
+	}
+
 	primeErr := primeRangeStart(resolved.stream, effectiveRange, resolved.size)
 	switch {
 	case isFatalStreamErr(primeErr):
@@ -259,6 +263,72 @@ func (s *Server) primeRangeOrFailover(
 		// verdict about the release; serve and let the read surface a real one.
 		logger.Debug("Range prime read inconclusive, serving anyway",
 			"session", resolved.sessionID, "range", effectiveRange, "err", primeErr)
+	}
+	return true
+}
+
+// maxPastEOFRangesBeforeFailover is how many GET requests may start at or
+// beyond the served size before the pattern reads as a player looping rather
+// than a one-off quirk. A stale cached size after a failover can produce a
+// stray request or two; a player stuck on a size mismatch produces them every
+// few hundred milliseconds, forever.
+const maxPastEOFRangesBeforeFailover = 3
+
+// failSlotOnRepeatedPastEOFRanges turns repeated ranges past the served size
+// into a failover, reporting whether it answered the request.
+//
+// A virtual file smaller than what its own container header declares — a
+// wrongly estimated segment map, or any truncation the pre-flights missed —
+// sends the player to a tail offset this slot cannot have. ServeContent
+// answers that from the size alone with a 416: the stream is never read, so
+// onReadError cannot fire, primeRangeStart deliberately has no verdict for a
+// past-EOF start, and every serve ends below the good threshold, which is
+// neither success nor failure. Nothing marks the slot, the player retries the
+// same URL, and the loop runs until the user gives up.
+//
+// Three strikes on a session that has never committed a good play is taken as
+// that loop: the slot is marked failed so resolvePlaybackSlot and the
+// next-release cursor step over it, and this request is redirected the way an
+// undeliverable range already is. A committed slot is never failed here — it
+// is delivering real bytes, so a stray stale-metadata request must not kill
+// it. No release verdict is recorded either: the articles may all exist and
+// merely be mapped wrong, so AvailNZB and History stay out of it.
+func (s *Server) failSlotOnRepeatedPastEOFRanges(
+	w http.ResponseWriter,
+	r *http.Request,
+	streamConfig *auth.Stream,
+	resolved *resolvedPlayback,
+	effectiveRange string,
+	closeStream func(string),
+) bool {
+	if resolved.size <= 0 {
+		return false
+	}
+	start, ok := parseRangeStart(effectiveRange)
+	if !ok || start < resolved.size {
+		return false
+	}
+	sess := resolved.session
+	if sess.OnceDone(onceSuccessRecorded) {
+		return false
+	}
+	count := sess.CountEvent(countPastEOFRanges)
+	if count < maxPastEOFRangesBeforeFailover {
+		logger.Debug("Range starts past the served size",
+			"session", resolved.sessionID, "range", effectiveRange, "size", resolved.size, "count", count)
+		return false
+	}
+	logger.Warn("Player keeps requesting ranges past the served size; failing the slot over",
+		"session", resolved.sessionID, "range", effectiveRange, "size", resolved.size, "count", count)
+	s.sessionManager.SetSlotFailedDuringPlayback(resolved.sessionID)
+	closeStream("range past served size")
+	if streamFailoverEnabled(streamConfig) {
+		s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,
+			"Redirecting to next fallback (player loops past served size)")
+	} else {
+		rt := s.runtime()
+		failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config),
+			fmt.Errorf("release serves %d bytes but the player keeps asking for offset %d", resolved.size, start))
 	}
 	return true
 }

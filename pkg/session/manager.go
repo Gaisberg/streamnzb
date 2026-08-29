@@ -120,9 +120,10 @@ type Session struct {
 
 	libraryBlueprintJSON string // serialized archive blueprint from the library, rehydrated onto Blueprint once loader files exist
 
-	// Per-session bookkeeping for the layers above; see bookkeeping.go. Both
-	// are guarded by mu.
+	// Per-session bookkeeping for the layers above; see bookkeeping.go. All
+	// three are guarded by mu.
 	once          map[OnceKey]struct{}
+	counts        map[OnceKey]int
 	deferredToken int64
 }
 

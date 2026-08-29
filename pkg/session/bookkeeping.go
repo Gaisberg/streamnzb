@@ -57,6 +57,23 @@ func (s *Session) ResetOnce(key OnceKey) {
 	delete(s.once, key)
 }
 
+// CountEvent increments the per-session tally named by key and returns the new
+// count. Counters follow the same lifecycle argument as the once-flags above:
+// held on the session, they end when it does, so a reused slot path starts
+// from zero under a fresh session.
+func (s *Session) CountEvent(key OnceKey) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.counts == nil {
+		s.counts = make(map[OnceKey]int, 2)
+	}
+	s.counts[key]++
+	return s.counts[key]
+}
+
 // BeginDeferred starts a deferred task on this session, superseding any earlier
 // one, and returns the token naming it. The token is a per-session counter
 // rather than a timestamp, so two tasks started in the same instant still get

@@ -38,6 +38,8 @@ Usenet releases decay: individual articles go missing from providers over time. 
 
 **Ranges are proven before they are promised.** Before writing a response header, StreamNZB reads the first byte of the range the player asked for. A release that cannot deliver that byte gets a redirect to the next candidate — logged as `Refusing to advertise a range this release cannot deliver` — instead of a `206` that advertises a full length and then delivers nothing. Players fail over promptly rather than waiting on a response that will never arrive.
 
+**A player stuck asking past the end of the file is failed over.** When the served file turns out smaller than its own container metadata declares — a truncated post the pre-flights missed, or a wrongly estimated size — the player keeps requesting a tail offset the stream cannot have and gets `416` after `416`, reloading forever. Three such requests on a play that has not yet delivered real bytes are taken as that loop, not a client quirk: the slot is failed over — logged as `Player keeps requesting ranges past the served size` — and the player lands on the next candidate. A play that already reached the good threshold is never failed by this, and no bad-release report is filed, since the articles themselves may be fine.
+
 ## Stalls after a seek, on a release with very large articles
 
 Read-ahead — how much of the file is being fetched ahead of what the player is reading — is sized as a fraction of the file, which works out to a fraction of its runtime whatever the bitrate, and is then clamped to a sane number of megabytes and of articles.
