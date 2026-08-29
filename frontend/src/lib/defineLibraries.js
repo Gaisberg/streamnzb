@@ -17,10 +17,16 @@
 import { maxConditionLength, maxProfileRules, ruleKey, rulesFromText } from "@/lib/profiles"
 import { diffLinkedProfiles } from "@/lib/remoteProfiles"
 import {
-  encodeShareCode, fetchShareCodeText, maxSharedNameLength, resolveShareCode, validateSourceUrl,
+  encodeShareCode, fetchShareCodeText, maxSharedNameLength, requireSchemaVersion,
+  resolveShareCode, validateSourceUrl,
 } from "@/lib/shareCodes"
 
 export const SHARE_CODE_PREFIX = "SNZBD1:"
+
+// DEFINE_SCHEMA_VERSION is the define-library payload's schema version — the
+// value of the streamnzb_define_library marker. requireSchemaVersion in
+// shareCodes.js says when it moves and when it must not.
+export const DEFINE_SCHEMA_VERSION = 1
 
 // validatedDefineRules is the one gate every imported rule list passes,
 // whatever form it arrived in: define-only, named, and bounded. Define-only
@@ -56,7 +62,7 @@ function validatedDefineRules(rawRules) {
 // that survive a round trip, mirroring exportedProfile.
 function exportedDefineLibrary(library) {
   return {
-    streamnzb_define_library: 1,
+    streamnzb_define_library: DEFINE_SCHEMA_VERSION,
     name: (library.name || "").trim(),
     rules: (library.rules || []).map((rule) => {
       const out = { name: rule.name || "", when: rule.when || "", action: "define" }
@@ -70,9 +76,8 @@ function exportedDefineLibrary(library) {
 // defineLibraryFromParsed reads what a code carried, strictly: a fresh object
 // with only the known fields, bounded, or a loud failure.
 function defineLibraryFromParsed(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.streamnzb_define_library !== 1) {
-    throw new Error("The code does not contain a define library.")
-  }
+  requireSchemaVersion(parsed, "streamnzb_define_library", DEFINE_SCHEMA_VERSION,
+    "The code does not contain a define library.")
   const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
   if (!name) throw new Error("The library needs a name.")
   if (name.length > maxSharedNameLength) throw new Error("The library name is too long.")

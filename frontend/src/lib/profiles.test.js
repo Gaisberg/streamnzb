@@ -3,6 +3,7 @@ import {
   decodeProfileShareCode, encodeProfileShareCode, inlineRuleRefs, renameRuleRefs,
   resolveProfileShareCode, rulesFromText, rulesToText,
 } from '@/lib/profiles'
+import { encodeShareCode } from '@/lib/shareCodes'
 
 // The rules editor is a text box the user types into freehand, so parsing is
 // the place a typo turns into a silently wrong ruleset.
@@ -163,6 +164,31 @@ describe('share codes', () => {
     const longName = { name: 'n'.repeat(201), preset: '4k', rules: [] }
     await expect(decodeProfileShareCode(await encodeProfileShareCode(longName)))
       .rejects.toThrow(/name is too long/)
+  })
+
+  it('tells a future schema version to update, not that the code is damaged', async () => {
+    // This message has to be deployed before the first schema bump ever
+    // ships — it is the old versions in the field that need to speak it.
+    const future = await encodeShareCode('SNZBP1:',
+      { streamnzb_profile: 2, name: 'Future', preset: '4k', rules: [] })
+    await expect(decodeProfileShareCode(future)).rejects.toThrow(/newer StreamNZB.*Update/)
+  })
+
+  it('refuses an unknown rule action instead of importing it as a score rule', async () => {
+    const code = await encodeShareCode('SNZBP1:', {
+      streamnzb_profile: 1, name: 'P', preset: '4k',
+      rules: [{ name: 'A', when: 'true', action: 'boost' }],
+    })
+    await expect(decodeProfileShareCode(code)).rejects.toThrow(/action this StreamNZB does not know/)
+  })
+
+  it('refuses an unknown preset instead of downgrading it to the default', async () => {
+    const code = await encodeShareCode('SNZBP1:',
+      { streamnzb_profile: 1, name: 'P', preset: '8k', rules: [] })
+    await expect(decodeProfileShareCode(code)).rejects.toThrow(/preset this StreamNZB does not know/)
+    // An absent preset is not an unknown one: it still falls back.
+    const bare = await encodeShareCode('SNZBP1:', { streamnzb_profile: 1, name: 'P', rules: [] })
+    expect((await decodeProfileShareCode(bare)).preset).toBe('4k')
   })
 
   it('refuses a decompression bomb', async () => {

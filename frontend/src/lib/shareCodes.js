@@ -3,7 +3,9 @@
 // profile kind that can be exported — the payload JSON, gzip-compressed and
 // base64url-encoded behind a versioned prefix ("SNZBP1:" for filter profiles,
 // "SNZBF1:" for format profiles, "SNZBD1:" for define libraries). What a
-// payload may contain is each kind's own business; nothing here interprets it.
+// payload may contain is each kind's own business; the one convention the
+// container owns is the schema-version marker every payload leads with, gated
+// by requireSchemaVersion below.
 //
 // The trust model for remote sources, in one place because everything below
 // leans on it: the URL the user typed is the only source ever consulted —
@@ -20,6 +22,41 @@ const maxDecodedBytes = 4 * 1024 * 1024
 
 // maxSharedNameLength bounds any name an imported payload carries.
 export const maxSharedNameLength = 200
+
+// requireSchemaVersion gates a decoded payload on its kind's schema marker
+// ("streamnzb_profile": 1 and so on). The number is the payload's schema
+// version, deliberately independent of the app version: it moves only when an
+// older importer would accept the payload and silently misread it — a new
+// load-bearing field, a changed meaning for an existing one. Additions an old
+// importer already refuses loudly on its own (a new rule action, a new preset,
+// a new expression identifier the server refuses to compile) do not move it.
+// External tooling that decodes share codes can pin against the marker under
+// that contract; the prefix ("SNZBP1") is the container's own version and
+// moves only if the transport itself changes.
+//
+// Two commitments the first bump must honour. The exporter stamps the lowest
+// version the payload actually needs — a profile using nothing the bump added
+// still travels as the old version, so a bump never cuts off profiles that
+// are compatible in fact. And an importer keeps reading every version it ever
+// understood: at the first bump the equality below becomes a range with a
+// per-version migration, never a new floor.
+//
+// The split below is why the marker helps at all: a version from the future
+// has to read as "update StreamNZB", not as a damaged code the user will only
+// re-paste, and that message must already be deployed when the first bump
+// ships.
+export function requireSchemaVersion(parsed, field, version, wrongKindMessage) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(wrongKindMessage)
+  }
+  const carried = parsed[field]
+  if (carried === version) return
+  if (Number.isInteger(carried) && carried > version) {
+    throw new Error(
+      `The code was made by a newer StreamNZB (schema version ${carried}; this version reads ${version}). Update StreamNZB to import it.`)
+  }
+  throw new Error(wrongKindMessage)
+}
 
 function toBase64Url(bytes) {
   let binary = ""

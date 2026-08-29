@@ -4,6 +4,7 @@ import {
   defineLibraryFromRuleText, defineRulesFromText, encodeDefineLibraryShareCode,
   fetchRemoteDefineLibrary, mergeDefineLibraryUpstream,
 } from '@/lib/defineLibraries'
+import { encodeShareCode } from '@/lib/shareCodes'
 
 const TEXT = [
   '# Generated from upstream.',
@@ -60,6 +61,12 @@ describe('share codes', () => {
 
   it('refuses a filter profile code', async () => {
     await expect(decodeDefineLibraryShareCode('SNZBP1:abc')).rejects.toThrow(/Not a StreamNZB define library code/)
+  })
+
+  it('tells a future schema version to update, not that the code is damaged', async () => {
+    const future = await encodeShareCode('SNZBD1:',
+      { streamnzb_define_library: 2, name: 'Future', rules: [] })
+    await expect(decodeDefineLibraryShareCode(future)).rejects.toThrow(/newer StreamNZB.*Update/)
   })
 })
 

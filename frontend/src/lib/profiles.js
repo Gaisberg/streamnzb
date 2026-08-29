@@ -1,7 +1,7 @@
 // Shape and vocabulary of a filter profile, mirrored for the Filters UI.
 // Keys here must match the JSON the backend stores.
 
-import { encodeShareCode, maxSharedNameLength, resolveShareCode } from "@/lib/shareCodes"
+import { encodeShareCode, maxSharedNameLength, requireSchemaVersion, resolveShareCode } from "@/lib/shareCodes"
 
 // Release traits grouped the way people reason about them. The policy behind
 // each is { fetch, rank } on the wire; the UI calls rank "score".
@@ -437,13 +437,18 @@ export function ruleGroupBy(rule) {
   return typeof rule?.group_by === "string" ? rule.group_by.trim() : ""
 }
 
+// PROFILE_SCHEMA_VERSION is the filter-profile payload's schema version — the
+// value of the streamnzb_profile marker. requireSchemaVersion in shareCodes.js
+// says when it moves and when it must not.
+export const PROFILE_SCHEMA_VERSION = 1
+
 // exportedProfile is the form a profile travels in: a preset plus rules, with
 // only the fields that survive a round trip. It is what a share code carries,
 // and profileFromParsed is what reads it back — one shape, written and read in
 // one place each, because the two drifting apart is what broke sharing before.
 function exportedProfile(profile) {
   return {
-    streamnzb_profile: 1,
+    streamnzb_profile: PROFILE_SCHEMA_VERSION,
     name: (profile.name || "").trim(),
     preset: profile.preset || DEFAULT_PRESET,
     rules: (profile.rules || []).map((rule) => {
@@ -484,7 +489,7 @@ export async function resolveProfileShareCode(code) {
   // A code made before presets carries a hand-tuned ranking profile that this
   // editor can no longer express, so say that rather than complain about a
   // missing marker the code was never going to have.
-  if (parsed && typeof parsed === "object" && parsed.streamnzb_profile !== 1 && parsed.ranking) {
+  if (parsed && typeof parsed === "object" && parsed.streamnzb_profile === undefined && parsed.ranking) {
     throw new Error("That code predates filter presets and can no longer be imported.")
   }
   return { code: matched, profile: profileFromParsed(parsed) }
@@ -502,18 +507,32 @@ export async function decodeProfileShareCode(code) {
 export const maxProfileRules = 500
 export const maxConditionLength = 10000
 
+// clip bounds a payload value echoed into an error message — the value may be
+// hostile, and a message is not the place to reproduce it in full.
+function clip(value) {
+  const s = String(value)
+  return `“${s.length > 40 ? `${s.slice(0, 40)}…` : s}”`
+}
+
 // profileFromParsed reads what a share code carried. It is strict about the
 // shape and says which rule is wrong when one is: a code that arrives damaged
-// should fail loudly rather than import half a ruleset.
+// should fail loudly rather than import half a ruleset — and one whose parts
+// this version does not know should say "newer StreamNZB" rather than import
+// a profile that silently behaves differently than its author meant.
 function profileFromParsed(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.streamnzb_profile !== 1) {
-    throw new Error("The code does not contain a filter profile.")
-  }
+  requireSchemaVersion(parsed, "streamnzb_profile", PROFILE_SCHEMA_VERSION,
+    "The code does not contain a filter profile.")
   const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
   if (!name) throw new Error("The profile needs a name.")
   if (name.length > maxSharedNameLength) throw new Error("The profile name is too long.")
 
-  const preset = PRESETS.some((p) => p.key === parsed.preset) ? parsed.preset : DEFAULT_PRESET
+  // An unknown preset is refused rather than downgraded to the default: the
+  // preset is the profile's whole baseline, and the plausible source of an
+  // unknown key is a newer StreamNZB, not a typo.
+  const preset = parsed.preset || DEFAULT_PRESET
+  if (!PRESETS.some((p) => p.key === preset)) {
+    throw new Error(`The profile uses a preset this StreamNZB does not know (${clip(preset)}); it may need a newer StreamNZB.`)
+  }
   const rawRules = Array.isArray(parsed.rules) ? parsed.rules : []
   if (rawRules.length > maxProfileRules) {
     throw new Error(`The profile carries ${rawRules.length} rules; the most a profile can hold is ${maxProfileRules}.`)
@@ -529,6 +548,13 @@ function profileFromParsed(parsed) {
     }
     if (String(rule.name || "").length > maxSharedNameLength) {
       throw new Error(`Rule ${i + 1} has a name longer than ${maxSharedNameLength} characters.`)
+    }
+    // ruleAction maps anything unrecorded to "score" — right for the editor,
+    // wrong at this trust boundary: an action from a newer StreamNZB imported
+    // as a zero-point score rule is exactly the silent misread the schema
+    // marker exists to prevent.
+    if (rule.action !== undefined && !RULE_ACTIONS.some((a) => a.key === rule.action)) {
+      throw new Error(`${label} has an action this StreamNZB does not know (${clip(rule.action)}); it may need a newer StreamNZB.`)
     }
     const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
     const action = ruleAction(rule)

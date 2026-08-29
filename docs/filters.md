@@ -202,6 +202,39 @@ importing something this editor cannot express.
 To version a profile or review one in a pull request, paste its code — it is a
 single line, and importing it is how it gets read back.
 
+### Share code versioning
+
+A share code is versioned twice, and the two numbers answer different
+questions.
+
+The **prefix** (`SNZBP1:`, `SNZBF1:` for format profiles, `SNZBD1:` for define
+libraries) versions the container — base64url around gzip around JSON. It
+changes only if that transport itself ever changes.
+
+The **schema marker** inside the payload (`"streamnzb_profile": 1`,
+`"streamnzb_format_profile": 1`, `"streamnzb_define_library": 1`) versions
+what the JSON means. It is deliberately not the app version: it increments
+only when an older importer would otherwise accept a code and silently
+misread it — a new load-bearing field, a changed meaning for an existing one.
+Additions an old importer already refuses loudly on its own — a new rule
+action, a new preset, a new expression identifier the server refuses to
+compile — do not move it, which is why most releases leave it untouched.
+
+A code carrying a higher schema version than the importer understands is
+refused with an explicit "made by a newer StreamNZB — update to import it",
+never as a damaged code. External tooling that decodes share codes (test
+harnesses, CI checks on published profiles) can pin the expected marker value
+and treat a change as the compatibility signal, under the same contract.
+
+Two more commitments keep that refusal honest. The exporter stamps the
+*lowest* schema version the payload actually needs — a profile that uses
+nothing a bump added still travels under the old number, so newer StreamNZB
+versions keep producing codes older ones can import whenever the content
+allows it. And importers keep reading every schema version they ever
+understood, so a bump never orphans existing codes. Together they mean a
+higher marker is never a formality: it appears exactly when the profile truly
+depends on semantics the reader lacks.
+
 ### Remote profiles
 
 A profile can be imported **from a URL** instead of a paste: host a file that

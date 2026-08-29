@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { encodeProfileShareCode } from '@/lib/profiles'
+import { encodeShareCode } from '@/lib/shareCodes'
 import {
   checkFormatForUpdate, decodeFormatProfileShareCode, diffFormatProfiles,
   encodeFormatProfileShareCode, mergeFormatUpstream,
@@ -29,6 +30,12 @@ describe('format share codes', () => {
     // importer is a user mistake worth naming, not a damaged code.
     const filterCode = await encodeProfileShareCode({ name: 'Filters', preset: '4k', rules: [] })
     await expect(decodeFormatProfileShareCode(filterCode)).rejects.toThrow(/format profile code/)
+  })
+
+  it('tells a future schema version to update, not that the code is damaged', async () => {
+    const future = await encodeShareCode('SNZBF1:',
+      { streamnzb_format_profile: 2, name: 'Future' })
+    await expect(decodeFormatProfileShareCode(future)).rejects.toThrow(/newer StreamNZB.*Update/)
   })
 
   it('refuses an oversized template', async () => {

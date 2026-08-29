@@ -6,11 +6,16 @@
 // and the diff shows both sides. The local name stays the user's.
 
 import {
-  encodeShareCode, fetchShareCodeText, maxSharedNameLength, resolveFetched,
-  resolveShareCode, validateSourceUrl,
+  encodeShareCode, fetchShareCodeText, maxSharedNameLength, requireSchemaVersion,
+  resolveFetched, resolveShareCode, validateSourceUrl,
 } from "@/lib/shareCodes"
 
 const SHARE_CODE_PREFIX = "SNZBF1:"
+
+// FORMAT_SCHEMA_VERSION is the format-profile payload's schema version — the
+// value of the streamnzb_format_profile marker. requireSchemaVersion in
+// shareCodes.js says when it moves and when it must not.
+export const FORMAT_SCHEMA_VERSION = 1
 
 // maxTemplateLength bounds each template. The built-in description template is
 // well under a kilobyte; anything past this is not a format, it is a payload.
@@ -21,7 +26,7 @@ const maxTemplateLength = 20000
 // each, mirroring what exportedProfile does for filter profiles.
 function exportedFormatProfile(profile) {
   return {
-    streamnzb_format_profile: 1,
+    streamnzb_format_profile: FORMAT_SCHEMA_VERSION,
     name: (profile.name || "").trim(),
     result_name_template: profile.result_name_template || "",
     result_description_template: profile.result_description_template || "",
@@ -31,9 +36,8 @@ function exportedFormatProfile(profile) {
 // formatProfileFromParsed reads what a code carried, strictly: a fresh object
 // with only the known fields, bounded, or a loud failure.
 function formatProfileFromParsed(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.streamnzb_format_profile !== 1) {
-    throw new Error("The code does not contain a format profile.")
-  }
+  requireSchemaVersion(parsed, "streamnzb_format_profile", FORMAT_SCHEMA_VERSION,
+    "The code does not contain a format profile.")
   const name = typeof parsed.name === "string" ? parsed.name.trim() : ""
   if (!name) throw new Error("The profile needs a name.")
   if (name.length > maxSharedNameLength) throw new Error("The profile name is too long.")
