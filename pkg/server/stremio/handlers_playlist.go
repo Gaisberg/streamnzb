@@ -621,30 +621,38 @@ func (s *Server) recordAvailIndexerStats(inputCandidates, finalCandidates []tria
 	availableByIndexer := make(map[string]int)
 	discardedByIndexer := make(map[string]int)
 
+	// Every copy, not just the primary: a merged release carries one copy per
+	// indexer, and the availability record is keyed by the copy's own details
+	// URL. Counting only the primary would credit whichever indexer won the
+	// variant merge and leave every other indexer's availability at zero.
 	if s.shouldFilterAvailNZBReportedBad(stream) && len(source.UnavailableDetailsURLs) > 0 {
 		for _, c := range inputCandidates {
-			if c.Release == nil || c.Release.DetailsURL == "" {
-				continue
-			}
-			if !source.UnavailableDetailsURLs[c.Release.DetailsURL] {
-				continue
-			}
-			if name := indexerNameFromRelease(c.Release); name != "" {
-				discardedByIndexer[name]++
+			for _, copyRel := range c.Release.Copies() {
+				if copyRel == nil || copyRel.DetailsURL == "" {
+					continue
+				}
+				if !source.UnavailableDetailsURLs[copyRel.DetailsURL] {
+					continue
+				}
+				if name := indexerNameFromRelease(copyRel); name != "" {
+					discardedByIndexer[name]++
+				}
 			}
 		}
 	}
 
 	if len(source.CachedAvailable) > 0 {
 		for _, c := range finalCandidates {
-			if c.Release == nil || c.Release.DetailsURL == "" {
-				continue
-			}
-			if !source.CachedAvailable[c.Release.DetailsURL] {
-				continue
-			}
-			if name := indexerNameFromRelease(c.Release); name != "" {
-				availableByIndexer[name]++
+			for _, copyRel := range c.Release.Copies() {
+				if copyRel == nil || copyRel.DetailsURL == "" {
+					continue
+				}
+				if !source.CachedAvailable[copyRel.DetailsURL] {
+					continue
+				}
+				if name := indexerNameFromRelease(copyRel); name != "" {
+					availableByIndexer[name]++
+				}
 			}
 		}
 	}

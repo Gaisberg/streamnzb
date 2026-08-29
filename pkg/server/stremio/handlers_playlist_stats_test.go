@@ -54,6 +54,43 @@ func TestRecordAvailIndexerStatsCountsUnavailableFromOriginalCandidates(t *testi
 	}
 }
 
+func TestRecordAvailIndexerStatsAttributesEveryCopy(t *testing.T) {
+	s := &Server{
+		config:            &config.Config{AvailNZBMode: "on"},
+		availIndexerStats: make(map[string]AvailIndexerStats),
+	}
+	primaryURL := "https://example.invalid/primary"
+	variantURL := "https://example.invalid/variant"
+	unavailableVariantURL := "https://example.invalid/unavailable-variant"
+	merged := &release.Release{
+		Title:      "Release",
+		DetailsURL: primaryURL,
+		Indexer:    "altHUB",
+		Variants: []*release.Release{
+			{Title: "Release", DetailsURL: variantURL, Indexer: "abNZB"},
+			{Title: "Release", DetailsURL: unavailableVariantURL, Indexer: "NinjaCentral"},
+		},
+	}
+	input := []triage.Candidate{{Release: merged}}
+	source := &playlistSource{
+		CachedAvailable:        map[string]bool{primaryURL: true, variantURL: true},
+		UnavailableDetailsURLs: map[string]bool{unavailableVariantURL: true},
+	}
+
+	stream := &auth.Stream{FilterAvailNZB: configPtrBool(true)}
+	s.recordAvailIndexerStats(input, input, source, true, stream)
+	stats := s.GetAvailIndexerStats()
+	if got := stats["altHUB"].AvailableReturned; got != 1 {
+		t.Fatalf("altHUB available count = %d, want 1", got)
+	}
+	if got := stats["abNZB"].AvailableReturned; got != 1 {
+		t.Fatalf("abNZB available count = %d, want 1", got)
+	}
+	if got := stats["NinjaCentral"].Discarded; got != 1 {
+		t.Fatalf("NinjaCentral discarded count = %d, want 1", got)
+	}
+}
+
 func TestApplyPlaylistFilteringCanDisableAvailNZBReportedBadFiltering(t *testing.T) {
 	unavailableURL := "https://example.invalid/unavailable"
 	availableURL := "https://example.invalid/available"
