@@ -176,8 +176,10 @@ jobs:
           for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
           exit $fail
 
-      # Releases also refresh the `main` tag: the release-please merge commit
-      # no longer gets its own push build.
+      # Pushes to main publish the rolling `dev` image; other branches keep
+      # their own name. Releases also refresh `dev`: the release-please merge
+      # commit never gets its own push build, so without this the tag would go
+      # stale the moment a release lands.
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v6
@@ -187,10 +189,10 @@ jobs:
             ${{ env.REPO }}
           tags: |
             type=ref,event=tag
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
             type=raw,value=${{ github.event.inputs.tag_name || 'latest' }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
 
       - name: Build and push Docker image
         id: build
@@ -203,6 +205,37 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Every dev image lands with a message in #dev-testing so testers know a
+      # new build is up without watching CI. DISCORD_DEV_WEBHOOK is that
+      # channel's webhook — releases announce through DISCORD_WEBHOOK above,
+      # this one is only for main pushes. allowed_mentions is emptied so the
+      # message can never ping anyone, even if a commit subject carries
+      # @everyone or a user mention.
+      - name: Announce dev build in Discord
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_DEV_WEBHOOK }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          SUBJECT="$(printf '%s' "$COMMIT_MSG" | head -n1)"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg subject "$SUBJECT" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
+            --arg pull "docker pull ghcr.io/${REPO}:dev" \
+            '{
+              username: "Dev Builds",
+              allowed_mentions: {parse: []},
+              embeds: [{
+                title: ("New dev build " + $version),
+                url: $url,
+                description: ("`" + $subject + "`\n\n```\n" + $pull + "\n```"),
+                color: 15105570
+              }]
+            }' | curl -sf -H "Content-Type: application/json" -d @- "$WEBHOOK_URL" \
+            || echo "::warning::Discord dev-build announcement failed"
 
       - name: Prepare Release Assets
         if: github.event_name == 'release'
