@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.15.0](https://github.com/Gaisberg/streamnzb/compare/v5.14.0...v5.15.0) (2026-08-30)
+
+
+### Features
+
+* **export:** version share-code payloads explicitly and refuse what a newer StreamNZB wrote ([bd54b03](https://github.com/Gaisberg/streamnzb/commit/bd54b031b2e608586353fd49e33a2c90d03150fd))
+* **stremio:** add math, repeat and stars template helpers with .TopScore ([4c0f7b3](https://github.com/Gaisberg/streamnzb/commit/4c0f7b385e5f7bfb514523b908fa04f153dfbbe2))
+
+
+### Bug Fixes
+
+* **loader:** detect articles missing from the NZB itself and fail over instead of looping ([3206b69](https://github.com/Gaisberg/streamnzb/commit/3206b697d670574128122ae98931c25bd162f494))
+* **stremio:** attribute availability stats to every copy of a merged release, Closes [#240](https://github.com/Gaisberg/streamnzb/issues/240) ([abaee98](https://github.com/Gaisberg/streamnzb/commit/abaee986aa29a2fb9165f0fdb0744cbc56e1470c))
+* **stremio:** fail a slot over when a player loops on ranges past the served size ([94d3f5c](https://github.com/Gaisberg/streamnzb/commit/94d3f5ce50f3bb050d3c937b0495eb897b953ba6))
+
 ## [5.14.0](https://github.com/Gaisberg/streamnzb/compare/v5.13.1...v5.14.0) (2026-08-28)
 
 
