@@ -430,6 +430,15 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 	}
 	var streams []Stream
 	if showAll {
+		// The best final score in the list, computed over the candidates that
+		// actually survived filtering — templates rate against the real winner
+		// via {{stars 5 .TopScore .Score}}.
+		topScore := 0
+		if format != nil {
+			for _, cand := range list.Candidates {
+				topScore = max(topScore, cand.Score)
+			}
+		}
 		for i, cand := range list.Candidates {
 			relTitle := ""
 			if cand.Release != nil && cand.Release.Title != "" {
@@ -450,7 +459,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			capsLine := capsSummaryLine(cand.Release)
 			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
 			if format != nil {
-				ctx := newFormatContext(cand, i+1, len(list.Candidates), service, key.StreamID, contentTitle, capsLine, isAvail, contentRuntime)
+				ctx := newFormatContext(cand, i+1, len(list.Candidates), topScore, service, key.StreamID, contentTitle, capsLine, isAvail, contentRuntime)
 				sName = renderResultTemplate(format.name, ctx, sName)
 				desc = renderResultTemplate(format.description, ctx, desc)
 			}

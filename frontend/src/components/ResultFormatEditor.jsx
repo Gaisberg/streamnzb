@@ -22,7 +22,7 @@ const EXAMPLE_DESCRIPTION_TEMPLATE = `{{.ReleaseTitle}}
 // it. Entries in a `raw` group are printed verbatim; every other entry is
 // wrapped in {{ }}.
 const FORMAT_FIELDS = [
-  { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count'] },
+  { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count', '.TopScore'] },
   { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Variants', '.VariantIndexers', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
   {
     group: 'Rules',
@@ -41,6 +41,7 @@ const FORMAT_FIELDS = [
   { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative'] },
   { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network', '.ParsedTitle | title | truncate 24'] },
   { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "'] },
+  { group: 'Math', fields: ['add 100 .Score', 'sub 100 .Score', 'mul 2 .Season', 'div 1000 .Score', 'mod 10 .Score', 'min 50 .Score', 'max 0 .Score', 'stars 5 .TopScore .Score', 'repeat "▰" 3', '.Score | div 1000 | repeat "▰"'] },
   {
     group: 'Checks',
     raw: true,

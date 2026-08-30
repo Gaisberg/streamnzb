@@ -124,6 +124,93 @@ func TestFormatTemplateExtendedHelpers(t *testing.T) {
 	}
 }
 
+// Math helpers take the value last like the string helpers, so they chain:
+// subtraction and division read as "sub N from the value", "div the value by
+// N". All of them are total — a zero divisor yields 0 and junk coerces to 0 —
+// because an execution error would silently swap in the built-in format.
+func TestFormatTemplateMathHelpers(t *testing.T) {
+	ctx := FormatContext{
+		Score:   2850,
+		Size:    1_832_627_684,
+		Season:  4,
+		Bitrate: "not a number",
+	}
+	cases := map[string]string{
+		`{{add 100 .Score}}`:            "2950",
+		`{{sub 100 .Score}}`:            "2750",
+		`{{mul 2 .Season}}`:             "8",
+		`{{div 1000 .Score}}`:           "2",
+		`{{mod 1000 .Score}}`:           "850",
+		`{{min 3 .Season}}`:             "3",
+		`{{max 10 .Season}}`:            "10",
+		`{{.Score | div 100 | min 20}}`: "20",
+		`{{div 0 .Score}}`:              "0",
+		`{{mod 0 .Score}}`:              "0",
+		`{{add 1 .Bitrate}}`:            "1",
+		// int64 fields coerce like ints: bytes → whole gigabytes.
+		`{{div 1000000000 .Size}}`: "1",
+	}
+	for text, want := range cases {
+		if got := renderFormat(t, text, ctx); got != want {
+			t.Errorf("%s = %q, want %q", text, got, want)
+		}
+	}
+}
+
+func TestFormatTemplateRepeatAndStars(t *testing.T) {
+	cases := map[string]string{
+		`{{repeat "★" 3}}`:                 "★★★",
+		`{{repeat "▰" 0}}`:                 "",
+		`{{repeat "▰" -2}}`:                "",
+		`{{div 1000 .Score | repeat "▰"}}`: "▰▰",
+		`{{stars 5 5000 .Score}}`:          "★★★☆☆",
+		`{{stars 5 2850 .Score}}`:          "★★★★★",
+		`{{stars 5 5000 9999}}`:            "★★★★★",
+		`{{stars 5 5000 -200}}`:            "☆☆☆☆☆",
+		`{{stars 5 0 .Score}}`:             "☆☆☆☆☆",
+		`{{stars 0 5000 .Score}}`:          "",
+		`{{stars 10 5000 .Score}}`:         "★★★★★★☆☆☆☆",
+		// Scaling against the list's actual winner needs no hand-picked ceiling.
+		`{{stars 5 .TopScore .Score}}`:    "★★★☆☆",
+		`{{stars 5 .TopScore .TopScore}}`: "★★★★★",
+	}
+	ctx := FormatContext{Score: 2850, TopScore: 4200}
+	for text, want := range cases {
+		if got := renderFormat(t, text, ctx); got != want {
+			t.Errorf("%s = %q, want %q", text, got, want)
+		}
+	}
+	// A runaway count stays inside the response cap instead of allocating.
+	if got := renderFormat(t, `{{repeat "ab" 100000}}`, ctx); len([]rune(got)) > maxFormattedResultRunes {
+		t.Errorf("repeat emitted %d runes, cap is %d", len([]rune(got)), maxFormattedResultRunes)
+	}
+}
+
+// The live render path feeds templates the best score of the list that
+// survived filtering, so {{stars 5 .TopScore .Score}} rates against the
+// actual winner — the top result always paints full.
+func TestBuildStreamsExposesTopScore(t *testing.T) {
+	list := &playlistResult{Candidates: []triage.Candidate{
+		{Release: &release.Release{Title: "Movie.2160p-GRP"}, Score: 4200},
+		{Release: &release.Release{Title: "Movie.1080p-GRP"}, Score: 2850},
+	}}
+	tpl, err := template.New("desc").Funcs(formatTemplateFuncs).Parse(`{{stars 5 .TopScore .Score}}`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	key := StreamSlotKey{StreamID: "Standalone", ContentType: "movie", ID: "tt1"}
+	streams := buildStreamsFromPlaylist(list, key, "Standalone", DefaultServiceName, "http://host", true, &resultFormat{description: tpl})
+	if len(streams) != 2 {
+		t.Fatalf("got %d streams, want 2", len(streams))
+	}
+	if streams[0].Description != "★★★★★" {
+		t.Errorf("top result = %q, want all filled", streams[0].Description)
+	}
+	if streams[1].Description != "★★★☆☆" {
+		t.Errorf("runner-up = %q, want ★★★☆☆", streams[1].Description)
+	}
+}
+
 func TestRenderResultTemplateDropsBlankLines(t *testing.T) {
 	// Conditionals on their own lines (issue #187): a false conditional must
 	// not leave an empty line behind, and trailing spaces from end-of-line
@@ -254,7 +341,7 @@ func TestFormatContextEstimatesBitrate(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		ctx := newFormatContext(c.cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, c.runtime)
+		ctx := newFormatContext(c.cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, c.runtime)
 		if ctx.Bitrate != c.want {
 			t.Errorf("%s: Bitrate = %q, want %q", c.name, ctx.Bitrate, c.want)
 		}
@@ -269,12 +356,12 @@ func TestFormatContextProbedDurationFillsDuration(t *testing.T) {
 		Release: &release.Release{Title: "Movie 2160p", Size: 9_000_000_000, IsLibrary: true},
 		Verdict: probed,
 	}
-	if ctx := newFormatContext(cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "1h 55m" {
+	if ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "1h 55m" {
 		t.Errorf("Duration = %q, want %q", ctx.Duration, "1h 55m")
 	}
 
 	cand.Release.Duration = 7200
-	if ctx := newFormatContext(cand, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "2h 0m" {
+	if ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "2h 0m" {
 		t.Errorf("Duration with an indexer-reported runtime = %q, want %q", ctx.Duration, "2h 0m")
 	}
 }
@@ -288,7 +375,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 			{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
 		},
 	}
-	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 
 	if got := renderFormat(t, "{{.Variants}}", ctx); got != "2" {
 		t.Errorf("{{.Variants}} = %q, want %q", got, "2")
@@ -298,7 +385,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 	}
 	// A lone release still reads as one copy, so {{if gt .Variants 1}} is the
 	// natural guard rather than a zero check.
-	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 	if got := renderFormat(t, "{{.Variants}}", lone); got != "1" {
 		t.Errorf("{{.Variants}} for a single copy = %q, want %q", got, "1")
 	}

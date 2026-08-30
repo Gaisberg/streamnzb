@@ -23,7 +23,7 @@ release's parsed data.
 
 | Group | Fields |
 |---|---|
-| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.Kind` `.IsAnime` |
+| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.Kind` `.IsAnime` |
 | Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
@@ -159,10 +159,39 @@ comma-separated text.
 | `first` / `last` | `{{first .Audio}}` | list edge element |
 | `contains` | `{{if contains "DV" .HDR}}…{{end}}` | substring test |
 | `hasPrefix` / `hasSuffix` | `{{if hasPrefix "2160" .Resolution}}…{{end}}` | prefix/suffix test |
+| `add` / `sub` / `mul` / `div` / `mod` | `{{div 100 .Score}}` | integer math on the value |
+| `min` / `max` | `{{.Score | div 100 | min 50}}` | smaller / larger of the two |
+| `repeat` | `{{repeat "▰" 3}}` | `▰▰▰` |
+| `stars` | `{{stars 5 .TopScore .Score}}` | `★★★☆☆` |
 
 Multi-argument helpers take the value last so they chain in pipelines:
 `{{.ParsedTitle | title | truncate 24}}`. The exceptions are `replace` and
 `join`, which keep their original value-first signatures.
+
+### Math
+
+The math helpers work in whole integers, take the value last like everything
+else, and read as "apply N to the value": `{{sub 100 .Score}}` is score minus
+100, `{{div 1000 .Size}}` is size divided by 1000. They never error — dividing
+by zero yields 0 and a non-numeric value counts as 0 — so a bad expression
+shows a wrong number instead of silently reverting the whole template to the
+built-in format.
+
+`stars` renders a rating: `{{stars 5 .TopScore .Score}}` scales the score
+against a ceiling, rounds to the nearest of 5 stars, and prints `★★★☆☆`. The
+ceiling is an argument because `.Score` has no fixed scale — it is whatever
+your ranking profile's rules add up to. `.TopScore`, the highest score in the
+current result list, is the natural choice: the best result always paints
+full and everything else rates relative to it. A fixed ceiling
+(`{{stars 5 5000 .Score}}`) works too if you'd rather rate against an
+absolute bar. Values clamp into range: a negative score renders all-empty,
+one past the ceiling all-filled. For custom glyphs or bars, build the same
+thing from math plus `repeat`:
+
+```
+{{stars 5 .TopScore .Score}}
+{{.Score | min 5000 | max 0 | div 1000 | repeat "▰"}}
+```
 
 ## Conditionals and composition
 

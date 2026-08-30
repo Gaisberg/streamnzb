@@ -3,6 +3,7 @@ package stremio
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -34,10 +35,15 @@ type FormatContext struct {
 	Index        int    // 1-based position in the result list
 	Count        int    // total results in the list
 	Score        int    // final ranking score (library bonus included)
-	Avail        bool   // AvailNZB reports this release available
-	Library      bool   // served from the local release library
-	Size         int64  // bytes
-	Indexer      string // indexer display name
+	// TopScore is the highest final score in this result list, so a template
+	// can rate against the actual winner instead of guessing a ceiling:
+	// {{stars 5 .TopScore .Score}} always paints the top result full. Zero
+	// when no candidate scored above zero (e.g. no ranking profile ran).
+	TopScore int
+	Avail    bool   // AvailNZB reports this release available
+	Library  bool   // served from the local release library
+	Size     int64  // bytes
+	Indexer  string // indexer display name
 	// Variants is how many interchangeable copies of this release the merge
 	// kept, counting the one that plays first. 1 means no duplicate was
 	// found; anything higher is how many indexers' NZBs playback can fall
@@ -287,6 +293,62 @@ func templateLength(v any) int {
 	return len([]rune(templateText(v)))
 }
 
+// templateInt coerces a template value to the int the math helpers work in:
+// ints pass through, floats truncate, numeric strings parse, and anything else
+// counts as 0 — the helpers must be total, because a template execution error
+// silently replaces the whole result with the built-in format.
+func templateInt(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(templateText(v)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// repeatText renders s n times, capped at maxFormattedResultRunes so a huge
+// count can never allocate past what the response cap would keep anyway.
+func repeatText(s string, n int) string {
+	if n <= 0 || s == "" {
+		return ""
+	}
+	if n > maxFormattedResultRunes {
+		n = maxFormattedResultRunes
+	}
+	if runes := len([]rune(s)); runes*n > maxFormattedResultRunes {
+		n = maxFormattedResultRunes / runes
+	}
+	return strings.Repeat(s, n)
+}
+
+// starsText renders v as filled/empty stars against a caller-chosen ceiling,
+// since .Score has no fixed one — it is whatever the profile's rules add up
+// to. The value clamps into [0, ceiling] and rounds to the nearest star, so a
+// negative score renders all-empty rather than erroring. A ceiling that makes
+// no sense (zero or negative) also renders all-empty: visibly wrong beats a
+// vanished template.
+func starsText(count, ceiling, value int) string {
+	if count <= 0 {
+		return ""
+	}
+	if count > maxFormattedResultRunes {
+		count = maxFormattedResultRunes
+	}
+	filled := 0
+	if ceiling > 0 {
+		v := min(max(value, 0), ceiling)
+		filled = (v*count + ceiling/2) / ceiling
+	}
+	return strings.Repeat("★", filled) + strings.Repeat("☆", count-filled)
+}
+
 // firstElem/lastElem pick a list edge element; non-list values pass through.
 func firstElem(v any) any {
 	switch t := v.(type) {
@@ -432,6 +494,33 @@ var formatTemplateFuncs = template.FuncMap{
 	"hasSuffix": func(suffix string, v any) bool {
 		return strings.HasSuffix(templateText(v), suffix)
 	},
+	// Integer math, value last like the other helpers so it chains:
+	// {{.Score | div 100 | min 50}}. div and mod return 0 on a zero divisor
+	// instead of erroring, which would silently discard the whole template.
+	"add": func(n, v any) int { return templateInt(v) + templateInt(n) },
+	"sub": func(n, v any) int { return templateInt(v) - templateInt(n) },
+	"mul": func(n, v any) int { return templateInt(v) * templateInt(n) },
+	"div": func(n, v any) int {
+		if d := templateInt(n); d != 0 {
+			return templateInt(v) / d
+		}
+		return 0
+	},
+	"mod": func(n, v any) int {
+		if d := templateInt(n); d != 0 {
+			return templateInt(v) % d
+		}
+		return 0
+	},
+	"min": func(n, v any) int { return min(templateInt(n), templateInt(v)) },
+	"max": func(n, v any) int { return max(templateInt(n), templateInt(v)) },
+	// repeat emits s count times — padding, bars: {{div 500 .Score | repeat "▰"}}.
+	"repeat": func(s string, count any) string { return repeatText(s, templateInt(count)) },
+	// stars renders a rating out of count stars, the value scaled against a
+	// ceiling of the template's choosing: {{stars 5 5000 .Score}} → ★★★☆☆.
+	"stars": func(count, ceiling, v any) string {
+		return starsText(templateInt(count), templateInt(ceiling), templateInt(v))
+	},
 }
 
 func humanSize(size int64) string {
@@ -532,7 +621,7 @@ func humanAge(pubDate string) string {
 // contentRuntime is the requested title's metadata runtime in seconds (one
 // episode's for episodic content), used to estimate a bitrate when neither the
 // release title nor the indexer supplies one. Zero means unknown.
-func newFormatContext(cand triage.Candidate, index, count int, service, streamID, contentTitle, caps string, avail bool, contentRuntime float64) FormatContext {
+func newFormatContext(cand triage.Candidate, index, count, topScore int, service, streamID, contentTitle, caps string, avail bool, contentRuntime float64) FormatContext {
 	if service == "" {
 		service = DefaultServiceName
 	}
@@ -543,6 +632,7 @@ func newFormatContext(cand triage.Candidate, index, count int, service, streamID
 		Index:        index,
 		Count:        count,
 		Score:        cand.Score,
+		TopScore:     topScore,
 		Avail:        avail,
 		Caps:         caps,
 		Kind:         cand.Verdict.Kind,
@@ -925,6 +1015,12 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 	}
 
 	fixtures := formatPreviewFixtures()
+	// Previews scale {{stars 5 .TopScore .Score}} the way a live list would:
+	// against the best score on show.
+	topScore := 0
+	for _, fx := range fixtures {
+		topScore = max(topScore, fx.score)
+	}
 	for i, fx := range fixtures {
 		rel := &release.Release{
 			Title:     fx.title,
@@ -940,7 +1036,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
 		cand.Verdict.Seadex = fx.seadex
-		ctx := newFormatContext(cand, i+1, len(fixtures), DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
+		ctx := newFormatContext(cand, i+1, len(fixtures), topScore, DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
 
 		builtinName := "StreamNZB\nStandalone"
 		if fx.avail {
