@@ -599,7 +599,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                             </div>
                           )}
                           <p className="text-[11px] text-muted-foreground">
-                            {hasApiLimit ? `of ${idx.api_hits_limit} today` : 'Unlimited'}
+                            {hasApiLimit ? `of ${idx.api_hits_limit} per 24h` : 'Unlimited'}
                           </p>
                         </div>
                         <div className="space-y-1.5">
@@ -611,7 +611,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                             </div>
                           )}
                           <p className="text-[11px] text-muted-foreground">
-                            {hasDlLimit ? `of ${idx.downloads_limit} today` : 'Unlimited'}
+                            {hasDlLimit ? `of ${idx.downloads_limit} per 24h` : 'Unlimited'}
                           </p>
                         </div>
                       </div>

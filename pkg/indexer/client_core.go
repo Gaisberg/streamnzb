@@ -68,11 +68,11 @@ const QuotaExhaustedCooldown = 30 * time.Minute
 // absolute. The only trustworthy view of either budget is the server's own
 // response headers, which ApplyHeaderUsage reads off a response — so they
 // arrive only when we make a request. Our own counter cannot stand in for
-// them: the daily reset here turns over on local midnight while indexers use
-// their own clock or a rolling window, and a configured limit may be a
+// them: the trailing-window count tracks our own hits but not an indexer that
+// meters differently or resets early, and a configured limit may be a
 // conservative number the operator typed rather than the real quota. Left to
-// itself, a wrong counter would retire a working indexer until the local day
-// rolled over. The periodic probe is what lets the indexer tell us otherwise.
+// itself, a wrong counter would retire a working indexer for up to a full
+// window. The periodic probe is what lets the indexer tell us otherwise.
 const BudgetExhaustedProbeInterval = 15 * time.Minute
 
 // NewClientCore builds the core and restores persisted usage counters for
@@ -90,9 +90,9 @@ func NewClientCore(name string, apiLimit, downloadLimit, rateLimitRPS int, um *U
 		downloadRemaining: downloadLimit,
 	}
 	if um != nil && name != "" {
-		usage := um.GetIndexerUsage(name)
-		c.apiUsed = usage.APIHitsUsed
-		c.downloadUsed = usage.DownloadsUsed
+		usage := um.Counts(name, time.Now())
+		c.apiUsed = usage.APIHits
+		c.downloadUsed = usage.Downloads
 		if apiLimit > 0 {
 			c.apiRemaining = clampRemaining(apiLimit - c.apiUsed)
 		}
@@ -128,7 +128,7 @@ func effectiveLimit(configured, advertised int) int {
 // Usage assembles the current usage snapshot, refreshing persisted counters
 // first so multiple processes/streams stay consistent.
 func (c *ClientCore) Usage() Usage {
-	usageData := c.RefreshUsage()
+	counts := c.RefreshUsage()
 
 	c.mu.RLock()
 	u := Usage{
@@ -144,23 +144,23 @@ func (c *ClientCore) Usage() Usage {
 		u.AvgResponseMS = float64(c.totalResponseMS) / float64(c.searchesCount)
 	}
 	c.mu.RUnlock()
-	if usageData != nil {
-		u.AllTimeAPIHitsUsed = usageData.AllTimeAPIHitsUsed
-		u.AllTimeDownloadsUsed = usageData.AllTimeDownloadsUsed
+	if counts != nil {
+		u.AllTimeAPIHitsUsed = counts.AllTimeAPIHits
+		u.AllTimeDownloadsUsed = counts.AllTimeDownloads
 	}
 	return u
 }
 
 // RefreshUsage re-reads persisted counters and recomputes remaining budgets.
-func (c *ClientCore) RefreshUsage() *UsageData {
+func (c *ClientCore) RefreshUsage() *UsageCounts {
 	if c.usageManager == nil || c.name == "" {
 		return nil
 	}
 
-	ud := c.usageManager.GetIndexerUsage(c.name)
+	counts := c.usageManager.Counts(c.name, time.Now())
 	c.mu.Lock()
-	c.apiUsed = ud.APIHitsUsed
-	c.downloadUsed = ud.DownloadsUsed
+	c.apiUsed = counts.APIHits
+	c.downloadUsed = counts.Downloads
 	if c.apiLimit > 0 {
 		c.apiRemaining = clampRemaining(c.apiLimit - c.apiUsed)
 	}
@@ -169,7 +169,7 @@ func (c *ClientCore) RefreshUsage() *UsageData {
 	}
 	c.mu.Unlock()
 
-	return ud
+	return &counts
 }
 
 func (c *ClientCore) RecordSearchDuration(elapsed time.Duration) {
@@ -259,8 +259,8 @@ func (c *ClientCore) checkDownloadBudgetForSearch(displayName string, now time.T
 		displayName, c.downloadProbeAfter.Sub(now).Round(time.Second), ErrRateLimited)
 }
 
-// RecordAPIHit accounts one search/API request: local counters, then response
-// header sync and persistence via ApplyHeaderUsage.
+// RecordAPIHit accounts one search/API request: local counters, the persisted
+// trailing-window ring, then response header sync via ApplyHeaderUsage.
 func (c *ClientCore) RecordAPIHit(h http.Header) {
 	c.mu.Lock()
 	c.apiUsed++
@@ -269,11 +269,12 @@ func (c *ClientCore) RecordAPIHit(h http.Header) {
 	}
 	c.mu.Unlock()
 
+	c.recordHits(1, 0)
 	c.ApplyHeaderUsage(h)
 }
 
 // RecordGrab accounts one NZB download (an API hit plus a download) with the
-// same header-sync/persist rules as RecordAPIHit.
+// same ring/header-sync rules as RecordAPIHit.
 func (c *ClientCore) RecordGrab(h http.Header) {
 	c.mu.Lock()
 	c.apiUsed++
@@ -286,7 +287,14 @@ func (c *ClientCore) RecordGrab(h http.Header) {
 	}
 	c.mu.Unlock()
 
+	c.recordHits(1, 1)
 	c.ApplyHeaderUsage(h)
+}
+
+func (c *ClientCore) recordHits(apiHits, downloads int) {
+	if c.usageManager != nil && c.name != "" {
+		c.usageManager.RecordHits(c.name, apiHits, downloads, time.Now())
+	}
 }
 
 // NoteThrottled opens a cooldown after an indexer refuses a request, honouring
@@ -387,14 +395,17 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 
 // ApplyHeaderUsage ingests the de-facto newznab rate-limit response headers,
 // preferring the standard X-RateLimit/X-DNZBLimit family over the x-api/x-grab
-// fallbacks, and persists the resulting absolute counters.
+// fallbacks, and persists the server-derived counts as a header sync.
 //
-// Headers may shrink a budget — the server sees consumption we cannot, like a
-// Sonarr sharing the account — but never expand it past the configured cap:
-// the enforced limit is the stricter of the configured and advertised limits,
-// and a remaining count from a server that never told us its own limit is only
-// honoured downward, since measuring it against our smaller cap would drive
-// the derived used count negative and disable the cap entirely.
+// The server's counters govern whenever they are usable — it sees consumption
+// we cannot (other apps sharing the account) and resets we cannot (its own
+// window, which our trailing-window count can only approximate) — but they
+// never expand the budget past the configured cap: the enforced limit is the
+// stricter of the configured and advertised limits, and a remaining count
+// from a server that never told us its own limit is trusted only up to that
+// cap, since a value beyond it says nothing about our share of the server's
+// larger budget and deriving a used count from it would go negative and
+// disable the cap entirely.
 func (c *ClientCore) ApplyHeaderUsage(h http.Header) {
 	c.mu.Lock()
 
@@ -407,48 +418,67 @@ func (c *ClientCore) ApplyHeaderUsage(h http.Header) {
 	c.apiLimit = effectiveLimit(c.cfgAPILimit, c.hdrAPILimit)
 	c.downloadLimit = effectiveLimit(c.cfgDownloadLimit, c.hdrDownloadLimit)
 
+	// Only server-governed counts become a header sync; a header that was
+	// ignored must not freeze the local trailing count as a stale baseline.
+	var hdrAPIUsed, hdrDownloadsUsed *int
 	if remaining, ok := firstHeaderInt(h, "X-RateLimit-Daily-Remaining", "x-api-remaining"); ok {
-		c.apiUsed, c.apiRemaining = reconcileRemaining(c.apiUsed, c.apiRemaining, c.apiLimit, c.hdrAPILimit, remaining)
+		var governed bool
+		c.apiUsed, c.apiRemaining, governed = reconcileRemaining(c.apiUsed, c.apiRemaining, c.apiLimit, c.hdrAPILimit, remaining)
+		if governed {
+			used := c.apiUsed
+			hdrAPIUsed = &used
+		}
 	}
 	if remaining, ok := firstHeaderInt(h, "X-DNZBLimit-Daily-Remaining", "x-grab-remaining"); ok {
-		c.downloadUsed, c.downloadRemaining = reconcileRemaining(c.downloadUsed, c.downloadRemaining, c.downloadLimit, c.hdrDownloadLimit, remaining)
+		var governed bool
+		c.downloadUsed, c.downloadRemaining, governed = reconcileRemaining(c.downloadUsed, c.downloadRemaining, c.downloadLimit, c.hdrDownloadLimit, remaining)
+		if governed {
+			used := c.downloadUsed
+			hdrDownloadsUsed = &used
+		}
 	}
 
 	name, um := c.name, c.usageManager
-	apiUsed, downloadUsed := c.apiUsed, c.downloadUsed
 	c.mu.Unlock()
 
 	if um != nil && name != "" {
-		um.UpdateUsage(name, apiUsed, downloadUsed)
+		um.SetHeaderCounts(name, hdrAPIUsed, hdrDownloadsUsed, time.Now())
 	}
 }
 
 // reconcileRemaining folds one remaining-count header into the local counters.
+// governed reports whether the server's view won — only then may the caller
+// persist the result as an authoritative header sync.
 //
 // With the server's own limit known, the pair states the server's full view —
 // including consumption by other apps on the account — so the server-derived
 // used count wins and remaining is re-measured against the enforced limit.
-// With only a remaining count, it is honoured only when it shrinks the budget.
-func reconcileRemaining(localUsed, localRemaining, limit, advertisedLimit, headerRemaining int) (used, remaining int) {
+// With only a remaining count, the server still governs in both directions as
+// long as the value fits within the enforced limit: honouring it only downward
+// left a locally-exhausted budget sealed for a full window even after the
+// indexer's own window had reset, defeating the exhaustion probe. A value
+// beyond the limit is ignored — the server's budget dwarfs the configured cap,
+// so its remaining count says nothing about our share of it.
+func reconcileRemaining(localUsed, localRemaining, limit, advertisedLimit, headerRemaining int) (used, remaining int, governed bool) {
 	if headerRemaining < 0 {
 		headerRemaining = 0
 	}
 	if advertisedLimit > 0 {
 		used = clampRemaining(advertisedLimit - headerRemaining)
 		if limit <= 0 {
-			return used, headerRemaining
+			return used, headerRemaining, true
 		}
-		return used, clampRemaining(limit - used)
+		return used, clampRemaining(limit - used), true
 	}
 	if limit <= 0 {
 		// Nothing to enforce; keep the local hit count for the stats and show
 		// the server's remaining as-is.
-		return localUsed, headerRemaining
+		return localUsed, headerRemaining, false
 	}
-	if headerRemaining >= localRemaining {
-		return localUsed, localRemaining
+	if headerRemaining > limit {
+		return localUsed, localRemaining, false
 	}
-	return clampRemaining(limit - headerRemaining), headerRemaining
+	return clampRemaining(limit - headerRemaining), headerRemaining, true
 }
 
 // headerInt reads one header as an integer; absent or malformed yields ok=false.

@@ -47,50 +47,95 @@ func newTestUsageManager(t *testing.T) *UsageManager {
 	}
 }
 
-func TestGetIndexerUsageResetsDailyCountersWithoutChangingAllTime(t *testing.T) {
+func TestCountsDropHitsOutsideTrailingWindow(t *testing.T) {
 	um := newTestUsageManager(t)
-	name := "usage-reset-get"
-	um.data[name] = &UsageData{
-		LastResetDay:         time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
-		APIHitsUsed:          7,
-		DownloadsUsed:        3,
-		AllTimeAPIHitsUsed:   20,
-		AllTimeDownloadsUsed: 11,
-	}
+	name := "usage-trailing-window"
+	now := time.Now()
 
-	got := um.GetIndexerUsage(name)
+	um.RecordHits(name, 5, 2, now.Add(-25*time.Hour))
+	um.RecordHits(name, 2, 1, now)
 
-	if got.APIHitsUsed != 0 || got.DownloadsUsed != 0 {
-		t.Fatalf("expected daily usage to reset, got hits=%d downloads=%d", got.APIHitsUsed, got.DownloadsUsed)
+	got := um.Counts(name, now)
+	if got.APIHits != 2 || got.Downloads != 1 {
+		t.Fatalf("expected only hits inside the window, got hits=%d downloads=%d", got.APIHits, got.Downloads)
 	}
-	if got.AllTimeAPIHitsUsed != 20 || got.AllTimeDownloadsUsed != 11 {
-		t.Fatalf("expected all-time usage unchanged, got hits=%d downloads=%d", got.AllTimeAPIHitsUsed, got.AllTimeDownloadsUsed)
+	if got.AllTimeAPIHits != 7 || got.AllTimeDownloads != 3 {
+		t.Fatalf("expected all-time to keep every hit, got hits=%d downloads=%d", got.AllTimeAPIHits, got.AllTimeDownloads)
 	}
 }
 
-func TestUpdateUsageOnNewDayOnlyAddsNewUsageToAllTime(t *testing.T) {
+func TestCountsUseFreshHeaderSyncPlusLaterHits(t *testing.T) {
 	um := newTestUsageManager(t)
-	name := "usage-reset-update"
-	um.data[name] = &UsageData{
-		LastResetDay:         time.Now().Add(-24 * time.Hour).Format("2006-01-02"),
+	name := "usage-header-sync"
+	now := time.Now()
+
+	um.RecordHits(name, 4, 0, now.Add(-time.Minute))
+	nine := 9
+	um.SetHeaderCounts(name, &nine, nil, now)
+	um.RecordHits(name, 1, 1, now.Add(2*time.Second))
+
+	got := um.Counts(name, now.Add(3*time.Second))
+	if got.APIHits != 10 {
+		t.Fatalf("APIHits = %d, want the synced 9 plus the 1 hit after the sync", got.APIHits)
+	}
+	// No download sync was stored, so downloads stay on the trailing count.
+	if got.Downloads != 1 {
+		t.Fatalf("Downloads = %d, want the trailing count 1", got.Downloads)
+	}
+}
+
+func TestCountsIgnoreHeaderSyncOlderThanWindow(t *testing.T) {
+	um := newTestUsageManager(t)
+	name := "usage-header-stale"
+	now := time.Now()
+
+	nine := 9
+	um.SetHeaderCounts(name, &nine, nil, now.Add(-25*time.Hour))
+	um.RecordHits(name, 3, 0, now)
+
+	if got := um.Counts(name, now); got.APIHits != 3 {
+		t.Fatalf("APIHits = %d, want the trailing count 3 once the sync went stale", got.APIHits)
+	}
+}
+
+func TestMigrateLegacyUsageSeedsTodayAndDropsStaleDay(t *testing.T) {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+
+	fresh := &UsageData{
+		LastResetDay:         today,
 		APIHitsUsed:          7,
 		DownloadsUsed:        3,
 		AllTimeAPIHitsUsed:   20,
 		AllTimeDownloadsUsed: 11,
 	}
-
-	um.UpdateUsage(name, 2, 1)
-	got := um.GetIndexerUsage(name)
-	if got.APIHitsUsed != 2 || got.DownloadsUsed != 1 {
-		t.Fatalf("expected new daily usage to be stored, got hits=%d downloads=%d", got.APIHitsUsed, got.DownloadsUsed)
+	if !migrateLegacyUsage(fresh, today, now) {
+		t.Fatal("expected a same-day legacy entry to migrate")
 	}
-	if got.AllTimeAPIHitsUsed != 22 || got.AllTimeDownloadsUsed != 12 {
-		t.Fatalf("expected all-time usage to increase only by new usage, got hits=%d downloads=%d", got.AllTimeAPIHitsUsed, got.AllTimeDownloadsUsed)
+	if len(fresh.APIHitTimes) != 7 || len(fresh.DownloadTimes) != 3 {
+		t.Fatalf("expected today's counters seeded as hits, got %d/%d", len(fresh.APIHitTimes), len(fresh.DownloadTimes))
+	}
+	if fresh.AllTimeAPIHitsUsed != 20 || fresh.AllTimeDownloadsUsed != 11 {
+		t.Fatalf("expected all-time untouched, got %d/%d", fresh.AllTimeAPIHitsUsed, fresh.AllTimeDownloadsUsed)
+	}
+	if fresh.LastResetDay != "" || fresh.APIHitsUsed != 0 || fresh.DownloadsUsed != 0 {
+		t.Fatal("expected legacy fields cleared after migration")
 	}
 
-	um.UpdateUsage(name, 5, 2)
-	got = um.GetIndexerUsage(name)
-	if got.AllTimeAPIHitsUsed != 25 || got.AllTimeDownloadsUsed != 13 {
-		t.Fatalf("expected same-day update to add only positive deltas, got hits=%d downloads=%d", got.AllTimeAPIHitsUsed, got.AllTimeDownloadsUsed)
+	stale := &UsageData{
+		LastResetDay:  now.Add(-24 * time.Hour).Format("2006-01-02"),
+		APIHitsUsed:   7,
+		DownloadsUsed: 3,
+	}
+	if !migrateLegacyUsage(stale, today, now) {
+		t.Fatal("expected a stale-day legacy entry to migrate")
+	}
+	if len(stale.APIHitTimes) != 0 || len(stale.DownloadTimes) != 0 {
+		t.Fatal("expected a stale day's counters dropped, not seeded")
+	}
+	// Pre-all-time databases carry the daily counts as the only usage ever
+	// recorded; migration folds them in once.
+	if stale.AllTimeAPIHitsUsed != 7 || stale.AllTimeDownloadsUsed != 3 {
+		t.Fatalf("expected all-time backfilled from legacy counters, got %d/%d", stale.AllTimeAPIHitsUsed, stale.AllTimeDownloadsUsed)
 	}
 }

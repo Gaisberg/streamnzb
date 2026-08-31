@@ -68,7 +68,11 @@ func TestApplyHeaderUsageAdvertisedLimitMayShrinkConfiguredCap(t *testing.T) {
 	}
 }
 
-func TestApplyHeaderUsageRemainingOnlyShrinksBudget(t *testing.T) {
+// A remaining-only header governs in both directions while it fits the cap:
+// the server sees consumption and resets we cannot, and honouring it only
+// downward sealed an exhausted budget until local midnight even after the
+// indexer's own window had reset.
+func TestApplyHeaderUsageRemainingOnlyGovernsWithinCap(t *testing.T) {
 	c := NewClientCore("Treasuremaps", 100, 0, 0, nil)
 
 	h := http.Header{}
@@ -79,11 +83,39 @@ func TestApplyHeaderUsageRemainingOnlyShrinksBudget(t *testing.T) {
 		t.Fatalf("used/remaining = %d/%d, want 80/20 after the header shrank the budget", u.APIHitsUsed, u.APIHitsRemaining)
 	}
 
-	// A larger remaining later must not stretch the budget back out.
+	// The indexer's window rolled over: its remaining climbs back and the
+	// budget must follow it.
 	h.Set("X-RateLimit-Daily-Remaining", "90")
 	c.ApplyHeaderUsage(h)
-	if u := c.Usage(); u.APIHitsUsed != 80 || u.APIHitsRemaining != 20 {
-		t.Fatalf("used/remaining = %d/%d, want the shrunk 80/20 to hold", u.APIHitsUsed, u.APIHitsRemaining)
+	if u := c.Usage(); u.APIHitsUsed != 10 || u.APIHitsRemaining != 90 {
+		t.Fatalf("used/remaining = %d/%d, want 10/90 after the server freed budget", u.APIHitsUsed, u.APIHitsRemaining)
+	}
+}
+
+// The exhaustion probe's whole point: a probe response saying budget is back
+// must re-open searches even when the server never advertises its own limit.
+func TestApplyHeaderUsageRemainingOnlyReopensExhaustedBudget(t *testing.T) {
+	c := NewClientCore("Treasuremaps", 2, 0, 0, nil)
+	now := time.Now()
+
+	c.RecordAPIHit(nil)
+	c.RecordAPIHit(nil)
+	if err := c.CheckSearchAllowed("Treasuremaps", now); err != nil {
+		t.Fatalf("expected the first post-exhaustion search to probe, got %v", err)
+	}
+	if err := c.CheckSearchAllowed("Treasuremaps", now); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected search skipped inside the probe interval, got %v", err)
+	}
+
+	h := http.Header{}
+	h.Set("x-api-remaining", "2")
+	c.ApplyHeaderUsage(h)
+
+	if err := c.CheckSearchAllowed("Treasuremaps", now); err != nil {
+		t.Fatalf("expected searches re-opened by the probe's header, got %v", err)
+	}
+	if u := c.Usage(); u.APIHitsUsed != 0 || u.APIHitsRemaining != 2 {
+		t.Fatalf("used/remaining = %d/%d, want 0/2 after the server reported a fresh budget", u.APIHitsUsed, u.APIHitsRemaining)
 	}
 }
 
