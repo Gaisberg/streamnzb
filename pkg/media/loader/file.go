@@ -132,9 +132,13 @@ type File struct {
 	segments  []*Segment
 	totalSize int64
 	detected  bool
-	ctx       context.Context
-	ownerID   string
-	mu        sync.Mutex
+	// playbackStreamBytes is the size of the whole playback stream this file
+	// backs a slice of — the unpacked movie, not this volume. Zero outside
+	// multi-volume playback. Guarded by mu.
+	playbackStreamBytes int64
+	ctx                 context.Context
+	ownerID             string
+	mu                  sync.Mutex
 
 	// missingFromNZB counts articles the NZB itself cannot deliver: numbering
 	// gaps (materialized as placeholders or not) and segments carrying no
@@ -1043,11 +1047,30 @@ func (f *File) OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, er
 }
 
 // PlaybackReadAhead is this file's read-ahead window, sized against its own
-// article size rather than assumed to be the sub-megabyte common case.
+// article size rather than assumed to be the sub-megabyte common case, and
+// against the whole stream when this file is one volume of one.
 func (f *File) PlaybackReadAhead() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return PlaybackReadAheadFor(f.totalSize, f.averageSegmentSizeLocked())
+	fileBytes := f.totalSize
+	if f.playbackStreamBytes > fileBytes {
+		fileBytes = f.playbackStreamBytes
+	}
+	return PlaybackReadAheadFor(fileBytes, f.averageSegmentSizeLocked())
+}
+
+// SetPlaybackStreamBytes records the size of the whole stream this file is one
+// volume of. The window is a buffer measured in seconds of playback, and a
+// 500 MB volume of a 176 GB movie is 1/300th of that runtime — sized against
+// the volume, the budget floored at its minimum on exactly the releases that
+// need the deepest window. Growing only, so a shorter stream opened over the
+// same volume cannot shrink a window playback is already relying on.
+func (f *File) SetPlaybackStreamBytes(n int64) {
+	f.mu.Lock()
+	if n > f.playbackStreamBytes {
+		f.playbackStreamBytes = n
+	}
+	f.mu.Unlock()
 }
 
 // averageSegmentSizeLocked reports the mean decoded segment size, which is what

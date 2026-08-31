@@ -42,6 +42,11 @@ func LiveVirtualStreams() int64 {
 }
 
 func NewVirtualStream(ctx context.Context, parts []virtualPart, totalSize int64, startOffset int64) *VirtualStream {
+	for i := range parts {
+		if sizer, ok := parts[i].VolFile.(playbackStreamSizer); ok {
+			sizer.SetPlaybackStreamBytes(totalSize)
+		}
+	}
 	liveVirtualStreams.Add(1)
 	return &VirtualStream{
 		parts:       parts,

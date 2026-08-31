@@ -36,6 +36,14 @@ type playbackStreamOpener interface {
 	OpenPlaybackStreamCtx(ctx context.Context) (io.ReadSeekCloser, error)
 }
 
+// playbackStreamSizer is offered by files that size their read-ahead window
+// against the whole stream being played rather than their own length. A volume
+// of a split archive is a fixed slice of the movie, so the window has to be
+// measured against the movie.
+type playbackStreamSizer interface {
+	SetPlaybackStreamBytes(int64)
+}
+
 func openPlaybackReaderAt(f UnpackableFile, ctx context.Context, offset int64) (io.ReadCloser, error) {
 	if o, ok := f.(playbackReaderAt); ok {
 		return o.OpenPlaybackReaderAt(ctx, offset)
