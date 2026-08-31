@@ -53,6 +53,8 @@ func TestParsedReleaseEpisodeMatchRank(t *testing.T) {
 	}
 }
 
+// Dashed anime numbering ("S4 - 03") is parsed by jhin itself since v0.5.0;
+// this pins the behavior the old in-house fallback existed for.
 func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {
 	parsed := ParseReleaseTitle("[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 03 (720p) [370B1C65]")
 	if parsed == nil {
@@ -75,9 +77,20 @@ func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {
 	}
 }
 
-func TestDashedSeasonEpisodePatternDoesNotFalseMatchInsideLongerToken(t *testing.T) {
-	if matches := dashedSeasonEpisodePattern.FindStringSubmatch("Example.Show.S1 - 24bit.1080p.WEB-DL"); len(matches) != 0 {
-		t.Fatalf("expected no regex match inside longer token, got %v", matches)
+// A compact dashed range names seasons, not an episode: S03-08 is a pack of
+// seasons 3 through 8, and nothing may invent an episode for it — the old
+// fallback read the same characters as S3E8, which turned season packs into
+// episode releases.
+func TestDashedSeasonRangeStaysASeasonPack(t *testing.T) {
+	parsed := ParseReleaseTitle("Show.S03-08.1080p.WEB-DL-GRP")
+	if parsed == nil {
+		t.Fatal("expected parsed release")
+	}
+	if len(parsed.Episodes) != 0 || parsed.Episode != 0 {
+		t.Fatalf("expected no episodes for a season range, got %v", parsed.Episodes)
+	}
+	if !parsed.HasSeason(3) || !parsed.HasSeason(8) {
+		t.Fatalf("expected seasons 3 through 8, got %v", parsed.Seasons)
 	}
 }
 

@@ -94,12 +94,6 @@ func (r RuleConfig) EffectiveScope() string {
 	return scope
 }
 
-// AppliesTo reports whether the rule runs for a request of this content kind.
-func (r RuleConfig) AppliesTo(kind string) bool {
-	scope := r.EffectiveScope()
-	return scope == RuleScopeAll || scope == strings.ToLower(strings.TrimSpace(kind))
-}
-
 // migratePatternRanks converts a profile's jhin weighted patterns into named
 // rules and clears them from the jhin spec, so each pattern is evaluated once
 // and by the side that can give it a name. Reports whether anything moved.

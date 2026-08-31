@@ -13,7 +13,7 @@ import (
 // evalSet runs a set the way the ranking pipeline does: aggregates first,
 // once, then every release.
 func evalSet(set *rules.Set, envs []rules.Env, kind string) []rules.Outcome {
-	state := set.ComputeAggregates(envs)
+	state := set.ComputeAggregates(envs, kind)
 	outs := make([]rules.Outcome, len(envs))
 	for i := range envs {
 		state.Inject(&envs[i])
@@ -176,11 +176,10 @@ func TestAggregateCompileErrors(t *testing.T) {
 		when string
 		want string
 	}{
-		{"nested", `exists(count(library) > 0)`, "cannot nest"},
-		{"reserved", `__aggs[0] > 1`, "reserved"},
-		{"no condition", `count() > 0`, "exactly one condition"},
-		{"two arguments", `exists(library, upscaled)`, "exactly one condition"},
-		{"not boolean", `count(sizeGB) > 0`, "in count(sizeGB)"},
+		{"nested", `exists(count(library) > 0)`, "result-set questions do not nest"},
+		{"no condition", `count() > 0`, "takes the list and a test"},
+		{"two arguments", `exists(library, upscaled)`, `unknown function "exists"`},
+		{"not boolean", `count(sizeGB) > 0`, "asks a yes/no question about the result set"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -202,7 +201,7 @@ func TestReportAggregates(t *testing.T) {
 	)
 
 	envs := envsFor("Movie 2020 2160p BluRay-GRP", "Movie 2020 1080p WEB-DL-GRP")
-	state, reports := set.ReportAggregates(envs)
+	state, reports := set.ReportAggregates(envs, "movie")
 	if state == nil {
 		t.Fatal("no state computed")
 	}

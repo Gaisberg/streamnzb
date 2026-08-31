@@ -102,17 +102,6 @@ func TestRuleDefaults(t *testing.T) {
 	if r.EffectiveScope() != RuleScopeAll {
 		t.Errorf("default scope = %q, want all", r.EffectiveScope())
 	}
-	if !r.AppliesTo("movie") {
-		t.Error("an unscoped rule should apply to every kind")
-	}
-
-	scoped := RuleConfig{Scope: "anime_show"}
-	if scoped.AppliesTo("series") {
-		t.Error("a scoped rule applied to another kind")
-	}
-	if !scoped.AppliesTo("anime_show") {
-		t.Error("a scoped rule did not apply to its own kind")
-	}
 }
 
 // A profile carried over from the pre-jhin schema gets no score floor. The

@@ -421,10 +421,10 @@ func (p *Profile) applyRules(req Request, results []Result) {
 		var state *rules.AggregateState
 		if req.AggregateTrace != nil {
 			var reports []rules.AggregateReport
-			state, reports = p.rules.ReportAggregates(inSet)
+			state, reports = p.rules.ReportAggregates(inSet, req.Kind)
 			*req.AggregateTrace = reports
 		} else {
-			state = p.rules.ComputeAggregates(inSet)
+			state = p.rules.ComputeAggregates(inSet, req.Kind)
 		}
 		for i := range envs {
 			state.Inject(&envs[i])

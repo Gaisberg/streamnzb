@@ -1,51 +1,98 @@
 package rules
 
 import (
-	"fmt"
+	"errors"
+	"strconv"
 	"strings"
 
-	"github.com/expr-lang/expr"
-	"github.com/expr-lang/expr/ast"
-	exprparser "github.com/expr-lang/expr/parser"
-	"github.com/expr-lang/expr/vm"
+	jhinrules "github.com/dreulavelle/jhin/rules"
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/triage"
 )
 
-// Rule is one compiled condition and what it does when it holds.
-type Rule struct {
-	Name   string
-	Scope  string
-	Action string
-	Points int
-	// Count is how many matching releases a limit rule keeps.
-	Count int
+// Tier names. A field belongs to a tier, and a rule reading a tier the
+// release carries nothing in is skipped rather than judged against zero
+// values — jhin's engine enforces the contract, these name the groups.
+const (
+	tierMeasured = "measured"
+	tierAvail    = "avail"
+	tierSeadex   = "seadex"
+	tierIndexer  = "indexer"
+)
 
-	program *vm.Program
-	// groupProgram splits a limit rule's cap into buckets. Nil caps the
-	// matching releases as one set.
-	groupProgram *vm.Program
-	// needsProbe, needsAvail, needsIndexer and needsSeadex record that the
-	// condition reads a tier the release may not have. Such a rule is skipped
-	// rather than evaluated against zero values — see Evaluate.
-	needsProbe   bool
-	needsAvail   bool
-	needsIndexer bool
-	needsSeadex  bool
-	// aggIndices are the set-wide result-set conditions this rule reads. A
-	// rule whose aggregate could not be judged is skipped the same way a rule
-	// reading a missing tier is.
-	aggIndices []int
+// registry declares StreamNZB's rule vocabulary: jhin's core release-name
+// attributes plus every fact source the application adds. The descriptions
+// are user-facing — they become the "skipped: needs …" reasons.
+//
+// Names are permanent API: renaming a field breaks every stored rule that
+// reads it.
+var registry = buildRegistry()
+
+func buildRegistry() *jhinrules.Registry {
+	reg := jhinrules.Core()
+	reg.Tier(tierMeasured, "a probed file, which this release is not")
+	reg.Tier(tierAvail, "an availability record, which this release has none of")
+	reg.Tier(tierSeadex, "a SeaDex lookup, which this request did not run")
+	reg.Tier(tierIndexer, "size, age or grabs, which a release name does not carry")
+
+	// Verified reports whether the merged bare attributes (resolution, codec,
+	// hdr, bitDepth) came from the file rather than from its name. It is
+	// always answerable, so it carries no tier.
+	reg.Field("verified", jhinrules.Bool, "")
+
+	// parsed.* is the release name's own account of the merged attributes,
+	// for rules that must not accept a probe's word for it (or vice versa).
+	reg.Namespace("parsed", "").
+		Str("resolution").Str("codec").StrList("hdr").Num("bitDepth").
+		Str("title").Bool("dolbyVision").Bool("hdrFallback")
+
+	// Reported by the indexer. A bare release name has none of these, which
+	// is why they share a tier: the preview builds releases from titles alone
+	// and must skip rules about them rather than judge against zeros.
+	reg.Field("sizeGB", jhinrules.Num, tierIndexer)
+	reg.Field("sizePerEpisodeGB", jhinrules.Num, tierIndexer)
+	reg.Field("ageDays", jhinrules.Num, tierIndexer)
+	reg.Field("grabs", jhinrules.Num, tierIndexer)
+	reg.Field("passworded", jhinrules.Bool, tierIndexer)
+	reg.Field("indexer", jhinrules.Str, tierIndexer)
+	reg.Field("querySource", jhinrules.Str, tierIndexer)
+	reg.Field("library", jhinrules.Bool, tierIndexer)
+
+	// Community: the availability database and SeaDex. Separate tiers because
+	// their presence differs — avail is known per release, seadex per request.
+	reg.Namespace("avail", tierAvail).
+		Str("status").Bool("known").Bool("onMyBackbone").
+		Num("checkedDaysAgo").Str("compression")
+	reg.Namespace("seadex", tierSeadex).
+		Bool("known").Bool("best").Bool("alternative")
+
+	// Measured: what ffprobe found in the file itself.
+	reg.Namespace("probed", tierMeasured).
+		Str("videoCodec").Str("audioCodec").Num("width").Num("height").
+		Str("profile").Num("bitDepth").Str("hdr").Bool("dolbyVision").
+		Bool("hasHDRFallback").Str("dynamicRange")
+
+	// Request context, the same for every release in one result set. title
+	// shadows jhin's core field: here it is the requested title, and the
+	// release name's own is parsed.title.
+	reg.Field("kind", jhinrules.Str, "")
+	reg.Field("isAnime", jhinrules.Bool, "")
+	reg.Field("season", jhinrules.Num, "")
+	reg.Field("episode", jhinrules.Num, "")
+
+	if err := reg.Err(); err != nil {
+		// A registration that fails is a programming error in this file, not
+		// a condition any profile can cause.
+		panic(err)
+	}
+	return reg
 }
 
 // Set is a profile's rules, compiled once and reused for every request.
 type Set struct {
-	rules []Rule
-	// aggs are the result-set conditions lifted out of the rules, shared
-	// across them and computed once per request — see ComputeAggregates.
-	aggs []aggregate
+	eng *jhinrules.Engine
 }
 
 // Len reports how many enabled rules the set holds.
@@ -53,21 +100,18 @@ func (s *Set) Len() int {
 	if s == nil {
 		return 0
 	}
-	return len(s.rules)
+	return s.eng.Len()
 }
 
 // NeedsSeadex reports whether any rule reads the seadex tier, so a caller can
 // skip the SeaDex lookup for profiles that never ask about it.
 func (s *Set) NeedsSeadex() bool {
-	if s == nil {
-		return false
-	}
-	for i := range s.rules {
-		if s.rules[i].needsSeadex {
-			return true
-		}
-	}
-	return false
+	return s != nil && s.eng.ReadsTier(tierSeadex)
+}
+
+// HasAggregates reports whether any rule in the set reads the result set.
+func (s *Set) HasAggregates() bool {
+	return s != nil && s.eng.HasAggregates()
 }
 
 // Error is a rule that would not compile, named so the editor can point at the
@@ -80,203 +124,57 @@ type Error struct {
 func (e *Error) Error() string { return "rule " + e.Rule + ": " + e.Err.Error() }
 func (e *Error) Unwrap() error { return e.Err }
 
-// Compile turns a profile's rule configs into an evaluable set. Disabled rules
-// are dropped here rather than skipped later, so a broken rule that is turned
-// off does not block a save.
+// Compile turns a profile's rule configs into an evaluable set. Compilation,
+// reference inlining, tier tracking and validation are jhin's; this converts
+// the config schema and keeps the registry.
 //
 // library carries the define rules of the config's shared define libraries.
 // They exist only to be referenced: matched() resolves against them after the
 // profile's own rules — a profile rule under the same name shadows the
-// library's — and they never join the set, judge nothing, and are not
-// validated here. A library is validated by compiling it on its own, which is
-// also what keeps it self-contained: its defines can reference each other but
-// never a profile's rules.
-//
-// Compilation is strict: the condition must type-check against the environment
-// and must yield a boolean. A rule that cannot compile fails the whole call,
-// because a profile that silently drops one of its rules filters differently
-// than the user configured and gives no sign of it.
+// library's — and they never join the set. A library is validated by
+// compiling it on its own, which is also what keeps it self-contained.
 func Compile(cfgs []config.RuleConfig, library ...config.RuleConfig) (*Set, error) {
 	if len(cfgs) == 0 {
 		return nil, nil
 	}
-	set := &Set{}
-	aggBySource := map[string]int{}
-	// References are resolved against every rule, disabled ones included, so
-	// that switching a rule off changes what a reference to it means rather
-	// than breaking the rules that refer to it. Library defines come first so
-	// the expander can tell them from the profile's own rules by index.
-	// Conditions are normalized once, up front, so raw regex notation reads
-	// the same everywhere a condition is parsed — see normalizeConditionEscapes.
-	all := make([]config.RuleConfig, 0, len(library)+len(cfgs))
-	all = append(all, library...)
-	all = append(all, cfgs...)
-	for i := range all {
-		all[i].When = normalizeConditionEscapes(all[i].When)
-		all[i].GroupBy = normalizeConditionEscapes(all[i].GroupBy)
+	eng, err := jhinrules.Compile(registry, toJhinRules(cfgs), toJhinRules(library)...)
+	if err != nil {
+		var jerr *jhinrules.Error
+		if errors.As(err, &jerr) {
+			return nil, &Error{Rule: jerr.Rule, Err: jerr.Err}
+		}
+		return nil, err
 	}
-	refs := newRefExpander(all, len(library))
-	for i := range cfgs {
-		rc := all[len(library)+i]
-		if !rc.IsEnabled() {
-			continue
-		}
-		name := ruleLabel(rc)
-		if strings.TrimSpace(rc.When) == "" {
-			return nil, &Error{Rule: name, Err: fmt.Errorf("condition is empty")}
-		}
-		if rc.EffectiveAction() == config.RuleActionLimit && rc.Count < 1 {
-			return nil, &Error{Rule: name, Err: fmt.Errorf("a limit rule has to keep at least one release")}
-		}
-		// matched("Other rule") is inlined before anything else looks at the
-		// condition, so a reference works wherever a condition does and the
-		// tiers it reads are the tiers of everything it pulls in.
-		when, err := refs.condition(len(library) + i)
-		if err != nil {
-			return nil, &Error{Rule: name, Err: err}
-		}
-		// A define rule is a named condition kept for other rules to reference
-		// and nothing else. It is validated as strictly as any rule — a broken
-		// definition must fail the save whether or not something references it
-		// yet — but it never joins the set: no release is judged by it, so it
-		// pays nothing out, rejects nothing, and shows up nowhere.
-		if rc.EffectiveAction() == config.RuleActionDefine {
-			if strings.TrimSpace(rc.GroupBy) != "" {
-				return nil, &Error{Rule: name, Err: fmt.Errorf("only a limit rule can group by %s", strings.TrimSpace(rc.GroupBy))}
-			}
-			if err := validateCondition(when); err != nil {
-				return nil, &Error{Rule: name, Err: err}
-			}
-			continue
-		}
-		// Result-set calls are lifted out first: the rule is compiled against
-		// their precomputed values, and the inner conditions become their own
-		// per-release programs. Identical conditions share one aggregate, so
-		// two rules asking about the same thing count it once.
-		var ruleAggs []int
-		when, err = rewriteAggregates(when, func(inner string) (int, error) {
-			idx, ok := aggBySource[inner]
-			if !ok {
-				program, err := expr.Compile(inner, expr.Env(Env{}), expr.AsBool())
-				if err != nil {
-					return 0, err
-				}
-				tiers, err := tiersUsed(inner)
-				if err != nil {
-					return 0, err
-				}
-				idx = len(set.aggs)
-				set.aggs = append(set.aggs, aggregate{program: program, tiers: tiers, source: inner})
-				aggBySource[inner] = idx
-			}
-			for _, have := range ruleAggs {
-				if have == idx {
-					return idx, nil
-				}
-			}
-			ruleAggs = append(ruleAggs, idx)
-			return idx, nil
-		})
-		if err != nil {
-			return nil, &Error{Rule: name, Err: err}
-		}
-		program, err := expr.Compile(when, expr.Env(Env{}), expr.AsBool())
-		if err != nil {
-			return nil, &Error{Rule: name, Err: err}
-		}
-		// Tiers are judged on the rewritten condition: a rule asking whether
-		// the set holds a probed release does not itself need this release to
-		// be probed.
-		tiers, err := tiersUsed(when)
-		if err != nil {
-			return nil, &Error{Rule: name, Err: err}
-		}
-		groupBy, err := refs.expand(strings.TrimSpace(rc.GroupBy))
-		if err != nil {
-			return nil, &Error{Rule: name, Err: fmt.Errorf("group by: %w", err)}
-		}
-		groupProgram, groupTiers, err := compileGroupBy(rc, groupBy)
-		if err != nil {
-			return nil, &Error{Rule: name, Err: err}
-		}
-		// A grouped cap is judged by its condition and its grouping together,
-		// so it reads whichever tiers either half touches: grouping by
-		// probed.height has to skip an unprobed release for the same reason a
-		// condition reading it does.
-		tiers = tiers.merge(groupTiers)
-		set.rules = append(set.rules, Rule{
-			Name:         name,
-			Scope:        rc.EffectiveScope(),
-			Action:       rc.EffectiveAction(),
-			Points:       rc.Points,
-			Count:        rc.Count,
-			program:      program,
-			groupProgram: groupProgram,
-			needsProbe:   tiers.probe,
-			needsAvail:   tiers.avail,
-			needsIndexer: tiers.indexer,
-			needsSeadex:  tiers.seadex,
-			aggIndices:   ruleAggs,
-		})
-	}
-	if len(set.rules) == 0 {
+	if eng == nil {
 		return nil, nil
 	}
-	return set, nil
+	return &Set{eng: eng}, nil
 }
 
-// validateCondition compiles a condition and discards the result — the strict
-// half of what Compile does for an acting rule, applied to one that exists
-// only to be referenced. Result-set calls are rewritten against a throwaway
-// index so the program type-checks; nothing is registered anywhere, so a
-// definition nobody references never costs a per-request aggregate.
-func validateCondition(when string) error {
-	rewritten, err := rewriteAggregates(when, func(inner string) (int, error) {
-		if _, err := expr.Compile(inner, expr.Env(Env{}), expr.AsBool()); err != nil {
-			return 0, err
+// toJhinRules converts the config schema to jhin's. The fields map one to
+// one; the differences are shape, not meaning — jhin scores by expression
+// where the config carries flat points, and scopes a rule by list where the
+// config has one kind or "all".
+func toJhinRules(cfgs []config.RuleConfig) []jhinrules.Rule {
+	out := make([]jhinrules.Rule, 0, len(cfgs))
+	for _, rc := range cfgs {
+		r := jhinrules.Rule{
+			Name:    rc.Name,
+			When:    rc.When,
+			Action:  rc.EffectiveAction(),
+			Count:   rc.Count,
+			GroupBy: rc.GroupBy,
+			Enabled: rc.Enabled,
 		}
-		return 0, nil
-	})
-	if err != nil {
-		return err
+		if r.Action == jhinrules.ActionScore {
+			r.Score = strconv.Itoa(rc.Points)
+		}
+		if scope := rc.EffectiveScope(); scope != config.RuleScopeAll {
+			r.Scope = []string{scope}
+		}
+		out = append(out, r)
 	}
-	_, err = expr.Compile(rewritten, expr.Env(Env{}), expr.AsBool())
-	return err
-}
-
-// compileGroupBy compiles a limit rule's grouping expression and reports which
-// attribute tiers it reads. A rule without one groups nothing and compiles to
-// nil, which is every rule written before grouping existed.
-//
-// The expression is not required to yield any particular type — resolution is
-// a string, year an int, hdr a list — because what a bucket needs is an
-// identity, not a value, and every type has one once it is written out. It is
-// checked against the same environment a condition sees, so a grouping naming
-// an attribute that does not exist is caught at save time rather than turning
-// every release into its own bucket at search time.
-//
-// Grouping is refused on anything but a limit rule. There is nothing sensible
-// for a score or reject rule to do with it, and accepting it silently would
-// leave a user who set it on the wrong rule looking at a cap that never
-// buckets, with nothing anywhere saying why.
-func compileGroupBy(rc config.RuleConfig, groupBy string) (*vm.Program, tierUse, error) {
-	if groupBy == "" {
-		return nil, tierUse{}, nil
-	}
-	if rc.EffectiveAction() != config.RuleActionLimit {
-		// Named as the user wrote it, not as it expanded: a grouping that
-		// pulled in another rule reads back as pages of inlined condition.
-		return nil, tierUse{}, fmt.Errorf("only a limit rule can group by %s", strings.TrimSpace(rc.GroupBy))
-	}
-	program, err := expr.Compile(groupBy, expr.Env(Env{}))
-	if err != nil {
-		return nil, tierUse{}, fmt.Errorf("group by: %w", err)
-	}
-	tiers, err := tiersUsed(groupBy)
-	if err != nil {
-		return nil, tierUse{}, fmt.Errorf("group by: %w", err)
-	}
-	return program, tiers, nil
+	return out
 }
 
 // Outcome is what a set's rules did to one release.
@@ -300,15 +198,99 @@ type Outcome struct {
 	Limits []LimitMatch
 }
 
-// LimitMatch is one cap a release counts against.
-type LimitMatch struct {
-	Name  string
-	Count int
-	// Group is the bucket the release falls in, for a cap that groups. Count
-	// is kept per bucket, so two releases counting against the same rule with
-	// different groups are not competing. Empty for an ungrouped cap, which
-	// puts every match in one bucket.
-	Group string
+// LimitMatch is one cap a release counts against. Count is kept per bucket,
+// so two releases counting against the same rule with different groups are
+// not competing. Group is empty for an ungrouped cap, which puts every match
+// in one bucket.
+type LimitMatch = jhinrules.LimitMatch
+
+// AggregateState is one request's computed result-set values, shared by every
+// release in the set.
+type AggregateState struct {
+	st *jhinrules.AggregateState
+}
+
+// Inject hands the computed values to one release's environment. Safe on a
+// nil state, which is what a set without aggregates computes.
+func (st *AggregateState) Inject(env *Env) {
+	if st == nil {
+		return
+	}
+	env.aggs = st.st
+}
+
+// AggregateReport is one result-set condition as a request computed it: the
+// inner condition, whether any release could be judged, how many satisfied it,
+// and which ones by name. It exists for the preview — a rule built on
+// exists()/none()/count() is otherwise debugged by guessing which releases the
+// number came from. See ReportAggregates.
+type AggregateReport struct {
+	// Source is the inner condition as its parsed form prints, so two
+	// spellings of the same condition read identically and are counted once.
+	Source string `json:"source"`
+	// Known is false when no release in the set carries the tiers the
+	// condition reads, which skips every rule depending on it.
+	Known bool `json:"known"`
+	// Count is how many releases satisfied the condition — the value count()
+	// reads, and what exists() and none() judge against zero.
+	Count int `json:"count"`
+	// Matched names the releases counted, in set order.
+	Matched []string `json:"matched,omitempty"`
+}
+
+// ComputeAggregates evaluates every lifted condition once against the given
+// releases, before the per-release pass, so the counts are the same for every
+// release and no rule can change them by rejecting. kind is the request's
+// content kind, matched against the scope of any rule an inner condition
+// references.
+func (s *Set) ComputeAggregates(envs []Env, kind string) *AggregateState {
+	if !s.HasAggregates() {
+		return nil
+	}
+	return &AggregateState{st: s.eng.ComputeAggregates(factsOf(envs), kind)}
+}
+
+// ReportAggregates is ComputeAggregates plus the answer to "which releases
+// made it come out that way": one report per condition, naming the releases it
+// counted. The capture is what the preview shows; the live path calls
+// ComputeAggregates and pays nothing for it.
+func (s *Set) ReportAggregates(envs []Env, kind string) (*AggregateState, []AggregateReport) {
+	if !s.HasAggregates() {
+		return nil, nil
+	}
+	facts := factsOf(envs)
+	st := s.eng.ComputeAggregates(facts, kind)
+	base := s.eng.Aggregates(st)
+	reports := make([]AggregateReport, len(base))
+	for i, r := range base {
+		reports[i] = AggregateReport{Source: r.Source, Known: r.Known, Count: r.Count}
+	}
+	// The engine reports totals, not who was counted, so each release is
+	// asked again alone: a single-release set answers 1 exactly when this
+	// release was counted in the full set, and stays unanswered when the
+	// release misses a tier the condition reads — the same rule that kept it
+	// out of the full count. The report order is the engine's aggregate
+	// order both times, so the indexes line up.
+	for i := range envs {
+		single := s.eng.Aggregates(s.eng.ComputeAggregates(facts[i:i+1], kind))
+		for k := range single {
+			if single[k].Known && single[k].Count > 0 {
+				reports[k].Matched = append(reports[k].Matched, envs[i].ReleaseName)
+			}
+		}
+	}
+	return &AggregateState{st: st}, reports
+}
+
+// factsOf adapts one environment per release. The pointer matters: Env
+// answers the Facts interface by pointer, and copying it per lookup would be
+// waste.
+func factsOf(envs []Env) []jhinrules.Facts {
+	out := make([]jhinrules.Facts, len(envs))
+	for i := range envs {
+		out[i] = &envs[i]
+	}
+	return out
 }
 
 // Evaluate runs the rules that apply to this content kind.
@@ -317,9 +299,8 @@ type LimitMatch struct {
 // in: probed.* on a release that was never opened, avail.* on one nobody has
 // reported. Evaluating those against zero values would let a single rule like
 // `probed.height < 1080` reject every fresh indexer hit, which is the opposite
-// of what the user asked for. This is the same fail-open contract the NZB
-// attribute limits already keep, made explicit because here it is the common
-// case rather than the exception.
+// of what the user asked for. jhin's engine keeps that contract; this converts
+// its outcome into the shapes the pipeline records.
 //
 // A set with result-set conditions expects the caller to have computed them —
 // ComputeAggregates over the whole set, Inject into each environment — before
@@ -330,149 +311,20 @@ func (s *Set) Evaluate(env Env, kind string) Outcome {
 	if s == nil {
 		return out
 	}
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	for i := range s.rules {
-		r := &s.rules[i]
-		if r.Scope != config.RuleScopeAll && r.Scope != kind {
-			continue
-		}
-		if r.needsProbe && !env.Verified {
-			out.Skipped = append(out.Skipped, r.Name+": release has not been probed")
-			continue
-		}
-		if r.needsAvail && !env.Avail.Known {
-			out.Skipped = append(out.Skipped, r.Name+": availability is unknown")
-			continue
-		}
-		if r.needsSeadex && !env.Seadex.Checked {
-			out.Skipped = append(out.Skipped, r.Name+": no SeaDex lookup for this request")
-			continue
-		}
-		// Size, age and grab count come from the NZB, which a bare release
-		// name does not have. In a real search every release carries one, so
-		// this only ever fires in the preview — where evaluating against zeros
-		// would show a rule doing something it will not do live, or nothing
-		// when it will.
-		if r.needsIndexer && !env.HasIndexerData {
-			out.Skipped = append(out.Skipped, r.Name+": needs size, age or grabs, which a release name does not carry")
-			continue
-		}
-		if msg := s.aggregateSkip(r, env); msg != "" {
-			out.Skipped = append(out.Skipped, r.Name+": "+msg)
-			continue
-		}
-		result, err := expr.Run(r.program, env)
-		if err != nil {
-			// A compiled, type-checked rule that fails at run time has hit
-			// data no test covered. Skipping matches the fail-open rule
-			// above: an inconclusive check never removes a release.
-			continue
-		}
-		matched, _ := result.(bool)
-		if !matched {
-			continue
-		}
-		switch r.Action {
-		case config.RuleActionReject:
-			out.Rejections = append(out.Rejections, diag.RuleRejectionPrefix+r.Name)
-		case config.RuleActionLimit:
-			group, ok := r.groupOf(env)
-			if !ok {
-				// A grouping that fails at run time cannot say which bucket
-				// this release belongs in, and a cap that does not know that
-				// cannot count it. Dropping the match rather than guessing at
-				// a bucket keeps the same promise the tier checks above make:
-				// a rule that cannot be judged never removes a release.
-				continue
-			}
-			out.Limits = append(out.Limits, LimitMatch{Name: r.Name, Count: r.Count, Group: group})
-		default:
-			out.Points += r.Points
-			out.Matched = append(out.Matched, triage.RuleMatch{Name: r.Name, Score: r.Points})
-		}
+	res := s.eng.Evaluate(&env, kind, env.aggs)
+	out.Points = res.Points
+	out.Limits = res.Limits
+	for _, m := range res.Matched {
+		out.Matched = append(out.Matched, triage.RuleMatch{Name: m.Name, Score: m.Score})
+	}
+	for _, rej := range res.Rejections {
+		// jhin writes "rule:Name"; the pipeline's rejection lists read
+		// "rule: Name" everywhere else, so the prefix is restated.
+		out.Rejections = append(out.Rejections,
+			diag.RuleRejectionPrefix+strings.TrimPrefix(rej, jhinrules.RejectionPrefix))
+	}
+	for _, sk := range res.Skipped {
+		out.Skipped = append(out.Skipped, sk.Name+": "+sk.Reason)
 	}
 	return out
-}
-
-// groupOf is the bucket this release falls in for a grouped cap, and whether
-// the grouping could be answered at all. An ungrouped rule reports the empty
-// bucket, which every one of its matches shares.
-//
-// The value is written out rather than compared as itself because a bucket
-// only ever needs to tell two releases apart, and because the expression may
-// yield any type: "2160p", 2020, or the whole of hdr as a list. A grouping on
-// a list therefore buckets by the entire list, which is rarely what a user
-// means but is at least what they wrote.
-func (r *Rule) groupOf(env Env) (string, bool) {
-	if r.groupProgram == nil {
-		return "", true
-	}
-	value, err := expr.Run(r.groupProgram, env)
-	if err != nil {
-		return "", false
-	}
-	return fmt.Sprint(value), true
-}
-
-// indexerAttributes are the attributes that come from the NZB rather than from
-// the release name. A condition reading any of them cannot be judged without
-// one.
-var indexerAttributes = map[string]bool{
-	"sizeGB": true, "sizePerEpisodeGB": true, "ageDays": true,
-	"grabs": true, "passworded": true, "indexer": true,
-	"querySource": true, "library": true,
-}
-
-type tierUse struct {
-	probe   bool
-	avail   bool
-	indexer bool
-	seadex  bool
-}
-
-// merge is the union of two tier uses, for a rule whose condition and grouping
-// read different tiers. Every tier has to be carried: this runs for every rule,
-// grouped or not, so a tier dropped here is a tier no rule ever reports.
-func (t tierUse) merge(other tierUse) tierUse {
-	return tierUse{
-		probe:   t.probe || other.probe,
-		avail:   t.avail || other.avail,
-		indexer: t.indexer || other.indexer,
-		seadex:  t.seadex || other.seadex,
-	}
-}
-
-// tiersUsed reports which optional attribute tiers a condition reads. It walks
-// the parsed expression rather than searching the text so that a pattern
-// mentioning "probed." inside a string literal is not mistaken for an
-// attribute reference.
-func tiersUsed(source string) (tierUse, error) {
-	tree, err := exprparser.Parse(source)
-	if err != nil {
-		return tierUse{}, err
-	}
-	v := &identVisitor{}
-	ast.Walk(&tree.Node, v)
-	return v.use, nil
-}
-
-type identVisitor struct {
-	use tierUse
-}
-
-func (v *identVisitor) Visit(node *ast.Node) {
-	ident, ok := (*node).(*ast.IdentifierNode)
-	if !ok {
-		return
-	}
-	switch {
-	case ident.Value == "probed":
-		v.use.probe = true
-	case ident.Value == "avail":
-		v.use.avail = true
-	case ident.Value == "seadex":
-		v.use.seadex = true
-	case indexerAttributes[ident.Value]:
-		v.use.indexer = true
-	}
 }

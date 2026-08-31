@@ -342,7 +342,7 @@ unanswerable, so the rule is skipped rather than fed a zero: on a fresh search
 where nothing has been probed, `none(probed.height >= 2000)` must not read as
 "there is no good 4K" and reject everything.
 
-One name-sharing note: expr's own collection builtins keep their meaning. The
+One name-sharing note: the collection builtins keep their meaning. The
 two-argument forms over a list attribute — `any(hdr, # == "DV")` — and
 `count([proper, repack])` over a literal list still judge the single release,
 exactly as before. Only the one-argument condition form reads the result set.
@@ -512,8 +512,9 @@ to answer them with.
 
 ## Syntax
 
-Standard expression syntax, powered by
-[expr](https://github.com/expr-lang/expr):
+Standard expression syntax, powered by the rule engine of
+[jhin](https://github.com/dreulavelle/jhin) — the same library that parses
+release names:
 
 | | |
 |---|---|

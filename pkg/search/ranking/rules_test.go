@@ -634,8 +634,8 @@ func TestExplainReportsAggregates(t *testing.T) {
 		t.Errorf("the aggregate rule did not pay out in the preview: %+v", out[0].Matched)
 	}
 	skipped := strings.Join(out[0].SkippedRules, "; ")
-	if !strings.Contains(skipped, "Probed 4K nearby") || !strings.Contains(skipped, "probed") {
-		t.Errorf("SkippedRules = %v, want the probe-tier aggregate reported", out[0].SkippedRules)
+	if !strings.Contains(skipped, "Probed 4K nearby") || !strings.Contains(skipped, "result set") {
+		t.Errorf("SkippedRules = %v, want the unanswerable aggregate reported", out[0].SkippedRules)
 	}
 
 	// The set-wide reports travel beside the per-release breakdowns: what each

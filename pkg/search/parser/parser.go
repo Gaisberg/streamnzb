@@ -11,8 +11,6 @@ import (
 	jhinparser "github.com/dreulavelle/jhin/parser"
 )
 
-var dashedSeasonEpisodePattern = regexp.MustCompile(`(?i)\bS(?:eason)?\s*0*([0-9]{1,2})\s*-\s*0*([0-9]{1,3})(?:$|[\s._()[\]])`)
-
 // languageAliasPattern matches release-title alias words (e.g. "NORDIC") as whole words,
 // case-insensitively, across common release-name separators (space, dot, underscore, dash).
 var languageAliasPattern = func() *regexp.Regexp {
@@ -94,7 +92,6 @@ func FromResult(title string, info *jhin.Result) *ParsedRelease {
 	if len(parsed.Episodes) > 0 {
 		parsed.Episode = parsed.Episodes[0]
 	}
-	applyDashedSeasonEpisodeFallback(title, parsed)
 	expandLanguageAliases(title, parsed)
 
 	return parsed
@@ -130,40 +127,6 @@ func expandLanguageAliases(rawTitle string, parsed *ParsedRelease) {
 				seen[key] = true
 				parsed.Languages = append(parsed.Languages, code)
 			}
-		}
-	}
-}
-
-func applyDashedSeasonEpisodeFallback(rawTitle string, parsed *ParsedRelease) {
-	if parsed == nil {
-		return
-	}
-	matches := dashedSeasonEpisodePattern.FindStringSubmatch(rawTitle)
-	if len(matches) != 3 {
-		return
-	}
-	season, seasonErr := strconv.Atoi(matches[1])
-	episode, episodeErr := strconv.Atoi(matches[2])
-	if seasonErr != nil || episodeErr != nil || season <= 0 || episode <= 0 {
-		return
-	}
-	if parsed.Season == 0 {
-		if !hasInt(parsed.Seasons, season) {
-			parsed.Seasons = append(parsed.Seasons, season)
-		}
-		parsed.Season = season
-	}
-	if parsed.Episode == 0 {
-		if !hasInt(parsed.Episodes, episode) {
-			parsed.Episodes = append(parsed.Episodes, episode)
-		}
-		parsed.Episode = episode
-	}
-	if parsed.Title != "" {
-		cleanedTitle := strings.TrimSpace(dashedSeasonEpisodePattern.ReplaceAllString(parsed.Title, " "))
-		cleanedTitle = strings.Join(strings.Fields(cleanedTitle), " ")
-		if cleanedTitle != "" {
-			parsed.Title = cleanedTitle
 		}
 	}
 }

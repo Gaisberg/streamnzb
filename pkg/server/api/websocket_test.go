@@ -148,7 +148,7 @@ func TestValidateConfigDefineLibraries(t *testing.T) {
 			FilterProfiles:  []config.FilterProfileConfig{{Name: "Mine", Rules: []config.RuleConfig{{Name: "Profile rule", When: "true", Points: 1}}}},
 		}
 		errs := s.validateConfigWithPlan(cfg, plan)
-		if got := errs["define_libraries.0.rules"]; !strings.Contains(got, `no rule is named "Profile rule"`) {
+		if got := errs["define_libraries.0.rules"]; !strings.Contains(got, `matched("Profile rule") names no rule`) {
 			t.Fatalf("expected the self-containment refusal, got %#v", errs)
 		}
 	})
@@ -159,7 +159,7 @@ func TestValidateConfigDefineLibraries(t *testing.T) {
 			FilterProfiles:  []config.FilterProfileConfig{{Name: "Mine", Rules: []config.RuleConfig{{Name: "Bonus", When: `matched("T1")`, Points: 500}}}},
 		}
 		errs := s.validateConfigWithPlan(cfg, plan)
-		if got := errs["filter_profiles.0.ranking"]; !strings.Contains(got, `no rule is named "T1"`) {
+		if got := errs["filter_profiles.0.ranking"]; !strings.Contains(got, `matched("T1") names no rule`) {
 			t.Fatalf("expected the profile to stop compiling, got %#v", errs)
 		}
 	})

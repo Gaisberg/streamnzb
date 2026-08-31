@@ -1,6 +1,11 @@
 // Package rules evaluates a filter profile's named conditions against a
 // release.
 //
+// The engine — grammar, compiler, tier tracking, result-set aggregates and
+// matched() inlining — is jhin's (github.com/dreulavelle/jhin/rules). This
+// package supplies what jhin cannot know: the registry declaring StreamNZB's
+// own attributes, and the Facts answering them per release.
+//
 // The attribute namespace is organised by how much a value can be trusted
 // rather than by which subsystem produced it:
 //
@@ -29,150 +34,321 @@ import (
 
 	jhinparser "github.com/dreulavelle/jhin/parser"
 	"github.com/dreulavelle/jhin/rank"
+	jhinrules "github.com/dreulavelle/jhin/rules"
 
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/triage"
 )
 
-// Env is what a rule condition sees. Field names are the identifiers a rule
-// author writes, so the expr tags are part of the user-facing language.
+// Env is what a rule condition sees: one release's answers to the registry's
+// attribute names. It implements jhin's Facts — Lookup maps the user-facing
+// identifiers onto these fields, and anything it does not own falls through
+// to jhin's own parse-result facts, so every core attribute jhin can read off
+// a name is available to rules without a field here.
 type Env struct {
 	// ---- inferred, merged with measured where the probe knows better ----
 
-	Resolution string `expr:"resolution"`
-	Codec      string `expr:"codec"`
-	BitDepth   int    `expr:"bitDepth"`
+	Resolution string
+	Codec      string
+	BitDepth   int
 	// HDR lists the dynamic-range tags, in the parser's vocabulary: "DV" for
 	// Dolby Vision and "HDR" for plain HDR10, so `"HDR10" in hdr` is never
 	// what you want. Prefer dolbyVision and hdrFallback below, which mean the
 	// same thing whichever tier answered.
-	HDR []string `expr:"hdr"`
+	HDR []string
 	// DolbyVision is true when the release carries a Dolby Vision layer.
-	DolbyVision bool `expr:"dolbyVision"`
+	DolbyVision bool
 	// HDRFallback is true when a device that cannot decode Dolby Vision still
 	// gets an HDR picture. It is false for SDR and for DV-only releases
 	// alike, which is the distinction "block DV without a fallback" needs and
 	// the one no single regex can express.
-	HDRFallback bool `expr:"hdrFallback"`
+	HDRFallback bool
 	// Verified reports that the merged values above came from the file rather
 	// than from its name.
-	Verified bool `expr:"verified"`
+	Verified bool
 
 	// ---- inferred only ----
 
-	Quality    string   `expr:"quality"`
-	Audio      []string `expr:"audio"`
-	Channels   []string `expr:"channels"`
-	Languages  []string `expr:"languages"`
-	Group      string   `expr:"group"`
-	Edition    string   `expr:"edition"`
-	Container  string   `expr:"container"`
-	Year       int      `expr:"year"`
-	Proper     bool     `expr:"proper"`
-	Repack     bool     `expr:"repack"`
-	Remastered bool     `expr:"remastered"`
-	Upscaled   bool     `expr:"upscaled"`
-	ThreeD     bool     `expr:"threeD"`
-	Dubbed     bool     `expr:"dubbed"`
-	Subbed     bool     `expr:"subbed"`
-	Hardcoded  bool     `expr:"hardcoded"`
-	Complete   bool     `expr:"complete"`
-	SeasonPack bool     `expr:"seasonPack"`
+	Quality    string
+	Audio      []string
+	Channels   []string
+	Languages  []string
+	Group      string
+	Edition    string
+	Container  string
+	Year       int
+	Proper     bool
+	Repack     bool
+	Remastered bool
+	Upscaled   bool
+	ThreeD     bool
+	Dubbed     bool
+	Subbed     bool
+	Hardcoded  bool
+	Complete   bool
+	SeasonPack bool
 	// Traits is every attribute the parser detected, by the same keys the
 	// ranking baseline scores: "remux", "webdl", "cam", "hevc", "10bit",
 	// "dual_audio" and so on. It is what lets a rule reach anything the
 	// baseline has an opinion about — `"cam" in traits` rejects camcorder
 	// rips, `"remux" in traits` rewards remuxes — without a separate control
 	// for each one.
-	Traits []string `expr:"traits"`
+	Traits []string
 	// Parsed is the release name's own account of the merged attributes, for
 	// rules that must not accept a probe's word for it (or vice versa).
-	Parsed ParsedEnv `expr:"parsed"`
+	Parsed ParsedEnv
 
 	// ---- reported by the indexer ----
 
-	ReleaseName string  `expr:"releaseName"`
-	SizeGB      float64 `expr:"sizeGB"`
+	ReleaseName string
+	SizeGB      float64
 	// SizePerEpisodeGB is what a size condition should usually judge: the
 	// whole release for films and single episodes, the per-episode share for
 	// a multi-episode release, and -1 for a season pack whose episode count
 	// the title does not reveal. Judging a ten-episode pack by its total
 	// would reject it for being large when it is not.
-	SizePerEpisodeGB float64 `expr:"sizePerEpisodeGB"`
-	AgeDays          float64 `expr:"ageDays"`
-	Grabs            int     `expr:"grabs"`
-	Passworded       bool    `expr:"passworded"`
-	Indexer          string  `expr:"indexer"`
-	QuerySource      string  `expr:"querySource"`
+	SizePerEpisodeGB float64
+	AgeDays          float64
+	Grabs            int
+	Passworded       bool
+	Indexer          string
+	QuerySource      string
 
 	// ---- community ----
 
-	Avail AvailEnv `expr:"avail"`
+	Avail AvailEnv
 
 	// Seadex is SeaDex's (releases.moe) per-title recommendation, resolved for
 	// the requested anime and judged against this release's group. Empty for
 	// anything that is not anime and whenever the lookup could not run, which
 	// is why rules touching it fail open.
-	Seadex SeadexEnv `expr:"seadex"`
+	Seadex SeadexEnv
 
 	// ---- measured ----
 
-	Probed ProbedEnv `expr:"probed"`
+	Probed ProbedEnv
 
 	// HasIndexerData reports that a real NZB stands behind this release, so
 	// its size, age and grab count mean something. It is false only in the
 	// preview, where a release name is all there is. Not exposed to
 	// conditions: a rule should say what it wants, and the engine decides
 	// whether it can be answered.
-	HasIndexerData bool `expr:"-"`
-
-	// ---- result set ----
-
-	// Aggs holds the values of the profile's result-set conditions, computed
-	// once over the whole set before any rule runs. The compiled rewrite
-	// reads them by index; the name is reserved and refused in conditions.
-	Aggs []int `expr:"__aggs"`
-	// AggsKnown mirrors Aggs: whether anyone in the set carried the tiers the
-	// condition reads, so a fresh unprobed search skips rather than counts
-	// zero. Not exposed — like HasIndexerData, the engine decides.
-	AggsKnown []bool `expr:"-"`
+	HasIndexerData bool
 
 	// ---- request context ----
 
-	Library bool   `expr:"library"`
-	Kind    string `expr:"kind"`
-	IsAnime bool   `expr:"isAnime"`
-	Season  int    `expr:"season"`
-	Episode int    `expr:"episode"`
-	Title   string `expr:"title"`
+	Library bool
+	Kind    string
+	IsAnime bool
+	Season  int
+	Episode int
+	Title   string
+
+	// core answers every jhin attribute this struct has no field for, from
+	// the parse result itself. Nil when BuildEnv had no parse, which answers
+	// those attributes with their zeros — what an unparseable name has always
+	// meant.
+	core *jhinrules.ResultFacts
+	// aggs is the request's computed result-set state, handed over by
+	// AggregateState.Inject. Nil for a set without aggregates.
+	aggs *jhinrules.AggregateState
+}
+
+// Lookup answers one declared attribute. The names are the identifiers a rule
+// author writes, so this switch is part of the user-facing language and has to
+// track the registry in rules.go.
+func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
+	switch path {
+	case "resolution":
+		return jhinrules.StrOf(e.Resolution), true
+	case "codec":
+		return jhinrules.StrOf(e.Codec), true
+	case "bitDepth":
+		return jhinrules.NumOf(float64(e.BitDepth)), true
+	case "hdr":
+		return jhinrules.StrListOf(e.HDR), true
+	case "dolbyVision":
+		return jhinrules.BoolOf(e.DolbyVision), true
+	case "hdrFallback":
+		return jhinrules.BoolOf(e.HDRFallback), true
+	case "verified":
+		return jhinrules.BoolOf(e.Verified), true
+
+	case "quality":
+		return jhinrules.StrOf(e.Quality), true
+	case "audio":
+		return jhinrules.StrListOf(e.Audio), true
+	case "channels":
+		return jhinrules.StrListOf(e.Channels), true
+	case "languages":
+		return jhinrules.StrListOf(e.Languages), true
+	case "group":
+		return jhinrules.StrOf(e.Group), true
+	case "edition":
+		return jhinrules.StrOf(e.Edition), true
+	case "container":
+		return jhinrules.StrOf(e.Container), true
+	case "year":
+		return jhinrules.NumOf(float64(e.Year)), true
+	case "proper":
+		return jhinrules.BoolOf(e.Proper), true
+	case "repack":
+		return jhinrules.BoolOf(e.Repack), true
+	case "remastered":
+		return jhinrules.BoolOf(e.Remastered), true
+	case "upscaled":
+		return jhinrules.BoolOf(e.Upscaled), true
+	case "threeD":
+		return jhinrules.BoolOf(e.ThreeD), true
+	case "dubbed":
+		return jhinrules.BoolOf(e.Dubbed), true
+	case "subbed":
+		return jhinrules.BoolOf(e.Subbed), true
+	case "hardcoded":
+		return jhinrules.BoolOf(e.Hardcoded), true
+	case "complete":
+		return jhinrules.BoolOf(e.Complete), true
+	case "seasonPack":
+		return jhinrules.BoolOf(e.SeasonPack), true
+	case "traits":
+		return jhinrules.StrListOf(e.Traits), true
+
+	case "parsed.resolution":
+		return jhinrules.StrOf(e.Parsed.Resolution), true
+	case "parsed.codec":
+		return jhinrules.StrOf(e.Parsed.Codec), true
+	case "parsed.hdr":
+		return jhinrules.StrListOf(e.Parsed.HDR), true
+	case "parsed.bitDepth":
+		return jhinrules.NumOf(float64(e.Parsed.BitDepth)), true
+	case "parsed.title":
+		return jhinrules.StrOf(e.Parsed.Title), true
+	case "parsed.dolbyVision":
+		return jhinrules.BoolOf(e.Parsed.DolbyVision), true
+	case "parsed.hdrFallback":
+		return jhinrules.BoolOf(e.Parsed.HDRFallback), true
+
+	case "releaseName":
+		return jhinrules.StrOf(e.ReleaseName), true
+	case "sizeGB":
+		return jhinrules.NumOf(e.SizeGB), true
+	case "sizePerEpisodeGB":
+		return jhinrules.NumOf(e.SizePerEpisodeGB), true
+	case "ageDays":
+		return jhinrules.NumOf(e.AgeDays), true
+	case "grabs":
+		return jhinrules.NumOf(float64(e.Grabs)), true
+	case "passworded":
+		return jhinrules.BoolOf(e.Passworded), true
+	case "indexer":
+		return jhinrules.StrOf(e.Indexer), true
+	case "querySource":
+		return jhinrules.StrOf(e.QuerySource), true
+	case "library":
+		return jhinrules.BoolOf(e.Library), true
+
+	case "avail.status":
+		return jhinrules.StrOf(e.Avail.Status), true
+	case "avail.known":
+		return jhinrules.BoolOf(e.Avail.Known), true
+	case "avail.onMyBackbone":
+		return jhinrules.BoolOf(e.Avail.OnMyBackbone), true
+	case "avail.checkedDaysAgo":
+		return jhinrules.NumOf(float64(e.Avail.CheckedDaysAgo)), true
+	case "avail.compression":
+		return jhinrules.StrOf(e.Avail.Compression), true
+
+	case "seadex.known":
+		return jhinrules.BoolOf(e.Seadex.Known), true
+	case "seadex.best":
+		return jhinrules.BoolOf(e.Seadex.Best), true
+	case "seadex.alternative":
+		return jhinrules.BoolOf(e.Seadex.Alternative), true
+
+	case "probed.videoCodec":
+		return jhinrules.StrOf(e.Probed.VideoCodec), true
+	case "probed.audioCodec":
+		return jhinrules.StrOf(e.Probed.AudioCodec), true
+	case "probed.width":
+		return jhinrules.NumOf(float64(e.Probed.Width)), true
+	case "probed.height":
+		return jhinrules.NumOf(float64(e.Probed.Height)), true
+	case "probed.profile":
+		return jhinrules.StrOf(e.Probed.Profile), true
+	case "probed.bitDepth":
+		return jhinrules.NumOf(float64(e.Probed.BitDepth)), true
+	case "probed.hdr":
+		return jhinrules.StrOf(e.Probed.HDR), true
+	case "probed.dolbyVision":
+		return jhinrules.BoolOf(e.Probed.DolbyVision), true
+	case "probed.hasHDRFallback":
+		return jhinrules.BoolOf(e.Probed.HasHDRFallback), true
+	case "probed.dynamicRange":
+		return jhinrules.StrOf(e.Probed.DynamicRange), true
+
+	case "kind":
+		return jhinrules.StrOf(e.Kind), true
+	case "isAnime":
+		return jhinrules.BoolOf(e.IsAnime), true
+	case "season":
+		return jhinrules.NumOf(float64(e.Season)), true
+	case "episode":
+		return jhinrules.NumOf(float64(e.Episode)), true
+	// title is the requested title, not the release name's — that one is
+	// parsed.title. It shadows jhin's core field on purpose.
+	case "title":
+		return jhinrules.StrOf(e.Title), true
+	}
+	if e.core != nil {
+		return e.core.Lookup(path)
+	}
+	return jhinrules.Value{}, false
+}
+
+// TierPresent reports whether this release carries anything in a tier.
+// Returning false skips every rule that reads it — the fail-open contract.
+func (e *Env) TierPresent(tier string) bool {
+	switch tier {
+	case "":
+		return true
+	case tierMeasured:
+		return e.Verified
+	case tierAvail:
+		return e.Avail.Known
+	case tierSeadex:
+		return e.Seadex.Checked
+	case tierIndexer:
+		return e.HasIndexerData
+	}
+	return false
 }
 
 // ParsedEnv is what the release name claims, untouched by anything measured.
 type ParsedEnv struct {
-	Resolution  string   `expr:"resolution"`
-	Codec       string   `expr:"codec"`
-	HDR         []string `expr:"hdr"`
-	BitDepth    int      `expr:"bitDepth"`
-	Title       string   `expr:"title"`
-	DolbyVision bool     `expr:"dolbyVision"`
-	HDRFallback bool     `expr:"hdrFallback"`
+	Resolution  string
+	Codec       string
+	HDR         []string
+	BitDepth    int
+	Title       string
+	DolbyVision bool
+	HDRFallback bool
 }
 
 // AvailEnv is the community availability record.
 type AvailEnv struct {
 	// Status is "available", "unavailable" or "unknown".
-	Status string `expr:"status"`
+	Status string
 	// Known is false when nobody has reported the release either way.
-	Known bool `expr:"known"`
+	Known bool
 	// OnMyBackbone reports the release healthy on a backbone this stream's
 	// own providers use.
-	OnMyBackbone bool `expr:"onMyBackbone"`
+	OnMyBackbone bool
 	// CheckedDaysAgo is how stale the record is, or -1 when it carries no
 	// timestamp.
-	CheckedDaysAgo int `expr:"checkedDaysAgo"`
+	CheckedDaysAgo int
 	// Compression is the archive format the database recorded, e.g. "rar".
-	Compression string `expr:"compression"`
+	Compression string
 }
 
 // SeadexEnv is the SeaDex recommendation for the requested anime, seen from
@@ -181,41 +357,41 @@ type AvailEnv struct {
 type SeadexEnv struct {
 	// Known is false when SeaDex has no entry for the requested title. That is
 	// an answer, not missing data — an uncataloged anime evaluates normally.
-	Known bool `expr:"known"`
+	Known bool
 	// Best is true when this release's group produced a release SeaDex marks
 	// best for this title.
-	Best bool `expr:"best"`
+	Best bool
 	// Alternative is true when the group is recommended for this title without
 	// the best mark.
-	Alternative bool `expr:"alternative"`
+	Alternative bool
 	// Checked reports that the lookup ran at all. When it is false — not an
 	// anime request, no AniList mapping, or SeaDex unreachable — rules reading
 	// seadex.* are skipped rather than judged against zero values. Not exposed
 	// to conditions, same contract as HasIndexerData.
-	Checked bool `expr:"-"`
+	Checked bool
 }
 
 // ProbedEnv is what ffprobe measured. Every field is zero for a release that
 // has never been opened, which is why rules touching it fail open.
 type ProbedEnv struct {
-	VideoCodec string `expr:"videoCodec"`
-	AudioCodec string `expr:"audioCodec"`
-	Width      int    `expr:"width"`
-	Height     int    `expr:"height"`
-	Profile    string `expr:"profile"`
-	BitDepth   int    `expr:"bitDepth"`
+	VideoCodec string
+	AudioCodec string
+	Width      int
+	Height     int
+	Profile    string
+	BitDepth   int
 	// HDR is the base HDR format ("HDR10", "HDR10+", "HLG"), empty for SDR
 	// and for Dolby Vision with no fallback layer.
-	HDR string `expr:"hdr"`
+	HDR string
 	// DolbyVision is independent of HDR: a DV release with an empty HDR is
 	// DV-only and shows as SDR on a device that cannot decode it.
-	DolbyVision bool `expr:"dolbyVision"`
+	DolbyVision bool
 	// HasHDRFallback is true when a device without Dolby Vision still gets an
 	// HDR picture.
-	HasHDRFallback bool `expr:"hasHDRFallback"`
+	HasHDRFallback bool
 	// DynamicRange is the human-readable form: "DV + HDR10", "DV only",
 	// "HDR10", or "" for SDR.
-	DynamicRange string `expr:"dynamicRange"`
+	DynamicRange string
 }
 
 // Context is the per-request half of the environment, the same for every
@@ -331,6 +507,7 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 	env.Probed = probedEnv(cand.Verdict.Probed)
 	env.Seadex = ctx.Seadex.For(env.Group)
 	applyMerged(&env, cand.Verdict.Probed)
+	env.core = jhinrules.FromResult(env.ReleaseName, parsed, env.Traits)
 	return env
 }
 

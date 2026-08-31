@@ -171,21 +171,32 @@ func TestReferenceErrors(t *testing.T) {
 		{
 			name:  "unknown rule",
 			cfgs:  []config.RuleConfig{{Name: "Uses it", When: `matched("Nothing")`, Points: 1}},
-			wants: `no rule is named "Nothing"`,
+			wants: `matched("Nothing") names no rule`,
 		},
 		{
+			// A disabled duplicate cannot be told apart from the live rule by
+			// name, so a reference to either is refused. Two live duplicates
+			// never get this far: the set itself refuses to compile.
 			name: "ambiguous name",
 			cfgs: []config.RuleConfig{
-				{Name: "Tier", When: `group == "A"`, Points: 1},
-				{Name: "tier", When: `group == "B"`, Points: 1},
+				{Name: "Tier", When: `group == "A"`, Points: 1, Enabled: boolPtr(false)},
+				{Name: "Tier", When: `group == "B"`, Points: 1},
 				{Name: "Uses it", When: `matched("Tier")`, Points: 1},
 			},
-			wants: `more than one rule is named "Tier"`,
+			wants: `matched("Tier") is ambiguous`,
+		},
+		{
+			name: "duplicate live names",
+			cfgs: []config.RuleConfig{
+				{Name: "Tier", When: `group == "A"`, Points: 1},
+				{Name: "Tier", When: `group == "B"`, Points: 1},
+			},
+			wants: "another rule already has this name",
 		},
 		{
 			name:  "references itself",
 			cfgs:  []config.RuleConfig{{Name: "Loop", When: `matched("Loop")`, Points: 1}},
-			wants: "circle: Loop -> Loop",
+			wants: "closes a loop: Loop → Loop",
 		},
 		{
 			name: "references in a circle",
@@ -193,7 +204,7 @@ func TestReferenceErrors(t *testing.T) {
 				{Name: "A", When: `matched("B")`, Points: 1},
 				{Name: "B", When: `matched("A")`, Points: 1},
 			},
-			wants: "circle: A -> B -> A",
+			wants: "closes a loop: A → B → A",
 		},
 		{
 			name: "name is not a literal",
@@ -201,12 +212,12 @@ func TestReferenceErrors(t *testing.T) {
 				{Name: "Tier", When: `group == "A"`, Points: 1},
 				{Name: "Uses it", When: `matched(group)`, Points: 1},
 			},
-			wants: "rule name in quotes",
+			wants: "needs the rule's name written out",
 		},
 		{
 			name:  "no argument",
 			cfgs:  []config.RuleConfig{{Name: "Uses it", When: `matched()`, Points: 1}},
-			wants: "exactly one rule name",
+			wants: "matched() names one rule",
 		},
 		{
 			name: "referenced rule has no condition",
@@ -214,7 +225,7 @@ func TestReferenceErrors(t *testing.T) {
 				{Name: "Uses it", When: `matched("Empty")`, Points: 1},
 				{Name: "Empty", When: "  ", Points: 1},
 			},
-			wants: `rule "Empty" has no condition`,
+			wants: `matched("Empty")`,
 		},
 	}
 	for _, tt := range tests {
@@ -357,12 +368,12 @@ func TestProfileRuleShadowsLibraryDefine(t *testing.T) {
 func TestLibraryReferenceErrors(t *testing.T) {
 	library := []config.RuleConfig{
 		{Name: "Tier", When: `group == "A"`, Action: config.RuleActionDefine},
-		{Name: "tier", When: `group == "B"`, Action: config.RuleActionDefine},
+		{Name: "Tier", When: `group == "B"`, Action: config.RuleActionDefine},
 	}
 	_, err := rules.Compile([]config.RuleConfig{
 		{Name: "Uses it", When: `matched("Tier")`, Points: 1},
 	}, library...)
-	if err == nil || !strings.Contains(err.Error(), `more than one library define is named "Tier"`) {
+	if err == nil || !strings.Contains(err.Error(), `matched("Tier") is ambiguous`) {
 		t.Errorf("err = %v, want the duplicate-library-define refusal", err)
 	}
 }
