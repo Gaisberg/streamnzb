@@ -211,27 +211,34 @@ jobs:
       # channel's webhook — releases announce through DISCORD_WEBHOOK above,
       # this one is only for main pushes. allowed_mentions is emptied so the
       # message can never ping anyone, even if a commit subject carries
-      # @everyone or a user mention.
+      # @everyone or a user mention. The push payload's commits array covers
+      # every commit in the push (not just HEAD); force-pushes can leave it
+      # empty, so head_commit remains as the fallback.
       - name: Announce dev build in Discord
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_DEV_WEBHOOK }}
           VERSION: ${{ steps.version.outputs.VERSION }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          SUBJECT="$(printf '%s' "$COMMIT_MSG" | head -n1)"
           jq -n \
             --arg version "$VERSION" \
-            --arg subject "$SUBJECT" \
-            --arg url "https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
             --arg pull "docker pull ghcr.io/${REPO}:dev" \
-            '{
+            --slurpfile event "$GITHUB_EVENT_PATH" \
+            '
+            (if ($event[0].commits // []) == [] then [$event[0].head_commit // empty]
+             else $event[0].commits end) as $commits |
+            ($commits | map("`" + (.message | split("\n")[0]) + "`")) as $lines |
+            (if ($lines | length) > 10
+             then $lines[:10] + ["… and \(($lines | length) - 10) more"]
+             else $lines end) as $shown |
+            {
               username: "Dev Builds",
               allowed_mentions: {parse: []},
               embeds: [{
                 title: ("New dev build " + $version),
-                url: $url,
-                description: ("`" + $subject + "`\n\n```\n" + $pull + "\n```"),
+                url: (if ($commits | length) > 1 then $event[0].compare
+                      else ("https://github.com/" + env.GITHUB_REPOSITORY + "/commit/" + env.GITHUB_SHA) end),
+                description: (($shown | join("\n")) + "\n\n```\n" + $pull + "\n```"),
                 color: 15105570
               }]
             }' | curl -sf -H "Content-Type: application/json" -d @- "$WEBHOOK_URL" \
