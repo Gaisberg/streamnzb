@@ -5,6 +5,7 @@ import { Copy, Download, Import } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { uniqueProfileName } from "@/hooks/useProfileDrafts"
+import { selectClass } from "@/lib/utils"
 
 // One box style for every share-code textarea.
 const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -33,10 +34,13 @@ function downloadText(filename, text) {
 // noun names the kind in the dialogs ("profile", "define library");
 // importNote overrides the import dialog's description where the default's
 // share-code framing does not fit the kind.
+// templates is the kind's curated list from lib/communityTemplates.js. The
+// dropdown only fills the URL field — a picked template goes through the same
+// fetch, validation and source-linking a typed URL does.
 // Returns { openImport, exportProfile, dialogs } — render `dialogs` once in
 // the page, hand `openImport` to a header button and `exportProfile` to the
 // per-profile action row.
-export function useProfileSharing({ profiles, onSave, isSaving, codec, noun = "profile", importNote }) {
+export function useProfileSharing({ profiles, onSave, isSaving, codec, noun = "profile", importNote, templates = [] }) {
   const [exportCode, setExportCode] = useState(null)
   const [exportName, setExportName] = useState("")
   const [exportCopied, setExportCopied] = useState(false)
@@ -178,6 +182,24 @@ export function useProfileSharing({ profiles, onSave, isSaving, codec, noun = "p
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
+            {templates.length > 0 && (
+              <div className="space-y-1.5">
+                <Label className="text-sm">Community templates</Label>
+                {/* The select is derived from the URL field rather than its own
+                    state: picking a template fills the URL, and editing that
+                    URL to anything else drops the select back to its prompt,
+                    so the two can never claim different sources. */}
+                <select
+                  className={`${selectClass} text-xs`}
+                  value={templates.find((t) => t.url === importUrl)?.url || ""}
+                  onChange={(e) => { setImportUrl(e.target.value); setImportError("") }}
+                  aria-label="Community templates"
+                >
+                  <option value="">Pick a known-good {noun} to import…</option>
+                  {templates.map((t) => <option key={t.url} value={t.url}>{t.label}</option>)}
+                </select>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label className="text-sm">Share code</Label>
               <textarea

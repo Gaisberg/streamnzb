@@ -9,6 +9,7 @@ import {
   decodeFormatProfileShareCode, encodeFormatProfileShareCode, fetchRemoteFormatProfile,
 } from "@/lib/formatProfiles"
 import { nameKey, usageByName } from "@/lib/usage"
+import { FORMAT_TEMPLATES } from "@/lib/communityTemplates"
 
 function summarize(profile) {
   const bits = []
@@ -34,6 +35,7 @@ export function FormattingPage({ config, onPersist, isSaving, saveStatus }) {
     profiles,
     onSave,
     isSaving,
+    templates: FORMAT_TEMPLATES,
     codec: {
       encode: encodeFormatProfileShareCode,
       decode: decodeFormatProfileShareCode,

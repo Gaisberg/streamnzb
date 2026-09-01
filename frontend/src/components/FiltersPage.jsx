@@ -15,6 +15,7 @@ import {
   defineLibraryFromPaste, encodeDefineLibraryShareCode, fetchRemoteDefineLibrary,
   summarizeDefineLibrary,
 } from "@/lib/defineLibraries"
+import { DEFINE_LIBRARY_TEMPLATES, PROFILE_TEMPLATES } from "@/lib/communityTemplates"
 
 // summarize gives each profile card a one-line read of what it does. A profile
 // is a preset plus rules, so that is the whole summary.
@@ -106,6 +107,7 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
     profiles,
     onSave,
     isSaving,
+    templates: PROFILE_TEMPLATES,
     codec: {
       encode: encodeProfileShareCode,
       decode: decodeProfileShareCode,
@@ -118,6 +120,7 @@ export function FiltersPage({ config, onSave, onSaveLibraries, isSaving, saveSta
     onSave: onSaveLibraries,
     isSaving,
     noun: "define library",
+    templates: DEFINE_LIBRARY_TEMPLATES,
     importNote: "Paste a share code or plain rule text — one define per line, # comments allowed — or give the https URL of a file serving either. It is added as a new library and never overwrites an existing one. A library imported from a URL stays linked to it: a Refresh button fetches updates, which apply only after you review them.",
     codec: {
       encode: encodeDefineLibraryShareCode,

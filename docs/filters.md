@@ -200,6 +200,13 @@ existing one; a name collision gets a numeric suffix. A code that arrives
 damaged says so, and one written before presets existed says that instead of
 importing something this editor cannot express.
 
+The import dialog also offers **community templates** — a short, curated list
+of known-good sources. Picking one fills the URL field and nothing more: the
+import runs exactly as it would for a URL you typed, including the
+[link-and-refresh](#remote-profiles) behaviour, so a template import keeps
+receiving its maintainer's updates. The same dropdown appears when importing
+define libraries and result formats, each with its own list.
+
 To version a profile or review one in a pull request, paste its code — it is a
 single line, and importing it is how it gets read back.
 

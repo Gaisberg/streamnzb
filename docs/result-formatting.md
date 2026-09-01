@@ -221,7 +221,9 @@ characters per template.
 chat window; **Download** writes it to a file for hosting.
 
 **Import** takes a code, or the `https://` URL of a raw file that serves one,
-and adds it as a new profile — a name collision gets a numeric suffix.
+and adds it as a new profile — a name collision gets a numeric suffix. The
+dialog also offers a curated **community templates** dropdown; picking one
+fills the URL field and imports through the ordinary from-URL path.
 
 A profile imported from a URL stays **linked**: it shows the host it came
 from, and a manual **Refresh** button fetches the current code and shows what
