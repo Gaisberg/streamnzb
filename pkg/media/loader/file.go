@@ -158,6 +158,15 @@ type File struct {
 	mapProbes  map[int]int64
 	mapKnown   map[int64]int64
 	mapSkipGap bool
+	mapYenc    yencGeometry
+
+	// yencGeo accumulates the "=ybegin size=" / "=ypart begin=" geometry of
+	// every article decoded before the segment map exists. The articles carry
+	// the exact map the poster wrote; collecting it costs nothing on downloads
+	// already happening. Guarded by yencGeoMu, not mu, so a fetch completion
+	// never contends with map detection.
+	yencGeoMu sync.Mutex
+	yencGeo   yencGeometry
 
 	firstStatMu      sync.Mutex
 	firstStatChecked bool
@@ -523,7 +532,7 @@ func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
-	f.recordSegmentMapInputsLocked(nil, knownByNZBBytes, true)
+	f.recordSegmentMapInputsLocked(nil, knownByNZBBytes, true, yencGeometry{})
 	logger.Trace("Primed uniform segment map from estimator",
 		"name", f.Name(),
 		"size", f.totalSize,
@@ -579,7 +588,15 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		return err
 	}
 
-	if !IsSkipGapProbingEnabled(ctx) {
+	// The probes just decoded articles, and each article names its own exact
+	// offset and the file's exact size (=ypart/=ybegin). When that geometry
+	// proves a uniform layout the map is exact from what is already in hand:
+	// no class clustering, no ratio scaling, and no gap pass — which on the
+	// non-skip path used to probe (download) every remaining segment.
+	geo := f.yencGeometrySnapshot()
+	exactSizes, exact := exactSizesFromYencGeometry(f.segments, probedByIndex, geo)
+
+	if !exact && !IsSkipGapProbingEnabled(ctx) {
 		if missing := segmentUnprobedIndices(len(f.segments), indices); len(missing) > 0 {
 			logger.Debug("Segment map gap probe",
 				"name", f.Name(),
@@ -623,11 +640,22 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		}
 	}
 
-	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx))
-	if includeMiddle {
-		mid := middleProbeIndex(len(f.segments))
-		if midDecoded, ok := probedByIndex[mid]; ok {
-			applyUniformMiddleCalibration(f.segments, sizes, mid, midDecoded)
+	var sizes []int64
+	if exact {
+		sizes = exactSizes
+		logger.Debug("Exact segment map from yEnc part headers",
+			"name", f.Name(),
+			"file_size", geo.fileSize,
+			"offsets", len(geo.offsets),
+			"segments", len(f.segments))
+	} else {
+		geo = yencGeometry{} // only geometry that produced the map is persisted
+		sizes = buildSegmentDecodedSizesFromProbes(f.segments, probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx))
+		if includeMiddle {
+			mid := middleProbeIndex(len(f.segments))
+			if midDecoded, ok := probedByIndex[mid]; ok {
+				applyUniformMiddleCalibration(f.segments, sizes, mid, midDecoded)
+			}
 		}
 	}
 
@@ -638,7 +666,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
-	f.recordSegmentMapInputsLocked(probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx))
+	f.recordSegmentMapInputsLocked(probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx), geo)
 	nzbSum := sumNZBSegmentBytes(f.segments)
 	logSegmentMapSizeCheck(f.Name(), f.segments, nzbSum, f.totalSize, probedByIndex)
 	logger.Debug("Recalculated total decoded size",
@@ -749,6 +777,10 @@ func (f *File) ReadAheadSegment(ctx context.Context, index int) {
 	}()
 }
 
+// maxAbandonedJoinRetries bounds how often a caller re-attempts after joining
+// an in-flight download that CancelAbandonedReadAhead had already condemned.
+const maxAbandonedJoinRetries = 2
+
 func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures bool) ([]byte, error) {
 	// A segment already ruled a hole stays a hole: every provider refused it
 	// once, so re-fetching on each pass over the same offset only adds latency
@@ -761,21 +793,67 @@ func (f *File) doDownloadSegment(ctx context.Context, index int, countFailures b
 	// not own the underlying request lifecycle. That shared fetch runs on the file
 	// context so short-lived probe/prefetch/read cancellations do not poison a
 	// segment download that another reader may still need moments later.
-	req, leader := f.startInflightDownload(index, countFailures)
-	logger.Trace("File doDownloadSegment: start", "file", f.Name(), "index", index, "leader", leader, "countFailures", countFailures)
-	if leader {
-		go f.runInflightDownload(index, req)
-	}
-	defer f.releaseInflightDownloadWaiter(index, req)
+	//
+	// The one exception is a fetch CancelAbandonedReadAhead condemned: a caller
+	// that raced such a cancellation gets context.Canceled back while its own
+	// context is perfectly alive, and retries against a fresh request. The retry
+	// cannot spin on the dead one — completeInflightDownload retires a request
+	// from the map in the same critical section that closes its done channel.
+	for attempt := 0; ; attempt++ {
+		req, leader := f.startInflightDownload(index, countFailures)
+		logger.Trace("File doDownloadSegment: start", "file", f.Name(), "index", index, "leader", leader, "countFailures", countFailures)
+		if leader {
+			go f.runInflightDownload(index, req)
+		}
 
-	select {
-	case <-ctx.Done():
-		// Expected when a probe/playback stream is closed or seeks mid-download; not an error.
-		logger.Trace("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
-		return nil, ctx.Err()
-	case <-req.done:
-		logger.Trace("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
-		return req.data, req.err
+		select {
+		case <-ctx.Done():
+			// Expected when a probe/playback stream is closed or seeks mid-download; not an error.
+			f.releaseInflightDownloadWaiter(index, req)
+			logger.Trace("File doDownloadSegment: ctx cancelled", "file", f.Name(), "index", index, "err", ctx.Err())
+			return nil, ctx.Err()
+		case <-req.done:
+			f.releaseInflightDownloadWaiter(index, req)
+			logger.Trace("File doDownloadSegment: req done", "file", f.Name(), "index", index, "err", req.err)
+			// Only a real read retries: a read-ahead waiter re-requesting the
+			// fetch it was just cancelled out of would resurrect it.
+			if req.err != nil && countFailures && attempt < maxAbandonedJoinRetries &&
+				errors.Is(req.err, context.Canceled) && ctx.Err() == nil &&
+				(f.ctx == nil || f.ctx.Err() == nil) {
+				logger.Trace("File doDownloadSegment: joined an abandoned fetch, retrying", "file", f.Name(), "index", index, "attempt", attempt)
+				continue
+			}
+			return req.data, req.err
+		}
+	}
+}
+
+// cancelAbandonedReadAheadIn aborts in-flight downloads inside [from, to) that
+// only read-ahead ever asked for. Read-ahead fetches deliberately run on the
+// file context so transient cancellations cannot poison them — but a window a
+// reader has jumped away from keeps downloading segments nobody will read, and
+// with the playback window at up to ~100 segments those dead fetches occupy
+// the very connections the new position is now queued behind.
+//
+// The range is the caller's OWN abandoned window, never "everything else": a
+// file is shared by concurrent readers, tail warms and prefetches, and a
+// file-wide sweep keyed off one reader's position cancelled all of them —
+// including the startup warm, on nothing more than http.ServeContent's
+// size-probing Seek(0, End). A fetch with a real reader attached
+// (countFailures) is never touched either way.
+func (f *File) cancelAbandonedReadAheadIn(from, to int) {
+	f.downloadMu.Lock()
+	defer f.downloadMu.Unlock()
+	cancelled := 0
+	for index, req := range f.inflightDownloads {
+		if req.countFailures || index < from || index >= to {
+			continue
+		}
+		req.cancel()
+		cancelled++
+	}
+	if cancelled > 0 {
+		logger.Trace("File cancelAbandonedReadAheadIn", "file", f.Name(), "cancelled", cancelled, "from", from, "to", to)
 	}
 }
 
@@ -953,13 +1031,69 @@ func (f *File) doDownloadSegmentViaFetcher(ctx context.Context, index int) ([]by
 	if name := strings.TrimSpace(data.FileName); name != "" {
 		f.yencName.Store(name)
 	}
+	f.recordYencGeometry(index, data)
 	// Don't cache here when using the pool fetcher: the pool already cached by message ID.
 	// Caching again would double memory use (same segment in pool cache + loader segCache) and double-count the budget.
 	return data.Body, nil
 }
 
+// recordYencGeometry keeps an article's declared file size and part offset for
+// the map builder. Only useful before the map exists, so it stops accumulating
+// once detection is done. Articles of one file that disagree on the file size
+// mean the headers cannot be trusted; the whole geometry is poisoned rather
+// than mixed.
+func (f *File) recordYencGeometry(index int, data pool.SegmentData) {
+	if data.YencFileSize <= 0 || index < 0 || index >= len(f.segments) {
+		return
+	}
+	if f.SegmentMapDetected() {
+		return
+	}
+	f.yencGeoMu.Lock()
+	defer f.yencGeoMu.Unlock()
+	switch {
+	case f.yencGeo.fileSize == 0:
+		f.yencGeo.fileSize = data.YencFileSize
+	case f.yencGeo.fileSize != data.YencFileSize:
+		f.yencGeo.fileSize = -1 // poisoned; exactSizesFromYencGeometry refuses it
+		return
+	case f.yencGeo.fileSize < 0:
+		return
+	}
+	if f.yencGeo.offsets == nil {
+		f.yencGeo.offsets = make(map[int]int64)
+	}
+	f.yencGeo.offsets[index] = data.YencPartOffset
+}
+
+// yencGeometrySnapshot copies the collected geometry for the map builder.
+func (f *File) yencGeometrySnapshot() yencGeometry {
+	f.yencGeoMu.Lock()
+	defer f.yencGeoMu.Unlock()
+	geo := yencGeometry{fileSize: f.yencGeo.fileSize}
+	if len(f.yencGeo.offsets) > 0 {
+		geo.offsets = make(map[int]int64, len(f.yencGeo.offsets))
+		for idx, off := range f.yencGeo.offsets {
+			geo.offsets[idx] = off
+		}
+	}
+	return geo
+}
+
 func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
-	if err := f.EnsureSegmentMap(); err != nil {
+	return f.ReadAtCtx(f.ctx, p, off)
+}
+
+// ReadAtCtx is ReadAt bound to the caller's context. The distinction matters
+// before the segment map exists: EnsureSegmentMap on the bare file context
+// carries no skip-gap flag, so a first ReadAt from a scan path would probe
+// every segment of the file — the whole volume — to serve a few bytes. The
+// caller's context carries the policy the caller chose.
+func (f *File) ReadAtCtx(ctx context.Context, p []byte, off int64) (n int, err error) {
+	if ctx == nil {
+		ctx = f.ctx
+	}
+	if err := f.EnsureSegmentMapCtx(ctx); err != nil {
 		return 0, err
 	}
 	if off >= f.totalSize {
@@ -981,7 +1115,7 @@ func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
 			continue
 		}
 
-		data, err := f.DownloadSegment(f.ctx, i)
+		data, err := f.DownloadSegment(ctx, i)
 		if err != nil {
 			return totalRead, err
 		}

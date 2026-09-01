@@ -1,6 +1,7 @@
 package seek
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 )
@@ -91,24 +92,11 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 }
 
 func findInBytes(data, needle []byte) int {
-	for i := 0; i <= len(data)-len(needle); i++ {
-		if bytesEqual(data[i:i+len(needle)], needle) {
-			return i
-		}
-	}
-	return -1
+	return bytes.Index(data, needle)
 }
 
 func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(a, b)
 }
 
 func readEBMLElement(data []byte) (payloadOffset int, payloadLen int64) {

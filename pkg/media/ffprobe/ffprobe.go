@@ -193,23 +193,61 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 		// decode of the opening N frames.
 		args = append(args, "-count_frames", "-read_intervals", fmt.Sprintf("%%+#%d", frames))
 	}
-	args = append(args, "pipe:0")
+	// A seekable stream is served over a loopback range server instead of a
+	// pipe. On a pipe ffprobe cannot seek, so an MP4/MOV whose moov sits at the
+	// tail (anything not written with faststart) is structurally unprobeable,
+	// and even a happy probe streams the full -probesize window through stdin.
+	// Over HTTP with Accept-Ranges, ffprobe seeks to exactly the boxes it
+	// needs. A stream that cannot seek keeps the pipe path.
+	var rr *recordingReader
+	var srv *probeStreamServer
+	// QuickHeader stays on the pipe deliberately: that probe sits on
+	// time-to-first-byte and is bounded BY being unseekable — over a seekable
+	// input ffprobe wanders to tail cues through cold segments, and its
+	// open-new-connection-before-closing-old seek pattern spends multi-second
+	// stalls the quick budget cannot afford. The thorough paths keep the
+	// loopback server for what it buys: a moov-at-end MP4 is only probeable
+	// with seeks.
+	if seeker, ok := stream.(io.ReadSeeker); ok && !opts.QuickHeader {
+		var srvErr error
+		srv, srvErr = newProbeStreamServer(seeker)
+		if srvErr != nil {
+			logger.Debug("FFprobe loopback server unavailable, probing over a pipe", "err", srvErr)
+			srv = nil
+		}
+	}
+	if srv != nil {
+		defer srv.Close()
+		args = append(args, srv.URL())
+	} else {
+		args = append(args, "pipe:0")
+	}
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	// Wrap stdin so we can recover the underlying stream error: when ffprobe exits
-	// non-zero because a segment read failed (e.g. 430), exec masks the copy error
-	// behind the ExitError. Capturing it lets callers tell a real broken release
-	// (missing/corrupt article) from an inconclusive probe (timeout, codec).
-	rr := &recordingReader{r: stream}
-	cmd.Stdin = rr
+	if srv == nil {
+		// Wrap stdin so we can recover the underlying stream error: when ffprobe exits
+		// non-zero because a segment read failed (e.g. 430), exec masks the copy error
+		// behind the ExitError. Capturing it lets callers tell a real broken release
+		// (missing/corrupt article) from an inconclusive probe (timeout, codec).
+		rr = &recordingReader{r: stream}
+		cmd.Stdin = rr
+	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		if rr.lastErr != nil {
-			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", err, strings.TrimSpace(stderr.String()), rr.lastErr)
+		// Same error recovery as the pipe path: the stream's own failure
+		// outranks ffprobe's opaque non-zero exit.
+		var streamErr error
+		if rr != nil {
+			streamErr = rr.lastErr
+		} else if srv != nil {
+			streamErr = srv.LastErr()
+		}
+		if streamErr != nil {
+			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", err, strings.TrimSpace(stderr.String()), streamErr)
 		}
 		return nil, fmt.Errorf("ffprobe execution failed (%v): %s", err, strings.TrimSpace(stderr.String()))
 	}

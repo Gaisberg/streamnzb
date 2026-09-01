@@ -168,6 +168,7 @@ func (f *File) runPipelinedReadAhead(ctx context.Context, batcher SegmentBatchFe
 			if name := strings.TrimSpace(results[i].Data.FileName); name != "" {
 				f.yencName.Store(name)
 			}
+			f.recordYencGeometry(c.index, results[i].Data)
 			f.completeInflightDownload(c.index, c.req, results[i].Data.Body, nil)
 			continue
 		}

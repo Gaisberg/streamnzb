@@ -143,7 +143,12 @@ func ClassifyStartupErr(phase string, startupTimeout time.Duration, startupCtx c
 	if errors.Is(err, ErrFirstSegmentUnavailable) {
 		return err
 	}
-	if errors.Is(startupCtx.Err(), context.DeadlineExceeded) {
+	// context.Cause covers both shapes of an expired budget: a WithTimeout
+	// deadline (Cause == DeadlineExceeded) and a WithCancelCause cancelled with
+	// DeadlineExceeded, which is how Prepare expires a probe whose stream must
+	// outlive the phase (a plain WithTimeout would kill the reused stream
+	// mid-serve once the deadline fired).
+	if errors.Is(context.Cause(startupCtx), context.DeadlineExceeded) {
 		return StartupTimeoutErr(startupTimeout, phase, err)
 	}
 	return err
@@ -181,36 +186,55 @@ func (p *Service) Prepare(ctx context.Context, sess *session.Session) (Prepared,
 		p.warmPlaybackTail(sess)
 		startupTimeout := p.startupTimeout()
 		probeStart := time.Now()
-		probeCtx, cancel := context.WithTimeout(ctx, startupTimeout)
-		spec, startupInfo, err := p.Probe(probeCtx, sess)
+		// Not WithTimeout: the probe's stream becomes the body stream below,
+		// and a deadline that outlives the probe would kill it mid-serve. The
+		// timer delivers the same budget as a DeadlineExceeded cause, which
+		// ClassifyStartupErr reads back; success stops the timer and the
+		// stream's Close retires the context.
+		probeCtx, cancelProbe := context.WithCancelCause(ctx)
+		timer := time.AfterFunc(startupTimeout, func() { cancelProbe(context.DeadlineExceeded) })
+		spec, startupInfo, stream, err := p.probeKeepingStream(probeCtx, sess)
+		timer.Stop()
 		err = ClassifyStartupErr("probe", startupTimeout, probeCtx, err)
-		cancel()
 		probeMS = time.Since(probeStart).Milliseconds()
 		if err != nil {
+			cancelProbe(context.Canceled)
 			return Prepared{}, err
 		}
 		preparedStream.Spec = spec
 		preparedStream.StartupInfo = startupInfo
 		preparedStream.HasStartupInfo = true
+		preparedStream.Stream = &cancelOnCloseStream{
+			ReadSeekCloser: stream,
+			cancel:         func() { cancelProbe(context.Canceled) },
+		}
 	}
 
 	if preparedStream.Spec.Key == "" {
+		if preparedStream.Stream != nil {
+			_ = preparedStream.Stream.Close()
+		}
 		return Prepared{}, fmt.Errorf("playback stream spec missing for session %s", sess.ID)
 	}
 
-	openStart := time.Now()
-	stream, err := p.openExpectedSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, p.startupTimeout())
-	if err != nil {
-		sess.ResetPlaybackStream()
-		return Prepared{}, err
+	openMS := int64(0)
+	if preparedStream.Stream == nil {
+		openStart := time.Now()
+		stream, err := p.openExpectedSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, p.startupTimeout())
+		if err != nil {
+			sess.ResetPlaybackStream()
+			return Prepared{}, err
+		}
+		preparedStream.Stream = stream
+		openMS = time.Since(openStart).Milliseconds()
 	}
 	logger.Debug("Playback prepare timing",
 		"session", sess.ID,
 		"probed", needProbe,
+		"reused_probe_stream", needProbe,
 		"probe_ms", probeMS,
-		"open_ms", time.Since(openStart).Milliseconds())
+		"open_ms", openMS)
 
-	preparedStream.Stream = stream
 	preparedStream.Mode = "per_request"
 	sess.CachePlaybackStreamSnapshot(preparedStream.Spec, preparedStream.StartupInfo, preparedStream.HasStartupInfo)
 	return preparedStream, nil
@@ -315,15 +339,28 @@ func (p *Service) openExpectedSource(ctx context.Context, sess *session.Session,
 // disposable probe reader so that small scans never disturb the session body
 // stream.
 func (p *Service) Probe(ctx context.Context, sess *session.Session) (session.PlaybackStreamSpec, seek.StreamStartInfo, error) {
+	spec, info, stream, err := p.probeKeepingStream(ctx, sess)
+	if stream != nil {
+		_ = stream.Close()
+	}
+	return spec, info, err
+}
+
+// probeKeepingStream is Probe, except a successful probe hands its opened,
+// rewound stream back instead of closing it. Prepare serves the first request
+// straight off it — the probe already paid for the NZB, the STAT sweep, the
+// archive mapping and the validation, and reopening the same source right after
+// repeated the parts of that the caches cannot answer.
+func (p *Service) probeKeepingStream(ctx context.Context, sess *session.Session) (session.PlaybackStreamSpec, seek.StreamStartInfo, io.ReadSeekCloser, error) {
 	probeStream, probeName, probeSize, err := p.OpenSource(ctx, sess)
 	if err != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, err
+		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, nil, err
 	}
-	defer probeStream.Close()
 
 	startInfo, inspectErr := seek.InspectStreamStart(probeStream, probeSize, probeName, unpack.ProbeSize)
 	if inspectErr != nil {
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe inspect: %w", inspectErr)
+		_ = probeStream.Close()
+		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, nil, fmt.Errorf("probe inspect: %w", inspectErr)
 	}
 	if !startInfo.HeaderValid {
 		if peek, err := readProbePrefix(probeStream, 16); err == nil && len(peek) > 0 {
@@ -335,10 +372,24 @@ func (p *Service) Probe(ctx context.Context, sess *session.Session) (session.Pla
 				"encrypted_blueprint", blueprintAnyEncrypted(sess),
 				"password_len", nzbPasswordLen(sess))
 		}
-		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, fmt.Errorf("probe: invalid container header for %s", probeName)
+		_ = probeStream.Close()
+		return session.PlaybackStreamSpec{}, seek.StreamStartInfo{}, nil, fmt.Errorf("probe: invalid container header for %s", probeName)
 	}
 
-	return NewStreamSpec(sess.ID, probeName, probeSize), startInfo, nil
+	return NewStreamSpec(sess.ID, probeName, probeSize), startInfo, probeStream, nil
+}
+
+// cancelOnCloseStream retires the probe-phase context when the reused stream
+// is closed, so the context neither leaks nor outlives the request body.
+type cancelOnCloseStream struct {
+	io.ReadSeekCloser
+	cancel func()
+}
+
+func (s *cancelOnCloseStream) Close() error {
+	err := s.ReadSeekCloser.Close()
+	s.cancel()
+	return err
 }
 
 // NewStreamSpec creates the stable session/file key used to cache validated

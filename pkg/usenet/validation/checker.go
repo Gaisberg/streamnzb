@@ -309,7 +309,7 @@ func (c *Checker) validateProviderExtendedWithClient(ctx context.Context, nzbDat
 			discard()
 			return result
 		}
-		frame, err := decode.DecodeToBytes(body)
+		frame, err := decode.DecodeToBytesSized(body, segments[idx].Bytes)
 		if err != nil {
 			_, _ = io.Copy(io.Discard, body)
 			if c.pool != nil {

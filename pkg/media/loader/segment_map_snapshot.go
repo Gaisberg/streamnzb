@@ -30,6 +30,10 @@ type SegmentMapSnapshot struct {
 	SkipGap  bool             `json:"skip_gap"`
 	Probes   []SegmentSizeAt  `json:"probes,omitempty"`
 	Known    []SegmentSizeFor `json:"known,omitempty"`
+	// YencSize and YencOffsets replay an exact-geometry map (see
+	// exactSizesFromYencGeometry); both absent for a measured/scaled map.
+	YencSize    int64           `json:"yenc_size,omitempty"`
+	YencOffsets []SegmentSizeAt `json:"yenc_offsets,omitempty"`
 }
 
 // SegmentSizeAt is a decoded size measured at one segment index.
@@ -69,11 +73,18 @@ func (f *File) SegmentMapSnapshotJSON() ([]byte, bool) {
 	for nzbBytes, decoded := range f.mapKnown {
 		snap.Known = append(snap.Known, SegmentSizeFor{NZBBytes: nzbBytes, Decoded: decoded})
 	}
+	if !f.mapYenc.empty() {
+		snap.YencSize = f.mapYenc.fileSize
+		for idx, off := range f.mapYenc.offsets {
+			snap.YencOffsets = append(snap.YencOffsets, SegmentSizeAt{Index: idx, Decoded: off})
+		}
+	}
 	// Map iteration order is random; sorting keeps a re-save of an unchanged
 	// map byte-identical instead of rewriting the library row every time.
 	sort.Slice(snap.Probes, func(i, j int) bool { return snap.Probes[i].Index < snap.Probes[j].Index })
 	sort.Slice(snap.Known, func(i, j int) bool { return snap.Known[i].NZBBytes < snap.Known[j].NZBBytes })
-	if len(snap.Probes) == 0 && len(snap.Known) == 0 {
+	sort.Slice(snap.YencOffsets, func(i, j int) bool { return snap.YencOffsets[i].Index < snap.YencOffsets[j].Index })
+	if len(snap.Probes) == 0 && len(snap.Known) == 0 && snap.YencSize == 0 {
 		return nil, false
 	}
 	data, err := json.Marshal(snap)
@@ -116,11 +127,29 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 		}
 		known[k.NZBBytes] = k.Decoded
 	}
-	if len(probes) == 0 && len(known) == 0 {
+	geo := yencGeometry{fileSize: snap.YencSize}
+	for _, o := range snap.YencOffsets {
+		if o.Index < 0 || o.Index >= len(f.segments) || o.Decoded < 0 {
+			return false
+		}
+		if geo.offsets == nil {
+			geo.offsets = make(map[int]int64, len(snap.YencOffsets))
+		}
+		geo.offsets[o.Index] = o.Decoded
+	}
+	if len(probes) == 0 && len(known) == 0 && geo.empty() {
 		return false
 	}
 
-	sizes := buildSegmentDecodedSizesFromProbes(f.segments, probes, known, snap.SkipGap)
+	// Replay through the same builder chain as detection: exact geometry when
+	// the snapshot recorded one, the measuring/scaling builder otherwise. The
+	// total check below still rejects a snapshot the current rules cannot
+	// reproduce bit-identically.
+	sizes, exact := exactSizesFromYencGeometry(f.segments, probes, geo)
+	if !exact {
+		geo = yencGeometry{}
+		sizes = buildSegmentDecodedSizesFromProbes(f.segments, probes, known, snap.SkipGap)
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -142,6 +171,7 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	f.mapProbes = probes
 	f.mapKnown = known
 	f.mapSkipGap = snap.SkipGap
+	f.mapYenc = geo
 	// Only a real probe of segment 0 may teach the estimator: an inferred size
 	// painted across other volumes is exactly how a map goes subtly wrong.
 	if decoded, ok := probes[0]; ok && decoded > 0 && f.estimator != nil {
@@ -164,8 +194,9 @@ func nzbSegmentSizes(segments []*Segment) []int64 {
 
 // recordSegmentMapInputsLocked stores what produced the map so it can be
 // snapshotted later. Called with f.mu held.
-func (f *File) recordSegmentMapInputsLocked(probes map[int]int64, known map[int64]int64, skipGap bool) {
+func (f *File) recordSegmentMapInputsLocked(probes map[int]int64, known map[int64]int64, skipGap bool, geo yencGeometry) {
 	f.mapProbes = probes
 	f.mapKnown = known
 	f.mapSkipGap = skipGap
+	f.mapYenc = geo
 }

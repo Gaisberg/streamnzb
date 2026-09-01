@@ -33,6 +33,86 @@ func nzbBytesNearby(a, b int64) bool {
 	return diff*33 < b
 }
 
+// yencGeometry is a file's part layout as its own articles declared it:
+// "=ybegin size=" for the whole decoded file, "=ypart begin=" per article.
+// fileSize < 0 marks geometry poisoned by articles that disagreed.
+type yencGeometry struct {
+	fileSize int64
+	offsets  map[int]int64
+}
+
+func (g yencGeometry) empty() bool {
+	return g.fileSize <= 0 && len(g.offsets) == 0
+}
+
+// exactSizesFromYencGeometry builds the segment map from the yEnc headers
+// instead of measuring and scaling, when the recorded offsets prove a uniform
+// stride. One article at index i>0 pins the stride (offset i*stride), the
+// declared file size pins the total and therefore the tail — the two probes
+// the planner already fetches (head class + physical last) are enough, exactly,
+// with no class clustering, no ratio scaling and no gap probing.
+//
+// Every check is a hard bail to the measuring path: a recorded offset off the
+// stride grid (non-uniform post), an implausible tail, or a probed article
+// whose measured length disagrees with the derived map. Serving through a
+// wrong map shifts every byte after the first error, so "exact or not at all"
+// is the only safe contract here.
+func exactSizesFromYencGeometry(segments []*Segment, probedByIndex map[int]int64, geo yencGeometry) ([]int64, bool) {
+	n := len(segments)
+	if n < 2 || geo.fileSize <= 0 || len(geo.offsets) == 0 {
+		return nil, false
+	}
+
+	var stride int64
+	for idx, off := range geo.offsets {
+		if idx <= 0 {
+			continue
+		}
+		if idx >= n || off <= 0 || off%int64(idx) != 0 {
+			return nil, false
+		}
+		s := off / int64(idx)
+		if stride == 0 {
+			stride = s
+		} else if s != stride {
+			return nil, false
+		}
+	}
+	if stride <= 0 {
+		return nil, false
+	}
+	for idx, off := range geo.offsets {
+		if idx < 0 || idx >= n || off != int64(idx)*stride {
+			return nil, false
+		}
+	}
+
+	last := geo.fileSize - int64(n-1)*stride
+	if last <= 0 || last > stride {
+		return nil, false
+	}
+
+	for idx, decoded := range probedByIndex {
+		if idx < 0 || idx >= n || decoded <= 0 {
+			continue
+		}
+		want := stride
+		if idx == n-1 {
+			want = last
+		}
+		if decoded != want {
+			return nil, false
+		}
+	}
+
+	sizes := make([]int64, n)
+	for i := 0; i < n-1; i++ {
+		sizes[i] = stride
+	}
+	sizes[n-1] = last
+	return sizes, true
+}
+
 func sumNZBSegmentBytes(segments []*Segment) int64 {
 	var sum int64
 	for _, seg := range segments {
