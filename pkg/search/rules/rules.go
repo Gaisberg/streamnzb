@@ -59,7 +59,14 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Field("passworded", jhinrules.Bool, tierIndexer)
 	reg.Field("indexer", jhinrules.Str, tierIndexer)
 	reg.Field("querySource", jhinrules.Str, tierIndexer)
-	reg.Field("library", jhinrules.Bool, tierIndexer)
+
+	// Whether the release is already in the library is StreamNZB's own
+	// knowledge, not the indexer's, and every release has an answer: a bare
+	// name is simply not a library hit. No tier, so `not library` holds for
+	// a fresh indexer result instead of being skipped along with the rules
+	// about size and grabs — which is what lets a prune rule exempt cached
+	// releases while judging everything else.
+	reg.Field("library", jhinrules.Bool, "")
 
 	// Community: the availability database and SeaDex. Separate tiers because
 	// their presence differs — avail is known per release, seadex per request.

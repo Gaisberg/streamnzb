@@ -138,6 +138,10 @@ type Env struct {
 
 	// ---- request context ----
 
+	// Library reports that this exact release is already in the library. It
+	// comes from StreamNZB's own store rather than the indexer, so unlike
+	// the reported fields above it is answerable for every release — false
+	// for a bare name — and carries no tier.
 	Library bool
 	Kind    string
 	IsAnime bool

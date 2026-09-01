@@ -397,15 +397,45 @@ func TestIndexerRulesRunOnRealResults(t *testing.T) {
 }
 
 // A library release counts as having indexer data even with nothing else set:
-// it came from somewhere and its provenance is exactly what the rule asks about.
+// it came from somewhere, so a size or grabs rule judges it rather than
+// skipping it.
 func TestLibraryReleaseCountsAsIndexerData(t *testing.T) {
-	set := compile(t, config.RuleConfig{Name: "Cached", When: "library", Points: 500})
+	set := compile(t, config.RuleConfig{Name: "Unpopular", When: "grabs < 5", Action: config.RuleActionReject})
 
 	env := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
 		c.Release.IsLibrary = true
 	})
-	if got := set.Evaluate(env, "movie"); got.Points != 500 {
-		t.Errorf("Points = %d, want 500 — a library release should be judged", got.Points)
+	got := set.Evaluate(env, "movie")
+	if len(got.Skipped) > 0 {
+		t.Errorf("a library release skipped an indexer rule: %v", got.Skipped)
+	}
+	if len(got.Rejections) == 0 {
+		t.Error("a library release with no grabs was not judged by a grabs rule")
+	}
+}
+
+// library is not indexer data: it is answerable for every release, and a bare
+// name is simply not a library hit. Without this, `not library` would be
+// skipped for exactly the releases it is meant to describe (#249).
+func TestLibraryIsAnsweredWithoutIndexerData(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Cached", When: "library", Points: 500},
+		config.RuleConfig{Name: "Fresh", When: "not library", Points: 7},
+	)
+
+	bare := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", nil), "movie")
+	if len(bare.Skipped) > 0 {
+		t.Errorf("a bare release skipped a library rule: %v", bare.Skipped)
+	}
+	if bare.Points != 7 {
+		t.Errorf("bare Points = %d, want 7 — `not library` must hold for a fresh release", bare.Points)
+	}
+
+	cached := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.IsLibrary = true
+	}), "movie")
+	if cached.Points != 500 {
+		t.Errorf("library Points = %d, want 500", cached.Points)
 	}
 }
 

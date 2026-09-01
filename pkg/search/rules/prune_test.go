@@ -220,6 +220,39 @@ func TestPruneRelativeIsIndependentOfScoreBand(t *testing.T) {
 	}
 }
 
+// The policy from issue #249: prune a known weak release only when enough
+// alternatives beat it, and never a library release. library is answered for
+// every release — false for a fresh indexer hit — so `not library` holds
+// there instead of skipping the rule for exactly the releases it exists to
+// judge, while a library release at the same score is kept.
+func TestPruneExemptsLibraryReleases(t *testing.T) {
+	_, post := compileStaged(t,
+		config.RuleConfig{Name: "LQ Groups", When: `group == "LQ"`, Action: config.RuleActionDefine},
+		config.RuleConfig{
+			Name:   "Weak LQ tail",
+			When:   `not library and matched("LQ Groups") and count(finalScore >= current.finalScore + 5000) >= 3`,
+			Action: config.RuleActionPrune,
+		},
+	)
+
+	envs := pruneEnvs(20000, 15000, 10000, 5000, 5000)
+	for i := 3; i < len(envs); i++ {
+		envs[i] = envFor("Movie 2020 1080p WEB-DL H264-LQ", nil)
+		envs[i].FinalScore, envs[i].FinalRank = 5000, i+1
+	}
+	envs[4].Library = true
+
+	outs := evalRelativeSet(post, envs, "movie")
+	for i, want := range []bool{false, false, false, true, false} {
+		if got := len(outs[i].Rejections) > 0; got != want {
+			t.Errorf("rank %d (library=%v): pruned = %v, want %v", i+1, envs[i].Library, got, want)
+		}
+		if len(outs[i].Skipped) > 0 {
+			t.Errorf("rank %d: rule skipped: %v", i+1, outs[i].Skipped)
+		}
+	}
+}
+
 // current.finalRank is the other half of the pair: how many alternatives sit
 // above this one is a question about the set, not about a fixed position.
 func TestPruneCountsAlternativesRankedAboveCurrent(t *testing.T) {

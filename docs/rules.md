@@ -306,7 +306,7 @@ not ("en" in languages)                # everything else, untagged included
 ### reported — from the indexer
 
 `releaseName` `sizeGB` `sizePerEpisodeGB` `ageDays` `grabs` `passworded`
-`indexer` `querySource` `library`
+`indexer` `querySource`
 
 `sizeGB` is the whole release. `sizePerEpisodeGB` is usually what you want: the
 whole release for films and single episodes, the per-episode share for a
@@ -316,6 +316,21 @@ does not reveal — so write size rules as
 
 `ageDays` is `-1` when the indexer reported no date. A missing date is not age
 zero, so write freshness rules as `ageDays >= 0 and ageDays < 7`.
+
+### library — from your own store
+
+`library`
+
+Whether this exact release is already in your library. It is StreamNZB's own
+knowledge rather than the indexer's, so unlike the attributes above it is
+answered for **every** release — `false` for a fresh indexer hit, not
+"unknown" — and `not library` holds for exactly the releases it describes.
+That is what lets a prune rule exempt cached results while judging the rest:
+
+```
+not library and matched("LQ groups")
+  and count(finalScore >= current.finalScore + 5000) >= 6
+```
 
 ### community — from AvailNZB
 
@@ -581,10 +596,11 @@ releases. It cannot be used to demote everything else by omission.
 
 ### Testing rules the preview cannot answer on its own
 
-`sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`,
-`querySource` and `library` come from the NZB. Every real result has one; a
-release name pasted into the preview does not — and neither has it been probed
-or reported to AvailNZB.
+`sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer` and
+`querySource` come from the NZB. Every real result has one; a release name
+pasted into the preview does not — and neither has it been probed or reported
+to AvailNZB. (`library` is not on that list: a pasted name is simply not a
+library release, and the preview says so, unless you pretend otherwise below.)
 
 Rather than judge those rules against zeros — which would show a `grabs < 5`
 rule rejecting everything when against real results it will do nothing of the
@@ -594,7 +610,7 @@ that, in three opt-in groups matching the three tiers:
 
 | Group | Answers rules about |
 |---|---|
-| From the indexer | `sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`, `library` |
+| From the indexer | `sizeGB`, `sizePerEpisodeGB`, `ageDays`, `grabs`, `passworded`, `indexer`, and a `library` switch to stand in for a cached release |
 | From ffprobe | every `probed.*` attribute |
 | From AvailNZB | every `avail.*` attribute |
 | From SeaDex | every `seadex.*` attribute — name the pretend best/alternative groups and each sampled release is matched by its own parsed group |

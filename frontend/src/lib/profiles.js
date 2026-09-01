@@ -315,7 +315,13 @@ export const RULE_ATTRIBUTES = [
       { name: "passworded", type: "yes/no" },
       { name: "indexer", type: "text" },
       { name: "querySource", type: "text" },
-      { name: "library", type: "yes/no", example: "already in your library" },
+    ],
+  },
+  {
+    title: "From your library",
+    note: "Whether this exact release is already in your library. StreamNZB's own knowledge, not the indexer's, so it is answered for every release — false for a fresh hit, never unknown — and `not library` holds for exactly the releases it describes.",
+    items: [
+      { name: "library", type: "yes/no", example: "not library and count(finalScore >= current.finalScore + 5000) >= 6" },
     ],
   },
   {

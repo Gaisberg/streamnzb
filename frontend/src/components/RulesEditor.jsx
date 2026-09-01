@@ -50,7 +50,7 @@ function tierOf(when = "", rules = []) {
   if (/\bprobed\./.test(stripped)) return "measured"
   if (/\bseadex\./.test(stripped)) return "seadex"
   if (/\bavail\./.test(stripped)) return "community"
-  if (/\b(sizeGB|ageDays|grabs|passworded|indexer|releaseName|querySource|library)\b/.test(stripped)) {
+  if (/\b(sizeGB|ageDays|grabs|passworded|indexer|releaseName|querySource)\b/.test(stripped)) {
     return "reported"
   }
   return "inferred"
