@@ -155,6 +155,13 @@ type Env struct {
 	FinalScore int
 	FinalRank  int
 
+	// current is the release whose prune rule is being evaluated, which a
+	// result-set question reaches through current.*. It is bound only while
+	// that release's aggregates are being computed, so inside count(...) a
+	// bare finalScore is the release being counted and current.finalScore the
+	// one being judged. Nil means the environment answers for itself, which
+	// is what current.* means everywhere outside a result-set question.
+	current *Env
 	// core answers every jhin attribute this struct has no field for, from
 	// the parse result itself. Nil when BuildEnv had no parse, which answers
 	// those attributes with their zeros — what an unparseable name has always
@@ -314,11 +321,26 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.NumOf(float64(e.FinalScore)), true
 	case "finalRank":
 		return jhinrules.NumOf(float64(e.FinalRank)), true
+	case "current.finalScore":
+		return jhinrules.NumOf(float64(e.judged().FinalScore)), true
+	case "current.finalRank":
+		return jhinrules.NumOf(float64(e.judged().FinalRank)), true
 	}
 	if e.core != nil {
 		return e.core.Lookup(path)
 	}
 	return jhinrules.Value{}, false
+}
+
+// judged is the release a current.* reference names: the one whose prune rule
+// is being evaluated, or this one when no other is bound. The fallback is not
+// a convenience — outside a result-set question the release being judged is
+// this release, so current.finalScore and finalScore are the same number.
+func (e *Env) judged() *Env {
+	if e.current != nil {
+		return e.current
+	}
+	return e
 }
 
 // TierPresent reports whether this release carries anything in a tier.

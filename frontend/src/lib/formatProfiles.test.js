@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { encodeProfileShareCode } from '@/lib/profiles'
 import { encodeShareCode } from '@/lib/shareCodes'
 import {
-  checkFormatForUpdate, decodeFormatProfileShareCode, diffFormatProfiles,
-  encodeFormatProfileShareCode, mergeFormatUpstream,
+  applySelectedFormatChanges, checkFormatForUpdate, decodeFormatProfileShareCode, diffFormatProfiles,
+  encodeFormatProfileShareCode, formatChangeKeys, mergeFormatUpstream,
 } from '@/lib/formatProfiles'
 
 const profile = {
@@ -63,11 +63,42 @@ describe('mergeFormatUpstream and diffFormatProfiles', () => {
     const merged = { name: 'Mine', result_name_template: '{{.Codec}}' }
     const diff = diffFormatProfiles(profile, merged)
     expect(diff.changes).toEqual([
-      { label: 'Name template', before: '{{.Resolution}} {{.Codec}}', after: '{{.Codec}}' },
-      { label: 'Description template', before: '{{.SizeGB}} GB · {{.Group}}', after: '(built-in format)' },
+      {
+        key: 'result_name_template', field: 'result_name_template', label: 'Name template',
+        before: '{{.Resolution}} {{.Codec}}', after: '{{.Codec}}',
+      },
+      {
+        key: 'result_description_template', field: 'result_description_template', label: 'Description template',
+        before: '{{.SizeGB}} GB · {{.Group}}', after: '(built-in format)',
+      },
     ])
     expect(diff.empty).toBe(false)
     expect(diffFormatProfiles(profile, { ...profile }).empty).toBe(true)
+  })
+})
+
+// The dialog offers the two templates separately; an unticked one keeps
+// whatever is there now, down to being absent.
+describe('applySelectedFormatChanges', () => {
+  // Upstream sets a name template and carries no description template, which
+  // the merge reads as "the built-in format".
+  const merged = mergeFormatUpstream(profile, { name: 'Theirs', result_name_template: '{{.Codec}}' })
+  const diff = diffFormatProfiles(profile, merged)
+
+  it('is the whole merge when both templates are ticked', () => {
+    expect(applySelectedFormatChanges(profile, merged, diff, new Set(formatChangeKeys(diff)))).toEqual(merged)
+  })
+
+  it('takes only the ticked template', () => {
+    const applied = applySelectedFormatChanges(profile, merged, diff, new Set(['result_name_template']))
+    expect(applied.result_name_template).toBe('{{.Codec}}')
+    // The description was cleared upstream and left unticked, so the local one
+    // stays rather than falling back to the built-in format.
+    expect(applied.result_description_template).toBe('{{.SizeGB}} GB · {{.Group}}')
+  })
+
+  it('leaves the profile alone when nothing is ticked', () => {
+    expect(applySelectedFormatChanges(profile, merged, diff, new Set())).toEqual(profile)
   })
 })
 

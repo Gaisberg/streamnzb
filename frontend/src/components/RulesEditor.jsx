@@ -469,7 +469,7 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
                 : action === "define"
                   ? `Does nothing on its own — other rules use it with matched(${JSON.stringify(rule.name || "Name")}).`
                   : action === "prune"
-                    ? "Runs after every point is in and the results are ranked — the only stage where finalScore and finalRank exist."
+                    ? "Runs after every point is in and the results are ranked — the only stage where finalScore, finalRank and current.* exist."
                     : skipNote}
             </p>
             {action !== "define" && (

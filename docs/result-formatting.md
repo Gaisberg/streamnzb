@@ -227,8 +227,9 @@ fills the URL field and imports through the ordinary from-URL path.
 
 A profile imported from a URL stays **linked**: it shows the host it came
 from, and a manual **Refresh** button fetches the current code and shows what
-would change before anything is applied. Applying replaces the templates with
-the maintainer's version; the profile's local name is yours and never follows
+would change before anything is applied. Each template that would change has
+its own checkbox, so a refresh can take the maintainer's description and leave
+your name template alone; the profile's local name is yours and never follows
 a rename upstream. **Unlink** keeps the profile as it is and removes the
 connection. The trust rules and hosting notes are the same as for filter
 profiles — see [Remote profiles](filters.md#remote-profiles).

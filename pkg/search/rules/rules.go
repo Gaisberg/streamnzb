@@ -110,6 +110,19 @@ func buildPostRegistry() *jhinrules.Registry {
 	reg.Field("finalScore", jhinrules.Num, "")
 	reg.Field("finalRank", jhinrules.Num, "")
 
+	// current.* is the release the prune rule is judging. It exists for the
+	// one place the distinction is real: inside a result-set question, where a
+	// bare finalScore is the release being counted, so `count(finalScore >=
+	// finalScore + 5000)` asks whether a release beats itself by 5000 and is
+	// false for everything. current.finalScore is what the other side of that
+	// comparison needs — "how many alternatives are materially better than
+	// this one" — without hardcoding the score band the answer falls in.
+	//
+	// Only these two are mirrored. A full current.* namespace would have to
+	// answer what a missing tier means on the judged release as well as on
+	// the counted one, and no answer to that is obviously right.
+	reg.Namespace("current", "").Num("finalScore").Num("finalRank")
+
 	if err := reg.Err(); err != nil {
 		panic(err)
 	}
@@ -119,6 +132,16 @@ func buildPostRegistry() *jhinrules.Registry {
 // Set is a profile's rules, compiled once and reused for every request.
 type Set struct {
 	eng *jhinrules.Engine
+	// relative records that a result-set question in this set compares
+	// against the release being judged, which is what decides whether the
+	// aggregates are computed once for the set or once per release. Settled
+	// at compile time: it is a property of the rules, not of any request.
+	relative bool
+	// scoreOnly narrows that: every relative question in the set reads
+	// current.finalScore and none reads current.finalRank, so two releases
+	// holding the same score are asking the same question and one
+	// computation answers both.
+	scoreOnly bool
 }
 
 // Len reports how many enabled rules the set holds.
@@ -138,6 +161,14 @@ func (s *Set) NeedsSeadex() bool {
 // HasAggregates reports whether any rule in the set reads the result set.
 func (s *Set) HasAggregates() bool {
 	return s != nil && s.eng.HasAggregates()
+}
+
+// HasRelativeAggregates reports whether a result-set question in the set names
+// current.*, which is what makes its answer differ from release to release.
+// Sets that ask only absolute questions — the overwhelming majority — keep the
+// single shared computation and pay nothing for this.
+func (s *Set) HasRelativeAggregates() bool {
+	return s != nil && s.relative
 }
 
 // Error is a rule that would not compile, named so the editor can point at the
@@ -213,7 +244,7 @@ func explainPostOnlyAttr(err error) error {
 	if !errors.As(err, &cerr) {
 		return err
 	}
-	for _, attr := range []string{"finalScore", "finalRank"} {
+	for _, attr := range []string{"finalScore", "finalRank", currentPrefix + "finalScore", currentPrefix + "finalRank"} {
 		if strings.Contains(cerr.Err.Error(), fmt.Sprintf("unknown attribute %q", attr)) {
 			cerr.Err = fmt.Errorf("%w — %s only exists after scoring, so only a prune rule can read it",
 				cerr.Err, attr)
@@ -238,7 +269,69 @@ func compileWith(reg *jhinrules.Registry, cfgs, library []config.RuleConfig) (*S
 	if eng == nil {
 		return nil, nil
 	}
-	return &Set{eng: eng}, nil
+	sources := eng.AggregateSources()
+	relative := readsRef(sources, currentPrefix)
+	return &Set{
+		eng:       eng,
+		relative:  relative,
+		scoreOnly: relative && !readsRef(sources, currentPrefix+"finalRank"),
+	}, nil
+}
+
+// currentPrefix names the release a result-set question is being asked on
+// behalf of. Reading it inside count(...) is what turns one shared answer into
+// one answer per release.
+const currentPrefix = "current."
+
+// readsRef reports whether any of these result-set conditions names an
+// attribute or namespace. The conditions arrive as jhin rendered them — field
+// paths bare, strings quoted — so the scan is over canonical text rather than
+// over whatever the profile happened to type.
+//
+// It is deliberately a scan and not a question put to the engine: a rule's
+// tiers stop at the aggregate boundary by design, so nothing the engine
+// exposes distinguishes a condition that reads current.* from one that does
+// not. Being wrong in the safe direction costs a redundant computation and
+// changes no answer, since the relative and shared forms agree exactly when
+// current.* goes unread.
+func readsRef(sources []string, ref string) bool {
+	for _, src := range sources {
+		if namesRef(src, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesRef finds a reference rather than text. A release name matching
+// "current.something" is a string literal, and skipping literals whole is what
+// keeps it from counting.
+func namesRef(src, ref string) bool {
+	for i := 0; i < len(src); i++ {
+		if q := src[i]; q == '"' || q == '\'' {
+			for i++; i < len(src); i++ {
+				if src[i] == '\\' && q == '"' {
+					i++
+					continue
+				}
+				if src[i] == q {
+					break
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(src[i:], ref) && (i == 0 || !identByte(src[i-1])) {
+			return true
+		}
+	}
+	return false
+}
+
+// identByte reports whether a byte can sit inside an attribute path, so a
+// namespace is only matched whole.
+func identByte(c byte) bool {
+	return c == '_' || c == '.' ||
+		(c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // toJhinRules converts the config schema to jhin's. The fields map one to
@@ -332,6 +425,11 @@ type AggregateReport struct {
 	Count int `json:"count"`
 	// Matched names the releases counted, in set order.
 	Matched []string `json:"matched,omitempty"`
+	// Release names the release the question was asked on behalf of, and is
+	// empty for the usual kind — one answer the whole set shares. A condition
+	// reading current.* has an answer per release, so it is reported once per
+	// release, each naming whose perspective produced the count.
+	Release string `json:"release,omitempty"`
 }
 
 // ComputeAggregates evaluates every lifted condition once against the given
@@ -376,6 +474,109 @@ func (s *Set) ReportAggregates(envs []Env, kind string) (*AggregateState, []Aggr
 		}
 	}
 	return &AggregateState{st: st}, reports
+}
+
+// ComputeRelativeAggregates evaluates the set's result-set questions once per
+// release instead of once per set: pass i binds current.* to release i, so a
+// condition can compare every result against the release being judged. The
+// states are index-aligned with envs and each belongs to its release alone.
+//
+// Absolute questions answer the same in every pass, so a set mixing the two
+// stays correct — it just recomputes the shared answers. Only a set that asks
+// a relative question comes here at all; see HasRelativeAggregates.
+func (s *Set) ComputeRelativeAggregates(envs []Env, kind string) []*AggregateState {
+	if !s.HasAggregates() {
+		return nil
+	}
+	facts := factsOf(envs)
+	out := make([]*AggregateState, len(envs))
+	// When the questions read current.finalScore and nothing else about the
+	// release being judged, two releases holding the same score get the same
+	// answers, so the second reuses the first's. Scoring in bands makes that
+	// the ordinary case rather than a lucky one — every release of one
+	// resolution and quality carries the same points — and it is the
+	// difference between a pass per release and a pass per distinct score.
+	var byScore map[int]*AggregateState
+	if s.scoreOnly {
+		byScore = make(map[int]*AggregateState, len(envs))
+	}
+	for i := range envs {
+		if st, ok := byScore[envs[i].FinalScore]; ok {
+			out[i] = st
+			continue
+		}
+		bindCurrent(envs, i)
+		out[i] = &AggregateState{st: s.eng.ComputeAggregates(facts, kind)}
+		if byScore != nil {
+			byScore[envs[i].FinalScore] = out[i]
+		}
+	}
+	unbindCurrent(envs)
+	return out
+}
+
+// ReportRelativeAggregates is ComputeRelativeAggregates plus the answer to
+// "which releases made it come out that way", the same capture the preview
+// gets for a shared question. A relative condition is reported once per
+// release, naming whose perspective it counted from; a shared one alongside it
+// is reported once, because every pass computed it identically.
+func (s *Set) ReportRelativeAggregates(envs []Env, kind string) ([]*AggregateState, []AggregateReport) {
+	if !s.HasAggregates() {
+		return nil, nil
+	}
+	facts := factsOf(envs)
+	states := make([]*AggregateState, len(envs))
+	var reports []AggregateReport
+	for i := range envs {
+		bindCurrent(envs, i)
+		st := s.eng.ComputeAggregates(facts, kind)
+		states[i] = &AggregateState{st: st}
+		// Who was counted, by the same single-release reading the shared path
+		// uses: current.* stays bound to release i throughout, so every one of
+		// these answers a relative question from i's perspective.
+		singles := make([][]jhinrules.AggregateReport, len(envs))
+		for j := range envs {
+			singles[j] = s.eng.Aggregates(s.eng.ComputeAggregates(facts[j:j+1], kind))
+		}
+		for k, base := range s.eng.Aggregates(st) {
+			// A shared question is the same number from every desk, so it is
+			// reported from the first one and skipped thereafter.
+			relative := namesRef(base.Source, currentPrefix)
+			if i > 0 && !relative {
+				continue
+			}
+			rep := AggregateReport{Source: base.Source, Known: base.Known, Count: base.Count}
+			if relative {
+				rep.Release = envs[i].ReleaseName
+			}
+			for j := range envs {
+				if singles[j][k].Known && singles[j][k].Count > 0 {
+					rep.Matched = append(rep.Matched, envs[j].ReleaseName)
+				}
+			}
+			reports = append(reports, rep)
+		}
+	}
+	unbindCurrent(envs)
+	return states, reports
+}
+
+// bindCurrent points every environment at the release being judged, which is
+// what a current.* reference reads while that release's questions are being
+// computed. Every environment in the set sees the same one: the question is
+// asked on one release's behalf however many releases answer it.
+func bindCurrent(envs []Env, judged int) {
+	for i := range envs {
+		envs[i].current = &envs[judged]
+	}
+}
+
+// unbindCurrent leaves each environment answering for itself again, which is
+// what current.* means once the questions are computed and the rules run.
+func unbindCurrent(envs []Env) {
+	for i := range envs {
+		envs[i].current = nil
+	}
 }
 
 // factsOf adapts one environment per release. The pointer matters: Env

@@ -143,7 +143,9 @@ describe('checkDefineLibraryForUpdate', () => {
       { name: 'Movies Remux T1 Groups', when: 'group in ["FraMeSToR"]', action: 'define' },
     ])
     expect(result.diff.changed).toHaveLength(1)
-    expect(result.diff.removed).toEqual(['My own tier: define if group == "X"'])
+    expect(result.diff.removed).toEqual([
+      { key: 'remove:my own tier', name: 'My own tier', line: 'My own tier: define if group == "X"' },
+    ])
   })
 })
 

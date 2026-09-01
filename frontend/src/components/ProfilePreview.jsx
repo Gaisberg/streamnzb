@@ -148,6 +148,26 @@ function ResultRow({ result, expanded, onToggle }) {
   )
 }
 
+// groupAggregates puts one heading on each result-set question. Most are
+// counted once for the whole set and are their own group; one comparing
+// against current.* is counted once per release, and repeating the condition
+// above every count would bury what actually differs — which release it was
+// asked on behalf of.
+function groupAggregates(aggregates) {
+  const groups = []
+  const bySource = new Map()
+  for (const agg of aggregates || []) {
+    let group = bySource.get(agg.source)
+    if (!group) {
+      group = { source: agg.source, reports: [] }
+      bySource.set(agg.source, group)
+      groups.push(group)
+    }
+    group.reports.push(agg)
+  }
+  return groups
+}
+
 // ProfilePreview shows what the profile being edited would do to a set of
 // release names. It is fed by the editor rather than fetching for itself, so
 // the per-rule counts on the Rules tab and the breakdown here always come from
@@ -260,29 +280,39 @@ export function ProfilePreview({
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
               Result-set conditions
             </p>
-            {aggregates.map((agg, i) => (
+            {groupAggregates(aggregates).map((group, i) => (
               <div key={i} className="space-y-0.5">
-                <div className="flex flex-wrap items-baseline gap-x-2">
-                  <code className="font-mono text-[11px] text-foreground">{agg.source}</code>
-                  <span className={cn(
-                    "text-[11px]",
-                    !agg.known || agg.count === 0 ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-500",
-                  )}>
-                    {!agg.known
-                      ? "cannot be judged from these releases"
-                      : agg.count === 0
-                        ? "matches nothing in this set"
-                        : `matches ${agg.count === 1 ? "1 release" : `${agg.count} releases`}`}
-                  </span>
-                </div>
-                {(agg.matched || []).map((title, j) => (
-                  <p key={j} className="truncate pl-3 font-mono text-[10px] text-muted-foreground/80">{title}</p>
+                <code className="block font-mono text-[11px] text-foreground">{group.source}</code>
+                {group.reports.map((agg, j) => (
+                  <div key={j} className={cn("space-y-0.5", agg.release && "pl-3")}>
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      {agg.release && (
+                        <span className="truncate font-mono text-[10px] text-muted-foreground">
+                          for {agg.release}
+                        </span>
+                      )}
+                      <span className={cn(
+                        "text-[11px]",
+                        !agg.known || agg.count === 0 ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-500",
+                      )}>
+                        {!agg.known
+                          ? "cannot be judged from these releases"
+                          : agg.count === 0
+                            ? "matches nothing in this set"
+                            : `matches ${agg.count === 1 ? "1 release" : `${agg.count} releases`}`}
+                      </span>
+                    </div>
+                    {(agg.matched || []).map((title, k) => (
+                      <p key={k} className="truncate pl-3 font-mono text-[10px] text-muted-foreground/80">{title}</p>
+                    ))}
+                  </div>
                 ))}
               </div>
             ))}
             <p className="max-w-prose pt-0.5 text-[11px] text-muted-foreground/80">
-              Counted once over the whole set before any rule fires — these are the values count(), exists()
-              and none() read.
+              Counted over the whole set before any rule fires — these are the values count(), exists() and
+              none() read. A question comparing against current.* is counted once per release, so it is
+              listed from each release's own point of view.
             </p>
           </div>
         )}

@@ -469,6 +469,12 @@ func (r Request) ruleContext() rules.Context {
 // release never changes what another rule counted and the order of the rules
 // stays irrelevant. That is what makes "drop the weak only while six stronger
 // remain" a stable condition rather than a cascade.
+//
+// A condition reading current.* is counted per release instead of once, so it
+// can ask how this release compares with the rest — "only while six are 5000
+// points better" — rather than against a threshold the profile had to know in
+// advance. The set it counts over is the same one, fixed before any rule
+// fires, so that stays a cascade-free question too.
 func (p *Profile) applyPrune(req Request, sorted []Result) (kept, dropped []Result) {
 	if p == nil || p.pruneRules.Len() == 0 {
 		return sorted, nil
@@ -480,19 +486,7 @@ func (p *Profile) applyPrune(req Request, sorted []Result) (kept, dropped []Resu
 		envs[i].FinalScore = sorted[i].Torrent.Rank
 		envs[i].FinalRank = i + 1
 	}
-	if p.pruneRules.HasAggregates() {
-		var state *rules.AggregateState
-		if req.AggregateTrace != nil {
-			var reports []rules.AggregateReport
-			state, reports = p.pruneRules.ReportAggregates(envs, req.Kind)
-			*req.AggregateTrace = append(*req.AggregateTrace, reports...)
-		} else {
-			state = p.pruneRules.ComputeAggregates(envs, req.Kind)
-		}
-		for i := range envs {
-			state.Inject(&envs[i])
-		}
-	}
+	p.injectPruneAggregates(req, envs)
 	kept = sorted[:0]
 	for i, r := range sorted {
 		outcome := p.pruneRules.Evaluate(envs[i], req.Kind)
@@ -510,6 +504,47 @@ func (p *Profile) applyPrune(req Request, sorted []Result) (kept, dropped []Resu
 		kept = append(kept, r)
 	}
 	return kept, dropped
+}
+
+// injectPruneAggregates computes the prune pass's result-set questions and
+// hands every release its answers.
+//
+// A question about the set alone is computed once and shared, which is what
+// keeps prune order-independent. A question that compares against the release
+// being judged — count(finalScore >= current.finalScore + 5000) — has an
+// answer per release, so it is computed per release. That costs a pass over
+// the set for every release in it, which is why it happens only for the
+// profiles that ask for it: the shared answer is still shared, and a profile
+// that never writes current.* never pays.
+func (p *Profile) injectPruneAggregates(req Request, envs []rules.Env) {
+	if !p.pruneRules.HasAggregates() {
+		return
+	}
+	if p.pruneRules.HasRelativeAggregates() {
+		var states []*rules.AggregateState
+		if req.AggregateTrace != nil {
+			var reports []rules.AggregateReport
+			states, reports = p.pruneRules.ReportRelativeAggregates(envs, req.Kind)
+			*req.AggregateTrace = append(*req.AggregateTrace, reports...)
+		} else {
+			states = p.pruneRules.ComputeRelativeAggregates(envs, req.Kind)
+		}
+		for i := range envs {
+			states[i].Inject(&envs[i])
+		}
+		return
+	}
+	var state *rules.AggregateState
+	if req.AggregateTrace != nil {
+		var reports []rules.AggregateReport
+		state, reports = p.pruneRules.ReportAggregates(envs, req.Kind)
+		*req.AggregateTrace = append(*req.AggregateTrace, reports...)
+	} else {
+		state = p.pruneRules.ComputeAggregates(envs, req.Kind)
+	}
+	for i := range envs {
+		state.Inject(&envs[i])
+	}
 }
 
 // applyMinRank enforces the profile's score floor on the finished score.

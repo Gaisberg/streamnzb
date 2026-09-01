@@ -38,7 +38,7 @@ upscaled and exists("remux" in traits)             → reject
 | **Name** | What the rule is called. Shows in the score breakdown, in History, and in [custom result formats](result-formatting.md) via `.MatchedRules`. |
 | **Condition** | An expression that answers yes or no. |
 | **Applies to** | All content, or one kind (Movies, Shows, Anime films, Anime shows). |
-| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. **Prune** removes the release [after scoring](#pruning-after-the-score), when its condition can read `finalScore` and `finalRank`. **Define** does nothing at all — the rule exists to be [referenced](#referring-to-another-rule) from other rules. |
+| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. **Prune** removes the release [after scoring](#pruning-after-the-score), when its condition can read `finalScore`, `finalRank` and `current.*`. **Define** does nothing at all — the rule exists to be [referenced](#referring-to-another-rule) from other rules. |
 | **Keep best** | For limit rules: how many survive. The best that many by final score are kept, the rest dropped. |
 | **Per** | For limit rules: what the cap is counted per. Nothing caps every match together; pick a grouping and the cap is kept once per value of it. |
 | **Enabled** | Turn a rule off without deleting it. A disabled rule is not compiled, so a half-written one never blocks a save. |
@@ -197,6 +197,38 @@ The mechanics worth knowing:
 
 A pruned release is rejected like any other, with `rule: <name>` as the
 reason, so History and the preview say which rule removed it.
+
+### Comparing against the release being judged
+
+A threshold like `finalScore < -500` has to know which band your scores land
+in. That is fine until the profile scores in wide bands — a clean 1080p WEB-DL
+at `+20500` and the same release carrying a `-10000` penalty at `+10500` are
+both positive, so no absolute number separates "good" from "materially worse
+than what else is here". `finalScore < 15000` would work, but it encodes the
+resolution's score band rather than the question you meant.
+
+`current.finalScore` and `current.finalRank` ask the question directly. Inside
+`count()`, a bare `finalScore` is the release being *counted*; `current.*` is
+the release being *judged*:
+
+```
+Weak tail: prune if count(finalScore >= current.finalScore + 5000) >= 6
+```
+
+Read it as: remove this release only if at least six alternatives are at least
+5000 points better. It holds whatever band the scores land in, because it is a
+question about the gap. The same shape works on position —
+`count(finalRank < current.finalRank) >= 6` is "at least six ranked above me" —
+though plain `finalRank > 6` says that more directly.
+
+Outside a result-set question the release being judged *is* this release, so
+`current.finalScore` and `finalScore` are the same number there.
+
+One cost worth knowing: a question comparing against `current.*` has a
+different answer for every release, so it is counted once per release instead
+of once for the set. Releases sharing a score share the answer, and a profile
+that never writes `current.*` is unaffected, but on a very large result set
+this is the one condition shape that is not free.
 
 ## Where rules run
 
@@ -360,11 +392,17 @@ This is what makes rules a complete replacement for the old per-trait controls:
 
 ### After scoring — prune rules only
 
-`finalScore` `finalRank`
+`finalScore` `finalRank` `current.finalScore` `current.finalRank`
 
 The finished verdict: the accumulated score, and the 1-based position among
 the surviving results sorted by it. They only exist once every rule has run,
 so only a [prune rule](#pruning-after-the-score) can read them.
+
+`current.*` is the release being judged, which differs from the bare names in
+exactly one place: inside `count()`, `exists()` and `none()`, where a bare
+`finalScore` is the release being counted. That is what lets a rule ask how
+many alternatives beat this one by a margin — see [comparing against the
+release being judged](#comparing-against-the-release-being-judged).
 
 ### About the result set
 
@@ -393,7 +431,9 @@ the counts are taken first, a rule that rejects can never change what another
 rule counted, so the order of your rules does not matter. What they cannot see
 is the final ordering; "the best three of these" is still the [limit
 action](#limits), and a condition over final scores belongs to a [prune
-rule](#pruning-after-the-score), where the set carries them.
+rule](#pruning-after-the-score), where the set carries them — including
+comparisons against [the release being
+judged](#comparing-against-the-release-being-judged).
 
 Fail-open extends to the set. A release missing a tier the inner condition
 reads is not counted — `count(probed.height >= 2000)` counts probed releases

@@ -262,6 +262,18 @@ until you confirm the diff. Updates merge **by rule name**:
   appended after the maintainer's rules;
 - a rule the maintainer deleted is removed, even if you had edited it.
 
+The diff is also the picker: every line in it — each added, updated and removed
+rule, and the preset move — has a **checkbox**, ticked to start, and Apply
+takes only what is still ticked. Unticking one means "leave this as it is": an
+added rule is not taken, an updated rule keeps your version, and a refused
+deletion stays, appended after the maintainer's rules where your own rules
+live. Nothing about the refusal is stored — the snapshot kept is upstream in
+full, since that is what tells a rule you added from one the maintainer deleted
+— so a change you skip is offered again on the next refresh, and a deletion you
+refuse quietly becomes a rule of your own. Rules can lean on each other: skip
+a define that another rule matches by name and the reference is left dangling,
+which the save refuses with the unknown-name error rather than landing broken.
+
 The contract in one line: customize by adding your own rules; edits to
 upstream rules last until the next refresh. The profile's local name is also
 yours — a rename upstream is shown in the diff but never applied. Everything a
@@ -315,7 +327,9 @@ manual **Refresh** → confirmation diff → apply flow and the same
   synced upstream list. The library is then named after the file.
 - **Refresh replaces the defines wholesale.** A library is the maintainer's
   data; local edits to it last until the next refresh. A lasting override
-  belongs in the profile, where your rule shadows the library's.
+  belongs in the profile, where your rule shadows the library's. The diff's
+  per-change checkboxes work the same as a profile's — a define you untick is
+  left as it is and offered again next time.
 
 A save that would break a profile is refused either way: every profile
 recompiles against the new library set when a library is saved, so a refresh

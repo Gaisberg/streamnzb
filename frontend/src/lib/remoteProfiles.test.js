@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { encodeProfileShareCode } from '@/lib/profiles'
-import { checkForUpdate, diffLinkedProfiles, mergeUpstream } from '@/lib/remoteProfiles'
+import { applySelectedChanges, changeKeys, checkForUpdate, diffLinkedProfiles, mergeUpstream } from '@/lib/remoteProfiles'
 import { sourceHost, validateSourceUrl } from '@/lib/shareCodes'
 
 describe('validateSourceUrl', () => {
@@ -78,17 +78,58 @@ describe('diffLinkedProfiles', () => {
     const merged = { name: 'Mine', preset: '1080p', rules: [rule('Edited', 2), rule('Fresh')] }
     const diff = diffLinkedProfiles(current, merged)
     expect(diff.changed).toEqual([
-      { name: 'Edited', before: 'Edited: score 1 if true', after: 'Edited: score 2 if true' },
+      { key: 'change:edited', name: 'Edited', before: 'Edited: score 1 if true', after: 'Edited: score 2 if true' },
     ])
-    expect(diff.added).toEqual(['Fresh: score 100 if true'])
-    expect(diff.removed).toEqual(['Gone: score 100 if true'])
-    expect(diff.preset).toEqual({ from: '4k', to: '1080p' })
+    expect(diff.added).toEqual([{ key: 'add:fresh', name: 'Fresh', line: 'Fresh: score 100 if true' }])
+    expect(diff.removed).toEqual([{ key: 'remove:gone', name: 'Gone', line: 'Gone: score 100 if true' }])
+    expect(diff.preset).toEqual({ key: 'preset', from: '4k', to: '1080p' })
     expect(diff.empty).toBe(false)
+    // Every decision the dialog offers, and they are distinct: a rule can be
+    // added, updated and removed under one name across three profiles.
+    expect(changeKeys(diff)).toEqual(['change:edited', 'add:fresh', 'remove:gone', 'preset'])
   })
 
   it('is empty when nothing would change', () => {
     const profile = { name: 'Mine', preset: '4k', rules: [rule('Same')] }
     expect(diffLinkedProfiles(profile, { ...profile }).empty).toBe(true)
+  })
+})
+
+// The dialog lets a change be unticked; applySelectedChanges is what an
+// unticked change means. Nothing is remembered — the snapshot the caller
+// stores is still upstream in full — so a skipped change comes back next time.
+describe('applySelectedChanges', () => {
+  const rule = (name, points = 100) => ({ name, when: 'true', points })
+  const current = { name: 'Mine', preset: '4k', rules: [rule('Edited', 1), rule('Gone'), rule('My own', 7)] }
+  const merged = { name: 'Mine', preset: '1080p', rules: [rule('Edited', 2), rule('Fresh'), rule('My own', 7)] }
+  const diff = diffLinkedProfiles(current, merged)
+
+  it('is the whole merge when everything is ticked', () => {
+    expect(applySelectedChanges(current, merged, diff, new Set(changeKeys(diff)))).toEqual(merged)
+  })
+
+  it('leaves the profile alone when nothing is ticked', () => {
+    const applied = applySelectedChanges(current, merged, diff, new Set())
+    expect(applied.rules).toEqual([rule('Edited', 1), rule('My own', 7), rule('Gone')])
+    expect(applied.preset).toBe('4k')
+  })
+
+  it('takes only the ticked changes', () => {
+    // Take the addition and the preset move; keep the local edit, and refuse
+    // the deletion — the refused rule stays, after upstream's, where the
+    // user's own rules live.
+    const applied = applySelectedChanges(current, merged, diff, new Set(['add:fresh', 'preset']))
+    expect(applied.rules).toEqual([rule('Edited', 1), rule('Fresh'), rule('My own', 7), rule('Gone')])
+    expect(applied.preset).toBe('1080p')
+  })
+
+  it('leaves a diff without a preset move alone', () => {
+    // A define library has no preset; the merge must not grow one.
+    const lib = { name: 'Tiers', rules: [rule('A')] }
+    const upstream = { name: 'Tiers', rules: [rule('A', 2)] }
+    const libDiff = diffLinkedProfiles(lib, upstream)
+    expect(applySelectedChanges(lib, upstream, libDiff, new Set())).toEqual(lib)
+    expect('preset' in applySelectedChanges(lib, upstream, libDiff, new Set())).toBe(false)
   })
 })
 
@@ -127,7 +168,9 @@ describe('checkForUpdate', () => {
     const result = await checkForUpdate(profile)
     expect(result.status).toBe('update')
     expect(result.merged.rules.map((r) => r.name)).toEqual(['IMAX'])
-    expect(result.diff.added).toEqual(['IMAX: score 2000 if releaseName matches "(?i)IMAX"'])
+    expect(result.diff.added).toEqual([
+      { key: 'add:imax', name: 'IMAX', line: 'IMAX: score 2000 if releaseName matches "(?i)IMAX"' },
+    ])
   })
 
   it('is current when a re-encoded upstream decodes to no visible change', async () => {

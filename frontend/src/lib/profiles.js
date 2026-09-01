@@ -381,6 +381,14 @@ export const RULE_ATTRIBUTES = [
     ],
   },
   {
+    title: "Compared with this release",
+    note: "current.* is the release being judged, and it exists for the one place that differs from finalScore: inside count(), where a bare finalScore is the release being counted. count(finalScore >= current.finalScore + 5000) >= 6 prunes a release only when six alternatives beat it by 5000 — a question about the gap, so it holds whatever band the profile's scores land in, where finalScore < 15000 would have to encode that band. Outside count() the release being judged is this release, so current.finalScore and finalScore are the same number.",
+    items: [
+      { name: "current.finalScore", type: "number", example: "count(finalScore >= current.finalScore + 5000) >= 6" },
+      { name: "current.finalRank", type: "number", example: "count(finalRank < current.finalRank) >= 6" },
+    ],
+  },
+  {
     tier: "inferred",
     title: "About the request",
     items: [

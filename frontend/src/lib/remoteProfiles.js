@@ -55,6 +55,10 @@ export function mergeUpstream(local, upstream, previousUpstream) {
 // refresh would change, add or remove, as the same one-line text form the
 // rules editor uses. Rules are matched by name, the same identity the merge
 // uses, so the diff and the merge cannot disagree about what happens.
+//
+// Every entry carries a `key`, unique across the three lists, because the
+// dialog lets the user tick changes one by one and applySelectedChanges reads
+// the ticks back.
 export function diffLinkedProfiles(current, merged) {
   const byKey = (rules) => new Map((rules || []).map((rule) => [ruleKey(rule.name), rule]))
   const line = (rule) => rulesToText([rule])
@@ -67,15 +71,17 @@ export function diffLinkedProfiles(current, merged) {
   for (const [key, rule] of mergedRules) {
     const before = currentRules.get(key)
     if (!before) {
-      added.push(line(rule))
+      added.push({ key: `add:${key}`, name: rule.name, line: line(rule) })
     } else if (line(before) !== line(rule)) {
-      changed.push({ name: rule.name, before: line(before), after: line(rule) })
+      changed.push({ key: `change:${key}`, name: rule.name, before: line(before), after: line(rule) })
     }
   }
   for (const [key, rule] of currentRules) {
-    if (!mergedRules.has(key)) removed.push(line(rule))
+    if (!mergedRules.has(key)) removed.push({ key: `remove:${key}`, name: rule.name, line: line(rule) })
   }
-  const preset = current.preset !== merged.preset ? { from: current.preset, to: merged.preset } : null
+  const preset = current.preset !== merged.preset
+    ? { key: "preset", from: current.preset, to: merged.preset }
+    : null
   return {
     changed,
     added,
@@ -83,6 +89,47 @@ export function diffLinkedProfiles(current, merged) {
     preset,
     empty: !changed.length && !added.length && !removed.length && !preset,
   }
+}
+
+// changeKeys lists every decision a rule-shaped diff offers, in the order the
+// dialog shows them — what "select all" means, and what the count counts.
+export function changeKeys(diff) {
+  const entries = [...(diff.changed || []), ...(diff.added || []), ...(diff.removed || [])]
+  if (diff.preset) entries.push(diff.preset)
+  return entries.map((entry) => entry.key)
+}
+
+// applySelectedChanges narrows a merge to the changes the user ticked. An
+// unticked change leaves the profile as it is: an added rule is not taken, an
+// updated rule keeps the local version, and a refused removal stays — appended
+// after upstream's rules, where every rule of the user's own lives.
+//
+// Nothing about the refusal is remembered. The stored snapshot is still the
+// upstream code in full, because it has to describe what upstream *is* for the
+// next merge to tell a user-added rule from an upstream-deleted one. So a rule
+// skipped today is offered again on the next refresh — the maintainer still
+// has it — while a deletion refused today becomes the user's own rule, since
+// the snapshot it used to appear in is gone.
+export function applySelectedChanges(current, merged, diff, selected) {
+  const currentByKey = new Map((current.rules || []).map((rule) => [ruleKey(rule.name), rule]))
+  const unticked = (entries) => new Set(
+    entries.filter((entry) => !selected.has(entry.key)).map((entry) => ruleKey(entry.name)))
+  const skippedAdds = unticked(diff.added || [])
+  const keptLocalEdits = unticked(diff.changed || [])
+
+  const rules = []
+  for (const rule of merged.rules || []) {
+    const key = ruleKey(rule.name)
+    if (skippedAdds.has(key)) continue
+    rules.push(keptLocalEdits.has(key) ? currentByKey.get(key) : rule)
+  }
+  for (const entry of diff.removed || []) {
+    if (!selected.has(entry.key)) rules.push(currentByKey.get(ruleKey(entry.name)))
+  }
+
+  const out = { ...merged, rules }
+  if (diff.preset && !selected.has(diff.preset.key)) out.preset = current.preset
+  return out
 }
 
 // checkForUpdate is the whole of the Refresh button: fetch, decode, merge,

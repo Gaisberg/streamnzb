@@ -94,7 +94,8 @@ export function mergeFormatUpstream(local, upstream) {
 // that would change, both sides in full — templates are short enough to read
 // whole, and a line-by-line diff of Go template syntax would obscure more
 // than it shows. An empty template renders the built-in format, so say that
-// rather than showing nothing.
+// rather than showing nothing. Each change carries the field it moves and a
+// `key`, so the dialog can offer the two templates as separate decisions.
 export function diffFormatProfiles(current, merged) {
   const changes = []
   const compare = (field, label) => {
@@ -102,6 +103,8 @@ export function diffFormatProfiles(current, merged) {
     const after = merged[field] || ""
     if (before === after) return
     changes.push({
+      key: field,
+      field,
       label,
       before: before || "(built-in format)",
       after: after || "(built-in format)",
@@ -110,6 +113,25 @@ export function diffFormatProfiles(current, merged) {
   compare("result_name_template", "Name template")
   compare("result_description_template", "Description template")
   return { changes, empty: !changes.length }
+}
+
+// formatChangeKeys is changeKeys for a template diff: every decision the
+// dialog offers, in the order it shows them.
+export function formatChangeKeys(diff) {
+  return (diff.changes || []).map((change) => change.key)
+}
+
+// applySelectedFormatChanges narrows a merge to the templates the user ticked;
+// an unticked one keeps whatever is there now, down to being absent, which is
+// what makes it render the built-in format.
+export function applySelectedFormatChanges(current, merged, diff, selected) {
+  const out = { ...merged }
+  for (const change of diff.changes || []) {
+    if (selected.has(change.key)) continue
+    if (current[change.field]) out[change.field] = current[change.field]
+    else delete out[change.field]
+  }
+  return out
 }
 
 // checkFormatForUpdate mirrors checkForUpdate for filter profiles: "current"

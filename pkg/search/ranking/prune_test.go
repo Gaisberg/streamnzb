@@ -169,3 +169,87 @@ func TestExplainCoversThePrunePass(t *testing.T) {
 		t.Error("no explanation carries the prune rule's rejection")
 	}
 }
+
+// The candidate-relative form end to end: a release is pruned only when
+// enough alternatives beat it by a margin, with no absolute threshold in the
+// rule. The groups are scored 5000 apart so the gap, not the band, decides.
+func TestPruneDropsWhatEnoughAlternativesBeatByAMargin(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "A", When: `group == "AAA"`, Points: 20000},
+		config.RuleConfig{Name: "B", When: `group == "BBB"`, Points: 15000},
+		config.RuleConfig{Name: "C", When: `group == "CCC"`, Points: 10000},
+		config.RuleConfig{Name: "D", When: `group == "DDD"`, Points: 5000},
+		config.RuleConfig{
+			Name:   "Weak tail",
+			When:   "count(finalScore >= current.finalScore + 5000) >= 3",
+			Action: config.RuleActionPrune,
+		},
+	)
+	titles := []string{
+		"Movie 2020 1080p WEB-DL H264-AAA",
+		"Movie 2020 1080p WEB-DL H264-BBB",
+		"Movie 2020 1080p WEB-DL H264-CCC",
+		"Movie 2020 1080p WEB-DL H264-DDD",
+	}
+
+	kept, rejected := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie},
+		pruneCandidates(titles...), rank.RankOptions{})
+	if len(kept) != 3 || len(rejected) != 1 {
+		t.Fatalf("kept %d and rejected %d, want 3 and 1", len(kept), len(rejected))
+	}
+	if !strings.HasSuffix(rejected[0].Candidate.Release.Title, "DDD") {
+		t.Errorf("pruned %q, want the release three alternatives beat by 5000",
+			rejected[0].Candidate.Release.Title)
+	}
+
+	// The same rule over a sparser set keeps the weak release: the margin is
+	// there, the alternatives are not.
+	kept, rejected = p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie},
+		pruneCandidates(titles[0], titles[3]), rank.RankOptions{})
+	if len(kept) != 2 || len(rejected) != 0 {
+		t.Errorf("with one better alternative, kept %d and rejected %d, want 2 and 0",
+			len(kept), len(rejected))
+	}
+}
+
+// The preview shows its work for a relative question too: one report per
+// release, naming whose perspective produced the count, alongside the single
+// shared report an absolute question still gets.
+func TestExplainReportsRelativeAggregatesPerRelease(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "A", When: `group == "AAA"`, Points: 20000},
+		config.RuleConfig{Name: "B", When: `group == "BBB"`, Points: 10000},
+		config.RuleConfig{
+			Name:   "Weak tail",
+			When:   "count(finalScore >= current.finalScore + 5000) >= 1 and count(finalScore >= 20000) >= 1",
+			Action: config.RuleActionPrune,
+		},
+	)
+
+	_, aggregates := p.Explain([]string{
+		"Movie 2020 1080p WEB-DL H264-AAA",
+		"Movie 2020 1080p WEB-DL H264-BBB",
+	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+
+	perRelease := map[string]int{}
+	shared := 0
+	for _, agg := range aggregates {
+		if agg.Release == "" {
+			shared++
+			continue
+		}
+		perRelease[agg.Release] = agg.Count
+	}
+	if shared != 1 {
+		t.Errorf("got %d shared reports, want 1 — the absolute question is counted once", shared)
+	}
+	if len(perRelease) != 2 {
+		t.Fatalf("got %d per-release reports, want one for each release: %+v", len(perRelease), aggregates)
+	}
+	if got := perRelease["Movie 2020 1080p WEB-DL H264-AAA"]; got != 0 {
+		t.Errorf("the best release counts %d alternatives 5000 above it, want 0", got)
+	}
+	if got := perRelease["Movie 2020 1080p WEB-DL H264-BBB"]; got != 1 {
+		t.Errorf("the weaker release counts %d alternatives 5000 above it, want 1", got)
+	}
+}
