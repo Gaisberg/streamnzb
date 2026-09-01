@@ -26,6 +26,54 @@ Each stream lists its movie and TV requests in order (drag to reorder in the str
 - **Combine all** (default) — every request runs in parallel; results are merged in your configured order and deduplicated.
 - **Stop after first hit** — requests run in order and stop at the first one that returns results. Put your most precise request first and broader fallbacks after it.
 
+A stream's **Indexer Mode** (in the stream editor) is the same choice one level
+down, across indexers rather than across requests: *Combine* queries them all,
+*Failover* walks them in order until one answers.
+
+## How long a search takes
+
+Both modes above default to the broad setting, and breadth is paid for in
+latency. *Combine* runs everything in parallel and then waits for all of it, so
+a search takes as long as its **slowest** indexer on its slowest request — not
+the average, and not the first useful answer. One indexer having a bad minute
+sets the time Stremio spends showing a spinner.
+
+A real search from the debug log, four queries wide (two requests × two
+indexers):
+
+```
+DrunkenSlug  id    149 ms
+altHUB       text  289 ms
+altHUB       id    320 ms
+DrunkenSlug  text  984 ms   ← the whole search waits here
+                   ------
+/stream total     1066 ms
+```
+
+The ID search had everything it needed after 320 ms. The remaining 664 ms
+bought the text query's extra results, and every result in the list — including
+the ones already in hand — waited for it.
+
+That is a trade, not a bug: the text query finds releases an ID search misses,
+particularly on indexers with thin ID coverage. What matters is that it is a
+*choice*, and the defaults choose breadth:
+
+| If you want | Set |
+|---|---|
+| The most results, whatever it costs in time | **Combine all** + **Combine** (the defaults) |
+| A fast list from your best indexer, falling back only when it comes up empty | **Stop after first hit** + **Failover**, with your most reliable indexer and most precise request first |
+| Breadth across indexers, without the slow broad query | **Combine** indexers, **Stop after first hit** requests, ID request listed first |
+
+Two things worth knowing before you narrow anything:
+
+- **Results are cached, so the cost is per unique title, not per request.** A
+  second `/stream` for the same content answers from the playlist cache. Slow
+  searches hurt on first view; they do not compound while browsing.
+- **A dropped request drops its releases.** *Stop after first hit* stops at the
+  first request that returns *anything* — one marginal result from a precise ID
+  query ends the search, and the text query that would have found ten more never
+  runs. Order the list accordingly.
+
 ## Same-release variants
 
 Several indexers carrying the same release used to produce one result and a

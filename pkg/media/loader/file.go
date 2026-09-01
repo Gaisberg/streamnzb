@@ -147,6 +147,11 @@ type File struct {
 
 	downloadMu        sync.Mutex
 	inflightDownloads map[int]*inflightSegmentDownload
+	// abandonedReadAhead holds the read-ahead fetches left behind by readers
+	// that have closed, waiting to learn whether the next reader wants them,
+	// keyed so each window's own grace timer can find it. Guarded by downloadMu.
+	abandonedReadAhead    map[uint64]abandonedReadAheadWindow
+	abandonedReadAheadSeq uint64
 
 	zeroFillMu sync.Mutex
 	zeroFilled map[int]struct{}
@@ -854,6 +859,133 @@ func (f *File) cancelAbandonedReadAheadIn(from, to int) {
 	}
 	if cancelled > 0 {
 		logger.Trace("File cancelAbandonedReadAheadIn", "file", f.Name(), "cancelled", cancelled, "from", from, "to", to)
+	}
+}
+
+// abandonedReadAheadWindow is the read-ahead a closed reader left in flight,
+// captured as the exact requests it had running rather than as a range. The
+// next reader decides their fate, and by then the range alone would also name
+// fetches that reader started itself.
+type abandonedReadAheadWindow struct {
+	reqs  map[int]*inflightSegmentDownload
+	timer *time.Timer
+}
+
+// abandonedReadAheadGrace is how long a closed reader's window waits to be
+// claimed before it is dropped unasked.
+//
+// The reader that would claim it is the next Range request of the same play,
+// which arrives in milliseconds, so this is long enough to lose nothing. What
+// it bounds is the case no reader on this file ever answers for: the last
+// request of a session, whose window goes on holding connections from a pool
+// every other session shares. Reaping is otherwise driven by demand on the
+// same file, and demand from a different file cannot see it.
+const abandonedReadAheadGrace = 2 * time.Second
+
+// abandonReadAheadWindow records the reader-less fetches still running in
+// [from, to) when a reader closed.
+//
+// It cancels nothing yet. Serving is per-request: a player streaming a file in
+// consecutive Range requests closes a reader and opens the next one over the
+// very window this one warmed, so cancelling at close would throw away the
+// prefetch that request is about to read. A player that seeks instead leaves
+// the window dead, and up to a full playback window of fetches nobody will
+// read goes on holding the connections the seek is queued behind — which is
+// the stall this exists to end. Which one it was is knowable one read-ahead
+// later, so that is where the decision lives (see reapAbandonedReadAhead).
+//
+// Fetches with a real reader attached are never captured, exactly as
+// cancelAbandonedReadAheadIn never touches them.
+func (f *File) abandonReadAheadWindow(from, to int) {
+	if to <= from {
+		return
+	}
+	f.downloadMu.Lock()
+	defer f.downloadMu.Unlock()
+
+	var reqs map[int]*inflightSegmentDownload
+	for index, req := range f.inflightDownloads {
+		if req.countFailures || index < from || index >= to {
+			continue
+		}
+		if reqs == nil {
+			reqs = make(map[int]*inflightSegmentDownload)
+		}
+		reqs[index] = req
+	}
+	if reqs == nil {
+		return
+	}
+	f.abandonedReadAheadSeq++
+	id := f.abandonedReadAheadSeq
+	if f.abandonedReadAhead == nil {
+		f.abandonedReadAhead = make(map[uint64]abandonedReadAheadWindow)
+	}
+	f.abandonedReadAhead[id] = abandonedReadAheadWindow{
+		reqs:  reqs,
+		timer: time.AfterFunc(abandonedReadAheadGrace, func() { f.dropAbandonedReadAhead(id) }),
+	}
+	logger.Trace("File abandonReadAheadWindow", "file", f.Name(), "from", from, "to", to, "held", len(reqs))
+}
+
+// dropAbandonedReadAhead cancels everything one window is still holding, for
+// the window whose grace ran out.
+func (f *File) dropAbandonedReadAhead(id uint64) {
+	f.downloadMu.Lock()
+	window, ok := f.abandonedReadAhead[id]
+	delete(f.abandonedReadAhead, id)
+	cancelled := 0
+	if ok {
+		cancelled = f.cancelHeldReadAheadLocked(window, 0, 0)
+	}
+	f.downloadMu.Unlock()
+
+	if cancelled > 0 {
+		logger.Trace("File dropAbandonedReadAhead", "file", f.Name(), "cancelled", cancelled)
+	}
+}
+
+// cancelHeldReadAheadLocked cancels the fetches a window holds outside
+// [from, to), and reports how many it stopped. Callers hold downloadMu.
+//
+// A fetch that has been retired, replaced, or picked up by a real reader since
+// it was captured is left alone: the capture names request pointers, so a
+// segment index re-fetched in between is a different request and cannot be hit
+// by a cancellation meant for the old one.
+func (f *File) cancelHeldReadAheadLocked(window abandonedReadAheadWindow, from, to int) int {
+	cancelled := 0
+	for index, req := range window.reqs {
+		if index >= from && index < to {
+			continue
+		}
+		if current, ok := f.inflightDownloads[index]; !ok || current != req || req.countFailures {
+			continue
+		}
+		req.cancel()
+		cancelled++
+	}
+	return cancelled
+}
+
+// reapAbandonedReadAhead settles every window a closed reader left behind
+// against the window a reader now wants: a held fetch inside [from, to) is
+// adopted, one outside it is cancelled so its connection goes to the new
+// window instead. Either way the hold is released — an adopted fetch belongs
+// to the new window, whose own reader will abandon it in turn.
+func (f *File) reapAbandonedReadAhead(from, to int) {
+	f.downloadMu.Lock()
+	cancelled := 0
+	for id, window := range f.abandonedReadAhead {
+		if window.timer != nil {
+			window.timer.Stop()
+		}
+		cancelled += f.cancelHeldReadAheadLocked(window, from, to)
+		delete(f.abandonedReadAhead, id)
+	}
+	f.downloadMu.Unlock()
+
+	if cancelled > 0 {
+		logger.Trace("File reapAbandonedReadAhead", "file", f.Name(), "from", from, "to", to, "cancelled", cancelled)
 	}
 }
 

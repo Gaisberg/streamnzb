@@ -392,8 +392,16 @@ func (r *SegmentReader) Close() error {
 	r.closed = true
 	r.currentSegIdx = -1
 	r.currentData = nil
+	winFrom, winTo := r.raWinFrom, r.raWinTo
+	r.raWinFrom, r.raWinTo = 0, 0
 	r.readAheadCancel()
 	r.mu.Unlock()
+
+	// Read-ahead runs on the file context, so cancelling this reader's own
+	// context leaves its window downloading. Hand the window over rather than
+	// killing it: serving is per-request, and the next request is as likely to
+	// be the rest of the same read as a seek away from it.
+	r.file.abandonReadAheadWindow(winFrom, winTo)
 
 	logger.Debug("loader SegmentReader Close", "file", r.file.Name())
 	r.cancel()
