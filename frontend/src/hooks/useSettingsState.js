@@ -35,8 +35,6 @@ const ADVANCED_TAB_FIELDS = [
   'playback_startup_timeout_seconds',
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
-  'speculative_preprobing_max_attempts',
-  'speculative_pre_probing_count',
   'mute_error_video',
   'memory_limit_mb',
   'availnzb_mode',
@@ -315,11 +313,6 @@ export function useSettingsState({
       trimmedFullData.session_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(sessionTtl) ? 30 : sessionTtl))
       const postPlaybackTtl = Number(trimmedFullData.session_post_playback_ttl_minutes)
       trimmedFullData.session_post_playback_ttl_minutes = Math.min(1440, Math.max(1, Number.isNaN(postPlaybackTtl) ? 240 : postPlaybackTtl))
-      const preProbeMaxAttempts = Number(trimmedFullData.speculative_preprobing_max_attempts ?? trimmedFullData.speculative_pre_probing_count)
-      const sanitizedAttempts = Math.min(5, Math.max(0, Number.isNaN(preProbeMaxAttempts) ? 3 : preProbeMaxAttempts))
-      trimmedFullData.speculative_preprobing_max_attempts = sanitizedAttempts
-      trimmedFullData.speculative_pre_probing_count = sanitizedAttempts
-
       const libraryMaxItems = Number(trimmedFullData.library_max_items)
       trimmedFullData.library_max_items = Math.max(10, Number.isNaN(libraryMaxItems) ? 5000 : libraryMaxItems)
       const libraryMaxSizeMB = Number(trimmedFullData.library_max_size_mb)

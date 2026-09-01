@@ -35,7 +35,7 @@ type statCapableFile interface {
 
 // verifySelectedFileArticlesDense STATs the SELECTED file's volumes densely:
 // every article of the first volumes (startup window) plus spread samples in
-// every remaining volume. It runs during speculative pre-probing only — a
+// every remaining volume. It runs during preloading only — a
 // definitive miss (430 on all providers) rejects the release before it is ever
 // offered, instead of failing mid-playback.
 //
@@ -180,7 +180,7 @@ func VerifySelectedFileArticlesDense(ctx context.Context, bp unpack.Blueprint) e
 
 	if miss != "" {
 		// Wrap ErrFirstSegmentUnavailable so the bad-release classification
-		// (preProbeConfirmsBadRelease → persistent verdict + AvailNZB report) fires.
+		// (preloadConfirmsBadRelease → persistent verdict + AvailNZB report) fires.
 		return fmt.Errorf("dense article verification: %s missing on all providers: %w", miss, ErrFirstSegmentUnavailable)
 	}
 	return nil

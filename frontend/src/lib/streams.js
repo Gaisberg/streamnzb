@@ -79,6 +79,7 @@ export function normalizeStreamDraft(draft) {
     combine_results: draft?.combine_results !== false,
     enable_failover: draft?.enable_failover !== false,
     variant_attempts: normalizeVariantAttempts(draft?.variant_attempts),
+    preload_attempts: normalizePreloadAttempts(draft?.preload_attempts),
     results_mode: normalizedFilterSortingMode === 'aiostreams' || draft?.results_mode === 'display_all' ? 'display_all' : 'combined_stream',
     auto_add_providers: draft?.auto_add_providers === true,
     auto_add_indexers: draft?.auto_add_indexers === true,
@@ -109,6 +110,7 @@ export function buildStreamDraft(stream) {
     combine_results: stream?.combine_results,
     enable_failover: stream?.enable_failover,
     variant_attempts: stream?.variant_attempts,
+    preload_attempts: stream?.preload_attempts,
     results_mode: stream?.results_mode,
     auto_add_providers: stream?.auto_add_providers,
     auto_add_indexers: stream?.auto_add_indexers,
@@ -147,6 +149,7 @@ export function buildStreamStateFromDraft(username, token, draft, existingOverri
     combine_results: draft.combine_results,
     enable_failover: draft.enable_failover,
     variant_attempts: draft.variant_attempts,
+    preload_attempts: draft.preload_attempts ?? null,
     results_mode: draft.results_mode,
     auto_add_providers: draft.auto_add_providers,
     auto_add_indexers: draft.auto_add_indexers,
@@ -245,6 +248,26 @@ export function variantAttemptsLabel(value) {
   // 0 is "use the backend default", which is Merge only.
   if (attempts <= 1) return 'Merge only'
   return `${attempts} copies`
+}
+
+// PRELOAD_ATTEMPTS_DEFAULT mirrors config.DefaultSpeculativePreProbingMaxAttempts:
+// the count a stream inherits when it has no preload_attempts of its own (null).
+export const PRELOAD_ATTEMPTS_DEFAULT = 3
+
+// normalizePreloadAttempts keeps null as "inherit the default" and clamps an
+// explicit count to the backend's supported 0-5 range.
+export function normalizePreloadAttempts(value) {
+  if (value == null || value === '') return null
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return null
+  return Math.min(5, Math.max(0, parsed))
+}
+
+export function preloadAttemptsLabel(value) {
+  const attempts = normalizePreloadAttempts(value)
+  if (attempts == null) return `Default (${PRELOAD_ATTEMPTS_DEFAULT})`
+  if (attempts === 0) return 'Off'
+  return attempts === 1 ? '1 result' : `${attempts} results`
 }
 
 export function applyFilterSortingMode(current, nextMode, profileName = '') {

@@ -1244,10 +1244,10 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig
 	requestedSessionID := strings.TrimPrefix(r.URL.Path, "/play/")
 	logger.Debug("Play request", "session", requestedSessionID)
 
-	// The user committed to a stream; stop any speculative pre-probe sweep for
+	// The user committed to a stream; stop any preload sweep for
 	// this content so it stops competing with interactive playback for NNTP
 	// connections.
-	s.cancelPreProbeForContentSlot(requestedSessionID)
+	s.cancelPreloadForContentSlot(requestedSessionID)
 
 	resolved, ok := s.resolvePlaybackSlot(w, r, streamConfig, requestedSessionID)
 	if !ok {
@@ -1578,8 +1578,8 @@ func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome 
 // reportBadReleaseOutcome runs the shared bad-release ritual: derive the
 // default outcome, report to AvailNZB when permitted, then apply the verdict
 // to the playlist/raw caches. requireReportGate preserves the serve-path rule
-// that only definitive failures reach AvailNZB; the speculative pre-probe
-// path gates on preProbeConfirmsBadRelease before calling and passes false.
+// that only definitive failures reach AvailNZB; the preload sweep
+// path gates on preloadConfirmsBadRelease before calling and passes false.
 //
 // copyOnly says the failure retires one NZB rather than the release behind it,
 // which is what a slot that still has an untried same-release copy needs: the
@@ -1625,7 +1625,7 @@ func conclusiveBadRelease(streamErr error) bool {
 	return true
 }
 
-// preProbeConfirmsBadRelease decides whether a speculative pre-probe failure is a
+// preloadConfirmsBadRelease decides whether a preload failure is a
 // confident bad-release signal worth poisoning the slot and reporting to AvailNZB.
 //
 // It extends the serve-time classifier with cause-aware detection: the forced-decode
@@ -1634,7 +1634,7 @@ func conclusiveBadRelease(streamErr error) bool {
 // counts as confirmed bad. Inconclusive failures (timeout, cancellation, or a merely
 // undecodable-on-client codec) do NOT match, so a transient blip never poisons a good
 // release.
-func (s *Server) preProbeConfirmsBadRelease(streamErr error) bool {
+func (s *Server) preloadConfirmsBadRelease(streamErr error) bool {
 	if streamErr == nil {
 		return false
 	}
@@ -2000,7 +2000,7 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 	// title is being watched (once per session; the stop with final progress
 	// comes from the serve teardown).
 	s.scrobbleSimklStart(sess)
-	// Populate the library from a real successful play, not just speculative
+	// Populate the library from a real successful play, not just preload
 	// pre-probe, so the cache reflects actual usage even when pre-probing is
 	// limited or disabled. Skip sessions already sourced from the library.
 	rel := sess.Release()
@@ -2043,14 +2043,14 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 	return true
 }
 
-func (s *Server) preProbeSessionSync(ctx context.Context, sess *session.Session) (bool, error) {
-	return s.playback.PreProbe(ctx, sess)
+func (s *Server) preloadSessionSync(ctx context.Context, sess *session.Session) (bool, error) {
+	return s.playback.Preload(ctx, sess)
 }
 
-// preProbeCacheKeyFromSlot derives the StreamSlotKey cache key from a slot path,
-// so the pre-probe cancel registry is keyed identically whether we register from a
+// preloadCacheKeyFromSlot derives the StreamSlotKey cache key from a slot path,
+// so the preload cancel registry is keyed identically whether we register from a
 // StreamSlotKey or cancel from a play request's session id.
-func preProbeCacheKeyFromSlot(slotPath string) string {
+func preloadCacheKeyFromSlot(slotPath string) string {
 	sid, ct, id, _, ok := parseStreamSlotID(slotPath)
 	if !ok {
 		return ""
@@ -2058,51 +2058,58 @@ func preProbeCacheKeyFromSlot(slotPath string) string {
 	return StreamSlotKey{StreamID: sid, ContentType: ct, ID: id}.CacheKey()
 }
 
-// preProbeCancelEntry boxes a cancel func so it can live in a sync.Map: func
+// preloadCancelEntry boxes a cancel func so it can live in a sync.Map: func
 // values are not comparable, so storing them bare would panic sync.Map's
 // CompareAndDelete. A pointer to this struct is compared by identity instead.
-type preProbeCancelEntry struct {
+type preloadCancelEntry struct {
 	cancel context.CancelFunc
 }
 
-// registerPreProbeCancel records the cancel func for an in-flight speculative
-// pre-probe sweep under cacheKey, cancelling any older sweep for the same content.
+// registerPreloadCancel records the cancel func for an in-flight preload
+// sweep under cacheKey, cancelling any older sweep for the same content.
 // The returned cleanup removes the registration (only if still ours).
-func (s *Server) registerPreProbeCancel(cacheKey string, cancel context.CancelFunc) func() {
+func (s *Server) registerPreloadCancel(cacheKey string, cancel context.CancelFunc) func() {
 	if cacheKey == "" {
 		return func() {}
 	}
-	entry := &preProbeCancelEntry{cancel: cancel}
-	if prev, loaded := s.preProbeCancels.Swap(cacheKey, entry); loaded {
-		if pe, ok := prev.(*preProbeCancelEntry); ok && pe != nil && pe.cancel != nil {
+	entry := &preloadCancelEntry{cancel: cancel}
+	if prev, loaded := s.preloadCancels.Swap(cacheKey, entry); loaded {
+		if pe, ok := prev.(*preloadCancelEntry); ok && pe != nil && pe.cancel != nil {
 			pe.cancel()
 		}
 	}
-	return func() { s.preProbeCancels.CompareAndDelete(cacheKey, entry) }
+	return func() { s.preloadCancels.CompareAndDelete(cacheKey, entry) }
 }
 
-// cancelPreProbeForContentSlot cancels any in-flight speculative pre-probe sweep
+// cancelPreloadForContentSlot cancels any in-flight preload sweep
 // for the content addressed by slotPath. Called when real playback starts so the
-// speculative sweep stops competing for NNTP connections with interactive startup.
-func (s *Server) cancelPreProbeForContentSlot(slotPath string) {
-	cacheKey := preProbeCacheKeyFromSlot(slotPath)
+// preload sweep stops competing for NNTP connections with interactive startup.
+func (s *Server) cancelPreloadForContentSlot(slotPath string) {
+	cacheKey := preloadCacheKeyFromSlot(slotPath)
 	if cacheKey == "" {
 		return
 	}
-	if v, ok := s.preProbeCancels.LoadAndDelete(cacheKey); ok {
-		if pe, ok := v.(*preProbeCancelEntry); ok && pe != nil && pe.cancel != nil {
-			logger.Debug("Cancelling speculative pre-probe; real playback started", "key", cacheKey)
+	if v, ok := s.preloadCancels.LoadAndDelete(cacheKey); ok {
+		if pe, ok := v.(*preloadCancelEntry); ok && pe != nil && pe.cancel != nil {
+			logger.Debug("Cancelling preload; real playback started", "key", cacheKey)
 			pe.cancel()
 		}
 	}
 }
 
-// preProbeSlots warms up to maxAttempts slots in order, stopping at the first
+// preloadSlots warms up to maxAttempts slots in order, stopping at the first
 // one that probes clean. Failures that definitively prove a bad release are
 // reported; anything inconclusive just moves to the next slot. Runs in the
 // background under a 3-minute budget, cancellable via cacheKey when real
 // playback starts.
-func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts int, stream *auth.Stream) {
+//
+// list is the play list the slots came from, when the caller has it; a slot
+// with no live session is materialized from it (or from a lazily bootstrapped
+// list) exactly the way a play request would. Sessions stopped being created
+// eagerly per candidate when the /stream path was slimmed down, and this loop
+// kept asking GetSession only — every slot silently skipped, so preloading has
+// been a no-op since.
+func (s *Server) preloadSlots(cacheKey string, slotPaths []string, list *playlistResult, maxAttempts int, stream *auth.Stream) {
 	if maxAttempts <= 0 || len(slotPaths) == 0 {
 		return
 	}
@@ -2110,34 +2117,51 @@ func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		defer s.registerPreProbeCancel(cacheKey, cancel)()
+		defer s.registerPreloadCancel(cacheKey, cancel)()
 
 		attempts := 0
 		for _, slotPath := range slotPaths {
 			if attempts >= maxAttempts {
 				return
 			}
+			if ctx.Err() != nil {
+				return
+			}
 			sess, err := s.sessionManager.GetSession(slotPath)
-			// Library-sourced releases were already validated when stored, so
-			// re-probing buys nothing — and skipping one no longer consumes an
-			// attempt, so the budget is spent on candidates a probe can
-			// actually tell us something about.
-			if rel := sess.Release(); err != nil || (rel != nil && rel.IsLibraryResult()) {
-				if err == nil {
-					logger.Debug("Skipping speculative pre-probing for library candidate", "title", sess.ReportReleaseName())
-				}
+			if err != nil {
+				sess, err = s.resolvePreloadSession(ctx, slotPath, &list, stream)
+			}
+			if err != nil {
+				logger.Debug("Preload: slot could not be resolved to a session", "slot", slotPath, "err", err)
 				continue
 			}
+			// A library entry with a good verdict IS what the sweep walks the
+			// list to find: a verified candidate whose startup is a cache
+			// replay. Reaching one means everything above it has been dealt
+			// with and the pick is covered — preloading anything below it
+			// would spend indexer API downloads on releases behind a
+			// known-good one. (Skipping-and-continuing here is what used to
+			// burn the whole budget below a library #1.)
+			//
+			// A pending entry — stored but never validated — falls through and
+			// is preloaded like any other candidate. It is the cheapest one on
+			// the list: its NZB comes from the database, not an indexer API
+			// hit, and a successful preload promotes it to good.
+			if rel := sess.Release(); rel != nil && rel.IsLibraryResult() && libraryReleaseValidated(rel) {
+				logger.Info("Preload stopping at validated library candidate",
+					"attempt", attempts, "slot", sess.ID, "title", sess.ReportReleaseName())
+				return
+			}
 			attempts++
-			ok, probeErr := s.preProbeSessionSync(ctx, sess)
+			ok, probeErr := s.preloadSessionSync(ctx, sess)
 			if ok {
-				logger.Info("Speculative failover pre-probing found ready stream candidate",
+				logger.Info("Preload found ready stream candidate",
 					"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "title", sess.ReportReleaseName())
 				return
 			}
-			logger.Debug("Speculative failover pre-probing candidate failed, trying next failover candidate",
+			logger.Debug("Preload candidate failed, trying next failover candidate",
 				"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
-			if s.preProbeConfirmsBadRelease(probeErr) {
+			if s.preloadConfirmsBadRelease(probeErr) {
 				// Moving the slot on to another copy of the same release keeps
 				// the verdict on the NZB that failed. The real play then starts
 				// on a copy the probe never condemned.
@@ -2148,10 +2172,43 @@ func (s *Server) preProbeSlots(cacheKey string, slotPaths []string, maxAttempts 
 	}()
 }
 
-func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
+// libraryReleaseValidated reports whether rel is a library-sourced release
+// stored with a good verdict — validated when stored (or on a played-through
+// stream), as opposed to pending, which only means the mapping work was saved.
+func libraryReleaseValidated(rel *release.Release) bool {
+	if rel == nil || !rel.IsLibraryResult() {
+		return false
+	}
+	item, ok := rel.SourceIndexer.(*persistence.LibraryItem)
+	return ok && item != nil && item.Status == persistence.LibraryStatusGood
+}
+
+// resolvePreloadSession materializes the deferred session for slotPath from the
+// play list, bootstrapping the (cached) list once when the caller did not have
+// one — the /failover-order entry point only has slot ids.
+func (s *Server) resolvePreloadSession(ctx context.Context, slotPath string, listRef **playlistResult, stream *auth.Stream) (*session.Session, error) {
+	sid, contentType, id, index, ok := parseStreamSlotID(slotPath)
+	if !ok {
+		return nil, fmt.Errorf("invalid slot path %q", slotPath)
+	}
+	key := StreamSlotKey{StreamID: sid, ContentType: contentType, ID: id}
+	if key.StreamID == "" {
+		key.StreamID = defaultStreamID
+	}
+	if *listRef == nil {
+		list, err := s.bootstrapPlaylistForPlay(ctx, key, stream)
+		if err != nil {
+			return nil, err
+		}
+		*listRef = list
+	}
+	return s.resolveStreamSlotFromPlaylist(key, index, *listRef, stream)
+}
+
+func (s *Server) preloadTopPlaylistCandidates(key StreamSlotKey, list *playlistResult, stream *auth.Stream) {
 	rt := s.runtime()
 	if streamUsesAIOStreamsProfile(stream) {
-		logger.Debug("Skipping speculative pre-probing in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
+		logger.Debug("Skipping preload in /stream for AIOStreams profile; waiting for /failover-order", "stream", key.StreamID)
 		return
 	}
 	if list == nil || len(list.Candidates) == 0 {
@@ -2168,15 +2225,15 @@ func (s *Server) speculativelyPreProbeTopPlaylistCandidates(key StreamSlotKey, l
 		slotPaths[i] = key.SlotPath(i)
 	}
 
-	s.preProbeSlots(key.CacheKey(), slotPaths, rt.config.EffectiveSpeculativePreProbingMaxAttempts(), stream)
+	s.preloadSlots(key.CacheKey(), slotPaths, list, stream.EffectivePreloadAttempts(rt.config), stream)
 }
 
-func (s *Server) speculativelyPreProbeTopFailoverOrder(order []string, stream *auth.Stream) {
+func (s *Server) preloadTopFailoverOrder(order []string, stream *auth.Stream) {
 	rt := s.runtime()
 	if len(order) == 0 {
 		return
 	}
-	s.preProbeSlots(preProbeCacheKeyFromSlot(order[0]), order, rt.config.EffectiveSpeculativePreProbingMaxAttempts(), stream)
+	s.preloadSlots(preloadCacheKeyFromSlot(order[0]), order, nil, stream.EffectivePreloadAttempts(rt.config), stream)
 }
 
 // sessionUnpackFiles adapts a session's loader files to the archive layer's

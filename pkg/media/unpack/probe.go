@@ -96,7 +96,7 @@ func ValidateMediaStreamHasVideoWithFFprobe(stream ReadSeekCloser, fileName stri
 // ValidateOptions tunes stream validation behavior.
 type ValidateOptions struct {
 	// ForceDecode makes ffprobe pull and decode several MB of real payload instead
-	// of stopping at the container header. Use in speculative pre-probing to catch
+	// of stopping at the container header. Use in preloading (speculative pre-probe) to catch
 	// releases with article holes past the header (e.g. 430 No Such Article).
 	ForceDecode bool
 	// DecodeFrames overrides the forced-decode frame count (0 => package default).

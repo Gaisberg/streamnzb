@@ -27,6 +27,7 @@ import {
   searchRequestsLabel,
   VARIANT_ATTEMPTS_UNLIMITED,
   variantAttemptsLabel,
+  preloadAttemptsLabel,
   streamsFromMap,
   tabHasError,
   uniquePreserveOrder,
@@ -762,6 +763,38 @@ function StreamDialog({
               </div>
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
+                  <div className="text-sm font-medium">Preloading</div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" className="h-9 w-40 justify-between">
+                        <span>{preloadAttemptsLabel(draft.preload_attempts)}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, preload_attempts: null }))}>
+                        {preloadAttemptsLabel(null)}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, preload_attempts: 0 }))}>
+                        Off
+                      </DropdownMenuItem>
+                      {[1, 2, 3, 4, 5].map((count) => (
+                        <DropdownMenuItem key={count} onClick={() => setDraft((current) => ({ ...current, preload_attempts: count }))}>
+                          {count === 1 ? '1 result' : `${count} results`}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  After a search, the top results are prepared in the background — downloaded, mapped and
+                  verified — so the one you pick starts almost instantly and broken releases are weeded out
+                  before you ever see a spinner. This is how many results are preloaded per search; each
+                  preloaded result spends one indexer API download. Off disables preloading for this stream.
+                </p>
+              </div>
+              <div className="rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between gap-4">
                   <div className="text-sm font-medium">Filter AvailNZB unavailable</div>
                   <Switch
                     checked={availNZBEnabled && draft.filter_availnzb === true}
@@ -956,6 +989,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         combine_results: draft.combine_results,
         enable_failover: draft.enable_failover,
         variant_attempts: draft.variant_attempts,
+        preload_attempts: draft.preload_attempts ?? null,
         results_mode: draft.results_mode,
         auto_add_providers: draft.auto_add_providers,
         auto_add_indexers: draft.auto_add_indexers,

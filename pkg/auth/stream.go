@@ -90,6 +90,11 @@ type Stream struct {
 	// config.StreamEntry; the two structs are converted into each other, so
 	// their fields must stay in step.
 	AddonName string `json:"addon_name,omitempty"`
+	// PreloadAttempts is how many top search results this stream preloads in
+	// the background after a search. nil inherits the deployment default; 0
+	// disables preloading. See config.StreamEntry; the two structs are
+	// converted into each other, so their fields must stay in step.
+	PreloadAttempts *int `json:"preload_attempts,omitempty"`
 }
 
 // ActiveProviderSelections lists the providers this stream actually uses, in
@@ -136,6 +141,17 @@ func (s *Stream) EffectiveUnairedSearchGate() bool {
 		return true
 	}
 	return *s.UnairedSearchGate
+}
+
+// EffectivePreloadAttempts is how many of this stream's top search results are
+// preloaded in the background after a search, clamped to the supported range.
+// nil falls back to the deployment default, which keeps configs written before
+// the setting moved to the stream behaving exactly as they did.
+func (s *Stream) EffectivePreloadAttempts(cfg *config.Config) int {
+	if s == nil || s.PreloadAttempts == nil {
+		return cfg.EffectiveSpeculativePreProbingMaxAttempts()
+	}
+	return config.ClampPreloadAttempts(*s.PreloadAttempts)
 }
 
 // EffectiveVariantAttempts is how many copies of one release playback may try
@@ -735,6 +751,7 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.ResultNameTemplate = strings.TrimSpace(streamConfig.ResultNameTemplate)
 	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)
 	stream.AddonName = strings.TrimSpace(streamConfig.AddonName)
+	stream.PreloadAttempts = streamConfig.PreloadAttempts
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)

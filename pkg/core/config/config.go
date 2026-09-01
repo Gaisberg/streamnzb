@@ -416,6 +416,12 @@ func normalizeSessionPostPlaybackTTLMinutes(ttl int) int {
 	return ttl
 }
 
+// ClampPreloadAttempts bounds a per-stream preload attempt count the same way
+// the deployment default is bounded: never negative, at most 5.
+func ClampPreloadAttempts(count int) int {
+	return normalizeSpeculativePreProbingCount(count)
+}
+
 func normalizeSpeculativePreProbingCount(count int) int {
 	if count < 0 {
 		return 0
@@ -928,6 +934,12 @@ type StreamEntry struct {
 	// AddonName replaces the manifest name this stream reports to clients.
 	// Empty keeps the default, which is the service name plus the stream name.
 	AddonName string `json:"addon_name,omitempty"`
+	// PreloadAttempts is how many of this stream's top search results are
+	// preloaded in the background after a search — downloaded, mapped and
+	// validated so the pick starts instantly. nil inherits the deployment
+	// default (EffectiveSpeculativePreProbingMaxAttempts, historically a
+	// global setting); 0 disables preloading for this stream.
+	PreloadAttempts *int `json:"preload_attempts,omitempty"`
 }
 
 // DefaultLibraryScoreBonus is the ranking bonus added to cached library

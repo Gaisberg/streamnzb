@@ -66,7 +66,7 @@ type Server struct {
 	playlistCache     sync.Map // cache key → *playlistCacheEntry
 	rawSearchCache    sync.Map // raw key → *rawSearchCacheEntry
 	nextReleaseIndex  sync.Map // streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
-	preProbeCancels   sync.Map // StreamSlotKey.CacheKey() → *preProbeCancelEntry; cancels the in-flight speculative pre-probe sweep when real playback starts
+	preloadCancels    sync.Map // StreamSlotKey.CacheKey() → *preloadCancelEntry; cancels the in-flight preload sweep when real playback starts
 	webHandler        http.Handler
 	apiHandler        http.Handler
 	playback          *playback.Service

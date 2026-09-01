@@ -231,7 +231,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 
 	json.NewEncoder(w).Encode(response)
 
-	go s.speculativelyPreProbeTopPlaylistCandidates(key, list, stream)
+	go s.preloadTopPlaylistCandidates(key, list, stream)
 }
 
 type failoverOrderRequest struct {
@@ -326,7 +326,7 @@ func (s *Server) handleFailoverOrder(w http.ResponseWriter, r *http.Request, str
 	}
 	token := streamToken(stream)
 	s.sessionManager.SetStreamFailoverOrder(token, streamKey, order)
-	go s.speculativelyPreProbeTopFailoverOrder(order, stream)
+	go s.preloadTopFailoverOrder(order, stream)
 	sample := ""
 	if len(order) > 0 {
 		sample = order[0]

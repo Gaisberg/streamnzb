@@ -710,10 +710,11 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	return stream, name, size, nil
 }
 
-// PreProbe speculatively downloads, maps and strictly validates a session's
+// Preload speculatively downloads, maps and strictly validates a session's
 // media before any client asks for it: NZB fetch, volume STAT sampling, dense
 // article verification of the selected file, and a forced-decode ffprobe run.
-func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, error) {
+// Users see this as "preloading" the top search results.
+func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, error) {
 	if sess == nil {
 		return false, errors.New("nil session")
 	}
@@ -723,7 +724,7 @@ func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, er
 	}
 
 	releaseTitle := sess.ReportReleaseName()
-	logger.Debug("Speculative pre-probing starting for session", "slot", sess.ID, "title", releaseTitle)
+	logger.Debug("Preloading starting for session", "slot", sess.ID, "title", releaseTitle)
 
 	// 1. Fetch the NZB and construct loader files
 	if _, err := sess.GetOrDownloadNZBWithContext(ctx, p.Sessions); err != nil {
@@ -784,24 +785,24 @@ func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, er
 	// first-segment sampling (e.g. 121MB into an 8.7GB release) before the
 	// release is ever offered, and before the forced decode downloads anything.
 	if err := VerifySelectedFileArticlesDense(ctx, bp); err != nil {
-		logger.Warn("Speculative pre-probing rejected release via dense article STAT", "slot", sess.ID, "file", name, "err", err)
+		logger.Warn("Preloading rejected release via dense article STAT", "slot", sess.ID, "file", name, "err", err)
 		if streamReader != nil {
 			streamReader.Close()
 		}
-		return false, fmt.Errorf("speculative pre-probing rejected stream: %w", err)
+		return false, fmt.Errorf("preloading rejected stream: %w", err)
 	}
 
-	logger.Info("Speculative pre-probing executing FFprobe validation", "slot", sess.ID, "file", name)
+	logger.Info("Preloading executing FFprobe validation", "slot", sess.ID, "file", name)
 	probeRes, err := unpack.ValidateMediaStreamWithOptions(ctx, streamReader, name, p.ffprobePath(), unpack.ValidateOptions{
 		ForceDecode:   true,
 		StrictFFprobe: true,
 	})
 	if err != nil {
-		logger.Warn("Speculative pre-probing rejected audio-only or unplayable stream via FFprobe", "slot", sess.ID, "name", name, "err", err)
+		logger.Warn("Preloading rejected audio-only or unplayable stream via FFprobe", "slot", sess.ID, "name", name, "err", err)
 		if streamReader != nil {
 			streamReader.Close()
 		}
-		return false, fmt.Errorf("speculative pre-probing rejected stream: %w", err)
+		return false, fmt.Errorf("preloading rejected stream: %w", err)
 	}
 	if probeRes != nil {
 		sess.SetMediaCapabilities(MediaCapabilitiesFromProbe(probeRes))
@@ -816,7 +817,7 @@ func (p *Service) PreProbe(ctx context.Context, sess *session.Session) (bool, er
 		streamReader.Close()
 	}
 
-	logger.Info("Speculative pre-probing successfully completed", "slot", sess.ID, "title", releaseTitle, "file", name, "size", size)
+	logger.Info("Preloading successfully completed", "slot", sess.ID, "title", releaseTitle, "file", name, "size", size)
 	return true, nil
 }
 

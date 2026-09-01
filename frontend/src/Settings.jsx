@@ -130,8 +130,6 @@ function Settings({
         nzb_history_retention_days: initialConfig.nzb_history_retention_days == null ? 90 : Number(initialConfig.nzb_history_retention_days),
         session_ttl_minutes: initialConfig.session_ttl_minutes == null ? 30 : Number(initialConfig.session_ttl_minutes),
         session_post_playback_ttl_minutes: initialConfig.session_post_playback_ttl_minutes == null ? 240 : Number(initialConfig.session_post_playback_ttl_minutes),
-        speculative_preprobing_max_attempts: (initialConfig.speculative_preprobing_max_attempts ?? initialConfig.speculative_pre_probing_count) == null ? 3 : Number(initialConfig.speculative_preprobing_max_attempts ?? initialConfig.speculative_pre_probing_count),
-        speculative_pre_probing_count: (initialConfig.speculative_preprobing_max_attempts ?? initialConfig.speculative_pre_probing_count) == null ? 3 : Number(initialConfig.speculative_preprobing_max_attempts ?? initialConfig.speculative_pre_probing_count),
         mute_error_video: initialConfig.mute_error_video === true,
         providers: initialConfig.providers?.map((p, index) => ({
           ...p,

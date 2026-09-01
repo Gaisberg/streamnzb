@@ -75,6 +75,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"result_name_template":        d.ResultNameTemplate,
 		"result_description_template": d.ResultDescriptionTemplate,
 		"addon_name":                  d.AddonName,
+		"preload_attempts":            d.PreloadAttempts,
 	}
 }
 
@@ -249,6 +250,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		ResultNameTemplate        string                                `json:"result_name_template"`
 		ResultDescriptionTemplate string                                `json:"result_description_template"`
 		AddonName                 string                                `json:"addon_name"`
+		PreloadAttempts           *int                                  `json:"preload_attempts"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&streamConfigs); err != nil {
 		s.writeSaveStatus(w, "error", "Invalid stream config data", nil)
@@ -317,6 +319,7 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			ResultNameTemplate:        dc.ResultNameTemplate,
 			ResultDescriptionTemplate: dc.ResultDescriptionTemplate,
 			AddonName:                 stremio.NormalizeAddonName(dc.AddonName),
+			PreloadAttempts:           dc.PreloadAttempts,
 		}); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to update stream config for %s: %v", username, err))
 			continue

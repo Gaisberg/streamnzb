@@ -17,7 +17,7 @@ import { cn, selectClass } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'search_debug_stream', 'keep_log_files'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'speculative_preprobing_max_attempts', 'mute_error_video'],
+  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'mute_error_video'],
   library: ['library_search_mode', 'library_max_items', 'library_max_size_mb', 'library_auto_save'],
   availnzb: ['availnzb_mode'],
 }
@@ -36,10 +36,6 @@ function pickInitialValues(values = {}) {
   const parsedSessionPostPlaybackTtl = values.session_post_playback_ttl_minutes == null
     ? 240
     : Number(values.session_post_playback_ttl_minutes)
-  const rawPreProbe = values.speculative_preprobing_max_attempts ?? values.speculative_pre_probing_count
-  const parsedSpeculativePreProbingMaxAttempts = rawPreProbe == null
-    ? 3
-    : Number(rawPreProbe)
   return {
     log_level: values.log_level ?? 'INFO',
     verbose_nntp_logging: values.verbose_nntp_logging === true,
@@ -49,7 +45,6 @@ function pickInitialValues(values = {}) {
     playback_startup_timeout_seconds: Number.isFinite(parsedPlaybackStartupTimeout) ? parsedPlaybackStartupTimeout : 5,
     session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
-    speculative_preprobing_max_attempts: Number.isFinite(parsedSpeculativePreProbingMaxAttempts) ? parsedSpeculativePreProbingMaxAttempts : 3,
     mute_error_video: values.mute_error_video === true,
     library_search_mode: values.library_search_mode ?? 'combine',
     library_max_items: Number(values.library_max_items ?? 5000) || 5000,
@@ -319,34 +314,6 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                       </div>
                       <FormDescription className="mt-3">
                         How long a session stays in memory after active playback ends (e.g. when paused). Keeping this long prevents needing to reload the catalog to resume.
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={control} name="speculative_preprobing_max_attempts" render={({ field }) => (
-                    <FormItem className="relative rounded-none border-0 p-3">
-                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-                      <div className={stackedFieldRowClass}>
-                        <FormLabel className={cn(labelClass, 'sm:flex-1')}>Speculative pre-probing max attempts</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={5}
-                            className={`h-9 ${controlMediumClass}`}
-                            {...field}
-                            value={field.value ?? ''}
-                            onChange={e => {
-                              const v = e.target.value;
-                              const next = Number(v);
-                              field.onChange(v === '' ? 3 : Math.min(5, Math.max(0, Number.isNaN(next) ? 3 : next)))
-                            }}
-                            onBlur={blurCommit(field, 'speculative_preprobing_max_attempts')}
-                          />
-                        </FormControl>
-                      </div>
-                      <FormDescription className="mt-3">
-                        Maximum number of failover pre-probe attempts to test sequentially until a verified working stream is found when loading a stream list. Set 0 to disable. Pre-probing reduces cold-start latency but consumes indexer API downloads.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
