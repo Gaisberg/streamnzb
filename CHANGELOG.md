@@ -1,5 +1,29 @@
 # Changelog
 
+## [5.16.0](https://github.com/Gaisberg/streamnzb/compare/v5.15.0...v5.16.0) (2026-09-01)
+
+
+### Features
+
+* **frontend:** let a refresh apply only the changes you tick ([7fb7485](https://github.com/Gaisberg/streamnzb/commit/7fb7485482256f0ee8c45eb3323e92f508684d20))
+* **frontend:** offer curated community templates in the import dialogs ([ea71af3](https://github.com/Gaisberg/streamnzb/commit/ea71af31cd00e61466e067d37002f416b401e748))
+* **rules:** add a prune action that filters on final score and rank ([4afd62e](https://github.com/Gaisberg/streamnzb/commit/4afd62ee1c4f8f30680e9bee957f3a8fb72e5c49)), closes [#247](https://github.com/Gaisberg/streamnzb/issues/247)
+* **rules:** compare a prune aggregate against the release being judged ([7fb7485](https://github.com/Gaisberg/streamnzb/commit/7fb7485482256f0ee8c45eb3323e92f508684d20))
+* **rules:** run profile rules on jhin's engine instead of the homegrown expr compiler ([f1d55a2](https://github.com/Gaisberg/streamnzb/commit/f1d55a294b98f4ae7c685ea17cec230b1d12a2bc))
+
+
+### Bug Fixes
+
+* **indexer:** meter daily budgets over a trailing 24h window governed by server usage headers ([05ffb08](https://github.com/Gaisberg/streamnzb/commit/05ffb0894f2153e998545bcbd86bc76e004ea546))
+* **stremio:** resolve preload sessions from the play list and move preloading to per-stream settings ([d910128](https://github.com/Gaisberg/streamnzb/commit/d91012807a8d1337e944256c781844e6eff45417))
+
+
+### Performance Improvements
+
+* **loader:** hand a closed reader's read-ahead window to the next one ([96f0e83](https://github.com/Gaisberg/streamnzb/commit/96f0e83e9c370ac6fbeb9eb1d199a4fe8a9e5fba))
+* **loader:** size playback read-ahead against the whole stream, not one volume ([937cbf3](https://github.com/Gaisberg/streamnzb/commit/937cbf33471a44d0b0595aa19ddbf85e1ca38dff))
+* **media:** improve the streaming path from article decode to playback ([402b1bb](https://github.com/Gaisberg/streamnzb/commit/402b1bb83bcb7c1479eb4de2012ebbb3df399f05))
+
 ## [5.15.0](https://github.com/Gaisberg/streamnzb/compare/v5.14.0...v5.15.0) (2026-08-30)
 
 
