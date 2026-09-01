@@ -79,6 +79,10 @@ type Profile struct {
 	blockPassworded bool
 	// rules are the profile's named conditions, compiled once.
 	rules *rules.Set
+	// pruneRules are the profile's prune rules, compiled against the
+	// post-scoring vocabulary. They run after the score floor and the sort,
+	// which is what lets a condition read finalScore and finalRank.
+	pruneRules *rules.Set
 	// minRank is the score floor. It is applied here rather than left to jhin
 	// because jhin only ever sees what the title earned: the NZB attributes,
 	// the library bonus and the rules all pay out afterwards, and a floor that
@@ -89,7 +93,7 @@ type Profile struct {
 // NeedsSeadex reports whether any of the profile's rules read the seadex
 // tier, so the caller can skip the SeaDex lookup when nothing would use it.
 func (p *Profile) NeedsSeadex() bool {
-	return p != nil && p.rules.NeedsSeadex()
+	return p != nil && (p.rules.NeedsSeadex() || p.pruneRules.NeedsSeadex())
 }
 
 func NewService() *Service {
@@ -154,7 +158,7 @@ func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Prof
 	if err != nil {
 		return nil, err
 	}
-	ruleSet, err := rules.Compile(fp.Rules, library...)
+	ruleSet, pruneSet, err := rules.CompileStaged(fp.Rules, library...)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +178,7 @@ func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Prof
 		scoring:           scoring,
 		blockPassworded:   fp.EffectiveBlockPassworded(),
 		rules:             ruleSet,
+		pruneRules:        pruneSet,
 		minRank:           spec.Options.MinRank,
 	}, nil
 }
@@ -217,8 +222,8 @@ type Result struct {
 	// limits are the caps this release counts against, resolved after sorting.
 	limits []rules.LimitMatch
 	// skipped are the rules that could not be judged for this release, kept
-	// from the one evaluation applyRules runs so the preview reports exactly
-	// what the pipeline did.
+	// from the evaluations applyRules and applyPrune run so the preview
+	// reports exactly what the pipeline did.
 	skipped []string
 }
 
@@ -284,6 +289,8 @@ func (p *Profile) Apply(req Request, candidates []triage.Candidate, opts rank.Ra
 // in the order the score is built up: the NZB attribute limits reject, the
 // attribute scoring and the library bonus add points, the rules add more and
 // may reject, and only then does the score floor judge the finished number.
+// After the sort come the two stages that need the finished order: the prune
+// rules, which read finalScore and finalRank, and the caps.
 //
 // The order is the point. Every one of those stages used to run somewhere
 // downstream of the floor and of the sort, which meant the floor rejected on a
@@ -307,6 +314,11 @@ func (p *Profile) ApplyWithRejected(req Request, candidates []triage.Candidate, 
 		}
 	}
 	p.SortResults(kept)
+	// The prune pass runs on the sorted survivors, which is the moment
+	// finalScore and finalRank first mean anything. It runs before the caps so
+	// a pruned release does not consume a limit slot.
+	kept, pruned := p.applyPrune(req, kept)
+	rejected = append(rejected, pruned...)
 	// Caps are the last word, and they have to be: "keep the best three" is
 	// only meaningful once every point is in and the list is in order.
 	kept, capped := applyCaps(kept)
@@ -393,16 +405,7 @@ func (p *Profile) applyRules(req Request, results []Result) {
 	if p == nil || p.rules.Len() == 0 {
 		return
 	}
-	ctx := rules.Context{
-		Kind:             req.Kind,
-		IsAnime:          req.IsAnime,
-		Season:           req.Season,
-		Episode:          req.Episode,
-		Title:            req.Title,
-		Episodic:         req.Kind == KindSeries || req.Kind == KindAnimeShow,
-		IndexerDataKnown: req.Sample != nil && req.Sample.IndexerData,
-		Seadex:           req.Seadex,
-	}
+	ctx := req.ruleContext()
 	envs := make([]rules.Env, len(results))
 	for i := range results {
 		envs[i] = rules.BuildEnv(results[i].Candidate, results[i].Torrent.Data, ctx)
@@ -442,6 +445,71 @@ func (p *Profile) applyRules(req Request, results []Result) {
 			r.Torrent.Rejections = append(r.Torrent.Rejections, outcome.Rejections...)
 		}
 	}
+}
+
+// ruleContext is the per-request half of a rule environment, shared by the
+// scoring and prune passes.
+func (r Request) ruleContext() rules.Context {
+	return rules.Context{
+		Kind:             r.Kind,
+		IsAnime:          r.IsAnime,
+		Season:           r.Season,
+		Episode:          r.Episode,
+		Title:            r.Title,
+		Episodic:         r.Kind == KindSeries || r.Kind == KindAnimeShow,
+		IndexerDataKnown: r.Sample != nil && r.Sample.IndexerData,
+		Seadex:           r.Seadex,
+	}
+}
+
+// applyPrune evaluates the profile's prune rules over the sorted survivors —
+// the one place finalScore and finalRank exist. Each release sees its finished
+// score and its 1-based position; result-set conditions count over the whole
+// surviving set as the sort left it, before any prune rule fires, so pruning a
+// release never changes what another rule counted and the order of the rules
+// stays irrelevant. That is what makes "drop the weak only while six stronger
+// remain" a stable condition rather than a cascade.
+func (p *Profile) applyPrune(req Request, sorted []Result) (kept, dropped []Result) {
+	if p == nil || p.pruneRules.Len() == 0 {
+		return sorted, nil
+	}
+	ctx := req.ruleContext()
+	envs := make([]rules.Env, len(sorted))
+	for i := range sorted {
+		envs[i] = rules.BuildEnv(sorted[i].Candidate, sorted[i].Torrent.Data, ctx)
+		envs[i].FinalScore = sorted[i].Torrent.Rank
+		envs[i].FinalRank = i + 1
+	}
+	if p.pruneRules.HasAggregates() {
+		var state *rules.AggregateState
+		if req.AggregateTrace != nil {
+			var reports []rules.AggregateReport
+			state, reports = p.pruneRules.ReportAggregates(envs, req.Kind)
+			*req.AggregateTrace = append(*req.AggregateTrace, reports...)
+		} else {
+			state = p.pruneRules.ComputeAggregates(envs, req.Kind)
+		}
+		for i := range envs {
+			state.Inject(&envs[i])
+		}
+	}
+	kept = sorted[:0]
+	for i, r := range sorted {
+		outcome := p.pruneRules.Evaluate(envs[i], req.Kind)
+		// The scoring pass already filled Matched and skipped; the prune pass
+		// adds to the same report rather than replacing it.
+		r.Matched = append(r.Matched, outcome.Matched...)
+		r.skipped = append(r.skipped, outcome.Skipped...)
+		if len(outcome.Rejections) > 0 {
+			r.Torrent.Fetch = false
+			r.Torrent.Rejections = append(r.Torrent.Rejections, outcome.Rejections...)
+			r.Candidate.Verdict.Rejections = r.Torrent.Rejections
+			dropped = append(dropped, r)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, dropped
 }
 
 // applyMinRank enforces the profile's score floor on the finished score.

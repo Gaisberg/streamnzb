@@ -202,13 +202,17 @@ export const RULE_PRESETS = [
 // What a rule can do. Scoring moves a release, rejecting removes it, and
 // limiting caps how many of the matching ones you are offered — the one thing
 // no condition can say, because "the best three" is about the final score
-// order, which only exists after every rule has run. Defining does nothing at
-// all: the rule exists to be referenced through matched(), so a tier list of
-// release groups has one home instead of a copy in every rule that cares.
+// order, which only exists after every rule has run. Pruning is rejecting
+// after that order exists: its condition runs once scoring is done and can
+// read finalScore and finalRank, so it can drop the weak tail only when
+// stronger alternatives remain. Defining does nothing at all: the rule exists
+// to be referenced through matched(), so a tier list of release groups has one
+// home instead of a copy in every rule that cares.
 export const RULE_ACTIONS = [
   { key: "score", label: "Score" },
   { key: "reject", label: "Reject" },
   { key: "limit", label: "Limit" },
+  { key: "prune", label: "Prune" },
   { key: "define", label: "Define" },
 ]
 
@@ -369,6 +373,14 @@ export const RULE_ATTRIBUTES = [
     ],
   },
   {
+    title: "After scoring",
+    note: "finalScore and finalRank are the finished verdict: the accumulated score, and the release's position (1 = best) among the surviving results sorted by it. They only exist once every rule has run, so only a prune rule can read them — a score or reject rule using either is refused. Combined with count(), a prune rule can drop the weak tail only while stronger alternatives remain: prune if finalScore < -500 and count(finalScore >= -500) >= 6.",
+    items: [
+      { name: "finalScore", type: "number", example: "the release's final accumulated score" },
+      { name: "finalRank", type: "number", example: "finalRank > 20 — position in the surviving results, 1 is best" },
+    ],
+  },
+  {
     tier: "inferred",
     title: "About the request",
     items: [
@@ -408,12 +420,13 @@ export function formatScore(value) {
   return value > 0 ? `+${value.toLocaleString()}` : value.toLocaleString()
 }
 
-// What a rule does. Four actions, not two: anything unrecorded is a score
-// rule, but "reject", "limit" and "define" are not interchangeable, and
-// reading the action as a boolean is what made a limit rule export as a score
-// rule worth nothing.
+// What a rule does. Five actions, not two: anything unrecorded is a score
+// rule, but "reject", "limit", "prune" and "define" are not interchangeable,
+// and reading the action as a boolean is what made a limit rule export as a
+// score rule worth nothing.
 export function ruleAction(rule) {
-  return rule?.action === "reject" || rule?.action === "limit" || rule?.action === "define"
+  return rule?.action === "reject" || rule?.action === "limit" ||
+    rule?.action === "prune" || rule?.action === "define"
     ? rule.action
     : "score"
 }
@@ -454,7 +467,7 @@ function exportedProfile(profile) {
     rules: (profile.rules || []).map((rule) => {
       const out = { name: rule.name || "", when: rule.when || "" }
       const action = ruleAction(rule)
-      if (action === "reject" || action === "define") {
+      if (action === "reject" || action === "prune" || action === "define") {
         out.action = action
       } else if (action === "limit") {
         out.action = "limit"
@@ -558,7 +571,7 @@ function profileFromParsed(parsed) {
     }
     const out = { name: String(rule.name || `Rule ${i + 1}`), when: rule.when }
     const action = ruleAction(rule)
-    if (action === "reject" || action === "define") {
+    if (action === "reject" || action === "prune" || action === "define") {
       out.action = action
     } else if (action === "limit") {
       // The server refuses a profile whose limit keeps nothing, so a count
@@ -593,6 +606,7 @@ function profileFromParsed(parsed) {
 //   DV without HDR fallback: reject if dolbyVision and not hdrFallback
 //   4K cap [off]: keep 3 if resolution == "2160p"
 //   Per resolution: keep 3 per resolution if true
+//   Weak tail: prune if finalScore < -500 and count(finalScore >= -500) >= 6
 //
 // Everything after `if` is the condition, carried through untouched. This
 // grammar wraps conditions and never parses them, so there is still exactly
@@ -608,7 +622,7 @@ const scopeKeys = new Set(CONTENT_KINDS.map((kind) => kind.key))
 // grouping is read lazily, up to the first " if ", because it is an
 // expression and a greedy read would swallow the condition of every line that
 // has one.
-const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|(define)|keep\s+(\d+)(?:\s+per\s+([\s\S]+?))?)\s+if\b\s*([\s\S]*)$/i
+const ruleBodyRE = /^\s*(?:score\s+([+-]?\d+)|reject|(define)|(prune)|keep\s+(\d+)(?:\s+per\s+([\s\S]+?))?)\s+if\b\s*([\s\S]*)$/i
 const ruleTagsRE = /^(.*?)\s*\[([^\]]*)\]\s*$/
 
 function ruleToText(rule) {
@@ -618,6 +632,7 @@ function ruleToText(rule) {
   const action = ruleAction(rule)
   const groupBy = ruleGroupBy(rule).replace(/\s+/g, " ")
   const verb = action === "reject" ? "reject"
+    : action === "prune" ? "prune"
     : action === "define" ? "define"
     : action === "limit" ? `keep ${limitCount(rule.count)}${groupBy ? ` per ${groupBy}` : ""}`
     : `score ${Math.trunc(Number(rule.points)) || 0}`
@@ -672,9 +687,9 @@ export function rulesFromText(text) {
     const at = `Line ${i + 1}`
     const split = splitRuleLine(line)
     if (!split) {
-      throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / keep 3 / define in place of score.`)
+      throw new Error(`${at}: expected “Name: score 100 if <condition>”, or reject / prune / keep 3 / define in place of score.`)
     }
-    const [, points, defineWord, count, groupBy, when] = split.body
+    const [, points, defineWord, pruneWord, count, groupBy, when] = split.body
     if (!when.trim()) throw new Error(`${at}: the rule has no condition.`)
 
     const tags = parseRuleTags(split.head)
@@ -692,6 +707,8 @@ export function rulesFromText(text) {
       rule.points = Number(points)
     } else if (defineWord !== undefined) {
       rule.action = "define"
+    } else if (pruneWord !== undefined) {
+      rule.action = "prune"
     } else {
       rule.action = "reject"
     }

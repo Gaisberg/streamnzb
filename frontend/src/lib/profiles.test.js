@@ -8,7 +8,7 @@ import { encodeShareCode } from '@/lib/shareCodes'
 // The rules editor is a text box the user types into freehand, so parsing is
 // the place a typo turns into a silently wrong ruleset.
 describe('rulesFromText', () => {
-  it('reads the four actions', () => {
+  it('reads the five actions', () => {
     expect(rulesFromText('Prefer NTb: score 100 if group == "NTb"')).toEqual([
       { name: 'Prefer NTb', when: 'group == "NTb"', points: 100 },
     ])
@@ -20,6 +20,9 @@ describe('rulesFromText', () => {
     ])
     expect(rulesFromText('T1 groups: define if group in ["FraMeSToR", "NTb"]')).toEqual([
       { name: 'T1 groups', when: 'group in ["FraMeSToR", "NTb"]', action: 'define' },
+    ])
+    expect(rulesFromText('Weak tail: prune if finalScore < 0 and count(finalScore >= 0) >= 6')).toEqual([
+      { name: 'Weak tail', when: 'finalScore < 0 and count(finalScore >= 0) >= 6', action: 'prune' },
     ])
   })
 
@@ -83,6 +86,7 @@ describe('rulesToText', () => {
       { name: 'No CAM', when: 'quality == "CAM"', action: 'reject' },
       { name: 'Top three', when: 'resolution == "2160p"', action: 'limit', count: 3 },
       { name: 'T1 groups', when: 'group in ["FraMeSToR", "NTb"]', action: 'define' },
+      { name: 'Weak tail', when: 'finalScore < 0 and count(finalScore >= 0) >= 6', action: 'prune' },
       { name: 'Anime only', when: 'true', points: 50, scope: 'anime_show' },
       { name: 'Paused', when: 'true', points: 50, enabled: false },
       { name: 'Per resolution', when: 'true', action: 'limit', count: 3, group_by: 'resolution' },
@@ -129,6 +133,7 @@ describe('share codes', () => {
     rules: [
       { name: 'IMAX', when: 'releaseName matches "(?i)\\bIMAX\\b"', points: 2000 },
       { name: 'No CAM', when: 'quality == "CAM"', action: 'reject' },
+      { name: 'Weak tail', when: 'finalScore < 0 and count(finalScore >= 0) >= 6', action: 'prune' },
     ],
   }
 

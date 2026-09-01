@@ -24,7 +24,9 @@ function summarize(profile) {
   const rules = (profile.rules || []).filter((r) => r && r.enabled !== false)
   if (rules.length) {
     const rejects = rules.filter((r) => r.action === "reject").length
-    bits.push(`${rules.length} rule${rules.length === 1 ? "" : "s"}${rejects ? ` · ${rejects} reject` : ""}`)
+    const prunes = rules.filter((r) => r.action === "prune").length
+    bits.push(`${rules.length} rule${rules.length === 1 ? "" : "s"}`
+      + `${rejects ? ` · ${rejects} reject` : ""}${prunes ? ` · ${prunes} prune` : ""}`)
   }
   return bits.join(" · ")
 }

@@ -16,12 +16,17 @@ import (
 // rather than a function inside a condition. Define is the absence of an
 // action: a named condition kept only for other rules to reference through
 // matched(), so a tier list of release groups has one home instead of a copy
-// in every rule that cares.
+// in every rule that cares. Prune is reject moved past the scoring: its
+// condition runs after every point is in and the surviving releases are in
+// final order, which is what lets it read finalScore and finalRank — values no
+// scoring-pass rule may see, because a rule reading the score it is helping to
+// build has no answer.
 const (
 	RuleActionScore  = "score"
 	RuleActionReject = "reject"
 	RuleActionLimit  = "limit"
 	RuleActionDefine = "define"
+	RuleActionPrune  = "prune"
 )
 
 // RuleScopeAll is the scope of a rule that applies to every content kind. The
@@ -80,6 +85,8 @@ func (r RuleConfig) EffectiveAction() string {
 		return RuleActionLimit
 	case RuleActionDefine:
 		return RuleActionDefine
+	case RuleActionPrune:
+		return RuleActionPrune
 	default:
 		return RuleActionScore
 	}

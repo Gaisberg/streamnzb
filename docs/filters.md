@@ -103,6 +103,7 @@ quality == "WEB-DL" and group in ["FraMeSToR", "NTb"]  → +500
 isAnime and "remux" in traits                          → +1000
 avail.onMyBackbone                                     → +500
 resolution == "2160p"                                  → keep best 3
+finalScore < -500 and count(finalScore >= -500) >= 6   → prune
 ```
 
 `traits` is the whole vocabulary the baseline scores by — `"remux"`, `"webrip"`,

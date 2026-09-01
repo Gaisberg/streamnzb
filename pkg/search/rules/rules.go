@@ -2,6 +2,7 @@ package rules
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -90,6 +91,31 @@ func buildRegistry() *jhinrules.Registry {
 	return reg
 }
 
+// postRegistry is the vocabulary of the prune pass: everything the scoring
+// pass can read, plus the two values that only exist once scoring is done.
+// They are a separate registry rather than two more fields above because a
+// scoring rule reading the score it is helping to build has no answer — the
+// checker must reject `finalScore < 0` in a score rule, and it can only do
+// that if the field is not declared there.
+var postRegistry = buildPostRegistry()
+
+func buildPostRegistry() *jhinrules.Registry {
+	reg := buildRegistry()
+
+	// The finished score, and the release's 1-based position in the surviving
+	// results sorted by it. Both are read-only by construction: prune rules
+	// reject, never score, so the values a condition reads are exactly the
+	// values that ordered the list. No tier — the prune pass only ever judges
+	// releases that survived scoring, and every one of those has both.
+	reg.Field("finalScore", jhinrules.Num, "")
+	reg.Field("finalRank", jhinrules.Num, "")
+
+	if err := reg.Err(); err != nil {
+		panic(err)
+	}
+	return reg
+}
+
 // Set is a profile's rules, compiled once and reused for every request.
 type Set struct {
 	eng *jhinrules.Engine
@@ -134,10 +160,74 @@ func (e *Error) Unwrap() error { return e.Err }
 // library's — and they never join the set. A library is validated by
 // compiling it on its own, which is also what keeps it self-contained.
 func Compile(cfgs []config.RuleConfig, library ...config.RuleConfig) (*Set, error) {
+	return compileWith(registry, cfgs, library)
+}
+
+// CompileStaged splits a profile's rules into the scoring pass and the prune
+// pass and compiles each against its own vocabulary. Prune rules go to the
+// post set, where finalScore and finalRank exist; everything else goes to the
+// scoring set, where they do not — which is what stops a scoring rule from
+// reading the number it is still building.
+//
+// The prune pass receives the scoring pass's rules as additional library
+// entries, so matched() reaches across the split: a prune rule can reference a
+// score rule or a define exactly as a scoring rule can. The reverse never
+// arises — a prune rule's name is not visible to the scoring pass, because a
+// condition that only holds after sorting cannot be asked before it.
+func CompileStaged(cfgs []config.RuleConfig, library ...config.RuleConfig) (pre, post *Set, err error) {
+	var preCfgs, postCfgs []config.RuleConfig
+	names := map[string]bool{}
+	for _, rc := range cfgs {
+		// The two passes report under one namespace — matches, skips and
+		// rejections all carry the rule's name — so a name must be unique
+		// across both, exactly as it had to be when one engine held them all.
+		if name := strings.ToLower(strings.TrimSpace(rc.Name)); name != "" && rc.IsEnabled() {
+			if names[name] {
+				return nil, nil, &Error{Rule: strings.TrimSpace(rc.Name),
+					Err: errors.New("another rule already has this name")}
+			}
+			names[name] = true
+		}
+		if rc.EffectiveAction() == config.RuleActionPrune {
+			postCfgs = append(postCfgs, rc)
+		} else {
+			preCfgs = append(preCfgs, rc)
+		}
+	}
+	if pre, err = compileWith(registry, preCfgs, library); err != nil {
+		return nil, nil, explainPostOnlyAttr(err)
+	}
+	post, err = compileWith(postRegistry, postCfgs, append(preCfgs, library...))
+	if err != nil {
+		return nil, nil, err
+	}
+	return pre, post, nil
+}
+
+// explainPostOnlyAttr rewrites the scoring pass's "unknown attribute" answer
+// for the two attributes that do exist — just not there. The plain message is
+// technically right and practically useless: the fix is not a different
+// spelling but a different action, and the error is the only place to say so.
+func explainPostOnlyAttr(err error) error {
+	var cerr *Error
+	if !errors.As(err, &cerr) {
+		return err
+	}
+	for _, attr := range []string{"finalScore", "finalRank"} {
+		if strings.Contains(cerr.Err.Error(), fmt.Sprintf("unknown attribute %q", attr)) {
+			cerr.Err = fmt.Errorf("%w — %s only exists after scoring, so only a prune rule can read it",
+				cerr.Err, attr)
+			return cerr
+		}
+	}
+	return err
+}
+
+func compileWith(reg *jhinrules.Registry, cfgs, library []config.RuleConfig) (*Set, error) {
 	if len(cfgs) == 0 {
 		return nil, nil
 	}
-	eng, err := jhinrules.Compile(registry, toJhinRules(cfgs), toJhinRules(library)...)
+	eng, err := jhinrules.Compile(reg, toJhinRules(cfgs), toJhinRules(library)...)
 	if err != nil {
 		var jerr *jhinrules.Error
 		if errors.As(err, &jerr) {
@@ -168,6 +258,12 @@ func toJhinRules(cfgs []config.RuleConfig) []jhinrules.Rule {
 		}
 		if r.Action == jhinrules.ActionScore {
 			r.Score = strconv.Itoa(rc.Points)
+		}
+		// Prune is StreamNZB's staging, not jhin's: to the post engine it is
+		// an ordinary reject. Which engine a rule reaches is decided by
+		// CompileStaged, never here.
+		if r.Action == config.RuleActionPrune {
+			r.Action = jhinrules.ActionReject
 		}
 		if scope := rc.EffectiveScope(); scope != config.RuleScopeAll {
 			r.Scope = []string{scope}

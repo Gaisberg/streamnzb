@@ -145,6 +145,16 @@ type Env struct {
 	Episode int
 	Title   string
 
+	// ---- post-scoring ----
+
+	// FinalScore and FinalRank are the scoring pass's finished verdict: the
+	// accumulated score and the release's 1-based position among the survivors
+	// sorted by it. Only the prune pass sets them, and only its registry
+	// declares them, so a scoring rule can never read a value that does not
+	// exist yet.
+	FinalScore int
+	FinalRank  int
+
 	// core answers every jhin attribute this struct has no field for, from
 	// the parse result itself. Nil when BuildEnv had no parse, which answers
 	// those attributes with their zeros — what an unparseable name has always
@@ -299,6 +309,11 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 	// parsed.title. It shadows jhin's core field on purpose.
 	case "title":
 		return jhinrules.StrOf(e.Title), true
+
+	case "finalScore":
+		return jhinrules.NumOf(float64(e.FinalScore)), true
+	case "finalRank":
+		return jhinrules.NumOf(float64(e.FinalRank)), true
 	}
 	if e.core != nil {
 		return e.core.Lookup(path)

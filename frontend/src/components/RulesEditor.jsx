@@ -265,13 +265,14 @@ function RuleStat({ stat, sampleCount, action, count }) {
   if (matched === 0) {
     return <span className="text-[11px] text-muted-foreground">no sample matched</span>
   }
+  const removes = action === "reject" || action === "prune"
   return (
     <span className={cn(
       "flex items-center gap-1 text-[11px]",
-      action === "reject" ? "text-destructive" : "text-emerald-600 dark:text-emerald-500",
+      removes ? "text-destructive" : "text-emerald-600 dark:text-emerald-500",
     )}>
       <Check className="h-3 w-3" />
-      {action === "reject" ? "removes" : "pays out on"} {matched} of {sampleCount}
+      {removes ? "removes" : "pays out on"} {matched} of {sampleCount}
     </span>
   )
 }
@@ -358,6 +359,11 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
         {action === "reject" && (
           <Badge variant="outline" className="h-8 px-2 text-[11px] font-normal text-destructive">
             removes it
+          </Badge>
+        )}
+        {action === "prune" && (
+          <Badge variant="outline" className="h-8 px-2 text-[11px] font-normal text-destructive">
+            removes it after scoring
           </Badge>
         )}
         {action === "define" && (
@@ -462,7 +468,9 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
                   : `Of the releases matching this, the best ${rule.count ?? DEFAULT_LIMIT_COUNT} are offered and the rest are dropped.`
                 : action === "define"
                   ? `Does nothing on its own — other rules use it with matched(${JSON.stringify(rule.name || "Name")}).`
-                  : skipNote}
+                  : action === "prune"
+                    ? "Runs after every point is in and the results are ranked — the only stage where finalScore and finalRank exist."
+                    : skipNote}
             </p>
             {action !== "define" && (
               <RuleStat stat={stat} sampleCount={sampleCount} action={action} count={rule.count} />
@@ -685,7 +693,7 @@ export function RulesEditor({ values = [], onChange, libraryRules = [], ruleStat
               onChange={(e) => editText(e.target.value)}
               rows={Math.min(24, Math.max(8, ruleText.split("\n").length + 1))}
               spellCheck={false}
-              placeholder={'Atmos: score -800 if "atmos" in traits\n3D: reject if threeD\n4K cap [movie]: keep 3 if resolution == "2160p"'}
+              placeholder={'Atmos: score -800 if "atmos" in traits\n3D: reject if threeD\n4K cap [movie]: keep 3 if resolution == "2160p"\nWeak tail: prune if finalScore < 0 and count(finalScore >= 0) >= 6'}
               className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label="All rules as text"
             />

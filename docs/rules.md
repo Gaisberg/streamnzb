@@ -38,7 +38,7 @@ upscaled and exists("remux" in traits)             → reject
 | **Name** | What the rule is called. Shows in the score breakdown, in History, and in [custom result formats](result-formatting.md) via `.MatchedRules`. |
 | **Condition** | An expression that answers yes or no. |
 | **Applies to** | All content, or one kind (Movies, Shows, Anime films, Anime shows). |
-| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. **Define** does nothing at all — the rule exists to be [referenced](#referring-to-another-rule) from other rules. |
+| **Action** | **Score** adds points (negative allowed). **Reject** removes the release. **Limit** caps how many matching releases you are offered. **Prune** removes the release [after scoring](#pruning-after-the-score), when its condition can read `finalScore` and `finalRank`. **Define** does nothing at all — the rule exists to be [referenced](#referring-to-another-rule) from other rules. |
 | **Keep best** | For limit rules: how many survive. The best that many by final score are kept, the rest dropped. |
 | **Per** | For limit rules: what the cap is counted per. Nothing caps every match together; pick a grouping and the cap is kept once per value of it. |
 | **Enabled** | Turn a rule off without deleting it. A disabled rule is not compiled, so a half-written one never blocks a save. |
@@ -62,11 +62,12 @@ DV without HDR fallback: reject if dolbyVision and not hdrFallback
 At most 3 in 4K [movie]: keep 3 if resolution == "2160p"
 Best 3 of each resolution: keep 3 per resolution if true
 UHD BluRay T1: define if group in ["FraMeSToR", "W4NK3R"]
+Weak tail: prune if finalScore < -500 and count(finalScore >= -500) >= 6
 Old experiment [off]: score 100 if "remux" in traits
 ```
 
 A line is `Name: action if condition`. The action is `score <points>` —
-negative allowed — `reject`, `keep <n>`, `keep <n> per <grouping>`, or
+negative allowed — `reject`, `keep <n>`, `keep <n> per <grouping>`, `prune`, or
 `define`.
 Brackets before the colon carry the
 scope (`movie`, `series`, `anime_movie`, `anime_show`) and `off` for a disabled
@@ -147,13 +148,63 @@ This is separate from the stream's own **Results limit**, which truncates the
 finished list. A limit rule shapes *what* is in the list; the stream setting
 decides how long it is.
 
+## Pruning after the score
+
+A **prune** rule is a reject that runs after scoring instead of during it. Its
+condition can read two attributes no other rule may touch:
+
+- `finalScore` — the release's finished, accumulated score.
+- `finalRank` — its position among the surviving results sorted by that score,
+  1 being the best.
+
+Both only exist once every point is in and the list is in order, which is why
+they live behind their own action: a score rule reading `finalScore` would be
+reading a number it is still helping to build, so the editor refuses it — with
+the suggestion to use a prune rule instead.
+
+The case prune exists for is the **adaptive weak filter**: not a global minimum
+score, but "drop the very weak only while enough materially stronger
+alternatives remain":
+
+```
+Weak tail: prune if finalScore < -500 and count(finalScore >= -500) >= 6
+Deep cuts: prune if finalRank > 20 and finalScore < 0
+```
+
+When a search returns six healthy releases and three scraping the bottom, the
+bottom three go; when the same profile meets a thin result set, they stay as
+fallbacks. A fixed **minimum score** cannot say that — it prunes the same
+releases whether or not anything better exists.
+
+Everything a normal rule can read, a prune rule can read too — `finalScore`
+and `finalRank` are additions, not replacements — and `matched("Rule name")`
+still reaches your score, reject and define rules. Rules reading a tier the
+release does not carry [fail open](#fail-open) here exactly as they do during
+scoring.
+
+The mechanics worth knowing:
+
+- Prune rules only ever judge **survivors**: releases already rejected never
+  reach them, and neither `finalScore` nor `finalRank` exists for one.
+- `count()` / `exists()` / `none()` in a prune rule run over the surviving set
+  with its final scores, and the counts are taken **before any prune rule
+  fires** — pruning a release never changes what another rule counted, so the
+  order of your prune rules does not matter.
+- Pruning runs before [limits](#limits), so a pruned release does not use up a
+  cap's slot, and `finalRank` is the rank *before* any cap trims the list.
+- A prune rule cannot add points. That is deliberate: the score a prune
+  condition reads is exactly the score that ordered the list, always.
+
+A pruned release is rejected like any other, with `rule: <name>` as the
+reason, so History and the preview say which rule removed it.
+
 ## Where rules run
 
 Rules run **inside** the profile, after everything cheap:
 
 ```
 jhin (title traits, languages, patterns) → NZB limits → NZB scoring
-  → library bonus → RULES → minimum score → sort → LIMITS
+  → library bonus → RULES → minimum score → sort → PRUNE → LIMITS
 ```
 
 Two consequences worth knowing:
@@ -307,6 +358,14 @@ This is what makes rules a complete replacement for the old per-trait controls:
 
 `kind` `isAnime` `season` `episode` `title`
 
+### After scoring — prune rules only
+
+`finalScore` `finalRank`
+
+The finished verdict: the accumulated score, and the 1-based position among
+the surviving results sorted by it. They only exist once every rule has run,
+so only a [prune rule](#pruning-after-the-score) can read them.
+
 ### About the result set
 
 `count(condition)` `exists(condition)` `none(condition)`
@@ -333,7 +392,8 @@ judged** — a 4K remux always has `count(resolution == "2160p") >= 1`. Because
 the counts are taken first, a rule that rejects can never change what another
 rule counted, so the order of your rules does not matter. What they cannot see
 is the final ordering; "the best three of these" is still the [limit
-action](#limits).
+action](#limits), and a condition over final scores belongs to a [prune
+rule](#pruning-after-the-score), where the set carries them.
 
 Fail-open extends to the set. A release missing a tier the inner condition
 reads is not counted — `count(probed.height >= 2000)` counts probed releases
