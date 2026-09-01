@@ -9,23 +9,28 @@
 // label is what the dropdown shows; url must be the raw file, not a GitHub
 // page around it.
 
+// DraCuLa's StreamNZB Template (github.com/d4s87/streamnzb-template). The
+// profile references the define library through matched(), so the library
+// should be imported first; the hardware-neutral profile variant is the one
+// offered here, the device-specific one lives alongside it in the repo.
+
 export const PROFILE_TEMPLATES = [
   {
-    label: "d4s87 · streamnzb-template profile",
-    url: "https://raw.githubusercontent.com/d4s87/streamnzb-template/main/profile.txt",
+    label: "DraCuLa's profile (hardware-neutral)",
+    url: "https://raw.githubusercontent.com/d4s87/streamnzb-template/main/profile-neutral.txt",
   },
 ]
 
 export const DEFINE_LIBRARY_TEMPLATES = [
   {
-    label: "d4s87 · release-group defines (from Vidhin05/Releases-Regex)",
-    url: "https://raw.githubusercontent.com/d4s87/streamnzb-template/refs/heads/main/generated/streamnzb-defines.txt",
+    label: "DraCuLa's define library",
+    url: "https://raw.githubusercontent.com/d4s87/streamnzb-template/main/generated/streamnzb-defines.txt",
   },
 ]
 
 export const FORMAT_TEMPLATES = [
   {
-    label: "d4s87 · streamnzb-template result format",
+    label: "DraCuLa's result format",
     url: "https://raw.githubusercontent.com/d4s87/streamnzb-template/main/formatter.txt",
   },
 ]
