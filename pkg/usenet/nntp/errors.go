@@ -73,6 +73,23 @@ func IsBenignDisconnect(err error) bool {
 		strings.Contains(msg, "context canceled")
 }
 
+// LeavesConnectionInSync reports whether a command that failed with err left
+// its connection ready for the next command.
+//
+// A status-line refusal (430, 480, 502 …) is a complete exchange: the server
+// said no and is waiting for whatever comes next, so the connection can go
+// back to the pool. Anything else — a timeout mid-reply, a closed socket, a
+// parse failure — leaves unread bytes or no socket at all, and pooling such a
+// connection hands the next command a reply to a question it never asked.
+// Callers deciding between release and discard ask this.
+func LeavesConnectionInSync(err error) bool {
+	if err == nil {
+		return true
+	}
+	var tpErr *textproto.Error
+	return errors.As(err, &tpErr)
+}
+
 // IsAuthFailure reports whether err is the server rejecting our credentials.
 //
 // 481 is "authentication failed/rejected" and 482 "authentication commands

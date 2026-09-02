@@ -78,13 +78,27 @@ func (c *Checker) ValidateNZBSingleProviderForEpisode(ctx context.Context, nzbDa
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("usenet pool not configured")}
 	}
 	exclude := excludeProvider(up.ProviderOrder(), providerName)
-	client, release, _, _, err := up.GetConnection(ctx, exclude, 999, up.IsBackupProvider(providerName))
+	client, release, discard, _, err := up.GetConnection(ctx, exclude, 999, up.IsBackupProvider(providerName))
 	if err != nil {
 		return &ValidationResult{Provider: providerName, Error: fmt.Errorf("get connection: %w", err)}
 	}
-	defer release()
 	host := up.Host(providerName)
-	return c.validateProviderWithClient(ctx, nzbData, providerName, client, host, season, episode)
+	result := c.validateProviderWithClient(ctx, nzbData, providerName, client, host, season, episode)
+	returnConnection(result.Error, release, discard)
+	return result
+}
+
+// returnConnection hands the checked-out connection back once the STAT phase
+// is over. A STAT that timed out under its short deadline is still unanswered
+// on the wire, and a connection pooled in that state gives its next command
+// the stale reply — which is how a fetch could see a 430 for an article it
+// never asked about. Only a clean outcome goes back to the pool.
+func returnConnection(err error, release, discard func()) {
+	if nntp.LeavesConnectionInSync(err) {
+		release()
+		return
+	}
+	discard()
 }
 
 func (c *Checker) ValidateNZBSingleProviderExtended(ctx context.Context, nzbData *nzb.NZB, providerName string) *ValidationResult {
@@ -276,7 +290,7 @@ func (c *Checker) validateProviderWithClient(ctx context.Context, nzbData *nzb.N
 func (c *Checker) validateProviderExtendedWithClient(ctx context.Context, nzbData *nzb.NZB, providerName string, client *nntp.Client, release, discard func(), host string, season, episode int) *ValidationResult {
 	result := c.validateProviderWithClient(ctx, nzbData, providerName, client, host, season, episode)
 	if result.Error != nil || !result.Available {
-		release()
+		returnConnection(result.Error, release, discard)
 		return result
 	}
 

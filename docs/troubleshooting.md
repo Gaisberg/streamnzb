@@ -52,6 +52,12 @@ It has to be, because the size of a single article is a poster's choice and vari
 
 Nothing is configurable here and nothing needs to be. If you see that pattern with modest article sizes, the bottleneck is the link or the providers rather than the window — check the connection speeds on the dashboard and the **Buffering behind Cloudflare Tunnel** note above.
 
+## A provider reports "too many connections"
+
+The provider's `502` at login means the account already has as many connections open as the plan allows, and the dashboard shows the provider as degraded with that reason. StreamNZB enforces the configured connection count per **account** rather than per activity: playback, the NNTP proxy, speed tests, connection tests, settings validation, health probes and a settings save that re-points a provider all draw on one allowance for that account, so the total StreamNZB holds never exceeds the count on the provider card — two provider entries with the same host and username share one allowance, and changing a provider's settings re-uses its existing connections instead of opening a second set beside them.
+
+If you still see the message, the connections are being counted from somewhere else: another client on the same account (a downloader, a second StreamNZB), a connection count set above what the plan includes, or connections a previous run left for the provider to time out on its own — see [Backup and updates](backup-and-updates.md) for why a clean stop avoids the last one. The state clears itself; nothing is parked, and the next dial that succeeds marks the provider healthy again.
+
 ## An episode still shows no streams after it aired
 
 Search results are cached per stream and title. A search that found **nothing** is cached for 15 minutes and its deadline is never pushed out by another request, so a title that had nothing behind it a moment ago is re-searched shortly after rather than staying empty for as long as the session cache lives. A search that found results keeps the longer sliding cache.

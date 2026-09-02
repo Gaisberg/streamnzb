@@ -8,8 +8,8 @@ import (
 // Auxiliary pools are the short-lived ClientPools built outside the streaming
 // set: speed tests, probes of providers that have no live pool, settings
 // validation. Their connections are as real to the provider as the streaming
-// pool's — they draw on the same account limit — so the dashboard must count
-// them, and this registry is how stats finds them.
+// pool's — they take permits from the same account budget — so the dashboard
+// must count them, and this registry is how stats finds them.
 var (
 	auxPoolsMu sync.Mutex
 	auxPools   = map[*ClientPool]string{}
@@ -38,8 +38,8 @@ func (p *ClientPool) untrackAux() {
 }
 
 // AuxConnStats sums the connection counts of every live auxiliary pool
-// registered under name. Max is deliberately left zero: auxiliary pools borrow
-// the account's headroom, they do not extend the configured ceiling.
+// registered under name. Max is deliberately left zero: auxiliary pools share
+// the account's ceiling with the streaming pool, they do not extend it.
 func AuxConnStats(name string) ConnSnapshot {
 	auxPoolsMu.Lock()
 	pools := make([]*ClientPool, 0, 2)

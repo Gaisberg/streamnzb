@@ -178,7 +178,10 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 		}
 		reached = true
 		if !s.ensureGroup(client) {
-			release()
+			// A GROUP that failed for any reason other than a status-line
+			// refusal may have left the socket mid-reply; pooling it would hand
+			// that reply to the next command.
+			discard()
 			exclude = append(exclude, pid) // don't retry the same broken provider
 			continue
 		}
@@ -194,6 +197,16 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 
 	logger.Info("NNTP proxy: "+verb+" failed (all pools)", "messageID", messageID)
 	return s.WriteLine("430 No such article")
+}
+
+// returnConnection hands a backend connection back after a command: to the
+// pool when the command ended with a clean reply, closed when it did not.
+func returnConnection(err error, release, discard func()) {
+	if nntp.LeavesConnectionInSync(err) {
+		release()
+		return
+	}
+	discard()
 }
 
 // writeTextResponse emits a status line followed by the article text, split
@@ -224,9 +237,9 @@ func (s *Session) handleArticle(args []string) error {
 	messageID := normalizeMessageID(args[0])
 
 	var replyErr error
-	err := s.forEachProvider("ARTICLE", messageID, func(client *nntp.Client, release, _ func(), pid string) (bool, error) {
+	err := s.forEachProvider("ARTICLE", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
 		article, err := client.GetArticle(messageID)
-		release()
+		returnConnection(err, release, discard)
 		s.recordArticleOutcome(pid, err, true)
 		if err != nil {
 			logger.Debug("NNTP proxy: GetArticle failed", "messageID", messageID, "err", err)
@@ -248,9 +261,9 @@ func (s *Session) handleHead(args []string) error {
 	messageID := normalizeMessageID(args[0])
 
 	var replyErr error
-	err := s.forEachProvider("HEAD", messageID, func(client *nntp.Client, release, _ func(), pid string) (bool, error) {
+	err := s.forEachProvider("HEAD", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
 		head, err := client.GetHead(messageID)
-		release()
+		returnConnection(err, release, discard)
 		s.recordArticleOutcome(pid, err, true)
 		if err != nil {
 			logger.Debug("NNTP proxy: GetHead failed", "messageID", messageID, "err", err)
@@ -306,9 +319,9 @@ func (s *Session) handleStat(args []string) error {
 	}
 	messageID := normalizeMessageID(args[0])
 
-	return s.forEachProvider("STAT", messageID, func(client *nntp.Client, release, _ func(), pid string) (bool, error) {
+	return s.forEachProvider("STAT", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
 		exists, err := client.CheckArticle(messageID)
-		release()
+		returnConnection(err, release, discard)
 		if err != nil {
 			s.recordArticleOutcome(pid, err, false)
 			logger.Debug("NNTP proxy: CheckArticle failed", "messageID", messageID, "err", err)

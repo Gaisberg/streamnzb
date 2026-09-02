@@ -184,7 +184,7 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 		if len(nextCfg.Providers) < len(currentCfg.Providers) {
 			plan.providerDeletionOnly = true
 		} else {
-			plan.changedProviderIndexes = changedIndexes(currentCfg.Providers, nextCfg.Providers)
+			plan.changedProviderIndexes = changedDialTargets(currentCfg.Providers, nextCfg.Providers)
 		}
 	}
 	if _, ok := raw["indexers"]; ok {
@@ -247,6 +247,21 @@ func validateDatabaseSettings(cfg *config.Config) (string, error) {
 		return "database_url", err
 	}
 	return "", nil
+}
+
+// changedDialTargets picks out the providers whose server or account moved.
+// Only those are worth a validation dial: a priority, backup or connection
+// count edit changes nothing the server would answer differently, and the dial
+// itself is a connection the provider counts against the account while
+// playback may already be at the limit.
+func changedDialTargets(current, next []config.Provider) map[int]bool {
+	changed := make(map[int]bool)
+	for i := range next {
+		if i >= len(current) || !current[i].SameDialTarget(next[i]) {
+			changed[i] = true
+		}
+	}
+	return changed
 }
 
 func changedIndexes[T any](current, next []T) map[int]bool {
@@ -709,11 +724,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				pool := nntp.NewClientPool(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, 1)
 				// Registered under the same name the streaming pool would use,
 				// so the dashboard folds this connection into the right row.
-				poolName := strings.TrimSpace(provider.Name)
-				if poolName == "" {
-					poolName = provider.Host
-				}
-				pool.TrackAux(poolName)
+				pool.TrackAux(provider.PoolName())
 				// Shutdown, not just Validate: without it the validation pool
 				// leaked its reaper goroutine and held its idle connection —
 				// a connection the provider counts against the account.

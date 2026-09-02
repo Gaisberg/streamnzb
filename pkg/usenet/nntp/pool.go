@@ -2,6 +2,8 @@ package nntp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,22 +12,40 @@ import (
 	"streamnzb/pkg/core/logger"
 )
 
+// ErrPoolClosed is returned by Get once Shutdown has run. A pool that has been
+// torn down must not dial: its connections would be closed the moment they were
+// returned, so every fetch on it cost a full handshake the provider counted
+// against the account alongside whatever pool replaced it.
+var ErrPoolClosed = errors.New("nntp: pool closed")
+
+// dialTarget is everything a dial needs, snapshotted under the pool lock so a
+// concurrent Reconfigure cannot hand a dial half of the old settings and half
+// of the new.
+type dialTarget struct {
+	host string
+	port int
+	ssl  bool
+	user string
+	pass string
+}
+
 type ClientPool struct {
-	host    string
-	port    int
-	ssl     bool
-	user    string
-	pass    string
-	maxConn int
+	// target, maxConn, budget and generation move together under mu when the
+	// pool is reconfigured. generation is stamped on every connection dialed,
+	// so a connection returned after a re-point is recognised as belonging to
+	// the previous account and closed instead of pooled.
+	target     dialTarget
+	maxConn    int
+	budget     *connBudget
+	generation uint64
 
 	idleClients chan *Client
-	slots       chan struct{}
 	stopCh      chan struct{} // closed once by Shutdown(); never re-used
 
 	// established counts connections that finished the handshake and are still
 	// open — idle, checked out, or probing. It moves only in dial (on success)
 	// and closeClient, so it tracks what the provider actually sees, where the
-	// slot count also includes dials still in progress. dialing counts those
+	// budget also counts dials still in progress. dialing counts those
 	// in-progress dials.
 	established atomic.Int64
 	dialing     atomic.Int64
@@ -43,23 +63,62 @@ type ClientPool struct {
 
 func NewClientPool(host string, port int, ssl bool, user, pass string, maxConn int) *ClientPool {
 	p := &ClientPool{
-		host:        host,
-		port:        port,
-		ssl:         ssl,
-		user:        user,
-		pass:        pass,
+		target:      dialTarget{host: host, port: port, ssl: ssl, user: user, pass: pass},
 		maxConn:     maxConn,
 		idleClients: make(chan *Client, maxConn),
-		slots:       make(chan struct{}, maxConn),
 		stopCh:      make(chan struct{}),
 	}
-
-	for i := 0; i < maxConn; i++ {
-		p.slots <- struct{}{}
-	}
+	p.budget = claimBudget(p, host, user, maxConn)
 
 	go p.reaperLoop()
 	return p
+}
+
+// Reconfigure re-points a live pool at new settings without replacing it, so
+// the streams already fetching through it keep going. It reports whether the
+// account or server changed — in which case the caller should Validate, since
+// nothing has been dialed with the new credentials yet.
+//
+// Existing connections are handled by generation: idle ones to the old target
+// are closed here, and checked-out ones are closed when they come back rather
+// than pooled. Their permits return to the budget they were dialed under, so a
+// pool moved to another account never counts its old connections against the
+// new one, and the old account's budget keeps seeing them until they close.
+func (p *ClientPool) Reconfigure(host string, port int, ssl bool, user, pass string, maxConn int) (targetChanged bool) {
+	next := dialTarget{host: host, port: port, ssl: ssl, user: user, pass: pass}
+
+	p.mu.Lock()
+	targetChanged = next != p.target
+	p.target = next
+	p.maxConn = maxConn
+	if targetChanged {
+		p.generation++
+	}
+	// Same account resolves to the same budget, so this is a no-op claim update
+	// unless the pool moved to another account.
+	prev := p.budget
+	p.budget = claimBudget(p, host, user, maxConn)
+	if prev != p.budget {
+		prev.dropClaim(p)
+	}
+	p.mu.Unlock()
+
+	if targetChanged {
+		p.drainIdle()
+	}
+	return targetChanged
+}
+
+// drainIdle closes every connection parked in the pool right now.
+func (p *ClientPool) drainIdle() {
+	for {
+		select {
+		case c := <-p.idleClients:
+			p.closeClient(c)
+		default:
+			return
+		}
+	}
 }
 
 // SetProviderName names the pool for health reporting.
@@ -84,21 +143,35 @@ func (p *ClientPool) SetUsageManager(name string, mgr *ProviderUsageManager) {
 	p.usageManager = mgr
 }
 
-// dial opens one authenticated connection and reports what the handshake said
-// about the account.
+// snapshot reads the dial settings and the budget they draw on in one go.
+func (p *ClientPool) snapshot() (dialTarget, *connBudget, uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.target, p.budget, p.generation
+}
+
+// dialsAs reports whether c was dialed with the settings the pool holds now.
+func (p *ClientPool) dialsAs(c *Client) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return c.generation == p.generation
+}
+
+// dial opens one authenticated connection under a permit the caller already
+// holds on budget, and reports what the handshake said about the account.
 //
-// Every caller took a slot before getting here and hands it back on failure,
-// which is why this returns rather than releasing: the slot bookkeeping stays
-// with the select arms that own it.
+// On success the connection owns the permit and closeClient returns it; on
+// failure the caller gives it back. That keeps the bookkeeping with the select
+// arms that took the permit, which is why this returns rather than releasing.
 //
 // The health verdict is taken here because this is the only place the AUTHINFO
 // exchange happens, and an authentication code means something specific only in
 // that exchange. A successful handshake clears any stored verdict — the account
 // working is the one piece of evidence that outranks a stored complaint.
-func (p *ClientPool) dial() (*Client, error) {
+func (p *ClientPool) dial(target dialTarget, budget *connBudget, generation uint64) (*Client, error) {
 	p.dialing.Add(1)
 	defer p.dialing.Add(-1)
-	c, err := NewClient(p.host, p.port, p.ssl)
+	c, err := NewClient(target.host, target.port, target.ssl)
 	if err != nil {
 		// A connect failure is inconclusive about credentials: the box may be
 		// down, DNS may be lying, the network may be out. It never blocks. The
@@ -111,7 +184,9 @@ func (p *ClientPool) dial() (*Client, error) {
 		return nil, err
 	}
 	c.SetPool(p)
-	if err := c.Authenticate(p.user, p.pass); err != nil {
+	c.budget = budget
+	c.generation = generation
+	if err := c.Authenticate(target.user, target.pass); err != nil {
 		c.Quit()
 		p.reportAuthResult(err)
 		return nil, err
@@ -121,13 +196,35 @@ func (p *ClientPool) dial() (*Client, error) {
 	return c, nil
 }
 
+// dialWithPermit takes a permit on the pool's current budget without waiting
+// and dials under it. ok is false when no permit was free.
+func (p *ClientPool) dialWithPermit() (c *Client, ok bool, err error) {
+	target, budget, generation := p.snapshot()
+	if !budget.tryAcquire() {
+		return nil, false, nil
+	}
+	c, err = p.dial(target, budget, generation)
+	if err != nil {
+		budget.release()
+		return nil, true, err
+	}
+	return c, true, nil
+}
+
 // closeClient closes a connection this pool dialed and keeps the established
-// count in step with it. Every teardown of a successfully dialed connection
-// must go through here, not c.Quit() directly — a bypassed close leaves the
-// count claiming a connection the provider no longer sees.
+// count and the account budget in step with it. Every teardown of a
+// successfully dialed connection must go through here, not c.Quit() directly —
+// a bypassed close leaves the count claiming a connection the provider no
+// longer sees, and the permit it held stranded.
 func (p *ClientPool) closeClient(c *Client) {
-	c.Quit()
+	first, _ := c.close()
+	if !first {
+		return
+	}
 	p.established.Add(-1)
+	if c.budget != nil {
+		c.budget.release()
+	}
 }
 
 // reportConnLimit records a connection-limit refusal seen at the greeting.
@@ -163,20 +260,29 @@ func (p *ClientPool) reportAuthResult(err error) {
 // Probe opens a throwaway authenticated connection to find out whether a
 // blocked provider has started working again, then drops it.
 //
-// It deliberately bypasses the idle pool and the slot budget: a probe must not
-// wait behind playback for a connection, and must not consume one either. The
-// answer is the health verdict dial already recorded.
+// It bypasses the idle pool — the question is whether a fresh login works, and
+// a parked connection cannot answer that — but not the account budget: the
+// provider counts a probe like any other connection. The answer is the health
+// verdict dial already recorded.
 func (p *ClientPool) Probe(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
+	target, budget, generation := p.snapshot()
+	if !budget.acquire(ctx) {
+		return ctx.Err()
+	}
+
 	type result struct {
 		c   *Client
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
-		c, err := p.dial()
+		c, err := p.dial(target, budget, generation)
+		if err != nil {
+			budget.release()
+		}
 		done <- result{c: c, err: err}
 	}()
 
@@ -246,108 +352,133 @@ func (p *ClientPool) TotalMegabytes() float64 {
 // pooled connection stalls its next command for the full 60s deadline.
 const idleStaleThreshold = 60 * time.Second
 
-// checkoutIdle validates a connection pulled from the idle channel. Dead ones
-// are closed and their slot freed; the caller retries acquisition.
+// checkoutIdle validates a connection pulled from the idle channel. Dead ones,
+// and ones dialed for a target the pool no longer has, are closed; the caller
+// retries acquisition.
 func (p *ClientPool) checkoutIdle(c *Client) *Client {
-	if c.HealthyForCheckout(idleStaleThreshold) {
+	if p.dialsAs(c) && c.HealthyForCheckout(idleStaleThreshold) {
 		return c
 	}
-	logger.Debug("NNTP pool discarding stale idle connection", "host", p.host)
+	logger.Debug("NNTP pool discarding stale idle connection", "host", p.Host())
 	p.closeClient(c)
-	p.slots <- struct{}{}
 	return nil
 }
 
+func (p *ClientPool) isClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
+}
+
+// Get hands out a connection: an idle one if there is one, a fresh dial if the
+// account budget allows, otherwise whichever of the two frees up first.
 func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
-	logger.VerboseNNTP("nntp pool Get", "host", p.host)
+	host := p.Host()
+	logger.VerboseNNTP("nntp pool Get", "host", host)
 
-	select {
-	case <-ctx.Done():
-		logger.VerboseNNTP("pool.Get ctx.Done (idle check)", "host", p.host)
-		return nil, ctx.Err()
-	case c := <-p.idleClients:
-		logger.VerboseNNTP("nntp pool Get from idle", "host", p.host)
-		if c = p.checkoutIdle(c); c == nil {
-			return p.Get(ctx)
+	for {
+		if p.isClosed() {
+			return nil, ErrPoolClosed
 		}
-		return c, nil
-	default:
-	}
 
-	select {
-	case <-ctx.Done():
-		logger.VerboseNNTP("pool.Get ctx.Done (slot check)", "host", p.host)
-		return nil, ctx.Err()
-	case <-p.slots:
+		select {
+		case <-ctx.Done():
+			logger.VerboseNNTP("pool.Get ctx.Done (idle check)", "host", host)
+			return nil, ctx.Err()
+		case c := <-p.idleClients:
+			logger.VerboseNNTP("nntp pool Get from idle", "host", host)
+			if c = p.checkoutIdle(c); c == nil {
+				continue
+			}
+			return c, nil
+		default:
+		}
 
-		c, err := p.dial()
-		if err != nil {
-			p.slots <- struct{}{}
-			return nil, err
+		if ctx.Err() != nil {
+			logger.VerboseNNTP("pool.Get ctx.Done (permit check)", "host", host)
+			return nil, ctx.Err()
 		}
-		logger.VerboseNNTP("nntp pool Get new client", "host", p.host)
-		return c, nil
-	default:
-	}
+		c, ok, err := p.dialWithPermit()
+		if ok {
+			if err != nil {
+				return nil, err
+			}
+			logger.VerboseNNTP("nntp pool Get new client", "host", host)
+			return c, nil
+		}
 
-	waitStarted := time.Now()
-	select {
-	case <-ctx.Done():
-		if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
-			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "context_canceled")
+		waitStarted := time.Now()
+		_, budget, _ := p.snapshot()
+		w := budget.wait()
+		select {
+		case <-ctx.Done():
+			budget.cancel(w)
+			if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
+				logger.Debug("NNTP pool wait exceeded threshold", "host", host, "wait", wait, "result", "context_canceled")
+			}
+			logger.VerboseNNTP("pool.Get ctx.Done (blocking)", "host", host)
+			// Say what was being waited for: a connection test that times out
+			// because playback holds every permit should read as that, not as
+			// a provider that did not answer.
+			return nil, fmt.Errorf("nntp: waiting for a free connection to %s (%d/%d in use on the account): %w",
+				host, budget.InUse(), budget.Limit(), ctx.Err())
+		case c := <-p.idleClients:
+			budget.cancel(w)
+			if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
+				logger.Debug("NNTP pool wait exceeded threshold", "host", host, "wait", wait, "result", "idle_client")
+			}
+			logger.VerboseNNTP("nntp pool Get from idle (after block)", "host", host)
+			if c = p.checkoutIdle(c); c == nil {
+				continue
+			}
+			return c, nil
+		case <-w.granted:
+			wait := time.Since(waitStarted)
+			// The permit was taken on the budget snapshotted above; a
+			// Reconfigure that swapped budgets in the meantime is the rare
+			// case, and dialing the old target under the old permit is still
+			// consistent — the connection returns its permit to that budget.
+			target, _, generation := p.snapshot()
+			c, err := p.dial(target, budget, generation)
+			if err != nil {
+				budget.release()
+				return nil, err
+			}
+			if wait >= 250*time.Millisecond {
+				logger.Debug("NNTP pool wait exceeded threshold", "host", host, "wait", wait, "result", "new_client")
+			}
+			logger.VerboseNNTP("nntp pool Get new client (after block)", "host", host)
+			return c, nil
 		}
-		logger.VerboseNNTP("pool.Get ctx.Done (blocking)", "host", p.host)
-		return nil, ctx.Err()
-	case c := <-p.idleClients:
-		if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
-			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "idle_client")
-		}
-		logger.VerboseNNTP("nntp pool Get from idle (after block)", "host", p.host)
-		if c = p.checkoutIdle(c); c == nil {
-			return p.Get(ctx)
-		}
-		return c, nil
-	case <-p.slots:
-		wait := time.Since(waitStarted)
-
-		c, err := p.dial()
-		if err != nil {
-			p.slots <- struct{}{}
-			return nil, err
-		}
-		if wait >= 250*time.Millisecond {
-			logger.Debug("NNTP pool wait exceeded threshold", "host", p.host, "wait", wait, "result", "new_client")
-		}
-		logger.VerboseNNTP("nntp pool Get new client (after block)", "host", p.host)
-		return c, nil
 	}
 }
 
+// TryGet is Get without the wait: it returns false when nothing is idle and the
+// account is at its limit.
 func (p *ClientPool) TryGet(ctx context.Context) (*Client, bool) {
-
-	select {
-	case <-ctx.Done():
-		return nil, false
-	case c := <-p.idleClients:
-		if c = p.checkoutIdle(c); c == nil {
-			return p.TryGet(ctx)
+	for {
+		if p.isClosed() {
+			return nil, false
 		}
-		return c, true
-	default:
-	}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case c := <-p.idleClients:
+			if c = p.checkoutIdle(c); c == nil {
+				continue
+			}
+			return c, true
+		default:
+		}
 
-	select {
-	case <-ctx.Done():
-		return nil, false
-	case <-p.slots:
-		c, err := p.dial()
-		if err != nil {
-			p.slots <- struct{}{}
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		c, ok, err := p.dialWithPermit()
+		if !ok || err != nil {
 			return nil, false
 		}
 		return c, true
-	default:
-		return nil, false
 	}
 }
 
@@ -357,14 +488,14 @@ func (p *ClientPool) Put(c *Client) {
 	}
 	p.mu.Lock()
 	closed := p.closed
+	current := c.generation == p.generation
 	p.mu.Unlock()
-	if closed {
+	if closed || !current {
 		p.closeClient(c)
-		p.slots <- struct{}{}
 		return
 	}
 	c.LastUsed = time.Now()
-	logger.VerboseNNTP("nntp pool Put", "host", p.host)
+	logger.VerboseNNTP("nntp pool Put", "host", p.Host())
 
 	// Use stopCh as an extra guard: if Shutdown() fires in the window between
 	// reading closed==false above and reaching this select, the stopCh case
@@ -373,13 +504,11 @@ func (p *ClientPool) Put(c *Client) {
 	case p.idleClients <- c:
 		// returned to idle
 	case <-p.stopCh:
-		// shutdown raced with Put; close and return slot
+		// shutdown raced with Put; close and return the permit
 		p.closeClient(c)
-		p.slots <- struct{}{}
 	default:
-		logger.VerboseNNTP("nntp pool Put idle full, closing connection", "host", p.host)
+		logger.VerboseNNTP("nntp pool Put idle full, closing connection", "host", p.Host())
 		p.closeClient(c)
-		p.slots <- struct{}{}
 	}
 }
 
@@ -387,9 +516,8 @@ func (p *ClientPool) Discard(c *Client) {
 	if c == nil {
 		return
 	}
-	logger.VerboseNNTP("nntp pool Discard connection not returned to pool", "host", p.host)
+	logger.VerboseNNTP("nntp pool Discard connection not returned to pool", "host", p.Host())
 	p.closeClient(c)
-	p.slots <- struct{}{}
 }
 
 func (p *ClientPool) reaperLoop() {
@@ -411,14 +539,12 @@ func (p *ClientPool) reaperLoop() {
 			case c := <-p.idleClients:
 				if time.Since(c.LastUsed) > timeout {
 					p.closeClient(c)
-					p.slots <- struct{}{}
 				} else {
 					// Put connection back, but respect a concurrent Shutdown().
 					select {
 					case p.idleClients <- c:
 					case <-p.stopCh:
 						p.closeClient(c)
-						p.slots <- struct{}{}
 						return
 					}
 				}
@@ -440,10 +566,14 @@ func (p *ClientPool) Validate() error {
 }
 
 func (p *ClientPool) Host() string {
-	return p.host
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.target.host
 }
 
 func (p *ClientPool) MaxConn() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.maxConn
 }
 
@@ -460,7 +590,7 @@ type ConnSnapshot struct {
 	// Active is Total minus Idle: connections a command is (or is about to be)
 	// running on.
 	Active int
-	// Pending is how many dials are in flight — a slot is claimed but the
+	// Pending is how many dials are in flight — a permit is claimed but the
 	// handshake has not finished.
 	Pending int
 }
@@ -477,7 +607,7 @@ func (p *ClientPool) ConnStats() ConnSnapshot {
 		idle = total
 	}
 	return ConnSnapshot{
-		Max:     p.maxConn,
+		Max:     p.MaxConn(),
 		Total:   total,
 		Idle:    idle,
 		Active:  total - idle,
@@ -486,8 +616,8 @@ func (p *ClientPool) ConnStats() ConnSnapshot {
 }
 
 // TotalConnections reports connections actually established with the provider.
-// This is deliberately not "slots claimed": a slot held by a dial that has not
-// finished — or that is failing against a dead server — is not a connection
+// This is deliberately not "permits claimed": a permit held by a dial that has
+// not finished — or that is failing against a dead server — is not a connection
 // the provider sees, and counting it had the dashboard reporting connections
 // that did not exist.
 func (p *ClientPool) TotalConnections() int {
@@ -502,6 +632,14 @@ func (p *ClientPool) ActiveConnections() int {
 	return p.ConnStats().Active
 }
 
+// AccountConnections reports how many connections every pool on this pool's
+// account holds or is dialing right now, and the ceiling they share. It is the
+// number the provider is comparing against its limit.
+func (p *ClientPool) AccountConnections() (inUse, limit int) {
+	_, budget, _ := p.snapshot()
+	return budget.InUse(), budget.Limit()
+}
+
 func (p *ClientPool) Shutdown() {
 	p.untrackAux()
 	p.mu.Lock()
@@ -512,6 +650,7 @@ func (p *ClientPool) Shutdown() {
 	p.closed = true
 	usageMgr := p.usageManager
 	providerName := p.providerName
+	budget := p.budget
 	p.mu.Unlock()
 
 	if usageMgr != nil && providerName != "" {
@@ -523,13 +662,10 @@ func (p *ClientPool) Shutdown() {
 	// reaperLoop could still be writing to it causes a "send on closed channel"
 	// panic.  Instead we drain it with non-blocking receives.
 	close(p.stopCh)
+	p.drainIdle()
 
-	for {
-		select {
-		case c := <-p.idleClients:
-			p.closeClient(c)
-		default:
-			return
-		}
-	}
+	// Checked-out connections keep their permits until they come back; the
+	// claim goes now so the account's ceiling stops counting a pool that will
+	// never dial again.
+	budget.dropClaim(p)
 }

@@ -378,12 +378,40 @@ func countBackups(providers []pool.ProviderConfig) int {
 }
 
 func providerConnEqual(a, b config.Provider) bool {
-	return a.Host == b.Host &&
-		a.Port == b.Port &&
-		a.UseSSL == b.UseSSL &&
-		a.Username == b.Username &&
-		a.Password == b.Password &&
-		a.Connections == b.Connections
+	return a.SameDialTarget(b) && a.Connections == b.Connections
+}
+
+// providerPoolFor returns the pool to use for provider on this (re)load and
+// whether its account needs a Validate before it is trusted.
+//
+// A pool that already exists for the name is kept and re-pointed rather than
+// replaced. Replacing it was how a settings save blew the account's connection
+// limit: the new pool validated and started dialing while the old one still
+// held every playback connection, and the old one was not torn down until the
+// reload finished. Keeping the pool means the streams already on it follow the
+// change, and its connections never coexist with a second set.
+func providerPoolFor(provider config.Provider, poolName string, prevCfg config.Provider, prevOK bool, prev *nntp.ClientPool) (p *nntp.ClientPool, reused, needsValidate bool) {
+	if prevOK && prev != nil {
+		if providerConnEqual(prevCfg, provider) {
+			logger.Info("Reusing NNTP pool", "provider", poolName, "host", provider.Host)
+			return prev, true, false
+		}
+		logger.Info("Reconfiguring NNTP pool", "provider", poolName, "host", provider.Host, "conns", provider.Connections)
+		changed := prev.Reconfigure(provider.Host, provider.Port, provider.UseSSL, provider.Username, provider.Password, provider.Connections)
+		return prev, true, changed
+	}
+
+	logger.Info("Initializing NNTP pool", "provider", provider.Name, "host", provider.Host, "conns", provider.Connections)
+	p = nntp.NewClientPool(
+		provider.Host,
+		provider.Port,
+		provider.UseSSL,
+		provider.Username,
+		provider.Password,
+		provider.Connections,
+	)
+	p.SetProviderName(poolName)
+	return p, false, true
 }
 
 func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, prevCfg *config.Config, prevPools map[string]*nntp.ClientPool) *ProviderPoolSet {
@@ -402,11 +430,7 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 	prevByName := make(map[string]config.Provider)
 	if prevCfg != nil {
 		for _, p := range prevCfg.Providers {
-			name := p.Name
-			if name == "" {
-				name = p.Host
-			}
-			prevByName[name] = p
+			prevByName[p.PoolName()] = p
 		}
 	}
 
@@ -438,10 +462,7 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 	// which ones they are before it hands out a single connection.
 	providerBackups := make(map[string]bool, len(providers))
 	for _, provider := range providers {
-		poolName := provider.Name
-		if poolName == "" {
-			poolName = provider.Host
-		}
+		poolName := provider.PoolName()
 		if provider.PipelineDepth != nil {
 			providerDepths[poolName] = *provider.PipelineDepth
 		}
@@ -449,31 +470,24 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 			providerBackups[poolName] = true
 		}
 
-		if prev, ok := prevByName[poolName]; ok && providerConnEqual(prev, provider) {
-			if reused := prevPools[poolName]; reused != nil {
-				logger.Info("Reusing NNTP pool", "provider", poolName, "host", provider.Host)
-				providerPools[poolName] = reused
-				providerOrder = append(providerOrder, poolName)
-				streamingPools = append(streamingPools, reused)
+		prevCfg, prevOK := prevByName[poolName]
+		pool, reused, needsValidate := providerPoolFor(provider, poolName, prevCfg, prevOK, prevPools[poolName])
+
+		if needsValidate {
+			if err := pool.Validate(); err != nil {
+				logger.Error("Failed to initialize provider", "name", provider.Name, "host", provider.Host, "err", err)
+				// Torn down, not abandoned: a pool that is dropped here without
+				// Shutdown kept its reaper goroutine and its claim on the
+				// account's connection ceiling.
+				pool.Shutdown()
 				continue
 			}
 		}
 
-		logger.Info("Initializing NNTP pool", "provider", provider.Name, "host", provider.Host, "conns", provider.Connections)
-
-		pool := nntp.NewClientPool(
-			provider.Host,
-			provider.Port,
-			provider.UseSSL,
-			provider.Username,
-			provider.Password,
-			provider.Connections,
-		)
-
-		pool.SetProviderName(poolName)
-
-		if err := pool.Validate(); err != nil {
-			logger.Error("Failed to initialize provider", "name", provider.Name, "host", provider.Host, "err", err)
+		if reused {
+			providerPools[poolName] = pool
+			providerOrder = append(providerOrder, poolName)
+			streamingPools = append(streamingPools, pool)
 			continue
 		}
 

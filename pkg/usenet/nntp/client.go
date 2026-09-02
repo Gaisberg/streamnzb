@@ -39,7 +39,28 @@ type Client struct {
 
 	LastUsed time.Time
 	pool     *ClientPool
+
+	// budget holds the account permit this connection was dialed under, and
+	// generation names the pool configuration it was dialed for. Both are set
+	// by the pool at dial time and read back when the connection is closed or
+	// returned, so a permit always goes back to the budget it came from even
+	// after the pool has been re-pointed at another account.
+	budget     *connBudget
+	generation uint64
+
+	// lifecycle guards conn against the one write that happens off the
+	// command goroutine: Quit, which a watchdog may call mid-command to abort
+	// a read. closed is sticky. Reconnect checks it before and after dialing,
+	// because a reconnect that lands after Quit would open a connection nothing
+	// owns — the pool has already freed the slot and counted the old one gone,
+	// and the new one would sit on the provider's account until it timed out.
+	lifecycle sync.Mutex
+	closed    bool
 }
+
+// ErrClientClosed is returned by commands on a connection that has been closed
+// by its pool.
+var ErrClientClosed = errors.New("nntp: client closed")
 
 func readGreeting(tp *textproto.Conn) error {
 	code, _, err := tp.ReadResponse(200)
@@ -53,7 +74,10 @@ func readGreeting(tp *textproto.Conn) error {
 	return err
 }
 
-func NewClient(address string, port int, ssl bool) (*Client, error) {
+// dialNNTP opens a TCP or TLS connection and reads the greeting. The greeting
+// is read under a deadline so a server that accepts and then says nothing
+// cannot hold the dial open indefinitely.
+func dialNNTP(address string, port int, ssl bool) (net.Conn, *textproto.Conn, error) {
 	fullAddr := net.JoinHostPort(address, strconv.Itoa(port))
 	var conn net.Conn
 	var err error
@@ -64,9 +88,8 @@ func NewClient(address string, port int, ssl bool) (*Client, error) {
 	} else {
 		conn, err = net.DialTimeout("tcp", fullAddr, dialTimeout)
 	}
-
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	logger.VerboseNNTP("nntp NewClient connection opened", "addr", fullAddr)
@@ -74,11 +97,17 @@ func NewClient(address string, port int, ssl bool) (*Client, error) {
 	tp := textproto.NewConn(conn)
 	if err = readGreeting(tp); err != nil {
 		tp.Close()
+		return nil, nil, err
+	}
+	conn.SetDeadline(time.Time{})
+	return conn, tp, nil
+}
+
+func NewClient(address string, port int, ssl bool) (*Client, error) {
+	conn, tp, err := dialNNTP(address, port, ssl)
+	if err != nil {
 		return nil, err
 	}
-
-	conn.SetDeadline(time.Time{})
-
 	return &Client{
 		conn:    tp,
 		netConn: conn,
@@ -280,47 +309,85 @@ func (c *Client) shouldRetry(code int, err error) bool {
 	return false
 }
 
+// Reconnect replaces a dead socket with a fresh one to the same server, keeping
+// the account permit and the pool's counters exactly as they were: to the pool
+// this is still the same connection.
+//
+// It refuses once the pool has closed the client. The command that noticed the
+// socket was gone cannot tell a provider-side drop from a watchdog's Quit, and
+// retrying the latter used to redial an orphan the provider counted against
+// the account for as long as it cared to keep it.
 func (c *Client) Reconnect() error {
-	if c.conn != nil {
-		c.conn.Close()
+	c.lifecycle.Lock()
+	if c.closed {
+		c.lifecycle.Unlock()
+		return ErrClientClosed
+	}
+	old := c.conn
+	c.lifecycle.Unlock()
+	if old != nil {
+		old.Close()
 	}
 	// A fresh connection has no group selected.
 	c.group = ""
 
-	fullAddr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
-	var conn net.Conn
-	var err error
-
-	if c.ssl {
-		dialer := &net.Dialer{Timeout: dialTimeout}
-		conn, err = tls.DialWithDialer(dialer, "tcp", fullAddr, nil)
-	} else {
-		conn, err = net.DialTimeout("tcp", fullAddr, dialTimeout)
-	}
-
+	conn, tp, err := dialNNTP(c.host, c.port, c.ssl)
 	if err != nil {
+		if c.pool != nil && IsConnectionLimit(err) {
+			c.pool.reportConnLimit(err)
+		}
 		return err
 	}
 
-	tp := textproto.NewConn(conn)
-	if err = readGreeting(tp); err != nil {
+	c.lifecycle.Lock()
+	if c.closed {
+		c.lifecycle.Unlock()
 		tp.Close()
-		return err
+		return ErrClientClosed
 	}
-
 	c.conn = tp
 	c.netConn = conn
+	c.lifecycle.Unlock()
 
-	if c.user != "" {
-		return c.Authenticate(c.user, c.pass)
+	if c.user == "" {
+		return nil
 	}
-	return nil
+	err = c.Authenticate(c.user, c.pass)
+	// The verdict is about this connection's credentials, which are only the
+	// provider's current ones if the pool has not been re-pointed since.
+	if c.pool != nil && c.pool.dialsAs(c) {
+		c.pool.reportAuthResult(err)
+	}
+	return err
 }
 
+// Quit closes the socket. It is idempotent, and it reports whether this call
+// was the one that closed it, so the pool's counters move exactly once however
+// many paths end up tearing the same connection down.
 func (c *Client) Quit() error {
+	_, err := c.close()
+	return err
+}
+
+func (c *Client) close() (first bool, err error) {
+	c.lifecycle.Lock()
+	defer c.lifecycle.Unlock()
+	if c.closed {
+		return false, nil
+	}
+	c.closed = true
 	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 	logger.VerboseNNTP("nntp Client Quit closing connection", "addr", addr)
-	return c.conn.Close()
+	if c.conn == nil {
+		return true, nil
+	}
+	return true, c.conn.Close()
+}
+
+func (c *Client) isClosed() bool {
+	c.lifecycle.Lock()
+	defer c.lifecycle.Unlock()
+	return c.closed
 }
 
 func (c *Client) setDeadline() {
@@ -343,7 +410,7 @@ func (c *Client) setShortDeadline() {
 // deadline — times retries — before failing, turning one stale socket into a
 // multi-minute playback stall.
 func (c *Client) HealthyForCheckout(maxIdle time.Duration) bool {
-	if c == nil || c.conn == nil {
+	if c == nil || c.conn == nil || c.isClosed() {
 		return false
 	}
 	if !c.LastUsed.IsZero() && time.Since(c.LastUsed) <= maxIdle {

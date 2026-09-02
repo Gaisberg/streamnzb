@@ -92,12 +92,12 @@ func TestCredentialsChangedComparesWhatWeAuthenticateWith(t *testing.T) {
 	base := config.Provider{Name: "p", Host: "h", Port: 563, Username: "u", Password: "p", Connections: 20}
 	moved := base
 	moved.Host = "other-host"
-	if !providerCredentialsChanged(base, moved) {
+	if base.SameDialTarget(moved) {
 		t.Error("a different host is a different login")
 	}
 	retuned := base
 	retuned.Connections = 50
-	if providerCredentialsChanged(base, retuned) {
+	if !base.SameDialTarget(retuned) {
 		t.Error("connection count is not a credential")
 	}
 

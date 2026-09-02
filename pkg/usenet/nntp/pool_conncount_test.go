@@ -73,8 +73,9 @@ func TestConnStatsCountsNoConnectionOnAuthFailure(t *testing.T) {
 	wantConns(t, pool, "after failed Get", 0, 0, 0, 0)
 }
 
-// TestConnStatsProbeBalances: a Probe dials outside the slot budget; its
-// connection must be counted while open and uncounted once torn down.
+// TestConnStatsProbeBalances: a Probe takes an account permit like any other
+// dial; its connection must be counted while open and uncounted — permit
+// included — once torn down.
 func TestConnStatsProbeBalances(t *testing.T) {
 	testHealthRegistry(t)
 	host, port := fakeNNTPListener(t, "accept")
@@ -88,6 +89,9 @@ func TestConnStatsProbeBalances(t *testing.T) {
 		t.Fatalf("Probe: %v", err)
 	}
 	wantConns(t, pool, "after Probe", 0, 0, 0, 0)
+	if inUse, _ := pool.AccountConnections(); inUse != 0 {
+		t.Fatalf("AccountConnections in use = %d after Probe, want 0", inUse)
+	}
 }
 
 // TestAuxConnStatsFollowsRegistration: a registered auxiliary pool contributes

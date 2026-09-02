@@ -233,7 +233,7 @@ func syncComponentHealth(oldCfg, newCfg *config.Config) {
 	for _, p := range newCfg.Providers {
 		providerNames = append(providerNames, p.Name)
 		prev, existed := oldProviders[p.Name]
-		if !existed || providerCredentialsChanged(prev, p) {
+		if !existed || !prev.SameDialTarget(p) {
 			reg.Forget(health.KindProvider, p.Name)
 		}
 	}
@@ -248,16 +248,6 @@ func syncComponentHealth(oldCfg, newCfg *config.Config) {
 		}
 	}
 	reg.Retain(health.KindIndexer, indexerNames)
-}
-
-// providerCredentialsChanged reports whether anything the server authenticates
-// us by moved. Host and port count: pointing the same account at a different
-// server is a different login as far as any stored rejection is concerned.
-func providerCredentialsChanged(before, after config.Provider) bool {
-	return before.Username != after.Username ||
-		before.Password != after.Password ||
-		before.Host != after.Host ||
-		before.Port != after.Port
 }
 
 func indexerCredentialsChanged(before, after config.IndexerConfig) bool {

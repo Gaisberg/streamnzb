@@ -89,6 +89,28 @@ type Provider struct {
 	PipelineDepth *int `json:"pipeline_depth,omitempty"`
 }
 
+// SameDialTarget reports whether both entries log in to the same server as the
+// same account. It is the one definition of "did the connection settings
+// change" — anything that decides whether a provider needs a fresh dial (pool
+// reuse on reload, settings validation, stored health verdicts) asks this, so a
+// password edit is a change everywhere and a priority edit is a change nowhere.
+func (p Provider) SameDialTarget(o Provider) bool {
+	return p.Host == o.Host &&
+		p.Port == o.Port &&
+		p.UseSSL == o.UseSSL &&
+		p.Username == o.Username &&
+		p.Password == o.Password
+}
+
+// PoolName is the name pools, health rows and usage records file the provider
+// under: the configured name, or the host for an unnamed entry.
+func (p Provider) PoolName() string {
+	if name := strings.TrimSpace(p.Name); name != "" {
+		return name
+	}
+	return p.Host
+}
+
 func ptrBool(b bool) *bool { return &b }
 
 func IsAggregatorIndexerType(indexerType string) bool {
