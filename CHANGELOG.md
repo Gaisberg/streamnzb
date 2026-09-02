@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.16.1](https://github.com/Gaisberg/streamnzb/compare/v5.16.0...v5.16.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **nntp:** enforce the provider connection cap per account across every pool ([e41d970](https://github.com/Gaisberg/streamnzb/commit/e41d970368ed313abe72a89c85c0529bac28d067))
+* **rules:** answer library for every release instead of skipping it with the indexer tier ([eee7811](https://github.com/Gaisberg/streamnzb/commit/eee7811f725b30602250b2a9bb3d934a618fceb9))
+* **rules:** stop rejecting IMAX Enhanced releases as upscaled ([1c1db3f](https://github.com/Gaisberg/streamnzb/commit/1c1db3ff81f897ab7adb8664f42c8b524d272a80)), closes [#251](https://github.com/Gaisberg/streamnzb/issues/251)
+
 ## [5.16.0](https://github.com/Gaisberg/streamnzb/compare/v5.15.0...v5.16.0) (2026-09-01)
 
 
