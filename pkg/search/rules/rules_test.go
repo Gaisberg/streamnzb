@@ -130,6 +130,27 @@ func TestConditionCombinesAttributes(t *testing.T) {
 	}
 }
 
+// "IMAX Enhanced" is a certification, not an upscale (#251). Older jhin read
+// the trailing "Enhanced" as an upscale marker, so a Reject Upscaled rule
+// threw away legitimate IMAX releases.
+func TestImaxEnhancedIsNotUpscaled(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name:   "Reject Upscaled",
+		When:   "upscaled",
+		Action: config.RuleActionReject,
+	})
+
+	imax := envFor("Movie.2026.2160p.IMAX.Enhanced.WEB-DL.DV.HDR10.x265-GRP", nil)
+	if got := set.Evaluate(imax, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("an IMAX Enhanced release was rejected: %v", got.Rejections)
+	}
+
+	upscaled := envFor("Movie.2026.2160p.AI.Upscaled.WEB-DL.x265-GRP", nil)
+	if got := set.Evaluate(upscaled, "movie"); len(got.Rejections) == 0 {
+		t.Error("an upscaled release was not rejected")
+	}
+}
+
 // Rules that read a tier the release has nothing in do not run. Without this,
 // turning on one probe rule would empty every result list of everything except
 // library hits.
