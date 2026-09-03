@@ -10,6 +10,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Providers](providers.md) — priority, failover, and holding a metered account back as a backup
 - [Provider speed test](speed-test.md) — measuring provider throughput and finding the right connection count
 - [Indexer & provider health](component-health.md) — how a rejected password, spent quota or lapsed subscription is detected, shown and recovered
+- [Statistics](statistics.md) — what the indexer and provider counters on the Statistics page measure
 - [Easynews advanced search](easynews.md) — server-side filtering options for Easynews indexers
 
 ## Features

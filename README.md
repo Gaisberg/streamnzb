@@ -128,6 +128,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Providers](docs/providers.md) — priority, failover, and holding a metered account back as a backup
 - [Provider speed test](docs/speed-test.md) — measuring provider throughput and finding the right connection count
 - [Indexer & provider health](docs/component-health.md) — how a rejected password, spent quota or lapsed subscription is detected, shown and recovered
+- [Statistics](docs/statistics.md) — what the indexer and provider counters on the Statistics page measure
 - [Easynews advanced search](docs/easynews.md) — server-side filtering options for Easynews indexers
 - [Metadata & catalogs](docs/metadata.md) — StreamNZB as a full Stremio metadata provider
 - [Stream model](docs/stream-model.md) — global configuration vs. per-stream behavior

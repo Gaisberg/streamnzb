@@ -111,13 +111,19 @@ function rangeFromPreset(preset) {
   return { from: formatDateInput(start), to: todayStr }
 }
 
+// Both columns have been read as something they are not: unique hits as "how
+// often this indexer answered at all", availability as the indexer's uptime.
+const UNIQUE_HITS_HINT = 'Deduplicated releases this indexer alone carried — no other indexer returned a copy of them.'
+const AVAILNZB_AVAILABILITY_HINT =
+  'Share of this indexer\'s releases that AvailNZB confirmed as available. Blank until AvailNZB has reported on a release from this indexer.'
+
 const indexerMetricOptions = {
   response: { label: 'Response (ms)', key: 'avgResponseMs', suffix: ' ms' },
   searches: { label: 'Searches', key: 'searchesCount', suffix: '' },
   downloads: { label: 'Downloads', key: 'downloadsCount', suffix: '' },
   uniqueHits: { label: 'Unique hits', key: 'uniqueHitsCount', suffix: '' },
-  availAvailable: { label: 'Available', key: 'availAvailableCount', suffix: '' },
-  availDiscarded: { label: 'Unavailable', key: 'availDiscardedCount', suffix: '' },
+  availAvailable: { label: 'AvailNZB available', key: 'availAvailableCount', suffix: '' },
+  availDiscarded: { label: 'AvailNZB unavailable', key: 'availDiscardedCount', suffix: '' },
 }
 
 export const StatisticsPage = memo(function StatisticsPage() {
@@ -588,7 +594,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
               <Gauge className="h-5 w-5 text-primary" />
               <CardTitle>Indexer Statistics</CardTitle>
             </div>
-            <CardDescription>Response time, searches, downloads, and availability rate by indexer.</CardDescription>
+            <CardDescription>Response time, searches, downloads, and AvailNZB availability rate by indexer.</CardDescription>
             <div className="pt-2">
               <div className="sm:hidden">
                 <select
@@ -619,8 +625,8 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
                   <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
                   <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
-                  <ToggleGroupItem value="availAvailable">Available</ToggleGroupItem>
-                  <ToggleGroupItem value="availDiscarded">Unavailable</ToggleGroupItem>
+                  <ToggleGroupItem value="availAvailable">AvailNZB available</ToggleGroupItem>
+                  <ToggleGroupItem value="availDiscarded">AvailNZB unavailable</ToggleGroupItem>
                 </ToggleGroup>
               </div>
             </div>
@@ -644,8 +650,8 @@ export const StatisticsPage = memo(function StatisticsPage() {
                     <th className="px-3 py-2 text-right font-medium">Avg response</th>
                     <th className="px-3 py-2 text-right font-medium">Searches</th>
                     <th className="px-3 py-2 text-right font-medium">Downloads</th>
-                    <th className="px-3 py-2 text-right font-medium">Unique hits</th>
-                    <th className="px-3 py-2 text-right font-medium">Availability</th>
+                    <th className="px-3 py-2 text-right font-medium" title={UNIQUE_HITS_HINT}>Unique hits</th>
+                    <th className="px-3 py-2 text-right font-medium" title={AVAILNZB_AVAILABILITY_HINT}>AvailNZB availability</th>
                     <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -656,12 +662,14 @@ export const StatisticsPage = memo(function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{row.avgResponseMs > 0 ? `${row.avgResponseMs.toFixed(0)} ms` : 'N/A'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.searchesCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.downloadsCount}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{row.uniqueHitsCount}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" title={UNIQUE_HITS_HINT}>{row.uniqueHitsCount}</td>
                       <td
                         className="px-3 py-2 text-right tabular-nums"
-                        title={row.availTotal > 0 ? `${row.availAvailableCount} available / ${row.availDiscardedCount} unavailable` : undefined}
+                        title={row.availTotal > 0 ? `${row.availAvailableCount} available / ${row.availDiscardedCount} unavailable` : AVAILNZB_AVAILABILITY_HINT}
                       >
-                        {row.availTotal > 0 ? `${row.availabilityPercent.toFixed(1)}%` : 'N/A'}
+                        {row.availTotal > 0
+                          ? `${row.availabilityPercent.toFixed(1)}%`
+                          : <span className="text-muted-foreground">No samples</span>}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <Button
@@ -729,9 +737,11 @@ export const StatisticsPage = memo(function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{row.usagePercent.toFixed(1)}%</td>
                       <td
                         className="px-3 py-2 text-right tabular-nums"
-                        title={row.articleTotal > 0 ? `${row.articleAvailableCount} available / ${row.articleMissingCount} missing` : undefined}
+                        title={row.articleTotal > 0 ? `${row.articleAvailableCount} available / ${row.articleMissingCount} missing` : 'No article has been fetched from this provider yet.'}
                       >
-                        {row.articleTotal > 0 ? `${row.missingPercent.toFixed(1)}%` : 'N/A'}
+                        {row.articleTotal > 0
+                          ? `${row.missingPercent.toFixed(1)}%`
+                          : <span className="text-muted-foreground">No samples</span>}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <Button

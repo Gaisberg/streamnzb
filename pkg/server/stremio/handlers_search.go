@@ -431,34 +431,50 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 		indexerReleases = append(indexerReleases, outcome.releases...)
 	}
 
-	if idxName, ok := singleIndexerFromReleases(indexerReleases); ok {
-		s.addUniqueIndexerHits(map[string]int{idxName: 1})
-	}
 	return indexerReleases, executedRequests, nil
 }
 
-func singleIndexerFromReleases(releases []*release.Release) (string, bool) {
-	if len(releases) == 0 {
-		return "", false
-	}
-	out := make(map[string]struct{})
+// uniqueIndexerHitsFrom counts, per indexer, the deduplicated releases that no
+// other indexer had a copy of — content this indexer alone contributed to the
+// result. It runs on the merged list, so the question it answers is "did any
+// other indexer carry this release", not "was this the only indexer that
+// answered the search": the old whole-search version credited nobody as soon as
+// a second indexer returned anything, which on a multi-indexer setup is always.
+func uniqueIndexerHitsFrom(releases []*release.Release) map[string]int {
+	hits := make(map[string]int)
 	for _, rel := range releases {
-		if rel == nil {
+		if name, ok := soleIndexerOf(rel); ok {
+			hits[name]++
+		}
+	}
+	return hits
+}
+
+// soleIndexerOf returns the one indexer behind every copy of a release, or
+// false when the copies span several indexers or name none at all.
+//
+// Library copies are skipped: a cached result is the same content coming back
+// from disk rather than a second indexer having it, so it must not cancel the
+// hit its own indexer earned.
+func soleIndexerOf(rel *release.Release) (string, bool) {
+	sole := ""
+	for _, c := range rel.Copies() {
+		if c == nil || c.IsLibraryResult() {
 			continue
 		}
-		name := strings.TrimSpace(rel.Indexer)
+		name := strings.TrimSpace(c.Indexer)
 		if name == "" {
 			continue
 		}
-		out[name] = struct{}{}
-		if len(out) > 1 {
+		if sole == "" {
+			sole = name
+			continue
+		}
+		if !strings.EqualFold(sole, name) {
 			return "", false
 		}
 	}
-	for name := range out {
-		return name, true
-	}
-	return "", false
+	return sole, sole != ""
 }
 
 // dedupeSearchResults collapses copies of the same release into one result.
@@ -787,6 +803,9 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	beforeBad := len(indexerReleases)
 	indexerReleases = s.filterBadReleases(streamLabel, indexerReleases)
 	diag.From(ctx).SetBadFiltered(beforeBad - len(indexerReleases))
+	// Credited here rather than at merge time so a release nobody can play
+	// does not earn its indexer a hit.
+	s.addUniqueIndexerHits(uniqueIndexerHitsFrom(indexerReleases))
 	availCtx = alignAvailContextWithSearch(availCtx, indexerReleases)
 	enrichSearchResultsWithAvail(streamLabel, indexerReleases, availCtx)
 	logger.Debug("Playback candidate build finished",

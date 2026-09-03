@@ -611,7 +611,7 @@ func TestBuildRawSearchResultShortCircuitsWhenMetadataCannotBeResolved(t *testin
 	}
 }
 
-func TestRunConfiguredSearchRequestsNoUniqueHitWhenSeveralIndexersAnswer(t *testing.T) {
+func TestRunConfiguredSearchRequestsMergesResultsFromEveryPlan(t *testing.T) {
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
@@ -657,18 +657,10 @@ func TestRunConfiguredSearchRequestsNoUniqueHitWhenSeveralIndexersAnswer(t *test
 	if len(releases) != 2 {
 		t.Fatalf("releases len = %d, want 2", len(releases))
 	}
-	hits := srv.GetUniqueIndexerHits()
-	if got := hits["IndexerB"]; got != 0 {
-		t.Fatalf("IndexerB unique hits = %d, want 0", got)
-	}
-	if got := hits["IndexerC"]; got != 0 {
-		t.Fatalf("IndexerC unique hits = %d, want 0", got)
-	}
 }
 
-// Every selected plan runs — there is no stream-level fallback chain any more
-// — and the one indexer that answered across all of them earns the unique hit.
-func TestRunConfiguredSearchRequestsRunsEveryPlanAndCreditsTheOnlyIndexer(t *testing.T) {
+// Every selected plan runs — there is no stream-level fallback chain any more.
+func TestRunConfiguredSearchRequestsRunsEveryPlan(t *testing.T) {
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
@@ -713,27 +705,37 @@ func TestRunConfiguredSearchRequestsRunsEveryPlanAndCreditsTheOnlyIndexer(t *tes
 	if len(releases) != 1 {
 		t.Fatalf("releases len = %d, want 1", len(releases))
 	}
-	hits := srv.GetUniqueIndexerHits()
-	if got := hits["IndexerB"]; got != 1 {
-		t.Fatalf("IndexerB unique hits = %d, want 1", got)
-	}
 }
 
-func TestSingleIndexerFromReleases(t *testing.T) {
-	one, ok := singleIndexerFromReleases([]*release.Release{
-		{Indexer: "IndexerA"},
-		{Indexer: "IndexerA"},
-	})
-	if !ok || one != "IndexerA" {
-		t.Fatalf("singleIndexerFromReleases single = (%q,%v), want (IndexerA,true)", one, ok)
+// A unique hit is per merged release, not per search: an indexer earns one for
+// every deduplicated release no other indexer had a copy of, so a busy
+// multi-indexer search credits several indexers at once.
+func TestUniqueIndexerHitsFrom(t *testing.T) {
+	onlyA := &release.Release{Indexer: "IndexerA"}
+	shared := &release.Release{
+		Indexer:  "IndexerA",
+		Variants: []*release.Release{{Indexer: "IndexerB"}},
 	}
+	onlyB := &release.Release{
+		Indexer:  "IndexerB",
+		Variants: []*release.Release{{Indexer: "indexerb"}},
+	}
+	// A library copy is the same content back from disk, not a rival indexer.
+	cached := &release.Release{
+		Indexer:  "IndexerC",
+		Variants: []*release.Release{{Indexer: "StreamNZB Library - IndexerC", IsLibrary: true}},
+	}
+	unattributed := &release.Release{Indexer: "  "}
 
-	_, ok = singleIndexerFromReleases([]*release.Release{
-		{Indexer: "IndexerA"},
-		{Indexer: "IndexerB"},
-	})
-	if ok {
-		t.Fatal("singleIndexerFromReleases should return false for mixed indexers")
+	hits := uniqueIndexerHitsFrom([]*release.Release{onlyA, shared, onlyB, cached, unattributed})
+	want := map[string]int{"IndexerA": 1, "IndexerB": 1, "IndexerC": 1}
+	if len(hits) != len(want) {
+		t.Fatalf("uniqueIndexerHitsFrom() = %v, want %v", hits, want)
+	}
+	for name, n := range want {
+		if hits[name] != n {
+			t.Fatalf("uniqueIndexerHitsFrom()[%q] = %d, want %d (got %v)", name, hits[name], n, hits)
+		}
 	}
 }
 

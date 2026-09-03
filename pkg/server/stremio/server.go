@@ -309,6 +309,9 @@ func (s *Server) addUniqueIndexerHits(hitsByIndexer map[string]int) {
 	}
 	s.availStatsMu.Lock()
 	defer s.availStatsMu.Unlock()
+	if s.uniqueIndexerHits == nil {
+		s.uniqueIndexerHits = make(map[string]int64)
+	}
 	for name, n := range hitsByIndexer {
 		if strings.TrimSpace(name) == "" || n <= 0 {
 			continue

@@ -212,6 +212,33 @@ func TestDedupeSearchResultsMergesCopiesOfOneRelease(t *testing.T) {
 	}
 }
 
+// The counter behind the "Unique hits" statistic reads the merge output: an
+// indexer is credited for the releases it alone carried, and the release two
+// indexers both had credits neither.
+func TestDedupeSearchResultsFeedsUniqueIndexerHits(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	server := &Server{config: &config.Config{}, uniqueIndexerHits: make(map[string]int64)}
+	releases := []*release.Release{
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek.invalid/1", Indexer: "NZBGeek"},
+		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
+		{Title: "Movie.1080p.WEB-DL-GRP", DetailsURL: "https://geek.invalid/3", Indexer: "NZBGeek"},
+	}
+	stream := &auth.Stream{Username: "stream_test"}
+
+	merged := server.dedupeSearchResults("stream_test", stream, releases, nil)
+	server.addUniqueIndexerHits(uniqueIndexerHitsFrom(merged))
+
+	hits := server.GetUniqueIndexerHits()
+	if got := hits["NZBGeek"]; got != 1 {
+		t.Fatalf("NZBGeek unique hits = %d, want 1 (only the 1080p release was its alone)", got)
+	}
+	if got := hits["DrunkenSlug"]; got != 0 {
+		t.Fatalf("DrunkenSlug unique hits = %d, want 0 (its only release was shared)", got)
+	}
+}
+
 func TestDefaultStreamMergesWithoutWalkingCopies(t *testing.T) {
 	initFailoverTestLogger()
 	t.Parallel()
