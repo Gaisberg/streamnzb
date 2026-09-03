@@ -148,6 +148,11 @@ type Env struct {
 	Season  int
 	Episode int
 	Title   string
+	// OriginalLanguage is the language the requested title was made in, as
+	// an ISO 639-1 code from the metadata provider ("ja", "ko", "fr"), empty
+	// when the provider did not say. It is what lets "prefer the original
+	// audio" be one rule for every language rather than one per language.
+	OriginalLanguage string
 
 	// ---- post-scoring ----
 
@@ -330,6 +335,8 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 	// parsed.title. It shadows jhin's core field on purpose.
 	case "title":
 		return jhinrules.StrOf(e.Title), true
+	case "originalLanguage":
+		return jhinrules.StrOf(e.OriginalLanguage), true
 
 	case "finalScore":
 		return jhinrules.NumOf(float64(e.FinalScore)), true
@@ -474,6 +481,9 @@ type Context struct {
 	Season  int
 	Episode int
 	Title   string
+	// OriginalLanguage is the requested title's original language (ISO
+	// 639-1), empty when metadata did not carry one.
+	OriginalLanguage string
 	// Episodic marks a request for episodic content, which is what decides
 	// whether a size is judged whole or per episode.
 	Episodic bool
@@ -508,11 +518,12 @@ type SeadexContext struct {
 // which is the same thing an absent attribute has always meant here.
 func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env {
 	env := Env{
-		Kind:    ctx.Kind,
-		IsAnime: ctx.IsAnime,
-		Season:  ctx.Season,
-		Episode: ctx.Episode,
-		Title:   ctx.Title,
+		Kind:             ctx.Kind,
+		IsAnime:          ctx.IsAnime,
+		Season:           ctx.Season,
+		Episode:          ctx.Episode,
+		Title:            ctx.Title,
+		OriginalLanguage: ctx.OriginalLanguage,
 	}
 
 	if parsed != nil {

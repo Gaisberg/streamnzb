@@ -101,6 +101,10 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Field("isAnime", jhinrules.Bool, "")
 	reg.Field("season", jhinrules.Num, "")
 	reg.Field("episode", jhinrules.Num, "")
+	// The requested title's original language, from metadata. Always
+	// answerable — an empty string when the provider did not say — so it
+	// carries no tier; a rule that needs it can guard on it being non-empty.
+	reg.Field("originalLanguage", jhinrules.Str, "")
 
 	if err := reg.Err(); err != nil {
 		// A registration that fails is a programming error in this file, not

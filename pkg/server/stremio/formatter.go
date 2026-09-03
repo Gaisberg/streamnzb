@@ -63,6 +63,11 @@ type FormatContext struct {
 	// decision on its own, which is the form templates usually want.
 	Kind    string
 	IsAnime bool
+	// OriginalLanguage is the requested title's original language as an ISO
+	// 639-1 code from metadata ("ja", "ko"), empty when it did not say. Pair
+	// it with .Languages to badge original-audio releases without a
+	// per-language template line.
+	OriginalLanguage string
 
 	// MatchedRules are the profile's named rules that paid out on this
 	// release, in configuration order. Range over them for badges
@@ -638,19 +643,20 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 		service = DefaultServiceName
 	}
 	ctx := FormatContext{
-		Service:      service,
-		Stream:       streamID,
-		Content:      contentTitle,
-		Index:        index,
-		Count:        count,
-		Score:        cand.Score,
-		TopScore:     topScore,
-		Avail:        avail,
-		Caps:         caps,
-		Kind:         cand.Verdict.Kind,
-		IsAnime:      cand.Verdict.IsAnime,
-		MatchedRules: cand.Verdict.Matched,
-		Availability: availInfo(cand.Verdict.Avail),
+		Service:          service,
+		Stream:           streamID,
+		Content:          contentTitle,
+		Index:            index,
+		Count:            count,
+		Score:            cand.Score,
+		TopScore:         topScore,
+		Avail:            avail,
+		Caps:             caps,
+		Kind:             cand.Verdict.Kind,
+		IsAnime:          cand.Verdict.IsAnime,
+		OriginalLanguage: cand.Verdict.OriginalLanguage,
+		MatchedRules:     cand.Verdict.Matched,
+		Availability:     availInfo(cand.Verdict.Avail),
 		Seadex: SeadexInfo{
 			Checked:     cand.Verdict.Seadex.Checked,
 			Known:       cand.Verdict.Seadex.Known,

@@ -514,6 +514,31 @@ func TestLibraryIsAnsweredWithoutIndexerData(t *testing.T) {
 	}
 }
 
+// originalLanguage is the request's, from metadata, so one rule covers every
+// language: a Japanese anime, a Korean drama and a French film all get "prefer
+// the original audio" from the same line.
+func TestOriginalLanguageIsPerRequest(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Original audio", When: `originalLanguage != "" and originalLanguage in languages`, Points: 500},
+		config.RuleConfig{Name: "Dubbed, not original", When: `originalLanguage != "" and dubbed and not (originalLanguage in languages)`, Points: -300},
+	)
+	envFor := func(title, orig string) rules.Env {
+		cand := triage.Candidate{Release: &release.Release{Title: title}}
+		return rules.BuildEnv(cand, jhin.Parse(title), rules.Context{Kind: "series", OriginalLanguage: orig})
+	}
+
+	if got := set.Evaluate(envFor("Drama.S01E01.1080p.WEB-DL.Korean.H.264-GRP", "ko"), "series"); got.Points != 500 {
+		t.Errorf("Korean audio on a Korean title scored %d, want 500", got.Points)
+	}
+	if got := set.Evaluate(envFor("Drama.S01E01.1080p.WEB-DL.English.Dubbed.H.264-GRP", "ko"), "series"); got.Points != -300 {
+		t.Errorf("English dub of a Korean title scored %d, want -300", got.Points)
+	}
+	// Metadata did not say: both rules are guarded and neither fires.
+	if got := set.Evaluate(envFor("Drama.S01E01.1080p.WEB-DL.English.Dubbed.H.264-GRP", ""), "series"); got.Points != 0 {
+		t.Errorf("unknown original language scored %d, want 0", got.Points)
+	}
+}
+
 // seadexEnvFor builds the environment for one release under a request that
 // resolved a SeaDex answer, the way ranking does for an anime search.
 func seadexEnvFor(title string, seadex *rules.SeadexContext) rules.Env {
