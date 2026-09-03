@@ -80,7 +80,7 @@ func buildRegistry() *jhinrules.Registry {
 		Str("status").Bool("known").Bool("onMyBackbone").
 		Num("checkedDaysAgo").Str("compression")
 	reg.Namespace("seadex", tierSeadex).
-		Bool("known").Bool("best").Bool("alternative")
+		Bool("known").Bool("best").Bool("alternative").Bool("dualAudio")
 
 	// Measured: what ffprobe found in the file itself.
 	reg.Namespace("probed", tierMeasured).

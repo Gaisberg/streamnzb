@@ -547,6 +547,31 @@ func TestSeadexJudgesByGroup(t *testing.T) {
 	}
 }
 
+// Dual audio is SeaDex's own flag on a recommended release, independent of the
+// best mark: a best release may be sub-only and an alternative dual.
+func TestSeadexDualAudioIsPerGroup(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "SeaDex best", When: `seadex.best`, Points: 1000},
+		config.RuleConfig{Name: "SeaDex dual audio", When: `seadex.dualAudio`, Points: 800},
+	)
+	seadex := &rules.SeadexContext{
+		Known:     true,
+		Best:      map[string]bool{"koala": true},
+		Alt:       map[string]bool{"anime time": true},
+		DualAudio: map[string]bool{"anime time": true},
+	}
+
+	if got := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-KoaLa", seadex), "anime_show"); got.Points != 1000 {
+		t.Errorf("sub-only best group scored %d, want 1000", got.Points)
+	}
+	if got := set.Evaluate(seadexEnvFor("[Anime Time] Anime - 01 [1080p][Dual-Audio]", seadex), "anime_show"); got.Points != 800 {
+		t.Errorf("dual-audio alternative scored %d, want 800", got.Points)
+	}
+	if got := set.Evaluate(seadexEnvFor("Anime S01E01 1080p BluRay x265-OTHER", seadex), "anime_show"); got.Points != 0 {
+		t.Errorf("an unlisted group scored %d, want 0", got.Points)
+	}
+}
+
 // No lookup and no entry are different claims. Without a lookup, seadex rules
 // are skipped; with a lookup that found nothing, they run and seadex.known is
 // simply false.

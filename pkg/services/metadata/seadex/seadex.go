@@ -66,6 +66,23 @@ func (e *Entry) GroupSets() (best, alt map[string]bool) {
 	return best, alt
 }
 
+// DualAudioGroups projects the entry onto the normalized release-group names
+// with at least one recommended release SeaDex marks dual audio for this
+// title. Like GroupSets it is per title: a group that ships dual audio for one
+// anime and sub-only for the next is judged per entry.
+func (e *Entry) DualAudioGroups() map[string]bool {
+	out := make(map[string]bool)
+	if e == nil {
+		return out
+	}
+	for _, t := range e.Torrents {
+		if g := NormalizeGroup(t.ReleaseGroup); g != "" && t.DualAudio {
+			out[g] = true
+		}
+	}
+	return out
+}
+
 // NormalizeGroup canonicalizes a release-group name for matching: SeaDex spells
 // groups as they name themselves ("SubsPlease"), release parsers report what
 // the filename carried, and case is the only difference that occurs in

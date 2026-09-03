@@ -183,6 +183,9 @@ type SeadexInfo struct {
 	// for the title; Alternative that it is recommended without the mark.
 	Best        bool
 	Alternative bool
+	// DualAudio reports the group has a recommended release SeaDex marks
+	// dual audio for the title.
+	DualAudio bool
 }
 
 // stringList and intList render as comma-separated text instead of Go's
@@ -653,6 +656,7 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 			Known:       cand.Verdict.Seadex.Known,
 			Best:        cand.Verdict.Seadex.Best,
 			Alternative: cand.Verdict.Seadex.Alternative,
+			DualAudio:   cand.Verdict.Seadex.DualAudio,
 		},
 	}
 	if probed := cand.Verdict.Probed; probed != nil {
