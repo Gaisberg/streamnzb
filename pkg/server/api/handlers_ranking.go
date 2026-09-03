@@ -130,6 +130,8 @@ func (e *explainSample) toSample() *ranking.Sample {
 			HDR:         p.HDR,
 			DolbyVision: p.DolbyVision,
 
+			TracksProbed: len(p.AudioLanguages) > 0 || len(p.SubtitleLanguages) > 0 ||
+				p.AudioStreams > 0 || p.SubtitleStreams > 0,
 			AudioLanguages:    p.AudioLanguages,
 			SubtitleLanguages: p.SubtitleLanguages,
 			AudioStreams:      max(p.AudioStreams, len(p.AudioLanguages)),

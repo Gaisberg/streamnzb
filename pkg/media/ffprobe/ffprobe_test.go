@@ -119,7 +119,8 @@ func TestNormalizeLanguageTag(t *testing.T) {
 	for tag, want := range map[string]string{
 		"jpn": "ja", "eng": "en", "ara": "ar", "ger": "de", "deu": "de",
 		"JA": "ja", "en_US": "en", "pt-BR": "pt", "und": "", "": "", "mul": "",
-		"xyz": "", "chi": "zh", "zho": "zh",
+		"xyz": "", "chi": "zh", "zho": "zh", "afr": "af", "bel": "be", "bos": "bs",
+		"cym": "cy", "wel": "cy", "gle": "ga", "swa": "sw", "fil": "tl", "nob": "nb",
 	} {
 		if got := NormalizeLanguageTag(tag); got != want {
 			t.Errorf("NormalizeLanguageTag(%q) = %q, want %q", tag, got, want)

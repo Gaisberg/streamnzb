@@ -363,6 +363,8 @@ func (e *Env) TierPresent(tier string) bool {
 		return true
 	case tierMeasured:
 		return e.Verified
+	case tierTracks:
+		return e.Verified && e.Probed.TracksProbed
 	case tierAvail:
 		return e.Avail.Known
 	case tierSeadex:
@@ -441,6 +443,11 @@ type ProbedEnv struct {
 	// DynamicRange is the human-readable form: "DV + HDR10", "DV only",
 	// "HDR10", or "" for SDR.
 	DynamicRange string
+	// TracksProbed reports the four track fields were captured; a library
+	// item probed before they existed leaves it false and the tracks tier
+	// absent, so rules reading them are skipped rather than judged against
+	// empty lists.
+	TracksProbed bool
 	// AudioLanguages and SubtitleLanguages are the tagged track languages
 	// (ISO 639-1, stream order). AudioStreams and SubtitleStreams count every
 	// track, so `probed.audioStreams >= 2` reads dual audio off an untagged
@@ -710,6 +717,7 @@ func probedEnv(caps *release.MediaCaps) ProbedEnv {
 		HasHDRFallback: caps.HasHDRFallback(),
 		DynamicRange:   caps.DynamicRange(),
 
+		TracksProbed:      caps.TracksProbed,
 		AudioLanguages:    caps.AudioLanguages,
 		SubtitleLanguages: caps.SubtitleLanguages,
 		AudioStreams:      caps.AudioStreams,
