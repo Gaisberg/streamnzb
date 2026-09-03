@@ -85,6 +85,60 @@ func TestSummarizeStreamsFirstQualifyingVideoWins(t *testing.T) {
 	}
 }
 
+func TestSummarizeStreamsTrackLanguages(t *testing.T) {
+	// A dual-audio anime episode as muxers actually tag it: ISO 639-2 codes,
+	// a second untagged audio track, and a subtitle track with a region.
+	streams := []FFprobeStream{
+		{CodecType: "video", CodecName: "hevc", Width: 1920, Height: 1080, NbReadFrames: "120"},
+		{CodecType: "audio", CodecName: "aac", Tags: ffprobeTags{Language: "jpn"}},
+		{CodecType: "audio", CodecName: "eac3", Tags: ffprobeTags{Language: "eng"}},
+		{CodecType: "audio", CodecName: "aac"},
+		{CodecType: "subtitle", CodecName: "ass", Tags: ffprobeTags{Language: "eng"}},
+		{CodecType: "subtitle", CodecName: "subrip", Tags: ffprobeTags{Language: "pt-BR"}},
+		{CodecType: "subtitle", CodecName: "subrip", Tags: ffprobeTags{Language: "und"}},
+	}
+	res := summarizeStreams(streams)
+	if got, want := res.AudioLanguages, []string{"ja", "en"}; !equalStrings(got, want) {
+		t.Fatalf("audio languages = %v, want %v", got, want)
+	}
+	if res.AudioStreams != 3 {
+		t.Fatalf("audio streams = %d, want 3 (untagged track still counts)", res.AudioStreams)
+	}
+	if got, want := res.SubtitleLanguages, []string{"en", "pt"}; !equalStrings(got, want) {
+		t.Fatalf("subtitle languages = %v, want %v", got, want)
+	}
+	if res.SubtitleStreams != 3 {
+		t.Fatalf("subtitle streams = %d, want 3", res.SubtitleStreams)
+	}
+	if res.AudioCodec != "aac" {
+		t.Fatalf("first audio codec = %q, want aac", res.AudioCodec)
+	}
+}
+
+func TestNormalizeLanguageTag(t *testing.T) {
+	for tag, want := range map[string]string{
+		"jpn": "ja", "eng": "en", "ara": "ar", "ger": "de", "deu": "de",
+		"JA": "ja", "en_US": "en", "pt-BR": "pt", "und": "", "": "", "mul": "",
+		"xyz": "", "chi": "zh", "zho": "zh",
+	} {
+		if got := NormalizeLanguageTag(tag); got != want {
+			t.Errorf("NormalizeLanguageTag(%q) = %q, want %q", tag, got, want)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestSummarizeStreamsCoverArtIsNotVideo(t *testing.T) {
 	// Audio file with embedded cover art: attached_pic video + audio. Must be
 	// treated as audio-only so the audio-only guard fires.

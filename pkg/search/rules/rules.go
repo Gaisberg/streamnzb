@@ -80,7 +80,9 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Namespace("probed", tierMeasured).
 		Str("videoCodec").Str("audioCodec").Num("width").Num("height").
 		Str("profile").Num("bitDepth").Str("hdr").Bool("dolbyVision").
-		Bool("hasHDRFallback").Str("dynamicRange")
+		Bool("hasHDRFallback").Str("dynamicRange").
+		StrList("audioLanguages").StrList("subtitleLanguages").
+		Num("audioStreams").Num("subtitleStreams")
 
 	// Request context, the same for every release in one result set. title
 	// shadows jhin's core field: here it is the requested title, and the

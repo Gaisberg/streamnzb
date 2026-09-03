@@ -25,7 +25,7 @@ release's parsed data.
 |---|---|
 | Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.Kind` `.IsAnime` |
 | Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
-| Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` |
+| Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` |
 | Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` |
@@ -105,6 +105,17 @@ an HDR10 base layer is tellable apart from one without — the difference betwee
 a file that looks right on a non-DV TV and one that does not.
 `.Probed.HasHDRFallback` answers that directly, and `.Probed.DynamicRange`
 renders it as `DV + HDR10`, `DV only`, `HDR10`, or empty for SDR.
+
+`.Probed.AudioLanguages` and `.Probed.SubtitleLanguages` are the tagged track
+languages as ISO 639-1 codes, the same codes `.Languages` holds, so one
+template line covers both the claimed and the measured case:
+
+```
+{{if .Verified}}⛿ {{join .Probed.AudioLanguages " · " | upper}}{{else}}⛿ {{join .Languages " · " | upper}}{{end}}
+```
+
+`.Probed.AudioStreams` and `.Probed.SubtitleStreams` count tracks whether or
+not they carry a tag.
 
 ### Availability
 

@@ -307,6 +307,14 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.BoolOf(e.Probed.HasHDRFallback), true
 	case "probed.dynamicRange":
 		return jhinrules.StrOf(e.Probed.DynamicRange), true
+	case "probed.audioLanguages":
+		return jhinrules.StrListOf(e.Probed.AudioLanguages), true
+	case "probed.subtitleLanguages":
+		return jhinrules.StrListOf(e.Probed.SubtitleLanguages), true
+	case "probed.audioStreams":
+		return jhinrules.NumOf(float64(e.Probed.AudioStreams)), true
+	case "probed.subtitleStreams":
+		return jhinrules.NumOf(float64(e.Probed.SubtitleStreams)), true
 
 	case "kind":
 		return jhinrules.StrOf(e.Kind), true
@@ -433,6 +441,14 @@ type ProbedEnv struct {
 	// DynamicRange is the human-readable form: "DV + HDR10", "DV only",
 	// "HDR10", or "" for SDR.
 	DynamicRange string
+	// AudioLanguages and SubtitleLanguages are the tagged track languages
+	// (ISO 639-1, stream order). AudioStreams and SubtitleStreams count every
+	// track, so `probed.audioStreams >= 2` reads dual audio off an untagged
+	// file where `"en" in probed.audioLanguages` cannot.
+	AudioLanguages    []string
+	SubtitleLanguages []string
+	AudioStreams      int
+	SubtitleStreams   int
 }
 
 // Context is the per-request half of the environment, the same for every
@@ -693,6 +709,11 @@ func probedEnv(caps *release.MediaCaps) ProbedEnv {
 		DolbyVision:    caps.DolbyVision,
 		HasHDRFallback: caps.HasHDRFallback(),
 		DynamicRange:   caps.DynamicRange(),
+
+		AudioLanguages:    caps.AudioLanguages,
+		SubtitleLanguages: caps.SubtitleLanguages,
+		AudioStreams:      caps.AudioStreams,
+		SubtitleStreams:   caps.SubtitleStreams,
 	}
 }
 
