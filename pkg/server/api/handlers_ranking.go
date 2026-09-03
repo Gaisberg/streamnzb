@@ -32,6 +32,9 @@ type explainRequest struct {
 	// tuned per content kind can be previewed as each of them. Empty exercises
 	// the rules that apply everywhere.
 	Kind string `json:"kind,omitempty"`
+	// OriginalLanguage is what to pretend the requested title was made in
+	// (ISO 639-1), for rules that read originalLanguage.
+	OriginalLanguage string `json:"original_language,omitempty"`
 	// Sample is what to pretend about the releases being judged, for the parts
 	// a release name cannot carry. Absent leaves those rules unjudged.
 	Sample *explainSample `json:"sample,omitempty"`
@@ -236,11 +239,12 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 	opts := rank.RankOptions{TargetTitle: strings.TrimSpace(req.TargetTitle)}
 	kind := strings.ToLower(strings.TrimSpace(req.Kind))
 	explainReq := ranking.Request{
-		Kind:    kind,
-		IsAnime: kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
-		Title:   strings.TrimSpace(req.TargetTitle),
-		Seadex:  req.Sample.toSeadex(),
-		Sample:  req.Sample.toSample(),
+		Kind:             kind,
+		IsAnime:          kind == ranking.KindAnimeMovie || kind == ranking.KindAnimeShow,
+		Title:            strings.TrimSpace(req.TargetTitle),
+		OriginalLanguage: strings.ToLower(strings.TrimSpace(req.OriginalLanguage)),
+		Seadex:           req.Sample.toSeadex(),
+		Sample:           req.Sample.toSample(),
 	}
 	results, aggregates := profile.Explain(titles, explainReq, opts)
 

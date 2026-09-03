@@ -237,6 +237,9 @@ type Request struct {
 	Season  int
 	Episode int
 	Title   string
+	// OriginalLanguage is the requested title's original language as an ISO
+	// 639-1 code from metadata, empty when unknown.
+	OriginalLanguage string
 	// Seadex is the SeaDex recommendation resolved for the requested anime,
 	// nil when no lookup ran (not anime, no mapping, or SeaDex unreachable).
 	Seadex *rules.SeadexContext
@@ -456,6 +459,7 @@ func (r Request) ruleContext() rules.Context {
 		Season:           r.Season,
 		Episode:          r.Episode,
 		Title:            r.Title,
+		OriginalLanguage: r.OriginalLanguage,
 		Episodic:         r.Kind == KindSeries || r.Kind == KindAnimeShow,
 		IndexerDataKnown: r.Sample != nil && r.Sample.IndexerData,
 		Seadex:           r.Seadex,
@@ -571,6 +575,7 @@ func (p *Profile) recordVerdicts(req Request, results []Result) {
 		r := &results[i]
 		r.Candidate.Verdict.Kind = req.Kind
 		r.Candidate.Verdict.IsAnime = req.IsAnime
+		r.Candidate.Verdict.OriginalLanguage = req.OriginalLanguage
 		r.Candidate.Verdict.Matched = r.Matched
 		r.Candidate.Verdict.Rejections = r.Torrent.Rejections
 		if req.Seadex != nil {

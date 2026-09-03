@@ -104,6 +104,9 @@ type Verdict struct {
 	// IsAnime is the anime classification behind Kind, kept separately
 	// because it is the half of the decision that custom formats ask for.
 	IsAnime bool
+	// OriginalLanguage is the requested title's original language (ISO
+	// 639-1) as metadata reported it, empty when it did not.
+	OriginalLanguage string
 
 	// Rejections is why a profile turned the release away, empty when it was
 	// kept.

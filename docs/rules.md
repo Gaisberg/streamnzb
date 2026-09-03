@@ -430,7 +430,21 @@ This is what makes rules a complete replacement for the old per-trait controls:
 
 ### About the request
 
-`kind` `isAnime` `season` `episode` `title`
+`kind` `isAnime` `season` `episode` `title` `originalLanguage`
+
+`originalLanguage` is the language the requested title was made in, as the
+metadata provider reports it — an ISO 639-1 code like `"ja"`, `"ko"` or
+`"fr"`, the same codes `languages` holds — or empty when the provider did not
+say. It turns "prefer the original audio" into one rule instead of one per
+language, and it is what makes a dub recognisable as a dub:
+
+```
+originalLanguage != "" and originalLanguage in languages            → +500
+originalLanguage != "" and dubbed and not (originalLanguage in languages) → -300
+```
+
+Guard on it being non-empty: a request whose metadata carries no language
+answers `""`, and `"" in languages` is never what a rule means.
 
 ### After scoring — prune rules only
 

@@ -1414,6 +1414,7 @@ func rankingRequest(source *playlistSource) ranking.Request {
 			} else {
 				isAnime = query.MetadataLooksLikeAnime(meta, contentType)
 			}
+			req.OriginalLanguage = strings.ToLower(query.MetadataOriginalLanguage(meta, contentType))
 		}
 	}
 	req.IsAnime = isAnime

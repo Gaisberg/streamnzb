@@ -23,7 +23,7 @@ release's parsed data.
 
 | Group | Fields |
 |---|---|
-| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.Kind` `.IsAnime` |
+| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.Kind` `.IsAnime` `.OriginalLanguage` |
 | Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
@@ -75,6 +75,14 @@ guess from the release name. `.Kind` is the full content kind: `movie`,
 
 ```
 {{if .IsAnime}}🌸 {{end}}{{.Resolution}}
+```
+
+`.OriginalLanguage` is the requested title's original language from metadata
+(ISO 639-1, the same codes `.Languages` holds), empty when it did not say. A
+badge for original-audio releases needs no per-language line:
+
+```
+{{if and .OriginalLanguage (contains .OriginalLanguage .Languages)}}🎙 original audio{{end}}
 ```
 
 ### Matched rules
