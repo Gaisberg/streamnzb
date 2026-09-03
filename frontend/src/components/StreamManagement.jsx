@@ -24,7 +24,6 @@ import {
   nextStreamName,
   normalizeStreamDraft,
   resultsModeLabel,
-  searchRequestsLabel,
   VARIANT_ATTEMPTS_UNLIMITED,
   variantAttemptsLabel,
   preloadAttemptsLabel,
@@ -171,7 +170,7 @@ function StreamDialog({
 }) {
   const isEditing = mode === 'edit'
   const availNZBEnabled = isAvailNZBEnabled(globalConfig?.availnzb_mode)
-  const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
+  const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
   const [saveError, setSaveError] = useState('')
   const [fieldErrors, setFieldErrors] = useState({})
   const [activeTab, setActiveTab] = useState('general')
@@ -182,16 +181,16 @@ function StreamDialog({
 
   useEffect(() => {
     if (open && (!wasOpen || dialogIdentity !== lastDialogIdentity)) {
-      setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
+      setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
       setSaveError('')
       setFieldErrors({})
       setActiveTab('general')
       setLastDialogIdentity(dialogIdentity)
     }
     setWasOpen(open)
-  }, [open, initialStream, isEditing, wasOpen, dialogIdentity, lastDialogIdentity, enabledProviderNames, enabledIndexerNames])
+  }, [open, initialStream, isEditing, wasOpen, dialogIdentity, lastDialogIdentity, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames])
 
-  const normalizedInitial = JSON.stringify(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames))
+  const normalizedInitial = JSON.stringify(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
   const normalizedCurrent = JSON.stringify(normalizeStreamDraft(draft))
   const isDirty = normalizedInitial !== normalizedCurrent
   const aiostreamsMode = draft.filter_sorting_mode === 'aiostreams'
@@ -671,30 +670,10 @@ function StreamDialog({
 
           {activeTab === 'search' && (
             <div className="space-y-4">
-              <div className="rounded-md border border-border/60 p-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm font-medium">Search requests</div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="outline" className="h-9 w-40 justify-between">
-                        <span>{searchRequestsLabel(draft.combine_results)}</span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-48">
-                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: true }))}>
-                        Combine all
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setDraft((current) => ({ ...current, combine_results: false }))}>
-                        Stop after first hit
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  If enabled, results from all search requests are combined. If disabled, requests run in order and stop after the first one that returns results.
-                </p>
-              </div>
+              <p className="text-sm text-muted-foreground">
+                Every selected request runs and the results are combined. Each request decides on its own
+                which attempts to make and when to stop.
+              </p>
               <SelectionSection
                 title="Movie Search Requests"
                 values={movieQueryNames}
@@ -986,7 +965,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       [username]: {
         filter_sorting_mode: draft.filter_sorting_mode,
         indexer_mode: draft.indexer_mode,
-        combine_results: draft.combine_results,
         enable_failover: draft.enable_failover,
         variant_attempts: draft.variant_attempts,
         preload_attempts: draft.preload_attempts ?? null,

@@ -1179,3 +1179,45 @@ func TestCheckNewznabErrorClassifiesCredentialCodes(t *testing.T) {
 		t.Fatalf("code 300 = %v, want an unclassified error", err)
 	}
 }
+
+// categoriesFor is the one place a class becomes category ids, in one order of
+// authority. The test walks it top to bottom.
+func TestCategoriesForResolvesTheClassInOneOrderOfAuthority(t *testing.T) {
+	client := &Client{cfg: config.IndexerConfig{Name: "Indexer"}}
+	client.SetCaps(&indexer.Caps{Categories: []indexer.CapsCategory{
+		{ID: "5000", Name: "TV", Subcats: []indexer.CapsCategory{{ID: "5070", Name: "Anime"}}},
+	}})
+	tvRequest := indexer.SearchRequest{Class: config.SearchClassTV, Cat: "5000"}
+	animeRequest := indexer.SearchRequest{Class: config.SearchClassTVAnime, Cat: "5000"}
+
+	// Nothing configured: the indexer answers from its published caps, and an
+	// anime request resolves to the anime vocabulary without anything mutating
+	// a shared config to widen it.
+	if got := client.categoriesFor(tvRequest, false, true); got != "5000" {
+		t.Fatalf("tv from caps = %q, want 5000", got)
+	}
+	if got := client.categoriesFor(animeRequest, false, true); got != "5070,5000" {
+		t.Fatalf("anime from caps = %q, want 5070,5000", got)
+	}
+
+	// The indexer's own vocabulary beats its caps.
+	client.cfg.TVCategories = "5040"
+	if got := client.categoriesFor(animeRequest, false, true); got != "5040" {
+		t.Fatalf("indexer vocabulary = %q, want 5040", got)
+	}
+
+	// The plan's override beats both.
+	planned := animeRequest
+	override := "5070"
+	planned.OptionalOverrides = &config.IndexerSearchConfig{Categories: &override}
+	if got := client.categoriesFor(planned, false, true); got != "5070" {
+		t.Fatalf("plan override = %q, want 5070", got)
+	}
+
+	// A request with no class at all — a proxied Newznab query — keeps the cat
+	// it arrived with.
+	client.cfg.TVCategories = ""
+	if got := client.categoriesFor(indexer.SearchRequest{Cat: "5030"}, false, true); got != "5030" {
+		t.Fatalf("classless request = %q, want the cat it arrived with", got)
+	}
+}

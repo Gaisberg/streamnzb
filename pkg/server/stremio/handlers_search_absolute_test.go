@@ -6,6 +6,7 @@ import (
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/search/query"
+	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 )
 
@@ -62,7 +63,9 @@ func TestAbsoluteEpisodeFromMetadata(t *testing.T) {
 	}
 }
 
-func TestPrepareAbsoluteEpisodeSearchSupplementsRequest(t *testing.T) {
+// The absolute number is resolved once per request and the queries are built
+// per attempt, because each title attempt has its own language.
+func TestSearchFactsResolveTheAbsoluteEpisode(t *testing.T) {
 	s := &Server{}
 	params := &query.SearchParams{
 		ContentType: "series",
@@ -70,7 +73,6 @@ func TestPrepareAbsoluteEpisodeSearchSupplementsRequest(t *testing.T) {
 			Season:  "2",
 			Episode: "2",
 		},
-		PreparedQueries:    []string{"One Piece S02E02"},
 		MovieTitleQueries:  map[string][]string{},
 		SeriesTitleQueries: map[string][]string{},
 		Metadata: animeTVMetadata([]tmdb.TVSeasonInfo{
@@ -79,65 +81,74 @@ func TestPrepareAbsoluteEpisodeSearchSupplementsRequest(t *testing.T) {
 		}),
 	}
 
-	if !s.prepareAbsoluteEpisodeSearch(params, "default", &config.SearchQueryConfig{SearchMode: "text"}) {
-		t.Fatalf("expected absolute-episode supplement to be prepared")
+	facts := s.searchFacts("series", "default", params)
+	if !facts.IsAnime {
+		t.Fatal("expected the request to be detected as anime")
+	}
+	if facts.Absolute != 63 {
+		t.Fatalf("absolute = %d, want 63", facts.Absolute)
+	}
+	if facts.Class != config.SearchClassTVAnime {
+		t.Fatalf("class = %q, want %q", facts.Class, config.SearchClassTVAnime)
+	}
+	if got := absoluteEpisodeQueries(params, "", facts.Absolute); len(got) == 0 || got[0] != "One Piece 63" {
+		t.Fatalf("absolute queries = %v, want [One Piece 63]", got)
+	}
+}
+
+// An absolute attempt dispatches the absolute-numbered query, and every
+// attempt of the plan carries the number so acceptance recognises an
+// absolute-numbered release whichever attempt surfaced it.
+func TestBuildSearchParamsForAttemptDispatchesTheAbsoluteQuery(t *testing.T) {
+	s := &Server{config: &config.Config{}}
+	base := func() *query.SearchParams {
+		return &query.SearchParams{
+			ContentType:        "series",
+			Req:                indexer.SearchRequest{Season: "2", Episode: "2"},
+			MovieTitleQueries:  map[string][]string{},
+			SeriesTitleQueries: map[string][]string{},
+			Metadata: animeTVMetadata([]tmdb.TVSeasonInfo{
+				{SeasonNumber: 1, EpisodeCount: 61},
+				{SeasonNumber: 2, EpisodeCount: 16},
+			}),
+		}
+	}
+	plan := config.DefaultTVPlan("TV")
+	facts := s.searchFacts("series", "default", base())
+
+	absolute := config.SearchAttempt{Address: config.SearchAddressTitle, Target: config.SearchTargetAbsolute}
+	params, err := s.buildSearchParamsForAttempt(base(), &plan, absolute, facts)
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+	}
+	if params.Req.Query != "One Piece 63" {
+		t.Fatalf("absolute attempt query = %q, want %q", params.Req.Query, "One Piece 63")
 	}
 	if params.Req.AbsoluteEpisode != "63" {
 		t.Fatalf("AbsoluteEpisode = %q, want 63", params.Req.AbsoluteEpisode)
 	}
-	found := false
-	for _, q := range params.AbsoluteQueries {
-		if q == "One Piece 63" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected absolute query variant, got %v", params.AbsoluteQueries)
-	}
-	// The supplement must not disturb the request's own queries.
-	if len(params.PreparedQueries) != 1 || params.PreparedQueries[0] != "One Piece S02E02" {
-		t.Fatalf("prepared queries must stay untouched, got %v", params.PreparedQueries)
-	}
-}
 
-func TestAppendSearchCategory(t *testing.T) {
-	cases := []struct {
-		categories string
-		want       string
-	}{
-		{"5000", "5000,5070"},
-		{"5000,5070", "5000,5070"},
-		{"5070", "5070"},
-		{"5000, 5070", "5000, 5070"},
-		{"5000,5060", "5000,5060,5070"},
+	episode := config.SearchAttempt{Address: config.SearchAddressTitle, Target: config.SearchTargetEpisode}
+	params, err = s.buildSearchParamsForAttempt(base(), &plan, episode, facts)
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
-	for _, tc := range cases {
-		if got := query.AppendSearchCategory(tc.categories, "5070"); got != tc.want {
-			t.Fatalf("query.AppendSearchCategory(%q) = %q, want %q", tc.categories, got, tc.want)
-		}
+	if params.Req.Query != "One Piece S02E02" {
+		t.Fatalf("episode attempt query = %q, want %q", params.Req.Query, "One Piece S02E02")
 	}
-}
-
-func TestAppendAnimeTVCategoryToEffective(t *testing.T) {
-	tvCats := "5000"
-	emptyCats := ""
-	effective := map[string]*config.IndexerSearchConfig{
-		"AnimeTosho": {TVCategories: &tvCats},
-		"NoFilter":   {TVCategories: &emptyCats},
-		"NoOverride": {},
+	if params.Req.AbsoluteEpisode != "63" {
+		t.Fatalf("expected every attempt of the plan to carry the absolute number, got %q", params.Req.AbsoluteEpisode)
 	}
 
-	query.AppendAnimeTVCategoryToEffective(effective)
-
-	if got := *effective["AnimeTosho"].TVCategories; got != "5000,5070" {
-		t.Fatalf("expected widened categories 5000,5070, got %q", got)
+	// A plan with no absolute attempt does not claim the number, so acceptance
+	// stays strict about season and episode.
+	noAbsolute := planOf("TV", nil, episode)
+	params, err = s.buildSearchParamsForAttempt(base(), &noAbsolute, episode, facts)
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
-	// An empty filter already matches everything and must stay empty.
-	if got := *effective["NoFilter"].TVCategories; got != "" {
-		t.Fatalf("expected empty categories to stay empty, got %q", got)
-	}
-	if effective["NoOverride"].TVCategories != nil {
-		t.Fatalf("expected nil categories to stay nil, got %q", *effective["NoOverride"].TVCategories)
+	if params.Req.AbsoluteEpisode != "" {
+		t.Fatalf("AbsoluteEpisode = %q, want empty", params.Req.AbsoluteEpisode)
 	}
 }
 
@@ -205,33 +216,27 @@ func TestAbsoluteEpisodeForContentPrefersResolvedAbsolute(t *testing.T) {
 }
 
 // A Kitsu entry spanning a whole series resolves its absolute number up front
-// and has no season to derive one from, so the supplement must use what the
-// request already carries.
-func TestPrepareAbsoluteEpisodeSearchUsesResolvedAbsolute(t *testing.T) {
+// and has no season to derive one from, so the facts must use what the request
+// already carries.
+func TestSearchFactsUseAResolvedAbsoluteEpisode(t *testing.T) {
 	s := &Server{}
 	params := &query.SearchParams{
 		ContentType: "series",
 		Req:         indexer.SearchRequest{KitsuID: "486", AbsoluteEpisode: "63"},
 		Metadata:    animeTVMetadata(nil),
 	}
-	if !s.prepareAbsoluteEpisodeSearch(params, "default", nil) {
-		t.Fatal("expected supplement to apply for a resolved absolute episode")
+	facts := s.searchFacts("series", "default", params)
+	if facts.Absolute != 63 {
+		t.Fatalf("absolute = %d, want 63", facts.Absolute)
 	}
-	if params.Req.AbsoluteEpisode != "63" {
-		t.Fatalf("absolute episode = %q, want 63", params.Req.AbsoluteEpisode)
-	}
-	found := false
-	for _, q := range params.AbsoluteQueries {
-		if q == "One Piece 63" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected an absolute-numbered query, got %v", params.AbsoluteQueries)
+	if got := absoluteEpisodeQueries(params, "", facts.Absolute); len(got) == 0 || got[0] != "One Piece 63" {
+		t.Fatalf("absolute queries = %v, want [One Piece 63]", got)
 	}
 }
 
-func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
+// Without a derivable number there is nothing to ask by, and the plan compiler
+// drops the absolute attempt rather than dispatching a query that cannot match.
+func TestSearchPlanDropsTheAbsoluteAttemptWhenThereIsNoNumber(t *testing.T) {
 	s := &Server{}
 
 	cases := []struct {
@@ -265,17 +270,50 @@ func TestPrepareAbsoluteEpisodeSearchSkipsUnsupportedRequests(t *testing.T) {
 			},
 		},
 	}
+	plan := config.DefaultTVPlan("TV")
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if s.prepareAbsoluteEpisodeSearch(tc.params, "default", nil) {
-				t.Fatalf("expected supplement to be skipped")
+			facts := s.searchFacts("series", "default", tc.params)
+			if facts.Absolute != 0 {
+				t.Fatalf("absolute = %d, want 0", facts.Absolute)
 			}
-			if tc.params.Req.AbsoluteEpisode != "" {
-				t.Fatalf("skipped request must not carry an absolute episode, got %q", tc.params.Req.AbsoluteEpisode)
-			}
-			if len(tc.params.AbsoluteQueries) != 0 {
-				t.Fatalf("skipped request must not carry absolute queries, got %v", tc.params.AbsoluteQueries)
+			for _, attempt := range plan.SearchPlanAttempts(facts.PlanContext(nil)) {
+				if attempt.Target == config.SearchTargetAbsolute {
+					t.Fatal("expected the absolute attempt to be dropped")
+				}
 			}
 		})
+	}
+}
+
+// Stremio's "anime" type is a series type unless the Kitsu entry is a film.
+// Deciding series-ness by type == "series" once sent every anime episode out
+// as a movie search (class movie, cat 2000) and found nothing.
+func TestSearchFactsTreatAnimeTypeAsSeries(t *testing.T) {
+	s := &Server{}
+	params := &query.SearchParams{
+		ContentType:        "anime",
+		Req:                indexer.SearchRequest{Season: "1", Episode: "1", KitsuID: "11469"},
+		MovieTitleQueries:  map[string][]string{},
+		SeriesTitleQueries: map[string][]string{},
+		Metadata:           animeTVMetadata([]tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 13}}),
+	}
+
+	facts := s.searchFacts("anime", "default", params)
+	if !facts.IsSeries {
+		t.Fatal("expected an anime episode request to count as a series")
+	}
+	if facts.Class != config.SearchClassTVAnime {
+		t.Fatalf("class = %q, want %q", facts.Class, config.SearchClassTVAnime)
+	}
+	if !facts.HasSeason || !facts.HasEpisode {
+		t.Fatal("expected the season and episode to be carried into the plan context")
+	}
+
+	// A Kitsu film stays a movie even under the anime type.
+	params.Metadata.KitsuDetails = &kitsu.AnimeDetails{ShowType: "movie", CanonicalTitle: "Spirited Away"}
+	facts = s.searchFacts("anime", "default", params)
+	if facts.IsSeries || facts.Class != config.SearchClassMovie {
+		t.Fatalf("kitsu film: series=%v class=%q, want a movie", facts.IsSeries, facts.Class)
 	}
 }

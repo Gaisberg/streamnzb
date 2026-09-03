@@ -65,7 +65,7 @@ func TestSearchInternalUsesSearchClient(t *testing.T) {
 		return nil, nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", "", false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false); err != nil {
 		t.Fatalf("searchInternal returned error: %v", err)
 	}
 }

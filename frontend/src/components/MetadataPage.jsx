@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
+import { moveItem } from "@/lib/lists"
 import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { nameKey, usageByName } from "@/lib/usage"
@@ -56,15 +57,6 @@ const METADATA_LANGUAGES = [
   { tag: "zh-CN", label: "中文 (简体)" },
   { tag: "zh-TW", label: "中文 (繁體)" },
 ]
-
-// arrayMove without pulling in another helper: returns a copy with the item
-// moved from -> to.
-function moveItem(list, from, to) {
-  const next = [...list]
-  const [item] = next.splice(from, 1)
-  next.splice(to, 0, item)
-  return next
-}
 
 // seedRows resolves a profile's catalog list against the registry. A missing
 // (null) list means "never configured": the registry defaults. An explicitly

@@ -4,6 +4,7 @@ import {
   applyFilterSortingMode,
   buildIndexerOverrides,
   defaultAddonName,
+  getInitialStreamDraft,
   mapStreamsByUsername,
   nextStreamName,
   streamsFromMap,
@@ -118,5 +119,28 @@ describe('variantAttemptsLabel', () => {
   it('names the walking modes', () => {
     expect(variantAttemptsLabel(3)).toBe('3 copies')
     expect(variantAttemptsLabel(-1)).toBe('All copies')
+  })
+})
+
+describe('getInitialStreamDraft', () => {
+  it('starts a new stream with every configured search request selected', () => {
+    const draft = getInitialStreamDraft(null, false, ['P1'], ['I1'], ['DefaultMovie', 'MovieBroad'], ['DefaultTV'])
+    expect(draft.movie_search_queries).toEqual(['DefaultMovie', 'MovieBroad'])
+    expect(draft.series_search_queries).toEqual(['DefaultTV'])
+    expect(draft.providers).toEqual(['P1'])
+    expect(draft.indexers).toEqual(['I1'])
+  })
+
+  it('keeps the selection a clone was made from', () => {
+    const clone = { username: 'Stream02', movie_search_queries: ['MovieBroad'], series_search_queries: ['DefaultTV'] }
+    const draft = getInitialStreamDraft(clone, false, [], [], ['DefaultMovie', 'MovieBroad'], ['DefaultTV', 'TVBroad'])
+    expect(draft.movie_search_queries).toEqual(['MovieBroad'])
+    expect(draft.series_search_queries).toEqual(['DefaultTV'])
+  })
+
+  it('leaves an edited stream alone', () => {
+    const draft = getInitialStreamDraft({ username: 'Stream01' }, true, ['P1'], ['I1'], ['DefaultMovie'], ['DefaultTV'])
+    expect(draft.movie_search_queries).toEqual([])
+    expect(draft.series_search_queries).toEqual([])
   })
 })

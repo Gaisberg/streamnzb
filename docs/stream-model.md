@@ -19,12 +19,12 @@ Each stream configuration defines:
 - **Per-provider enable/disable** — Turn a provider off for one stream without removing it from the list. Because it stays a member, the choice survives automatic sync, which owns membership rather than intent. At least one provider must stay enabled.
 - **Per-provider connection caps** — Optionally limit how many of a provider's connections this stream may hold during playback, so one manifest cannot monopolise the account. It is a ceiling, not a reservation: it stops a stream taking everything, but does not hold connections back for anyone else. The [provider speed test](speed-test.md) tells you the floor — the connection count each resolution needs.
 - **Indexer Mode** — `Combine` (query all, merge) or `Failover` (walk them in order until one answers).
-- **Search requests mode** — `Combine all` (parallel, merged) or `Stop after first hit` (sequential fallback) — see [Search requests](search-queries.md).
 
-  Both default to the broad setting. *Combine* runs its queries in parallel but
-  waits for all of them, so a search costs the slowest indexer on the slowest
-  request — see [How long a search takes](search-queries.md#how-long-a-search-takes)
+  It defaults to *Combine*, which runs its queries in parallel but waits for
+  all of them, so a search costs the slowest indexer on the slowest attempt —
+  see [How long a search takes](search-queries.md#how-long-a-search-takes)
   for what that is worth and how to trade it.
+- **Search requests** — Which movie and TV [search requests](search-queries.md) the stream runs. Every selected request runs and the results are merged; a new stream starts with all of them selected. When to stop, and in what order to ask, is each request's own setting.
 - **Skip unaired episodes** — Answer with no results instead of asking this stream's indexers for an episode that has not aired. It is per stream because how early a release lands depends on which indexers the stream asks: a stream pointed at a fast scene can turn the gate off while the rest keep it. The gate opens the moment the air date begins anywhere on Earth (midnight at UTC+14, so up to 14 hours before midnight UTC on that date), which is the earliest instant a broadcast — and therefore a release — can exist. A known broadcast time is reported, never used to hold the gate shut, so no release can sit on an indexer while the gate still calls the episode unaired. Any lookup that fails searches as normal. Skipped searches show as **Not aired yet** in History.
 - **Results Mode & Limit** — Whether each release is listed separately or collapsed into one combined entry, and the maximum release count returned to Stremio. Which releases are offered, and the order they come in, lives in the filter profile — see [Filters & ranking](filters.md).
 - **Filter Profiles** — General and per-kind (Movies, Shows, Anime films, Anime shows) release filter bindings powered by `jhin` — see [Filters & ranking](filters.md).

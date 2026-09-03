@@ -76,7 +76,6 @@ export function normalizeStreamDraft(draft) {
     filter_sorting_mode: normalizedFilterSortingMode,
     indexer_mode: draft?.indexer_mode === 'failover' ? 'failover' : 'combine',
     username: (draft?.username || '').trim(),
-    combine_results: draft?.combine_results !== false,
     enable_failover: draft?.enable_failover !== false,
     variant_attempts: normalizeVariantAttempts(draft?.variant_attempts),
     preload_attempts: normalizePreloadAttempts(draft?.preload_attempts),
@@ -107,7 +106,6 @@ export function buildStreamDraft(stream) {
     filter_sorting_mode: stream?.filter_sorting_mode,
     indexer_mode: stream?.indexer_mode,
     username: stream?.username || '',
-    combine_results: stream?.combine_results,
     enable_failover: stream?.enable_failover,
     variant_attempts: stream?.variant_attempts,
     preload_attempts: stream?.preload_attempts,
@@ -146,7 +144,6 @@ export function buildStreamStateFromDraft(username, token, draft, existingOverri
     token: token || '',
     filter_sorting_mode: draft.filter_sorting_mode,
     indexer_mode: draft.indexer_mode,
-    combine_results: draft.combine_results,
     enable_failover: draft.enable_failover,
     variant_attempts: draft.variant_attempts,
     preload_attempts: draft.preload_attempts ?? null,
@@ -181,7 +178,6 @@ export function generalDetailValues(stream) {
     `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
     `Variants ${variantAttemptsLabel(stream?.variant_attempts)}`,
     `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
-    `Search ${stream?.combine_results !== false ? 'Combine' : 'First hit'}`,
     `Results ${stream?.results_mode === 'display_all' ? 'All' : 'Combine'}`,
     `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
     `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
@@ -216,10 +212,6 @@ export function formattingSummaryValues(stream) {
   if (stream?.format_profile_name) return [stream.format_profile_name]
   // Legacy inline templates survive until the migration has run.
   return [stream?.result_name_template || stream?.result_description_template ? 'Custom' : 'Default']
-}
-
-export function searchRequestsLabel(combineResults) {
-  return combineResults !== false ? 'Combine all' : 'Stop after first hit'
 }
 
 export function indexerModeLabel(value) {
@@ -310,13 +302,24 @@ export function nextStreamName(streams) {
   return `Stream${Date.now()}`
 }
 
-export function getInitialStreamDraft(initialStream, isEditing, enabledProviderNames = [], enabledIndexerNames = []) {
+export function getInitialStreamDraft(
+  initialStream,
+  isEditing,
+  enabledProviderNames = [],
+  enabledIndexerNames = [],
+  movieQueryNames = [],
+  seriesQueryNames = []
+) {
   const base = buildStreamDraft(initialStream)
   if (!isEditing) {
     base.auto_add_providers = true
     base.auto_add_indexers = true
     base.providers = uniquePreserveOrder(enabledProviderNames)
     base.indexers = uniquePreserveOrder(enabledIndexerNames)
+    // A fresh stream starts with every configured search request selected;
+    // a clone keeps the selection it was cloned from.
+    if (base.movie_search_queries.length === 0) base.movie_search_queries = uniquePreserveOrder(movieQueryNames)
+    if (base.series_search_queries.length === 0) base.series_search_queries = uniquePreserveOrder(seriesQueryNames)
   }
   return base
 }

@@ -77,6 +77,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, function s
 		Season:             season,
 		Episode:            episode,
 		ContentIsAnime:     categoriesIncludeAnime(effectiveCat),
+		Class:              newznabClassFor(function, categoriesIncludeAnime(effectiveCat)),
 		SeriesSearchScope:  seriesScopeFor(function, season, episode),
 		SearchMode:         searchMode,
 		IndexerMode:        "combine",
@@ -167,6 +168,19 @@ func carriesSearchID(query url.Values) bool {
 		}
 	}
 	return false
+}
+
+// newznabClassFor is the content class a proxied query is after. A passthrough
+// query carries its own cat and keeps it; the class is what the non-Newznab
+// backends read instead.
+func newznabClassFor(function string, anime bool) string {
+	if function != "tvsearch" {
+		if function == "movie" {
+			return config.SearchClassMovie
+		}
+		return ""
+	}
+	return config.SearchClassFor(true, anime)
 }
 
 // seriesScopeFor describes how much of a series a TV query is after, which is

@@ -935,36 +935,6 @@ func AbsoluteEpisodeFromMetadata(metadata *ResolvedSearchMetadata, seasonStr, ep
 	return total + episode
 }
 
-// animeTVCategory is the Newznab TV/Anime subcategory. Anime-only indexers
-// (e.g. AnimeTosho) expose it as a flat category without expanding the 5000
-// parent, so anime requests widen their category filter with it.
-const animeTVCategory = "5070"
-
-// AppendAnimeTVCategoryToEffective widens each effective indexer config's TV
-// categories with the anime subcategory (Newznab cat is a comma-separated
-// list). Empty category lists stay empty — no filter already matches anime.
-func AppendAnimeTVCategoryToEffective(effective map[string]*config.IndexerSearchConfig) {
-	for _, eff := range effective {
-		if eff == nil || eff.TVCategories == nil || strings.TrimSpace(*eff.TVCategories) == "" {
-			continue
-		}
-		widened := AppendSearchCategory(*eff.TVCategories, animeTVCategory)
-		eff.TVCategories = &widened
-	}
-}
-
-// AppendSearchCategory appends cat to a comma-separated category list unless
-// it is already listed.
-func AppendSearchCategory(categories, cat string) string {
-	trimmed := strings.TrimSpace(categories)
-	for _, part := range strings.Split(trimmed, ",") {
-		if strings.TrimSpace(part) == cat {
-			return trimmed
-		}
-	}
-	return trimmed + "," + cat
-}
-
 // AbsoluteEpisodeForContent returns the anime absolute episode number for a
 // series request, or 0 when it does not apply: movie content, non-anime
 // metadata, or a number that cannot be derived. An already-resolved absolute

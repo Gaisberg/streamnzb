@@ -363,6 +363,38 @@ func ValidateSearchResultsWithStats(releases []*release.Release, contentType, va
 // no season or season 1) is accepted even though its parsed season/episode do
 // not match the request.
 func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, contentType string, validationQueries []string, season, episode, absoluteEpisode string, enableTitleValidation, enableYearValidation bool) ([]*release.Release, ValidationStats) {
+	return ValidateSearchResultsWithOptions(releases, contentType, validationQueries, ValidationOptions{
+		Season:          season,
+		Episode:         episode,
+		AbsoluteEpisode: absoluteEpisode,
+		EnforceTitle:    enableTitleValidation,
+		EnforceYear:     enableYearValidation,
+		AcceptPacks:     true,
+	})
+}
+
+// ValidationOptions is what a search plan's acceptance says a match is. It
+// replaces a positional argument list that had grown to eight, four of them
+// strings, and gives the plan's Accept section somewhere to land whole.
+type ValidationOptions struct {
+	Season          string
+	Episode         string
+	AbsoluteEpisode string
+	// EnforceTitle decides only whether a title mismatch drops the release;
+	// the check runs either way. An id attempt does not enforce it, because
+	// the indexer resolved the title itself.
+	EnforceTitle bool
+	EnforceYear  bool
+	// AcceptPacks accepts a season or complete-series pack that contains the
+	// requested episode. Off keeps only releases that name the episode.
+	AcceptPacks bool
+}
+
+// ValidateSearchResultsWithOptions filters releases against the expected
+// title/year/season/episode and the plan's acceptance.
+func ValidateSearchResultsWithOptions(releases []*release.Release, contentType string, validationQueries []string, opts ValidationOptions) ([]*release.Release, ValidationStats) {
+	season, episode, absoluteEpisode := opts.Season, opts.Episode, opts.AbsoluteEpisode
+	enableTitleValidation, enableYearValidation := opts.EnforceTitle, opts.EnforceYear
 	stats := ValidationStats{}
 	if contentType != "movie" && contentType != "series" {
 		stats.RawResults = len(releases)
@@ -474,6 +506,18 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 						rank = absRank
 					}
 				}
+				// Ranks 2 and 1 are a season pack and a complete-series pack:
+				// they contain the episode without naming it, and a plan that
+				// does not accept packs wants neither.
+				if !opts.AcceptPacks && rank > 0 && rank < 3 {
+					stats.DroppedEpisodeRequest++
+					logger.Trace("ValidateSearchResults dropped: pack not accepted",
+						"expect_season", expectSeason,
+						"expect_episode", expectEpisode,
+						"release", rel.Title,
+					)
+					continue
+				}
 				switch rank {
 				case 4:
 					stats.AcceptedExactEpisode++
@@ -485,6 +529,10 @@ func ValidateSearchResultsWithStatsForQueries(releases []*release.Release, conte
 					stats.AcceptedCompletePack++
 				}
 			case expectSeason > 0:
+				if !opts.AcceptPacks && (parsed.IsShowPack() || parsed.IsSeasonPack(expectSeason)) {
+					stats.DroppedSeason++
+					continue
+				}
 				switch {
 				case parsed.IsShowPack():
 					stats.AcceptedCompletePack++

@@ -11,10 +11,36 @@ import { EntityDialog } from "@/components/EntityDialog"
 import { useEntityDialog } from "@/hooks/useEntityDialog"
 import { UsageChips } from "@/components/UsageChips"
 import { apiFetch } from "@/api"
-import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from "@/lib/config"
+import { normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from "@/lib/config"
+import {
+  ADDRESS_ID,
+  ADDRESS_OPTIONS,
+  ADDRESS_TITLE,
+  ORDER_ADAPTIVE_SEASON,
+  ORDER_OPTIONS,
+  STOP_ALL,
+  STOP_OPTIONS,
+  TARGET_ABSOLUTE,
+  TARGET_OPTIONS,
+  attemptKey,
+  attemptLabel,
+  attemptsInRunOrder,
+  defaultAttempt,
+  isSeriesKind,
+  normalizeAddress,
+  normalizeAttempt,
+  normalizeAttempts,
+  normalizeOrder,
+  normalizeStop,
+  normalizeTarget,
+  planPresets,
+  presetPlan,
+} from "@/lib/searchPlan"
+import { SortableList, SortableRow } from "@/components/SortableList"
+import { moveItem } from "@/lib/lists"
 import { assignedStreams } from "@/lib/usage"
 import { mapStreamsByUsername } from "@/lib/streams"
-import { CircleHelp, Copy, Plus, Settings, Trash2, X } from "lucide-react"
+import { ArrowRight, CircleHelp, Copy, Plus, Settings, Sparkles, Trash2, X } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
@@ -46,68 +72,95 @@ const TITLE_LANGUAGE_OPTIONS = [
   { value: 'zh-TW', label: 'Chinese (Traditional)' },
 ]
 
-const SERIES_SCOPE_OPTIONS = [
-  { value: 'season_episode', label: 'Season/Episode' },
-  { value: 'season', label: 'Season' },
-  { value: 'none', label: 'None' },
+const ATTEMPTS_HINT_ITEMS = [
+  {
+    label: 'What it is',
+    text: 'The questions this request asks indexers, in order. Each row is one query.',
+  },
+  {
+    label: 'Address',
+    text: 'ID asks by database id (IMDb/TVDB/TMDB/Kitsu — whichever the indexer supports) and trusts the title it answers with. Title sends a text query and checks the answer.',
+  },
+  {
+    label: 'Target',
+    text: 'Episode asks for one episode, Season for the whole season, Series for the title alone, Absolute for the anime absolute episode number. Absolute rows are skipped for anything that is not anime.',
+  },
+  {
+    label: 'Order',
+    text: 'Put the narrowest question first. With "Stop at first hit" the later rows are only paid for when the earlier ones matched nothing.',
+  },
 ]
 
-const YEAR_HINT_ITEMS = [
+const STOP_HINT_ITEMS = [
   {
-    label: 'Text Search',
-    text: 'Adds the metadata year to the outgoing query and also checks it during validation.',
+    label: 'Stop at first hit',
+    text: 'Walk the rows in order and stop at the first one that matched anything. A request that finds what it wanted costs one indexer round trip.',
   },
   {
-    label: 'ID Search',
-    text: 'Does not change the ID request itself. It only affects validation, which still enforces the year.',
-  },
-]
-const TV_SCOPE_HINT_ITEMS = [
-  {
-    label: 'Season/Episode',
-    text: 'Targets one episode. ID uses params, Text uses an S01E01-style query.',
-  },
-  {
-    label: 'Season',
-    text: 'Broadens to the whole season, then validation trims back to releases that can contain the episode.',
-  },
-  {
-    label: 'None',
-    text: 'Searches only by series title or ID. Validation trims the broader results back to episode-capable releases.',
+    label: 'Run every attempt',
+    text: 'Ask every row every time and merge the results. Broader, and always pays for every query.',
   },
 ]
-const ANIME_ABSOLUTE_HINT_ITEMS = [
+
+const ORDER_HINT_ITEMS = [
+  {
+    label: 'As listed',
+    text: 'Run the rows exactly as written.',
+  },
+  {
+    label: 'Season first once it has aired',
+    text: 'A finished season is where the season pack lives, so the Season rows move to the front once every episode of the requested season has aired. Air dates come from TVMaze, TVDB or TMDB; when none of them can say, the order is left alone.',
+  },
+]
+
+const ACCEPT_TITLES_HINT_ITEMS = [
+  {
+    label: 'What it is',
+    text: 'The metadata titles a release name may match to prove it is the right content. Separate from what goes out: a Title row queries under one language, and this is what comes back.',
+  },
+  {
+    label: 'ID rows',
+    text: 'An ID row names an id, so a title mismatch is counted and kept rather than dropped — the indexer resolved the title itself.',
+  },
+  {
+    label: 'Empty',
+    text: 'With no titles listed, an attempt falls back to its own query language.',
+  },
+]
+
+const ACCEPT_YEAR_HINT_ITEMS = [
   {
     label: 'On',
-    text: 'For anime, additionally queries the absolute episode number ("One Piece 63" for S02E02) and accepts absolute-numbered releases.',
+    text: 'A release year has to be within a year of the metadata year, and Title rows with "+ year" put it in the query too.',
   },
   {
-    label: 'Detection',
-    text: 'Applied when metadata looks like anime; Kitsu requests are anime by definition. Anime requests also widen indexer categories with 5070 (TV/Anime).',
-  },
-  {
-    label: 'Kitsu',
-    text: 'Kitsu episodes are already absolute, so no extra queries are added — but episode matching and category widening still apply.',
-  },
-  {
-    label: 'ID Search',
-    text: 'Runs as an extra text query after the ID search.',
+    label: 'TV',
+    text: 'Usually off: scene TV releases are named Title.S01E01.1080p... and carry no year at all.',
   },
 ]
-const TITLE_LANGUAGE_HINT_ITEMS = [
+
+const ACCEPT_PACKS_HINT_ITEMS = [
   {
-    label: 'Text Search',
-    text: 'Uses exactly one metadata language, both for the outgoing query and for the titles results are checked against.',
+    label: 'On',
+    text: 'A season or complete-series pack that contains the requested episode counts as a match.',
   },
   {
-    label: 'ID Search',
-    text: 'No setting: an ID search names an id, not a title, and trusts what the indexer answers.',
-  },
-  {
-    label: 'Normalization',
-    text: 'Search and validation use the same normalized title basis.',
+    label: 'Off',
+    text: 'Only releases that name the episode are kept, even when a Season row found the pack.',
   },
 ]
+
+const CATEGORIES_HINT_ITEMS = [
+  {
+    label: 'Default',
+    text: 'Empty. Movies ask for 2000, TV for 5000, and anime for 5070 alongside 5000 — plus any bucket an indexer names "anime" in its own caps under another id.',
+  },
+  {
+    label: 'Override',
+    text: 'A comma-separated Newznab category list, sent to every indexer for this request instead of the defaults. Only needed when an indexer files things under ids of its own.',
+  },
+]
+
 const SEARCH_LIMIT_HINT_ITEMS = [
   {
     label: 'Max',
@@ -132,95 +185,9 @@ const EXTRA_TERMS_HINT_ITEMS = [
     text: 'Use quotes for exact phrases, `!term` to exclude words, `*` as wildcard, `|` or `OR` for alternatives, and parentheses for groups like `(1080p|720p)`.',
   },
 ]
-const DEFAULT_ID_TITLE_LANGUAGES = ['en-US', '']
-
-function normalizeDraftSearchTitleLanguage(value) {
-  if (value === null) return null
-  return normalizeSearchTitleLanguage(value)
-}
-
-function normalizeSeriesSearchScope(scope) {
-  switch ((scope || '').trim().toLowerCase()) {
-    case 'season_episode':
-    case 'season':
-    case 'none':
-      return scope.trim().toLowerCase()
-    case 'episode_param':
-    case 'episode_query':
-    case 'season_param':
-    case 'season_query':
-      return scope.trim().toLowerCase()
-    default:
-      return 'season_episode'
-  }
-}
-
-function normalizeSeriesScopeSelection(scope) {
-  const raw = (scope || '').trim().toLowerCase()
-  switch (raw) {
-    case 'season_episode':
-      return 'season_episode'
-    case 'season':
-      return 'season'
-    case 'none':
-      return 'none'
-    default:
-      break
-  }
-  switch (normalizeSeriesSearchScope(scope)) {
-    case 'season_param':
-    case 'season_query':
-      return 'season'
-    case 'none':
-      return 'none'
-    default:
-      return 'season_episode'
-  }
-}
-
-function resolveSeriesSearchScope(selection) {
-  switch ((selection || '').trim().toLowerCase()) {
-    case 'season':
-      return 'season'
-    case 'none':
-      return 'none'
-    case 'season_episode':
-    default:
-      return 'season_episode'
-  }
-}
 
 function normalizeName(value) {
   return (value || '').trim().toLowerCase()
-}
-
-function defaultIDTitleLanguages() {
-  return [...DEFAULT_ID_TITLE_LANGUAGES]
-}
-
-function resolvedIDTitleLanguages(searchMode, singleLanguage, languages) {
-  if (String(searchMode || '').trim().toLowerCase() !== 'id') {
-    return []
-  }
-  const normalizedLanguages = normalizeSearchTitleLanguages(languages)
-  if (normalizedLanguages.length > 0) {
-    return normalizedLanguages
-  }
-  const normalizedSingle = normalizeSearchTitleLanguage(singleLanguage)
-  if (normalizedSingle === '') {
-    return defaultIDTitleLanguages()
-  }
-  return [normalizedSingle]
-}
-
-function draftTitleLanguages(searchMode, singleLanguage, languages) {
-  if (String(searchMode || '').trim().toLowerCase() !== 'id') {
-    return []
-  }
-  if (Array.isArray(languages)) {
-    return normalizeSearchTitleLanguages(languages)
-  }
-  return resolvedIDTitleLanguages(searchMode, singleLanguage, languages)
 }
 
 function remainingTitleLanguageOptions(selectedLanguages) {
@@ -232,80 +199,53 @@ function titleLanguageLabel(value) {
   return TITLE_LANGUAGE_OPTIONS.find((option) => option.value === normalizeSearchTitleLanguage(value))?.label || 'Original'
 }
 
-function selectedTextTitleLanguages(singleLanguage) {
-  if (singleLanguage === null) return []
-  return [normalizeSearchTitleLanguage(singleLanguage)]
-}
-
 function assignedStreamsForQuery(streamsByName, kind, queryName) {
   const field = kind === 'movie' ? 'movie_search_queries' : 'series_search_queries'
   return assignedStreams(streamsByName, field, queryName)
 }
 
 function emptyDraft(kind) {
-  return {
-    name: kind === 'movie' ? 'MovieQuery01' : 'TVQuery01',
-    search_mode: 'id',
-    movie_categories: kind === 'movie' ? '2000' : undefined,
-    tv_categories: kind === 'series' ? '5000' : undefined,
-    search_result_limit: 0,
-    search_title_language: '',
-    search_title_languages: defaultIDTitleLanguages(),
-    include_year: false,
-    series_search_scope: kind === 'series' ? 'season_episode' : undefined,
-    try_absolute_episode: kind === 'series' ? true : undefined,
+  return { name: kind === 'movie' ? 'MovieQuery01' : 'TVQuery01', ...presetPlan(kind, 'balanced'), search_result_limit: 0, categories: '' }
+}
+
+function normalizeAccept(kind, accept) {
+  const value = accept || {}
+  const next = {
+    titles: normalizeSearchTitleLanguages(value.titles),
+    year: value.year === true,
   }
+  if (isSeriesKind(kind)) {
+    next.packs = value.packs !== false
+  }
+  return next
 }
 
 function normalizeDraft(kind, draft) {
   const value = draft || {}
-  const searchMode = value.search_mode || 'id'
-  const searchTitleLanguage = normalizeDraftSearchTitleLanguage(value.search_title_language)
   return {
     name: (value.name || '').trim(),
-    search_mode: searchMode,
+    attempts: normalizeAttempts(value.attempts, kind),
+    stop: normalizeStop(value.stop),
+    order: isSeriesKind(kind) ? normalizeOrder(value.order) : undefined,
+    accept: normalizeAccept(kind, value.accept),
     search_result_limit: value.search_result_limit ?? 0,
-    movie_categories: kind === 'movie' ? (value.movie_categories ?? '2000') : undefined,
-    tv_categories: kind === 'series' ? (value.tv_categories ?? '5000') : undefined,
-    search_title_language: searchTitleLanguage,
-    search_title_languages: draftTitleLanguages(searchMode, searchTitleLanguage, value.search_title_languages),
-    include_year: normalizeQueryYearSetting(searchMode, value.include_year, value.include_year_in_text_search),
-    series_search_scope: kind === 'series'
-      ? normalizeSeriesScopeSelection(value.series_search_scope)
-      : undefined,
-    try_absolute_episode: kind === 'series' ? value.try_absolute_episode !== false : undefined,
+    categories: String(value.categories ?? '').trim(),
   }
 }
 
 function persistableDraft(kind, draft) {
-  const next = normalizeDraft(kind, draft)
-  next.search_title_language = next.search_mode === 'text'
-    ? normalizeSearchTitleLanguage(next.search_title_language ?? '')
-    : (normalizeSearchTitleLanguages(next.search_title_languages)[0] ?? '')
-  next.search_title_languages = next.search_mode === 'id'
-    ? draftTitleLanguages(next.search_mode, next.search_title_language, next.search_title_languages)
-    : []
-  if (kind === 'series') {
-    const resolvedScope = resolveSeriesSearchScope(next.series_search_scope)
-    next.series_search_scope = resolvedScope
-  }
-  return next
+  return normalizeDraft(kind, draft)
 }
 
 function comparableQuerySignature(kind, draft) {
   const value = normalizeDraft(kind, draft)
   return JSON.stringify({
-    search_mode: value.search_mode || 'id',
-    movie_categories: kind === 'movie' ? String(value.movie_categories ?? '').trim() : '',
-    tv_categories: kind === 'series' ? String(value.tv_categories ?? '').trim() : '',
+    attempts: value.attempts,
+    stop: value.stop,
+    order: value.order,
+    accept: value.accept,
     search_result_limit: Number(value.search_result_limit || 0),
-    search_title_language: value.search_title_language === null
-      ? null
-      : normalizeSearchTitleLanguage(String(value.search_title_language || '').trim()),
-    search_title_languages: draftTitleLanguages(value.search_mode, value.search_title_language, value.search_title_languages),
-    include_year: value.include_year !== false,
-    series_search_scope: kind === 'series' ? normalizeSeriesScopeSelection(value.series_search_scope) : undefined,
-    try_absolute_episode: kind === 'series' ? value.try_absolute_episode !== false : undefined,
+    categories: value.categories,
   })
 }
 
@@ -331,25 +271,22 @@ function extractScopedQueryFieldErrors(fieldErrors, kind, index) {
 }
 
 function summarizeQuery(query, kind) {
-  const primary = []
+  const value = normalizeDraft(kind, query)
+  const primary = value.attempts.map((attempt) => attemptLabel(attempt, kind))
   const validation = []
+  if (value.stop === STOP_ALL) {
+    validation.push('Runs every attempt')
+  } else {
+    validation.push('Stops at first hit')
+  }
+  if (value.order === ORDER_ADAPTIVE_SEASON) validation.push('Season first once aired')
+  validation.push(`Titles: ${value.accept.titles.length === 0 ? 'attempt language' : value.accept.titles.map(titleLanguageLabel).join(', ')}`)
+  validation.push(`Year: ${value.accept.year ? 'Must match' : 'Ignored'}`)
+  if (isSeriesKind(kind)) validation.push(`Packs: ${value.accept.packs ? 'Accepted' : 'Rejected'}`)
+
   const extra = []
-
-  if (query.search_mode) primary.push(`Mode: ${query.search_mode.toUpperCase()}`)
-  if (kind === 'movie' && query.movie_categories) primary.push(`Movie: ${query.movie_categories}`)
-  if (kind === 'series' && query.tv_categories) primary.push(`TV: ${query.tv_categories}`)
-  primary.push(`Limit: ${Number(query.search_result_limit || 0) === 0 ? 'Max' : query.search_result_limit}`)
-
-  if ((query.search_mode || 'id') !== 'id') {
-    validation.push(`Title: ${titleLanguageLabel(query.search_title_language || '')}`)
-  }
-  validation.push(`Year: ${query.include_year === false ? 'Off' : 'On'}`)
-  if (kind === 'series') {
-    const scope = normalizeSeriesScopeSelection(query.series_search_scope)
-    const scopeLabel = SERIES_SCOPE_OPTIONS.find((option) => option.value === scope)?.label || 'Season/Episode'
-    validation.push(`Scope: ${scopeLabel}`)
-    validation.push(`Anime Absolute: ${query.try_absolute_episode === false ? 'Off' : 'On'}`)
-  }
+  extra.push(`Limit: ${Number(value.search_result_limit || 0) === 0 ? 'Max' : value.search_result_limit}`)
+  if (value.categories) extra.push(`Categories: ${value.categories}`)
 
   return { primary, validation, extra }
 }
@@ -430,28 +367,18 @@ function LabelWithHelp({ label, items = [] }) {
 
 // Text requests only: an ID request sends no title, so it has no title language
 // to pick.
-function TitleLanguageSelector({ singleLanguage, onSingleChange, onErrorChange, error }) {
-  const selectedLanguages = selectedTextTitleLanguages(singleLanguage)
-  const availableValues = remainingTitleLanguageOptions(selectedLanguages)
-
-  const handleAdd = (value) => {
-    if (selectedLanguages.length > 0) {
-      onErrorChange?.('Text search can use only one title language.')
-      return
-    }
-    onErrorChange?.('')
-    onSingleChange(value)
-  }
-
-  const handleRemove = () => {
-    onErrorChange?.('')
-    onSingleChange(null)
-  }
+// TitleLanguagesField is the acceptance titles: the metadata titles a release
+// name may match. It is a genuine multi-select, because acceptance genuinely
+// takes several — the single language a query goes out under lives on the
+// attempt that sends it.
+function TitleLanguagesField({ languages, onChange, error }) {
+  const selected = normalizeSearchTitleLanguages(languages)
+  const available = remainingTitleLanguageOptions(selected)
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <LabelWithHelp label="Title Language" items={TITLE_LANGUAGE_HINT_ITEMS} />
+        <LabelWithHelp label="Accepted titles" items={ACCEPT_TITLES_HINT_ITEMS} />
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -461,103 +388,189 @@ function TitleLanguageSelector({ singleLanguage, onSingleChange, onErrorChange, 
                   variant="outline"
                   size="icon"
                   className={`h-8 w-8 ${error ? 'border-destructive text-destructive' : ''}`}
-                  disabled={availableValues.length === 0}
+                  disabled={available.length === 0}
                 >
                   <Plus className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
             </TooltipTrigger>
             <TooltipContent>
-              {availableValues.length === 0 ? 'No more languages to add' : 'Add title language'}
+              {available.length === 0 ? 'Every language is already accepted' : 'Accept another title'}
             </TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
-            {availableValues.length === 0 ? (
-              <DropdownMenuItem disabled>No more languages available</DropdownMenuItem>
-            ) : (
-              availableValues.map((option) => (
-                <DropdownMenuItem key={option.value || 'original'} onClick={() => handleAdd(option.value)}>
-                  {option.label}
-                </DropdownMenuItem>
-              ))
-            )}
+            {available.map((option) => (
+              <DropdownMenuItem key={option.value || 'original'} onClick={() => onChange([...selected, option.value])}>
+                {option.label}
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <div className={`min-h-14 rounded-md border px-3 py-3 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'} flex items-center`}>
+      <div className={`min-h-12 rounded-md border px-3 py-2 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'} flex items-center`}>
         <div className="flex w-full flex-wrap items-center gap-2">
-          {selectedLanguages.map((language) => (
-            <Badge key={language || 'original'} variant="secondary" className="flex items-center gap-1 rounded-full px-3 py-1">
-              <span>{titleLanguageLabel(language)}</span>
-              <button
-                type="button"
-                className="rounded-full text-muted-foreground transition hover:text-foreground"
-                onClick={handleRemove}
-                aria-label={`Remove ${titleLanguageLabel(language)}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </Badge>
-          ))}
+          {selected.length === 0 ? (
+            <span className="text-xs text-muted-foreground">Falls back to each attempt&apos;s own language</span>
+          ) : (
+            selected.map((language) => (
+              <Badge key={language || 'original'} variant="secondary" className="flex items-center gap-1 rounded-full px-3 py-1">
+                <span>{titleLanguageLabel(language)}</span>
+                <button
+                  type="button"
+                  className="text-muted-foreground transition hover:text-foreground"
+                  aria-label={`Remove ${titleLanguageLabel(language)}`}
+                  onClick={() => onChange(selected.filter((value) => value !== language))}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            ))
+          )}
         </div>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  )
+}
+
+// ToggleRow is the two-state switch the Accept section is made of: a label with
+// help on the left, an on/off select on the right, matching every other control
+// in this dialog.
+function ToggleRow({ label, items, value, onChange, onLabel = 'On', offLabel = 'Off', className }) {
+  return (
+    <div className="flex flex-col gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:gap-4">
+      <div className="min-w-0 min-[360px]:flex-1">
+        <LabelWithHelp label={label} items={items} />
+      </div>
+      <div className={className}>
+        <select
+          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          value={value ? 'on' : 'off'}
+          onChange={(event) => onChange(event.target.value === 'on')}
+        >
+          <option value="on">{onLabel}</option>
+          <option value="off">{offLabel}</option>
+        </select>
       </div>
     </div>
   )
 }
 
+const attemptSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
 
-function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors = {}, onUIErrorChange }) {
-  const normalizedScope = kind === 'series'
-    ? normalizeSeriesScopeSelection(draft.series_search_scope)
-    : ''
-  const isIDMode = draft.search_mode === 'id'
-  const [titleLanguageUIError, setTitleLanguageUIError] = useState('')
+// AttemptRow is one question in the plan. Everything it needs is on the row —
+// address, target, and for a title attempt the language it queries under and
+// whether the year rides along — because that is exactly what gets dispatched.
+function AttemptRow({ kind, index, attempt, onChange, onRemove, canRemove }) {
+  const address = normalizeAddress(attempt.address)
+  const target = normalizeTarget(attempt.target)
+  const isTitle = address === ADDRESS_TITLE
+  const isSeries = isSeriesKind(kind)
+  const update = (patch) => onChange(normalizeAttempt({ ...attempt, ...patch }, kind))
 
-  const clearTitleLanguageUIError = () => {
-    setTitleLanguageUIError('')
-    onUIErrorChange?.('')
-  }
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+        {index + 1}
+      </span>
+      <select
+        className={attemptSelectClass}
+        value={address}
+        onChange={(event) => update({ address: event.target.value })}
+        aria-label={`Attempt ${index + 1} address`}
+      >
+        {ADDRESS_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+      {isSeries ? (
+        <select
+          className={attemptSelectClass}
+          value={target}
+          onChange={(event) => update({ target: event.target.value })}
+          aria-label={`Attempt ${index + 1} target`}
+        >
+          {TARGET_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value} disabled={option.value === TARGET_ABSOLUTE && !isTitle}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {isTitle ? (
+        <select
+          className={attemptSelectClass}
+          value={normalizeSearchTitleLanguage(attempt.title ?? '')}
+          onChange={(event) => update({ title: event.target.value })}
+          aria-label={`Attempt ${index + 1} title language`}
+        >
+          {TITLE_LANGUAGE_OPTIONS.map((option) => (
+            <option key={option.value || 'original'} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      ) : null}
+      {isTitle ? (
+        <Button
+          type="button"
+          variant={attempt.year ? 'secondary' : 'outline'}
+          className="h-8 px-2 text-xs font-normal"
+          onClick={() => update({ year: !attempt.year })}
+        >
+          {attempt.year ? '+ year' : 'no year'}
+        </Button>
+      ) : null}
+      {isSeries && target === TARGET_ABSOLUTE ? (
+        <Badge variant="outline" className="rounded-full px-2 py-0 text-[11px] font-normal text-muted-foreground">anime only</Badge>
+      ) : null}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="ml-auto h-8 w-8 text-muted-foreground hover:text-destructive"
+            onClick={onRemove}
+            disabled={!canRemove}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{canRemove ? 'Remove attempt' : 'A request needs at least one attempt'}</TooltipContent>
+      </Tooltip>
+    </div>
+  )
+}
 
-  const update = (key, value) => {
-    if (key === 'search_mode' || key === 'search_title_language') {
-      clearTitleLanguageUIError()
-    }
-    setDraft((current) => {
-      if (key === 'search_mode') {
-        const nextMode = value
-        const nextTitleLanguages = nextMode === 'id'
-          ? resolvedIDTitleLanguages(nextMode, current.search_title_language, current.search_title_languages)
-          : current.search_title_language === null
-            ? []
-            : [normalizeSearchTitleLanguage(current.search_title_language)]
-        return {
-          ...current,
-          search_mode: nextMode,
-          search_title_languages: nextTitleLanguages,
-          include_year: nextMode === 'text' ? true : current.include_year,
-        }
-      }
-      if (key === 'series_search_scope') {
-        return {
-          ...current,
-          series_search_scope: normalizeSeriesScopeSelection(value),
-        }
-      }
-      if (key === 'search_title_language') {
-        return {
-          ...current,
-          search_title_language: normalizeDraftSearchTitleLanguage(value),
-        }
-      }
-      const next = { ...current, [key]: value }
-      if (kind === 'series' && !next.series_search_scope) {
-        next.series_search_scope = normalizeSeriesScopeSelection(current.series_search_scope)
-      }
-      return next
-    })
-  }
+// AttemptChain is the plan read back as one line — what the request will
+// actually ask, in the order it will ask it. It is the answer to the question
+// the old two-dropdown form could not answer: what does this run?
+function AttemptChain({ kind, attempts, order, seasonCompleted = false }) {
+  const chain = attemptsInRunOrder(attempts, order, kind, seasonCompleted)
+  if (chain.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      {chain.map((attempt, index) => (
+        <span key={attemptKey(attempt, index)} className="flex items-center gap-1.5">
+          {index > 0 ? <ArrowRight className="h-3 w-3 shrink-0 opacity-60" /> : null}
+          <span className="rounded-full border border-border px-2 py-0.5">{attemptLabel(attempt, kind)}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors = {} }) {
+  const isSeries = isSeriesKind(kind)
+  const attempts = normalizeAttempts(draft.attempts, kind)
+  const accept = normalizeAccept(kind, draft.accept)
+  const stop = normalizeStop(draft.stop)
+  const order = normalizeOrder(draft.order)
+
+  const update = (patch) => setDraft((current) => ({ ...current, ...patch }))
+  const setAttempts = (next) => update({ attempts: next })
+  const updateAccept = (patch) => update({ accept: { ...accept, ...patch } })
+
   const fieldClass = (key) => fieldErrors[key] ? "border-destructive focus-visible:ring-destructive" : ""
-  const categoryField = kind === 'movie' ? 'movie_categories' : 'tv_categories'
   const rowClass = "space-y-3"
   const inlineRowClass = "flex flex-col gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:gap-4"
   const inlineLabelClass = "min-w-0 min-[360px]:flex-1"
@@ -566,6 +579,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
   const controlMediumClass = `${controlBaseClass} min-[360px]:w-[13rem]`
   const controlNarrowClass = `${controlBaseClass} min-[360px]:w-[9rem]`
   const sectionCardClass = "rounded-lg border border-border/60 bg-background/80"
+  const attemptsError = fieldErrors.attempts
 
   return (
     <div className="space-y-5">
@@ -576,47 +590,181 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
               <Label className="text-sm font-medium">Name</Label>
             </div>
             <div className={controlWideClass}>
-              <Input className={`h-9 ${fieldClass('name')}`} value={draft.name || ''} onChange={(event) => update('name', event.target.value)} placeholder={kind === 'movie' ? 'MovieQuery01' : 'TVQuery01'} disabled={editing} />
+              <Input className={`h-9 ${fieldClass('name')}`} value={draft.name || ''} onChange={(event) => update({ name: event.target.value })} placeholder={kind === 'movie' ? 'MovieQuery01' : 'TVQuery01'} disabled={editing} />
             </div>
           </div>
         </div>
       </div>
 
       <div className={sectionCardClass}>
-        <div className="p-3">
+        <div className="space-y-3 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <LabelWithHelp label="Attempts" items={ATTEMPTS_HINT_ITEMS} />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" className="h-8 gap-1.5 px-2 text-xs font-normal">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Preset
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                {planPresets(kind).map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.id}
+                    className="flex flex-col items-start gap-0.5"
+                    onClick={() => update(presetPlan(kind, preset.id))}
+                  >
+                    <span className="font-medium">{preset.label}</span>
+                    <span className="text-xs text-muted-foreground">{preset.description}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          <div className="space-y-2">
+            <SortableList
+              ids={attempts.map((attempt, index) => attemptKey(attempt, index))}
+              onMove={(from, to) => setAttempts(moveItem(attempts, from, to))}
+              disabled={attempts.length < 2}
+            >
+              {attempts.map((attempt, index) => (
+                <SortableRow
+                  key={attemptKey(attempt, index)}
+                  id={attemptKey(attempt, index)}
+                  disabled={attempts.length < 2}
+                  className="mb-2 bg-background/60"
+                >
+                  <AttemptRow
+                    kind={kind}
+                    index={index}
+                    attempt={attempt}
+                    canRemove={attempts.length > 1}
+                    onChange={(next) => setAttempts(attempts.map((current, at) => (at === index ? next : current)))}
+                    onRemove={() => setAttempts(attempts.filter((_, at) => at !== index))}
+                  />
+                </SortableRow>
+              ))}
+            </SortableList>
+            {attempts.length === 0 ? (
+              <p className={`text-sm ${attemptsError ? 'text-destructive' : 'text-muted-foreground'}`}>
+                No attempts yet — this request would ask nothing.
+              </p>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              className="h-8 w-full gap-1.5 border-dashed text-xs font-normal"
+              onClick={() => setAttempts([...attempts, defaultAttempt(kind)])}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add attempt
+            </Button>
+            {attemptsError ? <p className="text-xs text-destructive">{attemptsError}</p> : null}
+          </div>
+        </div>
+
+        <div className="relative p-3">
+          <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
           <div className={rowClass}>
             <div className={inlineRowClass}>
               <div className={inlineLabelClass}>
-                <Label className="text-sm font-medium">Search Mode</Label>
+                <LabelWithHelp label="When to stop" items={STOP_HINT_ITEMS} />
               </div>
               <div className={controlMediumClass}>
                 <select
-                  className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('search_mode')}`}
-                  value={draft.search_mode || 'id'}
-                  onChange={(event) => update('search_mode', event.target.value)}
+                  className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('stop')}`}
+                  value={stop}
+                  onChange={(event) => update({ stop: event.target.value })}
                 >
-                  <option value="id">ID Search</option>
-                  <option value="text">Text Search</option>
+                  {STOP_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
           </div>
         </div>
-        <div className="relative p-3">
-          <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-          <div className={rowClass}>
-            <div className={inlineRowClass}>
-              <div className={inlineLabelClass}>
-                <Label className="text-sm font-medium">Category</Label>
-              </div>
-              <div className={controlNarrowClass}>
-                <Input className={`h-9 ${fieldClass(categoryField)}`} value={kind === 'movie' ? (draft.movie_categories ?? '') : (draft.tv_categories ?? '')} onChange={(event) => update(categoryField, event.target.value)} placeholder={kind === 'movie' ? '2000' : '5000'} />
+
+        {isSeries ? (
+          <div className="relative p-3">
+            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+            <div className={rowClass}>
+              <div className={inlineRowClass}>
+                <div className={inlineLabelClass}>
+                  <LabelWithHelp label="Ordering" items={ORDER_HINT_ITEMS} />
+                </div>
+                <div className={controlWideClass}>
+                  <select
+                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('order')}`}
+                    value={order}
+                    onChange={(event) => update({ order: event.target.value })}
+                  >
+                    {ORDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
           </div>
+        ) : null}
+
+        {attempts.length > 0 ? (
+          <div className="relative space-y-2 p-3">
+            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+            <p className="text-xs font-medium text-muted-foreground">
+              {stop === STOP_ALL ? 'This request asks all of' : 'This request asks, until something answers'}
+            </p>
+            <AttemptChain kind={kind} attempts={attempts} order={order} />
+            {isSeries && order === ORDER_ADAPTIVE_SEASON ? (
+              <div className="space-y-1.5 pt-1">
+                <p className="text-xs font-medium text-muted-foreground">Once the season has finished airing</p>
+                <AttemptChain kind={kind} attempts={attempts} order={order} seasonCompleted />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div className={sectionCardClass}>
+        <div className="p-3">
+          <TitleLanguagesField
+            languages={accept.titles}
+            onChange={(next) => updateAccept({ titles: normalizeSearchTitleLanguages(next) })}
+            error={fieldErrors['accept.titles']}
+          />
         </div>
         <div className="relative p-3">
           <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+          <ToggleRow
+            label="Year must match"
+            items={ACCEPT_YEAR_HINT_ITEMS}
+            value={accept.year}
+            onChange={(value) => updateAccept({ year: value })}
+            onLabel="Must match"
+            offLabel="Ignored"
+            className={controlMediumClass}
+          />
+        </div>
+        {isSeries ? (
+          <div className="relative p-3">
+            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+            <ToggleRow
+              label="Season packs"
+              items={ACCEPT_PACKS_HINT_ITEMS}
+              value={accept.packs}
+              onChange={(value) => updateAccept({ packs: value })}
+              onLabel="Accepted"
+              offLabel="Rejected"
+              className={controlMediumClass}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      <div className={sectionCardClass}>
+        <div className="p-3">
           <div className={rowClass}>
             <div className={inlineRowClass}>
               <div className={inlineLabelClass}>
@@ -630,110 +778,44 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
                   placeholder="Max"
                   className={`h-9 ${fieldClass('search_result_limit')}`}
                   value={Number(draft.search_result_limit || 0) === 0 ? '' : draft.search_result_limit}
-                  onChange={(event) => update('search_result_limit', event.target.value === '' ? 0 : Number(event.target.value))}
+                  onChange={(event) => update({ search_result_limit: event.target.value === '' ? 0 : Number(event.target.value) })}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="relative p-3">
+          <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+          <div className={rowClass}>
+            <div className={inlineRowClass}>
+              <div className={inlineLabelClass}>
+                <LabelWithHelp label="Categories" items={CATEGORIES_HINT_ITEMS} />
+              </div>
+              <div className={controlMediumClass}>
+                <Input
+                  className={`h-9 ${fieldClass('categories')}`}
+                  value={draft.categories ?? ''}
+                  onChange={(event) => update({ categories: event.target.value })}
+                  placeholder="From indexer caps"
                 />
               </div>
             </div>
           </div>
         </div>
       </div>
-
-      <div className={sectionCardClass}>
-        {!isIDMode && (
-          <div className="relative p-3">
-            <div className={rowClass}>
-              <TitleLanguageSelector
-                singleLanguage={draft.search_title_language}
-                onSingleChange={(value) => update('search_title_language', value)}
-                onErrorChange={(message) => {
-                  setTitleLanguageUIError(message || '')
-                  onUIErrorChange?.(message || '')
-                }}
-                error={titleLanguageUIError || fieldErrors.search_title_language}
-              />
-            </div>
-          </div>
-        )}
-        <div className="relative p-3">
-          {!isIDMode && <div className="absolute left-3 right-3 top-0 border-t border-border/60" />}
-          <div className={rowClass}>
-            <div className={inlineRowClass}>
-              <div className={inlineLabelClass}>
-                <LabelWithHelp label="Year" items={YEAR_HINT_ITEMS} />
-              </div>
-              <div className={controlMediumClass}>
-                <select
-                  className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('include_year')}`}
-                  value={draft.include_year === false ? 'off' : 'on'}
-                  onChange={(event) => update('include_year', event.target.value === 'on')}
-                >
-                  <option value="on">{draft.search_mode === 'text' ? 'Search + Validation' : 'Validation'}</option>
-                  <option value="off">Ignore</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </div>
-        {kind === 'series' && (
-          <div className="relative p-3">
-            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-            <div className={rowClass}>
-              <div className={inlineRowClass}>
-                <div className={inlineLabelClass}>
-                  <LabelWithHelp label="Scope" items={TV_SCOPE_HINT_ITEMS} />
-                </div>
-                <div className={controlMediumClass}>
-                  <select
-                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('series_search_scope')}`}
-                    value={normalizedScope}
-                    onChange={(event) => update('series_search_scope', event.target.value)}
-                  >
-                    {SERIES_SCOPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {kind === 'series' && (
-          <div className="relative p-3">
-            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
-            <div className={rowClass}>
-              <div className={inlineRowClass}>
-                <div className={inlineLabelClass}>
-                  <LabelWithHelp label="Anime Absolute" items={ANIME_ABSOLUTE_HINT_ITEMS} />
-                </div>
-                <div className={controlMediumClass}>
-                  <select
-                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('try_absolute_episode')}`}
-                    value={draft.try_absolute_episode === false ? 'off' : 'on'}
-                    onChange={(event) => update('try_absolute_episode', event.target.value === 'on')}
-                  >
-                    <option value="on">Supplement</option>
-                    <option value="off">Off</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
     </div>
   )
 }
 
 function dialogTitle(kind, editing) {
-  if (editing) return kind === 'movie' ? 'Change Movie Query' : 'Change TV Query'
-  return kind === 'movie' ? 'Add Movie Query' : 'Add TV Query'
+  if (editing) return kind === 'movie' ? 'Change Movie Request' : 'Change TV Request'
+  return kind === 'movie' ? 'Add Movie Request' : 'Add TV Request'
 }
 
 function dialogDescription(kind) {
   return kind === 'movie'
-    ? 'Build your search requests for movies.'
-    : 'Build your search requests for TV.'
+    ? 'The questions this request asks indexers for a movie, in order.'
+    : 'The questions this request asks indexers for an episode, in order.'
 }
 
 function defaultQueryName(kind, index) {
@@ -741,7 +823,6 @@ function defaultQueryName(kind, index) {
 }
 
 function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [], existingQueries = [], onSave, saveLabel, editing = false, nextIndex = 0, onClearStatus }) {
-  const [uiValidationError, setUIValidationError] = useState('')
   const dialog = useEntityDialog({
     open,
     onOpenChange,
@@ -755,7 +836,6 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
     },
     normalize: (value) => normalizeDraft(kind, value),
     onClearStatus,
-    onClose: () => setUIValidationError(''),
   })
   const { draft, setDraft, fieldErrors } = dialog
 
@@ -764,10 +844,7 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
   const duplicateQuery = Boolean(duplicateQueryName)
 
   const handleSave = () => {
-    const next = normalizeDraft(kind, draft)
-    if (kind === 'series') {
-      next.series_search_scope = resolveSeriesSearchScope(next.series_search_scope)
-    }
+    const next = persistableDraft(kind, draft)
     const limit = Number(next.search_result_limit)
     return dialog.runSave({
       validate: () => {
@@ -775,12 +852,8 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
         if (!next.name) nextFieldErrors.name = 'Name is required.'
         if (duplicateName) nextFieldErrors.name = 'Name already exists.'
         if (duplicateQuery) nextFieldErrors.name = `An identical search request already exists: "${duplicateQueryName}".`
-        const category = kind === 'movie' ? String(next.movie_categories ?? '').trim() : String(next.tv_categories ?? '').trim()
-        if (!category || category === '0') {
-          nextFieldErrors[kind === 'movie' ? 'movie_categories' : 'tv_categories'] = 'Category is required.'
-        }
-        if (next.search_mode === 'text' && selectedTextTitleLanguages(next.search_title_language).length === 0) {
-          nextFieldErrors.search_title_language = 'Add at least one title language.'
+        if (next.attempts.length === 0) {
+          nextFieldErrors.attempts = 'Add at least one attempt.'
         }
         if (Number.isNaN(limit) || limit < 0) {
           nextFieldErrors.search_result_limit = 'Limit must be 0 or greater.'
@@ -788,7 +861,6 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
         return nextFieldErrors
       },
       commit: () => {
-        setUIValidationError('')
         next.search_result_limit = limit
         return onSave(next)
       },
@@ -807,9 +879,9 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
       savingLabel="Saving..."
       onSave={handleSave}
       discardDescription="Your unsaved search request changes will be lost."
-      bannerError={uiValidationError || dialog.saveError}
+      bannerError={dialog.saveError}
     >
-      <QueryDraftFields kind={kind} draft={draft} setDraft={setDraft} editing={editing} fieldErrors={fieldErrors} onUIErrorChange={setUIValidationError} />
+      <QueryDraftFields kind={kind} draft={draft} setDraft={setDraft} editing={editing} fieldErrors={fieldErrors} />
     </EntityDialog>
   )
 }

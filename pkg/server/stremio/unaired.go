@@ -7,6 +7,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/services/metadata/tvmaze"
 	"streamnzb/pkg/session"
 )
 
@@ -165,9 +166,15 @@ func (s *Server) tvmazeAirWindow(ctx context.Context, ids *session.AvailReportMe
 	if !ok {
 		return airWindow{}, false
 	}
-	// A non-empty airtime is TVMaze saying it knows when this one broadcasts,
-	// and only then does the airstamp name a real instant. With airtime empty
-	// the stamp is a noon-UTC placeholder and the airdate is all there is.
+	return tvmazeEpisodeWindow(ep)
+}
+
+// tvmazeEpisodeWindow reads one TVMaze episode's air window.
+//
+// A non-empty airtime is TVMaze saying it knows when this one broadcasts, and
+// only then does the airstamp name a real instant. With airtime empty the
+// stamp is a noon-UTC placeholder and the airdate is all there is.
+func tvmazeEpisodeWindow(ep tvmaze.Episode) (airWindow, bool) {
 	if ep.Airtime != "" && ep.Airstamp != "" {
 		if t, err := time.Parse(time.RFC3339, ep.Airstamp); err == nil {
 			return withSchedule(t, ep.Airdate), true

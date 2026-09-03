@@ -178,7 +178,14 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 	// search into a title search shows up as a request that is nearly all
 	// mismatch. Season/episode and year validation are unaffected.
 	var valStats ValidationStats
-	releases, valStats = ValidateSearchResultsWithStatsForQueries(releases, contentType, validationQueries, req.Season, req.Episode, req.AbsoluteEpisode, !runIDSearch, req.EnableYearValidation)
+	releases, valStats = ValidateSearchResultsWithOptions(releases, contentType, validationQueries, ValidationOptions{
+		Season:          req.Season,
+		Episode:         req.Episode,
+		AbsoluteEpisode: req.AbsoluteEpisode,
+		EnforceTitle:    !runIDSearch,
+		EnforceYear:     req.EnableYearValidation,
+		AcceptPacks:     req.AcceptPacks,
+	})
 	diag.From(ctx).AddValidation(diag.ValidationStat{
 		Request:           req.RequestLabel,
 		Mode:              indexer.SearchModeLabel(searchReq.SearchMode),
@@ -209,7 +216,14 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 // that used to run unconditionally on the hot path.
 func logPerProfileValidationStats(req indexer.SearchRequest, contentType string, rawReleases []*release.Release, runIDSearch bool) {
 	for _, profile := range validationProfilesForRequest(req) {
-		_, profileStats := ValidateSearchResultsWithStatsForQueries(rawReleases, contentType, []string{profile.Query}, req.Season, req.Episode, req.AbsoluteEpisode, !runIDSearch, req.EnableYearValidation)
+		_, profileStats := ValidateSearchResultsWithOptions(rawReleases, contentType, []string{profile.Query}, ValidationOptions{
+			Season:          req.Season,
+			Episode:         req.Episode,
+			AbsoluteEpisode: req.AbsoluteEpisode,
+			EnforceTitle:    !runIDSearch,
+			EnforceYear:     req.EnableYearValidation,
+			AcceptPacks:     req.AcceptPacks,
+		})
 		validationAttrs := []any{
 			"stream", req.StreamLabel,
 			"request", req.RequestLabel,

@@ -436,37 +436,47 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				}
 				seen[key] = true
 			}
-			mode := strings.ToLower(strings.TrimSpace(query.SearchMode))
-			if mode != "id" && mode != "text" {
-				errors[fmt.Sprintf("%s.%d.search_mode", prefix, i)] = "Search mode must be id or text"
+			// A plan is valid when every attempt in it is: one well-formed
+			// question each, and at least one to ask. There are no cross-field
+			// rules left to break — an attempt carries its own address,
+			// target, language and year.
+			isSeries := prefix == "series_search_queries"
+			if len(query.Attempts) == 0 {
+				errors[fmt.Sprintf("%s.%d.attempts", prefix, i)] = "Add at least one search attempt"
 			}
-			titleLanguages := config.NormalizeSearchTitleLanguages(query.SearchTitleLanguages)
-			if mode == "id" && len(titleLanguages) == 0 {
-				if rawSingle := strings.TrimSpace(query.SearchTitleLanguage); rawSingle != "" {
-					titleLanguages = []string{config.NormalizeSearchTitleLanguage(rawSingle)}
+			for j, attempt := range query.Attempts {
+				field := fmt.Sprintf("%s.%d.attempts.%d", prefix, i, j)
+				switch strings.ToLower(strings.TrimSpace(attempt.Address)) {
+				case config.SearchAddressID, config.SearchAddressTitle:
+				default:
+					errors[field+".address"] = "Address must be id or title"
 				}
-			}
-			if mode == "text" && len(titleLanguages) > 1 {
-				errors[fmt.Sprintf("%s.%d.search_title_languages", prefix, i)] = "Text search can use only one title language"
-			}
-			if mode == "id" && len(titleLanguages) == 0 {
-				errors[fmt.Sprintf("%s.%d.search_title_languages", prefix, i)] = "Add at least one title language"
-			}
-			if prefix == "series_search_queries" {
-				rawScope := strings.ToLower(strings.TrimSpace(query.SeriesSearchScope))
-				if rawScope != "" {
-					normalizedScope := config.NormalizeSeriesSearchScope(rawScope)
-					switch rawScope {
-					case normalizedScope,
-						"absolute",
-						"episode_param",
-						"episode_query",
-						"season_param",
-						"season_query":
-					default:
-						errors[fmt.Sprintf("%s.%d.series_search_scope", prefix, i)] = "TV scope must be season_episode, season, or none"
+				if !isSeries {
+					if strings.TrimSpace(attempt.Target) != "" {
+						errors[field+".target"] = "Movie attempts carry no target"
 					}
+					continue
 				}
+				switch strings.ToLower(strings.TrimSpace(attempt.Target)) {
+				case config.SearchTargetEpisode, config.SearchTargetSeason,
+					config.SearchTargetSeries, config.SearchTargetAbsolute:
+				default:
+					errors[field+".target"] = "Target must be episode, season, series, or absolute"
+				}
+				if config.NormalizeSearchAddress(attempt.Address) == config.SearchAddressID &&
+					config.NormalizeSearchTarget(attempt.Target) == config.SearchTargetAbsolute {
+					errors[field+".target"] = "An absolute episode number is a title query, not an id"
+				}
+			}
+			switch strings.ToLower(strings.TrimSpace(query.Stop)) {
+			case "", config.SearchStopFirstHit, config.SearchStopAll:
+			default:
+				errors[fmt.Sprintf("%s.%d.stop", prefix, i)] = "Stop must be first_hit or all"
+			}
+			switch strings.ToLower(strings.TrimSpace(query.Order)) {
+			case "", config.SearchOrderAsListed, config.SearchOrderAdaptiveSeason:
+			default:
+				errors[fmt.Sprintf("%s.%d.order", prefix, i)] = "Order must be as_listed or adaptive_season"
 			}
 		}
 	}

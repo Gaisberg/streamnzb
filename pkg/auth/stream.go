@@ -43,7 +43,6 @@ type Stream struct {
 	IndexerMode       string `json:"indexer_mode,omitempty"`
 	UseAvailNZB       *bool  `json:"use_availnzb,omitempty"`
 	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
-	CombineResults    *bool  `json:"combine_results,omitempty"`
 	EnableFailover    *bool  `json:"enable_failover,omitempty"`
 	// VariantAttempts caps how many copies of one release playback may try
 	// before it moves on to a different release. 0 means the default, -1
@@ -535,21 +534,28 @@ func (dm *StreamManager) CreateStream(username, password string, adminUsername s
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
 
+	// A new stream starts with every configured search request selected: a
+	// stream with none cannot search, and the configured requests are the
+	// admin's stated defaults.
+	movieQueries, seriesQueries := []string{}, []string{}
+	if dm.cfg != nil {
+		movieQueries = config.SearchQueryNames(dm.cfg.MovieSearchQueries)
+		seriesQueries = config.SearchQueryNames(dm.cfg.SeriesSearchQueries)
+	}
 	stream := &Stream{
 		Username:            username,
 		Token:               token,
 		Order:               dm.nextStreamOrderLocked(),
 		IndexerMode:         "combine",
 		UseAvailNZB:         ptrBool(true),
-		CombineResults:      ptrBool(true),
 		VariantAttempts:     config.DefaultVariantAttempts,
 		AutoAddProviders:    ptrBool(true),
 		AutoAddIndexers:     ptrBool(true),
 		IndexerOverrides:    make(map[string]config.IndexerSearchConfig),
 		ProviderSelections:  []string{},
 		IndexerSelections:   []string{},
-		MovieSearchQueries:  []string{},
-		SeriesSearchQueries: []string{},
+		MovieSearchQueries:  movieQueries,
+		SeriesSearchQueries: seriesQueries,
 		FilterProfileName:   "",
 	}
 
@@ -697,12 +703,11 @@ func (dm *StreamManager) UpdateStreamProviderSelections(username string, provide
 	})
 }
 
-func (dm *StreamManager) UpdateStreamGeneralSettings(username, filterSortingMode, indexerMode string, useAvailNZB, combineResults, enableFailover *bool, resultsMode string) error {
+func (dm *StreamManager) UpdateStreamGeneralSettings(username, filterSortingMode, indexerMode string, useAvailNZB, enableFailover *bool, resultsMode string) error {
 	return dm.mutate(username, "stream general settings", func(stream *Stream) {
 		stream.FilterSortingMode = strings.TrimSpace(filterSortingMode)
 		stream.IndexerMode = strings.TrimSpace(indexerMode)
 		stream.UseAvailNZB = useAvailNZB
-		stream.CombineResults = combineResults
 		stream.EnableFailover = enableFailover
 		stream.ResultsMode = strings.TrimSpace(resultsMode)
 	})
@@ -725,7 +730,6 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.IndexerMode = strings.TrimSpace(streamConfig.IndexerMode)
 	stream.UseAvailNZB = streamConfig.UseAvailNZB
 	stream.FilterAvailNZB = streamConfig.FilterAvailNZB
-	stream.CombineResults = streamConfig.CombineResults
 	stream.EnableFailover = streamConfig.EnableFailover
 	stream.VariantAttempts = streamConfig.VariantAttempts
 	stream.ResultsMode = strings.TrimSpace(streamConfig.ResultsMode)

@@ -49,8 +49,18 @@ type SearchRequest struct {
 	// ContentIsAnime marks the request as anime content (Kitsu-addressed, or
 	// TMDB metadata: animation not originally in English). Per-indexer
 	// content_scope decides participation from it.
-	ContentIsAnime          bool
-	SeriesSearchScope       string
+	ContentIsAnime    bool
+	SeriesSearchScope string
+	// Class is what the request is after — movie, tv or tv_anime — in the
+	// terms each indexer's category vocabulary answers. Indexers translate it
+	// into their own category ids; nothing upstream names a category number.
+	Class string
+	// AttemptLabel names which attempt of the plan this is ("id·episode"), for
+	// logs and the search funnel.
+	AttemptLabel string
+	// AcceptPacks accepts a season or complete-series pack that contains the
+	// requested episode. The plan's acceptance decides it.
+	AcceptPacks             bool
 	SearchMode              string
 	DisableResultFiltering  bool
 	EnableYearValidation    bool

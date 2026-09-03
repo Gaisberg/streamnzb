@@ -384,20 +384,46 @@ func TestValidateConfigRejectsUnreachableGlobalIndexerProxyURL(t *testing.T) {
 	}
 }
 
-func TestValidateConfigWithPlanAllowsLegacyOriginalIDTitleLanguage(t *testing.T) {
+// A plan is valid when every attempt in it is. There are no cross-field rules
+// left, so the checks are per attempt and name the attempt that failed.
+func TestValidateConfigWithPlanChecksEveryAttempt(t *testing.T) {
 	s := &Server{}
 
 	cfg := &config.Config{
-		MovieSearchQueries: []config.SearchQueryConfig{{
-			Name:                "MovieQuery01",
-			SearchMode:          "id",
-			SearchTitleLanguage: "original",
-		}},
+		MovieSearchQueries: []config.SearchQueryConfig{
+			config.DefaultMoviePlan("MovieQuery01"),
+			{Name: "Empty"},
+			{Name: "BadTarget", Attempts: []config.SearchAttempt{{Address: "id", Target: "episode"}}},
+		},
+		SeriesSearchQueries: []config.SearchQueryConfig{
+			config.DefaultTVPlan("TVQuery01"),
+			{Name: "AbsoluteByID", Attempts: []config.SearchAttempt{{Address: "id", Target: "absolute"}}},
+			{Name: "BadStop", Attempts: []config.SearchAttempt{{Address: "id", Target: "episode"}}, Stop: "sometimes"},
+		},
 	}
 
-	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateMovieSearchQueries: true})
-	if got := errs["movie_search_queries.0.search_title_languages"]; got != "" {
-		t.Fatalf("expected legacy original title language to be accepted, got %q", got)
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{
+		validateMovieSearchQueries:  true,
+		validateSeriesSearchQueries: true,
+	})
+	for _, ok := range []string{"movie_search_queries.0", "series_search_queries.0"} {
+		for field := range errs {
+			if strings.HasPrefix(field, ok+".") {
+				t.Errorf("expected the stock plan to validate, got %s = %q", field, errs[field])
+			}
+		}
+	}
+	if errs["movie_search_queries.1.attempts"] == "" {
+		t.Error("expected a plan with no attempts to be rejected")
+	}
+	if errs["movie_search_queries.2.attempts.0.target"] == "" {
+		t.Error("expected a movie attempt with a target to be rejected")
+	}
+	if errs["series_search_queries.1.attempts.0.target"] == "" {
+		t.Error("expected an absolute episode number addressed by id to be rejected")
+	}
+	if errs["series_search_queries.2.stop"] == "" {
+		t.Error("expected an unknown stop rule to be rejected")
 	}
 }
 

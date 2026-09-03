@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useSettingsState } from '@/hooks/useSettingsState'
 import { normalizeAvailNZBMode } from '@/lib/availnzb'
-import { normalizeQueryYearSetting, normalizeSearchTitleLanguage, normalizeSearchTitleLanguages } from '@/lib/config'
+import { normalizeSearchPlan } from '@/lib/searchPlan'
 
 const TABS = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -25,25 +25,6 @@ const TABS = [
 ]
 
 const ACTIVE_TAB_STORAGE_KEY = 'streamnzb.settings.activeTab'
-
-function normalizeSeriesScopeFromLegacy(scope, legacyUseSeasonEpisodeParams) {
-  const normalizedScope = String(scope || '').trim().toLowerCase()
-  if (normalizedScope) return normalizedScope
-  if (legacyUseSeasonEpisodeParams != null) return 'season_episode'
-  return ''
-}
-
-function normalizeSearchQueryLanguages(query) {
-  const searchMode = String(query?.search_mode || '').trim().toLowerCase()
-  const searchTitleLanguage = normalizeSearchTitleLanguage(query?.search_title_language || '')
-  const searchTitleLanguages = normalizeSearchTitleLanguages(query?.search_title_languages)
-  if (searchMode === 'id') {
-    if (searchTitleLanguages.length > 0) return searchTitleLanguages
-    if (searchTitleLanguage === '') return ['en-US', '']
-    return [searchTitleLanguage]
-  }
-  return []
-}
 
 function Settings({
   initialConfig,
@@ -152,26 +133,10 @@ function Settings({
           disable_string_search: idx.disable_string_search === true,
           content_scope: idx.content_scope === 'anime' || idx.content_scope === 'non_anime' ? idx.content_scope : ''
         })) || [],
-        movie_search_queries: initialConfig.movie_search_queries?.map((query) => ({
-          name: query.name || '',
-          search_mode: query.search_mode || 'id',
-          movie_categories: query.movie_categories || '',
-          search_result_limit: Number(query.search_result_limit || 0),
-          search_title_language: normalizeSearchTitleLanguage(query.search_title_language || ''),
-          search_title_languages: normalizeSearchQueryLanguages(query),
-          include_year: normalizeQueryYearSetting(query.search_mode, query.include_year, query.include_year_in_text_search),
-        })) || [],
-        series_search_queries: initialConfig.series_search_queries?.map((query) => ({
-          name: query.name || '',
-          search_mode: query.search_mode || 'id',
-          tv_categories: query.tv_categories || '',
-          search_result_limit: Number(query.search_result_limit || 0),
-          search_title_language: normalizeSearchTitleLanguage(query.search_title_language || ''),
-          search_title_languages: normalizeSearchQueryLanguages(query),
-          include_year: normalizeQueryYearSetting(query.search_mode, query.include_year, query.include_year_in_text_search),
-          series_search_scope: normalizeSeriesScopeFromLegacy(query.series_search_scope, query.use_season_episode_params),
-          try_absolute_episode: query.try_absolute_episode !== false,
-        })) || [],
+        // Search plans arrive already migrated by the backend, so the shape
+        // the editor works on is the shape on disk.
+        movie_search_queries: initialConfig.movie_search_queries?.map((plan) => normalizeSearchPlan('movie', plan)) || [],
+        series_search_queries: initialConfig.series_search_queries?.map((plan) => normalizeSearchPlan('series', plan)) || [],
         filter_profiles: initialConfig.filter_profiles?.map((profile) => ({
           name: profile.name || '',
           allowed_resolutions: profile.allowed_resolutions || [],

@@ -107,3 +107,40 @@ func TestStandardCategoriesIsACopy(t *testing.T) {
 		t.Fatal("StandardCategories handed out a reference to the package tree")
 	}
 }
+
+// A category id means different things on different indexers, so the class is
+// resolved against what each one publishes.
+func TestClassCategories(t *testing.T) {
+	standardCaps := &Caps{Categories: StandardCategories()}
+	animeOnly := &Caps{Categories: []CapsCategory{{ID: "5070", Name: "Anime"}}}
+	tvOnly := &Caps{Categories: []CapsCategory{{ID: "5000", Name: "TV", Subcats: []CapsCategory{{ID: "5040", Name: "HD"}}}}}
+	ownTree := &Caps{Categories: []CapsCategory{
+		{ID: "7000", Name: "Video", Subcats: []CapsCategory{
+			{ID: "7020", Name: "Anime Series"},
+			{ID: "7030", Name: "TV"},
+		}},
+	}}
+
+	cases := []struct {
+		name  string
+		class string
+		caps  *Caps
+		want  string
+	}{
+		{"movie on a standard tree", classMovie, standardCaps, "2000"},
+		{"tv on a standard tree", classTV, standardCaps, "5000"},
+		{"anime on a standard tree keeps the tv parent", classTVAnime, standardCaps, "5070,5000"},
+		{"caps without an anime bucket still get the standard one", classTVAnime, tvOnly, "5070,5000"},
+		{"tv on an anime-only indexer keeps the standard bucket", classTV, animeOnly, "5000"},
+		{"an indexer's own anime bucket is added ahead of the standard ones", classTVAnime, ownTree, "7020,5070,5000"},
+		{"no caps at all falls back to the standard tree", classTVAnime, nil, "5070,5000"},
+		{"an unknown class names nothing", "audiobook", standardCaps, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassCategories(tc.class, tc.caps); got != tc.want {
+				t.Fatalf("ClassCategories(%q) = %q, want %q", tc.class, got, tc.want)
+			}
+		})
+	}
+}

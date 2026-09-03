@@ -1,9 +1,3 @@
-export function normalizeQueryYearSetting(searchMode, includeYear, legacyIncludeYearInTextSearch) {
-  if (includeYear != null) return includeYear === true
-  if (legacyIncludeYearInTextSearch != null) return legacyIncludeYearInTextSearch === true
-  return String(searchMode || '').trim().toLowerCase() !== 'id'
-}
-
 export function normalizeSearchTitleLanguage(value) {
   const trimmed = String(value || '').trim()
   return trimmed.toLowerCase() === 'original' ? '' : trimmed

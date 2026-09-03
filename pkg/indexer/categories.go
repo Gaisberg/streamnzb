@@ -321,3 +321,88 @@ func mergeParams(into, from map[string]bool) map[string]bool {
 	}
 	return into
 }
+
+// Search classes are the content kinds a request can be after. They live here
+// rather than in the config package's plan vocabulary because this is where the
+// translation into an indexer's own category ids happens; the two are kept in
+// step by ClassCategories, the only reader of both.
+const (
+	classMovie   = "movie"
+	classTV      = "tv"
+	classTVAnime = "tv_anime"
+)
+
+// standardClassCategories is what a class means in the Newznab standard tree.
+// These are always sent: a well-behaved indexer maps its content onto the
+// standard buckets whether or not it lists every one of them in its caps, and
+// plenty publish a TV root with no anime subcategory while still filing anime
+// under 5070. An anime request keeps the parent TV bucket alongside the anime
+// subcategory because just as many file anime under TV and nothing else.
+var standardClassCategories = map[string][]string{
+	classMovie:   {"2000"},
+	classTV:      {"5000"},
+	classTVAnime: {"5070", "5000"},
+}
+
+// animeCategoryNames are the names an indexer's own anime bucket goes by when
+// its ids are not the standard ones.
+var animeCategoryNames = []string{"anime"}
+
+// ClassCategories is the category list to send an indexer for one content
+// class: the standard buckets for that class, widened for anime with any
+// bucket the indexer's caps name as anime under a non-standard id.
+//
+// Caps only ever add — they never take a standard bucket away. An indexer's
+// caps are a claim about what it publishes, not a promise that it rejects the
+// rest, and dropping 5070 because caps omitted it would lose the anime filter
+// on exactly the indexers that need it most.
+func ClassCategories(class string, caps *Caps) string {
+	standard := standardClassCategories[class]
+	if len(standard) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(standard)+1)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		for _, existing := range ids {
+			if existing == id {
+				return
+			}
+		}
+		ids = append(ids, id)
+	}
+	if class == classTVAnime && caps != nil {
+		for _, id := range animeCategoryIDs(caps.Categories) {
+			add(id)
+		}
+	}
+	for _, id := range standard {
+		add(id)
+	}
+	return strings.Join(ids, ",")
+}
+
+// animeCategoryIDs finds the indexer's own anime buckets: anything it named
+// "anime" under any parent, whatever id it gave them.
+func animeCategoryIDs(cats []CapsCategory) []string {
+	var ids []string
+	var walk func(in []CapsCategory)
+	walk = func(in []CapsCategory) {
+		for _, cat := range in {
+			name := strings.ToLower(strings.TrimSpace(cat.Name))
+			for _, want := range animeCategoryNames {
+				if strings.Contains(name, want) {
+					ids = append(ids, cat.ID)
+					break
+				}
+			}
+			walk(cat.Subcats)
+		}
+	}
+	walk(cats)
+	sort.SliceStable(ids, func(i, j int) bool { return categoryIDLess(ids[i], ids[j]) })
+	return ids
+}

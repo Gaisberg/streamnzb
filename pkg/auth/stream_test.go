@@ -2,6 +2,7 @@ package auth
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"streamnzb/pkg/core/config"
@@ -253,5 +254,24 @@ func TestUnairedSearchGateRoundTrips(t *testing.T) {
 	// so a field that reaches one but not the other silently disappears on save.
 	if entry := cfg.Streams["default"]; entry.UnairedSearchGate == nil || *entry.UnairedSearchGate {
 		t.Errorf("config entry gate = %v, want an explicit false", entry.UnairedSearchGate)
+	}
+}
+
+// A new stream selects every configured search request: with none it could
+// not search at all, and the configured requests are the stated defaults.
+func TestCreateStreamSelectsConfiguredSearchRequests(t *testing.T) {
+	dm := newTestStreamManager(t)
+	dm.cfg.MovieSearchQueries = []config.SearchQueryConfig{{Name: "DefaultMovie"}, {Name: "  "}, {Name: "MovieBroad"}}
+	dm.cfg.SeriesSearchQueries = []config.SearchQueryConfig{{Name: "DefaultTV"}}
+
+	stream, err := dm.CreateStream("living-room", "", "admin")
+	if err != nil {
+		t.Fatalf("CreateStream() error = %v", err)
+	}
+	if got, want := stream.MovieSearchQueries, []string{"DefaultMovie", "MovieBroad"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MovieSearchQueries = %v, want %v", got, want)
+	}
+	if got, want := stream.SeriesSearchQueries, []string{"DefaultTV"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SeriesSearchQueries = %v, want %v", got, want)
 	}
 }

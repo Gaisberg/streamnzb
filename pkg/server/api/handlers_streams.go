@@ -53,7 +53,6 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 		"indexer_mode":                d.IndexerMode,
 		"use_availnzb":                d.UseAvailNZB,
 		"filter_availnzb":             d.FilterAvailNZB,
-		"combine_results":             d.CombineResults,
 		"enable_failover":             d.EnableFailover,
 		"variant_attempts":            d.VariantAttempts,
 		"results_mode":                d.ResultsMode,
@@ -228,7 +227,6 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 		IndexerMode               string                                `json:"indexer_mode"`
 		UseAvailNZB               *bool                                 `json:"use_availnzb"`
 		FilterAvailNZB            *bool                                 `json:"filter_availnzb"`
-		CombineResults            *bool                                 `json:"combine_results"`
 		EnableFailover            *bool                                 `json:"enable_failover"`
 		VariantAttempts           int                                   `json:"variant_attempts"`
 		ResultsMode               string                                `json:"results_mode"`
@@ -297,7 +295,6 @@ func (s *Server) handlePutStreamConfigs(w http.ResponseWriter, r *http.Request) 
 			IndexerMode:               dc.IndexerMode,
 			UseAvailNZB:               dc.UseAvailNZB,
 			FilterAvailNZB:            dc.FilterAvailNZB,
-			CombineResults:            dc.CombineResults,
 			EnableFailover:            dc.EnableFailover,
 			VariantAttempts:           dc.VariantAttempts,
 			ResultsMode:               dc.ResultsMode,

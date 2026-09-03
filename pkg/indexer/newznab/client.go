@@ -621,20 +621,7 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		params.Set(idParamName, idParamValue)
 	}
 
-	cat := req.Cat
-	if isMovieSearch && c.cfg.MovieCategories != "" {
-		cat = c.cfg.MovieCategories
-	} else if isTVSearch && c.cfg.TVCategories != "" {
-		cat = c.cfg.TVCategories
-	}
-	if o := req.OptionalOverrides; o != nil {
-		if isMovieSearch && o.MovieCategories != nil && *o.MovieCategories != "" {
-			cat = *o.MovieCategories
-		} else if isTVSearch && o.TVCategories != nil && *o.TVCategories != "" {
-			cat = *o.TVCategories
-		}
-	}
-	if cat != "" {
+	if cat := c.categoriesFor(req, isMovieSearch, isTVSearch); cat != "" {
 		params.Set("cat", cat)
 	}
 
@@ -717,6 +704,51 @@ func passthroughSkipReason(caps *indexer.Caps, req indexer.SearchRequest) string
 // output format layered on. The configured movie/TV category lists only fill
 // in when the caller named no categories at all — a client that asked for
 // specific ones gets exactly those.
+// categoriesFor is the one place a request's content class becomes category
+// ids, in one order of authority:
+//
+//  1. the search plan's own override, when the user set one;
+//  2. this indexer's configured categories for the kind;
+//  3. what the indexer publishes in its caps for the class;
+//  4. the Newznab standard tree.
+//
+// Nothing upstream names a category number, and nothing here mutates shared
+// state to widen a request — an anime request resolves to this indexer's anime
+// vocabulary because that is what the class means here.
+func (c *Client) currentCaps() *indexer.Caps {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.caps
+}
+
+func (c *Client) categoriesFor(req indexer.SearchRequest, isMovieSearch, isTVSearch bool) string {
+	if o := req.OptionalOverrides; o != nil && o.Categories != nil && strings.TrimSpace(*o.Categories) != "" {
+		return strings.TrimSpace(*o.Categories)
+	}
+	if o := req.OptionalOverrides; o != nil {
+		if isMovieSearch && o.MovieCategories != nil && *o.MovieCategories != "" {
+			return *o.MovieCategories
+		}
+		if isTVSearch && o.TVCategories != nil && *o.TVCategories != "" {
+			return *o.TVCategories
+		}
+	}
+	if isMovieSearch && c.cfg.MovieCategories != "" {
+		return c.cfg.MovieCategories
+	}
+	if isTVSearch && c.cfg.TVCategories != "" {
+		return c.cfg.TVCategories
+	}
+	class := strings.TrimSpace(req.Class)
+	if class == "" {
+		return req.Cat
+	}
+	if cat := indexer.ClassCategories(class, c.currentCaps()); cat != "" {
+		return cat
+	}
+	return req.Cat
+}
+
 func (c *Client) passthroughParams(req indexer.SearchRequest, limit int) url.Values {
 	params := url.Values{}
 	for key, values := range req.Passthrough.Params {
@@ -730,20 +762,8 @@ func (c *Client) passthroughParams(req indexer.SearchRequest, limit int) url.Val
 		params.Set("offset", "0")
 	}
 	if params.Get("cat") == "" {
-		cat := ""
-		switch {
-		case strings.HasPrefix(req.Cat, "2"):
-			cat = c.cfg.MovieCategories
-			if o := req.OptionalOverrides; o != nil && o.MovieCategories != nil && *o.MovieCategories != "" {
-				cat = *o.MovieCategories
-			}
-		case strings.HasPrefix(req.Cat, "5"):
-			cat = c.cfg.TVCategories
-			if o := req.OptionalOverrides; o != nil && o.TVCategories != nil && *o.TVCategories != "" {
-				cat = *o.TVCategories
-			}
-		}
-		if cat != "" {
+		isMovie := strings.HasPrefix(req.Cat, "2")
+		if cat := c.categoriesFor(req, isMovie, strings.HasPrefix(req.Cat, "5")); cat != "" {
 			params.Set("cat", cat)
 		}
 	}

@@ -21,7 +21,7 @@ func jsonResponse(status int, body string) *http.Response {
 }
 
 func TestBuildEasynewsSearchURLBasic(t *testing.T) {
-	got := buildEasynewsSearchURL("dune", "", "", "", "2000", searchOptions{})
+	got := buildEasynewsSearchURL("dune", "", "", "", false, searchOptions{})
 
 	if !strings.HasPrefix(got, easynewsBaseURL+easynewsSearchPath+"?") {
 		t.Fatalf("buildEasynewsSearchURL() = %q, want prefix %q", got, easynewsBaseURL+easynewsSearchPath+"?")
@@ -35,7 +35,7 @@ func TestBuildEasynewsSearchURLBasic(t *testing.T) {
 
 func TestBuildEasynewsSearchURLHasNoTrailingSlash(t *testing.T) {
 	// A trailing slash makes Easynews serve the web app's HTML instead of JSON.
-	got := buildEasynewsSearchURL("dune", "", "", "", "2000", searchOptions{})
+	got := buildEasynewsSearchURL("dune", "", "", "", false, searchOptions{})
 	if strings.Contains(got, "/3.0/api/search/?") {
 		t.Fatalf("search URL must not carry a trailing slash: %q", got)
 	}
@@ -44,7 +44,7 @@ func TestBuildEasynewsSearchURLHasNoTrailingSlash(t *testing.T) {
 func TestBuildEasynewsSearchURLAdvanced(t *testing.T) {
 	opts := searchOptions{advanced: true, spamFilter: true, fileExtensions: defaultFileExtensions}
 
-	got := buildEasynewsSearchURL("dune", "", "", "", "2000", opts)
+	got := buildEasynewsSearchURL("dune", "", "", "", false, opts)
 	for _, param := range []string{"st=adv", "gx=1", "sS=3", "spamf=1", "fex="} {
 		if !strings.Contains(got, param) {
 			t.Fatalf("buildEasynewsSearchURL() = %q, missing %q", got, param)
@@ -56,7 +56,7 @@ func TestBuildEasynewsSearchURLAdvanced(t *testing.T) {
 }
 
 func TestBuildEasynewsSearchURLAdvancedOmitsOptionalFilters(t *testing.T) {
-	got := buildEasynewsSearchURL("dune", "", "", "", "2000", searchOptions{advanced: true})
+	got := buildEasynewsSearchURL("dune", "", "", "", false, searchOptions{advanced: true})
 
 	if strings.Contains(got, "spamf=") {
 		t.Fatalf("spam filter off must not send spamf: %q", got)
@@ -113,7 +113,7 @@ func TestSearchSendsAdvancedParams(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"data":[],"results":0}`), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", "", false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
 	if gotPath != easynewsSearchPath {
@@ -139,7 +139,7 @@ func TestSearchWalksAllPages(t *testing.T) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	results, stats, err := client.searchInternal(context.Background(), "show", "1", "1", "", "", false)
+	results, stats, err := client.searchInternal(context.Background(), "show", "1", "1", "", true, false)
 	if err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSearchStopsAtPageBound(t *testing.T) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "show", "", "", "", "", false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
 	if calls != maxSearchPages {
@@ -189,7 +189,7 @@ func TestSearchKeepsEarlierPagesWhenALaterOneFails(t *testing.T) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	results, _, err := client.searchInternal(context.Background(), "show", "", "", "", "", false)
+	results, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false)
 	if err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestSearchReportsRejectedCredentials(t *testing.T) {
 		return jsonResponse(http.StatusUnauthorized, ""), nil
 	})
 
-	_, _, err = client.searchInternal(context.Background(), "test", "", "", "", "", false)
+	_, _, err = client.searchInternal(context.Background(), "test", "", "", "", false, false)
 	if !errors.Is(err, errCredentialsRejected) {
 		t.Fatalf("err = %v, want a rejected-credentials error", err)
 	}
@@ -228,7 +228,7 @@ func TestSearchSendsQueryHeaderAndAuth(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"data":[],"results":0}`), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", "", false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
 	if gotUA != "StreamNZB-Test/1.0" {

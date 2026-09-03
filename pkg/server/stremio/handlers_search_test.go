@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,71 +145,95 @@ func TestMetadataLogTitlesHandleMissingJapaneseAlternativeTitles(t *testing.T) {
 	logMetadataLookupFinished("Stream01", "movie", "tt0245429", params)
 }
 
-func TestBuildSearchParamsFromBaseSeriesIDQueryModeMovesSeasonEpisodeIntoQuery(t *testing.T) {
+// idAttempt / titleAttempt build the attempts the tests dispatch, and planOf
+// wraps them in the smallest plan that can carry them. A plan is the unit of
+// configuration now, so the tests say what they mean in those terms.
+func idAttempt(target string) config.SearchAttempt {
+	return config.SearchAttempt{Address: config.SearchAddressID, Target: target}
+}
+
+func titleAttempt(target, language string, year bool) config.SearchAttempt {
+	attempt := config.SearchAttempt{Address: config.SearchAddressTitle, Target: target, Title: &language}
+	if year {
+		attempt.Year = boolPtr(true)
+	}
+	return attempt
+}
+
+func planOf(name string, accept *config.SearchAcceptance, attempts ...config.SearchAttempt) config.SearchQueryConfig {
+	return config.SearchQueryConfig{Name: name, Attempts: attempts, Stop: config.SearchStopFirstHit, Accept: accept}
+}
+
+func acceptTitles(languages ...string) *config.SearchAcceptance {
+	return &config.SearchAcceptance{Titles: languages}
+}
+
+// An attempt's address and target are what the request carries to the wire.
+func TestBuildSearchParamsForAttemptMapsAddressAndTargetOntoTheRequest(t *testing.T) {
 	srv := &Server{config: &config.Config{}}
-	base := &query.SearchParams{
-		ContentType: "series",
-		ID:          "tt1234567:1:4",
-		Req: indexer.SearchRequest{
-			Season:  "1",
-			Episode: "4",
-			IMDbID:  "tt1234567",
-			Cat:     "5000",
-			Limit:   1000,
-		},
+	base := func() *query.SearchParams {
+		return &query.SearchParams{
+			ContentType: "series",
+			ID:          "tt1234567:1:4",
+			Req: indexer.SearchRequest{
+				Season:  "1",
+				Episode: "4",
+				IMDbID:  "tt1234567",
+				Limit:   1000,
+			},
+			MovieTitleQueries:  make(map[string][]string),
+			SeriesTitleQueries: make(map[string][]string),
+		}
 	}
+	plan := planOf("TV", nil, idAttempt(config.SearchTargetEpisode))
+	facts := searchFacts{IsSeries: true, HasSeason: true, HasEpisode: true, Class: config.SearchClassTV}
 
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode: "id",
-	})
+	params, err := srv.buildSearchParamsForAttempt(base(), &plan, idAttempt(config.SearchTargetEpisode), facts)
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
-
 	if params.Req.SearchMode != "id" {
-		t.Fatalf("expected SearchMode to be id, got %q", params.Req.SearchMode)
+		t.Fatalf("SearchMode = %q, want id", params.Req.SearchMode)
+	}
+	if params.Req.SeriesSearchScope != config.SeriesSearchScopeSeasonEpisode {
+		t.Fatalf("scope = %q, want %q", params.Req.SeriesSearchScope, config.SeriesSearchScopeSeasonEpisode)
 	}
 	if params.Req.Query != "S01E04" {
-		t.Fatalf("expected S/E query suffix, got %q", params.Req.Query)
+		t.Fatalf("Query = %q, want S01E04", params.Req.Query)
+	}
+	if params.Req.Class != config.SearchClassTV {
+		t.Fatalf("Class = %q, want %q", params.Req.Class, config.SearchClassTV)
 	}
 	if params.Req.Season != "1" || params.Req.Episode != "4" {
 		t.Fatalf("expected season/episode params to be preserved, got season=%q episode=%q", params.Req.Season, params.Req.Episode)
 	}
-}
 
-func TestBuildSearchParamsFromBaseSeriesTextQueryModeKeepsSeasonEpisodeForLaterDispatchDecision(t *testing.T) {
-	srv := &Server{config: &config.Config{}}
-	base := &query.SearchParams{
-		ContentType: "series",
-		ID:          "tt1234567:1:4",
-		Req: indexer.SearchRequest{
-			Season:  "1",
-			Episode: "4",
-			IMDbID:  "tt1234567",
-			Cat:     "5000",
-			Limit:   1000,
-		},
-	}
-
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode: "text",
-	})
+	seasonParams, err := srv.buildSearchParamsForAttempt(base(), &plan, idAttempt(config.SearchTargetSeason), facts)
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+	}
+	if seasonParams.Req.SeriesSearchScope != config.SeriesSearchScopeSeason {
+		t.Fatalf("season scope = %q, want %q", seasonParams.Req.SeriesSearchScope, config.SeriesSearchScopeSeason)
+	}
+	if seasonParams.Req.Query != "S01" {
+		t.Fatalf("season Query = %q, want S01", seasonParams.Req.Query)
 	}
 
-	if params.Req.SearchMode != "text" {
-		t.Fatalf("expected SearchMode to be text, got %q", params.Req.SearchMode)
+	// A title attempt with no metadata has nothing to build a query from, and
+	// says so by leaving the query empty rather than dispatching a bare title.
+	textParams, err := srv.buildSearchParamsForAttempt(base(), &plan, titleAttempt(config.SearchTargetEpisode, "", false), facts)
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
-	if params.Req.Query != "" {
-		t.Fatalf("expected query to stay empty before text query expansion, got %q", params.Req.Query)
+	if textParams.Req.SearchMode != "text" {
+		t.Fatalf("SearchMode = %q, want text", textParams.Req.SearchMode)
 	}
-	if params.Req.Season != "1" || params.Req.Episode != "4" {
-		t.Fatalf("expected base season/episode to remain available, got season=%q episode=%q", params.Req.Season, params.Req.Episode)
+	if textParams.Req.Query != "" {
+		t.Fatalf("Query = %q, want empty without metadata", textParams.Req.Query)
 	}
 }
 
-func TestBuildSearchParamsFromBaseTextModeUsesRequestLanguageNotPerIndexerOverrides(t *testing.T) {
+func TestBuildSearchParamsForAttemptUsesTheAttemptLanguageNotPerIndexerOverrides(t *testing.T) {
 	srv := &Server{config: &config.Config{
 		Indexers: []config.IndexerConfig{
 			{Name: "IndexerA", SearchTitleLanguage: "de"},
@@ -247,13 +272,11 @@ func TestBuildSearchParamsFromBaseTextModeUsesRequestLanguageNotPerIndexerOverri
 		SeriesTitleQueries: make(map[string][]string),
 	}
 
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode:          "text",
-		SearchTitleLanguage: "de-DE",
-		IncludeYear:         boolPtr(false),
-	})
+	attempt := titleAttempt("", "de-DE", false)
+	plan := planOf("Movie", acceptTitles("de-DE"), attempt)
+	params, err := srv.buildSearchParamsForAttempt(base, &plan, attempt, searchFacts{Class: config.SearchClassMovie})
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
 
 	if params.Req.Query != "Koenig der Loewen" {
@@ -283,7 +306,7 @@ func TestBuildSearchParamsBaseNumericIDMapsToTMDBID(t *testing.T) {
 	}
 }
 
-func TestBuildSearchParamsFromBaseAlwaysBuildsValidationInputs(t *testing.T) {
+func TestBuildSearchParamsForAttemptAlwaysBuildsValidationInputs(t *testing.T) {
 	srv := &Server{config: &config.Config{}}
 	base := &query.SearchParams{
 		ContentType: "movie",
@@ -305,11 +328,11 @@ func TestBuildSearchParamsFromBaseAlwaysBuildsValidationInputs(t *testing.T) {
 		SeriesTitleQueries: make(map[string][]string),
 	}
 
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode: "id",
-	})
+	attempt := idAttempt("")
+	plan := planOf("Movie", acceptTitles(""), attempt)
+	params, err := srv.buildSearchParamsForAttempt(base, &plan, attempt, searchFacts{Class: config.SearchClassMovie})
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
 
 	if params.Req.EnableYearValidation {
@@ -323,7 +346,7 @@ func TestBuildSearchParamsFromBaseAlwaysBuildsValidationInputs(t *testing.T) {
 	}
 }
 
-func TestBuildSearchParamsFromBaseIDModeBuildsValidationQueriesForMultipleLanguages(t *testing.T) {
+func TestBuildSearchParamsForAttemptBuildsValidationQueriesForEveryAcceptedTitle(t *testing.T) {
 	srv := &Server{config: &config.Config{}}
 	base := &query.SearchParams{
 		ContentType: "movie",
@@ -356,24 +379,20 @@ func TestBuildSearchParamsFromBaseIDModeBuildsValidationQueriesForMultipleLangua
 		SeriesTitleQueries: make(map[string][]string),
 	}
 
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode:           "id",
-		SearchTitleLanguage:  "",
-		SearchTitleLanguages: []string{"", "de-DE"},
-		IncludeYear:          boolPtr(false),
-	})
+	attempt := idAttempt("")
+	plan := planOf("Movie", acceptTitles("", "de-DE"), attempt)
+	params, err := srv.buildSearchParamsForAttempt(base, &plan, attempt, searchFacts{Class: config.SearchClassMovie})
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
 
 	if !reflect.DeepEqual(params.Req.ValidationQueries, []string{"The Lion King", "Koenig der Loewen"}) {
 		t.Fatalf("ValidationQueries = %#v, want %#v", params.Req.ValidationQueries, []string{"The Lion King", "Koenig der Loewen"})
 	}
-	// en-US rides along on every ID request's validation basis, so the request's
-	// own languages can only widen it. Here the English and original titles are
-	// the same string, so they group into one profile under both labels.
+	// The accepted titles are exactly what the plan listed — no language rides
+	// along implicitly, which is the whole point of stating acceptance once.
 	if !reflect.DeepEqual(params.Req.ValidationQueryProfiles, []indexer.ValidationQueryProfile{
-		{Languages: []string{"original", "en-US"}, Query: "The Lion King"},
+		{Languages: []string{"original"}, Query: "The Lion King"},
 		{Languages: []string{"de-DE"}, Query: "Koenig der Loewen"},
 	}) {
 		t.Fatalf("ValidationQueryProfiles = %#v", params.Req.ValidationQueryProfiles)
@@ -383,7 +402,7 @@ func TestBuildSearchParamsFromBaseIDModeBuildsValidationQueriesForMultipleLangua
 	}
 }
 
-func TestBuildSearchParamsFromBaseSeriesFallbackUsesNormalizedMetadataQueries(t *testing.T) {
+func TestBuildSearchParamsForAttemptUsesNormalizedMetadataQueries(t *testing.T) {
 	srv := &Server{config: &config.Config{}}
 	base := &query.SearchParams{
 		ContentType: "series",
@@ -405,13 +424,11 @@ func TestBuildSearchParamsFromBaseSeriesFallbackUsesNormalizedMetadataQueries(t 
 		SeriesTitleQueries: make(map[string][]string),
 	}
 
-	params, err := srv.buildSearchParamsFromBase(base, &config.SearchQueryConfig{
-		SearchMode:          "text",
-		SearchTitleLanguage: "original",
-		IncludeYear:         boolPtr(false),
-	})
+	attempt := titleAttempt(config.SearchTargetSeries, "original", false)
+	plan := planOf("TV", acceptTitles("original"), attempt)
+	params, err := srv.buildSearchParamsForAttempt(base, &plan, attempt, searchFacts{IsSeries: true, Class: config.SearchClassTV})
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase() error = %v", err)
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
 
 	if params.Req.Query != "Your Friends Neighbors" {
@@ -427,12 +444,11 @@ func TestRunConfiguredSearchRequestsKeepsMetadataValidationQueryForTextSearch(t 
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
-				{
-					Name:                "MovieQuery03",
-					SearchMode:          "text",
-					SearchTitleLanguage: "de-DE",
-					IncludeYear:         boolPtr(true),
-				},
+				func() config.SearchQueryConfig {
+					plan := planOf("MovieQuery03", acceptTitles("de-DE"), titleAttempt("", "de-DE", true))
+					plan.Accept.Year = boolPtr(true)
+					return plan
+				}(),
 			},
 		},
 		indexer: rec,
@@ -574,7 +590,7 @@ func TestBuildRawSearchResultShortCircuitsWhenMetadataCannotBeResolved(t *testin
 	srv := &Server{
 		config: &config.Config{
 			SeriesSearchQueries: []config.SearchQueryConfig{
-				{Name: "TVQuery01", SearchMode: "id"},
+				config.DefaultTVPlan("TVQuery01"),
 			},
 		},
 	}
@@ -595,13 +611,13 @@ func TestBuildRawSearchResultShortCircuitsWhenMetadataCannotBeResolved(t *testin
 	}
 }
 
-func TestRunConfiguredSearchRequestsUniqueHitsOnlyFirstResultRequestInCombineMode(t *testing.T) {
+func TestRunConfiguredSearchRequestsNoUniqueHitWhenSeveralIndexersAnswer(t *testing.T) {
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
-				{Name: "Q1", SearchMode: "text"},
-				{Name: "Q2", SearchMode: "text"},
-				{Name: "Q3", SearchMode: "text"},
+				planOf("Q1", acceptTitles("original"), titleAttempt("", "original", false)),
+				planOf("Q2", acceptTitles("original"), titleAttempt("", "original", false)),
+				planOf("Q3", acceptTitles("original"), titleAttempt("", "original", false)),
 			},
 		},
 		indexer:           &requestLabelIndexer{},
@@ -650,14 +666,14 @@ func TestRunConfiguredSearchRequestsUniqueHitsOnlyFirstResultRequestInCombineMod
 	}
 }
 
-func TestRunConfiguredSearchRequestsUniqueHitsInFirstHitMode(t *testing.T) {
-	combine := false
-	stream := &auth.Stream{CombineResults: &combine}
+// Every selected plan runs — there is no stream-level fallback chain any more
+// — and the one indexer that answered across all of them earns the unique hit.
+func TestRunConfiguredSearchRequestsRunsEveryPlanAndCreditsTheOnlyIndexer(t *testing.T) {
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
-				{Name: "Q1", SearchMode: "text"},
-				{Name: "Q2", SearchMode: "text"},
+				planOf("Q1", acceptTitles("original"), titleAttempt("", "original", false)),
+				planOf("Q2", acceptTitles("original"), titleAttempt("", "original", false)),
 			},
 		},
 		indexer:           &requestLabelIndexer{},
@@ -687,7 +703,7 @@ func TestRunConfiguredSearchRequestsUniqueHitsInFirstHitMode(t *testing.T) {
 			TmdbID: "1084242",
 		},
 	}
-	releases, executed, err := srv.runConfiguredSearchRequests(context.Background(), "movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, params)
+	releases, executed, err := srv.runConfiguredSearchRequests(context.Background(), "movie", "tt123", "stream-01", nil, []string{"Q1", "Q2"}, params)
 	if err != nil {
 		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
 	}
@@ -795,16 +811,14 @@ func combineModeSearchParams() *query.SearchParams {
 	}
 }
 
-// Combine mode runs the configured requests concurrently, so results must be
+// The selected plans run concurrently, so results must be
 // merged by configured order rather than by whichever finished first.
 func TestRunConfiguredSearchRequestsCombineKeepsConfiguredOrder(t *testing.T) {
-	combine := true
-	stream := &auth.Stream{CombineResults: &combine}
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
-				{Name: "Q1", SearchMode: "text"},
-				{Name: "Q2", SearchMode: "text"},
+				planOf("Q1", acceptTitles("original"), titleAttempt("", "original", false)),
+				planOf("Q2", acceptTitles("original"), titleAttempt("", "original", false)),
 			},
 		},
 		// Q1 is the slow one; without ordering it would land second.
@@ -813,7 +827,7 @@ func TestRunConfiguredSearchRequestsCombineKeepsConfiguredOrder(t *testing.T) {
 	}
 
 	releases, executed, err := srv.runConfiguredSearchRequests(
-		context.Background(), "movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, combineModeSearchParams())
+		context.Background(), "movie", "tt123", "stream-01", nil, []string{"Q1", "Q2"}, combineModeSearchParams())
 	if err != nil {
 		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
 	}
@@ -831,14 +845,12 @@ func TestRunConfiguredSearchRequestsCombineKeepsConfiguredOrder(t *testing.T) {
 // The two requests should overlap, so the whole call costs about one delay
 // rather than the sum of both.
 func TestRunConfiguredSearchRequestsCombineRunsConcurrently(t *testing.T) {
-	combine := true
-	stream := &auth.Stream{CombineResults: &combine}
 	const delay = 150 * time.Millisecond
 	srv := &Server{
 		config: &config.Config{
 			MovieSearchQueries: []config.SearchQueryConfig{
-				{Name: "Q1", SearchMode: "text"},
-				{Name: "Q2", SearchMode: "text"},
+				planOf("Q1", acceptTitles("original"), titleAttempt("", "original", false)),
+				planOf("Q2", acceptTitles("original"), titleAttempt("", "original", false)),
 			},
 		},
 		indexer:           &delayedLabelIndexer{slowAll: true, delay: delay},
@@ -847,12 +859,182 @@ func TestRunConfiguredSearchRequestsCombineRunsConcurrently(t *testing.T) {
 
 	start := time.Now()
 	_, _, err := srv.runConfiguredSearchRequests(
-		context.Background(), "movie", "tt123", "stream-01", stream, []string{"Q1", "Q2"}, combineModeSearchParams())
+		context.Background(), "movie", "tt123", "stream-01", nil, []string{"Q1", "Q2"}, combineModeSearchParams())
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
 	}
 	if elapsed >= 2*delay {
 		t.Fatalf("requests look sequential: took %v for two %v requests", elapsed, delay)
+	}
+}
+
+// attemptIndexer records the label of every attempt it is asked for, and
+// answers only the one it is told to hit. The label is the plan read back at
+// dispatch, so a test asserts on the plan it configured.
+type attemptIndexer struct {
+	mu       sync.Mutex
+	attempts []string
+	queries  []string
+	hit      string
+}
+
+func (s *attemptIndexer) Search(_ context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	s.mu.Lock()
+	s.attempts = append(s.attempts, req.AttemptLabel)
+	s.queries = append(s.queries, req.Query)
+	s.mu.Unlock()
+	if req.AttemptLabel != s.hit {
+		return &indexer.SearchResponse{}, nil
+	}
+	title := "Show Name S03E07 1080p WEB-DL x264-GRP"
+	if req.SeriesSearchScope == config.SeriesSearchScopeSeason {
+		title = "Show Name S03 1080p WEB-DL x264-GRP"
+	}
+	return &indexer.SearchResponse{Channel: indexer.Channel{Items: []indexer.Item{{
+		Title:         title,
+		GUID:          "https://example.invalid/" + req.AttemptLabel,
+		Comments:      "https://example.invalid/" + req.AttemptLabel,
+		ActualIndexer: "AttemptIndexer",
+	}}}}, nil
+}
+
+func (s *attemptIndexer) Name() string               { return "AttemptIndexer" }
+func (s *attemptIndexer) GetUsage() indexer.Usage    { return indexer.Usage{} }
+func (s *attemptIndexer) Ping(context.Context) error { return nil }
+func (s *attemptIndexer) DownloadNZB(_ context.Context, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func (s *attemptIndexer) snapshot() ([]string, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.attempts...), append([]string(nil), s.queries...)
+}
+
+func seriesSearchParams() *query.SearchParams {
+	return &query.SearchParams{
+		ContentType: "series",
+		ID:          "tt1234567:3:7",
+		Req: indexer.SearchRequest{
+			TMDBID:  "555",
+			IMDbID:  "tt1234567",
+			Limit:   1000,
+			Season:  "3",
+			Episode: "7",
+		},
+		Metadata: &query.ResolvedSearchMetadata{
+			TVDetails: &tmdb.TVDetails{
+				Name:             "Show Name",
+				OriginalName:     "Show Name",
+				OriginalLanguage: "en",
+			},
+		},
+		MovieTitleQueries:  make(map[string][]string),
+		SeriesTitleQueries: make(map[string][]string),
+		ContentIDs: &session.AvailReportMeta{
+			ImdbID:  "tt1234567",
+			TmdbID:  "555",
+			Season:  3,
+			Episode: 7,
+		},
+	}
+}
+
+func planServer(idx indexer.Indexer, plan config.SearchQueryConfig) *Server {
+	return &Server{
+		config:            &config.Config{SeriesSearchQueries: []config.SearchQueryConfig{plan}},
+		indexer:           idx,
+		uniqueIndexerHits: make(map[string]int64),
+	}
+}
+
+func runSeriesPlan(t *testing.T, idx *attemptIndexer, plan config.SearchQueryConfig) ([]*release.Release, int, []string) {
+	t.Helper()
+	srv := planServer(idx, plan)
+	releases, executed, err := srv.runConfiguredSearchRequests(
+		context.Background(), "series", "tt1234567:3:7", "stream-01", nil, []string{plan.Name}, seriesSearchParams())
+	if err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	attempts, _ := idx.snapshot()
+	return releases, executed, attempts
+}
+
+// The plan is walked in order and stops at the first attempt that matched: the
+// broader question is only paid for when the narrower one came back empty.
+func TestRunConfiguredSearchRequestsWalksThePlanUntilSomethingMatches(t *testing.T) {
+	plan := config.DefaultTVPlan("TVPlan")
+	plan.Order = config.SearchOrderAsListed
+
+	idx := &attemptIndexer{hit: "title·season"}
+	releases, executed, attempts := runSeriesPlan(t, idx, plan)
+	want := []string{"id·episode", "title·episode", "id·season", "title·season"}
+	if !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if executed != 4 {
+		t.Fatalf("executedRequests = %d, want 4", executed)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("releases = %d, want 1", len(releases))
+	}
+}
+
+func TestRunConfiguredSearchRequestsStopsAtTheFirstAttemptThatMatches(t *testing.T) {
+	plan := config.DefaultTVPlan("TVPlan")
+	plan.Order = config.SearchOrderAsListed
+
+	idx := &attemptIndexer{hit: "id·episode"}
+	releases, executed, attempts := runSeriesPlan(t, idx, plan)
+	if !reflect.DeepEqual(attempts, []string{"id·episode"}) {
+		t.Fatalf("attempts = %v, want only the first", attempts)
+	}
+	if executed != 1 {
+		t.Fatalf("executedRequests = %d, want 1", executed)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("releases = %d, want 1", len(releases))
+	}
+}
+
+// stop=all runs every attempt and merges what they found, which is the plan's
+// own breadth setting — not the stream's.
+func TestRunConfiguredSearchRequestsRunsEveryAttemptWhenThePlanSaysAll(t *testing.T) {
+	plan := planOf("TVPlan", acceptTitles("original"),
+		idAttempt(config.SearchTargetEpisode),
+		titleAttempt(config.SearchTargetEpisode, "original", false),
+	)
+	plan.Stop = config.SearchStopAll
+
+	idx := &attemptIndexer{hit: "id·episode"}
+	_, executed, attempts := runSeriesPlan(t, idx, plan)
+	if !reflect.DeepEqual(attempts, []string{"id·episode", "title·episode"}) {
+		t.Fatalf("attempts = %v, want both", attempts)
+	}
+	if executed != 2 {
+		t.Fatalf("executedRequests = %d, want 2", executed)
+	}
+}
+
+// The query text an attempt dispatches is built from its own language and its
+// own year setting, so two title attempts of one plan can differ.
+func TestRunConfiguredSearchRequestsBuildsEachAttemptsOwnQuery(t *testing.T) {
+	plan := planOf("TVPlan", acceptTitles("original"),
+		titleAttempt(config.SearchTargetEpisode, "original", false),
+		titleAttempt(config.SearchTargetSeason, "original", false),
+	)
+	plan.Stop = config.SearchStopAll
+
+	idx := &attemptIndexer{}
+	srv := planServer(idx, plan)
+	if _, _, err := srv.runConfiguredSearchRequests(
+		context.Background(), "series", "tt1234567:3:7", "stream-01", nil, []string{plan.Name}, seriesSearchParams()); err != nil {
+		t.Fatalf("runConfiguredSearchRequests() error = %v", err)
+	}
+	_, queries := idx.snapshot()
+	want := []string{"Show Name S03E07", "Show Name S03"}
+	if !reflect.DeepEqual(queries, want) {
+		t.Fatalf("queries = %v, want %v", queries, want)
 	}
 }

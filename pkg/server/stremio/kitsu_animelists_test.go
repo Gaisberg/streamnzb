@@ -278,9 +278,11 @@ func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
 		t.Fatalf("validation content type = %q, want movie", got)
 	}
 
-	full, err := srv.buildSearchParamsFromBase(params, nil)
+	plan := config.DefaultMoviePlan("Movie")
+	attempt := plan.Attempts[1]
+	full, err := srv.buildSearchParamsForAttempt(params, &plan, attempt, srv.searchFacts("anime", "default", params))
 	if err != nil {
-		t.Fatalf("buildSearchParamsFromBase: %v", err)
+		t.Fatalf("buildSearchParamsForAttempt: %v", err)
 	}
 	if len(full.PreparedQueries) == 0 || !strings.HasPrefix(full.PreparedQueries[0], "Spirited Away") {
 		t.Fatalf("prepared queries = %v, want a Spirited Away movie query", full.PreparedQueries)

@@ -23,45 +23,80 @@ import (
 	"streamnzb/pkg/session"
 )
 
-// prepareAbsoluteEpisodeSearch supplements an anime series request with
-// absolute-numbered queries ("One Piece 63" for S02E02) — the naming anime
-// indexers and fansub groups use — and marks the request so validation accepts
-// absolute-numbered releases. The queries land in params.AbsoluteQueries and
-// run as trailing text searches after the request's own queries. Returns false
-// when the supplement does not apply: non-anime content, or an absolute number
-// that is neither already resolved nor derivable from metadata.
-func (s *Server) prepareAbsoluteEpisodeSearch(params *query.SearchParams, streamLabel string, searchQuery *config.SearchQueryConfig) bool {
-	if params == nil || params.ContentType != "series" {
-		return false
+// searchFacts is what one request is, as the plans need to read it: the
+// content kind's own shape, resolved once and shared by every plan.
+type searchFacts struct {
+	IsSeries   bool
+	IsAnime    bool
+	HasSeason  bool
+	HasEpisode bool
+	Absolute   int
+	Class      string
+}
+
+// PlanContext hands the facts to the plan compiler, with the one fact the
+// compiler asks for lazily.
+func (f searchFacts) PlanContext(seasonCompleted func() bool) config.SearchPlanContext {
+	ctx := config.SearchPlanContext{
+		IsSeries:    f.IsSeries,
+		HasSeason:   f.HasSeason,
+		HasEpisode:  f.HasEpisode,
+		IsAnime:     f.IsAnime,
+		HasAbsolute: f.Absolute > 0,
 	}
-	req := &params.Req
-	skip := func(reason string) bool {
-		logger.Debug("Skipping absolute-episode search supplement",
-			"stream", streamLabel,
-			"request", req.RequestLabel,
-			"reason", reason,
-		)
-		return false
+	if seasonCompleted != nil {
+		ctx.SeasonCompleted = seasonCompleted()
+	}
+	return ctx
+}
+
+// searchFacts resolves them. The absolute episode number is the only one that
+// costs anything (a walk of the prior seasons' episode counts), and it is what
+// an absolute-numbered attempt asks by — and what lets acceptance recognise an
+// absolute-numbered release whichever attempt surfaced it.
+//
+// Series-ness is decided the way the metadata layer decides it, not by the
+// Stremio type alone: "anime" is a series type unless the Kitsu entry is a
+// film. Keying on type == "series" here once sent every anime episode out as
+// a movie search.
+func (s *Server) searchFacts(contentType, streamLabel string, params *query.SearchParams) searchFacts {
+	facts := searchFacts{IsSeries: contentType != "movie"}
+	if params == nil {
+		facts.Class = config.SearchClassFor(facts.IsSeries, false)
+		return facts
+	}
+	facts.IsSeries = !query.MovieLike(params.Metadata, contentType)
+	facts.IsAnime = query.RequestLooksLikeAnime(params)
+	facts.HasSeason = strings.TrimSpace(params.Req.Season) != ""
+	facts.HasEpisode = strings.TrimSpace(params.Req.Episode) != ""
+	facts.Class = config.SearchClassFor(facts.IsSeries, facts.IsAnime)
+	if !facts.IsSeries {
+		return facts
 	}
 	// A Kitsu entry spanning a whole series resolves its absolute number up
 	// front, where deriving one from season/episode would not work.
-	absolute, _ := strconv.Atoi(req.AbsoluteEpisode)
-	if absolute <= 0 {
-		if !query.RequestLooksLikeAnime(params) {
-			return skip("content not detected as anime")
-		}
-		absolute = query.AbsoluteEpisodeFromMetadata(params.Metadata, req.Season, req.Episode)
-		if absolute <= 0 {
-			return skip("absolute episode not derivable from metadata")
-		}
-		// The absolute number lets validation accept absolute-numbered
-		// releases regardless of which query surfaced them.
-		req.AbsoluteEpisode = strconv.Itoa(absolute)
+	absolute, _ := strconv.Atoi(params.Req.AbsoluteEpisode)
+	if absolute <= 0 && facts.IsAnime {
+		absolute = query.AbsoluteEpisodeFromMetadata(params.Metadata, params.Req.Season, params.Req.Episode)
 	}
+	if absolute > 0 {
+		facts.Absolute = absolute
+		logger.Debug("Absolute episode resolved",
+			"stream", streamLabel,
+			"season", params.Req.Season,
+			"episode", params.Req.Episode,
+			"absolute_episode", absolute,
+		)
+	}
+	return facts
+}
 
-	language := ""
-	if searchQuery != nil {
-		language = config.NormalizeSearchTitleLanguage(searchQuery.SearchTitleLanguage)
+// absoluteEpisodeQueries builds the absolute-numbered text queries for one
+// title language ("One Piece 63" for S02E02) — the naming anime indexers and
+// fansub groups use.
+func absoluteEpisodeQueries(params *query.SearchParams, language string, absolute int) []string {
+	if params == nil || absolute <= 0 {
+		return nil
 	}
 	var queries []string
 	for _, title := range query.BuildSeriesQueriesFromMetadata(params.Metadata, language, false, "", "", config.SeriesSearchScopeNone) {
@@ -70,20 +105,7 @@ func (s *Server) prepareAbsoluteEpisodeSearch(params *query.SearchParams, stream
 		}
 		queries = query.AppendUniqueSearchQuery(queries, fmt.Sprintf("%s %02d", title, absolute))
 	}
-	if len(queries) == 0 {
-		return skip("no titles available for absolute query")
-	}
-
-	params.AbsoluteQueries = queries
-	logger.Debug("Absolute-episode search supplement prepared",
-		"stream", streamLabel,
-		"request", req.RequestLabel,
-		"season", req.Season,
-		"episode", req.Episode,
-		"absolute_episode", absolute,
-		"queries", len(queries),
-	)
-	return true
+	return queries
 }
 
 func logMetadataLookup(streamLabel, contentType, id string) {
@@ -135,12 +157,6 @@ func logStreamConfiguration(streamLabel, contentType string, stream *auth.Stream
 			return strings.ToLower(strings.TrimSpace(stream.FilterSortingMode))
 		}(),
 		"indexer_mode", streamIndexerMode(stream),
-		"search_requests_mode", func() string {
-			if streamCombinesResults(stream) {
-				return "combine"
-			}
-			return "first_hit"
-		}(),
 		"results_mode", streamResultsMode(stream),
 		"failover", streamFailoverEnabled(stream),
 		"availnzb", streamUsesAvailNZB(stream),
@@ -225,181 +241,152 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 	rt := s.runtime()
 	indexerReleases := make([]*release.Release, 0)
 	executedRequests := 0
-	// runOne executes a single configured request. It returns the releases that
-	// request produced, how many indexer round trips it took, and any hard
-	// error. An empty result with no error means "this request matched nothing"
-	// — for a fallback chain that is the cue to try the next one.
-	runOne := func(searchQuery *config.SearchQueryConfig) ([]*release.Release, int, error) {
-		executedRequests := 0
-		var collected []*release.Release
+	// planFacts is what the plans cannot know about this request: whether it
+	// is anime, whether an absolute episode number exists, and what season and
+	// episode there are to aim at. Resolved once — every plan asks about the
+	// same content.
+	planFacts := s.searchFacts(contentType, streamLabel, params)
+	// seasonCompleted is the one fact a plan pays for only if it asks: the
+	// adaptive ordering reads it, and nothing else does. Resolved at most once
+	// per search, since the plans run concurrently and they all ask about the
+	// same season.
+	var (
+		seasonStateOnce sync.Once
+		seasonDone      bool
+	)
+	seasonCompleted := func() bool {
+		seasonStateOnce.Do(func() {
+			done, known := s.seasonCompletedState(ctx, contentType, params.ContentIDs)
+			seasonDone = done && known
+			logger.Debug("Adaptive plan season state",
+				"stream", streamLabel,
+				"type", contentType,
+				"id", id,
+				"season_completed", seasonDone,
+				"known", known,
+			)
+		})
+		return seasonDone
+	}
+	// runAttempt executes one attempt of one plan: the plan with this attempt's
+	// address, target, title language and year resolved, dispatched once per
+	// query the attempt produces. It returns what the attempt matched, how many
+	// indexer round trips it took, and any hard error. Empty with no error
+	// means "this attempt matched nothing" — the cue to try the next one.
+	runAttempt := func(plan *config.SearchQueryConfig, attempt config.SearchAttempt) ([]*release.Release, int, error) {
+		executed := 0
 		// Clone before stamping the labels: the base params are shared across
-		// requests, and in combine mode these run concurrently.
+		// plans, and the plans run concurrently.
 		base := cloneSearchParams(params)
 		base.Req.StreamLabel = streamLabel
-		base.Req.RequestLabel = searchQuery.Name
-		profileParams, profileErr := s.buildSearchParamsFromBase(base, searchQuery)
-		if profileErr != nil {
-			return nil, executedRequests, profileErr
+		base.Req.RequestLabel = plan.Name
+		attemptParams, err := s.buildSearchParamsForAttempt(base, plan, attempt, planFacts)
+		if err != nil {
+			return nil, executed, err
 		}
-		profileParams.Req.StreamLabel = streamLabel
-		profileParams.Req.RequestLabel = searchQuery.Name
-		// Per-indexer content_scope routes on this flag; stamped here so every
-		// query variant of the request carries it.
-		profileParams.Req.ContentIsAnime = query.RequestLooksLikeAnime(profileParams)
-		applyStreamIndexerSelection(&profileParams.Req, stream)
-		profileParams.Req.DisableResultFiltering = stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" || strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "none") || streamUsesAIOStreamsProfile(stream)
-		searchMode := strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
-		if contentType == "series" && searchQuery.TryAbsoluteEpisodeEnabled() {
-			if profileParams.Req.ContentIsAnime {
-				// Widen every variant of this anime request to also match the
-				// anime subcategory on indexers that don't expand the 5000
-				// parent. Kitsu requests are anime even though they skip the
-				// absolute query supplement below (already absolute).
-				query.AppendAnimeTVCategoryToEffective(profileParams.Req.EffectiveByIndexer)
-			}
-			s.prepareAbsoluteEpisodeSearch(profileParams, streamLabel, searchQuery)
-		}
-		validationQueries := append([]string(nil), profileParams.Req.ValidationQueries...)
-		if len(validationQueries) == 0 && strings.TrimSpace(profileParams.Req.ValidationQuery) != "" {
-			validationQueries = []string{profileParams.Req.ValidationQuery}
-		}
-		if len(validationQueries) == 0 {
-			logger.Debug("Skipping search request without validation basis",
+		req := &attemptParams.Req
+		req.StreamLabel = streamLabel
+		req.RequestLabel = plan.Name
+		req.AttemptLabel = attempt.Label()
+		req.ContentIsAnime = planFacts.IsAnime
+		applyStreamIndexerSelection(req, stream)
+		req.DisableResultFiltering = stream == nil || strings.TrimSpace(stream.FilterSortingMode) == "" || strings.EqualFold(strings.TrimSpace(stream.FilterSortingMode), "none") || streamUsesAIOStreamsProfile(stream)
+
+		skip := func(reason string) ([]*release.Release, int, error) {
+			logger.Debug("Skipping search attempt",
 				"stream", streamLabel,
-				"request", searchQuery.Name,
+				"request", plan.Name,
+				"attempt", attempt.Label(),
 				"type", contentType,
 				"id", id,
+				"reason", reason,
 			)
-			return nil, executedRequests, nil
+			return nil, executed, nil
 		}
-		titleLanguages := query.ValidationTitleLanguages(searchQuery.SearchMode, searchQuery.SearchTitleLanguage, searchQuery.SearchTitleLanguages)
-		if searchMode == "id" && !hasUsableIDSearchIdentifier(profileParams.Req, contentType) {
-			logger.Debug("Skipping search request without resolved metadata identifiers",
-				"stream", streamLabel,
-				"request", searchQuery.Name,
-				"type", contentType,
-				"id", id,
-			)
-			return nil, executedRequests, nil
+		if len(req.ValidationQueries) == 0 && strings.TrimSpace(req.ValidationQuery) == "" {
+			return skip("no validation basis")
 		}
-		if searchMode != "id" && !hasPreparedTextQueries(profileParams.Req) {
-			logger.Debug("Skipping search request without prepared text queries",
-				"stream", streamLabel,
-				"request", searchQuery.Name,
-				"type", contentType,
-				"id", id,
-			)
-			return nil, executedRequests, nil
+		byID := config.NormalizeSearchAddress(attempt.Address) == config.SearchAddressID
+		if byID && !hasUsableIDSearchIdentifier(*req, contentType) {
+			return skip("no resolved metadata identifiers")
 		}
-		effectiveLimit := profileParams.Req.Limit
-		if searchQuery.SearchResultLimit >= 0 {
-			effectiveLimit = searchQuery.SearchResultLimit
+		if !byID && !hasPreparedTextQueries(*req) {
+			return skip("no prepared text queries")
 		}
-		scopeForLog := ""
-		if contentType == "series" {
-			scopeForLog = config.NormalizeSeriesSearchScope(profileParams.Req.SeriesSearchScope)
+
+		effectiveLimit := req.Limit
+		if plan.SearchResultLimit >= 0 {
+			effectiveLimit = plan.SearchResultLimit
 		}
-		configAttrs := []any{
-			"stream", streamLabel,
-			"request", searchQuery.Name,
-			"search_mode", searchQuery.SearchMode,
-			"type", contentType,
-			"id", id,
-			"year", profileParams.Req.EnableYearValidation,
-			"limit", searchLimitForLog(effectiveLimit),
+		logAttemptConfig(streamLabel, contentType, id, plan, attempt, attemptParams, effectiveLimit)
+
+		// An id attempt names an id and carries no query text; a title attempt
+		// runs the queries prepared for it, which is one per title the attempt
+		// resolved to (several only for an absolute-numbered attempt).
+		queries := []string{req.Query}
+		if !byID && len(attemptParams.PreparedQueries) > 0 {
+			queries = attemptParams.PreparedQueries
 		}
-		if searchMode == "id" {
-			configAttrs = append(configAttrs, "title_languages", searchTitleLanguagesForLog(titleLanguages))
-		} else {
-			configAttrs = append(configAttrs, "title_language", query.SearchTitleLanguageForLog(searchQuery.SearchTitleLanguage))
-		}
-		if contentType == "series" {
-			configAttrs = append(configAttrs,
-				"tv_categories", searchQuery.TVCategories,
-				"scope", scopeForLog,
-			)
-		} else {
-			configAttrs = append(configAttrs,
-				"movie_categories", searchQuery.MovieCategories,
-			)
-		}
-		logger.Debug("Search request config", configAttrs...)
-		if entries, ok := query.SearchRequestNormalisationLogEntries(
-			profileParams.Metadata,
-			contentType,
-			titleLanguages,
-		); ok {
-			for _, entry := range entries {
-				attrs := []any{
-					"stream", streamLabel,
-					"request", searchQuery.Name,
-					"input_title", entry.InputTitle,
-					"normalised_title", entry.NormalizedTitle,
-				}
-				if len(entry.Languages) == 1 {
-					attrs = append(attrs, "title_language", entry.Languages[0])
-				} else {
-					attrs = append(attrs, "title_languages", entry.Languages)
-				}
-				logger.Debug("Search request normalisation", attrs...)
+		collected := make([]*release.Release, 0)
+		for _, text := range queries {
+			dispatch := *req
+			dispatch.Limit = effectiveLimit
+			if !byID {
+				dispatch.Query = text
 			}
-		}
-		type searchVariant struct {
-			query    string
-			absolute bool
-		}
-		variants := make([]searchVariant, 0, len(profileParams.PreparedQueries)+len(profileParams.AbsoluteQueries)+1)
-		if searchMode == "id" || len(profileParams.PreparedQueries) == 0 {
-			variants = append(variants, searchVariant{query: profileParams.Req.Query})
-		} else {
-			for _, q := range profileParams.PreparedQueries {
-				variants = append(variants, searchVariant{query: q})
-			}
-		}
-		for _, q := range profileParams.AbsoluteQueries {
-			variants = append(variants, searchVariant{query: q, absolute: true})
-		}
-		// An id-mode query's per-indexer config disables text search, which
-		// would skip every indexer for the text-mode absolute variants; those
-		// variants run with the query's text-mode equivalent instead.
-		var absoluteEffective map[string]*config.IndexerSearchConfig
-		if searchMode == "id" && len(profileParams.AbsoluteQueries) > 0 {
-			textQuery := *searchQuery
-			textQuery.SearchMode = "text"
-			absoluteEffective = s.effectiveIndexerConfigs(textQuery.AsIndexerSearchConfig())
-			query.AppendAnimeTVCategoryToEffective(absoluteEffective)
-		}
-		requestReleases := make([]*release.Release, 0)
-		for _, variant := range variants {
-			reqVariant := profileParams.Req
-			reqVariant.Limit = effectiveLimit
-			if searchMode != "id" || variant.absolute {
-				reqVariant.Query = variant.query
-			}
-			if variant.absolute && searchMode == "id" {
-				reqVariant.SearchMode = "text"
-				reqVariant.EffectiveByIndexer = absoluteEffective
-			}
-			executedRequests++
-			releases, runErr := search.RunIndexerSearches(ctx, rt.indexer, reqVariant, validationContentType(profileParams, contentType))
+			executed++
+			releases, runErr := search.RunIndexerSearches(ctx, rt.indexer, dispatch, validationContentType(attemptParams, contentType))
 			if runErr != nil {
-				return nil, executedRequests, runErr
+				return nil, executed, runErr
+			}
+			collected = append(collected, releases...)
+		}
+		return collected, executed, nil
+	}
+
+	// runOne walks one plan's attempts in order. The plan's own stop rule
+	// decides whether it ends at the first attempt that matched: the fallback
+	// is deliberately sequential, because its whole point is that the broader
+	// indexer query is only paid for when the narrower one came back empty.
+	runOne := func(plan *config.SearchQueryConfig) ([]*release.Release, int, error) {
+		executed := 0
+		attempts := plan.SearchPlanAttempts(planFacts.PlanContext(seasonCompleted))
+		if len(attempts) == 0 {
+			logger.Debug("Search request has no runnable attempts",
+				"stream", streamLabel,
+				"request", plan.Name,
+				"type", contentType,
+				"id", id,
+			)
+			return nil, executed, nil
+		}
+		firstHit := plan.StopsAtFirstHit()
+		collected := make([]*release.Release, 0)
+		for i, attempt := range attempts {
+			releases, attemptExecuted, err := runAttempt(plan, attempt)
+			executed += attemptExecuted
+			if err != nil {
+				return nil, executed, err
 			}
 			if len(releases) > 0 {
-				requestReleases = append(requestReleases, releases...)
-			}
-			if streamCombinesResults(stream) {
+				if firstHit {
+					return releases, executed, nil
+				}
 				collected = append(collected, releases...)
 				continue
 			}
-			if len(releases) > 0 {
-				if idxName, ok := singleIndexerFromReleases(requestReleases); ok {
-					s.addUniqueIndexerHits(map[string]int{idxName: 1})
-				}
-				return releases, executedRequests, nil
+			if i+1 < len(attempts) {
+				logger.Debug("Search attempt found nothing; falling back",
+					"stream", streamLabel,
+					"request", plan.Name,
+					"type", contentType,
+					"id", id,
+					"attempt", attempt.Label(),
+					"fallback_attempt", attempts[i+1].Label(),
+				)
 			}
 		}
-		return collected, executedRequests, nil
+		return collected, executed, nil
 	}
 
 	queries := make([]*config.SearchQueryConfig, 0, len(selectedQueries))
@@ -412,25 +399,11 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 		queries = append(queries, searchQuery)
 	}
 
-	if !streamCombinesResults(stream) {
-		// Fallback chain: the requests are ordered by preference and the first
-		// one that matches anything wins, so running later requests would be
-		// work whose result is thrown away.
-		for _, searchQuery := range queries {
-			releases, executed, err := runOne(searchQuery)
-			executedRequests += executed
-			if err != nil {
-				return nil, executedRequests, err
-			}
-			if len(releases) > 0 {
-				return releases, executedRequests, nil
-			}
-		}
-		return indexerReleases, executedRequests, nil
-	}
-
-	// Combine mode runs every request regardless, and they share no state, so
-	// there is nothing to gain from waiting for one before starting the next.
+	// Every selected plan runs and their results are merged. Sequencing lives
+	// inside a plan — its attempts and stop rule are the fallback chain — so
+	// a stream that wants "try this, then that" says so in one plan rather
+	// than by ordering several. The plans share no state, so there is nothing
+	// to gain from waiting for one before starting the next.
 	type queryOutcome struct {
 		releases []*release.Release
 		executed int
@@ -950,12 +923,11 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 		SeriesTitleQueries: make(map[string][]string),
 		Metadata:           &query.ResolvedSearchMetadata{},
 	}
-	req := indexer.SearchRequest{Limit: searchLimit}
-	scope := config.SeriesSearchScopeSeasonEpisode
-	if searchQuery != nil {
-		scope = config.NormalizeSeriesSearchScope(searchQuery.SeriesSearchScope)
-	}
-	req.SeriesSearchScope = scope
+	// The base request carries no plan settings: every attempt resolves its
+	// own from the plan it belongs to (see buildSearchParamsForAttempt). The
+	// episode scope is the narrowest thing a series request could be after,
+	// and is what the base stands for until an attempt says otherwise.
+	req := indexer.SearchRequest{Limit: searchLimit, SeriesSearchScope: config.SeriesSearchScopeSeasonEpisode}
 
 	// Reading the id apart is pure string work with no clients in it, so it
 	// lives in pkg/search/query where its arities can be tested directly.
@@ -1356,104 +1328,184 @@ func (s *Server) effectiveIndexerConfigs(queryIndexerConfig *config.IndexerSearc
 	return out
 }
 
-func (s *Server) buildSearchParamsFromBase(base *query.SearchParams, searchQuery *config.SearchQueryConfig) (*query.SearchParams, error) {
+// scopeForTarget maps a plan target onto the season/episode vocabulary the
+// indexer clients speak: how much of a series a request is asking for.
+func scopeForTarget(target string) string {
+	switch target {
+	case config.SearchTargetSeason:
+		return config.SeriesSearchScopeSeason
+	case config.SearchTargetSeries, config.SearchTargetAbsolute:
+		return config.SeriesSearchScopeNone
+	default:
+		return config.SeriesSearchScopeSeasonEpisode
+	}
+}
+
+// buildSearchParamsForAttempt turns one plan attempt into a dispatchable
+// request. It is the single place a plan meets the wire: the attempt's address
+// becomes the search mode, its target becomes the series scope, its title
+// language and year build the query text, and the plan's acceptance builds the
+// validation profiles. Nothing downstream re-reads the plan.
+func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *config.SearchQueryConfig, attempt config.SearchAttempt, facts searchFacts) (*query.SearchParams, error) {
 	params := cloneSearchParams(base)
 	if params == nil {
 		return nil, fmt.Errorf("base search params are required")
 	}
 	contentType := params.ContentType
 	req := &params.Req
-	searchMode := ""
-	searchTitleLanguage := ""
-	searchTitleLanguages := []string(nil)
-	includeYear := true
-	scope := config.NormalizeSeriesSearchScope(req.SeriesSearchScope)
-	var queryIndexerConfig *config.IndexerSearchConfig
-	if searchQuery != nil {
-		searchMode = strings.ToLower(strings.TrimSpace(searchQuery.SearchMode))
-		searchTitleLanguage = config.NormalizeSearchTitleLanguage(searchQuery.SearchTitleLanguage)
-		searchTitleLanguages = config.NormalizeSearchTitleLanguages(searchQuery.SearchTitleLanguages)
-		queryIndexerConfig = searchQuery.AsIndexerSearchConfig()
-		if searchQuery.IncludeYear != nil {
-			includeYear = *searchQuery.IncludeYear
-		} else if searchMode == "id" {
-			includeYear = false
-		}
-		scope = config.NormalizeSeriesSearchScope(searchQuery.SeriesSearchScope)
+	byID := config.NormalizeSearchAddress(attempt.Address) == config.SearchAddressID
+	target := ""
+	if facts.IsSeries {
+		target = config.NormalizeSearchTarget(attempt.Target)
 	}
-	req.SeriesSearchScope = scope
-	req.EnableYearValidation = includeYear
-	req.SearchMode = "text"
+	language := attempt.TitleLanguage()
+	yearInQuery := attempt.YearInQuery()
+	accept := plan.Acceptance()
+
+	req.SeriesSearchScope = scopeForTarget(target)
+	req.Class = facts.Class
+	req.EnableYearValidation = accept.YearEnforced()
+	req.AcceptPacks = accept.PacksEnabled()
 	req.Query = ""
-	req.ValidationQueryProfiles = nil
-	req.ValidationQueries = nil
-	validationLanguages := query.ValidationTitleLanguages(searchMode, searchTitleLanguage, searchTitleLanguages)
-	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, contentType, validationLanguages, includeYear)
+	req.SearchMode = "text"
+	if byID {
+		req.SearchMode = "id"
+	}
+	// The absolute number is acceptance, not addressing: it lets an
+	// absolute-numbered release be recognised whichever attempt found it, so
+	// every attempt of a plan that asks by absolute number carries it.
+	req.AbsoluteEpisode = ""
+	if facts.Absolute > 0 && plan.RunsAbsoluteAttempt() {
+		req.AbsoluteEpisode = strconv.Itoa(facts.Absolute)
+	}
+
+	// Acceptance titles are the spellings a release may match. They are the
+	// plan's, not the attempt's — what goes out and what may come back are
+	// different questions — and fall back to the attempt's own language.
+	validationLanguages := accept.AcceptTitles()
+	if len(validationLanguages) == 0 {
+		validationLanguages = []string{language}
+	}
+	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, contentType, validationLanguages, accept.YearEnforced())
 	req.ValidationQueries = query.ValidationQueriesFromProfiles(req.ValidationQueryProfiles)
 	req.ValidationQuery = ""
 	if len(req.ValidationQueries) > 0 {
 		req.ValidationQuery = req.ValidationQueries[0]
 	}
-	if searchMode == "id" {
-		req.SearchMode = "id"
-		if contentType == "series" {
-			switch scope {
-			case config.SeriesSearchScopeSeasonEpisode:
-				if req.Season != "" && req.Episode != "" {
-					if seasonNum, err1 := strconv.Atoi(req.Season); err1 == nil {
-						if episodeNum, err2 := strconv.Atoi(req.Episode); err2 == nil {
-							req.Query = fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
-						}
-					}
-					if req.Query == "" {
-						req.Query = fmt.Sprintf("S%sE%s", req.Season, req.Episode)
-					}
-				}
-			case config.SeriesSearchScopeSeason:
+
+	req.EffectiveByIndexer = s.effectiveIndexerConfigs(plan.AsIndexerSearchConfigFor(attempt))
+	params.PreparedQueries = nil
+	params.AbsoluteQueries = nil
+
+	if byID {
+		// An id request names an id. The season/episode text is carried for
+		// the backends that read it instead of the params (Easynews) and for
+		// the request label in logs.
+		if facts.IsSeries {
+			switch target {
+			case config.SearchTargetEpisode:
+				req.Query = seasonEpisodeToken(req.Season, req.Episode)
+			case config.SearchTargetSeason:
 				req.Query = query.AppendSeasonQuery("", req.Season)
 			}
 		}
+		return params, nil
 	}
 
-	req.EffectiveByIndexer = s.effectiveIndexerConfigs(queryIndexerConfig)
-	if searchMode != "id" {
-		var queries []string
-		cacheKey := fmt.Sprintf("%s|%t|%s", searchTitleLanguage, includeYear, scope)
-		if query.MovieLike(params.Metadata, contentType) {
-			if cached, ok := params.MovieTitleQueries[cacheKey]; ok {
-				queries = cached
-			} else {
-				queries = query.BuildMovieQueriesFromMetadata(params.Metadata, searchTitleLanguage, includeYear)
-				if len(queries) > 0 {
-					params.MovieTitleQueries[cacheKey] = queries
-				}
-			}
-		} else if req.Episode != "" || req.Season != "" {
-			if cached, ok := params.SeriesTitleQueries[cacheKey]; ok {
-				queries = cached
-			} else {
-				queries = query.BuildSeriesQueriesFromMetadata(params.Metadata, searchTitleLanguage, includeYear, req.Season, req.Episode, scope)
-				if len(queries) > 0 {
-					params.SeriesTitleQueries[cacheKey] = queries
-				}
-			}
-		} else {
-			queries = query.BuildSeriesQueriesFromMetadata(params.Metadata, searchTitleLanguage, includeYear, "", "", config.SeriesSearchScopeNone)
+	if target == config.SearchTargetAbsolute {
+		params.PreparedQueries = absoluteEpisodeQueries(params, language, facts.Absolute)
+		if len(params.PreparedQueries) > 0 {
+			req.Query = params.PreparedQueries[0]
 		}
+		return params, nil
+	}
 
-		if len(queries) == 0 {
-			for _, qList := range params.SeriesTitleQueries {
-				queries = append(queries, qList...)
-			}
-			for _, qList := range params.MovieTitleQueries {
-				queries = append(queries, qList...)
-			}
-		}
-
-		if len(queries) > 0 {
-			params.PreparedQueries = append([]string(nil), queries...)
-			req.Query = queries[0]
-		}
+	queries := s.titleQueriesFor(params, contentType, language, yearInQuery, req.SeriesSearchScope)
+	if len(queries) > 0 {
+		params.PreparedQueries = append([]string(nil), queries...)
+		req.Query = queries[0]
 	}
 	return params, nil
+}
+
+// seasonEpisodeToken is the S01E04 form of a season and episode, and "" when
+// either is missing.
+func seasonEpisodeToken(season, episode string) string {
+	if season == "" || episode == "" {
+		return ""
+	}
+	if seasonNum, err := strconv.Atoi(season); err == nil {
+		if episodeNum, err := strconv.Atoi(episode); err == nil {
+			return fmt.Sprintf("S%02dE%02d", seasonNum, episodeNum)
+		}
+	}
+	return fmt.Sprintf("S%sE%s", season, episode)
+}
+
+// titleQueriesFor builds the query text for a title attempt, memoized per
+// (language, year, scope) on the shared params — several attempts of several
+// plans ask under the same title.
+func (s *Server) titleQueriesFor(params *query.SearchParams, contentType, language string, includeYear bool, scope string) []string {
+	req := &params.Req
+	cacheKey := fmt.Sprintf("%s|%t|%s", language, includeYear, scope)
+	var queries []string
+	if query.MovieLike(params.Metadata, contentType) {
+		if cached, ok := params.MovieTitleQueries[cacheKey]; ok {
+			return cached
+		}
+		queries = query.BuildMovieQueriesFromMetadata(params.Metadata, language, includeYear)
+		if len(queries) > 0 {
+			params.MovieTitleQueries[cacheKey] = queries
+		}
+		return queries
+	}
+	if req.Episode != "" || req.Season != "" {
+		if cached, ok := params.SeriesTitleQueries[cacheKey]; ok {
+			return cached
+		}
+		queries = query.BuildSeriesQueriesFromMetadata(params.Metadata, language, includeYear, req.Season, req.Episode, scope)
+		if len(queries) > 0 {
+			params.SeriesTitleQueries[cacheKey] = queries
+		}
+		return queries
+	}
+	return query.BuildSeriesQueriesFromMetadata(params.Metadata, language, includeYear, "", "", config.SeriesSearchScopeNone)
+}
+
+// logAttemptConfig records what one attempt is about to ask for. It is the
+// plan read back at dispatch time, which is what a debug log is for.
+func logAttemptConfig(streamLabel, contentType, id string, plan *config.SearchQueryConfig, attempt config.SearchAttempt, params *query.SearchParams, limit int) {
+	accept := plan.Acceptance()
+	attrs := []any{
+		"stream", streamLabel,
+		"request", plan.Name,
+		"attempt", attempt.Label(),
+		"type", contentType,
+		"id", id,
+		"class", params.Req.Class,
+		"limit", searchLimitForLog(limit),
+		"accept_titles", searchTitleLanguagesForLog(accept.AcceptTitles()),
+		"accept_year", accept.YearEnforced(),
+	}
+	if language := attempt.TitleLanguage(); config.NormalizeSearchAddress(attempt.Address) == config.SearchAddressTitle {
+		attrs = append(attrs, "title_language", query.SearchTitleLanguageForLog(language), "query_year", attempt.YearInQuery())
+	}
+	if config.SearchClassIsSeries(params.Req.Class) {
+		attrs = append(attrs, "accept_packs", accept.PacksEnabled())
+		if params.Req.AbsoluteEpisode != "" {
+			attrs = append(attrs, "absolute_episode", params.Req.AbsoluteEpisode)
+		}
+	}
+	logger.Debug("Search attempt", attrs...)
+	if entries, ok := query.SearchRequestNormalisationLogEntries(params.Metadata, contentType, accept.AcceptTitles()); ok {
+		for _, entry := range entries {
+			logger.Debug("Search request normalisation",
+				"stream", streamLabel,
+				"request", plan.Name,
+				"input_title", entry.InputTitle,
+				"normalised_title", entry.NormalizedTitle,
+				"title_languages", entry.Languages,
+			)
+		}
+	}
 }

@@ -42,12 +42,27 @@ const (
 	MaxSessionPostPlaybackTTLMinutes        = 1440
 	DefaultSpeculativePreProbingCount       = 3
 	DefaultSpeculativePreProbingMaxAttempts = 3
-	CurrentConfigVersion                    = 2
-	StreamModelConfigVersion                = 2
-	defaultMigratedStreamID                 = "default"
-	SeriesSearchScopeSeasonEpisode          = "season_episode"
-	SeriesSearchScopeSeason                 = "season"
-	SeriesSearchScopeNone                   = "none"
+	// CurrentConfigVersion 3 is the search-plan schema: a search request is an
+	// ordered list of attempts rather than a set of interacting mode/scope
+	// flags. StreamModelConfigVersion stays at 2 — it gates the stream reset,
+	// which this schema change does not need.
+	CurrentConfigVersion           = 3
+	StreamModelConfigVersion       = 2
+	defaultMigratedStreamID        = "default"
+	SeriesSearchScopeSeasonEpisode = "season_episode"
+	SeriesSearchScopeSeason        = "season"
+	SeriesSearchScopeNone          = "none"
+	// SeriesSearchScopeEpisodeThenSeason and SeriesSearchScopeDynamic are
+	// the pre-plan schema's two adaptive scopes. They named an ordered pair of
+	// the concrete scopes above, which a plan's attempt list says outright, so
+	// they survive only as values migrateSearchPlan reads.
+	SeriesSearchScopeEpisodeThenSeason = "episode_then_season"
+	SeriesSearchScopeDynamic           = "dynamic"
+	SearchModeID                       = "id"
+	SearchModeText                     = "text"
+	// SearchModeDynamic was the same for addressing: an id search with a text
+	// search behind it. Also pre-plan, also read only by migrateSearchPlan.
+	SearchModeDynamic = "dynamic"
 	// legacySeriesSearchScopeAbsolute was a dedicated scope that queried anime
 	// by absolute episode number. Absolute querying is now a per-query
 	// supplement (TryAbsoluteEpisode), so the scope migrates to season_episode
@@ -113,6 +128,8 @@ func (p Provider) PoolName() string {
 
 func ptrBool(b bool) *bool { return &b }
 
+func ptrString(s string) *string { return &s }
+
 func IsAggregatorIndexerType(indexerType string) bool {
 	switch strings.ToLower(strings.TrimSpace(indexerType)) {
 	case "aggregator", "nzbhydra", "prowlarr":
@@ -123,16 +140,18 @@ func IsAggregatorIndexerType(indexerType string) bool {
 }
 
 type IndexerSearchConfig struct {
-	SearchResultLimit          int     `json:"search_result_limit,omitempty"`
-	EnableSeriesSeasonSearch   *bool   `json:"enable_series_season_search,omitempty"`
-	EnableSeriesCompleteSearch *bool   `json:"enable_series_complete_search,omitempty"`
-	EnableSeriesPackSearch     *bool   `json:"enable_series_pack_search,omitempty"`
-	SearchTitleLanguage        *string `json:"search_title_language,omitempty"`
-	MovieCategories            *string `json:"movie_categories,omitempty"`
-	TVCategories               *string `json:"tv_categories,omitempty"`
-	DisableIdSearch            *bool   `json:"disable_id_search,omitempty"`
-	DisableStringSearch        *bool   `json:"disable_string_search,omitempty"`
-	ContentScope               *string `json:"content_scope,omitempty"`
+	SearchResultLimit   int     `json:"search_result_limit,omitempty"`
+	SearchTitleLanguage *string `json:"search_title_language,omitempty"`
+	// MovieCategories and TVCategories are an indexer's own category
+	// vocabulary, per content kind. Categories is the search plan's override
+	// of it and wins for whatever kind the request is; both are optional, and
+	// with both empty an indexer answers from its published caps.
+	MovieCategories     *string `json:"movie_categories,omitempty"`
+	TVCategories        *string `json:"tv_categories,omitempty"`
+	Categories          *string `json:"categories,omitempty"`
+	DisableIdSearch     *bool   `json:"disable_id_search,omitempty"`
+	DisableStringSearch *bool   `json:"disable_string_search,omitempty"`
+	ContentScope        *string `json:"content_scope,omitempty"`
 }
 
 // Indexer content scopes: which requests an indexer participates in.
@@ -154,27 +173,39 @@ func NormalizeIndexerContentScope(raw string) string {
 	return IndexerContentScopeAll
 }
 
+// SearchQueryConfig is one named search plan, referenced by streams. See
+// searchplan.go for the model: an ordered list of attempts, one stop rule, one
+// statement of what counts as a match.
 type SearchQueryConfig struct {
-	Name                   string `json:"name"`
-	SearchMode             string `json:"search_mode,omitempty"`
-	SearchResultLimit      int    `json:"search_result_limit,omitempty"`
-	IncludeYear            *bool  `json:"include_year,omitempty"`
-	UseSeasonEpisodeParams *bool  `json:"use_season_episode_params,omitempty"`
-	SeriesSearchScope      string `json:"series_search_scope,omitempty"`
-	// TryAbsoluteEpisode supplements anime series searches with absolute-
-	// numbered text queries ("One Piece 63" for S02E02) and lets validation
-	// accept absolute-numbered releases. Nil defaults to enabled; series only.
-	TryAbsoluteEpisode            *bool    `json:"try_absolute_episode,omitempty"`
-	EnableSeriesSeasonSearch      *bool    `json:"enable_series_season_search,omitempty"`
-	EnableSeriesCompleteSearch    *bool    `json:"enable_series_complete_search,omitempty"`
-	EnableSeriesPackSearch        *bool    `json:"enable_series_pack_search,omitempty"`
-	SearchTitleLanguage           string   `json:"search_title_language,omitempty"`
-	SearchTitleLanguages          []string `json:"search_title_languages,omitempty"`
-	LegacyIncludeYearInTextSearch *bool    `json:"include_year_in_text_search,omitempty"`
-	MovieCategories               string   `json:"movie_categories,omitempty"`
-	TVCategories                  string   `json:"tv_categories,omitempty"`
-	DisableIdSearch               *bool    `json:"disable_id_search,omitempty"`
-	DisableStringSearch           *bool    `json:"disable_string_search,omitempty"`
+	Name string `json:"name"`
+
+	// Attempts is the plan proper: the questions to ask indexers, in order.
+	Attempts []SearchAttempt `json:"attempts,omitempty"`
+	// Stop is when to stop walking them, Order whether to reorder them for
+	// the state of the season, and Accept what counts as a match.
+	Stop   string            `json:"stop,omitempty"`
+	Order  string            `json:"order,omitempty"`
+	Accept *SearchAcceptance `json:"accept,omitempty"`
+
+	SearchResultLimit int `json:"search_result_limit,omitempty"`
+	// Categories overrides the Newznab categories for this plan. Empty — the
+	// default — lets each indexer answer for its own vocabulary, from its
+	// published caps. A category id means different things on different
+	// indexers, so it is theirs to name, not the plan's.
+	Categories string `json:"categories,omitempty"`
+
+	// Everything below is the pre-plan schema, read once on load, migrated
+	// into the fields above, and then cleared. See migrateSearchPlan.
+	LegacySearchMode             string   `json:"search_mode,omitempty"`
+	LegacyIncludeYear            *bool    `json:"include_year,omitempty"`
+	LegacyUseSeasonEpisodeParams *bool    `json:"use_season_episode_params,omitempty"`
+	LegacySeriesSearchScope      string   `json:"series_search_scope,omitempty"`
+	LegacyTryAbsoluteEpisode     *bool    `json:"try_absolute_episode,omitempty"`
+	LegacySearchTitleLanguage    string   `json:"search_title_language,omitempty"`
+	LegacySearchTitleLanguages   []string `json:"search_title_languages,omitempty"`
+	LegacyIncludeYearInText      *bool    `json:"include_year_in_text_search,omitempty"`
+	LegacyMovieCategories        string   `json:"movie_categories,omitempty"`
+	LegacyTVCategories           string   `json:"tv_categories,omitempty"`
 }
 
 // FilterProfileConfig is one named filtering/ranking profile. Ranking holds
@@ -262,15 +293,12 @@ type IndexerConfig struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 
-	MovieCategories            string `json:"movie_categories,omitempty"`
-	TVCategories               string `json:"tv_categories,omitempty"`
-	SearchResultLimit          int    `json:"search_result_limit,omitempty"`
-	EnableSeriesSeasonSearch   *bool  `json:"enable_series_season_search,omitempty"`
-	EnableSeriesCompleteSearch *bool  `json:"enable_series_complete_search,omitempty"`
-	EnableSeriesPackSearch     *bool  `json:"enable_series_pack_search,omitempty"`
-	SearchTitleLanguage        string `json:"search_title_language,omitempty"`
-	DisableIdSearch            *bool  `json:"disable_id_search,omitempty"`
-	DisableStringSearch        *bool  `json:"disable_string_search,omitempty"`
+	MovieCategories     string `json:"movie_categories,omitempty"`
+	TVCategories        string `json:"tv_categories,omitempty"`
+	SearchResultLimit   int    `json:"search_result_limit,omitempty"`
+	SearchTitleLanguage string `json:"search_title_language,omitempty"`
+	DisableIdSearch     *bool  `json:"disable_id_search,omitempty"`
+	DisableStringSearch *bool  `json:"disable_string_search,omitempty"`
 
 	// ContentScope restricts which requests this indexer participates in:
 	// "anime" queries it only for anime content, "non_anime" for everything
@@ -625,6 +653,18 @@ func normalizeSeriesSearchScopeFromLegacy(scope string, useSeasonEpisodeParams *
 	return normalizedScope
 }
 
+// NormalizeSearchMode maps a raw search mode to "id", "dynamic" or "text";
+// anything else is a text search, which is what an unset mode has always been.
+func NormalizeSearchMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case SearchModeID:
+		return SearchModeID
+	case SearchModeDynamic:
+		return SearchModeDynamic
+	}
+	return SearchModeText
+}
+
 func SeriesSearchScopeUsesSeasonParams(scope, searchMode string) bool {
 	if !strings.EqualFold(strings.TrimSpace(searchMode), "id") {
 		return false
@@ -648,15 +688,6 @@ func SeriesSearchScopeSearchTarget(scope, searchMode, season, episode string) (s
 		return strings.TrimSpace(season), ""
 	default:
 		return "", ""
-	}
-}
-
-func SeriesSearchScopeRequiresValidation(scope string) bool {
-	switch NormalizeSeriesSearchScope(scope) {
-	case SeriesSearchScopeSeason, SeriesSearchScopeNone:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -903,7 +934,6 @@ type StreamEntry struct {
 	IndexerMode       string `json:"indexer_mode,omitempty"`
 	UseAvailNZB       *bool  `json:"use_availnzb,omitempty"`
 	FilterAvailNZB    *bool  `json:"filter_availnzb,omitempty"`
-	CombineResults    *bool  `json:"combine_results,omitempty"`
 	EnableFailover    *bool  `json:"enable_failover,omitempty"`
 	// VariantAttempts caps how many copies of one release playback may try
 	// before moving on to a different release. 0 means the default
@@ -981,51 +1011,25 @@ func (fp *FilterProfileConfig) EffectiveLibraryScoreBonus() int {
 	return *fp.LibraryScoreBonus
 }
 
-// TryAbsoluteEpisodeEnabled reports whether the query supplements anime series
-// searches with absolute-numbered queries. Defaults to enabled when unset.
-func (sq *SearchQueryConfig) TryAbsoluteEpisodeEnabled() bool {
-	if sq == nil || sq.TryAbsoluteEpisode == nil {
-		return true
-	}
-	return *sq.TryAbsoluteEpisode
-}
-
-func (sq *SearchQueryConfig) AsIndexerSearchConfig() *IndexerSearchConfig {
+// AsIndexerSearchConfigFor is the plan's per-indexer search config for one
+// attempt. The address decides which kind of search the indexers are asked
+// for, so an indexer that cannot answer that kind sits the attempt out — which
+// is a capability of the indexer, not something the plan grants it. See
+// MergeIndexerSearch.
+func (sq *SearchQueryConfig) AsIndexerSearchConfigFor(attempt SearchAttempt) *IndexerSearchConfig {
 	if sq == nil {
 		return nil
 	}
-	out := &IndexerSearchConfig{
-		SearchResultLimit:          sq.SearchResultLimit,
-		EnableSeriesSeasonSearch:   sq.EnableSeriesSeasonSearch,
-		EnableSeriesCompleteSearch: sq.EnableSeriesCompleteSearch,
-		EnableSeriesPackSearch:     sq.EnableSeriesPackSearch,
+	out := &IndexerSearchConfig{SearchResultLimit: sq.SearchResultLimit}
+	disableID := NormalizeSearchAddress(attempt.Address) != SearchAddressID
+	disableString := !disableID
+	out.DisableIdSearch = &disableID
+	out.DisableStringSearch = &disableString
+	if language := attempt.TitleLanguage(); language != "" {
+		out.SearchTitleLanguage = &language
 	}
-	mode := strings.ToLower(strings.TrimSpace(sq.SearchMode))
-	switch mode {
-	case "id":
-		disableID := false
-		disableString := true
-		out.DisableIdSearch = &disableID
-		out.DisableStringSearch = &disableString
-	case "text":
-		disableID := true
-		disableString := false
-		out.DisableIdSearch = &disableID
-		out.DisableStringSearch = &disableString
-	default:
-		out.DisableIdSearch = sq.DisableIdSearch
-		out.DisableStringSearch = sq.DisableStringSearch
-	}
-	if s := NormalizeSearchTitleLanguage(sq.SearchTitleLanguage); s != "" {
-		out.SearchTitleLanguage = &s
-	}
-	if sq.MovieCategories != "" {
-		s := sq.MovieCategories
-		out.MovieCategories = &s
-	}
-	if sq.TVCategories != "" {
-		s := sq.TVCategories
-		out.TVCategories = &s
+	if categories := strings.TrimSpace(sq.Categories); categories != "" {
+		out.Categories = &categories
 	}
 	return out
 }
@@ -1059,35 +1063,6 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 	if override != nil && override.SearchResultLimit > 0 {
 		out.SearchResultLimit = override.SearchResultLimit
 	}
-	seriesSeasonSearch := true
-	if ic != nil && ic.EnableSeriesPackSearch != nil {
-		seriesSeasonSearch = *ic.EnableSeriesPackSearch
-	}
-	if ic != nil && ic.EnableSeriesSeasonSearch != nil {
-		seriesSeasonSearch = *ic.EnableSeriesSeasonSearch
-	}
-	if override != nil && override.EnableSeriesPackSearch != nil {
-		seriesSeasonSearch = *override.EnableSeriesPackSearch
-	}
-	if override != nil && override.EnableSeriesSeasonSearch != nil {
-		seriesSeasonSearch = *override.EnableSeriesSeasonSearch
-	}
-	out.EnableSeriesSeasonSearch = &seriesSeasonSearch
-
-	seriesCompleteSearch := true
-	if ic != nil && ic.EnableSeriesPackSearch != nil {
-		seriesCompleteSearch = *ic.EnableSeriesPackSearch
-	}
-	if ic != nil && ic.EnableSeriesCompleteSearch != nil {
-		seriesCompleteSearch = *ic.EnableSeriesCompleteSearch
-	}
-	if override != nil && override.EnableSeriesPackSearch != nil {
-		seriesCompleteSearch = *override.EnableSeriesPackSearch
-	}
-	if override != nil && override.EnableSeriesCompleteSearch != nil {
-		seriesCompleteSearch = *override.EnableSeriesCompleteSearch
-	}
-	out.EnableSeriesCompleteSearch = &seriesCompleteSearch
 	s := ""
 	if ic != nil && ic.SearchTitleLanguage != "" {
 		s = ic.SearchTitleLanguage
@@ -1119,12 +1094,22 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		out.TVCategories = &tc
 	}
 
+	if override != nil && override.Categories != nil && strings.TrimSpace(*override.Categories) != "" {
+		planCategories := strings.TrimSpace(*override.Categories)
+		out.Categories = &planCategories
+	}
+
+	// Whether an indexer can be asked by id, or by title text, is a capability
+	// of the indexer — so either side saying no is a no. The override carries
+	// the attempt's address (an id attempt disables text search and vice
+	// versa); letting it win outright would have a plan force an id search on
+	// an indexer configured not to serve one.
 	disableID := false
 	if ic != nil && ic.DisableIdSearch != nil {
 		disableID = *ic.DisableIdSearch
 	}
 	if override != nil && override.DisableIdSearch != nil {
-		disableID = *override.DisableIdSearch
+		disableID = disableID || *override.DisableIdSearch
 	}
 	out.DisableIdSearch = &disableID
 
@@ -1133,7 +1118,7 @@ func MergeIndexerSearch(ic *IndexerConfig, override *IndexerSearchConfig, global
 		disableString = *ic.DisableStringSearch
 	}
 	if override != nil && override.DisableStringSearch != nil {
-		disableString = *override.DisableStringSearch
+		disableString = disableString || *override.DisableStringSearch
 	}
 	out.DisableStringSearch = &disableString
 
@@ -1390,139 +1375,23 @@ func (c *Config) applyStreamModelUpgradeDefaults() bool {
 	return changed
 }
 
-// ensureDefaultMigrationSearchQueries seeds the four stock search requests.
-// Movie queries carry the year because movie releases are named with one;
-// series queries do not, because scene TV releases are named
-// "Title.S01E01.1080p..." — a year token narrows the indexer query to nothing
-// and arms year validation against results that can never carry one.
+// ensureDefaultMigrationSearchQueries seeds the two stock search plans, one
+// per content kind. See DefaultMoviePlan and DefaultTVPlan.
 func (c *Config) ensureDefaultMigrationSearchQueries() bool {
 	changed := false
-	if c.ensureMovieSearchQuery(SearchQueryConfig{
-		Name:                "DefaultMovieText",
-		SearchMode:          "text",
-		SearchResultLimit:   0,
-		MovieCategories:     "2000",
-		IncludeYear:         ptrBool(true),
-		SearchTitleLanguage: "en-US",
-	}) {
+	if c.ensureMovieSearchQuery(DefaultMoviePlan("DefaultMovie")) {
 		changed = true
 	}
-	if c.ensureMovieSearchQuery(SearchQueryConfig{
-		Name:                 "DefaultMovieID",
-		SearchMode:           "id",
-		SearchResultLimit:    0,
-		MovieCategories:      "2000",
-		IncludeYear:          ptrBool(true),
-		SearchTitleLanguages: DefaultIDSearchTitleLanguages(),
-	}) {
-		changed = true
-	}
-	if c.ensureSeriesSearchQuery(SearchQueryConfig{
-		Name:                "DefaultTVText",
-		SearchMode:          "text",
-		SearchResultLimit:   0,
-		TVCategories:        "5000",
-		IncludeYear:         ptrBool(false),
-		SeriesSearchScope:   SeriesSearchScopeSeasonEpisode,
-		TryAbsoluteEpisode:  ptrBool(true),
-		SearchTitleLanguage: "en-US",
-	}) {
-		changed = true
-	}
-	if c.ensureSeriesSearchQuery(SearchQueryConfig{
-		Name:                 "DefaultTVID",
-		SearchMode:           "id",
-		SearchResultLimit:    0,
-		TVCategories:         "5000",
-		IncludeYear:          ptrBool(false),
-		SeriesSearchScope:    SeriesSearchScopeSeasonEpisode,
-		TryAbsoluteEpisode:   ptrBool(true),
-		SearchTitleLanguages: DefaultIDSearchTitleLanguages(),
-	}) {
+	if c.ensureSeriesSearchQuery(DefaultTVPlan("DefaultTV")) {
 		changed = true
 	}
 	return changed
 }
 
-func backfillLegacySearchQuerySettingsForQuery(query *SearchQueryConfig, isSeries bool) bool {
-	if query == nil {
-		return false
-	}
-	changed := false
-	if query.IncludeYear == nil {
-		if query.LegacyIncludeYearInTextSearch != nil {
-			query.IncludeYear = ptrBool(*query.LegacyIncludeYearInTextSearch)
-		} else {
-			// Same rule the stock queries use: movie releases are named with a
-			// year, series releases are not.
-			query.IncludeYear = ptrBool(!isSeries)
-		}
-		changed = true
-	}
-	if query.LegacyIncludeYearInTextSearch != nil {
-		query.LegacyIncludeYearInTextSearch = nil
-		changed = true
-	}
-	normalizedSingleLanguage := NormalizeSearchTitleLanguage(query.SearchTitleLanguage)
-	if query.SearchTitleLanguage != normalizedSingleLanguage {
-		query.SearchTitleLanguage = normalizedSingleLanguage
-		changed = true
-	}
-	normalizedLanguages := NormalizeSearchTitleLanguages(query.SearchTitleLanguages)
-	if len(query.SearchTitleLanguages) != len(normalizedLanguages) || strings.Join(query.SearchTitleLanguages, "\x00") != strings.Join(normalizedLanguages, "\x00") {
-		query.SearchTitleLanguages = normalizedLanguages
-		changed = true
-	}
-	if strings.EqualFold(strings.TrimSpace(query.SearchMode), "id") && len(query.SearchTitleLanguages) == 0 {
-		if query.SearchTitleLanguage == "" {
-			query.SearchTitleLanguages = DefaultIDSearchTitleLanguages()
-		} else {
-			query.SearchTitleLanguages = NormalizeSearchTitleLanguages([]string{query.SearchTitleLanguage})
-		}
-		changed = true
-	}
-	if isSeries {
-		// The retired "absolute" scope becomes season_episode with the
-		// absolute-episode supplement explicitly enabled.
-		if strings.EqualFold(strings.TrimSpace(query.SeriesSearchScope), legacySeriesSearchScopeAbsolute) && query.TryAbsoluteEpisode == nil {
-			query.TryAbsoluteEpisode = ptrBool(true)
-			changed = true
-		}
-		normalizedScope := normalizeSeriesSearchScopeFromLegacy(query.SeriesSearchScope, query.UseSeasonEpisodeParams)
-		if query.SeriesSearchScope != normalizedScope {
-			query.SeriesSearchScope = normalizedScope
-			changed = true
-		}
-	} else {
-		if query.SeriesSearchScope != "" {
-			query.SeriesSearchScope = ""
-			changed = true
-		}
-		if query.TryAbsoluteEpisode != nil {
-			query.TryAbsoluteEpisode = nil
-			changed = true
-		}
-	}
-	if query.UseSeasonEpisodeParams != nil {
-		query.UseSeasonEpisodeParams = nil
-		changed = true
-	}
-	return changed
-}
-
+// backfillLegacySearchQuerySettings converts the pre-plan search-request
+// schema. It is MigrateSearchPlans under the name the load path calls it by.
 func (c *Config) backfillLegacySearchQuerySettings() bool {
-	changed := false
-	for i := range c.MovieSearchQueries {
-		if backfillLegacySearchQuerySettingsForQuery(&c.MovieSearchQueries[i], false) {
-			changed = true
-		}
-	}
-	for i := range c.SeriesSearchQueries {
-		if backfillLegacySearchQuerySettingsForQuery(&c.SeriesSearchQueries[i], true) {
-			changed = true
-		}
-	}
-	return changed
+	return c.MigrateSearchPlans()
 }
 
 func (c *Config) ensureMovieSearchQuery(query SearchQueryConfig) bool {
@@ -1564,7 +1433,6 @@ func (c *Config) ensureDefaultMigratedStream() bool {
 		FilterSortingMode:   "aiostreams",
 		IndexerMode:         "combine",
 		UseAvailNZB:         ptrBool(true),
-		CombineResults:      ptrBool(true),
 		EnableFailover:      ptrBool(true),
 		VariantAttempts:     DefaultVariantAttempts,
 		ResultsMode:         "display_all",
@@ -1608,6 +1476,12 @@ func allIndexerNames(indexers []IndexerConfig) []string {
 		}
 	}
 	return names
+}
+
+// SearchQueryNames lists the configured search requests by name, in
+// configured order — what a new stream selects by default.
+func SearchQueryNames(queries []SearchQueryConfig) []string {
+	return allSearchQueryNames(queries)
 }
 
 func allSearchQueryNames(queries []SearchQueryConfig) []string {

@@ -673,13 +673,6 @@ func streamIndexerMode(stream *auth.Stream) string {
 	}
 }
 
-func streamCombinesResults(stream *auth.Stream) bool {
-	if stream == nil || stream.CombineResults == nil {
-		return true
-	}
-	return *stream.CombineResults
-}
-
 func streamFailoverEnabled(stream *auth.Stream) bool {
 	if stream == nil || stream.EnableFailover == nil {
 		return true

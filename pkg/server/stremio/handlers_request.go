@@ -207,12 +207,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, stream *au
 	logger.Debug("Stream finished",
 		"stream", streamLogName(stream),
 		"indexer_mode", streamIndexerMode(stream),
-		"search_requests_mode", func() string {
-			if streamCombinesResults(stream) {
-				return "combine"
-			}
-			return "first_hit"
-		}(),
 		"results_mode", streamResultsMode(stream),
 		"candidate_results", candidateCount,
 		"final_results", len(streams),

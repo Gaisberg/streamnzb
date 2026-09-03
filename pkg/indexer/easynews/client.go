@@ -204,7 +204,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	// Easynews exposes no cheap auth-check endpoint; a minimal real search is
 	// the only reliable credential probe.
 	testQuery := "dune"
-	_, _, err := c.searchInternal(ctx, testQuery, "", "", config.SeriesSearchScopeNone, "", false)
+	_, _, err := c.searchInternal(ctx, testQuery, "", "", config.SeriesSearchScopeNone, false, false)
 	if err != nil {
 		return fmt.Errorf("easynews credentials invalid: %w", err)
 	}
@@ -242,7 +242,8 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 
 	season := req.Season
 	episode := req.Episode
-	searchURL := buildEasynewsSearchURL(query, season, episode, req.SeriesSearchScope, req.Cat, c.searchOptions())
+	isSeries := config.SearchClassIsSeries(req.Class)
+	searchURL := buildEasynewsSearchURL(query, season, episode, req.SeriesSearchScope, isSeries, c.searchOptions())
 
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,
@@ -252,11 +253,11 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		"type", "easynews",
 		"advanced", c.advancedSearch,
 		"url", searchURL,
-		"gps", buildEasynewsGPSQuery(query, season, episode, req.SeriesSearchScope, req.Cat),
+		"gps", buildEasynewsGPSQuery(query, season, episode, req.SeriesSearchScope, isSeries),
 	)
 
 	startedAt := time.Now()
-	results, stats, err := c.searchInternal(ctx, query, season, episode, req.SeriesSearchScope, req.Cat, false)
+	results, stats, err := c.searchInternal(ctx, query, season, episode, req.SeriesSearchScope, isSeries, false)
 	if err != nil {
 		return nil, fmt.Errorf("easynews search failed: %w", err)
 	}
@@ -346,9 +347,12 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	return nzbData, nil
 }
 
-func buildEasynewsGPSQuery(query, season, episode, scope, category string) string {
+// buildEasynewsGPSQuery builds Easynews' single search string. Easynews has no
+// categories, so what it needs from a request is the class — whether this is
+// TV at all — not a Newznab number to sniff a prefix off.
+func buildEasynewsGPSQuery(query, season, episode, scope string, isSeries bool) string {
 	query = release.NormalizeTitleForSearchQuery(query)
-	if !strings.HasPrefix(strings.TrimSpace(category), "5") {
+	if !isSeries {
 		return query
 	}
 	switch config.NormalizeSeriesSearchScope(scope) {
@@ -413,14 +417,14 @@ type easynewsSearchStats struct {
 	Pages      int
 }
 
-func (c *Client) searchInternal(ctx context.Context, query, season, episode, scope, category string, strictMode bool) ([]easynewsResult, easynewsSearchStats, error) {
+func (c *Client) searchInternal(ctx context.Context, query, season, episode, scope string, isSeries, strictMode bool) ([]easynewsResult, easynewsSearchStats, error) {
 	var (
 		rows  []interface{}
 		stats easynewsSearchStats
 	)
 
 	for page := 1; page <= maxSearchPages; page++ {
-		data, err := c.fetchSearchPage(ctx, query, season, episode, scope, category, page)
+		data, err := c.fetchSearchPage(ctx, query, season, episode, scope, isSeries, page)
 		if err != nil {
 			// Page one failing is the search failing; a later page failing just
 			// means we return what we already have rather than nothing.
@@ -455,10 +459,10 @@ func (c *Client) searchInternal(ctx context.Context, query, season, episode, sco
 	return results, stats, nil
 }
 
-func (c *Client) fetchSearchPage(ctx context.Context, query, season, episode, scope, category string, page int) (*easynewsSearchResponse, error) {
+func (c *Client) fetchSearchPage(ctx context.Context, query, season, episode, scope string, isSeries bool, page int) (*easynewsSearchResponse, error) {
 	opts := c.searchOptions()
 	opts.page = page
-	searchURL := buildEasynewsSearchURL(query, season, episode, scope, category, opts)
+	searchURL := buildEasynewsSearchURL(query, season, episode, scope, isSeries, opts)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
@@ -520,7 +524,7 @@ func fileExtensionList() string {
 	return defaultFileExtensions
 }
 
-func buildEasynewsSearchURL(query, season, episode, scope, category string, opts searchOptions) string {
+func buildEasynewsSearchURL(query, season, episode, scope string, isSeries bool, opts searchOptions) string {
 	params := url.Values{}
 	params.Set("fly", "2")
 	params.Set("sb", "1")
@@ -534,7 +538,7 @@ func buildEasynewsSearchURL(query, season, episode, scope, category string, opts
 	params.Set("chxu", "1")
 	params.Set("chxgx", "1")
 	params.Set("st", "basic")
-	params.Set("gps", buildEasynewsGPSQuery(query, season, episode, scope, category))
+	params.Set("gps", buildEasynewsGPSQuery(query, season, episode, scope, isSeries))
 	params.Set("vv", "1")
 	params.Set("safeO", "0")
 	params.Set("s1", "relevance")
