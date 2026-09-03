@@ -55,13 +55,15 @@ func (s *Server) seadexContext(ctx context.Context, source *playlistSource, stre
 		return &rules.SeadexContext{}
 	}
 	best, alt := entry.GroupSets()
+	dual := entry.DualAudioGroups()
 	logger.Debug("SeaDex entry resolved",
 		"kitsu_id", kitsuID,
 		"anilist_id", mapping.AniListID,
 		"best_groups", len(best),
 		"alt_groups", len(alt),
+		"dual_audio_groups", len(dual),
 	)
-	return &rules.SeadexContext{Known: true, Best: best, Alt: alt}
+	return &rules.SeadexContext{Known: true, Best: best, Alt: alt, DualAudio: dual}
 }
 
 // annotateSeadexVerdicts judges each candidate's parsed group against the
@@ -83,6 +85,7 @@ func annotateSeadexVerdicts(candidates []triage.Candidate, seadexCtx *rules.Sead
 			Known:       se.Known,
 			Best:        se.Best,
 			Alternative: se.Alternative,
+			DualAudio:   se.DualAudio,
 		}
 	}
 }

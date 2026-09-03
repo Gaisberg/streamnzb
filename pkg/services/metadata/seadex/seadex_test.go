@@ -111,3 +111,19 @@ func TestGroupSetsBestWins(t *testing.T) {
 		t.Fatal("a nil entry recommends nothing")
 	}
 }
+
+func TestDualAudioGroups(t *testing.T) {
+	entry := &Entry{Torrents: []Torrent{
+		{ReleaseGroup: "Koala", IsBest: true, DualAudio: false},
+		{ReleaseGroup: "Anime Time", IsBest: false, DualAudio: true},
+		{ReleaseGroup: "LostYears", IsBest: true, DualAudio: true},
+		{ReleaseGroup: "  ", DualAudio: true},
+	}}
+	dual := entry.DualAudioGroups()
+	if !dual["anime time"] || !dual["lostyears"] || len(dual) != 2 {
+		t.Fatalf("dual = %v, want exactly anime time and lostyears", dual)
+	}
+	if len((*Entry)(nil).DualAudioGroups()) != 0 {
+		t.Fatal("a nil entry has no dual-audio groups")
+	}
+}

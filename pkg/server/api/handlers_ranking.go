@@ -66,6 +66,9 @@ type explainSeadex struct {
 	Known      bool     `json:"known,omitempty"`
 	BestGroups []string `json:"best_groups,omitempty"`
 	AltGroups  []string `json:"alt_groups,omitempty"`
+	// DualAudioGroups names the groups whose recommended release is marked
+	// dual audio; a group may appear here and in one of the lists above.
+	DualAudioGroups []string `json:"dual_audio_groups,omitempty"`
 }
 
 // toSeadex builds the request-level SeaDex context, nil when the sample does
@@ -75,9 +78,15 @@ func (e *explainSample) toSeadex() *rules.SeadexContext {
 		return nil
 	}
 	out := &rules.SeadexContext{
-		Known: e.Seadex.Known || len(e.Seadex.BestGroups) > 0 || len(e.Seadex.AltGroups) > 0,
-		Best:  make(map[string]bool, len(e.Seadex.BestGroups)),
-		Alt:   make(map[string]bool, len(e.Seadex.AltGroups)),
+		Known:     e.Seadex.Known || len(e.Seadex.BestGroups) > 0 || len(e.Seadex.AltGroups) > 0 || len(e.Seadex.DualAudioGroups) > 0,
+		Best:      make(map[string]bool, len(e.Seadex.BestGroups)),
+		Alt:       make(map[string]bool, len(e.Seadex.AltGroups)),
+		DualAudio: make(map[string]bool, len(e.Seadex.DualAudioGroups)),
+	}
+	for _, g := range e.Seadex.DualAudioGroups {
+		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
+			out.DualAudio[g] = true
+		}
 	}
 	for _, g := range e.Seadex.BestGroups {
 		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {

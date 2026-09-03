@@ -27,7 +27,7 @@ release's parsed data.
 | Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
-| SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` |
+| SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` `.Seadex.DualAudio` |
 | Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
 | Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
@@ -141,8 +141,11 @@ rules](rules.md#community--from-seadex) for how the lookup works. `.Best` and
 recommended for *this* anime rather than groups with a good name in general:
 
 ```
-{{if .Seadex.Best}}🥇 SeaDex best{{else if .Seadex.Alternative}}🥈 SeaDex pick{{end}}
+{{if .Seadex.Best}}🥇 SeaDex best{{else if .Seadex.Alternative}}🥈 SeaDex pick{{end}}{{if .Seadex.DualAudio}} · dual audio{{end}}
 ```
+
+`.DualAudio` is SeaDex's own flag on the group's recommended release, so it
+marks dual audio even when the release name does not say so.
 
 `.Checked` reports a lookup ran at all (only anime requested through Kitsu is
 looked up), and `.Known` that SeaDex has an entry for the title. Both are false
