@@ -97,6 +97,12 @@ type explainProbe struct {
 	BitDepth    int    `json:"bit_depth,omitempty"`
 	HDR         string `json:"hdr,omitempty"`
 	DolbyVision bool   `json:"dolby_vision,omitempty"`
+	// Track languages as ISO 639-1 codes, and track counts, so a preview can
+	// exercise `"ja" in probed.audioLanguages` and `probed.audioStreams >= 2`.
+	AudioLanguages    []string `json:"audio_languages,omitempty"`
+	SubtitleLanguages []string `json:"subtitle_languages,omitempty"`
+	AudioStreams      int      `json:"audio_streams,omitempty"`
+	SubtitleStreams   int      `json:"subtitle_streams,omitempty"`
 }
 
 // toSample turns the request's pretend-release into what ranking evaluates
@@ -123,6 +129,11 @@ func (e *explainSample) toSample() *ranking.Sample {
 			BitDepth:    p.BitDepth,
 			HDR:         p.HDR,
 			DolbyVision: p.DolbyVision,
+
+			AudioLanguages:    p.AudioLanguages,
+			SubtitleLanguages: p.SubtitleLanguages,
+			AudioStreams:      max(p.AudioStreams, len(p.AudioLanguages)),
+			SubtitleStreams:   max(p.SubtitleStreams, len(p.SubtitleLanguages)),
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(e.AvailStatus)) {
