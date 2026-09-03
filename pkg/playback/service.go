@@ -840,5 +840,10 @@ func MediaCapabilitiesFromProbe(res *ffprobe.FFprobeResult) *session.MediaCapabi
 		ColorTransfer:   res.ColorTransfer,
 		CodecTag:        res.CodecTag,
 		DurationSeconds: res.DurationSeconds,
+
+		AudioLanguages:    res.AudioLanguages,
+		SubtitleLanguages: res.SubtitleLanguages,
+		AudioStreams:      res.AudioStreams,
+		SubtitleStreams:   res.SubtitleStreams,
 	}
 }

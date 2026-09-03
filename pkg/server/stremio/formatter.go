@@ -144,6 +144,12 @@ type ProbedCaps struct {
 	DolbyVision    bool
 	HasHDRFallback bool
 	DynamicRange   string // "DV + HDR10", "DV only", "HDR10", or "" for SDR
+	// AudioLanguages and SubtitleLanguages are the tagged track languages as
+	// ISO 639-1 codes; AudioStreams and SubtitleStreams count every track.
+	AudioLanguages    stringList
+	SubtitleLanguages stringList
+	AudioStreams      int
+	SubtitleStreams   int
 }
 
 // AvailInfo is the community availability record for one release.
@@ -659,6 +665,11 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 			DolbyVision:    probed.DolbyVision,
 			HasHDRFallback: probed.HasHDRFallback(),
 			DynamicRange:   probed.DynamicRange(),
+
+			AudioLanguages:    probed.AudioLanguages,
+			SubtitleLanguages: probed.SubtitleLanguages,
+			AudioStreams:      probed.AudioStreams,
+			SubtitleStreams:   probed.SubtitleStreams,
 		}
 	}
 	rel := cand.Release

@@ -106,6 +106,41 @@ func TestDolbyVisionWithoutFallbackFromProbe(t *testing.T) {
 	}
 }
 
+// Track languages come from the file, not the name. A release tagged DUAL says
+// nothing about which two languages; the probe says ["ja", "en"]. And a muxer
+// that tagged nothing still leaves a track count to read dual audio from.
+func TestTrackLanguagesFromProbe(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Japanese audio, measured", When: `"ja" in probed.audioLanguages`, Points: 800},
+		config.RuleConfig{Name: "Dual audio, measured", When: `probed.audioStreams >= 2`, Points: 400},
+		config.RuleConfig{Name: "Arabic subs, measured", When: `"ar" in probed.subtitleLanguages`, Points: 300},
+	)
+
+	tagged := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{
+			VideoCodec: "hevc", Height: 1080,
+			AudioLanguages: []string{"ja", "en"}, AudioStreams: 2,
+			SubtitleLanguages: []string{"en", "ar"}, SubtitleStreams: 2,
+		}
+	})
+	if got := set.Evaluate(tagged, "anime_show"); got.Points != 1500 {
+		t.Errorf("tagged dual-audio file scored %d, want 1500 (800+400+300)", got.Points)
+	}
+
+	untagged := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080, AudioStreams: 2}
+	})
+	if got := set.Evaluate(untagged, "anime_show"); got.Points != 400 {
+		t.Errorf("untagged two-track file scored %d, want 400 (count only)", got.Points)
+	}
+
+	// Never opened: every probed.* rule is skipped, not judged against zeros.
+	unprobed := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", nil)
+	if got := set.Evaluate(unprobed, "anime_show"); got.Points != 0 {
+		t.Errorf("unprobed release scored %d, want 0 (measured tier absent)", got.Points)
+	}
+}
+
 // What lookarounds were being asked for: a condition over two attributes at
 // once. RE2 cannot express it in one pattern; a rule does not need to.
 func TestConditionCombinesAttributes(t *testing.T) {

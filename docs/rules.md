@@ -379,12 +379,27 @@ attributes. Answers are cached for a day. The base URL can be overridden with
 
 `probed.height` `probed.width` `probed.videoCodec` `probed.audioCodec`
 `probed.profile` `probed.bitDepth` `probed.hdr` `probed.dolbyVision`
-`probed.hasHDRFallback` `probed.dynamicRange`
+`probed.hasHDRFallback` `probed.dynamicRange` `probed.audioLanguages`
+`probed.subtitleLanguages` `probed.audioStreams` `probed.subtitleStreams`
 
 Only library releases have ever been opened, so these are only populated for
 them. `probed.hdr` is the base layer (`"HDR10"`, `"HDR10+"`, `"HLG"`, or empty)
 and `probed.dolbyVision` is independent of it — that pair is what makes
 "Dolby Vision with no fallback" a measurement rather than a guess.
+
+`probed.audioLanguages` and `probed.subtitleLanguages` are the languages the
+tracks are tagged with, as the same ISO 639-1 codes `languages` uses, in
+stream order. They answer what a release name only claims: a title tagged
+`DUAL` says nothing about which two, the tracks say `["ja", "en"]`. Not every
+muxer tags its tracks, so `probed.audioStreams` and `probed.subtitleStreams`
+count them regardless — `probed.audioStreams >= 2` is dual audio even when the
+language list is empty.
+
+```
+"ja" in probed.audioLanguages and "en" in probed.audioLanguages   → +800
+probed.audioStreams >= 2                                          → +400
+"ar" in probed.subtitleLanguages                                  → +300
+```
 
 ### Traits
 

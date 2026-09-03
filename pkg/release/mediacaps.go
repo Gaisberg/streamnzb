@@ -29,6 +29,14 @@ type MediaCaps struct {
 	// DurationSeconds is the container-reported duration, 0 when the probe
 	// could not see one (and on library items saved before it was captured).
 	DurationSeconds float64
+	// AudioLanguages and SubtitleLanguages are the tagged track languages as
+	// ISO 639-1 codes in stream order; AudioStreams and SubtitleStreams count
+	// every track, tagged or not. Nil on library items saved before they
+	// were captured.
+	AudioLanguages    []string
+	SubtitleLanguages []string
+	AudioStreams      int
+	SubtitleStreams   int
 }
 
 // Summary renders a short human-readable capability string suitable for a

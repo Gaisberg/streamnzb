@@ -27,6 +27,14 @@ const DefaultDecodeFrames = 120
 // ffprobeDisposition captures the stream disposition flags we care about.
 type ffprobeDisposition struct {
 	AttachedPic int `json:"attached_pic"`
+	Default     int `json:"default"`
+}
+
+// ffprobeTags is the per-stream tag block. language is the only tag read: the
+// ISO 639-2 code a muxer wrote on an audio or subtitle track.
+type ffprobeTags struct {
+	Language string `json:"language"`
+	Title    string `json:"title"`
 }
 
 type FFprobeStream struct {
@@ -43,6 +51,7 @@ type FFprobeStream struct {
 	BitsPerRawSample string             `json:"bits_per_raw_sample"`
 	NbReadFrames     string             `json:"nb_read_frames"`
 	Disposition      ffprobeDisposition `json:"disposition"`
+	Tags             ffprobeTags        `json:"tags"`
 }
 
 // FFprobeFormat carries the container-level fields we ask for. Duration comes
@@ -84,6 +93,18 @@ type FFprobeResult struct {
 	// DurationSeconds is the container-reported duration, 0 when the header
 	// does not state one.
 	DurationSeconds float64
+
+	// Track languages, as ISO 639-1 codes in stream order, deduplicated. A
+	// track with no language tag (or "und") contributes nothing, so a file
+	// can have AudioStreams == 2 and one entry in AudioLanguages. This is the
+	// measured counterpart of what a release name claims: the name says
+	// "DUAL", the tracks say ["ja", "en"].
+	AudioLanguages    []string
+	SubtitleLanguages []string
+	// AudioStreams and SubtitleStreams count the tracks whether or not they
+	// were tagged, so "dual audio" is answerable even from an untagged file.
+	AudioStreams    int
+	SubtitleStreams int
 }
 
 // ProbeOptions tunes how aggressively ProbeStream inspects the input.
@@ -148,7 +169,8 @@ func FindFFprobeBinary(customPath string) (string, bool) {
 // playability and capture client-relevant capabilities (profile, bit depth, HDR).
 const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt," +
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
-	"stream_disposition=attached_pic:" +
+	"stream_disposition=attached_pic,default:" +
+	"stream_tags=language,title:" +
 	"format=duration"
 
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
@@ -278,6 +300,10 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 		"frames_decoded", res.FramesDecoded,
 		"has_audio", res.HasAudio,
 		"audio_codec", res.AudioCodec,
+		"audio_streams", res.AudioStreams,
+		"audio_languages", res.AudioLanguages,
+		"subtitle_streams", res.SubtitleStreams,
+		"subtitle_languages", res.SubtitleLanguages,
 		"duration_s", res.DurationSeconds,
 	)
 
@@ -314,12 +340,32 @@ func summarizeStreams(streams []FFprobeStream) *FFprobeResult {
 			videoChosen = true
 		case "audio":
 			res.HasAudio = true
+			res.AudioStreams++
 			if res.AudioCodec == "" {
 				res.AudioCodec = st.CodecName
 			}
+			res.AudioLanguages = appendLanguage(res.AudioLanguages, st.Tags.Language)
+		case "subtitle":
+			res.SubtitleStreams++
+			res.SubtitleLanguages = appendLanguage(res.SubtitleLanguages, st.Tags.Language)
 		}
 	}
 	return res
+}
+
+// appendLanguage adds a track's language tag to the list as an ISO 639-1 code,
+// skipping untagged and undetermined tracks and codes already present.
+func appendLanguage(list []string, tag string) []string {
+	code := NormalizeLanguageTag(tag)
+	if code == "" {
+		return list
+	}
+	for _, have := range list {
+		if have == code {
+			return list
+		}
+	}
+	return append(list, code)
 }
 
 // isRealVideoStream rejects "video" streams that are actually embedded cover art
