@@ -21,6 +21,11 @@ const (
 	tierAvail    = "avail"
 	tierSeadex   = "seadex"
 	tierIndexer  = "indexer"
+	// tierTracks is the measured tier's younger half: the track languages
+	// and counts, captured only by probes newer than the field. A library
+	// item probed before then has real codec and HDR measurements and
+	// nothing about its tracks, so those four fields fail open on their own.
+	tierTracks = "tracks"
 )
 
 // registry declares StreamNZB's rule vocabulary: jhin's core release-name
@@ -37,6 +42,7 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Tier(tierAvail, "an availability record, which this release has none of")
 	reg.Tier(tierSeadex, "a SeaDex lookup, which this request did not run")
 	reg.Tier(tierIndexer, "size, age or grabs, which a release name does not carry")
+	reg.Tier(tierTracks, "a probed file with its tracks read, which this release is not")
 
 	// Verified reports whether the merged bare attributes (resolution, codec,
 	// hdr, bitDepth) came from the file rather than from its name. It is
@@ -80,9 +86,13 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Namespace("probed", tierMeasured).
 		Str("videoCodec").Str("audioCodec").Num("width").Num("height").
 		Str("profile").Num("bitDepth").Str("hdr").Bool("dolbyVision").
-		Bool("hasHDRFallback").Str("dynamicRange").
-		StrList("audioLanguages").StrList("subtitleLanguages").
-		Num("audioStreams").Num("subtitleStreams")
+		Bool("hasHDRFallback").Str("dynamicRange")
+	// The track fields sit under probed.* but carry their own tier: a probe
+	// that predates them leaves them absent, not empty.
+	reg.Field("probed.audioLanguages", jhinrules.StrList, tierTracks)
+	reg.Field("probed.subtitleLanguages", jhinrules.StrList, tierTracks)
+	reg.Field("probed.audioStreams", jhinrules.Num, tierTracks)
+	reg.Field("probed.subtitleStreams", jhinrules.Num, tierTracks)
 
 	// Request context, the same for every release in one result set. title
 	// shadows jhin's core field: here it is the requested title, and the

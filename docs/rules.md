@@ -393,7 +393,10 @@ stream order. They answer what a release name only claims: a title tagged
 `DUAL` says nothing about which two, the tracks say `["ja", "en"]`. Not every
 muxer tags its tracks, so `probed.audioStreams` and `probed.subtitleStreams`
 count them regardless — `probed.audioStreams >= 2` is dual audio even when the
-language list is empty.
+language list is empty. The four carry their own tier: a library item probed
+before they were captured has codec and HDR measurements but nothing about
+its tracks, and a rule reading them is skipped for it rather than judged
+against an empty list.
 
 ```
 "ja" in probed.audioLanguages and "en" in probed.audioLanguages   → +800

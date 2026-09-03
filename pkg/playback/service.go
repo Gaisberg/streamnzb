@@ -868,6 +868,7 @@ func MediaCapabilitiesFromProbe(res *ffprobe.FFprobeResult) *session.MediaCapabi
 		CodecTag:        res.CodecTag,
 		DurationSeconds: res.DurationSeconds,
 
+		TracksProbed:      true,
 		AudioLanguages:    res.AudioLanguages,
 		SubtitleLanguages: res.SubtitleLanguages,
 		AudioStreams:      res.AudioStreams,

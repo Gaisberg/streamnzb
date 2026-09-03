@@ -29,10 +29,15 @@ type MediaCaps struct {
 	// DurationSeconds is the container-reported duration, 0 when the probe
 	// could not see one (and on library items saved before it was captured).
 	DurationSeconds float64
+	// TracksProbed reports the track fields below were captured at all. It is
+	// what tells a library item probed before they existed — which has real
+	// codec and HDR measurements but nothing about its tracks — apart from a
+	// file that was measured and has no tagged tracks. Rules and formats read
+	// the track fields only when it is set.
+	TracksProbed bool
 	// AudioLanguages and SubtitleLanguages are the tagged track languages as
 	// ISO 639-1 codes in stream order; AudioStreams and SubtitleStreams count
-	// every track, tagged or not. Nil on library items saved before they
-	// were captured.
+	// every track, tagged or not.
 	AudioLanguages    []string
 	SubtitleLanguages []string
 	AudioStreams      int

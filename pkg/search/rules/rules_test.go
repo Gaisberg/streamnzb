@@ -118,7 +118,7 @@ func TestTrackLanguagesFromProbe(t *testing.T) {
 
 	tagged := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
 		c.Verdict.Probed = &release.MediaCaps{
-			VideoCodec: "hevc", Height: 1080,
+			VideoCodec: "hevc", Height: 1080, TracksProbed: true,
 			AudioLanguages: []string{"ja", "en"}, AudioStreams: 2,
 			SubtitleLanguages: []string{"en", "ar"}, SubtitleStreams: 2,
 		}
@@ -128,7 +128,7 @@ func TestTrackLanguagesFromProbe(t *testing.T) {
 	}
 
 	untagged := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
-		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080, AudioStreams: 2}
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080, TracksProbed: true, AudioStreams: 2}
 	})
 	if got := set.Evaluate(untagged, "anime_show"); got.Points != 400 {
 		t.Errorf("untagged two-track file scored %d, want 400 (count only)", got.Points)
@@ -138,6 +138,25 @@ func TestTrackLanguagesFromProbe(t *testing.T) {
 	unprobed := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", nil)
 	if got := set.Evaluate(unprobed, "anime_show"); got.Points != 0 {
 		t.Errorf("unprobed release scored %d, want 0 (measured tier absent)", got.Points)
+	}
+
+	// Probed before the track fields existed: codec and HDR are measured,
+	// the tracks are not, so the track rules are skipped rather than told
+	// "no audio at all". A rule on the older measurements still runs.
+	set = compile(t,
+		config.RuleConfig{Name: "Dual audio, measured", When: `probed.audioStreams >= 2`, Points: 400},
+		config.RuleConfig{Name: "Mono, measured", When: `probed.audioStreams < 2`, Points: -400},
+		config.RuleConfig{Name: "HEVC, measured", When: `probed.videoCodec == "hevc"`, Points: 50},
+	)
+	legacy := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080}
+	})
+	got := set.Evaluate(legacy, "anime_show")
+	if got.Points != 50 {
+		t.Errorf("legacy probe scored %d, want 50 (track rules skipped, codec rule kept)", got.Points)
+	}
+	if len(got.Skipped) != 2 {
+		t.Errorf("legacy probe skipped %v, want the two track rules", got.Skipped)
 	}
 }
 

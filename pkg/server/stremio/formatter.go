@@ -144,6 +144,9 @@ type ProbedCaps struct {
 	DolbyVision    bool
 	HasHDRFallback bool
 	DynamicRange   string // "DV + HDR10", "DV only", "HDR10", or "" for SDR
+	// TracksProbed reports the track fields were captured; false for a
+	// library item probed before they existed, whose .Verified is still true.
+	TracksProbed bool
 	// AudioLanguages and SubtitleLanguages are the tagged track languages as
 	// ISO 639-1 codes; AudioStreams and SubtitleStreams count every track.
 	AudioLanguages    stringList
@@ -666,6 +669,7 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 			HasHDRFallback: probed.HasHDRFallback(),
 			DynamicRange:   probed.DynamicRange(),
 
+			TracksProbed:      probed.TracksProbed,
 			AudioLanguages:    probed.AudioLanguages,
 			SubtitleLanguages: probed.SubtitleLanguages,
 			AudioStreams:      probed.AudioStreams,
