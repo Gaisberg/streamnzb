@@ -74,6 +74,9 @@ type SeadexState struct {
 	// for this title; Alternative that it is recommended without the mark.
 	Best        bool
 	Alternative bool
+	// DualAudio reports the group has a recommended release SeaDex marks
+	// dual audio for this title.
+	DualAudio bool
 }
 
 // RuleMatch is one named scoring rule that fired on a release, in the shape

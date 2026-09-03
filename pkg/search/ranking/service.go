@@ -584,6 +584,7 @@ func (p *Profile) recordVerdicts(req Request, results []Result) {
 				Known:       se.Known,
 				Best:        se.Best,
 				Alternative: se.Alternative,
+				DualAudio:   se.DualAudio,
 			}
 		}
 	}

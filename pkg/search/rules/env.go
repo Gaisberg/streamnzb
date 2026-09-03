@@ -286,6 +286,8 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.BoolOf(e.Seadex.Best), true
 	case "seadex.alternative":
 		return jhinrules.BoolOf(e.Seadex.Alternative), true
+	case "seadex.dualAudio":
+		return jhinrules.BoolOf(e.Seadex.DualAudio), true
 
 	case "probed.videoCodec":
 		return jhinrules.StrOf(e.Probed.VideoCodec), true
@@ -415,6 +417,10 @@ type SeadexEnv struct {
 	// Alternative is true when the group is recommended for this title without
 	// the best mark.
 	Alternative bool
+	// DualAudio is true when the group has a recommended release SeaDex marks
+	// dual audio for this title. Per title, like Best: the same group can
+	// ship dual audio for one anime and sub-only for the next.
+	DualAudio bool
 	// Checked reports that the lookup ran at all. When it is false — not an
 	// anime request, no AniList mapping, or SeaDex unreachable — rules reading
 	// seadex.* are skipped rather than judged against zero values. Not exposed
@@ -489,9 +495,12 @@ type SeadexContext struct {
 	// the title.
 	Known bool
 	// Best holds the groups with a release marked best for this title, Alt
-	// the recommended groups without a best mark.
-	Best map[string]bool
-	Alt  map[string]bool
+	// the recommended groups without a best mark, DualAudio the groups with
+	// a recommended release marked dual audio. A group may be in DualAudio
+	// and either of the other two.
+	Best      map[string]bool
+	Alt       map[string]bool
+	DualAudio map[string]bool
 }
 
 // BuildEnv assembles the environment for one release. parsed may be nil when
@@ -590,6 +599,7 @@ func (c *SeadexContext) For(group string) SeadexEnv {
 		Known:       c.Known,
 		Best:        g != "" && c.Best[g],
 		Alternative: g != "" && c.Alt[g],
+		DualAudio:   g != "" && c.DualAudio[g],
 	}
 }
 
