@@ -59,6 +59,7 @@ const FORMAT_FIELDS = [
       '{{if lt .Year 2000}}…{{end}}',
       '{{if le .Index 3}}…{{end}}',
       '{{if contains "DV" .HDR}}…{{end}}',
+      '{{if has "en" .Languages}}…{{end}}',
       '{{if hasPrefix "2160" .Resolution}}…{{end}}',
       '{{if hasSuffix "p" .Resolution}}…{{end}}',
     ],
