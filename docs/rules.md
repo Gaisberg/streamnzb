@@ -366,9 +366,10 @@ seadex.dualAudio                           → +800
 `seadex.best` is true when this release's group made a release SeaDex marks
 best for the requested title; `seadex.alternative` when the group is
 recommended without the best mark; `seadex.dualAudio` when the group's
-recommended release is marked dual audio — SeaDex's own flag, independent of
-the best mark, and the one answer to "does this carry both languages" a
-release name tagged `DUAL` cannot give; `seadex.known` when SeaDex has an
+recommended release is marked dual audio — SeaDex's own flag, judged on the
+group's best release when it has one and on its alternatives otherwise, and
+the one answer to "does this carry both languages" a release name tagged
+`DUAL` cannot give; `seadex.known` when SeaDex has an
 entry for the title at all. Matching is by release-group name, case-insensitively —
 SeaDex catalogs torrents, so the recommendation transfers to usenet whenever
 the same group's release circulates under its group tag.

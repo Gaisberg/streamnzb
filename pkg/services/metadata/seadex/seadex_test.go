@@ -118,10 +118,20 @@ func TestDualAudioGroups(t *testing.T) {
 		{ReleaseGroup: "Anime Time", IsBest: false, DualAudio: true},
 		{ReleaseGroup: "LostYears", IsBest: true, DualAudio: true},
 		{ReleaseGroup: "  ", DualAudio: true},
+		// The best decides: a sub-only best is not made dual by a dual
+		// alternative from the same group.
+		{ReleaseGroup: "Judas", IsBest: true, DualAudio: false},
+		{ReleaseGroup: "judas", IsBest: false, DualAudio: true},
+		// ...and in the other order of appearance.
+		{ReleaseGroup: "Arid", IsBest: false, DualAudio: true},
+		{ReleaseGroup: "Arid", IsBest: true, DualAudio: false},
 	}}
 	dual := entry.DualAudioGroups()
 	if !dual["anime time"] || !dual["lostyears"] || len(dual) != 2 {
 		t.Fatalf("dual = %v, want exactly anime time and lostyears", dual)
+	}
+	if dual["judas"] || dual["arid"] {
+		t.Fatalf("a group whose best release is sub-only must not read as dual audio: %v", dual)
 	}
 	if len((*Entry)(nil).DualAudioGroups()) != 0 {
 		t.Fatal("a nil entry has no dual-audio groups")

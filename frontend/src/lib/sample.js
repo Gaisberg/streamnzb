@@ -22,6 +22,7 @@ export const DEFAULT_SEADEX = {
   known: true,
   best_groups: "",
   alt_groups: "",
+  dual_audio_groups: "",
 }
 
 // activeCount says how much of the release is being pretended about, so the
@@ -55,6 +56,7 @@ export function sampleForRequest(sample) {
       known: sample.seadex.known === true,
       best_groups: splitList(sample.seadex.best_groups),
       alt_groups: splitList(sample.seadex.alt_groups),
+      dual_audio_groups: splitList(sample.seadex.dual_audio_groups),
     }
   }
   return out

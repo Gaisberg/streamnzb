@@ -67,16 +67,39 @@ func (e *Entry) GroupSets() (best, alt map[string]bool) {
 }
 
 // DualAudioGroups projects the entry onto the normalized release-group names
-// with at least one recommended release SeaDex marks dual audio for this
-// title. Like GroupSets it is per title: a group that ships dual audio for one
-// anime and sub-only for the next is judged per entry.
+// whose recommended release for this title is dual audio. It follows the same
+// "stronger claim wins" rule as GroupSets: when a group has a release marked
+// best, that release decides, and its alternatives do not — so a group whose
+// best is sub-only stays false even if it also has a dual-audio alternative,
+// and `seadex.best and not seadex.dualAudio` means what it says. A group with
+// no best mark is judged by its recommended alternatives. Per title, like the
+// rest of the namespace.
 func (e *Entry) DualAudioGroups() map[string]bool {
 	out := make(map[string]bool)
 	if e == nil {
 		return out
 	}
+	type claim struct{ best, bestDual, altDual bool }
+	claims := make(map[string]*claim)
 	for _, t := range e.Torrents {
-		if g := NormalizeGroup(t.ReleaseGroup); g != "" && t.DualAudio {
+		g := NormalizeGroup(t.ReleaseGroup)
+		if g == "" {
+			continue
+		}
+		c := claims[g]
+		if c == nil {
+			c = &claim{}
+			claims[g] = c
+		}
+		if t.IsBest {
+			c.best = true
+			c.bestDual = c.bestDual || t.DualAudio
+		} else {
+			c.altDual = c.altDual || t.DualAudio
+		}
+	}
+	for g, c := range claims {
+		if (c.best && c.bestDual) || (!c.best && c.altDual) {
 			out[g] = true
 		}
 	}
