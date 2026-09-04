@@ -961,6 +961,9 @@ type formatPreviewFixture struct {
 	kind             string
 	isAnime          bool
 	originalLanguage string
+	// languages is what the indexer reported, used when the title carries no
+	// language token, so at least one fixture renders the original-audio badge.
+	languages []string
 	// variants are the other indexers holding a copy of this release, so a
 	// preview of {{.Variants}} shows a merged result rather than a lone one.
 	variants []string
@@ -980,6 +983,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			duration:         165 * 60,
 			kind:             "movie",
 			originalLanguage: "en",
+			languages:        []string{"en"},
 			variants:         []string{"NZBGeek", "NinjaCentral"},
 		},
 		{
@@ -1070,6 +1074,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			PubDate:   fx.pubDate,
 			Grabs:     fx.grabs,
 			Duration:  fx.duration,
+			Languages: fx.languages,
 		}
 		for _, name := range fx.variants {
 			rel.Variants = append(rel.Variants, &release.Release{Title: fx.title, Size: fx.size, Indexer: name, PubDate: fx.pubDate})
