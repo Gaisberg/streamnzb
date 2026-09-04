@@ -52,6 +52,8 @@ var iso6392to1 = map[string]string{
 	"uzb": "uz", "ven": "ve", "vie": "vi", "vol": "vo", "wel": "cy", "cym": "cy",
 	"wln": "wa", "wol": "wo", "xho": "xh", "yid": "yi", "yor": "yo", "zha": "za",
 	"zul": "zu",
+	// Retired ISO 639-2 codes still found on older muxes.
+	"scr": "hr", "scc": "sr",
 }
 
 // NormalizeLanguageTag turns a track language tag into an ISO 639-1 code, or

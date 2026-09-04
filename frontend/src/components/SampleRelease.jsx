@@ -18,6 +18,9 @@ const DEFAULT_PROBE = {
   // a real probe's are (jpn → ja); sampleForRequest splits them.
   audio_languages: "",
   subtitle_languages: "",
+  // Counts include untagged tracks, which the language lists cannot show.
+  audio_streams: 0,
+  subtitle_streams: 0,
 }
 
 const HDR_OPTIONS = [
@@ -162,7 +165,7 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                 <SettingRow
                   label="Audio track languages"
                   htmlFor="sample-audio-languages"
-                  description="Comma-separated tags as a muxer writes them (jpn, eng, ara). Leave empty for a probe that read no track languages; rules on the tracks then skip."
+                  description="Tagged tracks only, comma-separated as a muxer writes them (jpn, eng, ara). Leave both lists and counts empty for a probe that read no tracks; rules on the tracks then skip."
                 >
                   <Input
                     id="sample-audio-languages"
@@ -182,6 +185,26 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                     onChange={(e) => patch({ probed: { ...sample.probed, subtitle_languages: e.target.value } })}
                     placeholder="eng, ara"
                     className="h-9 w-44 font-mono text-xs"
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Audio tracks"
+                  description="Total audio tracks, tagged or not. At least the number of languages above; higher stands in for untagged or duplicate-language tracks."
+                >
+                  <NumberField
+                    value={sample.probed.audio_streams}
+                    min={0}
+                    onCommit={(audio_streams) => patch({ probed: { ...sample.probed, audio_streams } })}
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Subtitle tracks"
+                  description="Total subtitle tracks, tagged or not."
+                >
+                  <NumberField
+                    value={sample.probed.subtitle_streams}
+                    min={0}
+                    onCommit={(subtitle_streams) => patch({ probed: { ...sample.probed, subtitle_streams } })}
                   />
                 </SettingRow>
                 <SettingRow label="Dolby Vision">
