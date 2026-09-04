@@ -14,6 +14,10 @@ const DEFAULT_PROBE = {
   bit_depth: 10,
   hdr: "HDR10",
   dolby_vision: false,
+  // Track languages are typed as comma-separated tags and normalized the way
+  // a real probe's are (jpn → ja); sampleForRequest splits them.
+  audio_languages: "",
+  subtitle_languages: "",
 }
 
 const HDR_OPTIONS = [
@@ -154,6 +158,31 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                   >
                     {HDR_OPTIONS.map((o) => <option key={o.label} value={o.value}>{o.label}</option>)}
                   </select>
+                </SettingRow>
+                <SettingRow
+                  label="Audio track languages"
+                  htmlFor="sample-audio-languages"
+                  description="Comma-separated tags as a muxer writes them (jpn, eng, ara). Leave empty for a probe that read no track languages; rules on the tracks then skip."
+                >
+                  <Input
+                    id="sample-audio-languages"
+                    value={sample.probed.audio_languages || ""}
+                    onChange={(e) => patch({ probed: { ...sample.probed, audio_languages: e.target.value } })}
+                    placeholder="jpn, eng"
+                    className="h-9 w-44 font-mono text-xs"
+                  />
+                </SettingRow>
+                <SettingRow
+                  label="Subtitle track languages"
+                  htmlFor="sample-subtitle-languages"
+                >
+                  <Input
+                    id="sample-subtitle-languages"
+                    value={sample.probed.subtitle_languages || ""}
+                    onChange={(e) => patch({ probed: { ...sample.probed, subtitle_languages: e.target.value } })}
+                    placeholder="eng, ara"
+                    className="h-9 w-44 font-mono text-xs"
+                  />
                 </SettingRow>
                 <SettingRow label="Dolby Vision">
                   <Switch

@@ -27,14 +27,12 @@ const DefaultDecodeFrames = 120
 // ffprobeDisposition captures the stream disposition flags we care about.
 type ffprobeDisposition struct {
 	AttachedPic int `json:"attached_pic"`
-	Default     int `json:"default"`
 }
 
 // ffprobeTags is the per-stream tag block. language is the only tag read: the
 // ISO 639-2 code a muxer wrote on an audio or subtitle track.
 type ffprobeTags struct {
 	Language string `json:"language"`
-	Title    string `json:"title"`
 }
 
 type FFprobeStream struct {
@@ -169,8 +167,8 @@ func FindFFprobeBinary(customPath string) (string, bool) {
 // playability and capture client-relevant capabilities (profile, bit depth, HDR).
 const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt," +
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
-	"stream_disposition=attached_pic,default:" +
-	"stream_tags=language,title:" +
+	"stream_disposition=attached_pic:" +
+	"stream_tags=language:" +
 	"format=duration"
 
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).

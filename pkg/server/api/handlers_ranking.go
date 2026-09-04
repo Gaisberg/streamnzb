@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/media/ffprobe"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/rules"
@@ -105,6 +107,21 @@ type explainProbe struct {
 	SubtitleStreams   int      `json:"subtitle_streams,omitempty"`
 }
 
+// normalizeLanguageTags puts sample-supplied track tags through the same
+// normalization the probe applies, so a preview typed as "jpn" or "JA" agrees
+// with the live pipeline's "ja" instead of making a correct rule look broken.
+func normalizeLanguageTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		code := ffprobe.NormalizeLanguageTag(tag)
+		if code == "" || slices.Contains(out, code) {
+			continue
+		}
+		out = append(out, code)
+	}
+	return out
+}
+
 // toSample turns the request's pretend-release into what ranking evaluates
 // against.
 func (e *explainSample) toSample() *ranking.Sample {
@@ -132,8 +149,8 @@ func (e *explainSample) toSample() *ranking.Sample {
 
 			TracksProbed: len(p.AudioLanguages) > 0 || len(p.SubtitleLanguages) > 0 ||
 				p.AudioStreams > 0 || p.SubtitleStreams > 0,
-			AudioLanguages:    p.AudioLanguages,
-			SubtitleLanguages: p.SubtitleLanguages,
+			AudioLanguages:    normalizeLanguageTags(p.AudioLanguages),
+			SubtitleLanguages: normalizeLanguageTags(p.SubtitleLanguages),
 			AudioStreams:      max(p.AudioStreams, len(p.AudioLanguages)),
 			SubtitleStreams:   max(p.SubtitleStreams, len(p.SubtitleLanguages)),
 		}
