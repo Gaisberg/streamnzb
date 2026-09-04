@@ -182,10 +182,13 @@ type SearchQueryConfig struct {
 	// Attempts is the plan proper: the questions to ask indexers, in order.
 	Attempts []SearchAttempt `json:"attempts,omitempty"`
 	// Stop is when to stop walking them, Order whether to reorder them for
-	// the state of the season, and Accept what counts as a match.
-	Stop   string            `json:"stop,omitempty"`
-	Order  string            `json:"order,omitempty"`
-	Accept *SearchAcceptance `json:"accept,omitempty"`
+	// the state of the season, and Accept what counts as a match. MinHits is
+	// the enough_hits threshold: how many distinct matching releases the
+	// attempts so far must have found between them before the plan stops.
+	Stop    string            `json:"stop,omitempty"`
+	MinHits int               `json:"min_hits,omitempty"`
+	Order   string            `json:"order,omitempty"`
+	Accept  *SearchAcceptance `json:"accept,omitempty"`
 
 	SearchResultLimit int `json:"search_result_limit,omitempty"`
 	// Categories overrides the Newznab categories for this plan. Empty — the

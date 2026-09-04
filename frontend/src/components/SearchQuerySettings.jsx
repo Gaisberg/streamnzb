@@ -19,6 +19,7 @@ import {
   ORDER_ADAPTIVE_SEASON,
   ORDER_OPTIONS,
   STOP_ALL,
+  STOP_ENOUGH_HITS,
   STOP_OPTIONS,
   TARGET_ABSOLUTE,
   TARGET_OPTIONS,
@@ -30,6 +31,7 @@ import {
   normalizeAddress,
   normalizeAttempt,
   normalizeAttempts,
+  normalizeMinHits,
   normalizeOrder,
   normalizeStop,
   normalizeTarget,
@@ -87,7 +89,7 @@ const ATTEMPTS_HINT_ITEMS = [
   },
   {
     label: 'Order',
-    text: 'Put the narrowest question first. With "Stop at first hit" the later rows are only paid for when the earlier ones matched nothing.',
+    text: 'Put the narrowest question first. With "Stop at first hit" the later rows are only paid for when the earlier ones matched nothing; with "Stop after enough hits", when they matched too little.',
   },
 ]
 
@@ -97,8 +99,23 @@ const STOP_HINT_ITEMS = [
     text: 'Walk the rows in order and stop at the first one that matched anything. A request that finds what it wanted costs one indexer round trip.',
   },
   {
+    label: 'Stop after enough hits',
+    text: 'Keep walking the rows until the ones asked so far have matched at least the minimum number of distinct releases between them. A productive first row costs one round trip; a thin one — a niche show, an anime under absolute numbering — goes on to the next.',
+  },
+  {
     label: 'Run every attempt',
     text: 'Ask every row every time and merge the results. Broader, and always pays for every query.',
+  },
+]
+
+const MIN_HITS_HINT_ITEMS = [
+  {
+    label: 'What counts',
+    text: 'Releases that passed validation, with the same release listed by several indexers counted once. Everything found on the way is kept, so a row that pushes the count past the minimum does not lose its extra results.',
+  },
+  {
+    label: 'Choosing a number',
+    text: 'Ten leaves the quality filters something to rank. A lower number stops sooner; a higher one behaves more like "Run every attempt" for anything but the most common content.',
   },
 ]
 
@@ -226,6 +243,7 @@ function normalizeDraft(kind, draft) {
     name: (value.name || '').trim(),
     attempts: normalizeAttempts(value.attempts, kind),
     stop: normalizeStop(value.stop),
+    min_hits: normalizeMinHits(value.stop, value.min_hits),
     order: isSeriesKind(kind) ? normalizeOrder(value.order) : undefined,
     accept: normalizeAccept(kind, value.accept),
     search_result_limit: value.search_result_limit ?? 0,
@@ -242,6 +260,7 @@ function comparableQuerySignature(kind, draft) {
   return JSON.stringify({
     attempts: value.attempts,
     stop: value.stop,
+    min_hits: value.min_hits,
     order: value.order,
     accept: value.accept,
     search_result_limit: Number(value.search_result_limit || 0),
@@ -276,6 +295,8 @@ function summarizeQuery(query, kind) {
   const validation = []
   if (value.stop === STOP_ALL) {
     validation.push('Runs every attempt')
+  } else if (value.stop === STOP_ENOUGH_HITS) {
+    validation.push(`Stops after ${value.min_hits} hits`)
   } else {
     validation.push('Stops at first hit')
   }
@@ -565,6 +586,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
   const accept = normalizeAccept(kind, draft.accept)
   const stop = normalizeStop(draft.stop)
   const order = normalizeOrder(draft.order)
+  const minHits = normalizeMinHits(stop, draft.min_hits)
 
   const update = (patch) => setDraft((current) => ({ ...current, ...patch }))
   const setAttempts = (next) => update({ attempts: next })
@@ -675,7 +697,12 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
                 <select
                   className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('stop')}`}
                   value={stop}
-                  onChange={(event) => update({ stop: event.target.value })}
+                  onChange={(event) => {
+                    // Switching to a threshold rule starts from the default
+                    // threshold rather than the zero the other rules carry.
+                    const nextStop = event.target.value
+                    update({ stop: nextStop, min_hits: normalizeMinHits(nextStop, draft.min_hits) })
+                  }}
                 >
                   {STOP_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
@@ -685,6 +712,30 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
             </div>
           </div>
         </div>
+
+        {stop === STOP_ENOUGH_HITS ? (
+          <div className="relative p-3">
+            <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+            <div className={rowClass}>
+              <div className={inlineRowClass}>
+                <div className={inlineLabelClass}>
+                  <LabelWithHelp label="Minimum hits" items={MIN_HITS_HINT_ITEMS} />
+                </div>
+                <div className={controlNarrowClass}>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    className={`h-9 ${fieldClass('min_hits')}`}
+                    value={draft.min_hits ?? ''}
+                    onChange={(event) => update({ min_hits: event.target.value === '' ? '' : Number(event.target.value) })}
+                  />
+                </div>
+              </div>
+              {fieldErrors.min_hits ? <p className="text-xs text-destructive">{fieldErrors.min_hits}</p> : null}
+            </div>
+          </div>
+        ) : null}
 
         {isSeries ? (
           <div className="relative p-3">
@@ -714,7 +765,11 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
           <div className="relative space-y-2 p-3">
             <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
             <p className="text-xs font-medium text-muted-foreground">
-              {stop === STOP_ALL ? 'This request asks all of' : 'This request asks, until something answers'}
+              {stop === STOP_ALL
+                ? 'This request asks all of'
+                : stop === STOP_ENOUGH_HITS
+                  ? `This request asks, until ${minHits} distinct releases have answered`
+                  : 'This request asks, until something answers'}
             </p>
             <AttemptChain kind={kind} attempts={attempts} order={order} />
             {isSeries && order === ORDER_ADAPTIVE_SEASON ? (
@@ -857,6 +912,12 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
         }
         if (Number.isNaN(limit) || limit < 0) {
           nextFieldErrors.search_result_limit = 'Limit must be 0 or greater.'
+        }
+        if (next.stop === STOP_ENOUGH_HITS) {
+          const minHits = Number(draft.min_hits)
+          if (!Number.isInteger(minHits) || minHits < 1) {
+            nextFieldErrors.min_hits = 'Minimum hits must be a whole number of at least 1.'
+          }
         }
         return nextFieldErrors
       },

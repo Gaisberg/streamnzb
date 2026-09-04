@@ -879,6 +879,10 @@ type attemptIndexer struct {
 	attempts []string
 	queries  []string
 	hit      string
+	// hits lists, per attempt label, the release groups the attempt answers
+	// with; one item each, and the same group is the same release wherever
+	// it is listed. When set it replaces the single hit.
+	hits map[string][]string
 }
 
 func (s *attemptIndexer) Search(_ context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
@@ -886,6 +890,18 @@ func (s *attemptIndexer) Search(_ context.Context, req indexer.SearchRequest) (*
 	s.attempts = append(s.attempts, req.AttemptLabel)
 	s.queries = append(s.queries, req.Query)
 	s.mu.Unlock()
+	if s.hits != nil {
+		items := make([]indexer.Item, 0, len(s.hits[req.AttemptLabel]))
+		for _, group := range s.hits[req.AttemptLabel] {
+			items = append(items, indexer.Item{
+				Title:         "Show Name S03E07 1080p WEB-DL x264-" + group,
+				GUID:          "https://example.invalid/" + group,
+				Comments:      "https://example.invalid/" + group,
+				ActualIndexer: "AttemptIndexer",
+			})
+		}
+		return &indexer.SearchResponse{Channel: indexer.Channel{Items: items}}, nil
+	}
 	if req.AttemptLabel != s.hit {
 		return &indexer.SearchResponse{}, nil
 	}
@@ -1016,6 +1032,58 @@ func TestRunConfiguredSearchRequestsRunsEveryAttemptWhenThePlanSaysAll(t *testin
 	}
 	if executed != 2 {
 		t.Fatalf("executedRequests = %d, want 2", executed)
+	}
+}
+
+// stop=enough_hits keeps walking while the attempts so far have found fewer
+// distinct releases than the threshold between them, and counts the same
+// release listed twice as one: three attempts answer 2 + 1 (a repeat) + 2, and
+// a threshold of four is only met after the third.
+func TestRunConfiguredSearchRequestsWalksThePlanUntilEnoughDistinctHits(t *testing.T) {
+	plan := planOf("TVPlan", acceptTitles("original"),
+		idAttempt(config.SearchTargetEpisode),
+		titleAttempt(config.SearchTargetEpisode, "original", false),
+		idAttempt(config.SearchTargetSeason),
+		titleAttempt(config.SearchTargetSeason, "original", false),
+	)
+	plan.Stop = config.SearchStopEnoughHits
+	plan.MinHits = 4
+
+	idx := &attemptIndexer{hits: map[string][]string{
+		"id·episode":    {"A", "B"},
+		"title·episode": {"A"},
+		"id·season":     {"C", "D"},
+		"title·season":  {"E"},
+	}}
+	releases, executed, attempts := runSeriesPlan(t, idx, plan)
+	want := []string{"id·episode", "title·episode", "id·season"}
+	if !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if executed != 3 {
+		t.Fatalf("executedRequests = %d, want 3", executed)
+	}
+	// Everything found on the way is kept; merging the repeat is the caller's
+	// job, as it is for stop=all.
+	if len(releases) != 5 {
+		t.Fatalf("releases = %d, want 5 listings from the three attempts", len(releases))
+	}
+
+	// A first attempt that clears the threshold on its own costs one request.
+	idx = &attemptIndexer{hits: map[string][]string{"id·episode": {"A", "B", "C", "D"}}}
+	_, executed, attempts = runSeriesPlan(t, idx, plan)
+	if !reflect.DeepEqual(attempts, []string{"id·episode"}) || executed != 1 {
+		t.Fatalf("attempts = %v (%d executed), want only the first", attempts, executed)
+	}
+
+	// A plan that never gets there runs out of attempts rather than results.
+	idx = &attemptIndexer{hits: map[string][]string{"id·episode": {"A"}, "title·season": {"B"}}}
+	releases, executed, attempts = runSeriesPlan(t, idx, plan)
+	if executed != 4 || len(attempts) != 4 {
+		t.Fatalf("attempts = %v (%d executed), want every attempt", attempts, executed)
+	}
+	if len(releases) != 2 {
+		t.Fatalf("releases = %d, want 2", len(releases))
 	}
 }
 

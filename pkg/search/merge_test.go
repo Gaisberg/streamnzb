@@ -297,6 +297,30 @@ func TestMergeSameReleaseVariantsKeepsFirstOccurrenceOrder(t *testing.T) {
 	}
 }
 
+// The count a stop threshold is measured against is the merged count: the
+// same NZB from three indexers is one choice, and an already-merged release
+// still counts once however many variants ride on it.
+func TestDistinctReleaseCountCountsCopiesOnce(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "First A", DetailsURL: "https://idx/details/a"},
+		{Title: "First B", GUID: "https://idx/details/b"},
+		{Title: "Dup A later", DetailsURL: "https://idx/details/a"},
+		{Title: "Dup B later", GUID: "https://idx/details/b"},
+		{Title: "Unique C", DetailsURL: "https://idx/details/c"},
+		nil,
+	}
+	if got := DistinctReleaseCount(releases); got != 3 {
+		t.Fatalf("distinct count = %d, want 3", got)
+	}
+	merged := MergeSameReleaseVariants(releases, VariantMergeOptions{})
+	if got := DistinctReleaseCount(merged); got != 3 {
+		t.Fatalf("distinct count of the merged list = %d, want 3", got)
+	}
+	if got := DistinctReleaseCount(nil); got != 0 {
+		t.Fatalf("distinct count of nothing = %d, want 0", got)
+	}
+}
+
 func TestMergeSameReleaseVariantsDoesNotUseTitleMatching(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "The.Patriot.2000.1080p.BluRay", DetailsURL: "https://idx/details/1"},

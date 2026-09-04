@@ -1125,3 +1125,29 @@ func labelsOf(attempts []SearchAttempt) []string {
 	}
 	return labels
 }
+
+// The stop rule reduces to one number the executor compares against: how many
+// distinct matches end the walk. Zero means it never ends early.
+func TestSearchPlanStopThreshold(t *testing.T) {
+	cases := []struct {
+		name    string
+		stop    string
+		minHits int
+		want    int
+	}{
+		{"default is first hit", "", 0, 1},
+		{"first hit", "first_hit", 25, 1},
+		{"all never stops early", "ALL", 25, 0},
+		{"enough hits uses the threshold", "enough_hits", 25, 25},
+		{"enough hits without a threshold uses the default", "enough_hits", 0, DefaultSearchMinHits},
+	}
+	for _, tc := range cases {
+		plan := &SearchQueryConfig{Stop: tc.stop, MinHits: tc.minHits}
+		if got := plan.StopThreshold(); got != tc.want {
+			t.Errorf("%s: threshold = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	if NormalizeSearchStop(" Enough_Hits ") != SearchStopEnoughHits {
+		t.Error("expected enough_hits to normalize case-insensitively")
+	}
+}

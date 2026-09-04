@@ -48,37 +48,15 @@ type VariantMergeOptions struct {
 // Releases already carrying variants are flattened into the group, so merging
 // a merged list is idempotent.
 func MergeSameReleaseVariants(releases []*release.Release, opts VariantMergeOptions) []*release.Release {
-	groupIndex := make(map[string]int)
 	var groups [][]*release.Release
-
-	for _, rel := range releases {
-		if rel == nil {
-			continue
+	groupSameRelease(releases, func(group int, copyRel *release.Release) {
+		if group == len(groups) {
+			groups = append(groups, nil)
 		}
-		for _, copyRel := range rel.Copies() {
-			if copyRel == nil {
-				continue
-			}
-			flat := copyRel.Clone()
-			flat.Variants = nil
-			keys := dedupeReleaseKeys(flat)
-			existing := -1
-			for _, k := range keys {
-				if idx, found := groupIndex[k]; found {
-					existing = idx
-					break
-				}
-			}
-			if existing < 0 {
-				existing = len(groups)
-				groups = append(groups, nil)
-			}
-			groups[existing] = append(groups[existing], flat)
-			for _, k := range keys {
-				groupIndex[k] = existing
-			}
-		}
-	}
+		flat := copyRel.Clone()
+		flat.Variants = nil
+		groups[group] = append(groups[group], flat)
+	})
 
 	out := make([]*release.Release, 0, len(groups))
 	for _, group := range groups {
@@ -87,6 +65,51 @@ func MergeSameReleaseVariants(releases []*release.Release, opts VariantMergeOpti
 		}
 	}
 	return out
+}
+
+// DistinctReleaseCount is how many different releases a list holds once the
+// copies of the same release — by the keys deduplication uses — are counted
+// as one. It is the count a search plan's stop threshold is measured against:
+// three indexers listing one NZB are one choice, not three.
+func DistinctReleaseCount(releases []*release.Release) int {
+	return groupSameRelease(releases, func(int, *release.Release) {})
+}
+
+// groupSameRelease partitions every copy of every release into groups of the
+// same release and reports how many groups there were. Each copy is handed to
+// visit with its group index; a copy joins the first group that shares any of
+// its dedupe keys and otherwise opens the next one, so visit sees the index
+// equal to the number of groups so far exactly when a new group opens.
+func groupSameRelease(releases []*release.Release, visit func(group int, copyRel *release.Release)) int {
+	groupIndex := make(map[string]int)
+	groups := 0
+	for _, rel := range releases {
+		if rel == nil {
+			continue
+		}
+		for _, copyRel := range rel.Copies() {
+			if copyRel == nil {
+				continue
+			}
+			keys := dedupeReleaseKeys(copyRel)
+			existing := -1
+			for _, k := range keys {
+				if idx, found := groupIndex[k]; found {
+					existing = idx
+					break
+				}
+			}
+			if existing < 0 {
+				existing = groups
+				groups++
+			}
+			visit(existing, copyRel)
+			for _, k := range keys {
+				groupIndex[k] = existing
+			}
+		}
+	}
+	return groups
 }
 
 // mergeGroup picks the primary of one group of copies and folds the rest into

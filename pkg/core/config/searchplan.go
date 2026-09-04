@@ -30,9 +30,18 @@ const (
 	SearchTargetAbsolute = "absolute"
 
 	// SearchStopFirstHit stops the plan at the first attempt that matched
-	// anything; SearchStopAll runs every attempt and merges the results.
-	SearchStopFirstHit = "first_hit"
-	SearchStopAll      = "all"
+	// anything; SearchStopEnoughHits keeps going until the attempts so far
+	// have matched at least MinHits distinct releases between them; and
+	// SearchStopAll runs every attempt and merges the results.
+	SearchStopFirstHit   = "first_hit"
+	SearchStopEnoughHits = "enough_hits"
+	SearchStopAll        = "all"
+
+	// DefaultSearchMinHits is the threshold an enough_hits plan stops at when
+	// it names none. Ten is enough of a choice for the quality filters to
+	// have something to rank, and few enough that one productive attempt
+	// usually clears it.
+	DefaultSearchMinHits = 10
 
 	// SearchOrderAsListed runs the attempts in the order they are written.
 	// SearchOrderAdaptiveSeason leads with the season attempts once every
@@ -117,8 +126,11 @@ func NormalizeSearchTarget(target string) string {
 }
 
 func NormalizeSearchStop(stop string) string {
-	if strings.EqualFold(strings.TrimSpace(stop), SearchStopAll) {
+	switch strings.ToLower(strings.TrimSpace(stop)) {
+	case SearchStopAll:
 		return SearchStopAll
+	case SearchStopEnoughHits:
+		return SearchStopEnoughHits
 	}
 	return SearchStopFirstHit
 }
@@ -277,6 +289,25 @@ func seasonFirstRank(attempt SearchAttempt) int {
 // matched anything.
 func (sq *SearchQueryConfig) StopsAtFirstHit() bool {
 	return sq != nil && NormalizeSearchStop(sq.Stop) == SearchStopFirstHit
+}
+
+// StopThreshold is the number of distinct matching releases at which the
+// plan stops walking its attempts: one for first_hit, the plan's MinHits for
+// enough_hits, and zero — never — for all.
+func (sq *SearchQueryConfig) StopThreshold() int {
+	if sq == nil {
+		return 1
+	}
+	switch NormalizeSearchStop(sq.Stop) {
+	case SearchStopAll:
+		return 0
+	case SearchStopEnoughHits:
+		if sq.MinHits > 0 {
+			return sq.MinHits
+		}
+		return DefaultSearchMinHits
+	}
+	return 1
 }
 
 // Acceptance is the plan's acceptance with defaults applied.

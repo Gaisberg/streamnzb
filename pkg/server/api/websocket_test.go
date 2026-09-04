@@ -399,6 +399,8 @@ func TestValidateConfigWithPlanChecksEveryAttempt(t *testing.T) {
 			config.DefaultTVPlan("TVQuery01"),
 			{Name: "AbsoluteByID", Attempts: []config.SearchAttempt{{Address: "id", Target: "absolute"}}},
 			{Name: "BadStop", Attempts: []config.SearchAttempt{{Address: "id", Target: "episode"}}, Stop: "sometimes"},
+			{Name: "NoThreshold", Attempts: []config.SearchAttempt{{Address: "id", Target: "episode"}}, Stop: "enough_hits"},
+			{Name: "Threshold", Attempts: []config.SearchAttempt{{Address: "id", Target: "episode"}}, Stop: "enough_hits", MinHits: 10},
 		},
 	}
 
@@ -424,6 +426,14 @@ func TestValidateConfigWithPlanChecksEveryAttempt(t *testing.T) {
 	}
 	if errs["series_search_queries.2.stop"] == "" {
 		t.Error("expected an unknown stop rule to be rejected")
+	}
+	if errs["series_search_queries.3.min_hits"] == "" {
+		t.Error("expected an enough_hits plan without a threshold to be rejected")
+	}
+	for field := range errs {
+		if strings.HasPrefix(field, "series_search_queries.4.") {
+			t.Errorf("expected an enough_hits plan with a threshold to validate, got %s = %q", field, errs[field])
+		}
 	}
 }
 

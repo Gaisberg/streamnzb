@@ -470,8 +470,12 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			}
 			switch strings.ToLower(strings.TrimSpace(query.Stop)) {
 			case "", config.SearchStopFirstHit, config.SearchStopAll:
+			case config.SearchStopEnoughHits:
+				if query.MinHits < 1 {
+					errors[fmt.Sprintf("%s.%d.min_hits", prefix, i)] = "Minimum hits must be at least 1"
+				}
 			default:
-				errors[fmt.Sprintf("%s.%d.stop", prefix, i)] = "Stop must be first_hit or all"
+				errors[fmt.Sprintf("%s.%d.stop", prefix, i)] = "Stop must be first_hit, enough_hits, or all"
 			}
 			switch strings.ToLower(strings.TrimSpace(query.Order)) {
 			case "", config.SearchOrderAsListed, config.SearchOrderAdaptiveSeason:

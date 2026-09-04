@@ -6,6 +6,8 @@ import {
   ORDER_ADAPTIVE_SEASON,
   ORDER_AS_LISTED,
   STOP_ALL,
+  STOP_ENOUGH_HITS,
+  STOP_FIRST_HIT,
   TARGET_ABSOLUTE,
   TARGET_EPISODE,
   TARGET_SEASON,
@@ -13,7 +15,9 @@ import {
   attemptsInRunOrder,
   normalizeAttempt,
   normalizeAttempts,
+  normalizeMinHits,
   normalizeSearchPlan,
+  normalizeStop,
   planPresets,
   presetPlan,
 } from './searchPlan'
@@ -124,11 +128,13 @@ describe('normalizeSearchPlan', () => {
       accept: { titles: ['en-US'], year: true, packs: false },
       search_result_limit: '25',
       categories: ' 5070 ',
+      min_hits: 7,
     })
     expect(plan).toEqual({
       name: 'TVPlan',
       attempts: [{ address: ADDRESS_ID, target: TARGET_EPISODE }],
       stop: 'first_hit',
+      min_hits: 0,
       order: ORDER_ADAPTIVE_SEASON,
       accept: { titles: ['en-US'], year: true, packs: false },
       search_result_limit: 25,
@@ -143,5 +149,34 @@ describe('normalizeSearchPlan', () => {
 
   it('accepts nothing implicitly: an empty title list stays empty', () => {
     expect(normalizeSearchPlan('movie', { attempts: [{ address: 'id' }] }).accept.titles).toEqual([])
+  })
+
+  it('keeps the threshold only on a plan that stops after enough hits', () => {
+    const plan = normalizeSearchPlan('movie', { attempts: [{ address: 'id' }], stop: 'enough_hits', min_hits: '12' })
+    expect(plan.stop).toBe(STOP_ENOUGH_HITS)
+    expect(plan.min_hits).toBe(12)
+    expect(normalizeSearchPlan('movie', { attempts: [{ address: 'id' }], stop: 'all', min_hits: 12 }).min_hits).toBe(0)
+  })
+})
+
+describe('normalizeStop', () => {
+  it('knows the three stop rules and falls back to the first hit', () => {
+    expect(normalizeStop(' Enough_Hits ')).toBe(STOP_ENOUGH_HITS)
+    expect(normalizeStop('all')).toBe(STOP_ALL)
+    expect(normalizeStop('sometimes')).toBe(STOP_FIRST_HIT)
+  })
+})
+
+describe('normalizeMinHits', () => {
+  it('settles the threshold to a whole number of at least one, or the default', () => {
+    expect(normalizeMinHits(STOP_ENOUGH_HITS, 4.9)).toBe(4)
+    expect(normalizeMinHits(STOP_ENOUGH_HITS, 0)).toBe(10)
+    expect(normalizeMinHits(STOP_ENOUGH_HITS, 'lots')).toBe(10)
+    expect(normalizeMinHits(STOP_ENOUGH_HITS, undefined)).toBe(10)
+  })
+
+  it('is nothing for the stop rules that have no threshold', () => {
+    expect(normalizeMinHits(STOP_FIRST_HIT, 12)).toBe(0)
+    expect(normalizeMinHits(STOP_ALL, 12)).toBe(0)
   })
 })

@@ -11,7 +11,8 @@ stop**, and one description of what a matching release **must look like**.
 |---|---|
 | **Name** | Unique identifier; streams reference it. Fixed after creation. |
 | **Attempts** | The questions the request asks indexers, in order — one indexer query per row. Each row has an **Address** and, for TV, a **Target**; Title rows also carry a language and whether to put the year in the query. Presets (*Balanced*, *Precise*, *Broad*) fill in a sensible list; drag rows to reorder. |
-| **When to stop** | **Stop at first hit** walks the rows in order and stops at the first one that matched anything. **Run every attempt** asks every row every time and merges the results. |
+| **When to stop** | **Stop at first hit** walks the rows in order and stops at the first one that matched anything. **Stop after enough hits** keeps walking until the rows asked so far have matched at least **Minimum hits** distinct releases between them. **Run every attempt** asks every row every time and merges the results. |
+| **Minimum hits** | The threshold for *Stop after enough hits* (default 10). Counts releases that passed validation, with the same release listed by several indexers counted once; everything found on the way is kept. |
 | **Ordering** *(TV)* | **As listed** runs the rows as written. **Season first once it has aired** moves the Season rows to the front once every episode of the requested season has aired — a finished season is where the season pack lives, an airing one is where the single episode does. |
 | **Accepted titles** | The metadata titles a release name may match (English, original, localized, Kitsu…). Separate from what goes out: a Title row queries under one language, this is what may come back. Empty falls back to each row's own query language. |
 | **Year must match** | Requires the release year to be within ±1 of the metadata year. Off for TV by default — scene TV releases carry no year. |
@@ -99,7 +100,17 @@ Two things worth knowing before you narrow anything:
 - **A skipped attempt skips its releases.** *Stop at first hit* stops at the
   first row that returns *anything* — one marginal result from a precise ID row
   ends the request, and the Title row that would have found ten more never
-  runs. Order the rows accordingly, or switch to *Run every attempt*.
+  runs. Order the rows accordingly, switch to *Stop after enough hits* so a thin
+  answer keeps the walk going, or switch to *Run every attempt*.
+
+*Stop after enough hits* is the middle ground. A first row that comes back
+with a full list costs one round trip, like *Stop at first hit*; a first row
+that comes back with two releases — a niche show, an anime that indexers file
+under absolute numbering, a title with thin ID coverage — goes on to the next
+row, and the next, until the rows asked so far have found the minimum between
+them or the request runs out of rows. The count is of *distinct* releases: the
+same NZB from three indexers is one hit, not three, so the threshold measures
+choice rather than how many indexers you have.
 
 ## Same-release variants
 

@@ -345,9 +345,11 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 	}
 
 	// runOne walks one plan's attempts in order. The plan's own stop rule
-	// decides whether it ends at the first attempt that matched: the fallback
-	// is deliberately sequential, because its whole point is that the broader
-	// indexer query is only paid for when the narrower one came back empty.
+	// decides when it ends: at the first attempt that matched, once the
+	// attempts so far have found enough distinct releases between them, or
+	// never. The fallback is deliberately sequential, because its whole point
+	// is that the broader indexer query is only paid for when the narrower
+	// one came back short.
 	runOne := func(plan *config.SearchQueryConfig) ([]*release.Release, int, error) {
 		executed := 0
 		attempts := plan.SearchPlanAttempts(planFacts.PlanContext(seasonCompleted))
@@ -360,7 +362,7 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 			)
 			return nil, executed, nil
 		}
-		firstHit := plan.StopsAtFirstHit()
+		threshold := plan.StopThreshold()
 		collected := make([]*release.Release, 0)
 		for i, attempt := range attempts {
 			releases, attemptExecuted, err := runAttempt(plan, attempt)
@@ -368,23 +370,29 @@ func (s *Server) runConfiguredSearchRequests(ctx context.Context, contentType, i
 			if err != nil {
 				return nil, executed, err
 			}
-			if len(releases) > 0 {
-				if firstHit {
-					return releases, executed, nil
-				}
-				collected = append(collected, releases...)
+			collected = append(collected, releases...)
+			if threshold <= 0 || i+1 == len(attempts) {
 				continue
 			}
-			if i+1 < len(attempts) {
-				logger.Debug("Search attempt found nothing; falling back",
-					"stream", streamLabel,
-					"request", plan.Name,
-					"type", contentType,
-					"id", id,
-					"attempt", attempt.Label(),
-					"fallback_attempt", attempts[i+1].Label(),
-				)
+			// The threshold counts choices, not listings: the same NZB from
+			// three indexers is one hit.
+			hits := len(collected)
+			if threshold > 1 {
+				hits = search.DistinctReleaseCount(collected)
 			}
+			if hits >= threshold {
+				return collected, executed, nil
+			}
+			logger.Debug("Search attempt found too little; falling back",
+				"stream", streamLabel,
+				"request", plan.Name,
+				"type", contentType,
+				"id", id,
+				"attempt", attempt.Label(),
+				"hits", hits,
+				"min_hits", threshold,
+				"fallback_attempt", attempts[i+1].Label(),
+			)
 		}
 		return collected, executed, nil
 	}

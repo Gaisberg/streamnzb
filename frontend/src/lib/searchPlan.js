@@ -14,7 +14,12 @@ export const TARGET_SERIES = 'series'
 export const TARGET_ABSOLUTE = 'absolute'
 
 export const STOP_FIRST_HIT = 'first_hit'
+export const STOP_ENOUGH_HITS = 'enough_hits'
 export const STOP_ALL = 'all'
+
+// The threshold an enough_hits plan stops at when it names none, mirroring
+// config.DefaultSearchMinHits.
+export const DEFAULT_MIN_HITS = 10
 
 export const ORDER_AS_LISTED = 'as_listed'
 export const ORDER_ADAPTIVE_SEASON = 'adaptive_season'
@@ -33,6 +38,7 @@ export const TARGET_OPTIONS = [
 
 export const STOP_OPTIONS = [
   { value: STOP_FIRST_HIT, label: 'Stop at first hit' },
+  { value: STOP_ENOUGH_HITS, label: 'Stop after enough hits' },
   { value: STOP_ALL, label: 'Run every attempt' },
 ]
 
@@ -61,7 +67,23 @@ export function normalizeTarget(target) {
 }
 
 export function normalizeStop(stop) {
-  return lower(stop) === STOP_ALL ? STOP_ALL : STOP_FIRST_HIT
+  switch (lower(stop)) {
+    case STOP_ALL:
+      return STOP_ALL
+    case STOP_ENOUGH_HITS:
+      return STOP_ENOUGH_HITS
+    default:
+      return STOP_FIRST_HIT
+  }
+}
+
+// normalizeMinHits settles the enough_hits threshold: a whole number of at
+// least one, the default when the plan names none, and zero — omitted — for
+// the stop rules that have no threshold to keep.
+export function normalizeMinHits(stop, minHits) {
+  if (normalizeStop(stop) !== STOP_ENOUGH_HITS) return 0
+  const value = Math.floor(Number(minHits))
+  return Number.isFinite(value) && value >= 1 ? value : DEFAULT_MIN_HITS
 }
 
 export function normalizeOrder(order) {
@@ -254,6 +276,7 @@ export function normalizeSearchPlan(kind, plan) {
     name: String(value.name ?? '').trim(),
     attempts: normalizeAttempts(value.attempts, kind),
     stop: normalizeStop(value.stop),
+    min_hits: normalizeMinHits(value.stop, value.min_hits),
     accept: {
       titles: Array.isArray(accept.titles) ? accept.titles.filter((title) => typeof title === 'string') : [],
       year: accept.year === true,
