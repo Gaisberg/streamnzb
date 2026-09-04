@@ -487,6 +487,18 @@ func (f *File) StatSegmentAt(ctx context.Context, index int) (bool, error) {
 	return statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
 }
 
+// StatConcurrency is how many STATs the fetcher lets one caller keep in
+// flight — the pool's own budget when the fetcher offers one, else the
+// loader's default. It is what sizes the article census.
+func (f *File) StatConcurrency() int {
+	if h, ok := f.fetcher.(StatConcurrencyHinter); ok {
+		if n := h.StatConcurrency(); n > 0 {
+			return n
+		}
+	}
+	return defaultStatConcurrency
+}
+
 func (f *File) SegmentMapDetected() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

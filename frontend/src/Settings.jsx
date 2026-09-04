@@ -112,6 +112,7 @@ function Settings({
         session_ttl_minutes: initialConfig.session_ttl_minutes == null ? 30 : Number(initialConfig.session_ttl_minutes),
         session_post_playback_ttl_minutes: initialConfig.session_post_playback_ttl_minutes == null ? 240 : Number(initialConfig.session_post_playback_ttl_minutes),
         mute_error_video: initialConfig.mute_error_video === true,
+        preload_article_census: initialConfig.preload_article_census === true,
         providers: initialConfig.providers?.map((p, index) => ({
           ...p,
           priority: p.priority != null ? p.priority : index + 1,

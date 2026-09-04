@@ -452,6 +452,15 @@ func (c *Config) EffectiveSpeculativePreProbingMaxAttempts() int {
 	return DefaultSpeculativePreProbingMaxAttempts
 }
 
+// EffectivePreloadArticleCensus reports whether preloading runs the full
+// article census (opt-in) rather than the sampled sweep.
+func (c *Config) EffectivePreloadArticleCensus() bool {
+	if c != nil && c.PreloadArticleCensus != nil {
+		return *c.PreloadArticleCensus
+	}
+	return false
+}
+
 func normalizeSessionTTLMinutes(ttl int) int {
 	if ttl < MinSessionTTLMinutes || ttl > MaxSessionTTLMinutes {
 		return DefaultSessionTTLMinutes
@@ -804,6 +813,11 @@ type Config struct {
 	SpeculativePreProbingMaxAttempts int `json:"speculative_preprobing_max_attempts,omitempty"`
 	// SpeculativePreProbingCount is kept for backward compatibility with legacy configs.
 	SpeculativePreProbingCount int `json:"speculative_pre_probing_count,omitempty"`
+	// PreloadArticleCensus makes preloading STAT every article of the selected
+	// file (in an order that keeps any prefix a uniform sample) instead of
+	// sampling the first two volumes densely and six points per later volume.
+	// Costs STAT connections and preload time; off by default.
+	PreloadArticleCensus *bool `json:"preload_article_census,omitempty"`
 
 	// LibrarySearchMode controls SQLite library search priority ("library_first", "combine", "fallback_only", "disabled"). Default "combine".
 	LibrarySearchMode string `json:"library_search_mode,omitempty"`
