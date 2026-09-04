@@ -75,6 +75,14 @@ func decodeAndCloseBody(body io.ReadCloser, decodeFn func(io.Reader) (*decode.Fr
 // seeking back and forth across one damaged segment must not burn the budget.
 const MaxZeroFills = 10
 
+// MaxZeroFillRun is the longest run of consecutive missing segments that is
+// still zero-filled. A single absent article is a smeared frame the player
+// rides out; five in a row is several seconds of zeros inside the stream,
+// which most demuxers do not survive. Past this the file is failed so the
+// slot fails over instead of serving a crash. The cumulative cap above is
+// unchanged: this only says that ten holes must not be one hole.
+const MaxZeroFillRun = 4
+
 // slowSegmentFetchThreshold flags segment downloads that took long enough to
 // drain a player's buffer; one Warn per slow segment confirms mid-stream
 // stalls in the field without needing Trace-level logs.
@@ -87,7 +95,26 @@ func isArticleNotFound(err error) bool {
 }
 
 func (f *File) IsFailed() bool {
-	return f.ZeroFilledSegments() >= MaxZeroFills
+	return f.runFailed.Load() || f.ZeroFilledSegments() >= MaxZeroFills
+}
+
+// zeroFilledRunLocked is the length of the maximal run of zero-filled
+// segments containing index. Caller holds zeroFillMu.
+func (f *File) zeroFilledRunLocked(index int) int {
+	run := 1
+	for i := index - 1; i >= 0; i-- {
+		if _, ok := f.zeroFilled[i]; !ok {
+			break
+		}
+		run++
+	}
+	for i := index + 1; i < len(f.segments); i++ {
+		if _, ok := f.zeroFilled[i]; !ok {
+			break
+		}
+		run++
+	}
+	return run
 }
 
 // ZeroFilledSegments reports how many distinct segments of this file have been
@@ -155,6 +182,9 @@ type File struct {
 
 	zeroFillMu sync.Mutex
 	zeroFilled map[int]struct{}
+	// runFailed is set once a run of zero-filled segments grows past
+	// MaxZeroFillRun; IsFailed reports it alongside the cumulative cap.
+	runFailed atomic.Bool
 
 	segmentDetectMu sync.Mutex
 
@@ -1112,11 +1142,20 @@ func (f *File) finalizeSegmentDownload(index int, data []byte, err error, countF
 		f.zeroFilled[index] = struct{}{}
 		count++
 	}
+	run := f.zeroFilledRunLocked(index)
 	f.zeroFillMu.Unlock()
+
+	if run > MaxZeroFillRun {
+		// Isolated holes are a glitch; a run this long is seconds of zeros
+		// inside the stream, and no player rides that out. Fail the file so
+		// the read errors and the slot fails over.
+		f.runFailed.Store(true)
+		return nil, fmt.Errorf("missing run of %d segments at %d exceeds %d: %w", run, index, MaxZeroFillRun, errors.Join(ErrTooManyZeroFills, eligible.cause))
+	}
 
 	// Warn, not Debug: every zero-filled segment is wrong bytes served to a
 	// player, and the operator should be able to find that after the fact.
-	logger.Warn("Segment unavailable, zero-filling gap", "file", f.Name(), "index", index, "holes", count, "max", MaxZeroFills, "err", eligible.cause)
+	logger.Warn("Segment unavailable, zero-filling gap", "file", f.Name(), "index", index, "holes", count, "max", MaxZeroFills, "run", run, "err", eligible.cause)
 	return f.zeroSegment(index), nil
 }
 
