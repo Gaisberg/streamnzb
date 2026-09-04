@@ -107,13 +107,14 @@ a file that looks right on a non-DV TV and one that does not.
 renders it as `DV + HDR10`, `DV only`, `HDR10`, or empty for SDR.
 
 `.Probed.AudioLanguages` and `.Probed.SubtitleLanguages` are the tagged track
-languages as ISO 639-1 codes, the same codes `.Languages` holds. Guard them
-with `.Probed.TracksProbed` rather than `.Verified`: a library item probed
-before the tracks were captured is verified and has none, and should fall
-back to what the name claims. One line then covers both cases:
+languages as ISO 639-1 codes, the same codes `.Languages` holds. Guard on the
+list itself rather than on `.Verified`: a library item probed before the
+tracks were captured is verified and has none, and a probed file whose muxer
+tagged nothing has an empty list — both should fall back to what the name
+claims rather than print a bare marker. One line then covers every case:
 
 ```
-{{if .Probed.TracksProbed}}⛿ {{join .Probed.AudioLanguages " · " | upper}}{{else}}⛿ {{join .Languages " · " | upper}}{{end}}
+{{if .Probed.AudioLanguages}}⛿ {{join .Probed.AudioLanguages " · " | upper}}{{else if .Languages}}⛿ {{join .Languages " · " | upper}}{{end}}
 ```
 
 `.Probed.AudioStreams` and `.Probed.SubtitleStreams` count tracks whether or

@@ -392,15 +392,19 @@ tracks are tagged with, as the same ISO 639-1 codes `languages` uses, in
 stream order. They answer what a release name only claims: a title tagged
 `DUAL` says nothing about which two, the tracks say `["ja", "en"]`. Not every
 muxer tags its tracks, so `probed.audioStreams` and `probed.subtitleStreams`
-count them regardless — `probed.audioStreams >= 2` is dual audio even when the
-language list is empty. The four carry their own tier: a library item probed
+count them regardless. A count is not a language claim, though: a
+single-language file routinely carries two audio streams — a commentary, or a
+5.1 track beside a stereo downmix — so "dual audio" is
+`len(probed.audioLanguages) >= 2`, and `probed.audioStreams` is for what the
+count itself says (a file with no audio at all, an untagged mux you still want
+ranked by track count). The four carry their own tier: a library item probed
 before they were captured has codec and HDR measurements but nothing about
 its tracks, and a rule reading them is skipped for it rather than judged
 against an empty list.
 
 ```
 "ja" in probed.audioLanguages and "en" in probed.audioLanguages   → +800
-probed.audioStreams >= 2                                          → +400
+len(probed.audioLanguages) >= 2                                   → +400
 "ar" in probed.subtitleLanguages                                  → +300
 ```
 
