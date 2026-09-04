@@ -83,11 +83,6 @@ func (e *explainSample) toSeadex() *rules.SeadexContext {
 		Alt:       make(map[string]bool, len(e.Seadex.AltGroups)),
 		DualAudio: make(map[string]bool, len(e.Seadex.DualAudioGroups)),
 	}
-	for _, g := range e.Seadex.DualAudioGroups {
-		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
-			out.DualAudio[g] = true
-		}
-	}
 	for _, g := range e.Seadex.BestGroups {
 		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
 			out.Best[g] = true
@@ -96,6 +91,14 @@ func (e *explainSample) toSeadex() *rules.SeadexContext {
 	for _, g := range e.Seadex.AltGroups {
 		if g = strings.ToLower(strings.TrimSpace(g)); g != "" && !out.Best[g] {
 			out.Alt[g] = true
+		}
+	}
+	// Dual audio is a property of a recommended release, so it only holds
+	// for a group SeaDex recommends: the live lookup can never produce
+	// dualAudio without best or alternative, and neither may the preview.
+	for _, g := range e.Seadex.DualAudioGroups {
+		if g = strings.ToLower(strings.TrimSpace(g)); g != "" && (out.Best[g] || out.Alt[g]) {
+			out.DualAudio[g] = true
 		}
 	}
 	return out

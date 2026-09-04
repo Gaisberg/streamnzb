@@ -302,7 +302,7 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                 </SettingRow>
                 <SettingRow
                   label="Groups with dual audio"
-                  description="Groups whose recommended release SeaDex marks dual audio. A group may also be in either list above."
+                  description="Groups from the two lists above whose recommended release SeaDex marks dual audio. A group listed only here is ignored: dual audio is a property of a recommendation."
                 >
                   <Input
                     value={sample.seadex.dual_audio_groups || ""}
