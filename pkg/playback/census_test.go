@@ -22,6 +22,7 @@ type censusVol struct {
 	statErr  error         // transient error returned for every STAT when set
 	delay    time.Duration // per-STAT latency
 	width    int           // what the fetcher allows; 0 = no hint
+	idless   map[int]bool  // NZB-declared holes: no message id to STAT
 
 	mu       sync.Mutex
 	stats    []int
@@ -44,6 +45,7 @@ func (v *censusVol) OpenReaderAt(context.Context, int64) (io.ReadCloser, error) 
 func (v *censusVol) ReadAt([]byte, int64) (int, error)                          { return 0, nil }
 func (v *censusVol) SegmentCount() int                                          { return v.segments }
 func (v *censusVol) StatConcurrency() int                                       { return v.width }
+func (v *censusVol) SegmentHasMessageID(index int) bool                         { return !v.idless[index] }
 func (v *censusVol) StatSegmentAt(ctx context.Context, index int) (bool, error) {
 	n := v.inflight.Add(1)
 	for {
@@ -66,7 +68,9 @@ func (v *censusVol) StatSegmentAt(ctx context.Context, index int) (bool, error) 
 	if v.statErr != nil {
 		return false, v.statErr
 	}
-	return !v.missing[index], nil
+	// The real loader answers (false, nil) for an id-less segment — the same
+	// shape as a unanimous 430 — which is exactly why the census must not ask.
+	return !v.missing[index] && !v.idless[index], nil
 }
 
 func censusBP(vols ...*censusVol) *unpack.ArchiveBlueprint {
@@ -176,6 +180,27 @@ func TestCensusWidthComesFromTheFetcher(t *testing.T) {
 	}
 	if peak := plain.peak.Load(); peak > censusDefaultWidth {
 		t.Fatalf("unhinted census ran %d wide, default is %d", peak, censusDefaultWidth)
+	}
+}
+
+// A hole the NZB itself declares is not a provider miss: the census skips it
+// (the pre-flight owns it) and passes a release whose only holes are gaps in
+// the numbering — except segment 0, which stays fatal as it always was.
+func TestCensusSkipsNZBDeclaredHoles(t *testing.T) {
+	vols := []*censusVol{
+		{name: "p1", segments: 129, width: 8},
+		{name: "p2", segments: 129, idless: map[int]bool{40: true, 41: true}},
+		{name: "p3", segments: 129},
+	}
+	if err := VerifySelectedFileArticles(context.Background(), censusBP(vols...)); err != nil {
+		t.Fatalf("NZB-declared holes must not be reported as missing on providers, got %v", err)
+	}
+	if n := vols[1].statCount(); n != 127 {
+		t.Fatalf("id-less segments were STATed: %d of 129 asked, want 127", n)
+	}
+	headless := []*censusVol{{name: "p1", segments: 129, width: 8, idless: map[int]bool{0: true}}}
+	if err := VerifySelectedFileArticles(context.Background(), censusBP(headless...)); !errors.Is(err, ErrFirstSegmentUnavailable) {
+		t.Fatalf("a missing first segment stays fatal, got %v", err)
 	}
 }
 

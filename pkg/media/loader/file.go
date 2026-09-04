@@ -487,6 +487,17 @@ func (f *File) StatSegmentAt(ctx context.Context, index int) (bool, error) {
 	return statter.StatSegment(ctx, msgID, f.nzbFile.Groups)
 }
 
+// SegmentHasMessageID reports whether the segment at index names an article
+// at all. A numbering-gap placeholder or an id-less original has nothing to
+// STAT: it is a hole the NZB itself declares, owned by the pre-flight and the
+// zero-fill policy, not evidence about any provider.
+func (f *File) SegmentHasMessageID(index int) bool {
+	if index < 0 || index >= len(f.segments) {
+		return false
+	}
+	return strings.TrimSpace(f.segments[index].ID) != ""
+}
+
 // StatConcurrency is how many STATs the fetcher lets one caller keep in
 // flight — the pool's own budget when the fetcher offers one, else the
 // loader's default. It is what sizes the article census.

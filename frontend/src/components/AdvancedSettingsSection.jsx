@@ -354,7 +354,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                         </FormControl>
                       </div>
                       <FormDescription className="mt-3">
-                        Preloading normally checks a sample of a release's articles. On, it asks about every one — in an order that keeps any part it reaches representative of the whole file — so a hole in the middle sends the player to the next release instead of ending playback on the first seek into it. Costs STAT connections and a few more seconds per preloaded candidate.
+                        Preloading normally checks a sample of a release's articles. On, it asks about every one — in an order that keeps any part it reaches representative of the whole file — so a hole in the middle sends the player to the next release instead of ending playback on the first seek into it. Applies to RAR archive releases, which is where the check has volumes to walk; direct and 7z releases are checked as before. Costs STAT connections and a few more seconds per preloaded candidate.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
