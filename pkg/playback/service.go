@@ -499,6 +499,13 @@ func VerifyRequiredArchivesExist(ctx context.Context, files []*loader.File) (boo
 			return false, &errNZBIncomplete{msg: fmt.Sprintf(
 				"archive volume %s is missing %d articles from the NZB itself", f.Name(), missing)}
 		}
+		// An NZB gap is one contiguous span, so a gap within the count cap can
+		// still be a block of zeros no player survives: the same run cap the
+		// loader applies at read time is applied here, before any promise.
+		if run := f.MissingRunFromNZB(); run > loader.MaxZeroFillRun {
+			return false, &errNZBIncomplete{msg: fmt.Sprintf(
+				"archive volume %s is missing a run of %d consecutive articles from the NZB itself", f.Name(), run)}
+		}
 	}
 	if len(files) == 1 {
 		return files[0].CheckFirstSegmentExists(ctx)
