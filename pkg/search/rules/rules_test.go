@@ -112,7 +112,7 @@ func TestDolbyVisionWithoutFallbackFromProbe(t *testing.T) {
 func TestTrackLanguagesFromProbe(t *testing.T) {
 	set := compile(t,
 		config.RuleConfig{Name: "Japanese audio, measured", When: `"ja" in probed.audioLanguages`, Points: 800},
-		config.RuleConfig{Name: "Dual audio, measured", When: `probed.audioStreams >= 2`, Points: 400},
+		config.RuleConfig{Name: "Two audio streams, measured", When: `probed.audioStreams >= 2`, Points: 400},
 		config.RuleConfig{Name: "Arabic subs, measured", When: `"ar" in probed.subtitleLanguages`, Points: 300},
 	)
 
@@ -144,8 +144,8 @@ func TestTrackLanguagesFromProbe(t *testing.T) {
 	// the tracks are not, so the track rules are skipped rather than told
 	// "no audio at all". A rule on the older measurements still runs.
 	set = compile(t,
-		config.RuleConfig{Name: "Dual audio, measured", When: `probed.audioStreams >= 2`, Points: 400},
-		config.RuleConfig{Name: "Mono, measured", When: `probed.audioStreams < 2`, Points: -400},
+		config.RuleConfig{Name: "Two audio streams, measured", When: `probed.audioStreams >= 2`, Points: 400},
+		config.RuleConfig{Name: "One audio stream, measured", When: `probed.audioStreams < 2`, Points: -400},
 		config.RuleConfig{Name: "HEVC, measured", When: `probed.videoCodec == "hevc"`, Points: 50},
 	)
 	legacy := envFor("Show S01E01 1080p DUAL WEB-DL-GRP", func(c *triage.Candidate) {
