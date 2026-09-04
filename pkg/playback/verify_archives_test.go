@@ -125,6 +125,40 @@ func TestVerifyRequiredArchivesExistRefusesNZBGapPastZeroFillBudget(t *testing.T
 	}
 }
 
+// A gap within the count cap but longer than the run cap is a block of zeros
+// the read-time cap would fail on mid-play; the pre-flight refuses it first.
+// The same number of holes scattered through the file is still offered.
+func TestVerifyRequiredArchivesExistRefusesContiguousNZBGapPastRunCap(t *testing.T) {
+	gappy := func(subject string, missing ...int) *loader.File {
+		gone := make(map[int]bool, len(missing))
+		for _, n := range missing {
+			gone[n] = true
+		}
+		segments := make([]nzb.Segment, 0, 40)
+		for num := 1; num <= 40; num++ {
+			if gone[num] {
+				continue
+			}
+			segments = append(segments, nzb.Segment{ID: fmt.Sprintf("%s-seg-%d", subject, num), Number: num, Bytes: 1024})
+		}
+		return loader.NewFile(context.Background(), &nzb.File{Subject: subject, Groups: []string{"alt.test"}, Segments: segments}, nil, &statFetcher{})
+	}
+
+	block := append(statVolumes(&statFetcher{}, 2), gappy("block", 10, 11, 12, 13, 14, 15))
+	exists, err := VerifyRequiredArchivesExist(context.Background(), block)
+	if exists || !errors.Is(err, ErrFirstSegmentUnavailable) {
+		t.Fatalf("six contiguous NZB holes: exists=%v err=%v, want refused with the bad-release classification", exists, err)
+	}
+	if !strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("err = %q should name the run, not the count", err)
+	}
+
+	scattered := append(statVolumes(&statFetcher{}, 2), gappy("scattered", 5, 10, 15, 20, 25, 30))
+	if exists, err := VerifyRequiredArchivesExist(context.Background(), scattered); !exists || err != nil {
+		t.Fatalf("six scattered NZB holes: exists=%v err=%v, want offered", exists, err)
+	}
+}
+
 // The regression this whole change exists for: a STAT that never got an answer
 // must not come back wearing the missing-article verdict, because callers turn
 // that sentinel into an AvailNZB report and a multi-day ban.
