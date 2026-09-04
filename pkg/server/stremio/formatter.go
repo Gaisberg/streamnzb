@@ -990,7 +990,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			pubDate: time.Now().Add(-300 * 24 * time.Hour).Format(time.RFC1123Z),
 			score:   3600,
 			runtime: 24 * 60,
-			seadex:  triage.SeadexState{Checked: true, Known: true, Best: true},
+			seadex:  triage.SeadexState{Checked: true, Known: true, Best: true, DualAudio: true},
 		},
 		{
 			label:   "Library hit · ffprobe verified",
