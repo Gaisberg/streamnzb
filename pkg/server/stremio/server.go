@@ -179,6 +179,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		Sessions:                   opts.SessionManager,
 		FFprobePath:                s.effectiveFFprobePath,
 		StartupTimeout:             s.playbackStartupTimeout,
+		PreloadArticleCensus:       s.preloadArticleCensus,
 		AllowLargestDirectFallback: allowLargestDirectFallbackForSession,
 		SaveToLibrary:              s.saveSessionToLibrary,
 		NotePendingLibrarySave:     s.notePendingLibrarySave,

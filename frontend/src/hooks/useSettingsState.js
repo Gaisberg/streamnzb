@@ -36,6 +36,7 @@ const ADVANCED_TAB_FIELDS = [
   'session_ttl_minutes',
   'session_post_playback_ttl_minutes',
   'mute_error_video',
+  'preload_article_census',
   'memory_limit_mb',
   'availnzb_mode',
   'library_search_mode',
