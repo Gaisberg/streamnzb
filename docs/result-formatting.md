@@ -81,11 +81,14 @@ guess from the release name. `.Kind` is the full content kind: `movie`,
 as an ISO 639-1 code, empty when it did not say. `.Languages` holds the same
 codes when they came from the release name; when the name carried no language
 token it falls back to what the indexer reported, which may be a word
-(`English`) rather than a code, and the comparison below then simply does not
-fire. A badge for original-audio releases needs no per-language line:
+(`English`) rather than a code — `has` then finds no match and the badge stays
+off, which is the honest answer. Use `has`, which is membership on the list;
+`contains` is a substring test over the list's text and would light up `en`
+inside `French`. A badge for original-audio releases needs no per-language
+line:
 
 ```
-{{if and .OriginalLanguage (contains .OriginalLanguage .Languages)}}🎙 original audio{{end}}
+{{if and .OriginalLanguage (has .OriginalLanguage .Languages)}}🎙 original audio{{end}}
 ```
 
 ### Matched rules

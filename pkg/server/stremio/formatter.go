@@ -505,6 +505,19 @@ var formatTemplateFuncs = template.FuncMap{
 	"contains": func(sub string, v any) bool {
 		return strings.Contains(templateText(v), sub)
 	},
+	// has is membership on a list, which contains is not: contains is a
+	// substring test over the list's rendered text, so `contains "en"
+	// .Languages` is true for ["French"]. {{if has "en" .Languages}} asks
+	// whether "en" is one of the entries.
+	"has": func(item string, v any) bool {
+		switch list := v.(type) {
+		case stringList:
+			return slices.Contains(list, item)
+		case []string:
+			return slices.Contains(list, item)
+		}
+		return false
+	},
 	"hasPrefix": func(prefix string, v any) bool {
 		return strings.HasPrefix(templateText(v), prefix)
 	},
