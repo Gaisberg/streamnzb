@@ -1,5 +1,25 @@
 # Changelog
 
+## [5.17.0](https://github.com/Gaisberg/streamnzb/compare/v5.16.1...v5.17.0) (2026-09-04)
+
+
+### Features
+
+* **playback:** opt-in article census of the selected file when preloading ([1375a68](https://github.com/Gaisberg/streamnzb/commit/1375a68d964e9d699a5dbfa707f27ff33d46e346))
+* **playback:** rewrite zero-filled Matroska holes as void elements ([9f86ceb](https://github.com/Gaisberg/streamnzb/commit/9f86cebb702d19994099d690aab7fedc7bb49b11))
+* **probe:** expose per-file audio and subtitle track languages and counts to rules and formats ([10a26e8](https://github.com/Gaisberg/streamnzb/commit/10a26e89921f20d039b553d1f37dbbae46431e47))
+* **rules:** put the requested title's original language on the request, with a has helper for format lists ([ef1e811](https://github.com/Gaisberg/streamnzb/commit/ef1e8115c0d6f43b13c5509de3b11fbc66e1a3e1))
+* **seadex:** expose the dual-audio flag as seadex.dualAudio ([56889ab](https://github.com/Gaisberg/streamnzb/commit/56889ab8f822552e6943d9e3fa08d03c2a98fa96))
+* **search:** replace search modes and scopes with attempt-list search plans ([c360108](https://github.com/Gaisberg/streamnzb/commit/c360108068b49ea6a37694279900c21d373dcce7)), closes [#252](https://github.com/Gaisberg/streamnzb/issues/252)
+* **search:** stop a search plan after enough distinct hits ([ea74011](https://github.com/Gaisberg/streamnzb/commit/ea74011fa30d80ca76a52426b837d71178e72ac2)), closes [#256](https://github.com/Gaisberg/streamnzb/issues/256)
+* **stats:** track per-indexer grab success rate, NZB fetch time and exclusive plays ([39d4d1d](https://github.com/Gaisberg/streamnzb/commit/39d4d1deea587b34e411c4d51b38a3bf46dbcf68))
+
+
+### Bug Fixes
+
+* **loader:** fail a run of more than four missing segments instead of padding it ([7b1a9c5](https://github.com/Gaisberg/streamnzb/commit/7b1a9c5dd4683ec2fa1f923cccea69e0e4f5a502))
+* **stats:** count unique indexer hits per deduplicated release ([25bda56](https://github.com/Gaisberg/streamnzb/commit/25bda56d7212ce3b6e8eb64ddaf3f62b168f1b20))
+
 ## [5.16.1](https://github.com/Gaisberg/streamnzb/compare/v5.16.0...v5.16.1) (2026-09-02)
 
 
