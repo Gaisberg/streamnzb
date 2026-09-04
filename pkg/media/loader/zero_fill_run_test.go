@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/usenet/nntp"
 )
 
@@ -49,6 +50,29 @@ func TestMissingRunPastCapFailsInsteadOfPadding(t *testing.T) {
 	}
 	if !f.IsFailed() {
 		t.Fatal("a run past the cap must fail the file")
+	}
+}
+
+// The NZB's own gaps are one span by nature, so the file records the longest
+// run for the pre-flight: six scattered holes are six glitches, six in a row
+// is a block of zeros the read-time cap would fail on.
+func TestNewFileRecordsLongestMissingRunFromNZB(t *testing.T) {
+	scattered := NewFile(context.Background(), &nzb.File{
+		Subject: "scattered.mkv", Groups: []string{"alt.test"},
+		Segments: gappedNZBSegments(30, 1024, 3, 7, 11, 15, 19, 23),
+	}, nil, nil)
+	if got := scattered.MissingRunFromNZB(); got != 1 {
+		t.Fatalf("MissingRunFromNZB() = %d for scattered holes, want 1", got)
+	}
+	block := NewFile(context.Background(), &nzb.File{
+		Subject: "block.mkv", Groups: []string{"alt.test"},
+		Segments: gappedNZBSegments(30, 1024, 9, 10, 11, 12, 13, 14),
+	}, nil, nil)
+	if got := block.MissingRunFromNZB(); got != 6 {
+		t.Fatalf("MissingRunFromNZB() = %d for a six-article gap, want 6", got)
+	}
+	if got := block.MissingFromNZB(); got != 6 {
+		t.Fatalf("MissingFromNZB() = %d, want 6", got)
 	}
 }
 

@@ -169,8 +169,12 @@ type File struct {
 
 	// missingFromNZB counts articles the NZB itself cannot deliver: numbering
 	// gaps (materialized as placeholders or not) and segments carrying no
-	// message id. Immutable after NewFile.
-	missingFromNZB int
+	// message id. missingRunFromNZB is the longest contiguous run of those
+	// among the materialized segments — an NZB gap is one span by nature, so
+	// the count alone cannot say whether ten holes are ten glitches or one
+	// unplayable block. Both immutable after NewFile.
+	missingFromNZB    int
+	missingRunFromNZB int
 
 	downloadMu        sync.Mutex
 	inflightDownloads map[int]*inflightSegmentDownload
@@ -240,9 +244,16 @@ func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, 
 	// provider; the count is what lets the pre-flight refuse a release that
 	// would exhaust the zero-fill budget.
 	missing := unmaterialized
+	run, longestRun := 0, 0
 	for i, s := range nzbSegments {
 		if strings.TrimSpace(s.ID) == "" {
 			missing++
+			run++
+			if run > longestRun {
+				longestRun = run
+			}
+		} else {
+			run = 0
 		}
 		segments[i] = &Segment{
 			Segment:     s,
@@ -258,6 +269,7 @@ func NewFile(ctx context.Context, f *nzb.File, estimator *SegmentSizeEstimator, 
 		segments:          segments,
 		totalSize:         offset,
 		missingFromNZB:    missing,
+		missingRunFromNZB: longestRun,
 		ctx:               ctx,
 		inflightDownloads: make(map[int]*inflightSegmentDownload),
 		zeroFilled:        make(map[int]struct{}),
@@ -327,6 +339,12 @@ func (f *File) SegmentCount() int { return len(f.segments) }
 // playback.VerifyRequiredArchivesExist turns into a definitive pre-flight
 // verdict instead of letting an incomplete post serve a truncated file.
 func (f *File) MissingFromNZB() int { return f.missingFromNZB }
+
+// MissingRunFromNZB is the longest contiguous run of articles the NZB itself
+// cannot deliver. A run past MaxZeroFillRun would be zero-filled into the
+// stream as one block and fail the file on the read that reaches it, so the
+// pre-flight refuses it before the release is offered.
+func (f *File) MissingRunFromNZB() int { return f.missingRunFromNZB }
 
 // CheckFirstSegmentExists returns whether the required segments (start, middle, end) exist on the server via STAT.
 // Used before opening a stream to fail fast when release segments are missing (430).
