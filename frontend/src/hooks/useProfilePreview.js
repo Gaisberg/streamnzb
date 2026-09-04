@@ -19,7 +19,7 @@ export const SAMPLE_TITLES = [
 // match counts, the bench reads it for the full breakdown. Two components
 // asking the same question separately would double the traffic and let them
 // disagree on screen, which is worse than either.
-export function useProfilePreview(profile, { titles, kind, targetTitle, sample } = {}) {
+export function useProfilePreview(profile, { titles, kind, targetTitle, originalLanguage, sample } = {}) {
   const [results, setResults] = useState(null)
   const [aggregates, setAggregates] = useState([])
   const [loading, setLoading] = useState(false)
@@ -52,6 +52,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
           profile,
           kind: kind && kind !== "all" ? kind : undefined,
           target_title: targetTitle?.trim() || undefined,
+          original_language: originalLanguage?.trim() || undefined,
           sample: sampleForRequest(sample),
         }),
       })
@@ -76,7 +77,7 @@ export function useProfilePreview(profile, { titles, kind, targetTitle, sample }
     return () => window.clearTimeout(handle)
     // profileKey and titleKey stand in for the objects they serialize.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileKey, titleKey, sampleKey, kind, targetTitle])
+  }, [profileKey, titleKey, sampleKey, kind, targetTitle, originalLanguage])
 
   // ruleStats counts, per rule name, how many sampled releases it paid out on
   // and how many it could not be judged against. It is what turns a condition

@@ -955,6 +955,12 @@ type formatPreviewFixture struct {
 	// fixtures without an indexer-reported duration still preview {{.Bitrate}}.
 	runtime float64
 	seadex  triage.SeadexState
+	// kind, isAnime and originalLanguage are the request half of the verdict,
+	// so {{.Kind}}, {{.IsAnime}} and {{.OriginalLanguage}} preview as they
+	// render on a live result instead of as their zero values.
+	kind             string
+	isAnime          bool
+	originalLanguage string
 	// variants are the other indexers holding a copy of this release, so a
 	// preview of {{.Variants}} shows a merged result rather than a lone one.
 	variants []string
@@ -963,54 +969,63 @@ type formatPreviewFixture struct {
 func formatPreviewFixtures() []formatPreviewFixture {
 	return []formatPreviewFixture{
 		{
-			label:    "4K movie · fresh indexer hit",
-			content:  "Dune: Part Two",
-			title:    "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR10.HEVC.DDP5.1.Atmos-FLUX",
-			indexer:  "DrunkenSlug",
-			size:     24_800_000_000,
-			grabs:    154,
-			pubDate:  time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
-			score:    4200,
-			duration: 165 * 60,
-			variants: []string{"NZBGeek", "NinjaCentral"},
+			label:            "4K movie · fresh indexer hit",
+			content:          "Dune: Part Two",
+			title:            "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR10.HEVC.DDP5.1.Atmos-FLUX",
+			indexer:          "DrunkenSlug",
+			size:             24_800_000_000,
+			grabs:            154,
+			pubDate:          time.Now().Add(-40 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:            4200,
+			duration:         165 * 60,
+			kind:             "movie",
+			originalLanguage: "en",
+			variants:         []string{"NZBGeek", "NinjaCentral"},
 		},
 		{
-			label:   "1080p episode · AvailNZB verified",
-			content: "Ted Lasso",
-			title:   "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
-			indexer: "altHUB",
-			size:    1_832_627_684,
-			grabs:   37,
-			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
-			score:   2850,
-			avail:   true,
-			runtime: 34 * 60,
+			label:            "1080p episode · AvailNZB verified",
+			content:          "Ted Lasso",
+			title:            "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
+			indexer:          "altHUB",
+			size:             1_832_627_684,
+			grabs:            37,
+			pubDate:          time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:            2850,
+			avail:            true,
+			runtime:          34 * 60,
+			kind:             "series",
+			originalLanguage: "en",
 		},
 		{
-			label:   "Anime episode · SeaDex best",
-			content: "86: Eighty Six",
-			title:   "86.Eighty.Six.S01E01.REPACK.1080p.Blu-ray.Opus2.0.x265-koala",
-			indexer: "animetosho",
-			size:    2_118_286_545,
-			grabs:   88,
-			pubDate: time.Now().Add(-300 * 24 * time.Hour).Format(time.RFC1123Z),
-			score:   3600,
-			runtime: 24 * 60,
-			seadex:  triage.SeadexState{Checked: true, Known: true, Best: true, DualAudio: true},
+			label:            "Anime episode · SeaDex best",
+			content:          "86: Eighty Six",
+			title:            "86.Eighty.Six.S01E01.REPACK.1080p.Blu-ray.Opus2.0.x265-koala",
+			indexer:          "animetosho",
+			size:             2_118_286_545,
+			grabs:            88,
+			pubDate:          time.Now().Add(-300 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:            3600,
+			runtime:          24 * 60,
+			seadex:           triage.SeadexState{Checked: true, Known: true, Best: true, DualAudio: true},
+			kind:             "anime_show",
+			isAnime:          true,
+			originalLanguage: "ja",
 		},
 		{
-			label:   "Library hit · ffprobe verified",
-			content: "Ted Lasso",
-			title:   "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
-			indexer: "StreamNZB Library - altHUB",
-			size:    1_775_983_877,
-			grabs:   37,
-			pubDate: time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
-			score:   3350,
-			avail:   true,
-			library: true,
-			caps:    "hevc Main 10 1080p 10-bit",
-			runtime: 34 * 60,
+			label:            "Library hit · ffprobe verified",
+			content:          "Ted Lasso",
+			title:            "Ted.Lasso.S04E01.NORDiC.1080p.ATV.WEB-DL.H.265-NORViNE",
+			indexer:          "StreamNZB Library - altHUB",
+			size:             1_775_983_877,
+			grabs:            37,
+			pubDate:          time.Now().Add(-3 * 24 * time.Hour).Format(time.RFC1123Z),
+			score:            3350,
+			avail:            true,
+			library:          true,
+			caps:             "hevc Main 10 1080p 10-bit",
+			runtime:          34 * 60,
+			kind:             "series",
+			originalLanguage: "en",
 		},
 	}
 }
@@ -1061,6 +1076,9 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 		}
 		cand := triage.Candidate{Release: rel, Score: fx.score, Metadata: parser.ParseReleaseTitle(fx.title)}
 		cand.Verdict.Seadex = fx.seadex
+		cand.Verdict.Kind = fx.kind
+		cand.Verdict.IsAnime = fx.isAnime
+		cand.Verdict.OriginalLanguage = fx.originalLanguage
 		ctx := newFormatContext(cand, i+1, len(fixtures), topScore, DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
 
 		builtinName := "StreamNZB\nStandalone"

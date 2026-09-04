@@ -415,6 +415,7 @@ export const RULE_ATTRIBUTES = [
       { name: "season", type: "number" },
       { name: "episode", type: "number" },
       { name: "title", type: "text", example: "the title that was searched for" },
+      { name: "originalLanguage", type: "text", example: 'originalLanguage != "" and originalLanguage in languages — ISO 639-1 from metadata, "" when it did not say' },
     ],
   },
 ]

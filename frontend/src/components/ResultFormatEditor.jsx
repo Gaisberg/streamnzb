@@ -35,7 +35,7 @@ const FORMAT_FIELDS = [
   { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages'] },
   { group: 'Episode', fields: ['.Season', '.Episode', '.Seasons', '.Episodes', '.EpisodeCode', '.Volumes'] },
   { group: 'Flags', fields: ['.Proper', '.Repack', '.Remastered', '.Upscaled', '.ThreeD', '.Scene', '.Retail', '.Hardcoded', '.Dubbed', '.Subbed', '.Commentary', '.Complete', '.Documentary', '.Unrated', '.Uncensored', '.PPV'] },
-  { group: 'Kind', fields: ['.Kind', '.IsAnime'] },
+  { group: 'Kind', fields: ['.Kind', '.IsAnime', '.OriginalLanguage'] },
   { group: 'Probed', fields: ['.Verified', '.Probed.VideoCodec', '.Probed.AudioCodec', '.Probed.Width', '.Probed.Height', '.Probed.Profile', '.Probed.BitDepth', '.Probed.HDR', '.Probed.DolbyVision', '.Probed.HasHDRFallback', '.Probed.DynamicRange', '.Probed.TracksProbed', '.Probed.AudioLanguages', '.Probed.SubtitleLanguages', '.Probed.AudioStreams', '.Probed.SubtitleStreams'] },
   { group: 'Avail', fields: ['.Availability.Status', '.Availability.Known', '.Availability.OnMyBackbone', '.Availability.CheckedDaysAgo', '.Availability.Compression'] },
   { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative', '.Seadex.DualAudio'] },

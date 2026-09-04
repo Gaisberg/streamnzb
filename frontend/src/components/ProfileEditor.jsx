@@ -78,6 +78,7 @@ export function ProfileEditor({ profile, onChange, libraryRules = [] }) {
   const [sampleInput, setSampleInput] = useState(SAMPLE_TITLES.join("\n"))
   const [previewKind, setPreviewKind] = useState("movie")
   const [targetTitle, setTargetTitle] = useState("")
+  const [originalLanguage, setOriginalLanguage] = useState("")
   const [sample, setSample] = useState(EMPTY_SAMPLE)
 
   // One preview request serves the rules tab's per-rule counts and the panel's
@@ -91,6 +92,7 @@ export function ProfileEditor({ profile, onChange, libraryRules = [] }) {
     titles: sampleTitles,
     kind: previewKind,
     targetTitle,
+    originalLanguage,
     sample,
   })
 
@@ -148,6 +150,8 @@ export function ProfileEditor({ profile, onChange, libraryRules = [] }) {
             onKindChange={setPreviewKind}
             targetTitle={targetTitle}
             onTargetTitleChange={setTargetTitle}
+            originalLanguage={originalLanguage}
+            onOriginalLanguageChange={setOriginalLanguage}
             sample={sample}
             onSampleChange={setSample}
           />
