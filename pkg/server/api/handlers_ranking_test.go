@@ -71,6 +71,39 @@ func TestHandleRankingExplainUsesPostedProfile(t *testing.T) {
 	}
 }
 
+// A SeaDex sample answers seadex.dualAudio only for a group it also
+// recommends, matching the invariant the live lookup keeps.
+func TestHandleRankingExplainSeadexDualAudioNeedsARecommendation(t *testing.T) {
+	s := &Server{config: adminConfig()}
+	profile := &config.FilterProfileConfig{
+		Name:  "Dual",
+		Rules: []config.RuleConfig{{Name: "No dual", When: `seadex.dualAudio`, Action: config.RuleActionReject}},
+	}
+	explain := func(seadex *explainSeadex) bool {
+		t.Helper()
+		rec := postExplain(t, s, explainRequest{
+			Titles:  []string{"Anime S01E01 1080p BluRay x265-Koala"},
+			Profile: profile,
+			Kind:    "anime_show",
+			Sample:  &explainSample{Seadex: seadex},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var got explainResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Results[0].Fetch
+	}
+	if explain(&explainSeadex{BestGroups: []string{"Koala"}, DualAudioGroups: []string{"Koala"}}) {
+		t.Error("a recommended dual-audio group must trip the reject rule")
+	}
+	if !explain(&explainSeadex{DualAudioGroups: []string{"Koala"}}) {
+		t.Error("dual audio without a recommendation must not be answered true")
+	}
+}
+
 func TestHandleRankingExplainResolvesSavedProfileByName(t *testing.T) {
 	s := &Server{config: adminConfig(config.DefaultFilterProfile())}
 
