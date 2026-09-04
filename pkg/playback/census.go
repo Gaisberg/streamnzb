@@ -55,6 +55,17 @@ type statWidthHinter interface {
 	StatConcurrency() int
 }
 
+// segmentIDer is the other optional half: loader.File says which segments
+// name an article. A segment that does not — a numbering-gap placeholder from
+// the NZB — has nothing to STAT and is not the census's to judge: the NZB
+// declared that hole, the pre-flight already counts it, and treating it as a
+// unanimous 430 would report a release bad to AvailNZB for a gap every
+// provider is innocent of. Volume index 0 is the one exception, fatal
+// either way, as the sampled sweep has always treated it.
+type segmentIDer interface {
+	SegmentHasMessageID(index int) bool
+}
+
 type censusPoint struct {
 	vol int
 	seg int
@@ -67,7 +78,8 @@ type CensusReport struct {
 	Missing   int
 	Transient int
 	// Complete reports every planned article was asked about within the
-	// budget; false means the budget ran out and the rest went unasked.
+	// budget — including a census that found a miss and stopped, since it
+	// had its answer; false means the budget ran out and the rest went unasked.
 	Complete bool
 	Width    int
 	Duration time.Duration
@@ -138,7 +150,13 @@ func censusOrder(vols []statCapableFile) []censusPoint {
 			return
 		}
 		emitted[flat] = true
-		order = append(order, locate(flat))
+		p := locate(flat)
+		if p.seg != 0 {
+			if ider, ok := vols[p.vol].(segmentIDer); ok && !ider.SegmentHasMessageID(p.seg) {
+				return // an NZB-declared hole: nothing to ask, not ours to judge
+			}
+		}
+		order = append(order, p)
 	}
 
 	// Anchors: the head of the file, its tail, the first article of every
@@ -250,7 +268,7 @@ func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint,
 		Checked:   checked,
 		Missing:   missing,
 		Transient: transient,
-		Complete:  cursor >= len(order) && unasked == 0 && missing == 0,
+		Complete:  missing > 0 || (cursor >= len(order) && unasked == 0),
 		Width:     width,
 		Duration:  time.Since(start),
 	}, firstMiss
