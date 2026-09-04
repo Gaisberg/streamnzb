@@ -25,3 +25,29 @@ func TestIsFullDiscRelease(t *testing.T) {
 		}
 	}
 }
+
+// The unique-hit verdict is decided once at search time and read back at
+// playback, with a playlist clone in between — so cloning has to carry it, on
+// the variants as well as the primary.
+func TestCloneCarriesUniqueHitOntoEveryCopy(t *testing.T) {
+	rel := &Release{
+		Title:     "Movie.2160p.Remux-GRP",
+		Indexer:   "NZBGeek",
+		UniqueHit: true,
+		Variants:  []*Release{{Title: "Movie.2160p.Remux-GRP", Indexer: "NZBGeek", UniqueHit: true}},
+	}
+
+	clone := rel.Clone()
+	for i, c := range clone.Copies() {
+		if !c.UniqueHit {
+			t.Fatalf("copy %d: UniqueHit = false, want true", i)
+		}
+	}
+
+	// A clone is a snapshot, not an alias: re-marking the original must not
+	// reach through to a playlist already built from it.
+	rel.UniqueHit = false
+	if !clone.UniqueHit {
+		t.Fatal("clone.UniqueHit followed the original, want an independent copy")
+	}
+}

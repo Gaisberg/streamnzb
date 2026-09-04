@@ -38,6 +38,8 @@ type ClientCore struct {
 	downloadRemaining  int
 	searchesCount      int
 	totalResponseMS    int64
+	grabsCount         int
+	totalGrabMS        int64
 	throttledUntil     time.Time
 	apiProbeAfter      time.Time
 	downloadProbeAfter time.Time
@@ -139,9 +141,13 @@ func (c *ClientCore) Usage() Usage {
 		DownloadsUsed:      c.downloadUsed,
 		DownloadsRemaining: c.downloadRemaining,
 		SearchesCount:      c.searchesCount,
+		GrabsCount:         c.grabsCount,
 	}
 	if c.searchesCount > 0 {
 		u.AvgResponseMS = float64(c.totalResponseMS) / float64(c.searchesCount)
+	}
+	if c.grabsCount > 0 {
+		u.AvgGrabMS = float64(c.totalGrabMS) / float64(c.grabsCount)
 	}
 	c.mu.RUnlock()
 	if counts != nil {
@@ -180,6 +186,21 @@ func (c *ClientCore) RecordSearchDuration(elapsed time.Duration) {
 	c.mu.Lock()
 	c.searchesCount++
 	c.totalResponseMS += ms
+	c.mu.Unlock()
+}
+
+// RecordGrabDuration times one NZB download, the grab-side counterpart to
+// RecordSearchDuration. Only grabs that handed back NZB bytes are timed: a
+// refused or failed download measures the refusal, not how fast the indexer
+// serves an NZB.
+func (c *ClientCore) RecordGrabDuration(elapsed time.Duration) {
+	ms := elapsed.Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	c.mu.Lock()
+	c.grabsCount++
+	c.totalGrabMS += ms
 	c.mu.Unlock()
 }
 

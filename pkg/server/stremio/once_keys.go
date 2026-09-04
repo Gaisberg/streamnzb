@@ -31,6 +31,11 @@ const (
 	// The next fallback's NZB, warmed once the client has bytes. Every range
 	// request reaches the same trigger; the release only needs fetching once.
 	onceFallbackPrefetched session.OnceKey = "fallback-prefetched"
+	// The indexer's grab success/failure score for this slot. Separate from the
+	// history-row gates above: those are per outcome kind, and a session that
+	// succeeds and then hits a mid-stream read error would otherwise be scored
+	// twice against the indexer that supplied the NZB.
+	onceGrabScored session.OnceKey = "grab-scored"
 )
 
 // countPastEOFRanges tallies GET requests whose Range started at or beyond the

@@ -27,7 +27,7 @@ func newStatsTestStateManager(t *testing.T) *persistence.StateManager {
 	return mgr
 }
 
-func TestHandlePersistedStatsIncludesUniqueHitsCount(t *testing.T) {
+func TestHandlePersistedStatsIncludesIndexerCounters(t *testing.T) {
 	mgr := newStatsTestStateManager(t)
 	err := mgr.RecordMetricsSnapshot(nil, []persistence.IndexerMetric{
 		{
@@ -36,7 +36,11 @@ func TestHandlePersistedStatsIncludesUniqueHitsCount(t *testing.T) {
 			APIHitsUsed:         10,
 			SearchesCount:       8,
 			UniqueHitsCount:     3,
+			GrabSuccessCount:    5,
+			GrabFailureCount:    2,
+			UniqueSuccessCount:  4,
 			AvgResponseMS:       120,
+			AvgGrabMS:           450,
 			AvailAvailableCount: 2,
 			AvailDiscardedCount: 1,
 		},
@@ -64,5 +68,15 @@ func TestHandlePersistedStatsIncludesUniqueHitsCount(t *testing.T) {
 	row, _ := indexers[0].(map[string]any)
 	if got := row["unique_hits_count"]; got != float64(3) {
 		t.Fatalf("unique_hits_count = %v, want 3", got)
+	}
+	for field, want := range map[string]float64{
+		"grab_success_count":   5,
+		"grab_failure_count":   2,
+		"unique_success_count": 4,
+		"avg_grab_ms":          450,
+	} {
+		if got := row[field]; got != want {
+			t.Fatalf("%s = %v, want %v", field, got, want)
+		}
 	}
 }

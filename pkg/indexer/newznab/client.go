@@ -901,6 +901,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("User-Agent", c.effectiveGrabHeader())
+	startedAt := time.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download NZB from %s: %w", c.Name(), err)
@@ -934,6 +935,9 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read NZB data from %s: %w", c.Name(), err)
 	}
+	// Timed once the body is in hand: an NZB for a big release is not a token
+	// response, so the transfer is part of what the caller waited for.
+	c.core.RecordGrabDuration(time.Since(startedAt))
 
 	return data, nil
 }

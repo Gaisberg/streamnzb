@@ -139,7 +139,8 @@ var importTables = []importTable{
 		columns: cols(
 			num("collected_at"), txt("indexer_name"), num("api_hits_used"), num("api_hits_limit"),
 			num("downloads_used"), num("downloads_limit"), num("searches_count"),
-			num("unique_hits_count"), num("avg_response_ms"),
+			num("unique_hits_count"), num("grab_success_count"), num("grab_failure_count"),
+			num("unique_success_count"), num("avg_response_ms"), num("avg_grab_ms"),
 			num("avail_available_count"), num("avail_discarded_count"),
 		),
 	},

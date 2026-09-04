@@ -44,7 +44,11 @@ type IndexerStats struct {
 	AllTimeDownloadsUsed int     `json:"downloads_used_all_time"`
 	SearchesCount        int     `json:"searches_count"`
 	UniqueHitsCount      int64   `json:"unique_hits_count"`
+	GrabSuccessCount     int64   `json:"grab_success_count"`
+	GrabFailureCount     int64   `json:"grab_failure_count"`
+	UniqueSuccessCount   int64   `json:"unique_success_count"`
 	AvgResponseMS        float64 `json:"avg_response_ms"`
+	AvgGrabMS            float64 `json:"avg_grab_ms"`
 	AvailAvailableCount  int64   `json:"avail_available_count"`
 	AvailDiscardedCount  int64   `json:"avail_discarded_count"`
 }
@@ -146,9 +150,11 @@ func (s *Server) collectStats() SystemStats {
 	if liveIndexer != nil {
 		availIndexerStats := map[string]stremio.AvailIndexerStats{}
 		uniqueIndexerHits := map[string]int64{}
+		grabIndexerStats := map[string]stremio.GrabIndexerStats{}
 		if s.strmServer != nil {
 			availIndexerStats = s.strmServer.GetAvailIndexerStats()
 			uniqueIndexerHits = s.strmServer.GetUniqueIndexerHits()
+			grabIndexerStats = s.strmServer.GetGrabIndexerStats()
 		}
 
 		type indexerContainer interface {
@@ -176,7 +182,11 @@ func (s *Server) collectStats() SystemStats {
 				AllTimeDownloadsUsed: usage.AllTimeDownloadsUsed,
 				SearchesCount:        usage.SearchesCount,
 				UniqueHitsCount:      uniqueIndexerHits[idx.Name()],
+				GrabSuccessCount:     grabIndexerStats[idx.Name()].Successful,
+				GrabFailureCount:     grabIndexerStats[idx.Name()].Failed,
+				UniqueSuccessCount:   grabIndexerStats[idx.Name()].UniqueSuccessful,
 				AvgResponseMS:        usage.AvgResponseMS,
+				AvgGrabMS:            usage.AvgGrabMS,
 				AvailAvailableCount:  availIndexerStats[idx.Name()].AvailableReturned,
 				AvailDiscardedCount:  availIndexerStats[idx.Name()].Discarded,
 			})
@@ -292,7 +302,11 @@ func (s *Server) maybePersistMetrics(mgr *persistence.StateManager, stats System
 			DownloadsLimit:      idx.DownloadsLimit,
 			SearchesCount:       idx.SearchesCount,
 			UniqueHitsCount:     idx.UniqueHitsCount,
+			GrabSuccessCount:    idx.GrabSuccessCount,
+			GrabFailureCount:    idx.GrabFailureCount,
+			UniqueSuccessCount:  idx.UniqueSuccessCount,
 			AvgResponseMS:       idx.AvgResponseMS,
+			AvgGrabMS:           idx.AvgGrabMS,
 			AvailAvailableCount: idx.AvailAvailableCount,
 			AvailDiscardedCount: idx.AvailDiscardedCount,
 		})

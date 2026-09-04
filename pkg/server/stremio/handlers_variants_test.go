@@ -228,7 +228,7 @@ func TestDedupeSearchResultsFeedsUniqueIndexerHits(t *testing.T) {
 	stream := &auth.Stream{Username: "stream_test"}
 
 	merged := server.dedupeSearchResults("stream_test", stream, releases, nil)
-	server.addUniqueIndexerHits(uniqueIndexerHitsFrom(merged))
+	server.addUniqueIndexerHits(markUniqueIndexerHits(merged))
 
 	hits := server.GetUniqueIndexerHits()
 	if got := hits["NZBGeek"]; got != 1 {

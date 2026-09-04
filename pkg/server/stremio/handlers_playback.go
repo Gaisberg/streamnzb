@@ -1855,6 +1855,9 @@ func (s *Server) notifyAttemptRecorded() {
 }
 
 func (s *Server) recordAttempt(sess *session.Session, success bool, failureReason string, availOutcome availnzb.ReportOutcome) {
+	// Scored ahead of the recorder check: the grab counters feed the live stats
+	// endpoint, which answers with or without a persistence layer behind it.
+	s.scoreGrabOutcome(sess, success)
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
@@ -1866,6 +1869,30 @@ func (s *Server) recordAttempt(sess *session.Session, success bool, failureReaso
 	p.AvailReason = availOutcome.Reason
 	s.attemptRecorder.RecordAttempt(p)
 	s.notifyAttemptRecorded()
+}
+
+// scoreGrabOutcome credits or debits the indexer that supplied this session's
+// NZB, on the two verdicts that are conclusive about the grab: playback proven
+// good, or a failure before any playable candidate existed. The pending
+// resolution path deliberately does not come through here — a viewer who quits
+// after ten seconds says nothing about the NZB, and per the fail-open rule only
+// definitive evidence may count against a source.
+//
+// Library-sourced plays are skipped: those NZB bytes came off disk, so no grab
+// happened and the indexer named on the release is a "StreamNZB Library - x"
+// label rather than a configured indexer.
+func (s *Server) scoreGrabOutcome(sess *session.Session, success bool) {
+	if s == nil || sess == nil {
+		return
+	}
+	rel := sess.Release()
+	if rel == nil || rel.IsLibraryResult() {
+		return
+	}
+	if !sess.Once(onceGrabScored) {
+		return
+	}
+	s.addGrabIndexerOutcome(rel.Indexer, success, rel.UniqueHit)
 }
 
 func (s *Server) recordFailureAttempt(sess *session.Session, streamErr error, availOutcome availnzb.ReportOutcome) {

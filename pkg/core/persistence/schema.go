@@ -95,7 +95,11 @@ const (
 		downloads_limit {INT} NOT NULL DEFAULT 0,
 		searches_count {INT} NOT NULL DEFAULT 0,
 		unique_hits_count {INT} NOT NULL DEFAULT 0,
+		grab_success_count {INT} NOT NULL DEFAULT 0,
+		grab_failure_count {INT} NOT NULL DEFAULT 0,
+		unique_success_count {INT} NOT NULL DEFAULT 0,
 		avg_response_ms {REAL} NOT NULL DEFAULT 0.0,
+		avg_grab_ms {REAL} NOT NULL DEFAULT 0.0,
 		avail_available_count {INT} NOT NULL DEFAULT 0,
 		avail_discarded_count {INT} NOT NULL DEFAULT 0
 	);`
@@ -256,6 +260,12 @@ var addedColumns = []addedColumn{
 	{"provider_metrics", "article_available_count", "{INT} NOT NULL DEFAULT 0"},
 	{"provider_metrics", "article_missing_count", "{INT} NOT NULL DEFAULT 0"},
 	{"indexer_metrics", "unique_hits_count", "{INT} NOT NULL DEFAULT 0"},
+	// Per-indexer grab outcomes and NZB download latency. Rows written before
+	// this carry 0, which reads as "no samples" rather than a 0% success rate.
+	{"indexer_metrics", "grab_success_count", "{INT} NOT NULL DEFAULT 0"},
+	{"indexer_metrics", "grab_failure_count", "{INT} NOT NULL DEFAULT 0"},
+	{"indexer_metrics", "unique_success_count", "{INT} NOT NULL DEFAULT 0"},
+	{"indexer_metrics", "avg_grab_ms", "{REAL} NOT NULL DEFAULT 0.0"},
 	{"nzb_attempts", "preload", "{INT} NOT NULL DEFAULT 0"},
 	{"nzb_attempts", "served_file", "{TEXT}"},
 	{"nzb_attempts", "match_type", "{TEXT}"},

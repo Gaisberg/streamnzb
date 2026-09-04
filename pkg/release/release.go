@@ -56,6 +56,12 @@ type Release struct {
 	// variants of its own, so the copies of a release are always the primary
 	// plus this slice.
 	Variants []*Release
+
+	// UniqueHit marks a release no other indexer carried a copy of, decided on
+	// the merged list at search time. It is stamped on every copy so it
+	// survives failover to a variant, and read back at playback to tell an
+	// indexer's exclusive releases apart from the ones everyone has.
+	UniqueHit bool
 }
 
 // CopyCount is how many interchangeable copies of this release are available,

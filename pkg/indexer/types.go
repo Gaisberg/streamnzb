@@ -30,6 +30,11 @@ type Usage struct {
 	AllTimeDownloadsUsed int
 	SearchesCount        int
 	AvgResponseMS        float64
+	// GrabsCount is NZB downloads that returned bytes this session, and
+	// AvgGrabMS their mean round-trip. Separate from DownloadsUsed, which is
+	// the daily quota counter and survives restarts.
+	GrabsCount int
+	AvgGrabMS  float64
 }
 
 type SearchRequest struct {

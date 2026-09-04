@@ -710,7 +710,7 @@ func TestRunConfiguredSearchRequestsRunsEveryPlan(t *testing.T) {
 // A unique hit is per merged release, not per search: an indexer earns one for
 // every deduplicated release no other indexer had a copy of, so a busy
 // multi-indexer search credits several indexers at once.
-func TestUniqueIndexerHitsFrom(t *testing.T) {
+func TestMarkUniqueIndexerHits(t *testing.T) {
 	onlyA := &release.Release{Indexer: "IndexerA"}
 	shared := &release.Release{
 		Indexer:  "IndexerA",
@@ -727,15 +727,33 @@ func TestUniqueIndexerHitsFrom(t *testing.T) {
 	}
 	unattributed := &release.Release{Indexer: "  "}
 
-	hits := uniqueIndexerHitsFrom([]*release.Release{onlyA, shared, onlyB, cached, unattributed})
+	hits := markUniqueIndexerHits([]*release.Release{onlyA, shared, onlyB, cached, unattributed})
 	want := map[string]int{"IndexerA": 1, "IndexerB": 1, "IndexerC": 1}
 	if len(hits) != len(want) {
-		t.Fatalf("uniqueIndexerHitsFrom() = %v, want %v", hits, want)
+		t.Fatalf("markUniqueIndexerHits() = %v, want %v", hits, want)
 	}
 	for name, n := range want {
 		if hits[name] != n {
-			t.Fatalf("uniqueIndexerHitsFrom()[%q] = %d, want %d (got %v)", name, hits[name], n, hits)
+			t.Fatalf("markUniqueIndexerHits()[%q] = %d, want %d (got %v)", name, hits[name], n, hits)
 		}
+	}
+
+	// Every copy is stamped, so playback still knows the release was exclusive
+	// after failover moved the slot onto a variant.
+	for _, rel := range []*release.Release{onlyA, onlyB, cached} {
+		for i, c := range rel.Copies() {
+			if !c.UniqueHit {
+				t.Fatalf("copy %d of %q: UniqueHit = false, want true", i, rel.Indexer)
+			}
+		}
+	}
+	for i, c := range shared.Copies() {
+		if c.UniqueHit {
+			t.Fatalf("copy %d of a two-indexer release: UniqueHit = true, want false", i)
+		}
+	}
+	if unattributed.UniqueHit {
+		t.Fatal("a release naming no indexer must not be marked unique")
 	}
 }
 

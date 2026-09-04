@@ -74,6 +74,7 @@ type Server struct {
 	onAttemptRecorded func()
 	availIndexerStats map[string]AvailIndexerStats
 	uniqueIndexerHits map[string]int64
+	grabIndexerStats  map[string]GrabIndexerStats
 
 	// stopCh is closed by Shutdown to stop the background sweeps. It is only
 	// created by NewServer: tests build bare Servers, and those have no
@@ -88,6 +89,20 @@ type Server struct {
 type AvailIndexerStats struct {
 	AvailableReturned int64
 	Discarded         int64
+}
+
+// GrabIndexerStats stores per-indexer grab outcomes: Successful counts NZBs
+// grabbed from the indexer that went on to play, Failed counts those that
+// never reached a playable candidate. A play that ended before the good
+// threshold is inconclusive and lands in neither.
+//
+// UniqueSuccessful is the subset of Successful whose release no other indexer
+// carried — content that was both exclusive to this indexer and usable, which
+// is the pairing that decides whether a paid subscription is worth its price.
+type GrabIndexerStats struct {
+	Successful       int64
+	Failed           int64
+	UniqueSuccessful int64
 }
 
 const FailoverOrderPath = "/failover_order"
@@ -156,6 +171,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),
 		uniqueIndexerHits:    make(map[string]int64),
+		grabIndexerStats:     make(map[string]GrabIndexerStats),
 		stopCh:               make(chan struct{}),
 	}
 
@@ -318,6 +334,44 @@ func (s *Server) addUniqueIndexerHits(hitsByIndexer map[string]int) {
 		}
 		s.uniqueIndexerHits[name] += int64(n)
 	}
+}
+
+// addGrabIndexerOutcome scores one graded grab against the indexer it came
+// from. Callers gate on the session so a slot contributes exactly one outcome
+// however many times the player re-requests it.
+func (s *Server) addGrabIndexerOutcome(name string, success, unique bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	s.availStatsMu.Lock()
+	defer s.availStatsMu.Unlock()
+	if s.grabIndexerStats == nil {
+		s.grabIndexerStats = make(map[string]GrabIndexerStats)
+	}
+	curr := s.grabIndexerStats[name]
+	if success {
+		curr.Successful++
+		if unique {
+			curr.UniqueSuccessful++
+		}
+	} else {
+		curr.Failed++
+	}
+	s.grabIndexerStats[name] = curr
+}
+
+// GetGrabIndexerStats returns a snapshot copy of grabIndexerStats keyed by
+// indexer name. The copy is read under availStatsMu to avoid exposing internal
+// mutable state to callers.
+func (s *Server) GetGrabIndexerStats() map[string]GrabIndexerStats {
+	s.availStatsMu.RLock()
+	defer s.availStatsMu.RUnlock()
+	out := make(map[string]GrabIndexerStats, len(s.grabIndexerStats))
+	for k, v := range s.grabIndexerStats {
+		out[k] = v
+	}
+	return out
 }
 
 // GetAvailIndexerStats returns a snapshot copy of availIndexerStats keyed by

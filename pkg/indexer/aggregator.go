@@ -30,6 +30,7 @@ func (a *Aggregator) GetIndexers() []Indexer {
 func (a *Aggregator) GetUsage() Usage {
 	var usage Usage
 	var weightedResponseTotal float64
+	var weightedGrabTotal float64
 	for _, idx := range a.Indexers {
 		u := idx.GetUsage()
 		usage.APIHitsLimit += u.APIHitsLimit
@@ -41,10 +42,15 @@ func (a *Aggregator) GetUsage() Usage {
 		usage.AllTimeAPIHitsUsed += u.AllTimeAPIHitsUsed
 		usage.AllTimeDownloadsUsed += u.AllTimeDownloadsUsed
 		usage.SearchesCount += u.SearchesCount
+		usage.GrabsCount += u.GrabsCount
 		weightedResponseTotal += float64(u.SearchesCount) * u.AvgResponseMS
+		weightedGrabTotal += float64(u.GrabsCount) * u.AvgGrabMS
 	}
 	if usage.SearchesCount > 0 {
 		usage.AvgResponseMS = weightedResponseTotal / float64(usage.SearchesCount)
+	}
+	if usage.GrabsCount > 0 {
+		usage.AvgGrabMS = weightedGrabTotal / float64(usage.GrabsCount)
 	}
 	return usage
 }

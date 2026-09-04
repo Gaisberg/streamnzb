@@ -194,3 +194,78 @@ func TestRecordPerformanceSamples(t *testing.T) {
 		t.Fatalf("unexpected ttffSample: %+v", ttffSamples[0])
 	}
 }
+
+func TestRecordMetricsSnapshotPersistsIndexerGrabCounters(t *testing.T) {
+	mgr := newTestStateManager(t)
+	start := time.Now().Add(-3 * time.Minute)
+
+	// The baseline sits before the range, so the summary must report what
+	// accumulated inside it rather than the running totals.
+	snapshots := []IndexerMetric{
+		{CollectedAt: start, IndexerName: "IndexerA", GrabSuccessCount: 4, GrabFailureCount: 1, UniqueSuccessCount: 2, AvgGrabMS: 300},
+		{CollectedAt: start.Add(2 * time.Minute), IndexerName: "IndexerA", GrabSuccessCount: 9, GrabFailureCount: 3, UniqueSuccessCount: 5, AvgGrabMS: 500},
+		{CollectedAt: start.Add(150 * time.Second), IndexerName: "IndexerA", GrabSuccessCount: 13, GrabFailureCount: 4, UniqueSuccessCount: 6, AvgGrabMS: 700},
+	}
+	for i, snap := range snapshots {
+		if err := mgr.RecordMetricsSnapshot(nil, []IndexerMetric{snap}); err != nil {
+			t.Fatalf("RecordMetricsSnapshot %d: %v", i, err)
+		}
+	}
+
+	from := start.Add(1 * time.Minute)
+	summary, err := mgr.GetIndexerMetricsSummary(&from, nil)
+	if err != nil {
+		t.Fatalf("GetIndexerMetricsSummary: %v", err)
+	}
+	if len(summary) != 1 {
+		t.Fatalf("summary len = %d, want 1", len(summary))
+	}
+	got := summary[0]
+	if got.GrabSuccessCount != 9 {
+		t.Fatalf("GrabSuccessCount = %d, want 9", got.GrabSuccessCount)
+	}
+	if got.GrabFailureCount != 3 {
+		t.Fatalf("GrabFailureCount = %d, want 3", got.GrabFailureCount)
+	}
+	if got.UniqueSuccessCount != 4 {
+		t.Fatalf("UniqueSuccessCount = %d, want 4", got.UniqueSuccessCount)
+	}
+	// Averages are not counters: the in-range snapshots are meaned, the
+	// out-of-range baseline is not folded in.
+	if got.AvgGrabMS != 600 {
+		t.Fatalf("AvgGrabMS = %v, want 600", got.AvgGrabMS)
+	}
+}
+
+func TestGetIndexerMetricsSummaryFallsBackToLastKnownAverages(t *testing.T) {
+	mgr := newTestStateManager(t)
+	start := time.Now().Add(-2 * time.Minute)
+
+	// A restart zeroes the in-memory averages, so a range made only of
+	// post-restart snapshots must fall back to the newest value ever seen
+	// instead of claiming the indexer answers in 0 ms.
+	snapshots := []IndexerMetric{
+		{CollectedAt: start, IndexerName: "IndexerA", AvgResponseMS: 250, AvgGrabMS: 400},
+		{CollectedAt: start.Add(1 * time.Minute), IndexerName: "IndexerA"},
+	}
+	for i, snap := range snapshots {
+		if err := mgr.RecordMetricsSnapshot(nil, []IndexerMetric{snap}); err != nil {
+			t.Fatalf("RecordMetricsSnapshot %d: %v", i, err)
+		}
+	}
+
+	from := start.Add(30 * time.Second)
+	summary, err := mgr.GetIndexerMetricsSummary(&from, nil)
+	if err != nil {
+		t.Fatalf("GetIndexerMetricsSummary: %v", err)
+	}
+	if len(summary) != 1 {
+		t.Fatalf("summary len = %d, want 1", len(summary))
+	}
+	if summary[0].AvgResponseMS != 250 {
+		t.Fatalf("AvgResponseMS = %v, want 250", summary[0].AvgResponseMS)
+	}
+	if summary[0].AvgGrabMS != 400 {
+		t.Fatalf("AvgGrabMS = %v, want 400", summary[0].AvgGrabMS)
+	}
+}

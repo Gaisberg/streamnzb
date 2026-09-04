@@ -116,12 +116,24 @@ function rangeFromPreset(preset) {
 const UNIQUE_HITS_HINT = 'Deduplicated releases this indexer alone carried — no other indexer returned a copy of them.'
 const AVAILNZB_AVAILABILITY_HINT =
   'Share of this indexer\'s releases that AvailNZB confirmed as available. Blank until AvailNZB has reported on a release from this indexer.'
+const GRAB_SUCCESS_HINT =
+  'Share of the NZBs grabbed from this indexer that went on to play. Plays that ended before the good threshold are inconclusive and count for neither side.'
+const AVG_GRAB_HINT = 'Mean time to fetch one NZB from this indexer, body included.'
+const UNIQUE_SUCCESS_HINT =
+  'Releases that were exclusive to this indexer and went on to play — the overlap between unique hits and successful grabs.'
+
+// Response and grab times are the two columns where a smaller number is the
+// better one, so the chart sorts them the other way round.
+const lowerIsBetterMetrics = new Set(['avgResponseMs', 'avgGrabMs'])
 
 const indexerMetricOptions = {
   response: { label: 'Response (ms)', key: 'avgResponseMs', suffix: ' ms' },
   searches: { label: 'Searches', key: 'searchesCount', suffix: '' },
   downloads: { label: 'Downloads', key: 'downloadsCount', suffix: '' },
   uniqueHits: { label: 'Unique hits', key: 'uniqueHitsCount', suffix: '' },
+  grabSuccess: { label: 'Grab success', key: 'grabSuccessPercent', suffix: '%' },
+  uniqueSuccess: { label: 'Unique plays', key: 'uniqueSuccessCount', suffix: '' },
+  avgGrab: { label: 'Avg grab (ms)', key: 'avgGrabMs', suffix: ' ms' },
   availAvailable: { label: 'AvailNZB available', key: 'availAvailableCount', suffix: '' },
   availDiscarded: { label: 'AvailNZB unavailable', key: 'availDiscardedCount', suffix: '' },
 }
@@ -250,7 +262,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
 
   const indexerRows = useMemo(() => {
     const metricKey = indexerMetricOptions[indexerMetric]?.key || 'avgResponseMs'
-    const isResponseMetric = metricKey === 'avgResponseMs'
+    const lowerIsBetter = lowerIsBetterMetrics.has(metricKey)
     const rows = (historyStats?.indexers || [])
       .map((indexer) => {
         const name = String(pick(indexer, 'indexer_name', 'IndexerName', '') || '').trim()
@@ -259,12 +271,21 @@ export const StatisticsPage = memo(function StatisticsPage() {
         const availAvailableCount = toNumber(pick(indexer, 'avail_available_count', 'AvailAvailableCount'))
         const availDiscardedCount = toNumber(pick(indexer, 'avail_discarded_count', 'AvailDiscardedCount'))
         const availTotal = availAvailableCount + availDiscardedCount
+        const grabSuccessCount = toNumber(pick(indexer, 'grab_success_count', 'GrabSuccessCount'))
+        const grabFailureCount = toNumber(pick(indexer, 'grab_failure_count', 'GrabFailureCount'))
+        const grabTotal = grabSuccessCount + grabFailureCount
         return {
           name,
           avgResponseMs,
+          avgGrabMs: toNumber(pick(indexer, 'avg_grab_ms', 'AvgGrabMS')),
           searchesCount: toNumber(pick(indexer, 'searches_count', 'SearchesCount')),
           downloadsCount: toNumber(pick(indexer, 'downloads_used', 'DownloadsUsed')),
           uniqueHitsCount: toNumber(pick(indexer, 'unique_hits_count', 'UniqueHitsCount')),
+          grabSuccessCount,
+          grabFailureCount,
+          grabTotal,
+          grabSuccessPercent: grabTotal > 0 ? (grabSuccessCount / grabTotal) * 100 : 0,
+          uniqueSuccessCount: toNumber(pick(indexer, 'unique_success_count', 'UniqueSuccessCount')),
           availAvailableCount,
           availDiscardedCount,
           availTotal,
@@ -275,7 +296,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
     return rows.sort((a, b) => {
       const aMetric = toNumber(a[metricKey])
       const bMetric = toNumber(b[metricKey])
-      if (isResponseMetric) {
+      if (lowerIsBetter) {
         if (aMetric <= 0 && bMetric <= 0) return a.name.localeCompare(b.name)
         if (aMetric <= 0) return 1
         if (bMetric <= 0) return -1
@@ -594,7 +615,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
               <Gauge className="h-5 w-5 text-primary" />
               <CardTitle>Indexer Statistics</CardTitle>
             </div>
-            <CardDescription>Response time, searches, downloads, and AvailNZB availability rate by indexer.</CardDescription>
+            <CardDescription>Response time, searches, downloads, grab success rate, exclusive plays, and AvailNZB availability rate by indexer.</CardDescription>
             <div className="pt-2">
               <div className="sm:hidden">
                 <select
@@ -625,6 +646,9 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   <ToggleGroupItem value="searches">Searches</ToggleGroupItem>
                   <ToggleGroupItem value="downloads">Downloads</ToggleGroupItem>
                   <ToggleGroupItem value="uniqueHits">Unique hits</ToggleGroupItem>
+                  <ToggleGroupItem value="grabSuccess">Grab success</ToggleGroupItem>
+                  <ToggleGroupItem value="uniqueSuccess">Unique plays</ToggleGroupItem>
+                  <ToggleGroupItem value="avgGrab">Avg grab</ToggleGroupItem>
                   <ToggleGroupItem value="availAvailable">AvailNZB available</ToggleGroupItem>
                   <ToggleGroupItem value="availDiscarded">AvailNZB unavailable</ToggleGroupItem>
                 </ToggleGroup>
@@ -651,6 +675,9 @@ export const StatisticsPage = memo(function StatisticsPage() {
                     <th className="px-3 py-2 text-right font-medium">Searches</th>
                     <th className="px-3 py-2 text-right font-medium">Downloads</th>
                     <th className="px-3 py-2 text-right font-medium" title={UNIQUE_HITS_HINT}>Unique hits</th>
+                    <th className="px-3 py-2 text-right font-medium" title={GRAB_SUCCESS_HINT}>Grab success</th>
+                    <th className="px-3 py-2 text-right font-medium" title={UNIQUE_SUCCESS_HINT}>Unique plays</th>
+                    <th className="px-3 py-2 text-right font-medium" title={AVG_GRAB_HINT}>Avg grab</th>
                     <th className="px-3 py-2 text-right font-medium" title={AVAILNZB_AVAILABILITY_HINT}>AvailNZB availability</th>
                     <th className="px-3 py-2 text-right font-medium">Actions</th>
                   </tr>
@@ -663,6 +690,20 @@ export const StatisticsPage = memo(function StatisticsPage() {
                       <td className="px-3 py-2 text-right tabular-nums">{row.searchesCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{row.downloadsCount}</td>
                       <td className="px-3 py-2 text-right tabular-nums" title={UNIQUE_HITS_HINT}>{row.uniqueHitsCount}</td>
+                      <td
+                        className="px-3 py-2 text-right tabular-nums"
+                        title={row.grabTotal > 0 ? `${row.grabSuccessCount} successful / ${row.grabFailureCount} failed` : GRAB_SUCCESS_HINT}
+                      >
+                        {row.grabTotal > 0
+                          ? `${row.grabSuccessPercent.toFixed(1)}%`
+                          : <span className="text-muted-foreground">No samples</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums" title={UNIQUE_SUCCESS_HINT}>{row.uniqueSuccessCount}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" title={AVG_GRAB_HINT}>
+                        {row.avgGrabMs > 0
+                          ? `${row.avgGrabMs.toFixed(0)} ms`
+                          : <span className="text-muted-foreground">No samples</span>}
+                      </td>
                       <td
                         className="px-3 py-2 text-right tabular-nums"
                         title={row.availTotal > 0 ? `${row.availAvailableCount} available / ${row.availDiscardedCount} unavailable` : AVAILNZB_AVAILABILITY_HINT}
@@ -687,7 +728,7 @@ export const StatisticsPage = memo(function StatisticsPage() {
                   ))}
                   {indexerRows.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
+                      <td colSpan={10} className="px-3 py-6 text-center text-muted-foreground">No indexer statistics available.</td>
                     </tr>
                   )}
                 </tbody>

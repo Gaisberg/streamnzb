@@ -337,12 +337,14 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 		return nil, fmt.Errorf("invalid payload token: %w", err)
 	}
 
+	startedAt := time.Now()
 	nzbData, err := c.downloadNZBInternal(ctx, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download NZB: %w", err)
 	}
 
 	c.core.RecordGrab(nil)
+	c.core.RecordGrabDuration(time.Since(startedAt))
 
 	return nzbData, nil
 }

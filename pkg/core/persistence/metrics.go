@@ -29,7 +29,11 @@ type IndexerMetric struct {
 	DownloadsLimit      int       `json:"downloads_limit"`
 	SearchesCount       int       `json:"searches_count"`
 	UniqueHitsCount     int64     `json:"unique_hits_count"`
+	GrabSuccessCount    int64     `json:"grab_success_count"`
+	GrabFailureCount    int64     `json:"grab_failure_count"`
+	UniqueSuccessCount  int64     `json:"unique_success_count"`
 	AvgResponseMS       float64   `json:"avg_response_ms"`
+	AvgGrabMS           float64   `json:"avg_grab_ms"`
 	AvailAvailableCount int64     `json:"avail_available_count"`
 	AvailDiscardedCount int64     `json:"avail_discarded_count"`
 }
@@ -75,6 +79,31 @@ func counterDelta[T int64 | float64](baseline T, hasBaseline bool, values []T) T
 		current = val
 	}
 	return total
+}
+
+// foldAverage folds one "average" column across a range of snapshots. A
+// snapshot reporting 0 has nothing to say — the counters these averages come
+// from live in memory and a restart clears them — so only non-zero samples are
+// averaged, and a range holding none falls back to the newest non-zero value
+// ever recorded for that row rather than reporting a misleading zero.
+func foldAverage[T any](inRange, all []T, get func(T) float64) float64 {
+	var sum float64
+	var count int
+	for _, s := range inRange {
+		if v := get(s); v > 0 {
+			sum += v
+			count++
+		}
+	}
+	if count > 0 {
+		return sum / float64(count)
+	}
+	for i := len(all) - 1; i >= 0; i-- {
+		if v := get(all[i]); v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func (m *StateManager) deleteMetricRows(table, nameCol, name string, from, to *time.Time) error {
@@ -313,7 +342,7 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 	)
 	fetchFrom := m.baselineFrom("indexer_metrics", from)
 
-	query, args = buildTimeRangeSQL("SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count FROM indexer_metrics", fetchFrom, to)
+	query, args = buildTimeRangeSQL("SELECT collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, grab_success_count, grab_failure_count, unique_success_count, avg_response_ms, avg_grab_ms, avail_available_count, avail_discarded_count FROM indexer_metrics", fetchFrom, to)
 	query += " ORDER BY collected_at ASC"
 
 	rows, err := m.db.Query(query, args...)
@@ -330,7 +359,11 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		DownloadsLimit      int
 		SearchesCount       int
 		UniqueHitsCount     int64
+		GrabSuccessCount    int64
+		GrabFailureCount    int64
+		UniqueSuccessCount  int64
 		AvgResponseMS       float64
+		AvgGrabMS           float64
 		AvailAvailableCount int64
 		AvailDiscardedCount int64
 	}
@@ -351,7 +384,11 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			&s.DownloadsLimit,
 			&s.SearchesCount,
 			&s.UniqueHitsCount,
+			&s.GrabSuccessCount,
+			&s.GrabFailureCount,
+			&s.UniqueSuccessCount,
 			&s.AvgResponseMS,
+			&s.AvgGrabMS,
 			&s.AvailAvailableCount,
 			&s.AvailDiscardedCount,
 		); err != nil {
@@ -393,6 +430,9 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		bDl := int64(0)
 		bSearch := int64(0)
 		bUnique := int64(0)
+		bGrabOK := int64(0)
+		bGrabFail := int64(0)
+		bUniqueOK := int64(0)
 		bAvail := int64(0)
 		bDiscard := int64(0)
 		if hasBaseline && baseline != nil {
@@ -400,6 +440,9 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			bDl = int64(baseline.DownloadsUsed)
 			bSearch = int64(baseline.SearchesCount)
 			bUnique = baseline.UniqueHitsCount
+			bGrabOK = baseline.GrabSuccessCount
+			bGrabFail = baseline.GrabFailureCount
+			bUniqueOK = baseline.UniqueSuccessCount
 			bAvail = baseline.AvailAvailableCount
 			bDiscard = baseline.AvailDiscardedCount
 		}
@@ -408,12 +451,12 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 		dlHits := make([]int64, len(inRange))
 		searchHits := make([]int64, len(inRange))
 		uniqueHits := make([]int64, len(inRange))
+		grabOKHits := make([]int64, len(inRange))
+		grabFailHits := make([]int64, len(inRange))
+		uniqueOKHits := make([]int64, len(inRange))
 		availHits := make([]int64, len(inRange))
 		discardHits := make([]int64, len(inRange))
 
-		latestAvgResp := 0.0
-		var sumResp float64
-		var countResp int
 		apiLimit := latest.APIHitsLimit
 		dlLimit := latest.DownloadsLimit
 
@@ -422,12 +465,11 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			dlHits[i] = int64(s.DownloadsUsed)
 			searchHits[i] = int64(s.SearchesCount)
 			uniqueHits[i] = s.UniqueHitsCount
+			grabOKHits[i] = s.GrabSuccessCount
+			grabFailHits[i] = s.GrabFailureCount
+			uniqueOKHits[i] = s.UniqueSuccessCount
 			availHits[i] = s.AvailAvailableCount
 			discardHits[i] = s.AvailDiscardedCount
-			if s.AvgResponseMS > 0 {
-				sumResp += s.AvgResponseMS
-				countResp++
-			}
 			if s.APIHitsLimit > apiLimit {
 				apiLimit = s.APIHitsLimit
 			}
@@ -436,16 +478,8 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			}
 		}
 
-		if countResp > 0 {
-			latestAvgResp = sumResp / float64(countResp)
-		} else {
-			for i := len(snaps) - 1; i >= 0; i-- {
-				if snaps[i].AvgResponseMS > 0 {
-					latestAvgResp = snaps[i].AvgResponseMS
-					break
-				}
-			}
-		}
+		avgResp := foldAverage(inRange, snaps, func(s indexerSnapshot) float64 { return s.AvgResponseMS })
+		avgGrab := foldAverage(inRange, snaps, func(s indexerSnapshot) float64 { return s.AvgGrabMS })
 
 		agg[name] = IndexerMetric{
 			CollectedAt:         latest.CollectedAt,
@@ -456,7 +490,11 @@ func (m *StateManager) GetIndexerMetricsSummary(from, to *time.Time) ([]IndexerM
 			DownloadsLimit:      dlLimit,
 			SearchesCount:       int(counterDelta(bSearch, hasBaseline, searchHits)),
 			UniqueHitsCount:     counterDelta(bUnique, hasBaseline, uniqueHits),
-			AvgResponseMS:       latestAvgResp,
+			GrabSuccessCount:    counterDelta(bGrabOK, hasBaseline, grabOKHits),
+			GrabFailureCount:    counterDelta(bGrabFail, hasBaseline, grabFailHits),
+			UniqueSuccessCount:  counterDelta(bUniqueOK, hasBaseline, uniqueOKHits),
+			AvgResponseMS:       avgResp,
+			AvgGrabMS:           avgGrab,
 			AvailAvailableCount: counterDelta(bAvail, hasBaseline, availHits),
 			AvailDiscardedCount: counterDelta(bDiscard, hasBaseline, discardHits),
 		}
@@ -527,8 +565,8 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 			if len(indexers) > 0 {
 				stmt, err := tx.Prepare(`
 					INSERT INTO indexer_metrics (
-						collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, avg_response_ms, avail_available_count, avail_discarded_count
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						collected_at, indexer_name, api_hits_used, api_hits_limit, downloads_used, downloads_limit, searches_count, unique_hits_count, grab_success_count, grab_failure_count, unique_success_count, avg_response_ms, avg_grab_ms, avail_available_count, avail_discarded_count
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				`)
 				if err != nil {
 					return err
@@ -545,7 +583,11 @@ func (m *StateManager) RecordMetricsSnapshot(providers []ProviderMetric, indexer
 						idx.DownloadsLimit,
 						idx.SearchesCount,
 						idx.UniqueHitsCount,
+						idx.GrabSuccessCount,
+						idx.GrabFailureCount,
+						idx.UniqueSuccessCount,
 						idx.AvgResponseMS,
+						idx.AvgGrabMS,
 						idx.AvailAvailableCount,
 						idx.AvailDiscardedCount,
 					); err != nil {

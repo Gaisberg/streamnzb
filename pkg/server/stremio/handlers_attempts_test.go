@@ -265,3 +265,90 @@ func TestPendingAttemptResolutionReason(t *testing.T) {
 		t.Fatalf("pendingAttemptResolutionReason() = %q, want %q", got, want)
 	}
 }
+
+// grabScoringServer is a bare server with just the registry scoreGrabOutcome
+// writes into — no recorder, no session manager.
+func grabScoringServer() *Server {
+	return &Server{grabIndexerStats: make(map[string]GrabIndexerStats)}
+}
+
+func grabScoringSession(indexerName string, library bool) *session.Session {
+	return grabScoringSessionUnique(indexerName, library, false)
+}
+
+func grabScoringSessionUnique(indexerName string, library, unique bool) *session.Session {
+	sess := &session.Session{ID: "stream:global:movie:tt0111161:0:0:0"}
+	sess.SetRelease(&release.Release{
+		Title:      "The.Shawshank.Redemption.1994.2160p-GRP",
+		DetailsURL: "https://geek.invalid/details/1",
+		Indexer:    indexerName,
+		IsLibrary:  library,
+		UniqueHit:  unique,
+	})
+	return sess
+}
+
+func TestScoreGrabOutcomeCreditsAndDebitsTheSourceIndexer(t *testing.T) {
+	server := grabScoringServer()
+	server.scoreGrabOutcome(grabScoringSession("NZBGeek", false), true)
+	server.scoreGrabOutcome(grabScoringSession("NZBGeek", false), false)
+	server.scoreGrabOutcome(grabScoringSession("DrunkenSlug", false), false)
+
+	stats := server.GetGrabIndexerStats()
+	if got := stats["NZBGeek"]; got.Successful != 1 || got.Failed != 1 {
+		t.Fatalf("NZBGeek = %+v, want 1 successful / 1 failed", got)
+	}
+	if got := stats["DrunkenSlug"]; got.Successful != 0 || got.Failed != 1 {
+		t.Fatalf("DrunkenSlug = %+v, want 0 successful / 1 failed", got)
+	}
+}
+
+// A player re-requesting the same slot, or a success followed by a mid-stream
+// read error, must not score the indexer twice for one grab.
+func TestScoreGrabOutcomeScoresEachSessionOnce(t *testing.T) {
+	server := grabScoringServer()
+	sess := grabScoringSession("NZBGeek", false)
+
+	server.scoreGrabOutcome(sess, true)
+	server.scoreGrabOutcome(sess, true)
+	server.scoreGrabOutcome(sess, false)
+
+	if got := server.GetGrabIndexerStats()["NZBGeek"]; got.Successful != 1 || got.Failed != 0 {
+		t.Fatalf("NZBGeek = %+v, want 1 successful / 0 failed", got)
+	}
+}
+
+// A library play reads NZB bytes off disk, so nothing was grabbed and the
+// release carries a "StreamNZB Library - x" label rather than a real indexer.
+func TestScoreGrabOutcomeIgnoresLibraryPlaysAndSessionsWithoutARelease(t *testing.T) {
+	server := grabScoringServer()
+	server.scoreGrabOutcome(grabScoringSession(libraryIndexerName("NZBGeek"), true), true)
+	server.scoreGrabOutcome(&session.Session{ID: "stream:global:movie:tt0111161:0:0:0"}, false)
+	server.scoreGrabOutcome(grabScoringSession("", false), true)
+
+	if stats := server.GetGrabIndexerStats(); len(stats) != 0 {
+		t.Fatalf("expected no grab stats, got %+v", stats)
+	}
+}
+
+// The metric worth having is the overlap: a release that was exclusive to one
+// indexer *and* played. Neither half counts on its own.
+func TestScoreGrabOutcomeCountsUniqueSuccessesAsASubsetOfSuccesses(t *testing.T) {
+	server := grabScoringServer()
+	server.scoreGrabOutcome(grabScoringSessionUnique("NZBGeek", false, true), true)
+	server.scoreGrabOutcome(grabScoringSessionUnique("NZBGeek", false, false), true)
+	// Exclusive but unplayable: it earned a unique hit at search time and must
+	// not also be credited as a unique play.
+	server.scoreGrabOutcome(grabScoringSessionUnique("NZBGeek", false, true), false)
+
+	got := server.GetGrabIndexerStats()["NZBGeek"]
+	if got.Successful != 2 {
+		t.Fatalf("Successful = %d, want 2", got.Successful)
+	}
+	if got.Failed != 1 {
+		t.Fatalf("Failed = %d, want 1", got.Failed)
+	}
+	if got.UniqueSuccessful != 1 {
+		t.Fatalf("UniqueSuccessful = %d, want 1", got.UniqueSuccessful)
+	}
+}

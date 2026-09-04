@@ -26,6 +26,9 @@ the selected range only**.
 | Searches | Search API calls made. One playback request runs one search per attempt in each selected search plan, so this climbs faster than "number of things you played". |
 | Downloads | NZB downloads fetched from the indexer. |
 | Unique hits | Deduplicated releases **this indexer alone carried**. |
+| Grab success | Share of the NZBs grabbed from this indexer that went on to play. |
+| Unique plays | Releases that were exclusive to this indexer **and** played successfully. |
+| Avg grab | Mean time to fetch one NZB from the indexer. |
 | AvailNZB availability | Share of this indexer's releases that [AvailNZB](availnzb.md) confirmed as available. |
 
 ### Unique hits
@@ -47,6 +50,54 @@ Two details:
   back from disk, not a second indexer having it, so it never cancels a hit.
 - Releases rejected as unplayable are counted after the rejection, so a bad
   release earns nobody a hit.
+
+### Grab success
+
+Unique hits answer *does this indexer find releases I cannot get elsewhere?*
+Grab success answers the other half: *are the releases I actually use from it
+reliable?* An indexer can score well on one and badly on the other, and the pair
+is what tells you whether a paid subscription is earning its keep.
+
+A grab is scored once, against the indexer whose NZB was played, and only on a
+verdict that is conclusive about the NZB itself:
+
+- **Successful** — playback ran past the good threshold. The NZB downloaded, the
+  archive unpacked, ffprobe found a real video stream and the bytes kept coming.
+- **Failed** — the attempt never reached a playable candidate: a broken NZB, an
+  archive that would not unpack, no suitable video file inside, articles missing
+  everywhere, or a mid-stream read failure before the threshold.
+- **Neither** — playback started and stopped before the threshold. Someone
+  sampling a stream for ten seconds and moving on says nothing about the
+  release, so it is left out rather than held against the indexer. Attempt
+  history still shows those as failures; this column is deliberately stricter.
+
+Two details:
+
+- A play served from StreamNZB's own release library grabbed nothing — the NZB
+  came off disk — so it scores for nobody, however many times you replay it.
+- The column reads **No samples** until an NZB from that indexer has been played
+  to a verdict. Searching alone never moves it.
+
+**Avg grab** beside it is the mean time to fetch one NZB from the indexer, the
+response body included, measured only on grabs that returned bytes. A refused
+grab times the refusal rather than the indexer, so it is not counted.
+
+### Unique plays
+
+Unique hits and grab success each answer half a question, and this column is
+where they meet: a release that no other indexer carried *and* that played. It
+is the count of exclusive content the indexer actually delivered, so it is the
+single number that says whether a subscription is pulling its weight.
+
+It is a subset of the successful grabs, never larger. A release exclusive to an
+indexer but unplayable counts as a failed grab and earns nothing here — being
+the only one to carry something broken is not a contribution.
+
+The verdict comes from the same merge that decides unique hits, stamped on the
+release and read back when playback succeeds. It is stamped on every copy, so
+[failing over](stream-model.md) to another copy of the same release keeps the
+credit. Expect this to stay well below unique hits: most of what a search finds
+is never played.
 
 ### AvailNZB availability
 

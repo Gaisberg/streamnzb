@@ -169,3 +169,30 @@ func TestNoteQuotaExhaustedHonoursRetryAfter(t *testing.T) {
 		t.Fatalf("expected the server's 5s Retry-After to win over the quota default, got %v", err)
 	}
 }
+
+func TestRecordGrabDurationAveragesIndependentlyOfSearches(t *testing.T) {
+	c := NewClientCore("Treasuremaps", 0, 0, 0, nil)
+	c.RecordSearchDuration(1000 * time.Millisecond)
+	c.RecordGrabDuration(200 * time.Millisecond)
+	c.RecordGrabDuration(400 * time.Millisecond)
+
+	u := c.Usage()
+	if u.GrabsCount != 2 {
+		t.Fatalf("GrabsCount = %d, want 2", u.GrabsCount)
+	}
+	if u.AvgGrabMS != 300 {
+		t.Fatalf("AvgGrabMS = %v, want 300", u.AvgGrabMS)
+	}
+	// A search is not a grab: mixing the two would let one slow search drag
+	// the grab average around.
+	if u.AvgResponseMS != 1000 {
+		t.Fatalf("AvgResponseMS = %v, want 1000", u.AvgResponseMS)
+	}
+}
+
+func TestUsageReportsNoGrabAverageBeforeAnyGrab(t *testing.T) {
+	c := NewClientCore("Treasuremaps", 0, 0, 0, nil)
+	if u := c.Usage(); u.AvgGrabMS != 0 || u.GrabsCount != 0 {
+		t.Fatalf("Usage() = %+v, want zeroed grab stats", u)
+	}
+}

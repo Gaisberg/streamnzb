@@ -121,3 +121,32 @@ func TestAggregatorFailoverStartsInParallelButKeepsPriority(t *testing.T) {
 		t.Fatal("timed out waiting for failover search result")
 	}
 }
+
+// usageIndexer reports a fixed Usage, so the aggregator's folding can be
+// checked without a client behind it.
+type usageIndexer struct {
+	testIndexer
+	usage Usage
+}
+
+func (u *usageIndexer) GetUsage() Usage { return u.usage }
+
+func TestAggregatorWeightsGrabAverageByGrabCount(t *testing.T) {
+	agg := NewAggregator(
+		&usageIndexer{usage: Usage{SearchesCount: 1, AvgResponseMS: 100, GrabsCount: 1, AvgGrabMS: 1000}},
+		&usageIndexer{usage: Usage{SearchesCount: 9, AvgResponseMS: 200, GrabsCount: 3, AvgGrabMS: 200}},
+	)
+
+	u := agg.GetUsage()
+	if u.GrabsCount != 4 {
+		t.Fatalf("GrabsCount = %d, want 4", u.GrabsCount)
+	}
+	// (1*1000 + 3*200) / 4 — a busy indexer must not be outvoted by a quiet
+	// one that grabbed once.
+	if u.AvgGrabMS != 400 {
+		t.Fatalf("AvgGrabMS = %v, want 400", u.AvgGrabMS)
+	}
+	if u.AvgResponseMS != 190 {
+		t.Fatalf("AvgResponseMS = %v, want 190", u.AvgResponseMS)
+	}
+}

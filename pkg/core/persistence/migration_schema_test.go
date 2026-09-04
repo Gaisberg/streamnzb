@@ -20,7 +20,8 @@ func TestInitSchemaIsIdempotentAndComplete(t *testing.T) {
 		"library_blueprints": {"media_caps_json", "video_codec", "height", "bit_depth", "hdr", "dolby_vision", "audio_codec"},
 		"library_nzbs":       {"imdb_id", "tmdb_id", "tvdb_id", "kitsu_id", "status", "status_reason", "last_verified_at"},
 		"provider_metrics":   {"article_available_count", "article_missing_count"},
-		"indexer_metrics":    {"unique_hits_count"},
+		"indexer_metrics": {"unique_hits_count", "grab_success_count", "grab_failure_count",
+			"unique_success_count", "avg_grab_ms"},
 		"nzb_attempts": {"preload", "served_file", "match_type", "indexer_name", "stream_name",
 			"provider_name", "avail_status", "avail_reason", "ttff_ms"},
 	}
