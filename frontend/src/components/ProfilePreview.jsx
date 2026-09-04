@@ -180,6 +180,8 @@ export function ProfilePreview({
   onKindChange,
   targetTitle,
   onTargetTitleChange,
+  originalLanguage,
+  onOriginalLanguageChange,
   sample,
   onSampleChange,
 }) {
@@ -257,6 +259,20 @@ export function ProfilePreview({
               onChange={(e) => onTargetTitleChange(e.target.value)}
               placeholder="The Matrix"
               className="h-9 w-44"
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Original language"
+            htmlFor="preview-original-language"
+            description="Optional. The language the pretend title was made in, as an ISO 639-1 code, for rules that read originalLanguage. Empty is what a title with no metadata answers."
+          >
+            <Input
+              id="preview-original-language"
+              value={originalLanguage}
+              onChange={(e) => onOriginalLanguageChange(e.target.value)}
+              placeholder="ja"
+              className="h-9 w-44 font-mono text-xs"
             />
           </SettingRow>
 
