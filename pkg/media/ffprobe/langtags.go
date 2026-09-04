@@ -3,11 +3,19 @@ package ffprobe
 import "strings"
 
 // iso6392to1 maps ISO 639-2 codes — both the bibliographic (ger, fre, chi)
-// and terminologic (deu, fra, zho) forms — to the ISO 639-1 codes the rest of
-// StreamNZB speaks: jhin's languages list, rules like `"ja" in languages`, and
-// the formatter. Every 639-2 code that has a 639-1 equivalent is listed;
-// codes without one (e.g. fil is handled as tl by convention below) pass
-// through unchanged only when already two letters and are dropped otherwise.
+// and terminologic (deu, fra, zho) forms — to the codes the rest of StreamNZB
+// speaks: jhin's languages list, rules like `"ja" in languages`, and the
+// formatter. That vocabulary is ISO 639-1 with two deliberate departures a
+// probe has to follow so that "the same codes languages uses" stays true:
+//
+//   - Norwegian is one language, "no". jhin folds Bokmål and Nynorsk into it,
+//     so nob and nno land on "no" here as well, never on nb/nn.
+//   - "la" means Latin American Spanish in jhin (PTT's `latino`), not Latin.
+//     A Latin track (lat) therefore maps to nothing rather than to a code a
+//     rule would read as Latino.
+//
+// Every other 639-2 code with a 639-1 equivalent is listed. A code without
+// one passes through only when already two letters and is dropped otherwise.
 var iso6392to1 = map[string]string{
 	"aar": "aa", "abk": "ab", "afr": "af", "aka": "ak", "alb": "sq", "sqi": "sq",
 	"amh": "am", "ara": "ar", "arg": "an", "arm": "hy", "hye": "hy", "asm": "as",
@@ -26,12 +34,12 @@ var iso6392to1 = map[string]string{
 	"ina": "ia", "ind": "id", "ipk": "ik", "ita": "it", "jav": "jv", "jpn": "ja",
 	"kal": "kl", "kan": "kn", "kas": "ks", "kau": "kr", "kaz": "kk", "khm": "km",
 	"kik": "ki", "kin": "rw", "kir": "ky", "kom": "kv", "kon": "kg", "kor": "ko",
-	"kua": "kj", "kur": "ku", "lao": "lo", "lat": "la", "lav": "lv", "lim": "li",
+	"kua": "kj", "kur": "ku", "lao": "lo", "lav": "lv", "lim": "li",
 	"lin": "ln", "lit": "lt", "ltz": "lb", "lub": "lu", "lug": "lg", "mac": "mk",
 	"mkd": "mk", "mah": "mh", "mal": "ml", "mao": "mi", "mri": "mi", "mar": "mr",
 	"may": "ms", "msa": "ms", "mlg": "mg", "mlt": "mt", "mon": "mn", "nau": "na",
-	"nav": "nv", "nbl": "nr", "nde": "nd", "ndo": "ng", "nep": "ne", "nno": "nn",
-	"nob": "nb", "nor": "no", "nya": "ny", "oci": "oc", "oji": "oj", "ori": "or",
+	"nav": "nv", "nbl": "nr", "nde": "nd", "ndo": "ng", "nep": "ne", "nno": "no",
+	"nob": "no", "nor": "no", "nya": "ny", "oci": "oc", "oji": "oj", "ori": "or",
 	"orm": "om", "oss": "os", "pan": "pa", "per": "fa", "fas": "fa", "pli": "pi",
 	"pol": "pl", "por": "pt", "pus": "ps", "que": "qu", "roh": "rm", "rum": "ro",
 	"ron": "ro", "run": "rn", "rus": "ru", "sag": "sg", "san": "sa", "sin": "si",
@@ -57,11 +65,17 @@ func NormalizeLanguageTag(tag string) string {
 		tag = tag[:i]
 	}
 	switch tag {
-	case "", "und", "mul", "zxx", "mis":
+	case "", "und", "mul", "zxx", "mis", "lat":
 		return ""
 	}
 	if code, ok := iso6392to1[tag]; ok {
 		return code
+	}
+	switch tag {
+	case "nb", "nn":
+		return "no" // jhin's single Norwegian
+	case "la":
+		return "" // Latin as a two-letter tag; "la" is Latino downstream
 	}
 	if len(tag) == 2 && isASCIILetters(tag) {
 		return tag

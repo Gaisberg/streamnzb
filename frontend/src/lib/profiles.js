@@ -364,6 +364,17 @@ export const RULE_ATTRIBUTES = [
     ],
   },
   {
+    tier: "measured",
+    title: "From ffprobe — tracks",
+    note: "The file's audio and subtitle tracks, read by probes newer than the codec and HDR fields. A library item probed before then has those but nothing about its tracks, so rules reading these skip it as well as everything unprobed.",
+    items: [
+      { name: "probed.audioLanguages", type: "list", example: '"ja" in probed.audioLanguages — ISO 639-1, the same codes as languages' },
+      { name: "probed.subtitleLanguages", type: "list", example: '"ar" in probed.subtitleLanguages' },
+      { name: "probed.audioStreams", type: "number", example: "probed.audioStreams >= 2 — counts untagged tracks too" },
+      { name: "probed.subtitleStreams", type: "number" },
+    ],
+  },
+  {
     tier: "inferred",
     title: "Detected traits",
     note: "Every trait the parser found, by key. `\"remux\" in traits` reaches anything the baseline has an opinion about, without a separate control for each one.",
