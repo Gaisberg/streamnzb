@@ -67,6 +67,9 @@ type Service struct {
 	FFprobePath func() string
 	// StartupTimeout returns the per-phase playback startup budget.
 	StartupTimeout func() time.Duration
+	// PreloadArticleCensus reports whether preloading STATs every article of
+	// the selected file rather than a sample. Optional; nil means off.
+	PreloadArticleCensus func() bool
 	// AllowLargestDirectFallback reports whether stream selection may fall
 	// back to the largest direct file for this session (exact-episode and
 	// movie sessions only; policy lives with the server's match typing).
@@ -102,6 +105,10 @@ func (p *Service) startupTimeout() time.Duration {
 		}
 	}
 	return 45 * time.Second
+}
+
+func (p *Service) preloadArticleCensus() bool {
+	return p.PreloadArticleCensus != nil && p.PreloadArticleCensus()
 }
 
 func (p *Service) ffprobePath() string {
@@ -711,8 +718,9 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 }
 
 // Preload speculatively downloads, maps and strictly validates a session's
-// media before any client asks for it: NZB fetch, volume STAT sampling, dense
-// article verification of the selected file, and a forced-decode ffprobe run.
+// media before any client asks for it: NZB fetch, volume STAT sampling, an
+// article check of the selected file (sampled, or a full census when opted
+// in), and a forced-decode ffprobe run.
 // Users see this as "preloading" the top search results.
 func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, error) {
 	if sess == nil {
@@ -780,11 +788,23 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 		p.SaveToLibrary(sess, bp, name, size, LibraryStatusPending)
 	}
 
-	// Dense article check of the SELECTED file: every startup-window article plus
-	// spread samples across all its volumes. Catches holes past the sparse
-	// first-segment sampling (e.g. 121MB into an 8.7GB release) before the
-	// release is ever offered, and before the forced decode downloads anything.
-	if err := VerifySelectedFileArticlesDense(ctx, bp); err != nil {
+	// Article check of the SELECTED file, before the release is ever offered
+	// and before the forced decode downloads anything. Sampled by default —
+	// every startup-window article plus spread samples across the volumes —
+	// or, when the operator opted in, a census that asks about every article
+	// in an order that keeps any prefix a uniform sample of the file.
+	if p.preloadArticleCensus() {
+		censusCtx, cancelCensus := censusPreloadCtx(ctx)
+		err := VerifySelectedFileArticles(censusCtx, bp)
+		cancelCensus()
+		if err != nil {
+			logger.Warn("Preloading rejected release via article census", "slot", sess.ID, "file", name, "err", err)
+			if streamReader != nil {
+				streamReader.Close()
+			}
+			return false, fmt.Errorf("preloading rejected stream: %w", err)
+		}
+	} else if err := VerifySelectedFileArticlesDense(ctx, bp); err != nil {
 		logger.Warn("Preloading rejected release via dense article STAT", "slot", sess.ID, "file", name, "err", err)
 		if streamReader != nil {
 			streamReader.Close()

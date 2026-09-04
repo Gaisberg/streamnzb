@@ -98,6 +98,7 @@ var patchKeysNoCacheImpact = map[string]bool{
 	"session_post_playback_ttl_minutes":   true,
 	"speculative_preprobing_max_attempts": true,
 	"speculative_pre_probing_count":       true,
+	"preload_article_census":              true,
 	"memory_limit_mb":                     true,
 	"mute_error_video":                    true,
 	"admin_username":                      true,

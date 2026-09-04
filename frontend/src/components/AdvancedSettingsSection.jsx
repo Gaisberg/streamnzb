@@ -17,7 +17,7 @@ import { cn, selectClass } from "@/lib/utils"
 const CARD_FIELDS = {
   admin: ['log_level', 'verbose_nntp_logging', 'search_debug_stream', 'keep_log_files'],
   memory: ['memory_limit_mb'],
-  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'mute_error_video'],
+  playback: ['playback_startup_timeout_seconds', 'session_ttl_minutes', 'session_post_playback_ttl_minutes', 'mute_error_video', 'preload_article_census'],
   library: ['library_search_mode', 'library_max_items', 'library_max_size_mb', 'library_auto_save'],
   availnzb: ['availnzb_mode'],
 }
@@ -46,6 +46,7 @@ function pickInitialValues(values = {}) {
     session_ttl_minutes: Number.isFinite(parsedSessionTtl) ? parsedSessionTtl : 30,
     session_post_playback_ttl_minutes: Number.isFinite(parsedSessionPostPlaybackTtl) ? parsedSessionPostPlaybackTtl : 240,
     mute_error_video: values.mute_error_video === true,
+    preload_article_census: values.preload_article_census === true,
     library_search_mode: values.library_search_mode ?? 'combine',
     library_max_items: Number(values.library_max_items ?? 5000) || 5000,
     library_max_size_mb: Number(values.library_max_size_mb ?? 250) || 250,
@@ -334,6 +335,26 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                       </div>
                       <FormDescription className="mt-3">
                         Mutes the audio of the "Failed to start video" playback stream played when all releases fail.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <FormField control={control} name="preload_article_census" render={({ field }) => (
+                    <FormItem className="relative rounded-none border-0 p-3">
+                      <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                      <div className={stackedFieldRowClass}>
+                        <div className="sm:flex-1">
+                          <FormLabel className={labelClass}>Check every article when preloading</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            onCheckedChange={(checked) => { field.onChange(checked === true); commitField('preload_article_census') }}
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription className="mt-3">
+                        Preloading normally checks a sample of a release's articles. On, it asks about every one — in an order that keeps any part it reaches representative of the whole file — so a hole in the middle sends the player to the next release instead of ending playback on the first seek into it. Costs STAT connections and a few more seconds per preloaded candidate.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

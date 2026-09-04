@@ -567,6 +567,15 @@ func (s *Server) playbackStartupTimeout() time.Duration {
 	return cfg.EffectivePlaybackStartupTimeout()
 }
 
+// preloadArticleCensus reports whether preloading STATs every article of the
+// selected file rather than a sample (Settings → Advanced → Playback).
+func (s *Server) preloadArticleCensus() bool {
+	s.mu.RLock()
+	cfg := s.config
+	s.mu.RUnlock()
+	return cfg.EffectivePreloadArticleCensus()
+}
+
 func (s *Server) effectiveFFprobePath() string {
 	s.mu.RLock()
 	cfg := s.config
