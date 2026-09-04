@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/media/ebml"
 )
 
 // DefaultReadAhead is how many segments ahead of the current read position
@@ -416,4 +417,21 @@ func isContextErr(err error) bool {
 	}
 	s := err.Error()
 	return strings.Contains(s, "canceled") || strings.Contains(s, "cancelled")
+}
+
+// ZeroFilledRanges reports the file's zero-filled byte ranges. A reader over a
+// whole file shares its coordinates, so the ranges pass straight through.
+func (r *SegmentReader) ZeroFilledRanges() []ebml.Range {
+	return r.file.ZeroFilledRanges()
+}
+
+// ReadAt reads without moving the position this reader is serving from, so the
+// container repair can look at structure around a hole while playback
+// continues.
+//
+// Speculative: these bytes are read on the chance they explain the damage, not
+// because the player asked for them, so a miss found here must not spend the
+// zero-fill budget the served reads are measured against.
+func (r *SegmentReader) ReadAt(p []byte, off int64) (int, error) {
+	return r.file.ReadAtCtx(WithSpeculativeRead(r.ctx, true), p, off)
 }

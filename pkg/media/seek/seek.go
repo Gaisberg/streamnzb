@@ -52,6 +52,12 @@ func InspectStreamStart(stream io.ReadSeeker, size int64, filename string, maxBy
 	return info, nil
 }
 
+// IsMatroskaFilename reports whether a filename names a Matroska container, by
+// the same extension list the container checks use.
+func IsMatroskaFilename(filename string) bool {
+	return formatFromFilename(filename) == "mkv"
+}
+
 func formatFromFilename(filename string) string {
 	lower := strings.ToLower(filename)
 	switch {

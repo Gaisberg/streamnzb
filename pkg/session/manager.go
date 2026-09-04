@@ -17,6 +17,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/media/ebml"
 	"streamnzb/pkg/media/fileutil"
 	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/media/nzb"
@@ -117,6 +118,13 @@ type Session struct {
 	reportedProgressH atomic.Int64
 
 	mediaCaps *MediaCapabilities // codec/profile/HDR metadata captured during probing
+
+	// holeFill holds the container repair for each zero-filled hole of the
+	// file being played, shared by every concurrent range request so
+	// overlapping ranges over one hole serve the same bytes. Guarded by mu;
+	// dropped with the playback stream, because a different stream is a
+	// different set of offsets.
+	holeFill *ebml.PatchCache
 
 	libraryBlueprintJSON string // serialized archive blueprint from the library, rehydrated onto Blueprint once loader files exist
 
@@ -855,8 +863,20 @@ func (st *playbackStreamState) resetLocked() io.ReadSeekCloser {
 	return stream
 }
 
+// HoleFillPatches returns the session's container-repair cache, creating it on
+// first use. Playback hands it to every stream it opens for this session.
+func (s *Session) HoleFillPatches() *ebml.PatchCache {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.holeFill == nil {
+		s.holeFill = ebml.NewPatchCache()
+	}
+	return s.holeFill
+}
+
 func (s *Session) ResetPlaybackStream() {
 	s.mu.Lock()
+	s.holeFill = nil
 	stream := s.playback.resetLocked()
 	s.mu.Unlock()
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/media/ebml"
 )
 
 // Deobfuscation gives a release back its filenames.
@@ -556,6 +557,7 @@ var (
 	_ playbackReaderAt              = (*renamedFile)(nil)
 	_ playbackPrefetcher            = (*renamedFile)(nil)
 	_ playbackRangePrefetcher       = (*renamedFile)(nil)
+	_ zeroFilledRanger              = (*renamedFile)(nil)
 	_ interface{ IsFailed() bool }  = (*renamedFile)(nil)
 	_ yencNamer                     = (*renamedFile)(nil)
 	_ firstSegmentReader            = (*renamedFile)(nil)
@@ -611,6 +613,13 @@ func (f *renamedFile) PrefetchPlaybackOffset(ctx context.Context, offset int64) 
 	if p, ok := f.UnpackableFile.(playbackPrefetcher); ok {
 		p.PrefetchPlaybackOffset(ctx, offset)
 	}
+}
+
+func (f *renamedFile) ZeroFilledRanges() []ebml.Range {
+	if r, ok := f.UnpackableFile.(zeroFilledRanger); ok {
+		return r.ZeroFilledRanges()
+	}
+	return nil
 }
 
 func (f *renamedFile) PrefetchPlaybackRange(ctx context.Context, offset, length int64) {

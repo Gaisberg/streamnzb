@@ -13,6 +13,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/decode"
+	"streamnzb/pkg/media/ebml"
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
@@ -96,6 +97,41 @@ func isArticleNotFound(err error) bool {
 
 func (f *File) IsFailed() bool {
 	return f.runFailed.Load() || f.ZeroFilledSegments() >= MaxZeroFills
+}
+
+// ZeroFilledRanges reports which byte ranges of this file were made up rather
+// than downloaded, in decoded file offsets, merged and in order.
+//
+// The container layer needs the holes as bytes, not as segment indices, to
+// rewrite them into structure a demuxer skips. Before the segment map is
+// detected the mapped offsets are still encoded sizes, so there is nothing
+// truthful to report and the answer is empty — a stream that has not been
+// mapped is not being played either.
+func (f *File) ZeroFilledRanges() []ebml.Range {
+	f.zeroFillMu.Lock()
+	indices := make([]int, 0, len(f.zeroFilled))
+	for idx := range f.zeroFilled {
+		indices = append(indices, idx)
+	}
+	f.zeroFillMu.Unlock()
+	if len(indices) == 0 {
+		return nil
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.detected {
+		return nil
+	}
+	ranges := make([]ebml.Range, 0, len(indices))
+	for _, idx := range indices {
+		if idx < 0 || idx >= len(f.segments) {
+			continue
+		}
+		s := f.segments[idx]
+		ranges = append(ranges, ebml.Range{Start: s.StartOffset, End: s.EndOffset})
+	}
+	return ebml.MergeRanges(ranges)
 }
 
 // zeroFilledRunLocked is the length of the maximal run of zero-filled
@@ -1297,7 +1333,8 @@ func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 // ReadAtCtx is ReadAt bound to the caller's context. The distinction matters
-// before the segment map exists: EnsureSegmentMap on the bare file context
+// twice over: a read marked speculative (WithSpeculativeRead) does not count
+// its misses against the zero-fill budget, and before the segment map exists: EnsureSegmentMap on the bare file context
 // carries no skip-gap flag, so a first ReadAt from a scan path would probe
 // every segment of the file — the whole volume — to serve a few bytes. The
 // caller's context carries the policy the caller chose.
@@ -1327,7 +1364,7 @@ func (f *File) ReadAtCtx(ctx context.Context, p []byte, off int64) (n int, err e
 			continue
 		}
 
-		data, err := f.DownloadSegment(ctx, i)
+		data, err := f.doDownloadSegment(ctx, i, !IsSpeculativeRead(ctx))
 		if err != nil {
 			return totalRead, err
 		}

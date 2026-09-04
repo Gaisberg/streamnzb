@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+
+	"streamnzb/pkg/media/ebml"
 )
 
 var (
@@ -26,12 +28,14 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 	}
 	segData := data[segStart:]
 
-	off, payloadLen := readEBMLElement(segData)
-	if off < 0 || payloadLen < 0 {
+	off, payloadLen := ebml.ReadElementHeader(segData)
+	if off < 0 {
 		return 0, false
 	}
 	segPayload := segData[off:]
-	if int64(len(segPayload)) >= payloadLen {
+	// A payloadLen of -1 is the unknown-size marker a live mux writes; there is
+	// nothing to truncate to then.
+	if payloadLen >= 0 && int64(len(segPayload)) >= payloadLen {
 		segPayload = segPayload[:payloadLen]
 	}
 
@@ -40,19 +44,19 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 		return 0, false
 	}
 	infoData := segPayload[infoStart:]
-	off2, infoPayloadLen := readEBMLElement(infoData)
+	off2, infoPayloadLen := ebml.ReadElementHeader(infoData)
 	if off2 < 0 {
 		return 0, false
 	}
 	infoPayload := infoData[off2:]
-	if int64(len(infoPayload)) > infoPayloadLen {
+	if infoPayloadLen >= 0 && int64(len(infoPayload)) > infoPayloadLen {
 		infoPayload = infoPayload[:infoPayloadLen]
 	}
 	var timecodeScale uint64 = defaultTimestampScale
 	var duration float64 = -1
 
 	for len(infoPayload) > 0 {
-		idLen, _ := readEBMLVINT(infoPayload)
+		idLen, _ := ebml.ReadVint(infoPayload)
 		if idLen <= 0 {
 			break
 		}
@@ -61,7 +65,7 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 		if len(rest) < 1 {
 			break
 		}
-		sizeLen, size := readEBMLVINT(rest)
+		sizeLen, size := ebml.ReadVint(rest)
 		if sizeLen <= 0 {
 			break
 		}
@@ -74,7 +78,7 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 		switch {
 		case bytesEqual(idBytes, ebmlTimestampScaleID):
 			if len(payload) >= 1 && size <= 8 {
-				timecodeScale = readEBMLUint(payload, int(size))
+				timecodeScale = ebml.ReadUint(payload, int(size))
 			}
 		case bytesEqual(idBytes, ebmlDurationID):
 			if size == 8 && len(payload) >= 8 {
@@ -97,50 +101,4 @@ func findInBytes(data, needle []byte) int {
 
 func bytesEqual(a, b []byte) bool {
 	return bytes.Equal(a, b)
-}
-
-func readEBMLElement(data []byte) (payloadOffset int, payloadLen int64) {
-	idLen, _ := readEBMLVINT(data)
-	if idLen <= 0 || idLen >= len(data) {
-		return -1, -1
-	}
-	sizeLen, size := readEBMLVINT(data[idLen:])
-	if sizeLen <= 0 || idLen+sizeLen > len(data) {
-		return -1, -1
-	}
-	return idLen + sizeLen, int64(size)
-}
-
-func readEBMLVINT(data []byte) (length int, value uint64) {
-	if len(data) == 0 {
-		return 0, 0
-	}
-	first := data[0]
-	var numBytes int
-	for i := 0; i < 8; i++ {
-		if (first & (0x80 >> i)) != 0 {
-			numBytes = i + 1
-			break
-		}
-	}
-	if numBytes == 0 || numBytes > len(data) {
-		return 0, 0
-	}
-	mask := byte(0xFF >> numBytes)
-	value = uint64(first & mask)
-	for i := 1; i < numBytes; i++ {
-		value = (value << 8) | uint64(data[i])
-	}
-	return numBytes, value
-}
-
-func readEBMLUint(data []byte, size int) uint64 {
-	if size > len(data) || size > 8 {
-		return 0
-	}
-	var v uint64
-	for i := 0; i < size; i++ {
-		v = (v << 8) | uint64(data[i])
-	}
-	return v
 }

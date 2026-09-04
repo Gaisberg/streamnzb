@@ -242,6 +242,7 @@ func (p *Service) Prepare(ctx context.Context, sess *session.Session) (Prepared,
 		"probe_ms", probeMS,
 		"open_ms", openMS)
 
+	preparedStream.Stream = withHoleFill(sess, preparedStream)
 	preparedStream.Mode = "per_request"
 	sess.CachePlaybackStreamSnapshot(preparedStream.Spec, preparedStream.StartupInfo, preparedStream.HasStartupInfo)
 	return preparedStream, nil
@@ -392,6 +393,10 @@ type cancelOnCloseStream struct {
 	io.ReadSeekCloser
 	cancel func()
 }
+
+// Unwrap exposes the stream underneath, so the capability checks the layers
+// above make — hole reporting for the container repair — see through it.
+func (s *cancelOnCloseStream) Unwrap() io.ReadSeekCloser { return s.ReadSeekCloser }
 
 func (s *cancelOnCloseStream) Close() error {
 	err := s.ReadSeekCloser.Close()

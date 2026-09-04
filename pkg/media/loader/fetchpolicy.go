@@ -100,3 +100,31 @@ func IsSkipGapProbingEnabled(ctx context.Context) bool {
 	enabled, _ := ctx.Value(skipGapProbingContextKey{}).(bool)
 	return enabled
 }
+
+type speculativeReadContextKey struct{}
+
+// WithSpeculativeRead marks ctx as a read the player did not ask for: bytes
+// looked at on the chance they help, like the container structure the hole
+// repair reads around a hole.
+//
+// A miss found this way is not a hole the stream hit, so it must not spend the
+// zero-fill budget or trip the run cap — those caps measure what playback
+// serves. The read still gets zeros back; the accounting happens when, and if,
+// a real read reaches the same segment. Same reasoning as read-ahead, which
+// has never counted its own failures.
+func WithSpeculativeRead(ctx context.Context, enabled bool) context.Context {
+	if !enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, speculativeReadContextKey{}, true)
+}
+
+// IsSpeculativeRead reports whether ctx asked for a read that must not count
+// its own failures.
+func IsSpeculativeRead(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(speculativeReadContextKey{}).(bool)
+	return enabled
+}
