@@ -276,6 +276,25 @@ func TestProfileForKindIgnoresProfileInAIOStreamsMode(t *testing.T) {
 	}
 }
 
+// The original language rides the request from TMDB metadata, lowercased,
+// and is empty for a title that carries none — never guessed.
+func TestRankingRequestCarriesOriginalLanguage(t *testing.T) {
+	tv := &playlistSource{Params: &query.SearchParams{
+		ContentType: "series",
+		Metadata:    &query.ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{OriginalLanguage: "KO"}},
+	}}
+	if got := rankingRequest(tv).OriginalLanguage; got != "ko" {
+		t.Errorf("rankingRequest().OriginalLanguage = %q, want %q", got, "ko")
+	}
+	kitsuOnly := &playlistSource{Params: &query.SearchParams{
+		ContentType: "series",
+		Metadata:    &query.ResolvedSearchMetadata{KitsuDetails: &kitsu.AnimeDetails{ShowType: "TV"}},
+	}}
+	if got := rankingRequest(kitsuOnly).OriginalLanguage; got != "" {
+		t.Errorf("rankingRequest().OriginalLanguage = %q for Kitsu-only metadata, want empty", got)
+	}
+}
+
 // A Kitsu request stays anime regardless of what the other metadata says.
 func TestRankingRequestPrefersKitsu(t *testing.T) {
 	source := &playlistSource{Params: &query.SearchParams{

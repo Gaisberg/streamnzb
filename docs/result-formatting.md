@@ -78,8 +78,11 @@ guess from the release name. `.Kind` is the full content kind: `movie`,
 ```
 
 `.OriginalLanguage` is the requested title's original language from metadata
-(ISO 639-1, the same codes `.Languages` holds), empty when it did not say. A
-badge for original-audio releases needs no per-language line:
+as an ISO 639-1 code, empty when it did not say. `.Languages` holds the same
+codes when they came from the release name; when the name carried no language
+token it falls back to what the indexer reported, which may be a word
+(`English`) rather than a code, and the comparison below then simply does not
+fire. A badge for original-audio releases needs no per-language line:
 
 ```
 {{if and .OriginalLanguage (contains .OriginalLanguage .Languages)}}🎙 original audio{{end}}
