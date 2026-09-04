@@ -344,6 +344,7 @@ export const RULE_ATTRIBUTES = [
       { name: "seadex.known", type: "yes/no", example: "SeaDex has an entry for this title" },
       { name: "seadex.best", type: "yes/no", example: "this group made a release marked best for this title" },
       { name: "seadex.alternative", type: "yes/no", example: "recommended for this title, without the best mark" },
+      { name: "seadex.dualAudio", type: "yes/no", example: "this group's recommended release is marked dual audio" },
     ],
   },
   {

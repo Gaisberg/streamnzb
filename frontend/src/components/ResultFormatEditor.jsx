@@ -38,7 +38,7 @@ const FORMAT_FIELDS = [
   { group: 'Kind', fields: ['.Kind', '.IsAnime'] },
   { group: 'Probed', fields: ['.Verified', '.Probed.VideoCodec', '.Probed.AudioCodec', '.Probed.Width', '.Probed.Height', '.Probed.Profile', '.Probed.BitDepth', '.Probed.HDR', '.Probed.DolbyVision', '.Probed.HasHDRFallback', '.Probed.DynamicRange', '.Probed.TracksProbed', '.Probed.AudioLanguages', '.Probed.SubtitleLanguages', '.Probed.AudioStreams', '.Probed.SubtitleStreams'] },
   { group: 'Avail', fields: ['.Availability.Status', '.Availability.Known', '.Availability.OnMyBackbone', '.Availability.CheckedDaysAgo', '.Availability.Compression'] },
-  { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative'] },
+  { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative', '.Seadex.DualAudio'] },
   { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network', '.ParsedTitle | title | truncate 24'] },
   { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "'] },
   { group: 'Math', fields: ['add 100 .Score', 'sub 100 .Score', 'mul 2 .Season', 'div 1000 .Score', 'mod 10 .Score', 'min 50 .Score', 'max 0 .Score', 'stars 5 .TopScore .Score', 'repeat "▰" 3', '.Score | div 1000 | repeat "▰"'] },

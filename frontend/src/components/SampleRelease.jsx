@@ -300,6 +300,17 @@ export function SampleRelease({ value, onChange, open, onOpenChange }) {
                     className="h-9 w-52 font-mono text-xs"
                   />
                 </SettingRow>
+                <SettingRow
+                  label="Groups with dual audio"
+                  description="Groups whose recommended release SeaDex marks dual audio. A group may also be in either list above."
+                >
+                  <Input
+                    value={sample.seadex.dual_audio_groups || ""}
+                    onChange={(e) => patch({ seadex: { ...sample.seadex, dual_audio_groups: e.target.value } })}
+                    placeholder="Anime Time"
+                    className="h-9 w-52 font-mono text-xs"
+                  />
+                </SettingRow>
               </>
             )}
           </SettingGroup>
