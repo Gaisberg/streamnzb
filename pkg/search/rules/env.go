@@ -450,8 +450,10 @@ type ProbedEnv struct {
 	TracksProbed bool
 	// AudioLanguages and SubtitleLanguages are the tagged track languages
 	// (ISO 639-1, stream order). AudioStreams and SubtitleStreams count every
-	// track, so `probed.audioStreams >= 2` reads dual audio off an untagged
-	// file where `"en" in probed.audioLanguages` cannot.
+	// track, tagged or not. The count is not a language claim — a commentary
+	// or a stereo downmix is a second stream in one language — so dual audio
+	// is len(probed.audioLanguages) >= 2, and the counts are for what a count
+	// says on its own.
 	AudioLanguages    []string
 	SubtitleLanguages []string
 	AudioStreams      int

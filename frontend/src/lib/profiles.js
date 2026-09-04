@@ -370,7 +370,7 @@ export const RULE_ATTRIBUTES = [
     items: [
       { name: "probed.audioLanguages", type: "list", example: '"ja" in probed.audioLanguages — ISO 639-1, the same codes as languages' },
       { name: "probed.subtitleLanguages", type: "list", example: '"ar" in probed.subtitleLanguages' },
-      { name: "probed.audioStreams", type: "number", example: "probed.audioStreams >= 2 — counts untagged tracks too" },
+      { name: "probed.audioStreams", type: "number", example: "counts every audio track, tagged or not — a commentary or a stereo downmix counts, so dual audio is len(probed.audioLanguages) >= 2" },
       { name: "probed.subtitleStreams", type: "number" },
     ],
   },
