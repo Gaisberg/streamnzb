@@ -120,7 +120,10 @@ func TestNormalizeLanguageTag(t *testing.T) {
 		"jpn": "ja", "eng": "en", "ara": "ar", "ger": "de", "deu": "de",
 		"JA": "ja", "en_US": "en", "pt-BR": "pt", "und": "", "": "", "mul": "",
 		"xyz": "", "chi": "zh", "zho": "zh", "afr": "af", "bel": "be", "bos": "bs",
-		"cym": "cy", "wel": "cy", "gle": "ga", "swa": "sw", "fil": "tl", "nob": "nb",
+		"cym": "cy", "wel": "cy", "gle": "ga", "swa": "sw", "fil": "tl",
+		// jhin's vocabulary, not bare ISO: one Norwegian, and no Latin because
+		// "la" is Latino downstream.
+		"nob": "no", "nno": "no", "nor": "no", "nb": "no", "nn": "no", "lat": "", "la": "",
 	} {
 		if got := NormalizeLanguageTag(tag); got != want {
 			t.Errorf("NormalizeLanguageTag(%q) = %q, want %q", tag, got, want)

@@ -47,6 +47,7 @@ function tierOf(when = "", rules = []) {
   const stripped = stripSetCalls(
     inlineRuleRefs(when, rules).replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/'(?:[^'\\]|\\.)*'/g, ""),
   )
+  if (/\bprobed\.(?:audioLanguages|subtitleLanguages|audioStreams|subtitleStreams)\b/.test(stripped)) return "tracks"
   if (/\bprobed\./.test(stripped)) return "measured"
   if (/\bseadex\./.test(stripped)) return "seadex"
   if (/\bavail\./.test(stripped)) return "community"
@@ -59,10 +60,11 @@ function tierOf(when = "", rules = []) {
 // The chip shows how far a value can be trusted; seadex is community-curated
 // data with its own skip behavior, so it keys its own note but wears the
 // community chip.
-const CHIP_TIER = { seadex: "community" }
+const CHIP_TIER = { seadex: "community", tracks: "measured" }
 
 const SKIP_NOTE = {
   measured: "Only judges releases that have been probed — library items. Everything else passes untouched.",
+  tracks: "Only judges library items whose probe read the audio and subtitle tracks — newer than the codec and HDR fields, so older library items pass untouched along with everything unprobed.",
   community: "Only judges releases AvailNZB has an opinion about. Everything else passes untouched.",
   seadex: "Only judges anime requested through Kitsu, and only when the title could be looked up on SeaDex. Everything else passes untouched.",
   // Not a fail-open caveat like the two above: this one runs on every real

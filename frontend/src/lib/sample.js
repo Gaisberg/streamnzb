@@ -36,18 +36,27 @@ export function sampleActiveCount(sample) {
 }
 
 // sampleForRequest converts the editor's sample state into the explain API
-// shape: the SeaDex group lists are typed as comma-separated text but the API
-// takes them as lists.
+// shape: the SeaDex group lists and the probe's track languages are typed as
+// comma-separated text but the API takes them as lists.
 export function sampleForRequest(sample) {
-  if (!sample?.seadex) return sample || undefined
-  const splitGroups = (text) => (text || "").split(",").map((g) => g.trim()).filter(Boolean)
-  return {
-    ...sample,
-    seadex: {
-      known: sample.seadex.known === true,
-      best_groups: splitGroups(sample.seadex.best_groups),
-      alt_groups: splitGroups(sample.seadex.alt_groups),
-    },
+  if (!sample) return undefined
+  const splitList = (text) => (text || "").split(",").map((g) => g.trim()).filter(Boolean)
+  const out = { ...sample }
+  if (sample.probed) {
+    const { audio_languages, subtitle_languages, ...probed } = sample.probed
+    out.probed = {
+      ...probed,
+      audio_languages: splitList(audio_languages),
+      subtitle_languages: splitList(subtitle_languages),
+    }
   }
+  if (sample.seadex) {
+    out.seadex = {
+      known: sample.seadex.known === true,
+      best_groups: splitList(sample.seadex.best_groups),
+      alt_groups: splitList(sample.seadex.alt_groups),
+    }
+  }
+  return out
 }
 
