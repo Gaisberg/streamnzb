@@ -52,6 +52,8 @@ Variables listed as `STREAMNZB_*` with a legacy alias accept either name, with t
 |---|---|
 | `ADMIN_USERNAME` | Admin login name |
 | `ADMIN_FORCE_PASSWORD_RESET` | `true` forces the password-change screen on next startup — see [Troubleshooting](troubleshooting.md#force-password-reset-on-next-startup). Remove it once the password is changed |
+| `TRUSTED_PROXY_AUTH_HEADER` | Header a reverse-proxy login writes the user name into (for example `Remote-User`). With `TRUSTED_PROXIES` set, a request from a trusted address carrying it is the admin — no dashboard login. See [Remote access](remote-access.md#behind-a-reverse-proxy-login-authelia-authentik) |
+| `TRUSTED_PROXIES` | Comma-separated addresses or CIDRs the proxy connects from (for example `172.18.0.0/16`). Both must be set for the feature to be on |
 
 ### Database
 

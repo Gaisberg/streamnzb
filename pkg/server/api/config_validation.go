@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -410,6 +411,17 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		count := cfg.EffectiveSpeculativePreProbingMaxAttempts()
 		if count < 0 || count > 5 {
 			errors["speculative_preprobing_max_attempts"] = "Must be between 0 and 5"
+		}
+	}
+	// Always checked: a bad entry would silently switch the feature off at
+	// runtime, and the save is the only moment the admin is looking.
+	if len(cfg.TrustedProxies) > 0 || strings.TrimSpace(cfg.TrustedProxyAuthHeader) != "" {
+		if _, err := auth.NewProxyAuth(cfg.TrustedProxyAuthHeader, cfg.TrustedProxies); err != nil {
+			errors["trusted_proxies"] = err.Error()
+		} else if strings.TrimSpace(cfg.TrustedProxyAuthHeader) == "" {
+			errors["trusted_proxy_auth_header"] = "Set the header the proxy sends (for example Remote-User), or clear trusted_proxies"
+		} else if len(cfg.TrustedProxies) == 0 {
+			errors["trusted_proxies"] = "List the proxy's address or network, or clear trusted_proxy_auth_header"
 		}
 	}
 	if plan.validateDatabase {

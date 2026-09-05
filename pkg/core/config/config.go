@@ -723,6 +723,15 @@ type Config struct {
 	AdminMustChangePassword bool   `json:"admin_must_change_password"`
 	AdminToken              string `json:"admin_token"`
 
+	// Trusted-proxy authentication. When both are set, a request that arrives
+	// from one of TrustedProxies and carries a non-empty TrustedProxyAuthHeader
+	// is treated as the admin without the dashboard login: the proxy in front
+	// (Authelia, Authentik, oauth2-proxy) already authenticated the person and
+	// wrote their name into that header. Entries are CIDRs or single addresses.
+	// See docs/configuration.md, "Behind a reverse-proxy login".
+	TrustedProxyAuthHeader string   `json:"trusted_proxy_auth_header,omitempty"`
+	TrustedProxies         []string `json:"trusted_proxies,omitempty"`
+
 	Providers []Provider `json:"providers"`
 
 	ProxyPort     int    `json:"proxy_port"`
@@ -1661,31 +1670,33 @@ func keySet(list []string, s string) bool {
 // so a new override is one entry instead of two hand-maintained mirrors that
 // can (and did) drift apart.
 var envFieldCopiers = map[string]func(dst, src *Config){
-	env.KeyAddonPort:          func(d, s *Config) { d.AddonPort = s.AddonPort },
-	env.KeyAddonBaseURL:       func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
-	env.KeyLogLevel:           func(d, s *Config) { d.LogLevel = s.LogLevel },
-	env.KeyKeepLogFiles:       func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
-	env.KeyAvailNZBAPIKey:     func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
-	env.KeyTMDBAPIKey:         func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
-	env.KeyTVDBAPIKey:         func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
-	env.KeySimklClientID:      func(d, s *Config) { d.SimklClientID = s.SimklClientID },
-	env.KeyIndexerQueryHeader: func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
-	env.KeyIndexerGrabHeader:  func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
-	env.KeyProviderHeader:     func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
-	env.KeyProxyPort:          func(d, s *Config) { d.ProxyPort = s.ProxyPort },
-	env.KeyProxyHost:          func(d, s *Config) { d.ProxyHost = s.ProxyHost },
-	env.KeyProxyEnabled:       func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
-	env.KeyProxyAuthUser:      func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
-	env.KeyProxyAuthPass:      func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
-	env.KeyNewznabEnabled:     func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
-	env.KeyNewznabAPIKey:      func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
-	env.KeyAdminUsername:      func(d, s *Config) { d.AdminUsername = s.AdminUsername },
-	env.KeyAdminMustChangePwd: func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
-	env.KeyProviders:          func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
-	env.KeyIndexers:           func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
-	env.KeyDatabaseDriver:     func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
-	env.KeyDatabaseURL:        func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
-	env.KeyMetadataEnabled:    func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
+	env.KeyAddonPort:              func(d, s *Config) { d.AddonPort = s.AddonPort },
+	env.KeyAddonBaseURL:           func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
+	env.KeyLogLevel:               func(d, s *Config) { d.LogLevel = s.LogLevel },
+	env.KeyKeepLogFiles:           func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
+	env.KeyAvailNZBAPIKey:         func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
+	env.KeyTMDBAPIKey:             func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
+	env.KeyTVDBAPIKey:             func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeySimklClientID:          func(d, s *Config) { d.SimklClientID = s.SimklClientID },
+	env.KeyIndexerQueryHeader:     func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
+	env.KeyIndexerGrabHeader:      func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
+	env.KeyProviderHeader:         func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
+	env.KeyProxyPort:              func(d, s *Config) { d.ProxyPort = s.ProxyPort },
+	env.KeyProxyHost:              func(d, s *Config) { d.ProxyHost = s.ProxyHost },
+	env.KeyProxyEnabled:           func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
+	env.KeyProxyAuthUser:          func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
+	env.KeyProxyAuthPass:          func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyNewznabEnabled:         func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
+	env.KeyNewznabAPIKey:          func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
+	env.KeyAdminUsername:          func(d, s *Config) { d.AdminUsername = s.AdminUsername },
+	env.KeyAdminMustChangePwd:     func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
+	env.KeyTrustedProxyAuthHeader: func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
+	env.KeyTrustedProxies:         func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
+	env.KeyProviders:              func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:               func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:         func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:            func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled:        func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1760,6 +1771,8 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		NewznabAPIKey:           o.NewznabAPIKey,
 		AdminUsername:           o.AdminUsername,
 		AdminMustChangePassword: o.AdminMustChangePwd,
+		TrustedProxyAuthHeader:  o.TrustedProxyAuthHeader,
+		TrustedProxies:          append([]string(nil), o.TrustedProxies...),
 		DatabaseDriver:          o.DatabaseDriver,
 		DatabaseURL:             o.DatabaseURL,
 		Metadata:                MetadataConfig{Enabled: &o.MetadataEnabled},

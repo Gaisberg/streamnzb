@@ -24,6 +24,13 @@ func ContextWithStream(ctx context.Context, stream *Stream) context.Context {
 func AuthMiddleware(streamManager *StreamManager, getAdminUsername, getAdminToken func() string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// An outer layer — trusted-proxy auth — may already have settled
+			// who this is. Its word stands; the credential checks below are
+			// for requests nobody has vouched for yet.
+			if _, ok := StreamFromContext(r); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
 			adminUsername := ""
 			if getAdminUsername != nil {
 				adminUsername = getAdminUsername()
