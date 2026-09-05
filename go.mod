@@ -23,7 +23,7 @@ require golang.org/x/net v0.58.0
 require github.com/gorilla/websocket v1.5.3
 
 require (
-	github.com/dreulavelle/jhin v0.6.1
+	github.com/dreulavelle/jhin v0.6.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
 	golang.org/x/crypto v0.55.0
