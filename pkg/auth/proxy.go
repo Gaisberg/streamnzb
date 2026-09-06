@@ -4,10 +4,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"streamnzb/pkg/core/httpx"
 )
+
+// headerTokenRE is an RFC 9110 field-name token. A header name outside it can
+// never be sent by a proxy, so accepting one would configure a gate that no
+// request can pass — the feature looks on and enforces nothing.
+var headerTokenRE = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 // ProxyAuth accepts an identity asserted by a reverse proxy that has already
 // authenticated the person — Authelia, Authentik, oauth2-proxy and the like
@@ -28,31 +34,47 @@ type ProxyAuth struct {
 }
 
 // NewProxyAuth parses the trusted networks. Each entry is a CIDR ("172.18.0.0/16",
-// "fd00::/8") or a bare address, which stands for that single host. An empty
-// header or an empty list disables the feature and returns nil, nil.
+// "fd00::/8") or a bare address, which stands for that single host. With both
+// the header and the list empty the feature is off and nil, nil is returned.
+// Anything else that cannot enforce what it appears to promise — one half of
+// the pair missing, a blank entry, a header name no proxy could send, a
+// catch-all network — is an error, never a silently narrower or wider gate.
 func NewProxyAuth(header string, proxies []string) (*ProxyAuth, error) {
 	header = strings.TrimSpace(header)
+	if header == "" && len(proxies) == 0 {
+		return nil, nil
+	}
+	if header == "" {
+		return nil, fmt.Errorf("trusted_proxy_auth_header is empty: set the header the proxy sends (for example Remote-User), or clear trusted_proxies")
+	}
+	if !headerTokenRE.MatchString(header) {
+		return nil, fmt.Errorf("trusted_proxy_auth_header %q is not a valid header name", header)
+	}
+	if len(proxies) == 0 {
+		return nil, fmt.Errorf("trusted_proxies is empty: list the proxy's address or network, or clear trusted_proxy_auth_header")
+	}
 	nets, err := parseTrustedProxies(proxies)
 	if err != nil {
 		return nil, err
 	}
-	if header == "" || len(nets) == 0 {
-		return nil, nil
-	}
 	return &ProxyAuth{header: header, nets: nets}, nil
 }
 
-// parseTrustedProxies turns the configured entries into networks, rejecting the
-// first one that is neither a CIDR nor an address so a typo cannot silently
-// widen or narrow the trust list.
+// parseTrustedProxies turns the configured entries into networks. Every entry
+// must parse: a blank one, a typo, or a catch-all such as 0.0.0.0/0 is an
+// error, because each of those would leave a config that looks valid and
+// enforces something other than what it says.
 func parseTrustedProxies(proxies []string) ([]*net.IPNet, error) {
 	var nets []*net.IPNet
 	for _, raw := range proxies {
 		entry := strings.TrimSpace(raw)
 		if entry == "" {
-			continue
+			return nil, fmt.Errorf("trusted_proxies has a blank entry")
 		}
 		if _, n, err := net.ParseCIDR(entry); err == nil {
+			if ones, _ := n.Mask.Size(); ones == 0 {
+				return nil, fmt.Errorf("trusted proxy %q would trust every address; list the proxy's network only", entry)
+			}
 			nets = append(nets, n)
 			continue
 		}

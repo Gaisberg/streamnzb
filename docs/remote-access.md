@@ -55,7 +55,7 @@ trusted_proxy_auth_header: Remote-User      # TRUSTED_PROXY_AUTH_HEADER
 trusted_proxies: ["172.18.0.0/16"]          # TRUSTED_PROXIES=172.18.0.0/16
 ```
 
-A request that arrives **from one of those addresses** and **carries that header with a name in it** is treated as the admin. Everything else — a request from any other address, or one without the header — still gets the normal login, so a proxy that is down or bypassed leaves the dashboard as locked as it was.
+A request that arrives **from one of those addresses** and **carries that header with a name in it** is treated as the admin. Everything else — a request from any other address, or one without the header — still gets the normal login, so a proxy that is down or bypassed leaves the dashboard as locked as it was. Setting only one of the two, a blank entry, a catch-all network such as `0.0.0.0/0`, or a header name no proxy could send is refused when saved from the dashboard; the same values arriving from the environment leave the feature off with a warning in the log.
 
 The address list is the security boundary. The header alone proves nothing, because anyone who can reach the listener directly can write one; the proxy's address is what an outsider cannot forge. Two rules follow:
 
@@ -70,7 +70,7 @@ http:
     authelia:
       forwardAuth:
         address: http://authelia:9091/api/authz/forward-auth
-        trustForwardHeader: true
+        trustForwardHeader: true   # only safe with entryPoints.<name>.forwardedHeaders.trustedIPs set to the upstream proxy
         authResponseHeaders:
           - Remote-User
           - Remote-Groups
@@ -78,9 +78,11 @@ http:
           - Remote-Name
 ```
 
-Authelia writes `Remote-User` on every request it lets through and strips whatever the client sent, which is exactly the property this relies on. Authentik uses `X-authentik-username`; oauth2-proxy uses `X-Forwarded-User` when `--set-xauthrequest` is on. Put that header name in `trusted_proxy_auth_header`.
+`trustForwardHeader` makes Traefik pass the client's `X-Forwarded-*` headers to Authelia; that is only safe when the entry point's `forwardedHeaders.trustedIPs` names the proxy in front of Traefik, or when Traefik itself is the edge and the setting is left off. Authelia writes `Remote-User` on every request it lets through and strips whatever the client sent, which is exactly the property this relies on. Authentik uses `X-authentik-username`; oauth2-proxy uses `X-Forwarded-User` when `--set-xauthrequest` is on. Put that header name in `trusted_proxy_auth_header`.
 
-What stays the same: the Stremio addon and stream URLs are unaffected (they carry their own tokens), the admin password still exists and still works, `/api/login` still answers, and a bearer token still works for scripts. The **Log out** button clears the cookie and the next request is vouched for again by the proxy, so signing out of the dashboard means signing out of the proxy.
+Cross-site requests: the dashboard's own session cookie is `SameSite=Strict`, which is what stops another site from making your browser change settings. A proxy identity has no cookie of its own, so StreamNZB rebuilds that guarantee from the browser's own fetch metadata: a state-changing request marked `Sec-Fetch-Site: cross-site` or carrying an `Origin` for a different host gets no proxy identity and is refused. Reads are unaffected, and scripts behind the proxy that send neither header keep working.
+
+What stays the same: the Stremio addon and stream URLs are unaffected (they carry their own tokens), the admin password still exists and still works, `/api/login` still answers, and a bearer token still works for scripts. The admin token is never returned to a proxy-vouched request, so revoking the person at the proxy revokes their access. The **Log out** button clears StreamNZB's cookie only; the next request is vouched for again by the proxy, so to actually sign out, sign out of the proxy.
 
 ## What to avoid
 

@@ -53,11 +53,13 @@ type configValidationPlan struct {
 	validateFormatProfiles         bool
 	validateDefineLibraries        bool
 	validateDatabase               bool
+	validateTrustedProxyAuth       bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
 	return configValidationPlan{
 		validateKeepLogFiles:           true,
+		validateTrustedProxyAuth:       true,
 		validateNZBHistoryRetention:    true,
 		validatePlaybackStartupTimeout: true,
 		validateIndexerProxyURL:        true,
@@ -167,6 +169,11 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["indexer_proxy_url"]; ok {
 		plan.validateIndexerProxyURL = true
+	}
+	_, patchedHeader := raw["trusted_proxy_auth_header"]
+	_, patchedProxies := raw["trusted_proxies"]
+	if patchedHeader || patchedProxies {
+		plan.validateTrustedProxyAuth = true
 	}
 	_, patchedDriver := raw["database_driver"]
 	_, patchedDatabaseURL := raw["database_url"]
@@ -413,15 +420,17 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			errors["speculative_preprobing_max_attempts"] = "Must be between 0 and 5"
 		}
 	}
-	// Always checked: a bad entry would silently switch the feature off at
-	// runtime, and the save is the only moment the admin is looking.
-	if len(cfg.TrustedProxies) > 0 || strings.TrimSpace(cfg.TrustedProxyAuthHeader) != "" {
+	// Only when the pair itself is being edited. A value set outside the
+	// dashboard (environment) that fails here must not veto every unrelated
+	// save, since there would be no way to fix it from the UI; at runtime such
+	// a pair simply leaves the feature off with a warning in the log.
+	if plan.validateTrustedProxyAuth {
 		if _, err := auth.NewProxyAuth(cfg.TrustedProxyAuthHeader, cfg.TrustedProxies); err != nil {
-			errors["trusted_proxies"] = err.Error()
-		} else if strings.TrimSpace(cfg.TrustedProxyAuthHeader) == "" {
-			errors["trusted_proxy_auth_header"] = "Set the header the proxy sends (for example Remote-User), or clear trusted_proxies"
-		} else if len(cfg.TrustedProxies) == 0 {
-			errors["trusted_proxies"] = "List the proxy's address or network, or clear trusted_proxy_auth_header"
+			field := "trusted_proxies"
+			if strings.Contains(err.Error(), "trusted_proxy_auth_header") {
+				field = "trusted_proxy_auth_header"
+			}
+			errors[field] = err.Error()
 		}
 	}
 	if plan.validateDatabase {

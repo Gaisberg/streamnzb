@@ -5,31 +5,36 @@ import (
 	"testing"
 )
 
-func TestNewProxyAuthDisabledWithoutBothHalves(t *testing.T) {
+func TestNewProxyAuthOffOnlyWhenBothEmpty(t *testing.T) {
+	p, err := NewProxyAuth("", nil)
+	if err != nil || p != nil {
+		t.Fatalf("both empty must mean off: %v %v", p, err)
+	}
+	if _, ok := p.Identify(httptest.NewRequest("GET", "/", nil)); ok {
+		t.Fatal("a nil ProxyAuth must never identify anyone")
+	}
+}
+
+// Anything that looks configured but could not enforce what it promises is an
+// error, not a quietly disabled feature.
+func TestNewProxyAuthRejectsHalfConfiguredAndUnenforceable(t *testing.T) {
 	for name, tc := range map[string]struct {
 		header  string
 		proxies []string
 	}{
-		"no header":  {"", []string{"172.18.0.0/16"}},
-		"no proxies": {"Remote-User", nil},
-		"blank list": {"Remote-User", []string{" ", ""}},
+		"no header":         {"", []string{"172.18.0.0/16"}},
+		"no proxies":        {"Remote-User", nil},
+		"blank entry":       {"Remote-User", []string{"172.18.0.0/16", " "}},
+		"only blank":        {"Remote-User", []string{"  "}},
+		"garbage entry":     {"Remote-User", []string{"172.18.0.0/16", "not-an-address"}},
+		"catch-all v4":      {"Remote-User", []string{"0.0.0.0/0"}},
+		"catch-all v6":      {"Remote-User", []string{"::/0"}},
+		"header with space": {"Remote User", []string{"172.18.0.0/16"}},
+		"header with colon": {"Remote-User:", []string{"172.18.0.0/16"}},
 	} {
-		p, err := NewProxyAuth(tc.header, tc.proxies)
-		if err != nil {
-			t.Fatalf("%s: unexpected error %v", name, err)
+		if _, err := NewProxyAuth(tc.header, tc.proxies); err == nil {
+			t.Errorf("%s: expected an error", name)
 		}
-		if p != nil {
-			t.Fatalf("%s: expected proxy auth to be disabled", name)
-		}
-		if _, ok := p.Identify(httptest.NewRequest("GET", "/", nil)); ok {
-			t.Fatalf("%s: a nil ProxyAuth must never identify anyone", name)
-		}
-	}
-}
-
-func TestNewProxyAuthRejectsGarbage(t *testing.T) {
-	if _, err := NewProxyAuth("Remote-User", []string{"172.18.0.0/16", "not-an-address"}); err == nil {
-		t.Fatal("expected an error for an entry that is neither CIDR nor IP")
 	}
 }
 

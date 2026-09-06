@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -31,7 +32,7 @@ func (s *Server) proxyAuth() *auth.ProxyAuth {
 	s.mu.RLock()
 	header, proxies := s.config.TrustedProxyAuthHeader, s.config.TrustedProxies
 	s.mu.RUnlock()
-	if strings.TrimSpace(header) == "" || len(proxies) == 0 {
+	if strings.TrimSpace(header) == "" && len(proxies) == 0 {
 		return nil
 	}
 	key := proxyAuthKey(header, proxies)
@@ -44,7 +45,10 @@ func (s *Server) proxyAuth() *auth.ProxyAuth {
 	}
 	pa, err := auth.NewProxyAuth(header, proxies)
 	if err != nil {
-		logger.Warn("Trusted-proxy auth disabled: invalid trusted_proxies", "err", err)
+		// Logged once per distinct config, then the feature stays off until
+		// the values change. Validation refuses a save that would land here,
+		// so this is reached only by values set outside the dashboard.
+		logger.Warn("Trusted-proxy auth is off: settings are incomplete or invalid", "err", err)
 		pa = nil
 	}
 	c.key, c.auth = key, pa
@@ -76,6 +80,16 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if !proxyRequestIsSameSite(r) {
+			// A state-changing request the browser itself marks as coming from
+			// another site. Proxy identity rides on the proxy's cookie, whose
+			// SameSite policy is not ours to set, so this layer does its own
+			// check; the request falls through to the cookie path and is
+			// refused there.
+			logger.Debug("Trusted-proxy identity withheld: cross-site request", "method", r.Method, "path", r.URL.Path)
+			next.ServeHTTP(w, r)
+			return
+		}
 		token := s.adminToken()
 		stream, err := s.streamManager.AuthenticateToken(token, s.adminUsername(), token)
 		if err != nil {
@@ -87,4 +101,30 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 		logger.Debug("Auth via trusted proxy", "proxy_user", user, "remote", r.RemoteAddr)
 		next.ServeHTTP(w, r.WithContext(auth.ContextWithStream(r.Context(), stream)))
 	})
+}
+
+// proxyRequestIsSameSite is the CSRF check for proxy-vouched requests. The
+// dashboard's own session rides a SameSite=Strict cookie, which the browser
+// refuses to attach to cross-site requests; a header identity from the proxy
+// has no such property, so the same guarantee is rebuilt from what the browser
+// says about the request. Safe methods always pass. For the rest, Sec-Fetch-Site
+// must say same-origin or none (a direct navigation), and an Origin, when
+// present, must match the host. A request that carries neither header is not
+// a browser's cross-site request — browsers always send Sec-Fetch-Site — and
+// is allowed, so scripts behind the proxy keep working.
+func proxyRequestIsSameSite(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+		u, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return false
+		}
+	}
+	return true
 }

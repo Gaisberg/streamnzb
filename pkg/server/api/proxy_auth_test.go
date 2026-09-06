@@ -73,26 +73,117 @@ func TestTrustedProxyAuthOffByDefault(t *testing.T) {
 	}
 }
 
-// A config edit that would leave the feature half-configured or unparsable is
-// refused at save time.
+// Validation runs only when the pair is being edited: a half-configured pair
+// that came from the environment must not block an unrelated save.
 func TestValidateConfigTrustedProxies(t *testing.T) {
 	s := proxyAuthTestServer(t, "", nil)
+	editing := configValidationPlan{validateTrustedProxyAuth: true}
 
 	cfg := *s.config
 	cfg.TrustedProxyAuthHeader = "Remote-User"
 	cfg.TrustedProxies = []string{"not-a-network"}
-	if errs := s.validateConfigWithPlan(&cfg, configValidationPlan{}); errs["trusted_proxies"] == "" {
+	if errs := s.validateConfigWithPlan(&cfg, editing); errs["trusted_proxies"] == "" {
 		t.Fatalf("expected a trusted_proxies error, got %v", errs)
+	}
+	if errs := s.validateConfigWithPlan(&cfg, configValidationPlan{}); len(errs) != 0 {
+		t.Fatalf("an untouched pair must not block an unrelated save, got %v", errs)
+	}
+
+	for name, proxies := range map[string][]string{
+		"blank entry": {"172.18.0.0/16", " "},
+		"catch-all":   {"0.0.0.0/0"},
+	} {
+		cfg.TrustedProxies = proxies
+		if errs := s.validateConfigWithPlan(&cfg, editing); errs["trusted_proxies"] == "" {
+			t.Fatalf("%s: expected a trusted_proxies error, got %v", name, errs)
+		}
 	}
 
 	cfg.TrustedProxies = []string{"172.18.0.0/16"}
 	cfg.TrustedProxyAuthHeader = ""
-	if errs := s.validateConfigWithPlan(&cfg, configValidationPlan{}); errs["trusted_proxy_auth_header"] == "" {
+	if errs := s.validateConfigWithPlan(&cfg, editing); errs["trusted_proxy_auth_header"] == "" {
 		t.Fatalf("expected a trusted_proxy_auth_header error, got %v", errs)
 	}
 
 	cfg.TrustedProxyAuthHeader = "Remote-User"
-	if errs := s.validateConfigWithPlan(&cfg, configValidationPlan{}); len(errs) != 0 {
+	if errs := s.validateConfigWithPlan(&cfg, editing); len(errs) != 0 {
 		t.Fatalf("expected a clean validation, got %v", errs)
+	}
+}
+
+// A half-configured pair set outside the dashboard leaves the feature off.
+func TestTrustedProxyAuthHalfConfiguredIsOff(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", nil)
+	if code, _ := authCheck(t, s, "172.18.0.7:40000", "maged"); code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with only the header set, got %d", code)
+	}
+}
+
+// The proxy vouches for a person, not for possession of the admin token. The
+// check endpoint must not hand that token out, or a proxy logout would no
+// longer revoke anything.
+func TestTrustedProxyAuthDoesNotLeakAdminToken(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	code, body := authCheck(t, s, "172.18.0.7:40000", "maged")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if _, leaked := body["token"]; leaked {
+		t.Fatalf("admin token must not be returned to a proxy-vouched request: %v", body)
+	}
+
+	// The bearer path still echoes the token it was given.
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/check", nil)
+	req.RemoteAddr = "203.0.113.9:5555"
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || out["token"] != "admin-token" {
+		t.Fatalf("bearer caller should still get its token back: %d %v", rec.Code, out)
+	}
+}
+
+// Proxy identity must not become a CSRF hole: a state-changing request the
+// browser marks as cross-site gets no identity and is refused.
+func TestTrustedProxyAuthRefusesCrossSiteWrites(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	post := func(site, origin string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/clear", nil)
+		req.Host = "nzb.example.com"
+		req.RemoteAddr = "172.18.0.7:40000"
+		req.Header.Set("Remote-User", "maged")
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post("cross-site", "https://evil.example"); code != http.StatusUnauthorized {
+		t.Fatalf("cross-site POST must be refused, got %d", code)
+	}
+	if code := post("same-origin", "https://evil.example"); code != http.StatusUnauthorized {
+		t.Fatalf("mismatched Origin must be refused, got %d", code)
+	}
+	if code := post("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized {
+		t.Fatalf("same-origin POST must carry the proxy identity, got 401")
+	}
+	if code := post("", ""); code == http.StatusUnauthorized {
+		t.Fatalf("a non-browser POST without fetch metadata must keep working, got 401")
+	}
+	// Safe methods are never subject to the check.
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/check", nil)
+	req.RemoteAddr = "172.18.0.7:40000"
+	req.Header.Set("Remote-User", "maged")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET is safe and must still be vouched for, got %d", rec.Code)
 	}
 }
