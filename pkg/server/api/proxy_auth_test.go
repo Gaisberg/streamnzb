@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"streamnzb/pkg/auth"
 	"testing"
 )
 
@@ -65,8 +66,57 @@ func TestTrustedProxyAuthGrantsAdmin(t *testing.T) {
 	req.Header.Set("Remote-User", "maged")
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code == http.StatusUnauthorized {
-		t.Fatalf("admin endpoint should open for a proxy-vouched request, got 401")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin endpoint should open for a proxy-vouched request, got %d", rec.Code)
+	}
+}
+
+// A caller presenting its own credential is that credential. A device
+// token or bearer on a request that also came through the proxy must not be
+// lifted to admin.
+func TestTrustedProxyAuthDoesNotOverrideExplicitCredential(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	for name, apply := range map[string]func(*http.Request){
+		"query token": func(r *http.Request) {
+			q := r.URL.Query()
+			q.Set("token", "not-a-real-token")
+			r.URL.RawQuery = q.Encode()
+		},
+		"bearer": func(r *http.Request) { r.Header.Set("Authorization", "Bearer not-a-real-token") },
+	} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/config", nil)
+		req.RemoteAddr = "172.18.0.7:40000"
+		req.Header.Set("Remote-User", "maged")
+		apply(req)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: an explicit bad credential must be judged on its own, got %d", name, rec.Code)
+		}
+	}
+}
+
+// A stream that the Stremio path-token router placed in the context is not
+// a proxy voucher: the API's credential checks still apply to it.
+func TestPathTokenStreamIsNotVouched(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/config", nil)
+	req.RemoteAddr = "203.0.113.9:5555"
+	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "tv", Token: "device-token"}))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a bare context stream must not pass the credential middleware, got %d", rec.Code)
+	}
+}
+
+// The non-admin config view must not reveal which header and which
+// network the proxy identity trusts.
+func TestRedactForAPIHidesTrustedProxySettings(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	out := s.config.RedactForAPI()
+	if out.TrustedProxyAuthHeader != "" || len(out.TrustedProxies) != 0 {
+		t.Fatalf("trusted-proxy settings leaked through RedactForAPI: %q %v", out.TrustedProxyAuthHeader, out.TrustedProxies)
 	}
 }
 
@@ -193,6 +243,9 @@ func TestTrustedProxyAuthRefusesCrossSiteWrites(t *testing.T) {
 	if code := post("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized {
 		t.Fatalf("same-origin POST must carry the proxy identity, got 401")
 	}
+	if code := post("same-site", "https://other.nzb.example.com"); code != http.StatusUnauthorized {
+		t.Fatalf("same-site (sibling subdomain) POST must be refused, got %d", code)
+	}
 	if code := post("", ""); code == http.StatusUnauthorized {
 		t.Fatalf("a non-browser POST without fetch metadata must keep working, got 401")
 	}
@@ -289,6 +342,9 @@ func TestTrustedProxyAuthHonoursForwardedHost(t *testing.T) {
 	}
 	if code := post("nzb.example.com"); code == http.StatusUnauthorized {
 		t.Fatalf("forwarded host matching the Origin must be accepted, got 401")
+	}
+	if code := post("nzb.example.com:443"); code != http.StatusUnauthorized {
+		t.Fatalf("forwarded host with a port the Origin does not carry must not match, got %d", code)
 	}
 	if code := post("nzb.example.com, inner.proxy"); code == http.StatusUnauthorized {
 		t.Fatalf("first entry of a chained X-Forwarded-Host must be used, got 401")

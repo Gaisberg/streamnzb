@@ -53,6 +53,13 @@ func (s *Server) proxyAuth() *auth.ProxyAuth {
 		logger.Warn("Trusted-proxy auth is off: settings are incomplete or invalid", "err", err)
 		pa = nil
 	}
+	if pa != nil {
+		// Said once per distinct config so the operator can see exactly which
+		// addresses are trusted. A Docker bridge gateway or 127.0.0.1 in this
+		// list means "everyone who can reach the published port", which is the
+		// one misconfiguration the code cannot detect from inside.
+		logger.Info("Trusted-proxy auth enabled", "header", header, "trusted_proxies", strings.Join(proxies, ", "))
+	}
 	c.key, c.auth = key, pa
 	return pa
 }
@@ -68,7 +75,14 @@ func (s *Server) proxyAuth() *auth.ProxyAuth {
 // for the log line so the audit trail still says who.
 func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := auth.StreamFromContext(r); ok {
+		if auth.VouchedFromContext(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// A caller that presents its own credential is asking to be that
+		// credential. A device token or bearer must not be upgraded to the
+		// admin just because the request also passed through the proxy.
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("token") != "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -107,7 +121,7 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		logger.Debug("Auth via trusted proxy", "proxy_user", user, "remote", r.RemoteAddr)
-		next.ServeHTTP(w, r.WithContext(auth.ContextWithStream(r.Context(), stream)))
+		next.ServeHTTP(w, r.WithContext(auth.ContextWithVouchedStream(r.Context(), stream)))
 	})
 }
 

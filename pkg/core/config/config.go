@@ -1847,6 +1847,8 @@ func (c *Config) RedactForAPI() Config {
 	out := *c
 	out.AdminPasswordHash = ""
 	out.AdminToken = ""
+	out.TrustedProxyAuthHeader = ""
+	out.TrustedProxies = nil
 	out.NewznabAPIKey = ""
 	out.ProxyAuthUser = ""
 	out.ProxyAuthPass = ""
