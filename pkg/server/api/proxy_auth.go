@@ -86,7 +86,12 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 			// SameSite policy is not ours to set, so this layer does its own
 			// check; the request falls through to the cookie path and is
 			// refused there.
-			logger.Debug("Trusted-proxy identity withheld: cross-site request", "method", r.Method, "path", r.URL.Path)
+			// Warn, not Debug: when a proxy rewrites Host and does not forward
+			// the original, every save fails this way, and the dashboard's
+			// only symptom is a login screen on save. The log should say so.
+			logger.Warn("Trusted-proxy identity withheld: request did not look same-site",
+				"method", r.Method, "path", r.URL.Path,
+				"origin", r.Header.Get("Origin"), "host", requestHost(r), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"))
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -134,7 +139,7 @@ func proxyRequestIsSameSite(r *http.Request) bool {
 			return false
 		}
 		u, err := url.Parse(origin)
-		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+		if err != nil || !strings.EqualFold(u.Host, requestHost(r)) {
 			return false
 		}
 	}
@@ -153,4 +158,22 @@ func isWebSocketHandshake(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// requestHost is the host the browser addressed, as far as it can be known.
+// This runs only for requests the trusted proxy vouched for, so the proxy's
+// X-Forwarded-Host is as trustworthy as its identity header and is the
+// browser's view even when the proxy rewrote Host on the way in. A proxy that
+// forwards neither leaves r.Host, which then must equal what the browser
+// sees — the docs say to preserve Host for that reason.
+func requestHost(r *http.Request) string {
+	if h := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); h != "" {
+		// Comma-joined when several proxies appended; the first is the
+		// client-facing one.
+		if i := strings.IndexByte(h, ','); i >= 0 {
+			h = strings.TrimSpace(h[:i])
+		}
+		return h
+	}
+	return r.Host
 }

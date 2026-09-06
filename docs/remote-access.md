@@ -62,7 +62,9 @@ The address list is the security boundary. The header alone proves nothing, beca
 - List only the proxy. On Docker that is the network the proxy container sits on (`docker network inspect <name>` shows the subnet), not `0.0.0.0/0`.
 - Make sure nothing else can reach StreamNZB's port from those addresses — publish the port to the proxy's network only, never to the host or the internet.
 
-The proxy must pass the header through. Traefik with Authelia's `forwardAuth` middleware:
+Two things the proxy must do for writes to work. It must pass the identity header through, and it must let StreamNZB know the host the browser addressed: either leave `Host` as the browser sent it (nginx `proxy_set_header Host $host`; Traefik and Caddy do this by default) or forward it in `X-Forwarded-Host`. A proxy that rewrites `Host` and forwards nothing makes every browser `Origin` look foreign, and the dashboard then loads normally but answers every save and the live stats socket with a login screen; the refusal is logged at Warn with the origin and host it compared.
+
+Traefik with Authelia's `forwardAuth` middleware:
 
 ```yaml
 http:

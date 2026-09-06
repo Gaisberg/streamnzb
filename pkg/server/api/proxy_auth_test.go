@@ -257,3 +257,37 @@ func TestIsWebSocketHandshake(t *testing.T) {
 		t.Fatal("Connection: keep-alive, Upgrade + Upgrade: WebSocket is a handshake")
 	}
 }
+
+// A proxy that rewrites Host but forwards the original in X-Forwarded-Host
+// must not turn every save into a 401: the Origin is compared against what
+// the browser addressed, which for a proxy-vouched request the proxy is
+// trusted to report.
+func TestTrustedProxyAuthHonoursForwardedHost(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	post := func(forwardedHost string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/cache/clear", nil)
+		req.Host = "streamnzb:7000" // what the upstream sees after the proxy rewrote Host
+		req.RemoteAddr = "172.18.0.7:40000"
+		req.Header.Set("Remote-User", "maged")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Origin", "https://nzb.example.com")
+		if forwardedHost != "" {
+			req.Header.Set("X-Forwarded-Host", forwardedHost)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post("nzb.example.com"); code == http.StatusUnauthorized {
+		t.Fatalf("forwarded host matching the Origin must be accepted, got 401")
+	}
+	if code := post("nzb.example.com, inner.proxy"); code == http.StatusUnauthorized {
+		t.Fatalf("first entry of a chained X-Forwarded-Host must be used, got 401")
+	}
+	if code := post("other.example.com"); code != http.StatusUnauthorized {
+		t.Fatalf("forwarded host that does not match the Origin must be refused, got %d", code)
+	}
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Fatalf("rewritten Host with nothing forwarded cannot match the Origin, got %d", code)
+	}
+}
