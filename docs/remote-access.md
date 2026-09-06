@@ -34,7 +34,8 @@ server {
     location / {
         proxy_pass http://127.0.0.1:7000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;             # $http_host keeps the port; $host drops it
+        proxy_set_header X-Forwarded-Host $http_host; # overwrite, never pass the client's copy through
         proxy_set_header X-Forwarded-Proto $scheme;   # marks the login cookie Secure
         proxy_buffering off;        # stream video through, don't spool it
         proxy_read_timeout 1h;      # playback connections are long-lived
@@ -62,7 +63,7 @@ The address list is the security boundary. The header alone proves nothing, beca
 - List only the proxy. On Docker that is the network the proxy container sits on (`docker network inspect <name>` shows the subnet), not `0.0.0.0/0`.
 - Make sure nothing else can reach StreamNZB's port from those addresses — publish the port to the proxy's network only, never to the host or the internet.
 
-Two things the proxy must do for writes to work. It must pass the identity header through, and it must let StreamNZB know the host the browser addressed: either leave `Host` as the browser sent it (nginx `proxy_set_header Host $host`; Traefik and Caddy do this by default) or forward it in `X-Forwarded-Host`. A proxy that rewrites `Host` and forwards nothing makes every browser `Origin` look foreign, and the dashboard then loads normally but answers every save and the live stats socket with a login screen; the refusal is logged at Warn with the origin and host it compared.
+Two things the proxy must do for writes to work. It must pass the identity header through, and it must tell StreamNZB the host the browser addressed, port included: either leave `Host` as the browser sent it (Traefik and Caddy do this by default; nginx needs `proxy_set_header Host $http_host;` — `$http_host` keeps a non-standard port, `$host` drops it) or **set** `X-Forwarded-Host` itself, overwriting anything the client sent (Traefik and Caddy do; nginx only with `proxy_set_header X-Forwarded-Host $http_host;`). A forwarded host the proxy merely passes through from the client is not trustworthy and must not be relied on. A proxy that rewrites `Host` and sets nothing makes every browser `Origin` look foreign, and the dashboard then loads normally but answers every save and the live stats socket with a login screen; the refusal is logged at Warn (rate-limited, the rest at Debug) with the origin and host it compared.
 
 Traefik with Authelia's `forwardAuth` middleware:
 

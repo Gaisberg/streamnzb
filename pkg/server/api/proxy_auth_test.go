@@ -256,6 +256,15 @@ func TestIsWebSocketHandshake(t *testing.T) {
 	if !isWebSocketHandshake(r) {
 		t.Fatal("Connection: keep-alive, Upgrade + Upgrade: WebSocket is a handshake")
 	}
+	// Upgrade is a token list too.
+	r.Header.Set("Upgrade", "h2c, websocket")
+	if !isWebSocketHandshake(r) {
+		t.Fatal("Upgrade: h2c, websocket is a handshake")
+	}
+	r.Header.Set("Upgrade", "h2c")
+	if isWebSocketHandshake(r) {
+		t.Fatal("Upgrade: h2c alone is not a WebSocket handshake")
+	}
 }
 
 // A proxy that rewrites Host but forwards the original in X-Forwarded-Host

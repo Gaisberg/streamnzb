@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
@@ -89,9 +91,10 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 			// Warn, not Debug: when a proxy rewrites Host and does not forward
 			// the original, every save fails this way, and the dashboard's
 			// only symptom is a login screen on save. The log should say so.
-			logger.Warn("Trusted-proxy identity withheld: request did not look same-site",
-				"method", r.Method, "path", r.URL.Path,
-				"origin", r.Header.Get("Origin"), "host", requestHost(r), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"))
+			// A hostile page can drive cross-site posts through a logged-in
+			// browser at will, each carrying an origin of its choosing, so
+			// the Warn is rate-limited and the rest go to Debug.
+			logCrossSiteRefusal(r)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -149,11 +152,16 @@ func proxyRequestIsSameSite(r *http.Request) bool {
 // isWebSocketHandshake reports whether the request asks to upgrade to a
 // WebSocket, which is the one GET whose response a cross-site page can read.
 func isWebSocketHandshake(r *http.Request) bool {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return false
-	}
-	for _, token := range strings.Split(r.Header.Get("Connection"), ",") {
-		if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+	return headerHasToken(r.Header.Get("Upgrade"), "websocket") && headerHasToken(r.Header.Get("Connection"), "upgrade")
+}
+
+// headerHasToken reports whether a comma-separated header value lists the
+// token, case-insensitively. Both Upgrade and Connection are token lists
+// ("websocket, h2c"; "keep-alive, Upgrade"), so neither side is compared as
+// a whole string.
+func headerHasToken(value, want string) bool {
+	for _, token := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(token), want) {
 			return true
 		}
 	}
@@ -161,11 +169,12 @@ func isWebSocketHandshake(r *http.Request) bool {
 }
 
 // requestHost is the host the browser addressed, as far as it can be known.
-// This runs only for requests the trusted proxy vouched for, so the proxy's
-// X-Forwarded-Host is as trustworthy as its identity header and is the
-// browser's view even when the proxy rewrote Host on the way in. A proxy that
-// forwards neither leaves r.Host, which then must equal what the browser
-// sees — the docs say to preserve Host for that reason.
+// This runs only for requests the trusted proxy vouched for. X-Forwarded-Host
+// is preferred because it is the browser's view even when the proxy rewrote
+// Host on the way in — but only a proxy that SETS it (overwriting whatever
+// the client sent) makes it trustworthy; Traefik and Caddy do, nginx only
+// with an explicit proxy_set_header, and the docs say so. A proxy that sets
+// neither leaves r.Host, which then must equal what the browser sees.
 func requestHost(r *http.Request) string {
 	if h := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); h != "" {
 		// Comma-joined when several proxies appended; the first is the
@@ -176,4 +185,25 @@ func requestHost(r *http.Request) string {
 		return h
 	}
 	return r.Host
+}
+
+// crossSiteWarnEvery bounds how often a refusal is logged at Warn; refusals in
+// between are logged at Debug so a flood from one hostile page cannot fill
+// the log or the dashboard's log-history buffer.
+const crossSiteWarnEvery = 30 * time.Second
+
+var lastCrossSiteWarn atomic.Int64
+
+func logCrossSiteRefusal(r *http.Request) {
+	fields := []any{
+		"method", r.Method, "path", r.URL.Path,
+		"origin", r.Header.Get("Origin"), "host", requestHost(r), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"),
+	}
+	now := time.Now().UnixNano()
+	last := lastCrossSiteWarn.Load()
+	if now-last >= int64(crossSiteWarnEvery) && lastCrossSiteWarn.CompareAndSwap(last, now) {
+		logger.Warn("Trusted-proxy identity withheld: request did not look same-site (further refusals at Debug for 30s)", fields...)
+		return
+	}
+	logger.Debug("Trusted-proxy identity withheld: request did not look same-site", fields...)
 }
