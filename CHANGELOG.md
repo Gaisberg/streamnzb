@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.18.0](https://github.com/Gaisberg/streamnzb/compare/v5.17.0...v5.18.0) (2026-09-06)
+
+
+### Features
+
+* **filters:** carry attribute scoring in profile share codes ([1da3a85](https://github.com/Gaisberg/streamnzb/commit/1da3a85572a75bbcdda81fb9f9b48de8c859f6da)), closes [#267](https://github.com/Gaisberg/streamnzb/issues/267)
+
+
+### Bug Fixes
+
+* **health:** read a provider's 502 by its words, not its code ([7c0aea5](https://github.com/Gaisberg/streamnzb/commit/7c0aea50caeb436ca26321a6a6e9bd70d54f0e37))
+
 ## [5.17.0](https://github.com/Gaisberg/streamnzb/compare/v5.16.1...v5.17.0) (2026-09-04)
 
 
