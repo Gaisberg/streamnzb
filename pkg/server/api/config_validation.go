@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -427,8 +428,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 	if plan.validateTrustedProxyAuth {
 		if _, err := auth.NewProxyAuth(cfg.TrustedProxyAuthHeader, cfg.TrustedProxies); err != nil {
 			field := "trusted_proxies"
-			if strings.Contains(err.Error(), "trusted_proxy_auth_header") {
-				field = "trusted_proxy_auth_header"
+			var cfgErr *auth.ProxyConfigError
+			if goerrors.As(err, &cfgErr) {
+				field = cfgErr.Field
 			}
 			errors[field] = err.Error()
 		}

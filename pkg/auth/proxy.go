@@ -10,6 +10,24 @@ import (
 	"streamnzb/pkg/core/httpx"
 )
 
+// ProxyConfigError says which of the two settings a rejected configuration
+// fails on, so a settings page can point at the right field without parsing
+// the message.
+type ProxyConfigError struct {
+	Field string // "trusted_proxy_auth_header" or "trusted_proxies"
+	Msg   string
+}
+
+func (e *ProxyConfigError) Error() string { return e.Msg }
+
+func headerErr(format string, a ...any) error {
+	return &ProxyConfigError{Field: "trusted_proxy_auth_header", Msg: fmt.Sprintf(format, a...)}
+}
+
+func proxiesErr(format string, a ...any) error {
+	return &ProxyConfigError{Field: "trusted_proxies", Msg: fmt.Sprintf(format, a...)}
+}
+
 // headerTokenRE is an RFC 9110 field-name token. A header name outside it can
 // never be sent by a proxy, so accepting one would configure a gate that no
 // request can pass — the feature looks on and enforces nothing.
@@ -45,13 +63,13 @@ func NewProxyAuth(header string, proxies []string) (*ProxyAuth, error) {
 		return nil, nil
 	}
 	if header == "" {
-		return nil, fmt.Errorf("trusted_proxy_auth_header is empty: set the header the proxy sends (for example Remote-User), or clear trusted_proxies")
+		return nil, headerErr("trusted_proxy_auth_header is empty: set the header the proxy sends (for example Remote-User), or clear trusted_proxies")
 	}
 	if !headerTokenRE.MatchString(header) {
-		return nil, fmt.Errorf("trusted_proxy_auth_header %q is not a valid header name", header)
+		return nil, headerErr("trusted_proxy_auth_header %q is not a valid header name", header)
 	}
 	if len(proxies) == 0 {
-		return nil, fmt.Errorf("trusted_proxies is empty: list the proxy's address or network, or clear trusted_proxy_auth_header")
+		return nil, proxiesErr("trusted_proxies is empty: list the proxy's address or network, or clear trusted_proxy_auth_header")
 	}
 	nets, err := parseTrustedProxies(proxies)
 	if err != nil {
@@ -69,18 +87,18 @@ func parseTrustedProxies(proxies []string) ([]*net.IPNet, error) {
 	for _, raw := range proxies {
 		entry := strings.TrimSpace(raw)
 		if entry == "" {
-			return nil, fmt.Errorf("trusted_proxies has a blank entry")
+			return nil, proxiesErr("trusted_proxies has a blank entry")
 		}
 		if _, n, err := net.ParseCIDR(entry); err == nil {
 			if ones, _ := n.Mask.Size(); ones == 0 {
-				return nil, fmt.Errorf("trusted proxy %q would trust every address; list the proxy's network only", entry)
+				return nil, proxiesErr("trusted proxy %q would trust every address; list the proxy's network only", entry)
 			}
 			nets = append(nets, n)
 			continue
 		}
 		ip := net.ParseIP(entry)
 		if ip == nil {
-			return nil, fmt.Errorf("trusted proxy %q is neither a CIDR nor an IP address", entry)
+			return nil, proxiesErr("trusted proxy %q is neither a CIDR nor an IP address", entry)
 		}
 		bits := 32
 		if ip.To4() == nil {

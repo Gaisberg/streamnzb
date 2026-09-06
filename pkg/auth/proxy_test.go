@@ -10,7 +10,7 @@ func TestNewProxyAuthOffOnlyWhenBothEmpty(t *testing.T) {
 	if err != nil || p != nil {
 		t.Fatalf("both empty must mean off: %v %v", p, err)
 	}
-	if _, ok := p.Identify(httptest.NewRequest("GET", "/", nil)); ok {
+	if _, ok := p.Identify(httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)); ok {
 		t.Fatal("a nil ProxyAuth must never identify anyone")
 	}
 }
@@ -59,7 +59,7 @@ func TestProxyAuthIdentify(t *testing.T) {
 		{"neighbouring host of the single entry", "10.0.0.6:9", "maged", "", false},
 	}
 	for _, tc := range cases {
-		r := httptest.NewRequest("GET", "/api/auth/check", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/auth/check", nil)
 		r.RemoteAddr = tc.remote
 		if tc.header != "" {
 			r.Header.Set("Remote-User", tc.header)
@@ -76,7 +76,7 @@ func TestProxyAuthIdentify(t *testing.T) {
 // proxy is still an outsider.
 func TestProxyAuthIgnoresForwardedFor(t *testing.T) {
 	p, _ := NewProxyAuth("Remote-User", []string{"172.18.0.0/16"})
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 	r.RemoteAddr = "203.0.113.9:5555"
 	r.Header.Set("X-Forwarded-For", "172.18.0.7")
 	r.Header.Set("Remote-User", "maged")

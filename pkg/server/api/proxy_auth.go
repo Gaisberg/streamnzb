@@ -120,7 +120,13 @@ func proxyRequestIsSameSite(r *http.Request) bool {
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 		return false
 	}
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		// "null" is an opaque origin — a sandboxed frame or a redirect chain
+		// through another site — and older engines send it without any
+		// Sec-Fetch-Site to disambiguate. It is never our own page.
+		if origin == "null" {
+			return false
+		}
 		u, err := url.Parse(origin)
 		if err != nil || !strings.EqualFold(u.Host, r.Host) {
 			return false

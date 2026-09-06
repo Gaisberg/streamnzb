@@ -134,6 +134,9 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
+	// The answer names a person and can change the moment the proxy or the
+	// cookie says so; a cached copy would outlive both.
+	w.Header().Set("Cache-Control", "no-store")
 	stream, ok := auth.StreamFromContext(r)
 	cookiePresent := false
 	bearerPresent := false
