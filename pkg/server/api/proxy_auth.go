@@ -113,9 +113,15 @@ func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 // a browser's cross-site request — browsers always send Sec-Fetch-Site — and
 // is allowed, so scripts behind the proxy keep working.
 func proxyRequestIsSameSite(r *http.Request) bool {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
+	// A WebSocket handshake is a GET, but the socket it opens is readable by
+	// the page that opened it — WebSockets are not subject to CORS — and this
+	// one streams stats and log history the moment it connects. It gets the
+	// full check, not the safe-method exemption.
+	if !isWebSocketHandshake(r) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			return true
+		}
 	}
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 		return false
@@ -133,4 +139,18 @@ func proxyRequestIsSameSite(r *http.Request) bool {
 		}
 	}
 	return true
+}
+
+// isWebSocketHandshake reports whether the request asks to upgrade to a
+// WebSocket, which is the one GET whose response a cross-site page can read.
+func isWebSocketHandshake(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, token := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+			return true
+		}
+	}
+	return false
 }

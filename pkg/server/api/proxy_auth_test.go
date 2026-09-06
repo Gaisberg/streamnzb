@@ -207,3 +207,53 @@ func TestTrustedProxyAuthRefusesCrossSiteWrites(t *testing.T) {
 		t.Fatalf("GET is safe and must still be vouched for, got %d", rec.Code)
 	}
 }
+
+// A WebSocket handshake is a GET, but the socket it opens is readable
+// cross-site and streams stats and log history on connect. A cross-site
+// handshake must get no proxy identity, so /api/ws refuses it; a same-site
+// one is vouched for as before.
+func TestTrustedProxyAuthRefusesCrossSiteWebSocket(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	handshake := func(site, origin string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/ws", nil)
+		req.Host = "nzb.example.com"
+		req.RemoteAddr = "172.18.0.7:40000"
+		req.Header.Set("Remote-User", "maged")
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Sec-WebSocket-Version", "13")
+		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := handshake("cross-site", "https://evil.example"); code != http.StatusUnauthorized {
+		t.Fatalf("cross-site WebSocket handshake must be refused, got %d", code)
+	}
+	if code := handshake("", "https://evil.example"); code != http.StatusUnauthorized {
+		t.Fatalf("WebSocket handshake with a foreign Origin must be refused, got %d", code)
+	}
+	// Same-site: identity granted; the recorder cannot be hijacked, so the
+	// upgrade itself fails later, but not with 401.
+	if code := handshake("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized {
+		t.Fatalf("same-site WebSocket handshake must be vouched for, got 401")
+	}
+}
+
+func TestIsWebSocketHandshake(t *testing.T) {
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/ws", nil)
+	if isWebSocketHandshake(r) {
+		t.Fatal("plain GET is not a handshake")
+	}
+	r.Header.Set("Connection", "keep-alive, Upgrade")
+	r.Header.Set("Upgrade", "WebSocket")
+	if !isWebSocketHandshake(r) {
+		t.Fatal("Connection: keep-alive, Upgrade + Upgrade: WebSocket is a handshake")
+	}
+}
