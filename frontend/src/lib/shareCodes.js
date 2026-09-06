@@ -34,23 +34,24 @@ export const maxSharedNameLength = 200
 // that contract; the prefix ("SNZBP1") is the container's own version and
 // moves only if the transport itself changes.
 //
-// Two commitments the first bump must honour. The exporter stamps the lowest
-// version the payload actually needs — a profile using nothing the bump added
-// still travels as the old version, so a bump never cuts off profiles that
-// are compatible in fact. And an importer keeps reading every version it ever
-// understood: at the first bump the equality below becomes a range with a
-// per-version migration, never a new floor.
+// Two commitments every bump honours. The exporter stamps the lowest version
+// the payload actually needs — a profile using nothing the bump added still
+// travels as the old version, so a bump never cuts off profiles that are
+// compatible in fact. And an importer keeps reading every version it ever
+// understood: `version` is the newest this build reads, every marker from 1
+// up to it is accepted, and the carried version is returned so the kind can
+// migrate per version where a bump changed a meaning rather than adding a
+// field. A bump is never a new floor.
 //
 // The split below is why the marker helps at all: a version from the future
 // has to read as "update StreamNZB", not as a damaged code the user will only
-// re-paste, and that message must already be deployed when the first bump
-// ships.
+// re-paste.
 export function requireSchemaVersion(parsed, field, version, wrongKindMessage) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(wrongKindMessage)
   }
   const carried = parsed[field]
-  if (carried === version) return
+  if (Number.isInteger(carried) && carried >= 1 && carried <= version) return carried
   if (Number.isInteger(carried) && carried > version) {
     throw new Error(
       `The code was made by a newer StreamNZB (schema version ${carried}; this version reads ${version}). Update StreamNZB to import it.`)

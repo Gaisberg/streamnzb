@@ -150,6 +150,42 @@ now lets more through.
 A resolution you never want is a job for the preset (which does not offer it) or
 a rule (which rejects it and says so), not for the order.
 
+### Attribute scoring
+
+The NZB attribute scoring is the preset's: a **size target** per content kind
+(4K: 20 GB for films, 6 GB per episode; 1080p: 8 and 2.5; 720p: 4 and 1.2),
+worth **3000 points** at the target and tapering to nothing at zero and at twice
+it. It is the counterweight to source scoring — without it a 70 GB remux beats a
+20 GB encode by a margin nothing else can close.
+
+A profile can replace that whole map with its own: a `scoring` object on the
+profile, keyed by content kind with a `default` entry the kinds override field
+by field. There is no editor for it, so a map reaches a profile either by
+importing a share code that carries one, or through the same endpoint the
+dashboard saves with — `GET /api/config`, add the object to the profile, and
+`PUT /api/config` back with `{"filter_profiles": [...]}` carrying the whole
+list (profiles are replaced as a set, not merged by name). Both authenticate
+with the admin token that `POST /api/login` returns, as `Authorization: Bearer`,
+and both apply at once like any other save. Saving the profile from the editor
+afterwards keeps whatever map it has:
+
+```json
+"scoring": {
+  "default": { "age_fresh_days": 30, "age_weight": 100 },
+  "movie":   { "size_target_gb": 20, "size_weight": 500 },
+  "series":  { "size_target_gb": 6,  "size_weight": 500 }
+}
+```
+
+Each attribute pairs a target with a weight: `size_target_gb`/`size_weight`,
+`age_fresh_days`/`age_weight` (full points for a release posted just now,
+nothing at the fresh window), `grabs_target`/`grabs_weight` (logarithmic, so 1→10
+grabs reads like 10→100). A target without a weight, or a weight without a
+target, does nothing; weights may be negative to invert a preference; a zero
+means "inherit". Scoring fails open like the limits do — a release that reports
+no size, date or grab count is never docked for it. A profile carrying a map
+uses only that map: the preset's size scoring is not added underneath it.
+
 ## Binding a profile to a stream
 
 On the **Streams** page, each stream's **General** tab has a **Filter/Sorting**
@@ -190,10 +226,12 @@ groups, so those rules become testable too. See
 
 ## Sharing profiles
 
-**Export** turns the whole profile — preset and rules — into one `SNZBP1:`
-string. It survives a chat window: the code is picked out of any prose around
-it, smart-quote mangling is undone, and a code wrapped across lines is put back
-together.
+**Export** turns the whole profile — preset, rules, and its
+[attribute scoring](#attribute-scoring) map if it carries one — into one
+`SNZBP1:` string. It survives a chat window: the code is picked out of any prose
+around it, smart-quote mangling is undone, and a code wrapped across lines is
+put back together. NZB limits and the library bonus stay local; a share code
+does not carry them.
 
 **Import** takes that code and adds it as a new profile. It never overwrites an
 existing one; a name collision gets a numeric suffix. A code that arrives
@@ -243,6 +281,13 @@ understood, so a bump never orphans existing codes. Together they mean a
 higher marker is never a formality: it appears exactly when the profile truly
 depends on semantics the reader lacks.
 
+The filter-profile marker has moved once:
+
+| `streamnzb_profile` | Carries | Stamped when |
+|---|---|---|
+| 1 | name, preset, rules | the profile has no scoring map |
+| 2 | … plus `scoring` | the profile carries one — a version-1 importer would import it without the scoring and rank differently than its author meant |
+
 ### Remote profiles
 
 A profile can be imported **from a URL** instead of a paste: host a file that
@@ -262,22 +307,30 @@ until you confirm the diff. Updates merge **by rule name**:
   appended after the maintainer's rules;
 - a rule the maintainer deleted is removed, even if you had edited it.
 
+The [attribute scoring](#attribute-scoring) map follows upstream the way the
+preset does, as one change: the maintainer's map replaces yours whole, and a
+map the maintainer removed is removed — but only if the snapshot shows upstream
+once had one. A map you wrote into a profile whose maintainer never shipped one
+is yours, like a rule under a name upstream never used, and survives every
+refresh.
+
 The diff is also the picker: every line in it — each added, updated and removed
-rule, and the preset move — has a **checkbox**, ticked to start, and Apply
-takes only what is still ticked. Unticking one means "leave this as it is": an
-added rule is not taken, an updated rule keeps your version, and a refused
-deletion stays, appended after the maintainer's rules where your own rules
-live. Nothing about the refusal is stored — the snapshot kept is upstream in
-full, since that is what tells a rule you added from one the maintainer deleted
-— so a change you skip is offered again on the next refresh, and a deletion you
-refuse quietly becomes a rule of your own. Rules can lean on each other: skip
-a define that another rule matches by name and the reference is left dangling,
-which the save refuses with the unknown-name error rather than landing broken.
+rule, the preset move and the scoring change — has a **checkbox**, ticked to
+start, and Apply takes only what is still ticked. Unticking one means "leave
+this as it is": an added rule is not taken, an updated rule keeps your version,
+a refused deletion stays, appended after the maintainer's rules where your own
+rules live, and a declined scoring change keeps your map. Nothing about the
+refusal is stored — the snapshot kept is upstream in full, since that is what
+tells a rule you added from one the maintainer deleted — so a change you skip
+is offered again on the next refresh, and a deletion you refuse quietly becomes
+a rule of your own. Rules can lean on each other: skip a define that another
+rule matches by name and the reference is left dangling, which the save refuses
+with the unknown-name error rather than landing broken.
 
 The contract in one line: customize by adding your own rules; edits to
 upstream rules last until the next refresh. The profile's local name is also
 yours — a rename upstream is shown in the diff but never applied. Everything a
-share code does not carry (NZB limits, attribute scoring) stays untouched.
+share code does not carry (NZB limits, the library bonus) stays untouched.
 **Unlink** keeps the profile as it is and removes the connection.
 
 The trust model is deliberately narrow. Only `https://` URLs are accepted, the

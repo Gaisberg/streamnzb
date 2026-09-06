@@ -4,7 +4,7 @@
 // the trust model live in shareCodes.js; this module owns what is specific to
 // filter profiles — the merge-by-rule-name contract and its diff.
 
-import { DEFAULT_PRESET, resolveProfileShareCode, ruleKey, rulesToText } from "@/lib/profiles"
+import { DEFAULT_PRESET, resolveProfileShareCode, ruleKey, rulesToText, scoringToText } from "@/lib/profiles"
 import { fetchShareCodeText, resolveFetched, validateSourceUrl } from "@/lib/shareCodes"
 
 // fetchRemoteProfile is the whole of importing from a URL: validate, fetch,
@@ -24,9 +24,15 @@ export async function fetchRemoteProfile(rawUrl) {
 //   - a rule named only in the snapshot: the maintainer deleted it — gone,
 //     even if the user edited it, or it would linger as a phantom forever.
 //
+// The preset and the scoring map follow upstream. Scoring is one decision, not
+// a rule list: upstream's map replaces the local one whole, and a map the
+// maintainer dropped is dropped here too — but only when the snapshot shows
+// upstream once had one. A map upstream never carried can only be the user's
+// own, and stays.
+//
 // The contract in one line: customize by adding your own rules; edits to
 // upstream rules last until the next refresh. Everything a share code does not
-// carry — limits, scoring, the profile's local name — stays the user's.
+// carry — limits, the profile's local name — stays the user's.
 export function mergeUpstream(local, upstream, previousUpstream) {
   const upstreamRules = upstream.rules || []
   const upstreamKeys = new Set(upstreamRules.map((rule) => ruleKey(rule.name)))
@@ -41,14 +47,17 @@ export function mergeUpstream(local, upstream, previousUpstream) {
     if (upstreamKeys.has(key)) return false
     return !prevKeys || !prevKeys.has(key)
   })
-  return {
-    profile: {
-      ...local,
-      preset: upstream.preset || DEFAULT_PRESET,
-      rules: [...upstreamRules, ...keptLocal],
-    },
-    keptLocal,
+  const profile = {
+    ...local,
+    preset: upstream.preset || DEFAULT_PRESET,
+    rules: [...upstreamRules, ...keptLocal],
   }
+  const scoring = upstream.scoring || (previousUpstream?.scoring ? undefined : local.scoring)
+  // Set or absent, never undefined: a profile is compared to another by its
+  // keys, and an absent map is the shape the config stores.
+  if (scoring) profile.scoring = scoring
+  else delete profile.scoring
+  return { profile, keptLocal }
 }
 
 // diffLinkedProfiles is what the confirmation dialog shows: every rule the
@@ -82,12 +91,21 @@ export function diffLinkedProfiles(current, merged) {
   const preset = current.preset !== merged.preset
     ? { key: "preset", from: current.preset, to: merged.preset }
     : null
+  // Scoring is compared in its text form, the same way a rule is: two maps
+  // that read the same are the same, however their keys happen to be ordered.
+  // An empty side means the preset's own scoring.
+  const scoringBefore = scoringToText(current.scoring)
+  const scoringAfter = scoringToText(merged.scoring)
+  const scoring = scoringBefore !== scoringAfter
+    ? { key: "scoring", before: scoringBefore, after: scoringAfter }
+    : null
   return {
     changed,
     added,
     removed,
     preset,
-    empty: !changed.length && !added.length && !removed.length && !preset,
+    scoring,
+    empty: !changed.length && !added.length && !removed.length && !preset && !scoring,
   }
 }
 
@@ -96,13 +114,15 @@ export function diffLinkedProfiles(current, merged) {
 export function changeKeys(diff) {
   const entries = [...(diff.changed || []), ...(diff.added || []), ...(diff.removed || [])]
   if (diff.preset) entries.push(diff.preset)
+  if (diff.scoring) entries.push(diff.scoring)
   return entries.map((entry) => entry.key)
 }
 
 // applySelectedChanges narrows a merge to the changes the user ticked. An
 // unticked change leaves the profile as it is: an added rule is not taken, an
-// updated rule keeps the local version, and a refused removal stays — appended
-// after upstream's rules, where every rule of the user's own lives.
+// updated rule keeps the local version, a refused removal stays — appended
+// after upstream's rules, where every rule of the user's own lives — and an
+// unticked preset or scoring change keeps the local value.
 //
 // Nothing about the refusal is remembered. The stored snapshot is still the
 // upstream code in full, because it has to describe what upstream *is* for the
@@ -129,6 +149,10 @@ export function applySelectedChanges(current, merged, diff, selected) {
 
   const out = { ...merged, rules }
   if (diff.preset && !selected.has(diff.preset.key)) out.preset = current.preset
+  if (diff.scoring && !selected.has(diff.scoring.key)) {
+    if (current.scoring) out.scoring = current.scoring
+    else delete out.scoring
+  }
   return out
 }
 

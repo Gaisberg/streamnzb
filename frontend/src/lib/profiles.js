@@ -167,6 +167,31 @@ export const PRESETS = [
 
 export const DEFAULT_PRESET = "4k"
 
+// Attribute scoring: points for the NZB itself — size, age, grab count — on
+// top of what the title earns. The preset supplies it (a size target per
+// kind, worth 3000), and a profile may carry its own map to replace that:
+// keyed by content kind with a "default" entry the kinds override field by
+// field, mirroring ScoringConfig and ResolveScoring in
+// pkg/core/config/filterprofile.go. There is no editor for it; it is written
+// into the config by hand and travels in a share code, so what is known here
+// is the shape — enough to carry it faithfully and refuse what a newer
+// StreamNZB might add.
+const SCORING_KINDS = ["default", ...CONTENT_KINDS.map((kind) => kind.key)]
+
+// Each attribute pairs a target with a weight; a target with no weight, or a
+// weight with no target, is inert, and weights may be negative. The pairing is
+// the backend's business and is deliberately not checked here — an inert pair
+// fails open there, and refusing it at import would over-validate a profile
+// the server accepts.
+const SCORING_FIELDS = [
+  { key: "size_target_gb", integer: false },
+  { key: "size_weight", integer: true },
+  { key: "age_fresh_days", integer: true },
+  { key: "age_weight", integer: true },
+  { key: "grabs_target", integer: true },
+  { key: "grabs_weight", integer: true },
+]
+
 // matchesReleaseName builds the condition for the common case: a regular
 // expression applied to the whole release name. Mirrors MatchesReleaseName in
 // pkg/core/config/rules.go so a rule written here reads the same as one the
@@ -477,18 +502,44 @@ export function ruleGroupBy(rule) {
   return typeof rule?.group_by === "string" ? rule.group_by.trim() : ""
 }
 
-// PROFILE_SCHEMA_VERSION is the filter-profile payload's schema version — the
-// value of the streamnzb_profile marker. requireSchemaVersion in shareCodes.js
-// says when it moves and when it must not.
-export const PROFILE_SCHEMA_VERSION = 1
+// The filter-profile payload's schema versions — the value of the
+// streamnzb_profile marker. requireSchemaVersion in shareCodes.js says when
+// it moves and when it must not. Version 2 added the scoring map: a field a
+// version-1 importer accepts and silently drops, which is exactly the misread
+// a bump exists to prevent. The exporter stamps 1 for a profile that carries
+// no scoring, so those codes keep importing everywhere.
+const SCHEMA_VERSION_RULES = 1
+const SCHEMA_VERSION_SCORING = 2
+export const PROFILE_SCHEMA_VERSION = SCHEMA_VERSION_SCORING
 
-// exportedProfile is the form a profile travels in: a preset plus rules, with
-// only the fields that survive a round trip. It is what a share code carries,
-// and profileFromParsed is what reads it back — one shape, written and read in
-// one place each, because the two drifting apart is what broke sharing before.
+// exportedScoring is the scoring map as it travels: known kinds and known
+// fields only, zeros dropped because they mean "inherit" on the wire, and
+// nothing at all when nothing is left.
+function exportedScoring(scoring) {
+  if (!scoring || typeof scoring !== "object") return undefined
+  const out = {}
+  for (const kind of SCORING_KINDS) {
+    const entry = scoring[kind]
+    if (!entry || typeof entry !== "object") continue
+    const fields = {}
+    for (const { key } of SCORING_FIELDS) {
+      const value = entry[key]
+      if (typeof value === "number" && Number.isFinite(value) && value !== 0) fields[key] = value
+    }
+    if (Object.keys(fields).length) out[kind] = fields
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+// exportedProfile is the form a profile travels in: a preset plus rules, and
+// the scoring map when the profile has one, with only the fields that survive
+// a round trip. It is what a share code carries, and profileFromParsed is what
+// reads it back — one shape, written and read in one place each, because the
+// two drifting apart is what broke sharing before.
 function exportedProfile(profile) {
-  return {
-    streamnzb_profile: PROFILE_SCHEMA_VERSION,
+  const scoring = exportedScoring(profile.scoring)
+  const out = {
+    streamnzb_profile: scoring ? SCHEMA_VERSION_SCORING : SCHEMA_VERSION_RULES,
     name: (profile.name || "").trim(),
     preset: profile.preset || DEFAULT_PRESET,
     rules: (profile.rules || []).map((rule) => {
@@ -509,6 +560,8 @@ function exportedProfile(profile) {
       return out
     }),
   }
+  if (scoring) out.scoring = scoring
+  return out
 }
 
 // Filter profile share codes ride the shared container in shareCodes.js
@@ -554,11 +607,49 @@ function clip(value) {
   return `“${s.length > 40 ? `${s.slice(0, 40)}…` : s}”`
 }
 
+// scoringFromParsed reads the scoring map a share code carried, or undefined
+// when it carried none. The shape is checked as strictly as the rules are —
+// an unknown kind or field reads as "newer StreamNZB", a value of the wrong
+// type as damage — but not the meaning: which pairs are inert is the server's
+// call. Whole-number fields have to be integers Go can decode, and zero means
+// "inherit", so it is dropped like the exporter drops it.
+function scoringFromParsed(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("The profile's scoring is not an object.")
+  const out = {}
+  for (const [kind, entry] of Object.entries(raw)) {
+    if (!SCORING_KINDS.includes(kind)) {
+      throw new Error(`The profile scores a content kind this StreamNZB does not know (${clip(kind)}); it may need a newer StreamNZB.`)
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`The profile's scoring for ${kind} is not an object.`)
+    }
+    const fields = {}
+    for (const [key, value] of Object.entries(entry)) {
+      const field = SCORING_FIELDS.find((f) => f.key === key)
+      if (!field) {
+        throw new Error(`The profile's scoring for ${kind} has a field this StreamNZB does not know (${clip(key)}); it may need a newer StreamNZB.`)
+      }
+      const ok = field.integer ? Number.isSafeInteger(value) : (typeof value === "number" && Number.isFinite(value))
+      if (!ok) {
+        throw new Error(`The profile's scoring for ${kind} has a ${key} that is not a ${field.integer ? "whole " : ""}number.`)
+      }
+      if (value !== 0) fields[key] = value
+    }
+    if (Object.keys(fields).length) out[kind] = fields
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 // profileFromParsed reads what a share code carried. It is strict about the
 // shape and says which rule is wrong when one is: a code that arrives damaged
 // should fail loudly rather than import half a ruleset — and one whose parts
 // this version does not know should say "newer StreamNZB" rather than import
 // a profile that silently behaves differently than its author meant.
+//
+// Every schema version so far is read the same way: version 2 only added the
+// optional scoring map, so a version-1 payload is a version-2 payload without
+// one, and a scoring map is honoured whichever number the code carries.
 function profileFromParsed(parsed) {
   requireSchemaVersion(parsed, "streamnzb_profile", PROFILE_SCHEMA_VERSION,
     "The code does not contain a filter profile.")
@@ -620,7 +711,27 @@ function profileFromParsed(parsed) {
     return out
   })
 
-  return { name, preset, rules }
+  const profile = { name, preset, rules }
+  const scoring = scoringFromParsed(parsed.scoring)
+  if (scoring) profile.scoring = scoring
+  return profile
+}
+
+// scoringToText is the scoring map as lines, one per content kind, in the
+// field names the config uses — there is no editor vocabulary for these, and
+// the names are what a maintainer wrote. It is what the remote-profile diff
+// shows and compares, and empty for a profile that leaves scoring to its
+// preset.
+export function scoringToText(scoring) {
+  const exported = exportedScoring(scoring)
+  if (!exported) return ""
+  return SCORING_KINDS
+    .filter((kind) => exported[kind])
+    .map((kind) => `${kind}: ${SCORING_FIELDS
+      .filter(({ key }) => exported[kind][key] !== undefined)
+      .map(({ key }) => `${key} ${exported[kind][key]}`)
+      .join(", ")}`)
+    .join("\n")
 }
 
 // Rules as text.

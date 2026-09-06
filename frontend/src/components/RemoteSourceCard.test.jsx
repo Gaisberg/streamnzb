@@ -68,6 +68,36 @@ describe('RemoteSourceCard update dialog', () => {
     expect(screen.getByText(/Applied 1 of 2 changes/)).toBeTruthy()
   })
 
+  it('shows a scoring move as one checkbox and keeps the local map when it is unticked', async () => {
+    const onChange = vi.fn()
+    const mine = { movie: { size_target_gb: 25, size_weight: 800 } }
+    const theirs = { movie: { size_target_gb: 20, size_weight: 500 } }
+    const profile = {
+      name: 'Mine', preset: '4k', rules: [rule('Shared', 900)], scoring: mine,
+      source: { url: 'https://example.com/p.txt', code: 'SNZBP1:snapshot' },
+    }
+    const scored = { name: 'Community', preset: '4k', rules: [rule('Shared', 900)], scoring: theirs }
+    const { profile: merged, keptLocal } = mergeUpstream(profile, scored, { rules: [rule('Shared', 900)], scoring: mine })
+    checkForUpdate.mockResolvedValue({
+      status: 'update', code, merged, keptLocal, diff: diffLinkedProfiles(profile, merged), remoteName: scored.name,
+    })
+    render(<RemoteSourceCard profile={profile} onChange={onChange} />)
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
+    await screen.findByText('Attribute scoring')
+
+    expect(screen.getByText('- movie: size_target_gb 25, size_weight 800')).toBeTruthy()
+    expect(screen.getByText('+ movie: size_target_gb 20, size_weight 500')).toBeTruthy()
+    const boxes = screen.getAllByRole('checkbox')
+    expect(boxes).toHaveLength(1)
+
+    // Declining the only change disables Apply; taking it lands the map.
+    fireEvent.click(boxes[0])
+    expect(screen.getByRole('button', { name: /Apply/ }).disabled).toBe(true)
+    fireEvent.click(boxes[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Apply update' }))
+    expect(onChange.mock.calls[0][0].scoring).toEqual(theirs)
+  })
+
   it('will not apply an empty selection', async () => {
     const onChange = vi.fn()
     await openUpdate(onChange)

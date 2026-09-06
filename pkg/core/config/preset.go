@@ -192,8 +192,8 @@ var sizeTargetsGB = map[string]map[string]float64{
 const sizeWeight = 3000
 
 // PresetScoring is the NZB attribute scoring behind a preset, keyed by content
-// kind exactly like a profile's own would be. A profile carries no scoring of
-// its own — a rule is how you override this.
+// kind exactly like a profile's own. It applies to every profile whose Scoring
+// is nil; a profile that carries a map replaces it whole (see ranking.Compile).
 func PresetScoring(preset string) map[string]*ScoringConfig {
 	targets := sizeTargetsGB[NormalizePreset(preset)]
 	out := make(map[string]*ScoringConfig, len(targets))

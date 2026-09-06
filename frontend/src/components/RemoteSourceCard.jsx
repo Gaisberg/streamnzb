@@ -55,8 +55,28 @@ function DiffLines({ label, entries, tone, selection }) {
   )
 }
 
+// ScoringChange is the attribute-scoring move as one decision: the map is
+// replaced whole, so it gets one checkbox, shown as the config's own field
+// names on either side. An empty side is the preset's scoring, which is what a
+// profile has when it carries none.
+function ScoringChange({ change, selection }) {
+  const lines = (text) => (text ? text.split("\n") : ["(the preset's own scoring)"])
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground">Attribute scoring</p>
+      <div className="overflow-x-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
+        <ChangeRow entryKey={change.key} {...selection}>
+          {lines(change.before).map((line, i) => <div key={`b${i}`} className="text-destructive">- {line}</div>)}
+          {lines(change.after).map((line, i) => <div key={`a${i}`} className="text-emerald-600 dark:text-emerald-500">+ {line}</div>)}
+        </ChangeRow>
+      </div>
+    </div>
+  )
+}
+
 // The filter diff is rule-shaped: updated, added, removed, and the rules the
-// merge kept because they are the user's own.
+// merge kept because they are the user's own — plus the preset and scoring
+// moves, which are each one decision.
 function FilterDiff({ pending, selection }) {
   const diff = pending.diff
   return (
@@ -68,6 +88,7 @@ function FilterDiff({ pending, selection }) {
           </ChangeRow>
         </div>
       )}
+      {diff?.scoring && <ScoringChange change={diff.scoring} selection={selection} />}
       {diff?.changed.length > 0 && (
         <div className="space-y-1">
           <p className="text-xs font-medium text-muted-foreground">Updated</p>

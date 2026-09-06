@@ -68,6 +68,31 @@ describe('mergeUpstream', () => {
     expect(profile.rules).toEqual([rule('Shared', 5)])
     expect(keptLocal).toEqual([])
   })
+
+  // Scoring follows upstream like the preset does, as one map — with the
+  // snapshot deciding whether a map upstream lacks was dropped or never there.
+  describe('scoring', () => {
+    const theirs = { movie: { size_target_gb: 20, size_weight: 500 } }
+    const mine = { movie: { size_target_gb: 25, size_weight: 800 } }
+    const base = { name: 'Mine', preset: '4k', rules: [] }
+
+    it('replaces the local map with upstream\'s, local edits and all', () => {
+      const { profile } = mergeUpstream({ ...base, scoring: mine }, { ...base, scoring: theirs }, { rules: [], scoring: mine })
+      expect(profile.scoring).toEqual(theirs)
+    })
+
+    it('drops a map the maintainer removed', () => {
+      const { profile } = mergeUpstream({ ...base, scoring: theirs }, base, { rules: [], scoring: theirs })
+      expect('scoring' in profile).toBe(false)
+    })
+
+    it('keeps a map upstream never carried, with or without a snapshot', () => {
+      // Hand-written scoring on a linked profile is the user's own, exactly
+      // like a rule under a name upstream never used.
+      expect(mergeUpstream({ ...base, scoring: mine }, base, { rules: [] }).profile.scoring).toEqual(mine)
+      expect(mergeUpstream({ ...base, scoring: mine }, base, null).profile.scoring).toEqual(mine)
+    })
+  })
 })
 
 describe('diffLinkedProfiles', () => {
@@ -92,6 +117,18 @@ describe('diffLinkedProfiles', () => {
   it('is empty when nothing would change', () => {
     const profile = { name: 'Mine', preset: '4k', rules: [rule('Same')] }
     expect(diffLinkedProfiles(profile, { ...profile }).empty).toBe(true)
+  })
+
+  it('reports a scoring move as one decision, in text', () => {
+    const current = { name: 'Mine', preset: '4k', rules: [] }
+    const merged = { ...current, scoring: { movie: { size_target_gb: 20, size_weight: 500 } } }
+    const diff = diffLinkedProfiles(current, merged)
+    expect(diff.scoring).toEqual({ key: 'scoring', before: '', after: 'movie: size_target_gb 20, size_weight 500' })
+    expect(diff.empty).toBe(false)
+    expect(changeKeys(diff)).toEqual(['scoring'])
+    // Same map, different key order: nothing to decide.
+    const reordered = { ...merged, scoring: { movie: { size_weight: 500, size_target_gb: 20 } } }
+    expect(diffLinkedProfiles(merged, reordered).empty).toBe(true)
   })
 })
 
@@ -121,6 +158,23 @@ describe('applySelectedChanges', () => {
     const applied = applySelectedChanges(current, merged, diff, new Set(['add:fresh', 'preset']))
     expect(applied.rules).toEqual([rule('Edited', 1), rule('Fresh'), rule('My own', 7), rule('Gone')])
     expect(applied.preset).toBe('1080p')
+  })
+
+  it('keeps the local scoring when the scoring change is unticked', () => {
+    const theirs = { movie: { size_target_gb: 20, size_weight: 500 } }
+    const mine = { movie: { size_target_gb: 25, size_weight: 800 } }
+    const scoredMerge = { ...merged, scoring: theirs }
+    // Declined: an edited local map stays, and an absent one stays absent.
+    const withMine = { ...current, scoring: mine }
+    let diff = diffLinkedProfiles(withMine, scoredMerge)
+    expect(applySelectedChanges(withMine, scoredMerge, diff, new Set()).scoring).toEqual(mine)
+    diff = diffLinkedProfiles(current, scoredMerge)
+    expect('scoring' in applySelectedChanges(current, scoredMerge, diff, new Set())).toBe(false)
+    // Taken on its own: the map lands and nothing else moves.
+    const applied = applySelectedChanges(current, scoredMerge, diff, new Set(['scoring']))
+    expect(applied.scoring).toEqual(theirs)
+    expect(applied.preset).toBe('4k')
+    expect(applied.rules).toEqual([rule('Edited', 1), rule('My own', 7), rule('Gone')])
   })
 
   it('leaves a diff without a preset move alone', () => {

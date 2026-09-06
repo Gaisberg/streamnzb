@@ -162,9 +162,9 @@ func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Prof
 	if err != nil {
 		return nil, err
 	}
-	// Size scoring comes from the preset. A profile only carries its own on a
-	// config that predates presets, and the migration clears it once the
-	// preset owns it.
+	// Attribute scoring comes from the preset unless the profile carries its
+	// own map, which replaces the preset's whole. There is no editor for it: a
+	// map is written into the config by hand or arrives in a share code.
 	scoring := fp.Scoring
 	if scoring == nil {
 		scoring = config.PresetScoring(fp.Preset)
