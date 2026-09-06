@@ -36,6 +36,8 @@ const (
 	ProviderHeaderEnv                  = "PROVIDER_HEADER"
 	StreamNZBIndexerQueryHeaderEnv     = "STREAMNZB_INDEXER_QUERY_HEADER"
 	StreamNZBIndexerGrabHeaderEnv      = "STREAMNZB_INDEXER_GRAB_HEADER"
+	StreamNZBIndexerSeriesHeaderEnv    = "STREAMNZB_INDEXER_SERIES_HEADER"
+	StreamNZBIndexerMovieHeaderEnv     = "STREAMNZB_INDEXER_MOVIE_HEADER"
 	StreamNZBProviderHeaderEnv         = "STREAMNZB_PROVIDER_HEADER"
 	ConfigPath                         = "CONFIG_PATH"
 	DatabaseDriverEnv                  = "DATABASE_DRIVER"
@@ -56,32 +58,34 @@ const (
 )
 
 const (
-	KeyAddonPort          = "addon_port"
-	KeyAddonBaseURL       = "addon_base_url"
-	KeyLogLevel           = "log_level"
-	KeyKeepLogFiles       = "keep_log_files"
-	KeyProxyPort          = "proxy_port"
-	KeyProxyHost          = "proxy_host"
-	KeyProxyEnabled       = "proxy_enabled"
-	KeyProxyAuthUser      = "proxy_auth_user"
-	KeyProxyAuthPass      = "proxy_auth_pass"
-	KeyNewznabEnabled     = "newznab_enabled"
-	KeyNewznabAPIKey      = "newznab_api_key"
-	KeyProviders          = "providers"
-	KeyIndexers           = "indexers"
-	KeyAvailNZBURL        = "availnzb_url"
-	KeyAvailNZBAPIKey     = "availnzb_api_key"
-	KeyTMDBAPIKey         = "tmdb_api_key"
-	KeyTVDBAPIKey         = "tvdb_api_key"
-	KeySimklClientID      = "simkl_client_id"
-	KeyMetadataEnabled    = "metadata_enabled"
-	KeyIndexerQueryHeader = "indexer_query_header"
-	KeyIndexerGrabHeader  = "indexer_grab_header"
-	KeyProviderHeader     = "provider_header"
-	KeyAdminUsername      = "admin_username"
-	KeyAdminMustChangePwd = "admin_must_change_password"
-	KeyDatabaseDriver     = "database_driver"
-	KeyDatabaseURL        = "database_url"
+	KeyAddonPort           = "addon_port"
+	KeyAddonBaseURL        = "addon_base_url"
+	KeyLogLevel            = "log_level"
+	KeyKeepLogFiles        = "keep_log_files"
+	KeyProxyPort           = "proxy_port"
+	KeyProxyHost           = "proxy_host"
+	KeyProxyEnabled        = "proxy_enabled"
+	KeyProxyAuthUser       = "proxy_auth_user"
+	KeyProxyAuthPass       = "proxy_auth_pass"
+	KeyNewznabEnabled      = "newznab_enabled"
+	KeyNewznabAPIKey       = "newznab_api_key"
+	KeyProviders           = "providers"
+	KeyIndexers            = "indexers"
+	KeyAvailNZBURL         = "availnzb_url"
+	KeyAvailNZBAPIKey      = "availnzb_api_key"
+	KeyTMDBAPIKey          = "tmdb_api_key"
+	KeyTVDBAPIKey          = "tvdb_api_key"
+	KeySimklClientID       = "simkl_client_id"
+	KeyMetadataEnabled     = "metadata_enabled"
+	KeyIndexerQueryHeader  = "indexer_query_header"
+	KeyIndexerGrabHeader   = "indexer_grab_header"
+	KeyIndexerSeriesHeader = "indexer_series_header"
+	KeyIndexerMovieHeader  = "indexer_movie_header"
+	KeyProviderHeader      = "provider_header"
+	KeyAdminUsername       = "admin_username"
+	KeyAdminMustChangePwd  = "admin_must_change_password"
+	KeyDatabaseDriver      = "database_driver"
+	KeyDatabaseURL         = "database_url"
 )
 
 const AdminUsernameEnv = "ADMIN_USERNAME"
@@ -91,6 +95,8 @@ var DefaultIndexerUserAgent = "StreamNZB/dev"
 var runtimeHeadersMu sync.RWMutex
 var runtimeIndexerQueryHeader = ""
 var runtimeIndexerGrabHeader = ""
+var runtimeIndexerSeriesHeader = ""
+var runtimeIndexerMovieHeader = ""
 var runtimeProviderHeader = ""
 
 func TZ() string {
@@ -148,6 +154,59 @@ func SetRuntimeHeaders(indexerQueryHeader, indexerGrabHeader, providerHeader str
 	runtimeIndexerQueryHeader = strings.TrimSpace(indexerQueryHeader)
 	runtimeIndexerGrabHeader = strings.TrimSpace(indexerGrabHeader)
 	runtimeProviderHeader = strings.TrimSpace(providerHeader)
+}
+
+// SetRuntimeMediaHeaders stores the per-media User-Agents from config. Either
+// may be empty, which means that kind of content keeps using the plain
+// query/grab headers.
+func SetRuntimeMediaHeaders(seriesHeader, movieHeader string) {
+	runtimeHeadersMu.Lock()
+	defer runtimeHeadersMu.Unlock()
+	runtimeIndexerSeriesHeader = strings.TrimSpace(seriesHeader)
+	runtimeIndexerMovieHeader = strings.TrimSpace(movieHeader)
+}
+
+// IndexerSeriesHeader and IndexerMovieHeader are the User-Agents presented
+// for series and film traffic respectively, environment first, then config.
+// Empty means unset.
+func IndexerSeriesHeader() string {
+	if v := os.Getenv(StreamNZBIndexerSeriesHeaderEnv); v != "" {
+		return v
+	}
+	runtimeHeadersMu.RLock()
+	defer runtimeHeadersMu.RUnlock()
+	return runtimeIndexerSeriesHeader
+}
+
+func IndexerMovieHeader() string {
+	if v := os.Getenv(StreamNZBIndexerMovieHeaderEnv); v != "" {
+		return v
+	}
+	runtimeHeadersMu.RLock()
+	defer runtimeHeadersMu.RUnlock()
+	return runtimeIndexerMovieHeader
+}
+
+// IndexerHeaderFor is the User-Agent for one request to an indexer. A
+// per-media header, when set for the request's class, is used for both the
+// search and the NZB download — that is how Sonarr and Radarr behave, each
+// searching and fetching under its own name. Without one, the plain query or
+// grab header applies as before.
+func IndexerHeaderFor(mediaClass string, grab bool) string {
+	switch mediaClass {
+	case "series":
+		if h := IndexerSeriesHeader(); h != "" {
+			return h
+		}
+	case "movie":
+		if h := IndexerMovieHeader(); h != "" {
+			return h
+		}
+	}
+	if grab {
+		return IndexerGrabHeader()
+	}
+	return IndexerQueryHeader()
 }
 
 func LogLevel() string {
@@ -391,32 +450,34 @@ type Indexer struct {
 }
 
 type ConfigOverrides struct {
-	AddonPort          int
-	AddonBaseURL       string
-	LogLevel           string
-	KeepLogFiles       int
-	AvailNZBURL        string
-	AvailNZBAPIKey     string
-	TMDBAPIKey         string
-	TVDBAPIKey         string
-	SimklClientID      string
-	IndexerQueryHeader string
-	IndexerGrabHeader  string
-	ProviderHeader     string
-	ProxyPort          int
-	ProxyHost          string
-	ProxyEnabled       bool
-	ProxyAuthUser      string
-	ProxyAuthPass      string
-	NewznabEnabled     bool
-	NewznabAPIKey      string
-	AdminUsername      string
-	AdminMustChangePwd bool
-	DatabaseDriver     string
-	DatabaseURL        string
-	MetadataEnabled    bool
-	Providers          []Provider
-	Indexers           []Indexer
+	AddonPort           int
+	AddonBaseURL        string
+	LogLevel            string
+	KeepLogFiles        int
+	AvailNZBURL         string
+	AvailNZBAPIKey      string
+	TMDBAPIKey          string
+	TVDBAPIKey          string
+	SimklClientID       string
+	IndexerQueryHeader  string
+	IndexerGrabHeader   string
+	IndexerSeriesHeader string
+	IndexerMovieHeader  string
+	ProviderHeader      string
+	ProxyPort           int
+	ProxyHost           string
+	ProxyEnabled        bool
+	ProxyAuthUser       string
+	ProxyAuthPass       string
+	NewznabEnabled      bool
+	NewznabAPIKey       string
+	AdminUsername       string
+	AdminMustChangePwd  bool
+	DatabaseDriver      string
+	DatabaseURL         string
+	MetadataEnabled     bool
+	Providers           []Provider
+	Indexers            []Indexer
 }
 
 // envReader accumulates config overrides read from the environment, tracking
@@ -471,6 +532,8 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	}
 	r.str(&o.IndexerQueryHeader, KeyIndexerQueryHeader, StreamNZBIndexerQueryHeaderEnv, IndexerQueryHeaderEnv)
 	r.str(&o.IndexerGrabHeader, KeyIndexerGrabHeader, StreamNZBIndexerGrabHeaderEnv, IndexerGrabHeaderEnv)
+	r.str(&o.IndexerSeriesHeader, KeyIndexerSeriesHeader, StreamNZBIndexerSeriesHeaderEnv)
+	r.str(&o.IndexerMovieHeader, KeyIndexerMovieHeader, StreamNZBIndexerMovieHeaderEnv)
 	r.str(&o.ProviderHeader, KeyProviderHeader, StreamNZBProviderHeaderEnv, ProviderHeaderEnv)
 	r.intVal(&o.ProxyPort, KeyProxyPort, NNTPProxyPort, nil)
 	r.str(&o.ProxyHost, KeyProxyHost, NNTPProxyHost)

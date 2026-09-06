@@ -1298,6 +1298,7 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		segmentFetcher := s.segmentFetcher
 		itemTitle := ""
 		indexerName := ""
+		contentType := s.ContentType
 		if s.rel != nil {
 			itemTitle = s.rel.Title
 			indexerName = s.rel.Indexer
@@ -1313,7 +1314,9 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		s.mu.Unlock()
 
 		go func() {
-			downloadCtx, cancel := context.WithTimeout(sessionFileCtx, 60*time.Second)
+			// The class the play is about, so the download presents the same
+			// identity the search did (Sonarr for a series, Radarr for a film).
+			downloadCtx, cancel := context.WithTimeout(indexer.WithMediaClass(sessionFileCtx, contentType), 60*time.Second)
 			defer cancel()
 
 			var data []byte

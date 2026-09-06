@@ -111,7 +111,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, function s
 
 	base := s.baseURL(r)
 	result := newFeed(s.selfURL(r), base, offset)
-	result.Channel.Items = buildFeedItems(items, linkerFor(s.grabSecret(), base, s.apiKey()))
+	result.Channel.Items = buildFeedItems(items, linkerFor(s.grabSecret(), base, s.apiKey(), req.Class))
 	// Newznab's total is the size of the whole result set. A fan-out cannot
 	// know that, and overstating it makes clients page into nothing, so it
 	// reports what has actually been served up to this page.

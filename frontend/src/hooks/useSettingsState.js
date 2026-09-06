@@ -7,6 +7,8 @@ const GENERAL_TAB_FIELDS = [
   'addon_base_url',
   'indexer_query_header',
   'indexer_grab_header',
+  'indexer_series_header',
+  'indexer_movie_header',
   'provider_header',
   'database_driver',
   'database_url',
