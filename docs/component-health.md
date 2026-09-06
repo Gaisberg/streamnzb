@@ -4,7 +4,7 @@ An indexer or provider being **enabled** says what you asked for. It does not sa
 
 StreamNZB tracks a second, separate fact for every configured indexer and provider: whether it is actually usable right now. It is never written back into your configuration — your switch stays yours — and it appears in three places:
 
-- **Dashboard** — inside the affected provider or indexer card in the *Usenet Providers* / *Indexers* sections: the status dot turns red (blocked) or amber (degraded) and a notice underneath names the reason, with **Check again** right there for blocked components.
+- **Dashboard** — inside the affected provider or indexer card in the *Usenet Providers* / *Indexers* sections: the status dot turns red (blocked) or amber (degraded) and a notice underneath names the reason and quotes the server's own line, with **Check again** right there for blocked components.
 - **Settings → Indexers / Providers** — a badge on the affected card, next to the status dot.
 - **Live** — state changes are pushed to the open UI, so a subscription that lapses mid-session appears where you are already looking.
 
@@ -22,10 +22,13 @@ Only a definitive rejection. Timeouts, 5xx responses, connection resets and rate
 
 | Reason | Raised when |
 |---|---|
-| `auth_failed` | An indexer answers a newznab `1xx` error code or HTTP 401; a provider rejects AUTHINFO with 481/482. |
+| `auth_failed` | An indexer answers a newznab `1xx` error code or HTTP 401; a provider rejects AUTHINFO with 481/482, or with a 502 whose text is about the account (`502 "Authentication Failed"` is what Eweka says for a lapsed subscription). |
 | `quota_exhausted` | The configured daily API-hit or NZB-download budget is spent. Degraded, not blocked. |
 | `throttled` | The indexer returned 429/503 and we are inside the cooldown. Degraded, not blocked. |
-| `connection_limit` | The provider answered 502 for another connection. Your account allows fewer connections than are configured — lower the count for that provider. Degraded, not blocked. |
+| `connection_limit` | The provider refused a connection and said so in words — "too many connections", "connection limit". Your account allows fewer connections than are configured — lower the count for that provider. Degraded, not blocked. |
+| `login_refused` | The provider answered 502 without naming either the account or the connection count. Degraded, not blocked; the server's own line is shown so you can read what we could not. |
+
+A provider's `502` is the ambiguous one: it is the pre-RFC 4643 code for a rejected login *and* what many servers answer when the account is out of connections. The code alone never decides — the words after it do, and they are shown under the notice in every case.
 
 ## When it is noticed
 

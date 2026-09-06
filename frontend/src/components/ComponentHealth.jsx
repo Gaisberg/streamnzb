@@ -111,6 +111,11 @@ export function ComponentHealthNotice({ record, onRefresh }) {
         )}
       </div>
       {hint ? <div className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{hint}</div> : null}
+      {/* The server's own line. It is the one thing here that is not our
+          interpretation, so when the label is wrong this is what says so. */}
+      {record.detail ? (
+        <div className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{record.detail}</div>
+      ) : null}
     </div>
   )
 }

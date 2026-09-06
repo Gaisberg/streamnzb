@@ -26,6 +26,10 @@ const REASON_COPY = {
     label: 'Connection limit hit',
     hint: 'The account allows fewer connections than are configured. Lower the connection count for this provider.',
   },
+  login_refused: {
+    label: 'Login refused',
+    hint: 'The provider turned the login away without saying whether the account or the connection count is the problem. Its exact words are below.',
+  },
 }
 
 export function healthReasonLabel(reason) {

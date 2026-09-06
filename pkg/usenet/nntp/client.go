@@ -333,8 +333,8 @@ func (c *Client) Reconnect() error {
 
 	conn, tp, err := dialNNTP(c.host, c.port, c.ssl)
 	if err != nil {
-		if c.pool != nil && IsConnectionLimit(err) {
-			c.pool.reportConnLimit(err)
+		if c.pool != nil {
+			c.pool.reportGreeting(err)
 		}
 		return err
 	}

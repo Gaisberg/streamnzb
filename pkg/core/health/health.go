@@ -55,6 +55,10 @@ const (
 	ReasonQuotaExhausted  = "quota_exhausted"
 	ReasonThrottled       = "throttled"
 	ReasonConnectionLimit = "connection_limit"
+	// ReasonLoginRefused is a provider's 502 that said neither "too many
+	// connections" nor anything about the account — degraded, never blocked,
+	// with the server's own words as the detail.
+	ReasonLoginRefused = "login_refused"
 )
 
 // Probe backoff. A blocked component is re-checked on a schedule so a renewed

@@ -178,9 +178,7 @@ func (p *ClientPool) dial(target dialTarget, budget *connBudget, generation uint
 		// one exception worth recording is a 502 greeting — providers answer it
 		// when the account is already at its connection limit, which is a
 		// self-healing degraded state, not an outage.
-		if IsConnectionLimit(err) {
-			p.reportConnLimit(err)
-		}
+		p.reportGreeting(err)
 		return nil, err
 	}
 	c.SetPool(p)
@@ -227,18 +225,31 @@ func (p *ClientPool) closeClient(c *Client) {
 	}
 }
 
-// reportConnLimit records a connection-limit refusal seen at the greeting.
-func (p *ClientPool) reportConnLimit(err error) {
+// reportGreeting records what a refused greeting said about the account. The
+// server has not seen credentials yet, so nothing here can block: a
+// connection-limit refusal degrades with the fix named, and any other 502 is
+// surfaced with the server's own words.
+func (p *ClientPool) reportGreeting(err error) {
 	p.mu.Lock()
 	name := p.providerName
 	p.mu.Unlock()
 	if name == "" {
 		return
 	}
-	health.Global().Report(health.KindProvider, name, health.StateDegraded, health.ReasonConnectionLimit, err.Error())
+	reg := health.Global()
+	switch {
+	case IsConnectionLimit(err):
+		reg.Report(health.KindProvider, name, health.StateDegraded, health.ReasonConnectionLimit, err.Error())
+	case IsLoginRefused(err):
+		reg.Report(health.KindProvider, name, health.StateDegraded, health.ReasonLoginRefused, err.Error())
+	}
 }
 
 // reportAuthResult translates an AUTHINFO outcome into a health verdict.
+//
+// The connection-limit check runs before the credential check because a 502
+// can carry either meaning and only its text tells them apart; a 502 whose
+// text says neither is recorded as refused rather than guessed at.
 func (p *ClientPool) reportAuthResult(err error) {
 	p.mu.Lock()
 	name := p.providerName
@@ -250,10 +261,12 @@ func (p *ClientPool) reportAuthResult(err error) {
 	switch {
 	case err == nil:
 		reg.MarkOK(health.KindProvider, name)
-	case IsAuthFailure(err):
-		reg.Report(health.KindProvider, name, health.StateBlocked, health.ReasonAuthFailed, err.Error())
 	case IsConnectionLimit(err):
 		reg.Report(health.KindProvider, name, health.StateDegraded, health.ReasonConnectionLimit, err.Error())
+	case IsAuthFailure(err):
+		reg.Report(health.KindProvider, name, health.StateBlocked, health.ReasonAuthFailed, err.Error())
+	case IsLoginRefused(err):
+		reg.Report(health.KindProvider, name, health.StateDegraded, health.ReasonLoginRefused, err.Error())
 	}
 }
 

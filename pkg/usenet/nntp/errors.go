@@ -90,6 +90,40 @@ func LeavesConnectionInSync(err error) bool {
 	return errors.As(err, &tpErr)
 }
 
+// statusCode extracts the NNTP status code from err, if it still carries one.
+func statusCode(err error) (int, bool) {
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		return tpErr.Code, true
+	}
+	return 0, false
+}
+
+func containsAny(msg string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsConnectionLimit reports whether the server's own words say the
+// account is out of connections, whatever code carried them.
+func mentionsConnectionLimit(msg string) bool {
+	return containsAny(strings.ToLower(msg),
+		"too many connections", "connection limit", "connections exceeded",
+		"maximum connections", "max connections", "maximum number of connections")
+}
+
+// mentionsCredentials reports whether the server's own words are about the
+// account rather than the connection count.
+func mentionsCredentials(msg string) bool {
+	return containsAny(strings.ToLower(msg),
+		"auth", "denied", "password", "login", "credential", "permission",
+		"unauthorized", "expired", "suspended", "disabled", "inactive", "account")
+}
+
 // IsAuthFailure reports whether err is the server rejecting our credentials.
 //
 // 481 is "authentication failed/rejected" and 482 "authentication commands
@@ -99,17 +133,22 @@ func LeavesConnectionInSync(err error) bool {
 // would say something else entirely, and a verdict on the account is exactly
 // the kind of thing that must not be inferred loosely.
 //
-// 502 is deliberately excluded: providers answer it both for "permission
-// denied" and for "too many connections", and the second is a plan mismatch
-// the user fixes by lowering the connection count, not a dead account. See
-// IsConnectionLimit.
+// 502 is the code authentication failures wore before RFC 4643, and plenty of
+// providers still answer it — Eweka says `502 "Authentication Failed"` for a
+// lapsed subscription. The same code also means "too many connections" on
+// other servers, so for 502 the verdict rests on the words after the code: it
+// is a credential failure only when the text talks about the account and not
+// about connections. A 502 that says neither is IsLoginRefused, not this.
 func IsAuthFailure(err error) bool {
-	if err == nil {
+	code, ok := statusCode(err)
+	if !ok {
 		return false
 	}
-	var tpErr *textproto.Error
-	if errors.As(err, &tpErr) {
-		return tpErr.Code == 481 || tpErr.Code == 482
+	switch code {
+	case 481, 482:
+		return true
+	case 502:
+		return !IsConnectionLimit(err) && mentionsCredentials(err.Error())
 	}
 	return false
 }
@@ -119,16 +158,22 @@ func IsAuthFailure(err error) bool {
 //
 // This is not credential death — the account works, we simply asked for more
 // connections than the plan allows — so it surfaces as a degraded state that
-// names the fix rather than parking the provider.
+// names the fix rather than parking the provider. The code alone cannot make
+// that call (502 doubles as an authentication failure, and some servers use
+// 400), so only the server's text does.
 func IsConnectionLimit(err error) bool {
 	if err == nil {
 		return false
 	}
-	var tpErr *textproto.Error
-	if errors.As(err, &tpErr) && tpErr.Code == 502 {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "too many connections") ||
-		strings.Contains(msg, "connection limit")
+	return mentionsConnectionLimit(err.Error())
+}
+
+// IsLoginRefused reports whether err is a 502 the server gave no usable
+// explanation for: it named neither the connection count nor the account.
+// Such a refusal cannot block — parking a provider on a guess is exactly what
+// the fail-open rule forbids — but it is worth surfacing with the server's
+// own words so the user can read what we could not.
+func IsLoginRefused(err error) bool {
+	code, ok := statusCode(err)
+	return ok && code == 502 && !IsConnectionLimit(err) && !IsAuthFailure(err)
 }

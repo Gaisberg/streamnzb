@@ -16,9 +16,11 @@ import (
 // fakeNNTPListener speaks the same dialect as tools/fake-nntp, on loopback so
 // Windows never raises a firewall prompt for the test binary.
 //
-//	mode "accept":     AUTHINFO USER/PASS with pass "good" succeeds
-//	mode "reject":     every AUTHINFO PASS answers 481
-//	mode "conn-limit": the greeting itself answers 502
+//	mode "accept":      AUTHINFO USER/PASS with pass "good" succeeds
+//	mode "reject":      every AUTHINFO PASS answers 481
+//	mode "expired":     every AUTHINFO PASS answers Eweka's lapsed-account 502
+//	mode "unexplained": every AUTHINFO PASS answers a 502 that says nothing useful
+//	mode "conn-limit":  the greeting itself answers 502
 func fakeNNTPListener(t *testing.T, mode string) (host string, port int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -48,9 +50,14 @@ func fakeNNTPListener(t *testing.T, mode string) (host string, port int) {
 					case strings.HasPrefix(line, "AUTHINFO USER"):
 						say("381 password required")
 					case strings.HasPrefix(line, "AUTHINFO PASS"):
-						if mode == "reject" || !strings.HasSuffix(line, "GOOD") {
+						switch {
+						case mode == "expired":
+							say(`502 "Authentication Failed"`)
+						case mode == "unexplained":
+							say("502 Service refused")
+						case mode == "reject" || !strings.HasSuffix(line, "GOOD"):
 							say("481 authentication failed")
-						} else {
+						default:
 							say("281 welcome")
 						}
 					case line == "QUIT":
@@ -139,5 +146,60 @@ func TestPoolDialRecordsConnectionLimitGreeting(t *testing.T) {
 	}
 	if reg.Blocked(health.KindProvider, "capped-provider") {
 		t.Fatal("a connection limit must never block the provider")
+	}
+}
+
+// TestPoolDialBlocksOn502AuthenticationFailed pins the Eweka case: a lapsed
+// subscription answers AUTHINFO with 502 and the words "Authentication
+// Failed", which used to be read as a connection limit — telling the user to
+// lower a connection count when the account was gone.
+func TestPoolDialBlocksOn502AuthenticationFailed(t *testing.T) {
+	reg := testHealthRegistry(t)
+
+	host, port := fakeNNTPListener(t, "expired")
+	pool := NewClientPool(host, port, false, "user", "good", 2)
+	pool.SetProviderName("lapsed-provider")
+	t.Cleanup(pool.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := pool.Get(ctx); err == nil {
+		t.Fatal("expected the 502 AUTHINFO answer to fail the dial")
+	}
+	rec, ok := reg.Lookup(health.KindProvider, "lapsed-provider")
+	if !ok || rec.Reason != health.ReasonAuthFailed {
+		t.Fatalf("502 \"Authentication Failed\" should block with auth_failed, got %+v", rec)
+	}
+	if !reg.Blocked(health.KindProvider, "lapsed-provider") {
+		t.Fatal("a rejected account must block the provider")
+	}
+	if !strings.Contains(rec.Detail, "Authentication Failed") {
+		t.Fatalf("the server's own words must survive as the detail, got %q", rec.Detail)
+	}
+}
+
+// A 502 that names neither the account nor the connection count is recorded
+// as refused with the server's words, and never blocks on a guess.
+func TestPoolDialDegradesOnUnexplained502(t *testing.T) {
+	reg := testHealthRegistry(t)
+
+	host, port := fakeNNTPListener(t, "unexplained")
+	pool := NewClientPool(host, port, false, "user", "good", 2)
+	pool.SetProviderName("vague-provider")
+	t.Cleanup(pool.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := pool.Get(ctx); err == nil {
+		t.Fatal("expected the 502 AUTHINFO answer to fail the dial")
+	}
+	rec, ok := reg.Lookup(health.KindProvider, "vague-provider")
+	if !ok || rec.Reason != health.ReasonLoginRefused || rec.State != health.StateDegraded {
+		t.Fatalf("an unexplained 502 should degrade with login_refused, got %+v", rec)
+	}
+	if reg.Blocked(health.KindProvider, "vague-provider") {
+		t.Fatal("an unexplained 502 must never block the provider")
 	}
 }

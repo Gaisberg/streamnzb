@@ -8,6 +8,7 @@ describe('component health helpers', () => {
     expect(healthReasonLabel('quota_exhausted')).toBe('Quota spent')
     expect(healthReasonLabel('throttled')).toBe('Rate limited')
     expect(healthReasonLabel('connection_limit')).toBe('Connection limit hit')
+    expect(healthReasonLabel('login_refused')).toBe('Login refused')
     // An unknown code still has to render as something honest.
     expect(healthReasonLabel('something_new')).toBe('Not working')
     expect(healthReasonHint('something_new')).toBe('')
