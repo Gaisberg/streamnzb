@@ -95,6 +95,8 @@ See [Database backends](database.md) for how switching and migration work.
 |---|---|
 | `STREAMNZB_INDEXER_QUERY_HEADER` (legacy `INDEXER_QUERY_HEADER`) | User-Agent sent on indexer search requests |
 | `STREAMNZB_INDEXER_GRAB_HEADER` (legacy `INDEXER_GRAB_HEADER`) | User-Agent sent on NZB downloads |
+| `STREAMNZB_INDEXER_SERIES_HEADER` | Optional. User-Agent for series and anime — searches **and** NZB downloads — e.g. `Sonarr/4.0.15.2941`. Empty: the query/grab pair applies |
+| `STREAMNZB_INDEXER_MOVIE_HEADER` | Optional. Same for films, e.g. `Radarr/5.26.2.10099` |
 | `STREAMNZB_PROVIDER_HEADER` (legacy `PROVIDER_HEADER`) | Identification sent to Usenet providers |
 
 Indexers increasingly gate content on the client version, so a header pinned to
@@ -111,7 +113,20 @@ each of these tools is on today and lifts the headers to it:
 Whichever tool a header already names is kept, only its version moves; an empty
 header is seeded with the default for its slot (Prowlarr for queries, SABnzbd
 for grabs, VLC for providers), and a header naming a tool that is not in that
-list is left untouched. Headers set from the environment are never rewritten —
+list is left untouched. The two per-media headers are opt-in and are never
+seeded while empty; once they name Sonarr or Radarr they are lifted like the
+others.
+
+**Per-media identity.** A Prowlarr search followed by a SABnzbd download is not
+how an automation stack looks to an indexer: Sonarr and Radarr search under
+their own names and fetch the NZB themselves, and SABnzbd never contacts the
+indexer at all. Setting the series header to a Sonarr User-Agent and the movie
+header to a Radarr one makes StreamNZB present that same split — the class of
+the request (series, anime, film) picks the header for both the search and the
+later grab, including grabs served through the [Newznab endpoint](newznab.md),
+whose links remember the class of the search that produced them. A per-indexer
+override still wins over both. Direct-play NZB URLs carry no class and use the
+plain grab header. Headers set from the environment are never rewritten —
 the process value wins over config regardless. Results are cached for an hour,
 since GitHub allows 60 unauthenticated requests per hour per IP.
 

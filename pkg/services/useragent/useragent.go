@@ -24,6 +24,10 @@ const (
 	RoleQuery    = "query"
 	RoleGrab     = "grab"
 	RoleProvider = "provider"
+	// RoleSeries and RoleMovie seed the per-media headers: Sonarr for
+	// series, Radarr for films, each used for both search and grab.
+	RoleSeries = "series"
+	RoleMovie  = "movie"
 )
 
 const (
@@ -93,8 +97,8 @@ type source struct {
 // "nzbget/{version}").
 var catalog = []source{
 	{id: "prowlarr", product: "Prowlarr", role: RoleQuery, repo: "Prowlarr/Prowlarr"},
-	{id: "sonarr", product: "Sonarr", role: RoleQuery, repo: "Sonarr/Sonarr"},
-	{id: "radarr", product: "Radarr", role: RoleQuery, repo: "Radarr/Radarr"},
+	{id: "sonarr", product: "Sonarr", role: RoleSeries, repo: "Sonarr/Sonarr"},
+	{id: "radarr", product: "Radarr", role: RoleMovie, repo: "Radarr/Radarr"},
 	{id: "sabnzbd", product: "SABnzbd", role: RoleGrab, repo: "sabnzbd/sabnzbd"},
 	{id: "nzbget", product: "nzbget", role: RoleGrab, repo: "nzbgetcom/nzbget"},
 	{id: "vlc", product: "VLC", role: RoleProvider, statusURL: vlcStatusURL},

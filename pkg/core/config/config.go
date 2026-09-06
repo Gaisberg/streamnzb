@@ -748,8 +748,15 @@ type Config struct {
 	TMDBAPIKey         string `json:"tmdb_api_key,omitempty"`
 	IndexerQueryHeader string `json:"indexer_query_header,omitempty"`
 	IndexerGrabHeader  string `json:"indexer_grab_header,omitempty"`
-	ProviderHeader     string `json:"provider_header,omitempty"`
-	IndexerProxyURL    string `json:"indexer_proxy_url,omitempty"`
+	// IndexerSeriesHeader and IndexerMovieHeader present series and film
+	// traffic as two different programs — Sonarr and Radarr in a typical
+	// setup — for both the search and the NZB download, the way those tools
+	// actually behave. Empty means that kind of content uses the plain
+	// query/grab headers above. Per-indexer overrides still win.
+	IndexerSeriesHeader string `json:"indexer_series_header,omitempty"`
+	IndexerMovieHeader  string `json:"indexer_movie_header,omitempty"`
+	ProviderHeader      string `json:"provider_header,omitempty"`
+	IndexerProxyURL     string `json:"indexer_proxy_url,omitempty"`
 
 	TVDBAPIKey string `json:"tvdb_api_key,omitempty"`
 
@@ -1661,31 +1668,33 @@ func keySet(list []string, s string) bool {
 // so a new override is one entry instead of two hand-maintained mirrors that
 // can (and did) drift apart.
 var envFieldCopiers = map[string]func(dst, src *Config){
-	env.KeyAddonPort:          func(d, s *Config) { d.AddonPort = s.AddonPort },
-	env.KeyAddonBaseURL:       func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
-	env.KeyLogLevel:           func(d, s *Config) { d.LogLevel = s.LogLevel },
-	env.KeyKeepLogFiles:       func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
-	env.KeyAvailNZBAPIKey:     func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
-	env.KeyTMDBAPIKey:         func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
-	env.KeyTVDBAPIKey:         func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
-	env.KeySimklClientID:      func(d, s *Config) { d.SimklClientID = s.SimklClientID },
-	env.KeyIndexerQueryHeader: func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
-	env.KeyIndexerGrabHeader:  func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
-	env.KeyProviderHeader:     func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
-	env.KeyProxyPort:          func(d, s *Config) { d.ProxyPort = s.ProxyPort },
-	env.KeyProxyHost:          func(d, s *Config) { d.ProxyHost = s.ProxyHost },
-	env.KeyProxyEnabled:       func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
-	env.KeyProxyAuthUser:      func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
-	env.KeyProxyAuthPass:      func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
-	env.KeyNewznabEnabled:     func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
-	env.KeyNewznabAPIKey:      func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
-	env.KeyAdminUsername:      func(d, s *Config) { d.AdminUsername = s.AdminUsername },
-	env.KeyAdminMustChangePwd: func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
-	env.KeyProviders:          func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
-	env.KeyIndexers:           func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
-	env.KeyDatabaseDriver:     func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
-	env.KeyDatabaseURL:        func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
-	env.KeyMetadataEnabled:    func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
+	env.KeyAddonPort:           func(d, s *Config) { d.AddonPort = s.AddonPort },
+	env.KeyAddonBaseURL:        func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
+	env.KeyLogLevel:            func(d, s *Config) { d.LogLevel = s.LogLevel },
+	env.KeyKeepLogFiles:        func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
+	env.KeyAvailNZBAPIKey:      func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
+	env.KeyTMDBAPIKey:          func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
+	env.KeyTVDBAPIKey:          func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeySimklClientID:       func(d, s *Config) { d.SimklClientID = s.SimklClientID },
+	env.KeyIndexerQueryHeader:  func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
+	env.KeyIndexerGrabHeader:   func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
+	env.KeyIndexerSeriesHeader: func(d, s *Config) { d.IndexerSeriesHeader = s.IndexerSeriesHeader },
+	env.KeyIndexerMovieHeader:  func(d, s *Config) { d.IndexerMovieHeader = s.IndexerMovieHeader },
+	env.KeyProviderHeader:      func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
+	env.KeyProxyPort:           func(d, s *Config) { d.ProxyPort = s.ProxyPort },
+	env.KeyProxyHost:           func(d, s *Config) { d.ProxyHost = s.ProxyHost },
+	env.KeyProxyEnabled:        func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
+	env.KeyProxyAuthUser:       func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
+	env.KeyProxyAuthPass:       func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyNewznabEnabled:      func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
+	env.KeyNewznabAPIKey:       func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
+	env.KeyAdminUsername:       func(d, s *Config) { d.AdminUsername = s.AdminUsername },
+	env.KeyAdminMustChangePwd:  func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
+	env.KeyProviders:           func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:            func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:      func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:         func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled:     func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1750,6 +1759,8 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		SimklClientID:           o.SimklClientID,
 		IndexerQueryHeader:      o.IndexerQueryHeader,
 		IndexerGrabHeader:       o.IndexerGrabHeader,
+		IndexerSeriesHeader:     o.IndexerSeriesHeader,
+		IndexerMovieHeader:      o.IndexerMovieHeader,
 		ProviderHeader:          o.ProviderHeader,
 		ProxyPort:               o.ProxyPort,
 		ProxyHost:               o.ProxyHost,
@@ -1839,6 +1850,8 @@ func (c *Config) RedactForAPI() Config {
 	out.ProxyAuthPass = ""
 	out.IndexerQueryHeader = ""
 	out.IndexerGrabHeader = ""
+	out.IndexerSeriesHeader = ""
+	out.IndexerMovieHeader = ""
 	out.ProviderHeader = ""
 	out.IndexerProxyURL = RedactProxyURLForAPI(c.IndexerProxyURL)
 	out.AvailNZBAPIKey = ""

@@ -260,7 +260,7 @@ func downloadURL(baseURL, apiKey, id string) string {
 
 // linkerFor returns the itemLinker that seals each result's origin under
 // secret and points it back at baseURL.
-func linkerFor(secret, baseURL, apiKey string) itemLinker {
+func linkerFor(secret, baseURL, apiKey, class string) itemLinker {
 	return func(item *indexer.Item) string {
 		source := strings.TrimSpace(item.Link)
 		if source == "" {
@@ -274,7 +274,7 @@ func linkerFor(secret, baseURL, apiKey string) itemLinker {
 			logger.Debug("Newznab result dropped", "reason", "no resolvable download source", "title", item.Title, "indexer", name)
 			return ""
 		}
-		id, err := sealGrabRef(secret, grabRef{Indexer: name, URL: source, Title: item.Title})
+		id, err := sealGrabRef(secret, grabRef{Indexer: name, URL: source, Title: item.Title, Class: class})
 		if err != nil {
 			logger.Warn("Newznab result dropped", "reason", "failed to seal download reference", "title", item.Title, "err", err)
 			return ""
