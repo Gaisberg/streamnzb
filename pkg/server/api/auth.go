@@ -134,10 +134,13 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
+	// The answer names a person and can change the moment the proxy or the
+	// cookie says so; a cached copy would outlive both.
+	w.Header().Set("Cache-Control", "no-store")
 	stream, ok := auth.StreamFromContext(r)
 	cookiePresent := false
 	bearerPresent := false
-	authViaCookie := false
+	authViaBearer := false
 	if !ok {
 
 		cookie, err := r.Cookie(auth.SessionCookieName)
@@ -146,7 +149,6 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 			stream, err = s.streamManager.AuthenticateToken(cookie.Value, s.adminUsername(), s.adminToken())
 			if err == nil {
 				logger.Debug("Auth check authenticated", "via", "cookie")
-				authViaCookie = true
 				ok = true
 			}
 		}
@@ -163,6 +165,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					logger.Debug("Auth check authenticated", "via", "bearer")
 					ok = true
+					authViaBearer = true
 				}
 			}
 		}
@@ -180,7 +183,11 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 			"username":             stream.Username,
 			"must_change_password": mustChangePassword,
 		}
-		if !authViaCookie {
+		// The token is echoed only to a caller that already presented it as a
+		// bearer. A request vouched for by a trusted proxy holds no token and
+		// must not be handed the permanent admin one: that credential would
+		// outlive the proxy's session and turn a proxy logout into nothing.
+		if authViaBearer {
 			out["token"] = stream.Token
 		}
 		if s.strmServer != nil {

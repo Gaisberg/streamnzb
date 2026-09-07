@@ -571,3 +571,25 @@ func TestBooleanEnvNamesCoversEveryFixedName(t *testing.T) {
 		})
 	}
 }
+
+// TRUSTED_PROXIES is a comma-separated list; blanks and stray spaces around
+// entries are dropped so "a, b," reads as two entries, not four.
+func TestTrustedProxyOverrides(t *testing.T) {
+	clearNumberedBlocks(t)
+	clear(t, TrustedProxyAuthHeaderEnv, TrustedProxiesEnv)
+
+	o, keys := ReadConfigOverrides()
+	if o.TrustedProxyAuthHeader != "" || len(o.TrustedProxies) != 0 || contains(keys, KeyTrustedProxies) || contains(keys, KeyTrustedProxyAuthHeader) {
+		t.Fatalf("unset variables must not register overrides: %+v %v", o, keys)
+	}
+
+	t.Setenv(TrustedProxyAuthHeaderEnv, "Remote-User")
+	t.Setenv(TrustedProxiesEnv, " 172.18.0.0/16, 10.0.0.5,, ")
+	o, keys = ReadConfigOverrides()
+	if o.TrustedProxyAuthHeader != "Remote-User" || !contains(keys, KeyTrustedProxyAuthHeader) {
+		t.Fatalf("header not read: %+v %v", o, keys)
+	}
+	if len(o.TrustedProxies) != 2 || o.TrustedProxies[0] != "172.18.0.0/16" || o.TrustedProxies[1] != "10.0.0.5" || !contains(keys, KeyTrustedProxies) {
+		t.Fatalf("proxies not read: %+v %v", o, keys)
+	}
+}
