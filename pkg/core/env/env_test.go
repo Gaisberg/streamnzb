@@ -571,3 +571,43 @@ func TestBooleanEnvNamesCoversEveryFixedName(t *testing.T) {
 		})
 	}
 }
+
+// The per-media headers win for their class, for search and grab alike, and
+// an unset one falls back to the plain query/grab pair.
+func TestIndexerHeaderForPicksByMediaClass(t *testing.T) {
+	clear(t, StreamNZBIndexerSeriesHeaderEnv, StreamNZBIndexerMovieHeaderEnv, StreamNZBIndexerQueryHeaderEnv, StreamNZBIndexerGrabHeaderEnv, IndexerQueryHeaderEnv, IndexerGrabHeaderEnv)
+	SetRuntimeHeaders("Prowlarr/2.0", "SABnzbd/4.5", "")
+	SetRuntimeMediaHeaders("Sonarr/4.0", "")
+	t.Cleanup(func() { SetRuntimeHeaders("", "", ""); SetRuntimeMediaHeaders("", "") })
+
+	if got := IndexerHeaderFor("series", false); got != "Sonarr/4.0" {
+		t.Fatalf("series search = %q", got)
+	}
+	if got := IndexerHeaderFor("series", true); got != "Sonarr/4.0" {
+		t.Fatalf("series grab = %q", got)
+	}
+	if got := IndexerHeaderFor("movie", false); got != "Prowlarr/2.0" {
+		t.Fatalf("movie search without a movie header = %q", got)
+	}
+	if got := IndexerHeaderFor("movie", true); got != "SABnzbd/4.5" {
+		t.Fatalf("movie grab without a movie header = %q", got)
+	}
+	if got := IndexerHeaderFor("", true); got != "SABnzbd/4.5" {
+		t.Fatalf("classless grab = %q", got)
+	}
+
+	t.Setenv(StreamNZBIndexerMovieHeaderEnv, "Radarr/5.0")
+	if got := IndexerHeaderFor("movie", false); got != "Radarr/5.0" {
+		t.Fatalf("environment movie header must win: %q", got)
+	}
+}
+
+func TestMediaHeaderOverrides(t *testing.T) {
+	clearNumberedBlocks(t)
+	clear(t, StreamNZBIndexerSeriesHeaderEnv, StreamNZBIndexerMovieHeaderEnv)
+	t.Setenv(StreamNZBIndexerSeriesHeaderEnv, "Sonarr/4.0.15")
+	o, keys := ReadConfigOverrides()
+	if o.IndexerSeriesHeader != "Sonarr/4.0.15" || !contains(keys, KeyIndexerSeriesHeader) || contains(keys, KeyIndexerMovieHeader) {
+		t.Fatalf("series header override not read: %+v %v", o, keys)
+	}
+}

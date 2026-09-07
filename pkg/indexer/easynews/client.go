@@ -166,18 +166,18 @@ func (c *Client) reauthenticateRedirect(req *http.Request, via []*http.Request) 
 	return nil
 }
 
-func (c *Client) effectiveQueryHeader() string {
+func (c *Client) effectiveQueryHeader(ctx context.Context) string {
 	if h := strings.TrimSpace(c.queryHeader); h != "" {
 		return h
 	}
-	return env.IndexerQueryHeader()
+	return env.IndexerHeaderFor(indexer.MediaClassFromContext(ctx), false)
 }
 
-func (c *Client) effectiveGrabHeader() string {
+func (c *Client) effectiveGrabHeader(ctx context.Context) string {
 	if h := strings.TrimSpace(c.grabHeader); h != "" {
 		return h
 	}
-	return env.IndexerGrabHeader()
+	return env.IndexerHeaderFor(indexer.MediaClassFromContext(ctx), true)
 }
 
 func (c *Client) Name() string {
@@ -214,6 +214,7 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	ctx = indexer.WithMediaClass(ctx, req.Class)
 	if strings.TrimSpace(req.Query) == "" {
 		// Easynews answers text queries only. An empty one is not an id search
 		// it could still serve — it asks for the whole index, which is never
@@ -473,7 +474,7 @@ func (c *Client) fetchSearchPage(ctx context.Context, query, season, episode, sc
 
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.effectiveQueryHeader())
+	req.Header.Set("User-Agent", c.effectiveQueryHeader(ctx))
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("easynews search request failed: %w", err)
@@ -593,7 +594,7 @@ func (c *Client) downloadNZBInternal(ctx context.Context, payload map[string]int
 
 	req.SetBasicAuth(c.username, c.password)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", c.effectiveGrabHeader())
+	req.Header.Set("User-Agent", c.effectiveGrabHeader(ctx))
 	resp, err := c.downloadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("easynews NZB download request failed: %w", err)

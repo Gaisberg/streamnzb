@@ -22,6 +22,9 @@ type grabRef struct {
 	Indexer string `json:"i"`
 	URL     string `json:"u"`
 	Title   string `json:"t,omitempty"`
+	// Class is what the search that produced this link was after ("movie",
+	// "tv", "tv_anime"), so the grab can present the same identity.
+	Class string `json:"c,omitempty"`
 }
 
 var errBadGrabRef = errors.New("newznab: malformed download reference")
@@ -111,7 +114,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, idx indexer.I
 		return
 	}
 
-	data, err := source.DownloadNZB(r.Context(), ref.URL)
+	data, err := source.DownloadNZB(indexer.WithMediaClass(r.Context(), ref.Class), ref.URL)
 	if err != nil {
 		logger.Warn("Newznab grab failed", "indexer", ref.Indexer, "title", ref.Title, "err", err)
 		s.writeError(w, r, http.StatusBadGateway, errUnknownError, "NZB download failed")

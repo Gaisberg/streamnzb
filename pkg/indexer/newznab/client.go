@@ -208,18 +208,22 @@ func (c *Client) buildAPIURL(params url.Values) string {
 	return fmt.Sprintf("%s%s?%s", c.baseURL, c.apiPath, encodeOrderedQuery(params, orderedSearchQueryKeys))
 }
 
-func (c *Client) effectiveQueryHeader() string {
+// effectiveQueryHeader and effectiveGrabHeader pick the User-Agent for one
+// request: this indexer's own override first, then the per-media header for
+// the class the context carries (see indexer.WithMediaClass), then the plain
+// global header.
+func (c *Client) effectiveQueryHeader(ctx context.Context) string {
 	if h := strings.TrimSpace(c.cfg.QueryHeader); h != "" {
 		return h
 	}
-	return env.IndexerQueryHeader()
+	return env.IndexerHeaderFor(indexer.MediaClassFromContext(ctx), false)
 }
 
-func (c *Client) effectiveGrabHeader() string {
+func (c *Client) effectiveGrabHeader(ctx context.Context) string {
 	if h := strings.TrimSpace(c.cfg.GrabHeader); h != "" {
 		return h
 	}
-	return env.IndexerGrabHeader()
+	return env.IndexerHeaderFor(indexer.MediaClassFromContext(ctx), true)
 }
 
 func (c *Client) checkAPILimit() error {
@@ -299,7 +303,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", c.effectiveQueryHeader())
+	req.Header.Set("User-Agent", c.effectiveQueryHeader(ctx))
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -342,7 +346,7 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create caps request: %w", err)
 	}
-	req.Header.Set("User-Agent", c.effectiveQueryHeader())
+	req.Header.Set("User-Agent", c.effectiveQueryHeader(ctx))
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -500,6 +504,9 @@ func selectTVIDSearchParam(caps *indexer.Caps, req indexer.SearchRequest) (strin
 }
 
 func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	// The class rides the context so the HTTP layer picks the matching
+	// User-Agent without every helper growing a parameter.
+	ctx = indexer.WithMediaClass(ctx, req.Class)
 	if err := c.checkAPILimit(); err != nil {
 		return nil, err
 	}
@@ -792,7 +799,7 @@ func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, p
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	httpReq.Header.Set("User-Agent", c.effectiveQueryHeader())
+	httpReq.Header.Set("User-Agent", c.effectiveQueryHeader(ctx))
 	startedAt := time.Now()
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
@@ -900,7 +907,7 @@ func (c *Client) DownloadNZB(ctx context.Context, nzbURL string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", c.effectiveGrabHeader())
+	req.Header.Set("User-Agent", c.effectiveGrabHeader(ctx))
 	startedAt := time.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {

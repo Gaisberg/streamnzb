@@ -16,7 +16,7 @@ import { cn, selectClass } from "@/lib/utils"
 // The TMDB/TVDB API keys live on the Metadata page, next to what they power.
 const CARD_FIELDS = {
   addon: ['addon_base_url', 'addon_port'],
-  useragent: ['indexer_query_header', 'indexer_grab_header', 'provider_header'],
+  useragent: ['indexer_query_header', 'indexer_grab_header', 'indexer_series_header', 'indexer_movie_header', 'provider_header'],
   database: ['database_driver', 'database_url', 'nzb_history_retention_days'],
 }
 
@@ -30,6 +30,8 @@ const FIELD_CARD = Object.fromEntries(
 const USER_AGENT_ROLES = {
   indexer_query_header: 'query',
   indexer_grab_header: 'grab',
+  indexer_series_header: 'series',
+  indexer_movie_header: 'movie',
   provider_header: 'provider',
 }
 
@@ -56,6 +58,8 @@ function pickInitialValues(values = {}) {
     addon_base_url: values.addon_base_url ?? '',
     indexer_query_header: values.indexer_query_header ?? '',
     indexer_grab_header: values.indexer_grab_header ?? '',
+    indexer_series_header: values.indexer_series_header ?? '',
+    indexer_movie_header: values.indexer_movie_header ?? '',
     provider_header: values.provider_header ?? '',
     database_driver: values.database_driver || 'sqlite',
     database_url: values.database_url ?? '',
@@ -141,6 +145,10 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
       Object.entries(USER_AGENT_ROLES).forEach(([name, role]) => {
         if (envOverrides.includes(name)) return
         const current = form.getValues(name) || ''
+        // The per-media pair is opt-in: an empty one stays empty, so
+        // "Update to latest" only moves a Sonarr/Radarr header the user
+        // already typed.
+        if (!current && (role === 'series' || role === 'movie')) return
         const token = productToken(current)
         const match = token
           ? agents.find((agent) => agent.product.toLowerCase() === token.toLowerCase())
@@ -320,6 +328,28 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
                     <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="SABnzbd/4.5.5" onBlur={blurCommit(field, 'indexer_grab_header')} /></FormControl>
                   </div>
                   <FormDescription className="mt-3">Used when grabbing NZBs from indexers.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={control} name="indexer_series_header" render={({ field }) => (
+                <FormItem className="relative rounded-none border-0 p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={stackedFieldRowClass}>
+                    <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Series Header <EnvOverrideIndicator show={envOverrides.includes('indexer_series_header')} /></FormLabel>
+                    <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="Sonarr/4.0.15.2941" onBlur={blurCommit(field, 'indexer_series_header')} /></FormControl>
+                  </div>
+                  <FormDescription className="mt-3">Optional. Used for both searches and grabs of series and anime, the way Sonarr itself talks to an indexer. Leave empty to use the query and grab headers above.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={control} name="indexer_movie_header" render={({ field }) => (
+                <FormItem className="relative rounded-none border-0 p-3">
+                  <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                  <div className={stackedFieldRowClass}>
+                    <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Movie Header <EnvOverrideIndicator show={envOverrides.includes('indexer_movie_header')} /></FormLabel>
+                    <FormControl><Input className={`h-9 ${controlWideClass}`} {...field} value={field.value || ''} placeholder="Radarr/5.26.2.10099" onBlur={blurCommit(field, 'indexer_movie_header')} /></FormControl>
+                  </div>
+                  <FormDescription className="mt-3">Optional. Used for both searches and grabs of films, the way Radarr itself talks to an indexer. Leave empty to use the query and grab headers above.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )} />

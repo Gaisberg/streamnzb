@@ -154,6 +154,7 @@ func prefetchAvailNZBBackbones(cfg *config.Config, client *availnzb.Client) {
 
 func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error) {
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
+	env.SetRuntimeMediaHeaders(cfg.IndexerSeriesHeader, cfg.IndexerMovieHeader)
 	base, err := initialization.BuildComponents(cfg)
 	if err != nil {
 		return nil, err
@@ -285,6 +286,7 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	a.opts.TVDBAPIKey = strings.TrimSpace(newCfg.TVDBAPIKey)
 	a.opts.SimklClientID = strings.TrimSpace(newCfg.SimklClientID)
 	env.SetRuntimeHeaders(newCfg.IndexerQueryHeader, newCfg.IndexerGrabHeader, newCfg.ProviderHeader)
+	env.SetRuntimeMediaHeaders(newCfg.IndexerSeriesHeader, newCfg.IndexerMovieHeader)
 
 	old := a.components
 	scope := ConfigChanged(old.Config, newCfg)

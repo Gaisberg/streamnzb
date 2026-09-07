@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/env"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
@@ -1219,5 +1220,80 @@ func TestCategoriesForResolvesTheClassInOneOrderOfAuthority(t *testing.T) {
 	client.cfg.TVCategories = ""
 	if got := client.categoriesFor(indexer.SearchRequest{Cat: "5030"}, false, true); got != "5030" {
 		t.Fatalf("classless request = %q, want the cat it arrived with", got)
+	}
+}
+
+// With per-media headers set, a series search and its grab both present the
+// series identity, a film presents the film identity, and an indexer's own
+// override still wins over either.
+func TestNewznabMediaHeaders(t *testing.T) {
+	logger.Init("DEBUG")
+	env.SetRuntimeHeaders("Prowlarr/2.3.0", "SABnzbd/4.5.5", "")
+	env.SetRuntimeMediaHeaders("Sonarr/4.0.15.2941", "Radarr/5.26.2.10099")
+	t.Cleanup(func() { env.SetRuntimeHeaders("", "", ""); env.SetRuntimeMediaHeaders("", "") })
+
+	var mu sync.Mutex
+	seen := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path+"?t="+r.URL.Query().Get("t")] = r.Header.Get("User-Agent")
+		mu.Unlock()
+		if r.URL.Path == "/nzb" {
+			w.Header().Set("Content-Type", "application/x-nzb")
+			fmt.Fprint(w, `<?xml version="1.0"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"></nzb>`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/"><channel><newznab:response offset="0" total="0"/></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{Name: "MockIndexer", URL: server.URL, APIKey: "k"}, nil)
+
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{Query: "show", Class: config.SearchClassTV, Season: "1", Episode: "2"}); err != nil {
+		t.Fatalf("series search: %v", err)
+	}
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{Query: "film", Class: config.SearchClassMovie}); err != nil {
+		t.Fatalf("movie search: %v", err)
+	}
+	if _, err := client.DownloadNZB(indexer.WithMediaClass(context.Background(), config.SearchClassTVAnime), server.URL+"/nzb"); err != nil {
+		t.Fatalf("series grab: %v", err)
+	}
+
+	snapshot := func() map[string]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[string]string, len(seen))
+		for k, v := range seen {
+			out[k] = v
+		}
+		return out
+	}
+	first := snapshot()
+	presented := map[string]bool{}
+	for _, ua := range first {
+		presented[ua] = true
+	}
+	if !presented["Sonarr/4.0.15.2941"] || !presented["Radarr/5.26.2.10099"] {
+		t.Fatalf("expected both identities to be presented, saw %v", first)
+	}
+	if ua := first["/nzb?t="]; ua != "Sonarr/4.0.15.2941" {
+		t.Fatalf("series grab must carry the series identity, got %q (%v)", ua, first)
+	}
+
+	// The indexer's own override beats the per-media header.
+	override := NewClient(config.IndexerConfig{Name: "Scene", URL: server.URL, APIKey: "k", QueryHeader: "Prowlarr/1.0"}, nil)
+	if _, err := override.Search(context.Background(), indexer.SearchRequest{Query: "film", Class: config.SearchClassMovie}); err != nil {
+		t.Fatalf("override search: %v", err)
+	}
+	found := false
+	for _, ua := range snapshot() {
+		if ua == "Prowlarr/1.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("per-indexer override must win, saw %v", seen)
 	}
 }

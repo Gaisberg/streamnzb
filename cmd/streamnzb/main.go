@@ -124,6 +124,7 @@ func main() {
 	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
 	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
+	env.SetRuntimeMediaHeaders(cfg.IndexerSeriesHeader, cfg.IndexerMovieHeader)
 
 	dataDir := filepath.Dir(cfg.LoadedPath)
 	if dataDir == "" || dataDir == "." {
