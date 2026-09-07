@@ -10,13 +10,17 @@ import (
 )
 
 // adminWrite is the discriminator every write-path test uses: PUT /api/config
-// needs no streaming server, so its answer is the auth outcome and nothing
-// else — 200 for the admin, 403 for a non-admin stream, 401 for no identity.
-// (/api/cache/clear is not usable here: without a streaming server it answers
-// 503 after the gate, which hides whether the gate was passed.)
+// with a body that passes the admin gate and then fails validation. Its
+// answer is the auth outcome and nothing else — 400 for the admin (past the
+// gate, refused by the catch-all rule this PR added), 403 for a non-admin
+// stream, 401 for no identity — and nothing is ever saved, so no reload
+// goroutine runs against the fixture's nil session manager. (/api/cache/clear
+// is not usable: without a streaming server it answers 503 after the gate,
+// which hides whether the gate was passed; a valid body is not usable either:
+// the save succeeds and the async reload panics the test binary.)
 func adminWrite(t *testing.T, s *Server, shape func(*http.Request)) int {
 	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/config", strings.NewReader(`{"log_level":"debug"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/config", strings.NewReader(`{"trusted_proxies": ["0.0.0.0/0"]}`))
 	req.Host = "nzb.example.com"
 	req.Header.Set("Content-Type", "application/json")
 	shape(req)
@@ -91,8 +95,8 @@ func TestTrustedProxyAuthGrantsAdmin(t *testing.T) {
 		r.Header.Set("Remote-User", "maged")
 		r.Header.Set("Sec-Fetch-Site", "same-origin")
 		r.Header.Set("Origin", "https://nzb.example.com")
-	}); code != http.StatusOK {
-		t.Fatalf("admin write should succeed for a proxy-vouched same-site request, got %d", code)
+	}); code != http.StatusBadRequest {
+		t.Fatalf("admin write should reach validation (400) for a proxy-vouched same-site request, got %d", code)
 	}
 }
 
@@ -154,8 +158,8 @@ func TestProxyDoesNotOverwritePathTokenStream(t *testing.T) {
 		// stream, vouched by nobody, and the token stripped from the path.
 		*r = *r.WithContext(auth.ContextWithStream(r.Context(), &auth.Stream{Username: "tv", Token: "device-token"}))
 	})
-	if code == http.StatusOK {
-		t.Fatalf("a device stream behind the proxy was elevated to admin: the device token wrote global config")
+	if code == http.StatusBadRequest {
+		t.Fatalf("a device stream behind the proxy was elevated to admin: the device token reached config validation")
 	}
 	if code != http.StatusUnauthorized {
 		t.Fatalf("expected the device stream to be judged on its own (401 without a cookie), got %d", code)
@@ -291,12 +295,13 @@ func TestTrustedProxyAuthRefusesCrossSiteWrites(t *testing.T) {
 			t.Fatalf("%s: must be refused with 401, got %d", name, code)
 		}
 	}
-	// Granted: the proxy identity is the admin and the write goes through.
-	if code := post("same-origin", "https://nzb.example.com"); code != http.StatusOK {
-		t.Fatalf("same-origin POST must be admin, got %d", code)
+	// Granted: the proxy identity is the admin, the write passes the gate and
+	// is refused by validation (400) — past the gate is the whole claim.
+	if code := post("same-origin", "https://nzb.example.com"); code != http.StatusBadRequest {
+		t.Fatalf("same-origin POST must reach validation as admin (400), got %d", code)
 	}
-	if code := post("", ""); code != http.StatusOK {
-		t.Fatalf("a non-browser write without fetch metadata must keep working as admin, got %d", code)
+	if code := post("", ""); code != http.StatusBadRequest {
+		t.Fatalf("a non-browser write without fetch metadata must keep working as admin (400), got %d", code)
 	}
 	// Safe methods are never subject to the check.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/auth/check", nil)
@@ -388,11 +393,11 @@ func TestTrustedProxyAuthHonoursForwardedHost(t *testing.T) {
 			}
 		})
 	}
-	if code := post("nzb.example.com"); code != http.StatusOK {
-		t.Fatalf("forwarded host matching the Origin must be admin, got %d", code)
+	if code := post("nzb.example.com"); code != http.StatusBadRequest {
+		t.Fatalf("forwarded host matching the Origin must reach validation as admin (400), got %d", code)
 	}
-	if code := post("nzb.example.com, inner.proxy"); code != http.StatusOK {
-		t.Fatalf("first entry of a chained X-Forwarded-Host must be used, got %d", code)
+	if code := post("nzb.example.com, inner.proxy"); code != http.StatusBadRequest {
+		t.Fatalf("first entry of a chained X-Forwarded-Host must be used (400), got %d", code)
 	}
 	if code := post("nzb.example.com:443"); code != http.StatusUnauthorized {
 		t.Fatalf("forwarded host with a port the Origin does not carry must not match, got %d", code)
