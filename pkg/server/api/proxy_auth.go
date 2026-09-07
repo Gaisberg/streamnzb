@@ -75,7 +75,12 @@ func (s *Server) proxyAuth() *auth.ProxyAuth {
 // for the log line so the audit trail still says who.
 func (s *Server) proxyAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if auth.VouchedFromContext(r.Context()) {
+		// Any stream already in the context — vouched by this layer on a
+		// previous hop, or a device stream the Stremio path-token router
+		// identified — is a credential the caller presented. It is never
+		// overwritten with the admin; the vouched marker only decides what
+		// AuthMiddleware does with it afterwards.
+		if _, ok := auth.StreamFromContext(r); ok {
 			next.ServeHTTP(w, r)
 			return
 		}

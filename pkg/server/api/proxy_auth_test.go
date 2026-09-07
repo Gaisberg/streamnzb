@@ -110,6 +110,34 @@ func TestPathTokenStreamIsNotVouched(t *testing.T) {
 	}
 }
 
+// The third credential form: a Stremio client behind the proxy reaches the
+// API as /<stream-token>/api/..., which the path-token router turns into a
+// device stream in the context with nothing left in the URL or headers. The
+// proxy layer must leave that stream alone — a device behind the proxy acts
+// as that device, never as the admin. Discriminated on the admin gate: the
+// admin would get 200 on an admin-only write; anything else is the device
+// being judged as itself.
+func TestProxyDoesNotOverwritePathTokenStream(t *testing.T) {
+	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/cache/clear", nil)
+	req.Host = "nzb.example.com"
+	req.RemoteAddr = "172.18.0.7:40000"
+	req.Header.Set("Remote-User", "maged")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "https://nzb.example.com")
+	// What the Stremio front handler hands the API mux: the device stream,
+	// vouched by nobody, and the token stripped from the path.
+	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "tv", Token: "device-token"}))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a device stream behind the proxy was elevated to admin (200 on an admin-only write)")
+	}
+	if stream, ok := auth.StreamFromContext(req); !ok || stream.Username != "tv" {
+		t.Fatalf("the device stream must survive the proxy layer untouched, got %v", stream)
+	}
+}
+
 // The non-admin config view must not reveal which header and which
 // network the proxy identity trusts.
 func TestRedactForAPIHidesTrustedProxySettings(t *testing.T) {
