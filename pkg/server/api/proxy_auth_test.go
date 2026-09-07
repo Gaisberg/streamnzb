@@ -5,8 +5,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"streamnzb/pkg/auth"
+	"strings"
 	"testing"
 )
+
+// adminWrite is the discriminator every write-path test uses: PUT /api/config
+// needs no streaming server, so its answer is the auth outcome and nothing
+// else — 200 for the admin, 403 for a non-admin stream, 401 for no identity.
+// (/api/cache/clear is not usable here: without a streaming server it answers
+// 503 after the gate, which hides whether the gate was passed.)
+func adminWrite(t *testing.T, s *Server, shape func(*http.Request)) int {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/config", strings.NewReader(`{"log_level":"debug"}`))
+	req.Host = "nzb.example.com"
+	req.Header.Set("Content-Type", "application/json")
+	shape(req)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec.Code
+}
 
 func proxyAuthTestServer(t *testing.T, header string, proxies []string) *Server {
 	t.Helper()
@@ -69,6 +86,14 @@ func TestTrustedProxyAuthGrantsAdmin(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin endpoint should open for a proxy-vouched request, got %d", rec.Code)
 	}
+	if code := adminWrite(t, s, func(r *http.Request) {
+		r.RemoteAddr = "172.18.0.7:40000"
+		r.Header.Set("Remote-User", "maged")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Origin", "https://nzb.example.com")
+	}); code != http.StatusOK {
+		t.Fatalf("admin write should succeed for a proxy-vouched same-site request, got %d", code)
+	}
 }
 
 // A caller presenting its own credential is that credential. A device
@@ -113,28 +138,27 @@ func TestPathTokenStreamIsNotVouched(t *testing.T) {
 // The third credential form: a Stremio client behind the proxy reaches the
 // API as /<stream-token>/api/..., which the path-token router turns into a
 // device stream in the context with nothing left in the URL or headers. The
-// proxy layer must leave that stream alone — a device behind the proxy acts
-// as that device, never as the admin. Discriminated on the admin gate: the
-// admin would get 200 on an admin-only write; anything else is the device
-// being judged as itself.
+// proxy layer must leave that stream alone. Discriminated on the admin gate:
+// if the device were overwritten with the admin, this write would answer 200
+// and the device token would be writing global config; left as the device,
+// the unvouched stream goes through the credential checks and, with no
+// cookie, gets 401. This fails at eeac0ea and passes with the fix.
 func TestProxyDoesNotOverwritePathTokenStream(t *testing.T) {
 	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/cache/clear", nil)
-	req.Host = "nzb.example.com"
-	req.RemoteAddr = "172.18.0.7:40000"
-	req.Header.Set("Remote-User", "maged")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Origin", "https://nzb.example.com")
-	// What the Stremio front handler hands the API mux: the device stream,
-	// vouched by nobody, and the token stripped from the path.
-	req = req.WithContext(auth.ContextWithStream(req.Context(), &auth.Stream{Username: "tv", Token: "device-token"}))
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("a device stream behind the proxy was elevated to admin (200 on an admin-only write)")
+	code := adminWrite(t, s, func(r *http.Request) {
+		r.RemoteAddr = "172.18.0.7:40000"
+		r.Header.Set("Remote-User", "maged")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Origin", "https://nzb.example.com")
+		// What the Stremio front handler hands the API mux: the device
+		// stream, vouched by nobody, and the token stripped from the path.
+		*r = *r.WithContext(auth.ContextWithStream(r.Context(), &auth.Stream{Username: "tv", Token: "device-token"}))
+	})
+	if code == http.StatusOK {
+		t.Fatalf("a device stream behind the proxy was elevated to admin: the device token wrote global config")
 	}
-	if stream, ok := auth.StreamFromContext(req); !ok || stream.Username != "tv" {
-		t.Fatalf("the device stream must survive the proxy layer untouched, got %v", stream)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("expected the device stream to be judged on its own (401 without a cookie), got %d", code)
 	}
 }
 
@@ -245,37 +269,34 @@ func TestTrustedProxyAuthDoesNotLeakAdminToken(t *testing.T) {
 func TestTrustedProxyAuthRefusesCrossSiteWrites(t *testing.T) {
 	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
 	post := func(site, origin string) int {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/cache/clear", nil)
-		req.Host = "nzb.example.com"
-		req.RemoteAddr = "172.18.0.7:40000"
-		req.Header.Set("Remote-User", "maged")
-		if site != "" {
-			req.Header.Set("Sec-Fetch-Site", site)
+		return adminWrite(t, s, func(r *http.Request) {
+			r.RemoteAddr = "172.18.0.7:40000"
+			r.Header.Set("Remote-User", "maged")
+			if site != "" {
+				r.Header.Set("Sec-Fetch-Site", site)
+			}
+			if origin != "" {
+				r.Header.Set("Origin", origin)
+			}
+		})
+	}
+	// Refused: no identity is granted, and with no cookie that is 401.
+	for name, tc := range map[string][2]string{
+		"cross-site":            {"cross-site", "https://evil.example"},
+		"mismatched origin":     {"same-origin", "https://evil.example"},
+		"origin null, no site":  {"", "null"},
+		"same-site (subdomain)": {"same-site", "https://other.nzb.example.com"},
+	} {
+		if code := post(tc[0], tc[1]); code != http.StatusUnauthorized {
+			t.Fatalf("%s: must be refused with 401, got %d", name, code)
 		}
-		if origin != "" {
-			req.Header.Set("Origin", origin)
-		}
-		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, req)
-		return rec.Code
 	}
-	if code := post("cross-site", "https://evil.example"); code != http.StatusUnauthorized {
-		t.Fatalf("cross-site POST must be refused, got %d", code)
+	// Granted: the proxy identity is the admin and the write goes through.
+	if code := post("same-origin", "https://nzb.example.com"); code != http.StatusOK {
+		t.Fatalf("same-origin POST must be admin, got %d", code)
 	}
-	if code := post("same-origin", "https://evil.example"); code != http.StatusUnauthorized {
-		t.Fatalf("mismatched Origin must be refused, got %d", code)
-	}
-	if code := post("", "null"); code != http.StatusUnauthorized {
-		t.Fatalf("Origin: null without fetch metadata must be refused, got %d", code)
-	}
-	if code := post("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized {
-		t.Fatalf("same-origin POST must carry the proxy identity, got 401")
-	}
-	if code := post("same-site", "https://other.nzb.example.com"); code != http.StatusUnauthorized {
-		t.Fatalf("same-site (sibling subdomain) POST must be refused, got %d", code)
-	}
-	if code := post("", ""); code == http.StatusUnauthorized {
-		t.Fatalf("a non-browser POST without fetch metadata must keep working, got 401")
+	if code := post("", ""); code != http.StatusOK {
+		t.Fatalf("a non-browser write without fetch metadata must keep working as admin, got %d", code)
 	}
 	// Safe methods are never subject to the check.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/auth/check", nil)
@@ -320,10 +341,11 @@ func TestTrustedProxyAuthRefusesCrossSiteWebSocket(t *testing.T) {
 	if code := handshake("", "https://evil.example"); code != http.StatusUnauthorized {
 		t.Fatalf("WebSocket handshake with a foreign Origin must be refused, got %d", code)
 	}
-	// Same-site: identity granted; the recorder cannot be hijacked, so the
-	// upgrade itself fails later, but not with 401.
-	if code := handshake("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized {
-		t.Fatalf("same-site WebSocket handshake must be vouched for, got 401")
+	// Same-site: identity granted, so the request reaches the upgrader. The
+	// recorder cannot be hijacked, so the upgrade itself fails with 400 —
+	// which is past the auth gate; 401 or 403 would mean it was not.
+	if code := handshake("same-origin", "https://nzb.example.com"); code == http.StatusUnauthorized || code == http.StatusForbidden {
+		t.Fatalf("same-site WebSocket handshake must be vouched for, got %d", code)
 	}
 }
 
@@ -355,27 +377,25 @@ func TestIsWebSocketHandshake(t *testing.T) {
 func TestTrustedProxyAuthHonoursForwardedHost(t *testing.T) {
 	s := proxyAuthTestServer(t, "Remote-User", []string{"172.18.0.0/16"})
 	post := func(forwardedHost string) int {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/cache/clear", nil)
-		req.Host = "streamnzb:7000" // what the upstream sees after the proxy rewrote Host
-		req.RemoteAddr = "172.18.0.7:40000"
-		req.Header.Set("Remote-User", "maged")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		req.Header.Set("Origin", "https://nzb.example.com")
-		if forwardedHost != "" {
-			req.Header.Set("X-Forwarded-Host", forwardedHost)
-		}
-		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, req)
-		return rec.Code
+		return adminWrite(t, s, func(r *http.Request) {
+			r.Host = "streamnzb:7000" // what the upstream sees after the proxy rewrote Host
+			r.RemoteAddr = "172.18.0.7:40000"
+			r.Header.Set("Remote-User", "maged")
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			r.Header.Set("Origin", "https://nzb.example.com")
+			if forwardedHost != "" {
+				r.Header.Set("X-Forwarded-Host", forwardedHost)
+			}
+		})
 	}
-	if code := post("nzb.example.com"); code == http.StatusUnauthorized {
-		t.Fatalf("forwarded host matching the Origin must be accepted, got 401")
+	if code := post("nzb.example.com"); code != http.StatusOK {
+		t.Fatalf("forwarded host matching the Origin must be admin, got %d", code)
+	}
+	if code := post("nzb.example.com, inner.proxy"); code != http.StatusOK {
+		t.Fatalf("first entry of a chained X-Forwarded-Host must be used, got %d", code)
 	}
 	if code := post("nzb.example.com:443"); code != http.StatusUnauthorized {
 		t.Fatalf("forwarded host with a port the Origin does not carry must not match, got %d", code)
-	}
-	if code := post("nzb.example.com, inner.proxy"); code == http.StatusUnauthorized {
-		t.Fatalf("first entry of a chained X-Forwarded-Host must be used, got 401")
 	}
 	if code := post("other.example.com"); code != http.StatusUnauthorized {
 		t.Fatalf("forwarded host that does not match the Origin must be refused, got %d", code)
