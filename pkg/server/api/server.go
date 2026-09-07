@@ -29,6 +29,7 @@ import (
 type Server struct {
 	mu             sync.RWMutex
 	config         *config.Config
+	proxyAuthState proxyAuthCache
 	providerPools  map[string]*nntp.ClientPool
 	streamingPools []*nntp.ClientPool
 	sessionMgr     *session.Manager
@@ -481,11 +482,19 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
+	// The check endpoint decides whether the dashboard shows the login
+	// screen, so it must see the proxy's identity too.
+	mux.Handle("/api/auth/check", s.proxyAuthMiddleware(http.HandlerFunc(s.handleAuthCheck)))
 	mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	mux.HandleFunc("/api/info", s.handleInfo)
 
-	authMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.adminUsername() }, func() string { return s.adminToken() })
+	credentialMiddleware := auth.StreamAuthMiddleware(s.streamManager, func() string { return s.adminUsername() }, func() string { return s.adminToken() })
+	// Trusted-proxy identity first, then the cookie/bearer checks for
+	// everyone else. Order matters: the credential layer honours a stream
+	// already in the context and skips its own checks for it.
+	authMiddleware := func(next http.Handler) http.Handler {
+		return s.proxyAuthMiddleware(credentialMiddleware(next))
+	}
 	mux.Handle("/api/ws", authMiddleware(http.HandlerFunc(s.handleWebSocket)))
 	mux.Handle("/api/config", authMiddleware(http.HandlerFunc(s.handleConfig)))
 	mux.Handle("/api/cache/clear", authMiddleware(http.HandlerFunc(s.handleClearCache)))

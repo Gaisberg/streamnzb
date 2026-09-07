@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"net/url"
 	"reflect"
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -52,11 +54,13 @@ type configValidationPlan struct {
 	validateFormatProfiles         bool
 	validateDefineLibraries        bool
 	validateDatabase               bool
+	validateTrustedProxyAuth       bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
 	return configValidationPlan{
 		validateKeepLogFiles:           true,
+		validateTrustedProxyAuth:       true,
 		validateNZBHistoryRetention:    true,
 		validatePlaybackStartupTimeout: true,
 		validateIndexerProxyURL:        true,
@@ -166,6 +170,11 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	}
 	if _, ok := raw["indexer_proxy_url"]; ok {
 		plan.validateIndexerProxyURL = true
+	}
+	_, patchedHeader := raw["trusted_proxy_auth_header"]
+	_, patchedProxies := raw["trusted_proxies"]
+	if patchedHeader || patchedProxies {
+		plan.validateTrustedProxyAuth = true
 	}
 	_, patchedDriver := raw["database_driver"]
 	_, patchedDatabaseURL := raw["database_url"]
@@ -410,6 +419,20 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 		count := cfg.EffectiveSpeculativePreProbingMaxAttempts()
 		if count < 0 || count > 5 {
 			errors["speculative_preprobing_max_attempts"] = "Must be between 0 and 5"
+		}
+	}
+	// Only when the pair itself is being edited. A value set outside the
+	// dashboard (environment) that fails here must not veto every unrelated
+	// save, since there would be no way to fix it from the UI; at runtime such
+	// a pair simply leaves the feature off with a warning in the log.
+	if plan.validateTrustedProxyAuth {
+		if _, err := auth.NewProxyAuth(cfg.TrustedProxyAuthHeader, cfg.TrustedProxies); err != nil {
+			field := "trusted_proxies"
+			var cfgErr *auth.ProxyConfigError
+			if goerrors.As(err, &cfgErr) {
+				field = cfgErr.Field
+			}
+			errors[field] = err.Error()
 		}
 	}
 	if plan.validateDatabase {

@@ -56,36 +56,40 @@ const (
 )
 
 const (
-	KeyAddonPort          = "addon_port"
-	KeyAddonBaseURL       = "addon_base_url"
-	KeyLogLevel           = "log_level"
-	KeyKeepLogFiles       = "keep_log_files"
-	KeyProxyPort          = "proxy_port"
-	KeyProxyHost          = "proxy_host"
-	KeyProxyEnabled       = "proxy_enabled"
-	KeyProxyAuthUser      = "proxy_auth_user"
-	KeyProxyAuthPass      = "proxy_auth_pass"
-	KeyNewznabEnabled     = "newznab_enabled"
-	KeyNewznabAPIKey      = "newznab_api_key"
-	KeyProviders          = "providers"
-	KeyIndexers           = "indexers"
-	KeyAvailNZBURL        = "availnzb_url"
-	KeyAvailNZBAPIKey     = "availnzb_api_key"
-	KeyTMDBAPIKey         = "tmdb_api_key"
-	KeyTVDBAPIKey         = "tvdb_api_key"
-	KeySimklClientID      = "simkl_client_id"
-	KeyMetadataEnabled    = "metadata_enabled"
-	KeyIndexerQueryHeader = "indexer_query_header"
-	KeyIndexerGrabHeader  = "indexer_grab_header"
-	KeyProviderHeader     = "provider_header"
-	KeyAdminUsername      = "admin_username"
-	KeyAdminMustChangePwd = "admin_must_change_password"
-	KeyDatabaseDriver     = "database_driver"
-	KeyDatabaseURL        = "database_url"
+	KeyAddonPort              = "addon_port"
+	KeyAddonBaseURL           = "addon_base_url"
+	KeyLogLevel               = "log_level"
+	KeyKeepLogFiles           = "keep_log_files"
+	KeyProxyPort              = "proxy_port"
+	KeyProxyHost              = "proxy_host"
+	KeyProxyEnabled           = "proxy_enabled"
+	KeyProxyAuthUser          = "proxy_auth_user"
+	KeyProxyAuthPass          = "proxy_auth_pass"
+	KeyNewznabEnabled         = "newznab_enabled"
+	KeyNewznabAPIKey          = "newznab_api_key"
+	KeyProviders              = "providers"
+	KeyIndexers               = "indexers"
+	KeyAvailNZBURL            = "availnzb_url"
+	KeyAvailNZBAPIKey         = "availnzb_api_key"
+	KeyTMDBAPIKey             = "tmdb_api_key"
+	KeyTVDBAPIKey             = "tvdb_api_key"
+	KeySimklClientID          = "simkl_client_id"
+	KeyMetadataEnabled        = "metadata_enabled"
+	KeyIndexerQueryHeader     = "indexer_query_header"
+	KeyIndexerGrabHeader      = "indexer_grab_header"
+	KeyProviderHeader         = "provider_header"
+	KeyAdminUsername          = "admin_username"
+	KeyAdminMustChangePwd     = "admin_must_change_password"
+	KeyTrustedProxyAuthHeader = "trusted_proxy_auth_header"
+	KeyTrustedProxies         = "trusted_proxies"
+	KeyDatabaseDriver         = "database_driver"
+	KeyDatabaseURL            = "database_url"
 )
 
 const AdminUsernameEnv = "ADMIN_USERNAME"
 const AdminForcePasswordResetEnv = "ADMIN_FORCE_PASSWORD_RESET"
+const TrustedProxyAuthHeaderEnv = "TRUSTED_PROXY_AUTH_HEADER"
+const TrustedProxiesEnv = "TRUSTED_PROXIES"
 
 var DefaultIndexerUserAgent = "StreamNZB/dev"
 var runtimeHeadersMu sync.RWMutex
@@ -391,32 +395,34 @@ type Indexer struct {
 }
 
 type ConfigOverrides struct {
-	AddonPort          int
-	AddonBaseURL       string
-	LogLevel           string
-	KeepLogFiles       int
-	AvailNZBURL        string
-	AvailNZBAPIKey     string
-	TMDBAPIKey         string
-	TVDBAPIKey         string
-	SimklClientID      string
-	IndexerQueryHeader string
-	IndexerGrabHeader  string
-	ProviderHeader     string
-	ProxyPort          int
-	ProxyHost          string
-	ProxyEnabled       bool
-	ProxyAuthUser      string
-	ProxyAuthPass      string
-	NewznabEnabled     bool
-	NewznabAPIKey      string
-	AdminUsername      string
-	AdminMustChangePwd bool
-	DatabaseDriver     string
-	DatabaseURL        string
-	MetadataEnabled    bool
-	Providers          []Provider
-	Indexers           []Indexer
+	AddonPort              int
+	AddonBaseURL           string
+	LogLevel               string
+	KeepLogFiles           int
+	AvailNZBURL            string
+	AvailNZBAPIKey         string
+	TMDBAPIKey             string
+	TVDBAPIKey             string
+	SimklClientID          string
+	IndexerQueryHeader     string
+	IndexerGrabHeader      string
+	ProviderHeader         string
+	ProxyPort              int
+	ProxyHost              string
+	ProxyEnabled           bool
+	ProxyAuthUser          string
+	ProxyAuthPass          string
+	NewznabEnabled         bool
+	NewznabAPIKey          string
+	AdminUsername          string
+	AdminMustChangePwd     bool
+	TrustedProxyAuthHeader string
+	TrustedProxies         []string
+	DatabaseDriver         string
+	DatabaseURL            string
+	MetadataEnabled        bool
+	Providers              []Provider
+	Indexers               []Indexer
 }
 
 // envReader accumulates config overrides read from the environment, tracking
@@ -491,6 +497,15 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	if v, ok := os.LookupEnv(AdminForcePasswordResetEnv); ok && v != "" && getEnvBool(AdminForcePasswordResetEnv, false) {
 		o.AdminMustChangePwd = true
 		r.keys = append(r.keys, KeyAdminMustChangePwd)
+	}
+	r.str(&o.TrustedProxyAuthHeader, KeyTrustedProxyAuthHeader, TrustedProxyAuthHeaderEnv)
+	if v := os.Getenv(TrustedProxiesEnv); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				o.TrustedProxies = append(o.TrustedProxies, part)
+			}
+		}
+		r.keys = append(r.keys, KeyTrustedProxies)
 	}
 	if o.Providers = readProvidersFromEnv(); len(o.Providers) > 0 {
 		r.keys = append(r.keys, KeyProviders)
