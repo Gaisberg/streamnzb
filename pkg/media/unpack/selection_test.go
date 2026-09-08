@@ -35,6 +35,30 @@ func TestSelectEpisodeCandidateMatchesAbsoluteNumberedAnime(t *testing.T) {
 	}
 }
 
+// Season 0 is Stremio's Specials season, a literal target: the S00E01 file
+// serves it, and a same-numbered S01E01 file alongside does not.
+func TestSelectEpisodeCandidateTargetsSpecials(t *testing.T) {
+	target := EpisodeTarget{Season: 0, Episode: 1}
+	best, ok := selectEpisodeCandidate([]namedEpisodeCandidate{
+		{Name: "Show.S01E01.mkv", Size: 900, Order: 0},
+		{Name: "Show.S00E01.Christmas.Special.mkv", Size: 500, Order: 1},
+	}, target)
+	if !ok {
+		t.Fatal("expected specials candidate match")
+	}
+	if best.Name != "Show.S00E01.Christmas.Special.mkv" {
+		t.Fatalf("expected the S00E01 file, got %q", best.Name)
+	}
+
+	_, ok = selectEpisodeCandidate([]namedEpisodeCandidate{
+		{Name: "Show.S01E01.mkv", Size: 900, Order: 0},
+		{Name: "Show.S02E01.mkv", Size: 900, Order: 1},
+	}, target)
+	if ok {
+		t.Fatal("S01E01 and S02E01 must not serve a season 0 target")
+	}
+}
+
 func TestSelectMainFilePrefersRequestedEpisodeOverLargest(t *testing.T) {
 	target := EpisodeTarget{Season: 1, Episode: 5}
 	best, err := selectMainFile([]filePart{

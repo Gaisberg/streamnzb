@@ -670,10 +670,7 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	for i := range files {
 		unpackFiles[i] = files[i]
 	}
-	target := unpack.EpisodeTarget{}
-	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
-	}
+	target := sess.ContentIDs.EpisodeTarget()
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: p.allowLargestDirectFallback(sess),
 	}
@@ -777,10 +774,7 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 	if sessNZB := sess.NZB(); sessNZB != nil {
 		password = sessNZB.Password()
 	}
-	target := unpack.EpisodeTarget{}
-	if sess.ContentIDs != nil {
-		target = unpack.EpisodeTarget{Season: sess.ContentIDs.Season, Episode: sess.ContentIDs.Episode, Absolute: sess.ContentIDs.AbsoluteEpisode}
-	}
+	target := sess.ContentIDs.EpisodeTarget()
 	hints := unpack.StreamSelectionHints{
 		AllowLargestDirectFallback: p.allowLargestDirectFallback(sess),
 	}

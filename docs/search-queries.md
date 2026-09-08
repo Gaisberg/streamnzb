@@ -237,14 +237,14 @@ There is no separate "pack search" — one search's results are validated and pa
 
 Results are checked against the metadata before anything else happens. What is *enforced* depends on how the request asked:
 
-- **Season and episode** are enforced for every attempt. An episode request keeps only releases that can contain that episode; with **Season packs** off, only releases that name the episode.
+- **Season and episode** are enforced for every attempt. An episode request keeps only releases that can contain that episode; with **Season packs** off, only releases that name the episode. Season 0 is the Specials season and is matched literally: `tt…:0:1` keeps `S00E01` and rejects `S01E01`. An episode request without a season — an anime the Kitsu mapping could not place — accepts a release that names no season or season 1 under the same number.
 - **Year**, when *Year must match* is on, requires the release year to be within ±1.
 - **The title** is enforced for **Title attempts only**. A text query is just a keyword, so the indexer has no idea which title you meant and the check against the accepted titles is what makes the answer yours.
 - **ID attempts trust the indexer.** The attempt named an IMDb/TVDB/TMDB/Kitsu id and nothing else, so the indexer resolved the title itself. Release names diverge from TMDB/TVDB constantly — `Special.Ops.Lioness.S02E01` for a show TMDB calls *Lioness* — and dropping those meant losing correct results to a naming disagreement.
 
 An ID attempt still runs the title check, it just does not act on it: mismatches are counted and shown as *Title mismatch (kept)* in the History funnel. That number is worth a look. A handful is normal naming drift; an attempt where nearly everything is a mismatch is an indexer answering an ID search with something it was not asked for — typically an aggregator (NZBHydra2, Prowlarr) silently converting an unsupported ID search into a title search.
 
-Where the title *is* enforced, matching tolerates leading articles, short franchise suffixes (`SVU`), punctuation and `&`/`and`. An attempt that pins a season or episode also accepts a release whose name carries a prefix the metadata title dropped, because the episode number already proves the show. Drops show up as *Title mismatch* / *Year mismatch* in the History funnel. If good releases are being dropped from a Title attempt, adding the other language to **Accepted titles** is usually the fix (results named under an original or localized title), or a second Title row querying under it.
+Where the title *is* enforced, matching tolerates leading articles, the franchise suffixes `SVU` and `CI`, punctuation and `&`/`and`. Any other trailing word is part of the title, however short: *Sword Art Online II*, *Steins;Gate 0* and *Example Movie 2* are different titles from their bases. An attempt that pins a season or episode also accepts a release whose name carries a prefix the metadata title dropped, because the episode number already proves the show. Drops show up as *Title mismatch* / *Year mismatch* in the History funnel. If good releases are being dropped from a Title attempt, adding the other language to **Accepted titles** is usually the fix (results named under an original or localized title), or a second Title row querying under it.
 
 ## Defaults
 

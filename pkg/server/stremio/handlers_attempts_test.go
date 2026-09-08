@@ -99,6 +99,37 @@ func TestRecordAttemptParamsDerivesCompletePackMatchType(t *testing.T) {
 	}
 }
 
+// Season 0 is the Specials season, not "no season": an S00E01 release is an
+// exact match for tt…:0:1, and a seasonless (unmapped Kitsu) session does not
+// get read as season 0.
+func TestRecordAttemptParamsDerivesSpecialsMatchType(t *testing.T) {
+	server := &Server{}
+	for _, sess := range []*session.Session{
+		{ContentType: "series", ContentID: "tt0903747:0:1"},
+		{ContentType: "series", ContentID: "tt0903747:0:1", ContentIDs: &session.AvailReportMeta{Season: 0, Episode: 1}},
+	} {
+		sess.SetRelease(&release.Release{
+			Title: "Breaking.Bad.S00E01.Good.Cop.Bad.Cop.1080p.WEB-DL.mkv",
+		})
+		params := server.recordAttemptParamsForOutcome(sess, true)
+		if got := params.MatchType; got != "exact_episode" {
+			t.Fatalf("MatchType = %q, want %q", got, "exact_episode")
+		}
+	}
+
+	seasonless := &session.Session{
+		ContentType: "series",
+		ContentID:   "kitsu:1:1",
+		ContentIDs:  &session.AvailReportMeta{Seasonless: true, Episode: 1},
+	}
+	seasonless.SetRelease(&release.Release{
+		Title: "Breaking.Bad.S00E01.Good.Cop.Bad.Cop.1080p.WEB-DL.mkv",
+	})
+	if got := server.recordAttemptParamsForOutcome(seasonless, true).MatchType; got != "" {
+		t.Fatalf("MatchType = %q, want no match type for a seasonless session", got)
+	}
+}
+
 func TestAllowLargestDirectFallbackForSessionMovie(t *testing.T) {
 	sess := &session.Session{ContentType: "movie"}
 	if !allowLargestDirectFallbackForSession(sess) {

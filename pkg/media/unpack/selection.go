@@ -8,18 +8,9 @@ import (
 	searchparser "streamnzb/pkg/search/parser"
 )
 
-type EpisodeTarget struct {
-	Season  int
-	Episode int
-	// Absolute is the anime absolute episode number of the same episode
-	// (0 when unknown). Files carrying it match even though their parsed
-	// season/episode differ from the target.
-	Absolute int
-}
-
-func (t EpisodeTarget) Valid() bool {
-	return (t.Season > 0 && t.Episode > 0) || t.Absolute > 0
-}
+// EpisodeTarget is the parser's: the ranking that decides which file serves
+// the target lives there, alongside the NZB layer's use of the same type.
+type EpisodeTarget = searchparser.EpisodeTarget
 
 type namedEpisodeCandidate struct {
 	Name  string
@@ -116,14 +107,7 @@ func episodeNameMatchRank(name string, target EpisodeTarget) int {
 			"name", baseName)
 		return 0
 	}
-	rank := parsed.EpisodeMatchRank(target.Season, target.Episode)
-	if target.Absolute > 0 {
-		// Absolute-numbered anime files carry no season (or season 1), which
-		// is exactly the season<=0 match path.
-		if absRank := parsed.EpisodeMatchRank(0, target.Absolute); absRank > rank {
-			rank = absRank
-		}
-	}
+	rank := parsed.TargetMatchRank(target)
 	logger.Debug("Unpack episode candidate rank evaluated",
 		"target", target,
 		"name", baseName,

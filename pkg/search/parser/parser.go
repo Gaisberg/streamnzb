@@ -156,14 +156,37 @@ func hasInt(values []int, want int) bool {
 	return false
 }
 
+// EpisodeTarget is the episode a request is after, in every numbering a
+// release might use for it.
+type EpisodeTarget struct {
+	// Season is literal: 0 is Stremio's Specials season, matched only by S00
+	// releases. Seasonless says the request named no season at all — an
+	// unmapped Kitsu entry numbers episodes within itself — which Season alone
+	// cannot say, because 0 is a season.
+	Season     int
+	Seasonless bool
+	Episode    int
+	// Absolute is the anime absolute episode number of the same episode (0
+	// when unknown). Releases carrying it match even though their parsed
+	// season/episode differ from the target.
+	Absolute int
+}
+
+// Valid reports whether the target can pick a file out of a release: a season
+// and episode, or an absolute number. An episode without a season can accept
+// a release that names it, but not choose among a pack's files, whose numbers
+// restart every season.
+func (t EpisodeTarget) Valid() bool {
+	return (!t.Seasonless && t.Episode > 0) || t.Absolute > 0
+}
+
+// HasSeason reports whether the release names the season. The season is
+// literal, so 0 asks for an S00 release, not for one that names no season.
 func (p *ParsedRelease) HasSeason(season int) bool {
-	if p == nil || season <= 0 {
+	if p == nil || season < 0 {
 		return false
 	}
-	if hasInt(p.Seasons, season) {
-		return true
-	}
-	return p.Season == season
+	return hasInt(p.Seasons, season)
 }
 
 func (p *ParsedRelease) HasEpisode(episode int) bool {
@@ -177,21 +200,21 @@ func (p *ParsedRelease) HasEpisode(episode int) bool {
 }
 
 func (p *ParsedRelease) IsEpisodeRelease(season, episode int) bool {
-	if p == nil || season <= 0 || episode <= 0 {
+	if p == nil || season < 0 || episode <= 0 {
 		return false
 	}
 	return p.HasSeason(season) && p.HasEpisode(episode) && len(p.Episodes) <= 1
 }
 
 func (p *ParsedRelease) IsMultiEpisodeRelease(season, episode int) bool {
-	if p == nil || season <= 0 || episode <= 0 {
+	if p == nil || season < 0 || episode <= 0 {
 		return false
 	}
 	return p.HasSeason(season) && p.HasEpisode(episode) && len(p.Episodes) > 1
 }
 
 func (p *ParsedRelease) IsSeasonPack(season int) bool {
-	if p == nil || season <= 0 {
+	if p == nil || season < 0 {
 		return false
 	}
 	if !p.HasSeason(season) || len(p.Episodes) > 0 {
@@ -207,23 +230,13 @@ func (p *ParsedRelease) IsShowPack() bool {
 	return len(p.Seasons) == 0 || len(p.Seasons) > 1
 }
 
+// EpisodeMatchRank ranks how well the release serves season/episode: 4 names
+// exactly that episode, 3 names it among others, 2 is its season's pack, 1 a
+// complete-series pack, 0 nothing. The season is literal — 0 is the Specials
+// season, served only by S00 releases — so a request that names no season
+// belongs in SeasonlessEpisodeMatchRank instead.
 func (p *ParsedRelease) EpisodeMatchRank(season, episode int) int {
-	if p == nil || episode <= 0 {
-		return 0
-	}
-	if season <= 0 {
-		if p.HasEpisode(episode) {
-			if len(p.Seasons) > 0 && !p.HasSeason(1) {
-				return 0
-			}
-			if len(p.Episodes) <= 1 {
-				return 4
-			}
-			return 3
-		}
-		if p.IsShowPack() {
-			return 1
-		}
+	if p == nil || season < 0 || episode <= 0 {
 		return 0
 	}
 	if p.IsEpisodeRelease(season, episode) {
@@ -241,8 +254,46 @@ func (p *ParsedRelease) EpisodeMatchRank(season, episode int) int {
 	return 0
 }
 
-func (p *ParsedRelease) MatchesEpisodeRequest(season, episode int) bool {
-	return p.EpisodeMatchRank(season, episode) > 0
+// SeasonlessEpisodeMatchRank ranks the release against an episode number that
+// carries no season: an anime absolute number, or an unmapped Kitsu entry's
+// own numbering. Releases named that way carry no season, or season 1 when
+// they do ("One Piece - 63", "One.Piece.S01E63"); any other explicit season
+// is a different episode that happens to share the number. Ranks are as in
+// EpisodeMatchRank, with no season pack to rank at 2.
+func (p *ParsedRelease) SeasonlessEpisodeMatchRank(episode int) int {
+	if p == nil || episode <= 0 {
+		return 0
+	}
+	if p.HasEpisode(episode) {
+		if len(p.Seasons) > 0 && !p.HasSeason(1) {
+			return 0
+		}
+		if len(p.Episodes) <= 1 {
+			return 4
+		}
+		return 3
+	}
+	if p.IsShowPack() {
+		return 1
+	}
+	return 0
+}
+
+// TargetMatchRank ranks the release against every numbering the target
+// carries and keeps the best: an absolute-numbered release matches through
+// its absolute number even though its parsed season/episode differ from the
+// target's.
+func (p *ParsedRelease) TargetMatchRank(t EpisodeTarget) int {
+	rank := 0
+	if t.Seasonless {
+		rank = p.SeasonlessEpisodeMatchRank(t.Episode)
+	} else {
+		rank = p.EpisodeMatchRank(t.Season, t.Episode)
+	}
+	if t.Absolute > 0 {
+		rank = max(rank, p.SeasonlessEpisodeMatchRank(t.Absolute))
+	}
+	return rank
 }
 
 func (p *ParsedRelease) ResolutionGroup() string {

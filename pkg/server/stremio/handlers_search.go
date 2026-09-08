@@ -1263,9 +1263,15 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			}
 		}
 	}
-	seasonNum, _ := strconv.Atoi(req.Season)
+	// Season "0" is Stremio's Specials season; only an absent season means the
+	// request named none (an unmapped Kitsu entry).
+	seasonNum, seasonErr := strconv.Atoi(strings.TrimSpace(req.Season))
+	seasonless := seasonErr != nil || seasonNum < 0
+	if seasonless {
+		seasonNum = 0
+	}
 	episodeNum, _ := strconv.Atoi(req.Episode)
-	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Episode: episodeNum}
+	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Seasonless: seasonless, Episode: episodeNum}
 	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.AbsoluteEpisode, params.Metadata, req.Season, req.Episode)
 	if movieLike && req.TMDBID != "" && rt.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {

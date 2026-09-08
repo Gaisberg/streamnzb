@@ -17,6 +17,15 @@ func TestNormalizedTitleMatches(t *testing.T) {
 	}{
 		{"Law & Order", "Law and Order", true},
 		{"Law & Order", "Law and Order SVU", true},
+		{"Law & Order", "Law and Order CI", true},
+		// A short trailing token is not noise when it is what tells a sequel
+		// or sibling series from the base title.
+		{"Sword Art Online", "Sword.Art.Online.II.S01E01.1080p.WEB-DL", false},
+		{"Steins;Gate", "Steins.Gate.0.S01E01.1080p.WEB-DL", false},
+		{"Example Movie", "Example.Movie.2.1080p.WEB-DL", false},
+		{"Example Movie", "Example.Movie.II.1080p.WEB-DL", false},
+		{"Example Movie", "Example.Movie.Part.2.1080p.WEB-DL", false},
+		{"Dragon Ball", "Dragon.Ball.Z.S01E01.1080p.WEB-DL", false},
 		{"Star Trek: Starfleet Academy", "Star.Trek.Starfleet.Academy.S01E01", true},
 		{"Star Trek: Starfleet Academy", "Starfleet Academy S01E01", false},
 		{"Batman", "The Batman", false},
@@ -74,6 +83,9 @@ func TestNormalizedTitleMatchesAllowingLeadingWords(t *testing.T) {
 		{"Interstellar", "The.Science.of.Interstellar", true},
 		{"Batman", "Batman Beyond", false},
 		{"The Rookie", "The Rookie Feds", false},
+		{"Law & Order", "Law.and.Order.SVU.S01E01", true},
+		{"Sword Art Online", "Sword.Art.Online.II.S01E01.1080p.WEB-DL", false},
+		{"Steins;Gate", "Steins.Gate.0.S01E01.1080p.WEB-DL", false},
 		{"Star Trek: Starfleet Academy", "Starfleet Academy S01E01", false},
 		{"The Hunger Games: Mockingjay - Part 1", "The Hunger Games Mockingjay Part 2", false},
 		{"Some Show", "Other Show", false},

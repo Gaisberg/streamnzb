@@ -210,6 +210,7 @@ func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 		{Title: "One.Piece.S01E63.1080p.WEB-DL.AAC2.0-HatSubs"}, // absolute, S01Exxx style
 		{Title: "[Judas] One Piece - 62 (1080p) [ABCD1234]"},    // wrong absolute episode
 		{Title: "One.Piece.S02E05.1080p.WEB-DL.x264-GROUP"},     // wrong episode
+		{Title: "One.Piece.S03E63.1080p.WEB-DL.x264-GROUP"},     // absolute number under an explicit wrong season
 	}
 
 	filtered, stats := ValidateSearchResultsWithStatsForQueries(releases, "series", []string{"One Piece"}, "2", "2", "63", true, false)
@@ -217,8 +218,8 @@ func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 	if len(filtered) != 3 {
 		t.Fatalf("expected 3 accepted results, got %d: %+v", len(filtered), stats)
 	}
-	if stats.DroppedEpisodeRequest != 2 {
-		t.Fatalf("expected 2 episode-request rejections, got %d", stats.DroppedEpisodeRequest)
+	if stats.DroppedEpisodeRequest != 3 {
+		t.Fatalf("expected 3 episode-request rejections, got %d", stats.DroppedEpisodeRequest)
 	}
 	if stats.AcceptedExactEpisode != 3 {
 		t.Fatalf("expected 3 exact episode matches, got %d", stats.AcceptedExactEpisode)
@@ -229,6 +230,56 @@ func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 	filtered, _ = ValidateSearchResultsWithStatsForQueries(releases, "series", []string{"One Piece"}, "2", "2", "", true, false)
 	if len(filtered) != 1 {
 		t.Fatalf("expected only the standard release without absolute, got %d", len(filtered))
+	}
+}
+
+// Season 0 is Stremio's Specials season and a literal one: S00E01 serves a
+// season 0 request, the same episode number in another season does not, and
+// the seasonless anime path — asked for by an absent season, not season 0 —
+// keeps its own rules.
+func TestValidateSearchResultsSeasonZeroIsLiteral(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Example.Show.S00E01.1080p.WEB-DL"},
+		{Title: "Example.Show.S01E01.1080p.WEB-DL"},
+		{Title: "Example.Show.S02E01.1080p.WEB-DL"},
+		{Title: "Example.Show.S00.1080p.WEB-DL"},
+		{Title: "Example.Show.Complete.Series.1080p.WEB-DL"},
+		{Title: "[Group] Example Show - 01 (1080p)"},
+	}
+
+	filtered, stats := ValidateSearchResultsWithStats(releases, "series", "Example Show", "0", "1", true, false)
+	if len(filtered) != 3 {
+		t.Fatalf("expected S00E01, the S00 pack and the complete pack, got %d: %+v", len(filtered), stats)
+	}
+	for _, rel := range filtered {
+		if strings.Contains(rel.Title, "S01E01") || strings.Contains(rel.Title, "S02E01") || strings.Contains(rel.Title, " - 01") {
+			t.Fatalf("season 0 request accepted %q", rel.Title)
+		}
+	}
+	if stats.AcceptedExactEpisode != 1 || stats.AcceptedSeasonPack != 1 || stats.AcceptedCompletePack != 1 {
+		t.Fatalf("unexpected acceptance counts: %+v", stats)
+	}
+	if stats.DroppedEpisodeRequest != 3 {
+		t.Fatalf("expected 3 episode-request rejections, got %d", stats.DroppedEpisodeRequest)
+	}
+
+	// An absent season is the seasonless path an unmapped Kitsu entry takes:
+	// a release naming no season or season 1 matches, and nothing reads the
+	// request as season 0.
+	filtered, _ = ValidateSearchResultsWithStats(releases, "series", "Example Show", "", "1", true, false)
+	if len(filtered) != 3 {
+		t.Fatalf("expected S01E01, the dashed release and the complete pack, got %d", len(filtered))
+	}
+	for _, rel := range filtered {
+		if strings.Contains(rel.Title, "S00") || strings.Contains(rel.Title, "S02E01") {
+			t.Fatalf("seasonless request accepted %q", rel.Title)
+		}
+	}
+
+	// A season-only request for the Specials season keeps the S00 releases.
+	filtered, stats = ValidateSearchResultsWithStats(releases, "series", "Example Show", "0", "", true, false)
+	if len(filtered) != 2 || stats.AcceptedSeasonPack != 1 || stats.AcceptedSeasonMatch != 1 {
+		t.Fatalf("expected the two S00 releases, got %d: %+v", len(filtered), stats)
 	}
 }
 

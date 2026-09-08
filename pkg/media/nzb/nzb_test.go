@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"streamnzb/pkg/core/logger"
+	searchparser "streamnzb/pkg/search/parser"
 )
 
 func TestCompressionType_posterAttribute(t *testing.T) {
@@ -115,7 +116,7 @@ func TestGetSessionContentFilesForEpisodeKeepsAllCandidatesWhenNoEpisodeMatchExi
 		{Subject: "Altered.Carbon.Release.B.part02.rar", Segments: []Segment{{ID: "<d>", Bytes: 410}}},
 	}}
 
-	files := n.GetSessionContentFilesForEpisode(2, 1, 0)
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{Season: 2, Episode: 1})
 	if len(files) != 4 {
 		t.Fatalf("expected all content candidates, got %d", len(files))
 	}
@@ -143,12 +144,32 @@ func TestGetSessionContentFilesForEpisodeMatchesAbsoluteNumberedAnime(t *testing
 		{Subject: "One Piece - 338 - Landing to Get to Fish-Man Island [1080p][x264].mkv", Segments: []Segment{{ID: "<b>", Bytes: 950}}},
 	}}
 
-	files := n.GetSessionContentFilesForEpisode(10, 1, 337)
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{Season: 10, Episode: 1, Absolute: 337})
 	if len(files) != 1 {
 		t.Fatalf("expected the absolute-numbered episode group, got %d files", len(files))
 	}
 	if !strings.Contains(files[0].Filename, "337") {
 		t.Fatalf("expected episode 337 file, got %q", files[0].Filename)
+	}
+}
+
+// A Specials request is season 0, literally: the S00E01 group serves it and
+// the S01E01 group in the same NZB does not.
+func TestGetSessionContentFilesForEpisodeTargetsSpecials(t *testing.T) {
+	logger.Init("ERROR")
+
+	n := &NZB{Files: []File{
+		{Subject: "Show.S01E01.1080p.WEB-DL.mkv", Segments: []Segment{{ID: "<a>", Bytes: 900}}},
+		{Subject: "Show.S02E01.1080p.WEB-DL.mkv", Segments: []Segment{{ID: "<c>", Bytes: 900}}},
+		{Subject: "Show.S00E01.Christmas.Special.1080p.WEB-DL.mkv", Segments: []Segment{{ID: "<b>", Bytes: 800}}},
+	}}
+
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{Season: 0, Episode: 1})
+	if len(files) != 1 {
+		t.Fatalf("expected the specials group, got %d files", len(files))
+	}
+	if !strings.Contains(files[0].Filename, "S00E01") {
+		t.Fatalf("expected the S00E01 file, got %q", files[0].Filename)
 	}
 }
 
@@ -163,7 +184,7 @@ func TestDescribeMissingContentReportsPar2OnlyNZB(t *testing.T) {
 		{Subject: `[04/11] - "18a691ba.vol001+002.par2" yEnc(1/1)`, Segments: []Segment{{ID: "<c>", Bytes: 578044}}},
 	}}
 
-	if files := n.GetSessionContentFilesForEpisode(0, 0, 0); len(files) != 0 {
+	if files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{}); len(files) != 0 {
 		t.Fatalf("expected no content candidates, got %d", len(files))
 	}
 	detail := n.DescribeMissingContent()
@@ -232,7 +253,7 @@ func TestObfuscatedReleaseYieldsOneContentSet(t *testing.T) {
 	// unidentified one. Size is deliberately not a filter here — the smallest
 	// file of an obfuscated set is often its PAR2 index, and the unpack layer
 	// is what tells payload from recovery data.
-	files := n.GetSessionContentFilesForEpisode(0, 0, 0)
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{})
 	if len(files) != 11 {
 		names := make([]string, 0, len(files))
 		for _, f := range files {
@@ -288,7 +309,7 @@ func TestObfuscatedContentSetAdmitsDottedHashes(t *testing.T) {
 		{Subject: `[3/3] - "abc.xyz.par2" yEnc (1/1)`, Segments: []Segment{{ID: "<c>", Bytes: 40_000}}},
 	}}
 
-	files := n.GetSessionContentFilesForEpisode(0, 0, 0)
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{})
 	if len(files) != 2 {
 		t.Fatalf("expected both payload files, got %d", len(files))
 	}

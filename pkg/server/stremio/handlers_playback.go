@@ -1750,8 +1750,8 @@ func matchTypeForSession(sess *session.Session, contentType string) string {
 	if releaseTitle == "" {
 		return ""
 	}
-	targetSeason, targetEpisode := sessionTargetFromAttemptContext(sess)
-	if targetSeason <= 0 {
+	targetSeason, targetEpisode, ok := sessionTargetFromAttemptContext(sess)
+	if !ok {
 		return ""
 	}
 	parsed := searchparser.ParseReleaseTitle(releaseTitle)
@@ -1798,30 +1798,33 @@ func allowLargestDirectFallbackForSession(sess *session.Session) bool {
 	}
 }
 
-func sessionTargetFromAttemptContext(sess *session.Session) (int, int) {
+// sessionTargetFromAttemptContext is the season and episode the session was
+// opened for, and whether it named a season at all. Season 0 is Stremio's
+// Specials season, so it is a season here.
+func sessionTargetFromAttemptContext(sess *session.Session) (season, episode int, ok bool) {
 	if sess == nil {
-		return 0, 0
+		return 0, 0, false
 	}
-	if sess.ContentIDs != nil && sess.ContentIDs.Season > 0 {
-		return sess.ContentIDs.Season, sess.ContentIDs.Episode
+	if sess.ContentIDs != nil && !sess.ContentIDs.Seasonless {
+		return sess.ContentIDs.Season, sess.ContentIDs.Episode, true
 	}
 	contentID := strings.TrimSpace(sess.ContentID)
 	if contentID == "" {
-		return 0, 0
+		return 0, 0, false
 	}
 	parts := strings.Split(contentID, ":")
 	if len(parts) < 3 {
-		return 0, 0
+		return 0, 0, false
 	}
 	season, err := strconv.Atoi(strings.TrimSpace(parts[len(parts)-2]))
-	if err != nil || season <= 0 {
-		return 0, 0
+	if err != nil || season < 0 {
+		return 0, 0, false
 	}
-	episode, err := strconv.Atoi(strings.TrimSpace(parts[len(parts)-1]))
+	episode, err = strconv.Atoi(strings.TrimSpace(parts[len(parts)-1]))
 	if err != nil || episode < 0 {
-		return season, 0
+		return season, 0, true
 	}
-	return season, episode
+	return season, episode, true
 }
 
 func providerNameFromHosts(hosts []string) string {

@@ -157,13 +157,16 @@ func fuzzyTitleMatches(expect, gotTitle string, allowLeadingWords bool) bool {
 	return false
 }
 
+// trailingTitleAbbreviations are the franchise abbreviations a release may
+// carry past the expected title ("Law and Order SVU" for "Law & Order").
+// They are listed rather than recognised by length: the token that tells a
+// sequel or sibling series from its base title is often just as short —
+// "Sword Art Online II", "Steins;Gate 0", "Dragon Ball Z", "Example Movie 2" —
+// and a short-word rule waved every one of those through.
+var trailingTitleAbbreviations = map[string]bool{"svu": true, "ci": true}
+
 func isAllowedTrailingTitleWord(word string) bool {
-	if titleArticles[word] {
-		return true
-	}
-	// Keep short franchise suffixes such as "SVU" or "CI" matching their
-	// base title, while still rejecting broader spin-off titles like "Feds".
-	return len(word) > 0 && len(word) <= 3
+	return titleArticles[word] || trailingTitleAbbreviations[word]
 }
 
 func normalizedTitleMatches(expect, gotTitle string, allowLeadingWords bool) bool {
@@ -401,9 +404,17 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		stats.FinalResults = len(releases)
 		return releases, stats
 	}
-	expectSeason, _ := strconv.Atoi(season)
+	// Season "0" is Stremio's Specials season and asks for S00 releases; only
+	// an absent season means the request named none, which is what lets an
+	// absolute-numbered or unmapped Kitsu episode match by number alone.
+	expectSeason, seasonErr := strconv.Atoi(strings.TrimSpace(season))
+	seasonless := seasonErr != nil || expectSeason < 0
+	if seasonless {
+		expectSeason = 0
+	}
 	expectEpisode, _ := strconv.Atoi(episode)
 	expectAbsolute, _ := strconv.Atoi(absoluteEpisode)
+	target := parser.EpisodeTarget{Season: expectSeason, Seasonless: seasonless, Episode: expectEpisode, Absolute: expectAbsolute}
 	stats.ExpectedSeason = expectSeason
 	stats.ExpectedEpisode = expectEpisode
 
@@ -420,7 +431,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 	// A requested season or episode backs the title up, so the release does not
 	// have to *start* with the expected title to be the right show — scene
 	// names keep prefixes the metadata title drops ("Special Ops: Lioness").
-	allowLeadingTitleWords := contentType == "series" && (expectSeason > 0 || expectEpisode > 0)
+	allowLeadingTitleWords := contentType == "series" && (!seasonless || expectEpisode > 0)
 
 	var out []*release.Release
 	for _, rel := range releases {
@@ -455,15 +466,11 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 			)
 		}
 
+		episodeRank := 0
 		if contentType == "series" {
 			if expectEpisode > 0 {
-				matches := parsed.MatchesEpisodeRequest(expectSeason, expectEpisode)
-				if !matches && expectAbsolute > 0 {
-					// Absolute-numbered anime releases carry no season (or
-					// season 1), which is exactly the season<=0 match path.
-					matches = parsed.MatchesEpisodeRequest(0, expectAbsolute)
-				}
-				if !matches {
+				episodeRank = parsed.TargetMatchRank(target)
+				if episodeRank == 0 {
 					stats.DroppedEpisodeRequest++
 					logger.Trace("ValidateSearchResults dropped: episode_request",
 						"expect_season", expectSeason,
@@ -476,7 +483,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 					)
 					continue
 				}
-			} else if expectSeason > 0 && !parsed.HasSeason(expectSeason) {
+			} else if !seasonless && !parsed.HasSeason(expectSeason) {
 				stats.DroppedSeason++
 				logger.Trace("ValidateSearchResults dropped: season",
 					"expect_season", expectSeason,
@@ -500,16 +507,10 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		if contentType == "series" {
 			switch {
 			case expectEpisode > 0:
-				rank := parsed.EpisodeMatchRank(expectSeason, expectEpisode)
-				if expectAbsolute > 0 {
-					if absRank := parsed.EpisodeMatchRank(0, expectAbsolute); absRank > rank {
-						rank = absRank
-					}
-				}
 				// Ranks 2 and 1 are a season pack and a complete-series pack:
 				// they contain the episode without naming it, and a plan that
 				// does not accept packs wants neither.
-				if !opts.AcceptPacks && rank > 0 && rank < 3 {
+				if !opts.AcceptPacks && episodeRank > 0 && episodeRank < 3 {
 					stats.DroppedEpisodeRequest++
 					logger.Trace("ValidateSearchResults dropped: pack not accepted",
 						"expect_season", expectSeason,
@@ -518,7 +519,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 					)
 					continue
 				}
-				switch rank {
+				switch episodeRank {
 				case 4:
 					stats.AcceptedExactEpisode++
 				case 3:
@@ -528,7 +529,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				case 1:
 					stats.AcceptedCompletePack++
 				}
-			case expectSeason > 0:
+			case !seasonless:
 				if !opts.AcceptPacks && (parsed.IsShowPack() || parsed.IsSeasonPack(expectSeason)) {
 					stats.DroppedSeason++
 					continue

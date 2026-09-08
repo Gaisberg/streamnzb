@@ -47,9 +47,88 @@ func TestParsedReleaseEpisodeMatchRank(t *testing.T) {
 		})
 	}
 
-	wrongSeasonS02E01 := &ParsedRelease{Season: 2, Episode: 1, Seasons: []int{2}, Episodes: []int{1}}
-	if got := wrongSeasonS02E01.EpisodeMatchRank(0, 1); got != 0 {
-		t.Fatalf("expected S02E01 to be rejected for season 0 request, got rank %d", got)
+}
+
+// Season 0 is Stremio's Specials season, and a literal one: S00E01 serves it,
+// S01E01 does not, and neither does a release naming no season at all. The
+// seasonless path is a different question, asked through its own method.
+func TestParsedReleaseEpisodeMatchRankSeasonZeroIsLiteral(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  int
+	}{
+		{name: "special", title: "Example.Show.S00E01.1080p.WEB-DL", want: 4},
+		{name: "special among others", title: "Example.Show.S00E01E02.1080p.WEB-DL", want: 3},
+		{name: "specials pack", title: "Example.Show.S00.1080p.WEB-DL", want: 2},
+		{name: "complete pack", title: "Example.Show.Complete.Series.1080p.WEB-DL", want: 1},
+		{name: "season one", title: "Example.Show.S01E01.1080p.WEB-DL", want: 0},
+		{name: "season two", title: "Example.Show.S02E01.1080p.WEB-DL", want: 0},
+		{name: "no season", title: "[Group] Example Show - 01 (1080p)", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseReleaseTitle(tt.title).EpisodeMatchRank(0, 1); got != tt.want {
+				t.Fatalf("EpisodeMatchRank(0, 1) = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A request with no season — an absolute-numbered anime episode — takes a
+// release that names no season or season 1, and nothing with another
+// explicit season: S02E01 is not episode 1 of the show.
+func TestParsedReleaseSeasonlessEpisodeMatchRank(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  int
+	}{
+		{name: "no season", title: "[Group] Anime Name - 1085 (1080p)", want: 4},
+		{name: "season one", title: "Anime.Name.S01E1085.1080p.WEB-DL", want: 4},
+		{name: "complete pack", title: "Anime.Name.Complete.Series.1080p.WEB-DL", want: 1},
+		{name: "wrong season", title: "Anime.Name.S02E1085.1080p.WEB-DL", want: 0},
+		{name: "specials", title: "Anime.Name.S00E1085.1080p.WEB-DL", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseReleaseTitle(tt.title).SeasonlessEpisodeMatchRank(1085); got != tt.want {
+				t.Fatalf("SeasonlessEpisodeMatchRank(1085) = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsedReleaseTargetMatchRank(t *testing.T) {
+	absolute := ParseReleaseTitle("[Judas] One Piece - 63 (1080p) [ABCD1234]")
+	standard := ParseReleaseTitle("One.Piece.S02E02.1080p.WEB-DL.x264-GROUP")
+	special := ParseReleaseTitle("One.Piece.S00E02.1080p.WEB-DL.x264-GROUP")
+
+	target := EpisodeTarget{Season: 2, Episode: 2, Absolute: 63}
+	if got := absolute.TargetMatchRank(target); got != 4 {
+		t.Fatalf("absolute-numbered release rank = %d, want 4", got)
+	}
+	if got := standard.TargetMatchRank(target); got != 4 {
+		t.Fatalf("season/episode release rank = %d, want 4", got)
+	}
+	if got := special.TargetMatchRank(target); got != 0 {
+		t.Fatalf("special rank for a season 2 target = %d, want 0", got)
+	}
+
+	// A seasonless target reads its episode by the seasonless rule and never
+	// as season 0.
+	seasonless := EpisodeTarget{Seasonless: true, Episode: 63}
+	if got := absolute.TargetMatchRank(seasonless); got != 4 {
+		t.Fatalf("seasonless target against absolute-numbered release rank = %d, want 4", got)
+	}
+	if got := ParseReleaseTitle("One.Piece.S00E63.1080p.WEB-DL").TargetMatchRank(seasonless); got != 0 {
+		t.Fatalf("seasonless target must not read as season 0, got rank %d", got)
+	}
+	if seasonless.Valid() {
+		t.Fatal("a seasonless episode with no absolute number cannot pick a file")
+	}
+	if !(EpisodeTarget{Season: 0, Episode: 1}).Valid() {
+		t.Fatal("season 0 episode 1 is a literal target")
 	}
 }
 
