@@ -90,6 +90,9 @@ type Options struct {
 	// carries; read per request. A nil or non-positive value falls back to
 	// defaultMaxPlaybackSources.
 	MaxPlaybackSources func() int
+	// ResolveOnOpen runs the search when a title page is opened, instead of
+	// waiting for PlaybackInfo; read per request. A nil value means off.
+	ResolveOnOpen func() bool
 
 	Streams   Streams
 	Catalog   Catalog

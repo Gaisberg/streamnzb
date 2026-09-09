@@ -30,6 +30,7 @@ const (
 	NewznabAPIKeyEnv                   = "NEWZNAB_API_KEY"
 	JellyfinEnabledEnv                 = "JELLYFIN_ENABLED"
 	JellyfinMaxPlaybackSourcesEnv      = "JELLYFIN_MAX_PLAYBACK_SOURCES"
+	JellyfinResolveOnOpenEnv           = "JELLYFIN_RESOLVE_ON_OPEN"
 	TZVar                              = "TZ"
 	ProviderPrefix                     = "PROVIDER_"
 	IndexerPrefix                      = "INDEXER_"
@@ -71,6 +72,7 @@ const (
 	KeyNewznabAPIKey              = "newznab_api_key"
 	KeyJellyfinEnabled            = "jellyfin_enabled"
 	KeyJellyfinMaxPlaybackSources = "jellyfin_max_playback_sources"
+	KeyJellyfinResolveOnOpen      = "jellyfin_resolve_on_open"
 	KeyProviders                  = "providers"
 	KeyIndexers                   = "indexers"
 	KeyAvailNZBURL                = "availnzb_url"
@@ -332,6 +334,7 @@ var booleanEnvNames = []string{
 	NNTPProxyEnabled,
 	NewznabEnabledEnv,
 	JellyfinEnabledEnv,
+	JellyfinResolveOnOpenEnv,
 	AdminForcePasswordResetEnv,
 	EasynewsAdvancedSearchEnv,
 	StreamNZBEasynewsAdvancedSearchEnv,
@@ -421,6 +424,7 @@ type ConfigOverrides struct {
 	NewznabAPIKey              string
 	JellyfinEnabled            bool
 	JellyfinMaxPlaybackSources int
+	JellyfinResolveOnOpen      bool
 	AdminUsername              string
 	AdminMustChangePwd         bool
 	TrustedProxyAuthHeader     string
@@ -503,6 +507,10 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		r.keys = append(r.keys, KeyJellyfinEnabled)
 	}
 	r.intVal(&o.JellyfinMaxPlaybackSources, KeyJellyfinMaxPlaybackSources, JellyfinMaxPlaybackSourcesEnv, func(n int) bool { return n >= 1 && n <= 200 })
+	if v, ok := os.LookupEnv(JellyfinResolveOnOpenEnv); ok && v != "" {
+		o.JellyfinResolveOnOpen = getEnvBool(JellyfinResolveOnOpenEnv, true)
+		r.keys = append(r.keys, KeyJellyfinResolveOnOpen)
+	}
 	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
 	r.str(&o.DatabaseDriver, KeyDatabaseDriver, StreamNZBDatabaseDriverEnv, DatabaseDriverEnv)
 	r.str(&o.DatabaseURL, KeyDatabaseURL, StreamNZBDatabaseURLEnv, DatabaseURLEnv)

@@ -361,7 +361,7 @@ func TestProviderBlockDefaults(t *testing.T) {
 func TestOverrideKeysAreReportedOnlyForVariablesThatAreSet(t *testing.T) {
 	clearNumberedBlocks(t)
 	clear(t, ADDONPort, ADDONBaseURL, LOGLevel, KeepLogFiles, AdminUsernameEnv,
-		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, JellyfinEnabledEnv, JellyfinMaxPlaybackSourcesEnv, AdminForcePasswordResetEnv,
+		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, JellyfinEnabledEnv, JellyfinMaxPlaybackSourcesEnv, JellyfinResolveOnOpenEnv, AdminForcePasswordResetEnv,
 		AvailNZBAPIKey, TMDBAPIKey, TVDBAPIKey, SimklClientID, NNTPProxyPort, NNTPProxyHost,
 		NNTPProxyAuthUser, NNTPProxyAuthPass, NewznabAPIKeyEnv,
 		StreamNZBDatabaseDriverEnv, DatabaseDriverEnv, StreamNZBDatabaseURLEnv, DatabaseURLEnv,
@@ -554,6 +554,7 @@ func TestBooleanEnvNamesCoversEveryFixedName(t *testing.T) {
 		"MetadataEnabledEnv": MetadataEnabledEnv, "NNTPProxyEnabled": NNTPProxyEnabled,
 		"NewznabEnabledEnv": NewznabEnabledEnv, "AdminForcePasswordResetEnv": AdminForcePasswordResetEnv,
 		"JellyfinEnabledEnv":                 JellyfinEnabledEnv,
+		"JellyfinResolveOnOpenEnv":           JellyfinResolveOnOpenEnv,
 		"EasynewsAdvancedSearchEnv":          EasynewsAdvancedSearchEnv,
 		"StreamNZBEasynewsAdvancedSearchEnv": StreamNZBEasynewsAdvancedSearchEnv,
 		"EasynewsSpamFilterEnv":              EasynewsSpamFilterEnv,

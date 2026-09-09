@@ -207,6 +207,20 @@ func (s *Server) cappedEntries(rq *request, id itemID, entries []stremio.Playlis
 	return entries[:limit]
 }
 
+// renderedSources caps and renders a playlist view as media sources. Shared
+// by attachMediaSources' cached branch and the resolve-on-open path in
+// items.go, so the two callers that render a full playlist agree on it.
+func (s *Server) renderedSources(rq *request, id itemID, view *stremio.PlaylistView) []mediaSource {
+	if view == nil || len(view.Entries) == 0 {
+		return nil
+	}
+	var out []mediaSource
+	for _, entry := range s.cappedEntries(rq, id, view.Entries) {
+		out = append(out, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
+	}
+	return out
+}
+
 func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
 	id, _, ok := playableID(raw)
 	if !ok {
@@ -252,9 +266,7 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 		return
 	}
 	if view, ok := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); ok && view != nil && len(view.Entries) > 0 {
-		for _, entry := range s.cappedEntries(rq, id, view.Entries) {
-			item.MediaSources = append(item.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
-		}
+		item.MediaSources = append(item.MediaSources, s.renderedSources(rq, id, view)...)
 		return
 	}
 	runtime := float64(0)

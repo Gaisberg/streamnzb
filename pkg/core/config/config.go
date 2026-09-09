@@ -768,6 +768,12 @@ type Config struct {
 	// long list; the candidates are already ranked best-first, so capping
 	// only drops the tail. Defaulted to 20 when zero.
 	JellyfinMaxPlaybackSources int `json:"jellyfin_max_playback_sources,omitempty"`
+	// JellyfinResolveOnOpen runs the indexer search when a title page is
+	// opened, rather than waiting for PlaybackInfo. SenPlayer builds its
+	// version picker from the item document's MediaSources, so without this
+	// an unplayed title shows only "Play" and no list. Off by default: it
+	// costs one search per title page open.
+	JellyfinResolveOnOpen bool `json:"jellyfin_resolve_on_open,omitempty"`
 
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
@@ -1724,6 +1730,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyNewznabAPIKey:              func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
 	env.KeyJellyfinEnabled:            func(d, s *Config) { d.JellyfinEnabled = s.JellyfinEnabled },
 	env.KeyJellyfinMaxPlaybackSources: func(d, s *Config) { d.JellyfinMaxPlaybackSources = s.JellyfinMaxPlaybackSources },
+	env.KeyJellyfinResolveOnOpen:      func(d, s *Config) { d.JellyfinResolveOnOpen = s.JellyfinResolveOnOpen },
 	env.KeyAdminUsername:              func(d, s *Config) { d.AdminUsername = s.AdminUsername },
 	env.KeyAdminMustChangePwd:         func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyTrustedProxyAuthHeader:     func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
@@ -1807,6 +1814,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		NewznabAPIKey:              o.NewznabAPIKey,
 		JellyfinEnabled:            o.JellyfinEnabled,
 		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
+		JellyfinResolveOnOpen:      o.JellyfinResolveOnOpen,
 		AdminUsername:              o.AdminUsername,
 		AdminMustChangePassword:    o.AdminMustChangePwd,
 		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,

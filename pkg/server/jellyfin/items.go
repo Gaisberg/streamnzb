@@ -496,7 +496,32 @@ func (s *Server) handleItem(w http.ResponseWriter, rq *request, raw string) {
 		http.NotFound(w, rq.Request)
 		return
 	}
+	s.resolveOnOpen(rq, id, item)
 	writeJSON(w, http.StatusOK, item)
+}
+
+// resolveOnOpen runs the search immediately when a title page is opened,
+// for clients (SenPlayer) that build their version picker from the item
+// document's MediaSources rather than asking PlaybackInfo. It is opt-in —
+// unlike PlaybackInfo, nothing else forces this search to run — and only
+// fires here, on the single-item route: a list, Resume or NextUp page would
+// mean one search per row.
+func (s *Server) resolveOnOpen(rq *request, id itemID, item *baseItem) {
+	if s.opts.ResolveOnOpen == nil || !s.opts.ResolveOnOpen() {
+		return
+	}
+	if id.Kind != kindMovie && id.Kind != kindEpisode {
+		return
+	}
+	if _, cached := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); cached {
+		return
+	}
+	view, err := s.opts.Catalog.Playlist(rq.Context(), rq.stream, id.ContentType, id.playStremioID())
+	if err != nil || view == nil || len(view.Entries) == 0 {
+		logger.Debug("Jellyfin resolve on open failed", "item", id.playStremioID(), "stream", rq.streamName(), "err", err)
+		return
+	}
+	item.MediaSources = s.renderedSources(rq, id, view)
 }
 
 func (s *Server) writeItemError(w http.ResponseWriter, rq *request, raw string, err error) {

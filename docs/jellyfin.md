@@ -69,7 +69,10 @@ stream never sees another's.
   release as a *media source*, best first. The client's media-source picker is
   therefore the stream list, and switching source is switching release. At
   most 20 sources are offered per play (`JELLYFIN_MAX_PLAYBACK_SOURCES`); some
-  clients' pickers break on longer lists.
+  clients' pickers break on longer lists. With `JELLYFIN_RESOLVE_ON_OPEN=true`
+  the search runs when a title page is opened instead, so clients that pick a
+  source before pressing play (SenPlayer) see the full list; it costs an
+  indexer search per title opened, so it is off by default.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.

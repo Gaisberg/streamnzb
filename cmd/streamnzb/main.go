@@ -348,6 +348,10 @@ func main() {
 			}
 			return 0
 		},
+		ResolveOnOpen: func() bool {
+			liveCfg := apiServer.Config()
+			return liveCfg != nil && liveCfg.JellyfinResolveOnOpen
+		},
 		Streams:   streamManager,
 		Catalog:   stremioServer,
 		Playstate: stateMgr.JellyfinPlaystateStore(),

@@ -60,17 +60,18 @@ func (fakeStreams) AuthenticateToken(token, adminUsername, adminToken string) (*
 }
 
 type fakeCatalog struct {
-	mu        sync.Mutex
-	catalogs  []stremio.CatalogDef
-	rows      map[string][]stremio.MetaPreview
-	metas     map[string]*stremio.MetaObject
-	playlist  *stremio.PlaylistView
-	playErr   error
-	cached    *stremio.PlaylistView
-	searches  []string
-	metaCalls int
-	served    []servedPlay
-	disabled  bool
+	mu            sync.Mutex
+	catalogs      []stremio.CatalogDef
+	rows          map[string][]stremio.MetaPreview
+	metas         map[string]*stremio.MetaObject
+	playlist      *stremio.PlaylistView
+	playErr       error
+	cached        *stremio.PlaylistView
+	searches      []string
+	metaCalls     int
+	playlistCalls int
+	served        []servedPlay
+	disabled      bool
 }
 
 // releaseCaps is what ffprobe measured on the candidate that played: a
@@ -133,6 +134,9 @@ func (f *fakeCatalog) Meta(_ context.Context, _ *auth.Stream, contentType, id st
 }
 
 func (f *fakeCatalog) Playlist(context.Context, *auth.Stream, string, string) (*stremio.PlaylistView, error) {
+	f.mu.Lock()
+	f.playlistCalls++
+	f.mu.Unlock()
 	if f.playErr != nil {
 		return nil, f.playErr
 	}
@@ -286,12 +290,13 @@ func testCatalog() *fakeCatalog {
 }
 
 type fixture struct {
-	server     *Server
-	catalog    *fakeCatalog
-	play       *fakePlaystate
-	enabled    bool
-	serverID   string
-	maxSources int
+	server        *Server
+	catalog       *fakeCatalog
+	play          *fakePlaystate
+	enabled       bool
+	serverID      string
+	maxSources    int
+	resolveOnOpen bool
 }
 
 func newFixture() *fixture {
@@ -301,6 +306,7 @@ func newFixture() *fixture {
 		ServerID:           func() string { return f.serverID },
 		Admin:              func() (string, string, string) { return "admin", "$argon2id$hash", testAdminToken },
 		MaxPlaybackSources: func() int { return f.maxSources },
+		ResolveOnOpen:      func() bool { return f.resolveOnOpen },
 		Streams:            fakeStreams{},
 		Catalog:            f.catalog,
 		Playstate:          f.play,
@@ -839,6 +845,71 @@ func TestPlaybackInfoCapsSources(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
 	if len(info.MediaSources) != 3 {
 		t.Fatalf("want 3 sources with a configured limit, got %d", len(info.MediaSources))
+	}
+}
+
+// TestResolveOnOpenAttachesFullPlaylist checks the opt-in behaviour SenPlayer
+// needs: with JellyfinResolveOnOpen on, opening an unplayed movie's item page
+// runs the search immediately and the item carries the full (capped) list,
+// rather than the single stand-in source PlaybackInfo would otherwise leave
+// it with.
+func TestResolveOnOpenAttachesFullPlaylist(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
+
+	// Off by default: one stand-in source, and nothing was searched to build it.
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	if len(item.MediaSources) != 1 {
+		t.Fatalf("resolve on open off: want 1 stand-in source, got %d", len(item.MediaSources))
+	}
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("resolve on open off: Playlist called %d times, want 0", calls)
+	}
+
+	// On: the same route resolves and attaches the full list.
+	f.resolveOnOpen = true
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	if len(item.MediaSources) != 3 {
+		t.Fatalf("resolve on open: want 3 sources, got %d", len(item.MediaSources))
+	}
+	if item.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("resolve on open: sources out of order: %+v", item.MediaSources)
+	}
+	if calls := f.catalog.playlistCalls; calls != 1 {
+		t.Fatalf("resolve on open: Playlist called %d times, want 1", calls)
+	}
+}
+
+// TestResolveOnOpenSkipsListsAndCache checks that resolving on open only
+// fires on the single-item route, and only when the playlist is not already
+// cached — a list page would otherwise cost one search per row.
+func TestResolveOnOpenSkipsListsAndCache(t *testing.T) {
+	f := newFixture()
+	f.resolveOnOpen = true
+	movie, _ := itemIDFor("movie", "tt0111161")
+	f.catalog.playlist = &stremio.PlaylistView{Entries: []stremio.PlaylistEntry{{Index: 0, Title: "Release.mkv"}}}
+
+	// A library listing never triggers a search, however many rows it has.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+viewID("tmdb.trending.movie"), ""), new(queryResult))
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("listing: Playlist called %d times, want 0", calls)
+	}
+
+	// An already-cached playlist is not searched again.
+	f.catalog.cached = f.catalog.playlist
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("cached playlist: Playlist called %d times, want 0", calls)
+	}
+	if len(item.MediaSources) != 1 {
+		t.Fatalf("cached playlist: want 1 source from the cache, got %d", len(item.MediaSources))
 	}
 }
 
