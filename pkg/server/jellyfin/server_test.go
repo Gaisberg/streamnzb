@@ -261,7 +261,7 @@ func testCatalog() *fakeCatalog {
 	}
 	series := &stremio.MetaObject{
 		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: cdn + "/bb-bg.jpg",
-		ReleaseInfo: "2008-2013", Runtime: "49 min",
+		ReleaseInfo: "2008-2013", Released: "2008-01-20T00:00:00.000Z", Runtime: "49 min",
 		Videos: []stremio.MetaVideo{
 			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg"},
 			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
@@ -545,6 +545,71 @@ func TestMovieDetail(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?Ids="+item.ID+",zzz", ""), &result)
 	if len(result.Items) != 1 || result.Items[0].Name != item.Name {
 		t.Fatalf("ids lookup: %+v", result.Items)
+	}
+}
+
+// TestInfuseFields covers the fields Infuse 8.5 requires on every item
+// (Path, Etag, DateCreated): a view, a movie, a series, a season and an
+// episode all must carry non-empty values, a movie's DateCreated must equal
+// its PremiereDate, and the Etag must change when the poster does.
+func TestInfuseFields(t *testing.T) {
+	f := newFixture()
+	require := func(item baseItem, at string) {
+		if item.Path == "" || item.Etag == "" || item.DateCreated == "" {
+			t.Fatalf("%s missing infuse fields: %+v", at, item)
+		}
+	}
+
+	var views queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserViews", ""), &views)
+	if len(views.Items) == 0 {
+		t.Fatalf("no views")
+	}
+	require(*views.Items[0], "view")
+	if views.Items[0].DateCreated != dateCreatedFallback {
+		t.Fatalf("view DateCreated: %q", views.Items[0].DateCreated)
+	}
+
+	movie, _ := itemIDFor("movie", "tt0111161")
+	var movieItem baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &movieItem)
+	require(movieItem, "movie")
+	if movieItem.DateCreated != movieItem.PremiereDate {
+		t.Fatalf("movie DateCreated %q != PremiereDate %q", movieItem.DateCreated, movieItem.PremiereDate)
+	}
+	if !strings.HasPrefix(movieItem.Path, "/movie/") {
+		t.Fatalf("movie path: %q", movieItem.Path)
+	}
+
+	series, _ := itemIDFor("series", "tt0903747")
+	var seriesItem baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+series.encode(), ""), &seriesItem)
+	require(seriesItem, "series")
+	if !strings.HasPrefix(seriesItem.Path, "/series/") {
+		t.Fatalf("series path: %q", seriesItem.Path)
+	}
+	if seriesItem.PremiereDate == "" || seriesItem.DateCreated != seriesItem.PremiereDate {
+		t.Fatalf("series DateCreated %q != PremiereDate %q", seriesItem.DateCreated, seriesItem.PremiereDate)
+	}
+
+	var seasons queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Seasons?UserId=u", ""), &seasons)
+	require(*seasons.Items[0], "season")
+
+	var episodes queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+seasons.Items[0].ID, ""), &episodes)
+	require(*episodes.Items[0], "episode")
+	if episodes.Items[0].DateCreated != episodes.Items[0].PremiereDate {
+		t.Fatalf("episode DateCreated %q != PremiereDate %q", episodes.Items[0].DateCreated, episodes.Items[0].PremiereDate)
+	}
+
+	// A poster change changes the Etag: swap the fixture's meta and reread.
+	before := movieItem.Etag
+	f.catalog.metas["movie/tt0111161"].Poster = "/shawshank-2.jpg"
+	var again baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &again)
+	if again.Etag == before {
+		t.Fatalf("etag did not change with the poster: %q", again.Etag)
 	}
 }
 

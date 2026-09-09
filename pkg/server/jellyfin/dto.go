@@ -18,6 +18,32 @@ import (
 // ticksPerSecond is Jellyfin's time unit: 100ns ticks.
 const ticksPerSecond int64 = 10_000_000
 
+// dateCreatedFallback stands in for DateCreated when an item has no
+// PremiereDate (a view, or metadata missing one). Clients sort "recently
+// added" by this field; a fixed old date keeps the whole catalog from
+// looking freshly added.
+const dateCreatedFallback = "2020-01-01T00:00:00.0000000Z"
+
+// pathSlug turns a name into the one path segment views use: lowercase,
+// non-alphanumerics collapsed to a single "-". Nothing fetches this path —
+// Infuse just wants one present.
+func pathSlug(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			dash = false
+			continue
+		}
+		if !dash && b.Len() > 0 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
 type baseItem struct {
 	Name                     string            `json:"Name"`
 	ServerID                 string            `json:"ServerId"`
@@ -223,9 +249,25 @@ func providerIDs(id itemID) map[string]string {
 	return nil
 }
 
+// setIdentity fills Path, Etag and DateCreated. Some clients (Infuse 8.5)
+// request the three by name on every item and refuse a document that omits
+// one, even though nothing here is a filesystem path. Called after images
+// are set so the Etag folds in the Primary tag.
+func (s *Server) setIdentity(item *baseItem, path string) {
+	item.Path = path
+	item.DateCreated = item.PremiereDate
+	if item.DateCreated == "" {
+		item.DateCreated = dateCreatedFallback
+	}
+	// Same hash style as an image tag (images.go tagFor): first 20 hex of a
+	// sha1. Changes with the poster or the title, which is what an etag is
+	// for; a client refetches on either.
+	item.Etag = s.images.tagFor(item.ID + item.ImageTags["Primary"] + item.Name)
+}
+
 // viewItem is the library folder for a catalog.
 func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
-	return &baseItem{
+	item := &baseItem{
 		Name:           def.Name,
 		ServerID:       s.serverID(),
 		ID:             viewID(def.ID),
@@ -237,6 +279,8 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 		PlayAccess:     "Full",
 		UserData:       &userData{Key: viewID(def.ID), ItemID: viewID(def.ID)},
 	}
+	s.setIdentity(item, "/"+pathSlug(def.Name))
+	return item
 }
 
 // previewItem renders a catalog row. Rows carry no runtime or year, which is
@@ -304,6 +348,11 @@ func (s *Server) metaItem(id itemID, meta *stremio.MetaObject) *baseItem {
 		item.RecursiveItemCount = intPtr(len(videosOf(meta)))
 	}
 	s.setImages(item, id, meta.Poster, meta.Background, meta.Logo)
+	prefix := "series"
+	if id.Kind == kindMovie {
+		prefix = "movie"
+	}
+	s.setIdentity(item, "/"+prefix+"/"+id.baseStremioID())
 	return item
 }
 
@@ -373,6 +422,7 @@ func (s *Server) seasonItem(seriesID itemID, meta *stremio.MetaObject, season in
 	item.SeriesPrimaryImageTag = item.ImageTags["Primary"]
 	item.ParentBackdropItemID = seriesID.encode()
 	item.ParentBackdropImageTags = item.BackdropImageTags
+	s.setIdentity(item, "/series/"+seriesID.baseStremioID()+"/"+strconv.Itoa(season))
 	return item
 }
 
@@ -420,6 +470,8 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 		item.ParentBackdropItemID = seriesID.encode()
 		item.ParentBackdropImageTags = []string{tag}
 	}
+	path := "/series/" + seriesID.baseStremioID() + "/" + strconv.Itoa(video.Season) + "/" + strconv.Itoa(video.Episode)
+	s.setIdentity(item, path)
 	return item
 }
 
