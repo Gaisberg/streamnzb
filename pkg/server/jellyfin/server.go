@@ -86,6 +86,10 @@ type Options struct {
 	// The admin signs in with the dashboard credentials and is served as the
 	// admin stream, the same as in the Stremio addon.
 	Admin func() (username, passwordHash, token string)
+	// MaxPlaybackSources caps how many ranked candidates a media-source list
+	// carries; read per request. A nil or non-positive value falls back to
+	// defaultMaxPlaybackSources.
+	MaxPlaybackSources func() int
 
 	Streams   Streams
 	Catalog   Catalog
@@ -111,6 +115,29 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) enabled() bool {
 	return s.opts.Enabled == nil || s.opts.Enabled()
+}
+
+// defaultMaxPlaybackSources is applied when the operator has not set a
+// limit, or has set one out of range.
+const defaultMaxPlaybackSources = 20
+
+// maxSources reads the configured cap, clamped to a sane range so a bad
+// config value cannot empty the list or make it unbounded again.
+func (s *Server) maxSources() int {
+	n := defaultMaxPlaybackSources
+	if s.opts.MaxPlaybackSources != nil {
+		if v := s.opts.MaxPlaybackSources(); v > 0 {
+			n = v
+		}
+	}
+	switch {
+	case n < 1:
+		return 1
+	case n > 200:
+		return 200
+	default:
+		return n
+	}
 }
 
 func (s *Server) serverID() string {

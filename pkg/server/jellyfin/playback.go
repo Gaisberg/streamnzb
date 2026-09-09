@@ -196,6 +196,17 @@ func playSessionID(streamName, itemID string) string {
 	return hex.EncodeToString(h[:16])
 }
 
+// cappedEntries trims a ranked playlist down to maxSources, keeping the best
+// candidates: entries arrive best-first, so truncation only ever drops the tail.
+func (s *Server) cappedEntries(rq *request, id itemID, entries []stremio.PlaylistEntry) []stremio.PlaylistEntry {
+	limit := s.maxSources()
+	if len(entries) <= limit {
+		return entries
+	}
+	logger.Debug("Jellyfin media sources truncated", "stream", rq.streamName(), "content", id.playStremioID(), "total", len(entries), "sent", limit)
+	return entries[:limit]
+}
+
 func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
 	id, _, ok := playableID(raw)
 	if !ok {
@@ -214,7 +225,7 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw stri
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	for _, entry := range view.Entries {
+	for _, entry := range s.cappedEntries(rq, id, view.Entries) {
 		resp.MediaSources = append(resp.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
 	}
 	if len(resp.MediaSources) == 0 {
@@ -241,7 +252,7 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 		return
 	}
 	if view, ok := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); ok && view != nil && len(view.Entries) > 0 {
-		for _, entry := range view.Entries {
+		for _, entry := range s.cappedEntries(rq, id, view.Entries) {
 			item.MediaSources = append(item.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
 		}
 		return

@@ -286,23 +286,25 @@ func testCatalog() *fakeCatalog {
 }
 
 type fixture struct {
-	server   *Server
-	catalog  *fakeCatalog
-	play     *fakePlaystate
-	enabled  bool
-	serverID string
+	server     *Server
+	catalog    *fakeCatalog
+	play       *fakePlaystate
+	enabled    bool
+	serverID   string
+	maxSources int
 }
 
 func newFixture() *fixture {
 	f := &fixture{catalog: testCatalog(), play: newFakePlaystate(), enabled: true, serverID: "srv-0001"}
 	f.server = New(Options{
-		Enabled:   func() bool { return f.enabled },
-		ServerID:  func() string { return f.serverID },
-		Admin:     func() (string, string, string) { return "admin", "$argon2id$hash", testAdminToken },
-		Streams:   fakeStreams{},
-		Catalog:   f.catalog,
-		Playstate: f.play,
-		Version:   "test",
+		Enabled:            func() bool { return f.enabled },
+		ServerID:           func() string { return f.serverID },
+		Admin:              func() (string, string, string) { return "admin", "$argon2id$hash", testAdminToken },
+		MaxPlaybackSources: func() int { return f.maxSources },
+		Streams:            fakeStreams{},
+		Catalog:            f.catalog,
+		Playstate:          f.play,
+		Version:            "test",
 	})
 	return f
 }
@@ -806,6 +808,37 @@ func TestPlaybackInfo(t *testing.T) {
 	}
 	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+viewID("tmdb.trending.movie")+"/PlaybackInfo", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("playback info for a folder: %d", rec.Code)
+	}
+}
+
+// TestPlaybackInfoCapsSources checks that a playlist longer than the
+// configured limit is truncated to the limit, keeping the best-ranked
+// entries (the playlist already arrives ranked best-first).
+func TestPlaybackInfoCapsSources(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	entries := make([]stremio.PlaylistEntry, 25)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
+
+	var info playbackInfoResponse
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	if len(info.MediaSources) != 20 {
+		t.Fatalf("want 20 sources capped from 25, got %d", len(info.MediaSources))
+	}
+	for i, src := range info.MediaSources {
+		if src.Name != fmt.Sprintf("Release.%02d.mkv", i) {
+			t.Fatalf("source %d out of order: %+v", i, src)
+		}
+	}
+
+	// A configured limit is honoured too.
+	f.maxSources = 3
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	if len(info.MediaSources) != 3 {
+		t.Fatalf("want 3 sources with a configured limit, got %d", len(info.MediaSources))
 	}
 }
 

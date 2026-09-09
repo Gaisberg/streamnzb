@@ -361,7 +361,7 @@ func TestProviderBlockDefaults(t *testing.T) {
 func TestOverrideKeysAreReportedOnlyForVariablesThatAreSet(t *testing.T) {
 	clearNumberedBlocks(t)
 	clear(t, ADDONPort, ADDONBaseURL, LOGLevel, KeepLogFiles, AdminUsernameEnv,
-		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, JellyfinEnabledEnv, AdminForcePasswordResetEnv,
+		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, JellyfinEnabledEnv, JellyfinMaxPlaybackSourcesEnv, AdminForcePasswordResetEnv,
 		AvailNZBAPIKey, TMDBAPIKey, TVDBAPIKey, SimklClientID, NNTPProxyPort, NNTPProxyHost,
 		NNTPProxyAuthUser, NNTPProxyAuthPass, NewznabAPIKeyEnv,
 		StreamNZBDatabaseDriverEnv, DatabaseDriverEnv, StreamNZBDatabaseURLEnv, DatabaseURLEnv,
@@ -409,6 +409,28 @@ func TestUnparsableIntegersOverrideNothing(t *testing.T) {
 	o, keys := ReadConfigOverrides()
 	if o.KeepLogFiles != 0 || contains(keys, KeyKeepLogFiles) {
 		t.Fatalf("KEEP_LOG_FILES=0 gave %d, keys %v", o.KeepLogFiles, keys)
+	}
+}
+
+// JELLYFIN_MAX_PLAYBACK_SOURCES follows the same intVal path as KeepLogFiles:
+// it parses and range-checks together, so a value outside 1-200 is treated as
+// unset rather than silently clamped.
+func TestJellyfinMaxPlaybackSourcesEnv(t *testing.T) {
+	clearNumberedBlocks(t)
+	clear(t, JellyfinMaxPlaybackSourcesEnv)
+
+	t.Setenv(JellyfinMaxPlaybackSourcesEnv, "5")
+	o, keys := ReadConfigOverrides()
+	if o.JellyfinMaxPlaybackSources != 5 || !contains(keys, KeyJellyfinMaxPlaybackSources) {
+		t.Fatalf("JELLYFIN_MAX_PLAYBACK_SOURCES=5 gave %d, keys %v", o.JellyfinMaxPlaybackSources, keys)
+	}
+
+	for _, bad := range []string{"0", "201", "-1", "many"} {
+		t.Setenv(JellyfinMaxPlaybackSourcesEnv, bad)
+		o, keys := ReadConfigOverrides()
+		if o.JellyfinMaxPlaybackSources != 0 || contains(keys, KeyJellyfinMaxPlaybackSources) {
+			t.Fatalf("JELLYFIN_MAX_PLAYBACK_SOURCES=%q gave %d, keys %v", bad, o.JellyfinMaxPlaybackSources, keys)
+		}
 	}
 }
 
