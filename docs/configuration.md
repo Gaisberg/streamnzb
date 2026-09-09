@@ -91,6 +91,12 @@ See [Database backends](database.md) for how switching and migration work.
 | `NEWZNAB_ENABLED` | Enable/disable the Newznab endpoint (default off) — see [Newznab endpoint](newznab.md) |
 | `NEWZNAB_API_KEY` | The key clients authenticate with (one is generated on first start) |
 
+### Jellyfin endpoint
+
+| Variable | Meaning |
+|---|---|
+| `JELLYFIN_ENABLED` | Enable/disable the Jellyfin endpoint (default off) — see [Jellyfin endpoint](jellyfin.md) |
+
 ### Outbound User-Agent headers
 
 | Variable | Meaning |

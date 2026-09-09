@@ -286,12 +286,8 @@ func (s *Server) redirectToResolvedSlot(w http.ResponseWriter, r *http.Request, 
 	if resolved.stream != nil {
 		resolved.stream.Close()
 	}
-	nextURL := s.baseURLWithToken(streamConfig) + "/play/" + resolved.sessionID
-	if r.URL.RawQuery != "" {
-		nextURL += "?" + r.URL.RawQuery
-	}
 	logger.Info("Redirecting client to resolved/failover slot", "from", requestedSessionID, "to", resolved.sessionID)
-	w.Header().Set("Location", nextURL)
+	w.Header().Set("Location", s.slotLocation(r, streamConfig, resolved.sessionID))
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }

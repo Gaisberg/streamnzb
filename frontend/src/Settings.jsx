@@ -97,6 +97,7 @@ function Settings({
         proxy_enabled: initialConfig.proxy_enabled !== false,
         newznab_enabled: initialConfig.newznab_enabled === true,
         newznab_api_key: initialConfig.newznab_api_key ?? '',
+        jellyfin_enabled: initialConfig.jellyfin_enabled === true,
         availnzb_mode: normalizeAvailNZBMode(initialConfig.availnzb_mode),
         tmdb_api_key: initialConfig.tmdb_api_key ?? '',
         tvdb_api_key: initialConfig.tvdb_api_key ?? '',

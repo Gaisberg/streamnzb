@@ -1,0 +1,571 @@
+package jellyfin
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
+	"streamnzb/pkg/server/stremio"
+)
+
+// Playback is the Stremio flow with Jellyfin names. PlaybackInfo is the
+// stream request: it searches, ranks and returns every candidate as a media
+// source, best first. The stream URL is the addon's /play/ slot, and a
+// candidate that fails moves to the next one the way it does for Stremio —
+// by redirect, so the client re-issues its Range request against the new
+// slot instead of receiving the tail of a different file.
+
+// mediaSource is Jellyfin's MediaSourceInfo. Protocol "File" with direct
+// play and no transcoding tells every client to build the plain stream URL
+// itself, which is the only URL there is.
+type mediaSource struct {
+	Protocol              string `json:"Protocol"`
+	ID                    string `json:"Id"`
+	Path                  string `json:"Path"`
+	Type                  string `json:"Type"`
+	Container             string `json:"Container,omitempty"`
+	Size                  *int64 `json:"Size,omitempty"`
+	Name                  string `json:"Name"`
+	IsRemote              bool   `json:"IsRemote"`
+	ETag                  string `json:"ETag,omitempty"`
+	RunTimeTicks          *int64 `json:"RunTimeTicks,omitempty"`
+	ReadAtNativeFramerate bool   `json:"ReadAtNativeFramerate"`
+	IgnoreDts             bool   `json:"IgnoreDts"`
+	IgnoreIndex           bool   `json:"IgnoreIndex"`
+	GenPtsInput           bool   `json:"GenPtsInput"`
+	SupportsTranscoding   bool   `json:"SupportsTranscoding"`
+	SupportsDirectStream  bool   `json:"SupportsDirectStream"`
+	SupportsDirectPlay    bool   `json:"SupportsDirectPlay"`
+	IsInfiniteStream      bool   `json:"IsInfiniteStream"`
+	RequiresOpening       bool   `json:"RequiresOpening"`
+	RequiresClosing       bool   `json:"RequiresClosing"`
+	RequiresLooping       bool   `json:"RequiresLooping"`
+	SupportsProbing       bool   `json:"SupportsProbing"`
+	// TranscodingSubProtocol is "http" — the plain stream URL. Nothing is
+	// transcoded here, but the field is required and has no empty form.
+	TranscodingSubProtocol string `json:"TranscodingSubProtocol"`
+	// HasSegments is false: the source is one file, not a segmented stream.
+	HasSegments             bool              `json:"HasSegments"`
+	VideoType               string            `json:"VideoType"`
+	MediaStreams            []mediaStream     `json:"MediaStreams"`
+	MediaAttachments        []any             `json:"MediaAttachments"`
+	Formats                 []string          `json:"Formats"`
+	Bitrate                 *int              `json:"Bitrate,omitempty"`
+	RequiredHTTPHeaders     map[string]string `json:"RequiredHttpHeaders"`
+	DefaultAudioStreamIndex *int              `json:"DefaultAudioStreamIndex,omitempty"`
+}
+
+type mediaStream struct {
+	Codec                  string `json:"Codec,omitempty"`
+	Language               string `json:"Language,omitempty"`
+	DisplayTitle           string `json:"DisplayTitle,omitempty"`
+	VideoRange             string `json:"VideoRange,omitempty"`
+	VideoRangeType         string `json:"VideoRangeType,omitempty"`
+	IsInterlaced           bool   `json:"IsInterlaced"`
+	BitDepth               *int   `json:"BitDepth,omitempty"`
+	Height                 *int   `json:"Height,omitempty"`
+	Width                  *int   `json:"Width,omitempty"`
+	Type                   string `json:"Type"`
+	Index                  int    `json:"Index"`
+	IsDefault              bool   `json:"IsDefault"`
+	IsForced               bool   `json:"IsForced"`
+	IsHearingImpaired      bool   `json:"IsHearingImpaired"`
+	IsOriginal             bool   `json:"IsOriginal"`
+	IsExternal             bool   `json:"IsExternal"`
+	IsTextSubtitleStream   bool   `json:"IsTextSubtitleStream"`
+	SupportsExternalStream bool   `json:"SupportsExternalStream"`
+	Profile                string `json:"Profile,omitempty"`
+	Level                  *int   `json:"Level,omitempty"`
+}
+
+type playbackInfoResponse struct {
+	MediaSources  []mediaSource `json:"MediaSources"`
+	PlaySessionID string        `json:"PlaySessionId"`
+	ErrorCode     string        `json:"ErrorCode,omitempty"`
+}
+
+func (s *Server) servePlayback(w http.ResponseWriter, rq *request) bool {
+	segs := rq.segs
+	if len(segs) >= 2 && segs[0] == "users" {
+		segs = segs[2:]
+	}
+	switch {
+	case len(segs) == 3 && segs[0] == "items" && segs[2] == "playbackinfo" && (rq.is(http.MethodGet) || rq.is(http.MethodPost)):
+		s.handlePlaybackInfo(w, rq, segs[1])
+	case len(segs) == 3 && segs[0] == "videos" && (rq.is(http.MethodGet) || rq.is(http.MethodHead)):
+		// /Videos/{id}/stream and /Videos/{id}/stream.mkv; the HLS forms are
+		// transcodes, which do not exist here.
+		if name, _, _ := strings.Cut(segs[2], "."); name != "stream" {
+			return false
+		}
+		s.handleStream(w, rq, segs[1])
+	case len(segs) == 3 && segs[0] == "items" && segs[2] == "refresh" && rq.is(http.MethodPost):
+		writeEmpty(w)
+	case len(segs) >= 2 && segs[0] == "sessions" && segs[1] == "playing" && rq.is(http.MethodPost):
+		s.handlePlaying(w, rq, strings.Join(segs[2:], "/"), "")
+	case len(segs) == 2 && segs[0] == "playeditems":
+		// /Users/{id}/PlayedItems/{itemId}
+		s.handlePlayed(w, rq, segs[1])
+	case len(segs) == 2 && segs[0] == "userplayeditems":
+		s.handlePlayed(w, rq, segs[1])
+	case len(segs) == 2 && (segs[0] == "favoriteitems" || segs[0] == "userfavoriteitems"):
+		// Favourites have nowhere to live; the client gets its item's
+		// state back unchanged.
+		s.writeUserData(w, rq, segs[1])
+	case len(segs) == 3 && segs[0] == "useritems" && segs[2] == "userdata":
+		if rq.is(http.MethodPost) {
+			s.handleUserDataUpdate(w, rq, segs[1])
+			return true
+		}
+		s.writeUserData(w, rq, segs[1])
+	case len(segs) == 3 && segs[0] == "playingitems" && rq.is(http.MethodPost):
+		// The legacy /Users/{id}/PlayingItems/{itemId}[/Progress] forms carry
+		// the report in the query.
+		s.handlePlaying(w, rq, segs[2], segs[1])
+	case len(segs) == 2 && segs[0] == "playingitems":
+		if rq.is(http.MethodDelete) {
+			s.handlePlaying(w, rq, "stopped", segs[1])
+		} else {
+			s.handlePlaying(w, rq, "", segs[1])
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// playableID resolves an item or media-source id to the movie or episode
+// it plays and the slot index it names (0 for an item id).
+func playableID(raw string) (itemID, int, bool) {
+	id, err := decodeItemID(raw)
+	if err != nil {
+		return itemID{}, 0, false
+	}
+	switch id.Kind {
+	case kindMovie, kindEpisode:
+		return id, 0, true
+	case kindSource:
+		return id.playable(), id.Slot, true
+	}
+	return itemID{}, 0, false
+}
+
+// A media source id is the one thing this layer controls that travels on the
+// stream URL, so it carries the stream's token.
+//
+// The player that fetches the video is not the client that signed in. Findroid
+// hands ExoPlayer a bare URL built by the SDK — no Authorization header, no
+// api_key — and ExoPlayer sends exactly that. The request therefore arrives
+// with nothing to say which stream it belongs to, and this layer cannot serve
+// a slot without knowing whose config to resolve it against. Putting the token
+// in the URL is the same bargain the Stremio play URL already makes.
+//
+// The suffix is only ever honoured on the stream route, so a token read out of
+// a media source id cannot be used to browse.
+const mediaSourceTokenSep = "."
+
+func mediaSourceIDFor(id itemID, index int, stream *auth.Stream) string {
+	encoded := id.source(index).encode()
+	if stream == nil || stream.Token == "" {
+		return encoded
+	}
+	return encoded + mediaSourceTokenSep + stream.Token
+}
+
+// splitMediaSourceID separates the id from the token a client handed back.
+func splitMediaSourceID(raw string) (string, string) {
+	if before, after, found := strings.Cut(raw, mediaSourceTokenSep); found {
+		return before, after
+	}
+	return raw, ""
+}
+
+func playSessionID(streamName, itemID string) string {
+	h := sha1.Sum([]byte(streamName + ":" + itemID + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)))
+	return hex.EncodeToString(h[:16])
+}
+
+func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
+	id, _, ok := playableID(raw)
+	if !ok {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	resp := playbackInfoResponse{MediaSources: []mediaSource{}, PlaySessionID: playSessionID(rq.streamName(), id.encode())}
+	view, err := s.opts.Catalog.Playlist(rq.Context(), rq.stream, id.ContentType, id.playStremioID())
+	if err != nil {
+		if errors.Is(err, stremio.ErrMetadataDisabled) {
+			http.NotFound(w, rq.Request)
+			return
+		}
+		logger.Warn("Jellyfin playback info failed", "item", raw, "stream", rq.streamName(), "err", err)
+		resp.ErrorCode = "NoCompatibleStream"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	for _, entry := range view.Entries {
+		resp.MediaSources = append(resp.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
+	}
+	if len(resp.MediaSources) == 0 {
+		resp.ErrorCode = "NoCompatibleStream"
+	}
+	logger.Info("Jellyfin playback info", "stream", rq.streamName(), "content", id.playStremioID(), "sources", len(resp.MediaSources))
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// attachMediaSources gives a playable item the media sources a real Jellyfin
+// server carries on its detail document. Clients do not treat them as
+// optional: Findroid reads sources.first() while building its detail screen
+// and throws on an empty list, leaving the screen loading forever.
+//
+// Resolving candidates means searching indexers, which is far too slow to run
+// every time a poster is opened, so this is deliberately cheap. A playlist
+// already in cache is rendered in full; otherwise the item gets one stand-in
+// source naming slot 0 — the best candidate, whichever it turns out to be —
+// and the real ranked list arrives when the client asks for PlaybackInfo on
+// play. Playing the stand-in is correct either way: the slot resolves and
+// fails over exactly as it does for a Stremio client.
+func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
+	if item == nil || (id.Kind != kindMovie && id.Kind != kindEpisode) {
+		return
+	}
+	if view, ok := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); ok && view != nil && len(view.Entries) > 0 {
+		for _, entry := range view.Entries {
+			item.MediaSources = append(item.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
+		}
+		return
+	}
+	runtime := float64(0)
+	if item.RunTimeTicks != nil {
+		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
+	}
+	item.MediaSources = []mediaSource{s.mediaSourceOf(rq, id, stremio.PlaylistEntry{
+		Index: 0,
+		Title: item.Name,
+	}, runtime)}
+}
+
+// mediaSourceOf renders one candidate. Path is informational — clients
+// display it and nothing fetches it — and carries the release title, which
+// is what a user picking between sources wants to see.
+func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEntry, runtimeSeconds float64) mediaSource {
+	parsed := parser.ParseReleaseTitle(entry.Title)
+	container := "mkv"
+	if parsed != nil && parsed.Result != nil && parsed.Container != "" {
+		container = strings.ToLower(parsed.Container)
+	}
+	src := mediaSource{
+		Protocol:               "File",
+		ID:                     mediaSourceIDFor(id, entry.Index, rq.stream),
+		Path:                   entry.Title,
+		Type:                   "Default",
+		Container:              container,
+		Name:                   entry.Title,
+		SupportsDirectStream:   true,
+		SupportsDirectPlay:     true,
+		SupportsProbing:        true,
+		TranscodingSubProtocol: "http",
+		VideoType:              "VideoFile",
+		MediaStreams:           mediaStreamsOf(parsed, entry.Caps),
+		MediaAttachments:       []any{},
+		Formats:                []string{},
+		RequiredHTTPHeaders:    map[string]string{},
+	}
+	if entry.Size > 0 {
+		src.Size = int64Ptr(entry.Size)
+	}
+	seconds := runtimeSeconds
+	if entry.Caps != nil && entry.Caps.DurationSeconds > 0 {
+		seconds = entry.Caps.DurationSeconds
+	}
+	if seconds > 0 {
+		src.RunTimeTicks = int64Ptr(int64(seconds * float64(ticksPerSecond)))
+		if entry.Size > 0 {
+			src.Bitrate = intPtr(int(float64(entry.Size) * 8 / seconds))
+		}
+	}
+	for i, stream := range src.MediaStreams {
+		if stream.Type == "Audio" {
+			src.DefaultAudioStreamIndex = intPtr(i)
+			break
+		}
+	}
+	return src
+}
+
+var resolutionSizes = map[string][2]int{
+	"2160p": {3840, 2160}, "4k": {3840, 2160}, "1440p": {2560, 1440},
+	"1080p": {1920, 1080}, "720p": {1280, 720}, "576p": {1024, 576}, "480p": {720, 480},
+}
+
+// mediaStreamsOf describes the tracks: what ffprobe measured when the
+// release played before, otherwise what the title claims.
+func mediaStreamsOf(parsed *parser.ParsedRelease, caps *release.MediaCaps) []mediaStream {
+	video := mediaStream{Type: "Video", IsDefault: true}
+	var audio []mediaStream
+	if caps != nil {
+		video.Codec = strings.ToLower(caps.VideoCodec)
+		video.Profile = caps.Profile
+		if caps.Width > 0 {
+			video.Width = intPtr(caps.Width)
+		}
+		if caps.Height > 0 {
+			video.Height = intPtr(caps.Height)
+		}
+		if caps.BitDepth > 0 {
+			video.BitDepth = intPtr(caps.BitDepth)
+		}
+		switch {
+		case caps.DolbyVision:
+			video.VideoRange, video.VideoRangeType = "HDR", "DOVI"
+		case caps.HDR != "":
+			video.VideoRange, video.VideoRangeType = "HDR", strings.ReplaceAll(caps.HDR, "+", "Plus")
+		default:
+			video.VideoRange, video.VideoRangeType = "SDR", "SDR"
+		}
+		if caps.TracksProbed {
+			for i := 0; i < caps.AudioStreams; i++ {
+				track := mediaStream{Type: "Audio", Codec: strings.ToLower(caps.AudioCodec), IsDefault: i == 0}
+				if i < len(caps.AudioLanguages) {
+					track.Language = caps.AudioLanguages[i]
+				}
+				audio = append(audio, track)
+			}
+		} else if caps.AudioCodec != "" {
+			audio = append(audio, mediaStream{Type: "Audio", Codec: strings.ToLower(caps.AudioCodec), IsDefault: true})
+		}
+	} else if parsed != nil && parsed.Result != nil {
+		switch strings.ToLower(parsed.Codec) {
+		case "hevc", "x265", "h265":
+			video.Codec = "hevc"
+		case "avc", "x264", "h264":
+			video.Codec = "h264"
+		case "av1":
+			video.Codec = "av1"
+		}
+		if size, ok := resolutionSizes[strings.ToLower(parsed.Resolution)]; ok {
+			video.Width, video.Height = intPtr(size[0]), intPtr(size[1])
+		}
+		video.VideoRange, video.VideoRangeType = "SDR", "SDR"
+		for _, hdr := range parsed.HDR {
+			switch strings.ToUpper(hdr) {
+			case "DV", "DOLBY VISION":
+				video.VideoRange, video.VideoRangeType = "HDR", "DOVI"
+			case "HDR10+":
+				video.VideoRange, video.VideoRangeType = "HDR", "HDR10Plus"
+			case "HDR", "HDR10", "HLG":
+				if video.VideoRangeType != "DOVI" && video.VideoRangeType != "HDR10Plus" {
+					video.VideoRange, video.VideoRangeType = "HDR", "HDR10"
+				}
+			}
+		}
+		for i, codec := range parsed.Audio {
+			track := mediaStream{Type: "Audio", Codec: strings.ToLower(codec), IsDefault: i == 0}
+			if i < len(parsed.Languages) {
+				track.Language = parsed.Languages[i]
+			}
+			audio = append(audio, track)
+		}
+	}
+	// A video track without dimensions is worse than no video track. Once a
+	// client sees one it reads the height and width unconditionally — Findroid
+	// asserts both non-null — and a release that was never probed and whose
+	// title names no resolution has neither. Dropping the track costs a badge;
+	// keeping it crashes the screen the badge would sit on.
+	streams := []mediaStream{}
+	if video.Width != nil && video.Height != nil {
+		video.DisplayTitle = strings.TrimSpace(strings.ToUpper(video.Codec) + " " + video.VideoRangeType)
+		streams = append(streams, video)
+	}
+	for _, track := range audio {
+		track.DisplayTitle = strings.TrimSpace(track.Language + " " + strings.ToUpper(track.Codec))
+		streams = append(streams, track)
+	}
+	for i := range streams {
+		streams[i].Index = i
+	}
+	return streams
+}
+
+// handleStream serves /Videos/{id}/stream: the slot the media source names,
+// through the addon's play path. Failover redirects come back here with the
+// next source's id, so the client sees a media-source switch rather than a
+// foreign URL.
+func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
+	id, index, ok := playableID(raw)
+	if !ok {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	if src := rq.param("mediaSourceId"); src != "" {
+		raw, _ := splitMediaSourceID(src)
+		if sid, sidx, ok := playableID(raw); ok && sid.encode() == id.encode() {
+			index = sidx
+		}
+	}
+	contentID := id.playStremioID()
+	slotPath := stremio.SlotPathFor(rq.stream, id.ContentType, contentID, index)
+	logger.Debug("Jellyfin stream request", "stream", rq.streamName(), "content", contentID, "slot", index)
+
+	// The redirect must keep authenticating: a client that sent the token
+	// in a header may or may not replay it on a redirect, so the query
+	// carries it from here on when it did not already.
+	query := rq.URL.Query()
+	if clientOf(rq).Token != "" && rq.param("api_key") == "" && rq.param("apikey") == "" {
+		query.Set("api_key", clientOf(rq).Token)
+	}
+	opts := stremio.PlayServeOptions{
+		FailWithStatus: true,
+		SlotLocation: func(nextSlot string) string {
+			nextIndex, ok := stremio.SlotIndexOf(nextSlot)
+			if !ok {
+				nextIndex = index
+			}
+			q := url.Values{}
+			for k, v := range query {
+				q[k] = v
+			}
+			setParam(q, "mediaSourceId", mediaSourceIDFor(id, nextIndex, rq.stream))
+			return Mount + "videos/" + id.encode() + "/stream?" + q.Encode()
+		},
+	}
+	s.opts.Catalog.ServePlay(w, rq.Request, rq.stream, slotPath, opts)
+}
+
+// playbackReport is what a client says about where it is. The body form is
+// the Jellyfin one; the query form is the legacy PlayingItems route.
+type playbackReport struct {
+	ItemID        string `json:"ItemId"`
+	MediaSourceID string `json:"MediaSourceId"`
+	PositionTicks *int64 `json:"PositionTicks"`
+	IsPaused      bool   `json:"IsPaused"`
+	PlaySessionID string `json:"PlaySessionId"`
+}
+
+func readReport(rq *request, pathItem string) (playbackReport, bool) {
+	var report playbackReport
+	if rq.Body != nil {
+		raw, err := io.ReadAll(io.LimitReader(rq.Body, 256<<10))
+		if err == nil && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &report)
+		}
+	}
+	if report.ItemID == "" {
+		report.ItemID = rq.param("itemId")
+	}
+	if report.ItemID == "" {
+		report.ItemID = pathItem
+	}
+	if report.MediaSourceID == "" {
+		report.MediaSourceID = rq.param("mediaSourceId")
+	}
+	if report.PositionTicks == nil {
+		if v := rq.param("positionTicks"); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				report.PositionTicks = &n
+			}
+		}
+	}
+	if !report.IsPaused {
+		report.IsPaused = rq.boolParam("isPaused")
+	}
+	return report, report.ItemID != ""
+}
+
+// handlePlaying serves the Sessions/Playing family: "" (started),
+// "progress" and "stopped".
+func (s *Server) handlePlaying(w http.ResponseWriter, rq *request, event, pathItem string) {
+	report, ok := readReport(rq, pathItem)
+	if !ok {
+		writeEmpty(w)
+		return
+	}
+	id, _, ok := playableID(report.ItemID)
+	if !ok {
+		writeEmpty(w)
+		return
+	}
+	position := int64(0)
+	if report.PositionTicks != nil {
+		position = *report.PositionTicks
+	}
+	switch event {
+	case "", "playing":
+		s.recordProgress(rq, id, position, playEventStart)
+	case "progress":
+		if report.IsPaused {
+			s.recordProgress(rq, id, position, playEventPause)
+		} else {
+			s.recordProgress(rq, id, position, playEventTick)
+		}
+	case "stopped":
+		s.recordProgress(rq, id, position, playEventStop)
+	case "ping":
+	default:
+		http.NotFound(w, rq.Request)
+		return
+	}
+	writeEmpty(w)
+}
+
+func (s *Server) handlePlayed(w http.ResponseWriter, rq *request, raw string) {
+	id, _, ok := playableID(raw)
+	if !ok {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	switch {
+	case rq.is(http.MethodPost):
+		s.setPlayed(rq, id, true)
+	case rq.is(http.MethodDelete):
+		s.setPlayed(rq, id, false)
+	default:
+		http.NotFound(w, rq.Request)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.userData(rq, id))
+}
+
+func (s *Server) writeUserData(w http.ResponseWriter, rq *request, raw string) {
+	id, err := decodeItemID(raw)
+	if err != nil {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.userData(rq, id.playable()))
+}
+
+// handleUserDataUpdate serves POST /UserItems/{id}/UserData, the newer way
+// clients mark an item played or set its position.
+func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw string) {
+	id, _, ok := playableID(raw)
+	if !ok {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	var body struct {
+		Played                *bool  `json:"Played"`
+		PlaybackPositionTicks *int64 `json:"PlaybackPositionTicks"`
+	}
+	if data, err := io.ReadAll(io.LimitReader(rq.Body, 64<<10)); err == nil {
+		_ = json.Unmarshal(data, &body)
+	}
+	if body.Played != nil {
+		s.setPlayed(rq, id, *body.Played)
+	}
+	if body.PlaybackPositionTicks != nil {
+		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
+	}
+	writeJSON(w, http.StatusOK, s.userData(rq, id))
+}

@@ -25,6 +25,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Integrations](integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](newznab.md) — serving your configured indexers to any Newznab-compatible application
+- [Jellyfin endpoint](jellyfin.md) — serving your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid)
 - [AvailNZB](availnzb.md) — community availability database integration
 - [Using with AIOStreams](aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 

@@ -1,0 +1,933 @@
+package jellyfin
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/server/stremio"
+)
+
+func init() {
+	logger.Init("ERROR")
+}
+
+// fakeStreams is a two-stream world: "living-room", which has a token and the
+// password "room-pw", and an admin, which is not a stream at all.
+type fakeStreams struct{}
+
+const (
+	testToken      = "tok-living-room-0123456789abcdef"
+	testAdminToken = "tok-admin-fedcba9876543210"
+	testOtherToken = "tok-kitchen-0123456789abcdef00"
+	testPassword   = "room-pw"
+)
+
+func (fakeStreams) AuthenticateStream(username, password string) (*auth.Stream, error) {
+	if strings.EqualFold(username, "living-room") && (password == testPassword || password == testToken) {
+		return &auth.Stream{Username: "living-room", Token: testToken}, nil
+	}
+	if strings.EqualFold(username, "kitchen") && password == testOtherToken {
+		return &auth.Stream{Username: "kitchen", Token: testOtherToken}, nil
+	}
+	return nil, errors.New("invalid credentials")
+}
+
+func (fakeStreams) AuthenticateToken(token, adminUsername, adminToken string) (*auth.Stream, error) {
+	switch token {
+	case testToken:
+		return &auth.Stream{Username: "living-room", Token: testToken}, nil
+	case testOtherToken:
+		return &auth.Stream{Username: "kitchen", Token: testOtherToken}, nil
+	case adminToken:
+		return &auth.Stream{Username: adminUsername, Token: adminToken}, nil
+	}
+	return nil, errors.New("invalid token")
+}
+
+type fakeCatalog struct {
+	mu        sync.Mutex
+	catalogs  []stremio.CatalogDef
+	rows      map[string][]stremio.MetaPreview
+	metas     map[string]*stremio.MetaObject
+	playlist  *stremio.PlaylistView
+	playErr   error
+	cached    *stremio.PlaylistView
+	searches  []string
+	metaCalls int
+	served    []servedPlay
+	disabled  bool
+}
+
+// releaseCaps is what ffprobe measured on the candidate that played: a
+// 100-minute file, shorter than the 142 minutes the metadata claims.
+var releaseCaps = release.MediaCaps{VideoCodec: "h264", AudioCodec: "aac", Width: 1920, Height: 1080, DurationSeconds: 100 * 60}
+
+type servedPlay struct {
+	slotPath string
+	opts     stremio.PlayServeOptions
+}
+
+// searchSet is the set of searches run, since the carriers run in parallel.
+func (f *fakeCatalog) searchSet() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for _, s := range f.searches {
+		out[s] = true
+	}
+	return out
+}
+
+func (f *fakeCatalog) EnabledCatalogs(*auth.Stream) ([]stremio.CatalogDef, error) {
+	if f.disabled {
+		return nil, stremio.ErrMetadataDisabled
+	}
+	return f.catalogs, nil
+}
+
+func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, search string, skip int) ([]stremio.MetaPreview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if search != "" {
+		f.searches = append(f.searches, catalogID+"="+search)
+		return f.rows[catalogID], nil
+	}
+	rows := f.rows[catalogID]
+	if skip >= len(rows) {
+		return nil, nil
+	}
+	rows = rows[skip:]
+	if len(rows) > stremio.CatalogPageSize {
+		rows = rows[:stremio.CatalogPageSize]
+	}
+	return rows, nil
+}
+
+func (f *fakeCatalog) Meta(_ context.Context, _ *auth.Stream, contentType, id string) (*stremio.MetaObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.metaCalls++
+	if f.disabled {
+		return nil, stremio.ErrMetadataDisabled
+	}
+	meta, ok := f.metas[contentType+"/"+id]
+	if !ok {
+		return nil, fmt.Errorf("no meta for %s/%s", contentType, id)
+	}
+	return meta, nil
+}
+
+func (f *fakeCatalog) Playlist(context.Context, *auth.Stream, string, string) (*stremio.PlaylistView, error) {
+	if f.playErr != nil {
+		return nil, f.playErr
+	}
+	if f.playlist == nil {
+		return &stremio.PlaylistView{}, nil
+	}
+	return f.playlist, nil
+}
+
+func (f *fakeCatalog) PlaylistCached(*auth.Stream, string, string) (*stremio.PlaylistView, bool) {
+	return f.cached, f.cached != nil
+}
+
+func (f *fakeCatalog) ServePlay(w http.ResponseWriter, _ *http.Request, _ *auth.Stream, slotPath string, opts stremio.PlayServeOptions) {
+	f.mu.Lock()
+	f.served = append(f.served, servedPlay{slotPath: slotPath, opts: opts})
+	f.mu.Unlock()
+	w.Header().Set("X-Slot", slotPath)
+	w.WriteHeader(http.StatusOK)
+}
+
+type fakePlaystate struct {
+	mu    sync.Mutex
+	rows  map[string]persistence.JellyfinPlaystate
+	saves int
+}
+
+func newFakePlaystate() *fakePlaystate {
+	return &fakePlaystate{rows: map[string]persistence.JellyfinPlaystate{}}
+}
+
+func (p *fakePlaystate) Upsert(state persistence.JellyfinPlaystate) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.saves++
+	p.rows[state.StreamName+"|"+state.ItemID] = state
+	return nil
+}
+
+func (p *fakePlaystate) Get(streamName, itemID string) (persistence.JellyfinPlaystate, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st, ok := p.rows[streamName+"|"+itemID]
+	return st, ok
+}
+
+func (p *fakePlaystate) ListResume(streamName string, limit int) []persistence.JellyfinPlaystate {
+	var out []persistence.JellyfinPlaystate
+	for _, st := range p.ListForStream(streamName) {
+		if !st.Played && st.PositionTicks > 0 && len(out) < limit {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+func (p *fakePlaystate) ListForStream(streamName string) []persistence.JellyfinPlaystate {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []persistence.JellyfinPlaystate
+	for _, st := range p.rows {
+		if st.StreamName == streamName {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+func (p *fakePlaystate) SetPlayed(streamName, itemID, contentType, contentID string, played bool) error {
+	st, ok := p.Get(streamName, itemID)
+	if !ok {
+		st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: itemID, ContentType: contentType, ContentID: contentID}
+	}
+	st.Played = played
+	st.PositionTicks = 0
+	return p.Upsert(st)
+}
+
+func previews(contentType, prefix string, n int) []stremio.MetaPreview {
+	out := make([]stremio.MetaPreview, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, stremio.MetaPreview{ID: fmt.Sprintf("%s%07d", prefix, i), Type: contentType, Name: fmt.Sprintf("Title %d", i), Poster: fmt.Sprintf("https://img.test/%s/%d.jpg", contentType, i), Background: fmt.Sprintf("https://img.test/%s/%d-bg.jpg", contentType, i)})
+	}
+	return out
+}
+
+func testCatalog() *fakeCatalog {
+	movie := &stremio.MetaObject{
+		ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption",
+		Poster: "https://img.test/shawshank.jpg", Background: "https://img.test/shawshank-bg.jpg", Logo: "https://img.test/shawshank-logo.png",
+		Description: "Two imprisoned men bond.", ReleaseInfo: "1994", Released: "1994-09-23T00:00:00.000Z",
+		IMDBRating: "9.3", Runtime: "142 min", Genres: []string{"Drama"}, Cast: []string{"Tim Robbins"}, Director: []string{"Frank Darabont"},
+		Trailers: []stremio.MetaTrailer{{Source: "6hB3S9bIaco", Type: "Trailer"}},
+	}
+	series := &stremio.MetaObject{
+		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: "https://img.test/bb-bg.jpg",
+		ReleaseInfo: "2008-2013", Runtime: "49 min",
+		Videos: []stremio.MetaVideo{
+			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: "https://img.test/bb-s1e1.jpg"},
+			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
+			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1},
+			{ID: "tt0903747:0:1", Title: "Minisode", Season: 0, Episode: 1},
+		},
+	}
+	kitsuMovie := &stremio.MetaObject{ID: "kitsu:9", Type: "anime", Name: "Your Name.", Poster: "https://img.test/yn.jpg", Runtime: "106 min"}
+	return &fakeCatalog{
+		catalogs: []stremio.CatalogDef{
+			{ID: "tmdb.trending.movie", Type: "movie", Name: "Trending Movies", SupportsSkip: true},
+			{ID: "tmdb.trending.series", Type: "series", Name: "Trending Series", SupportsSkip: true},
+			{ID: "kitsu.trending.anime", Type: "anime", Name: "Trending Anime"},
+		},
+		rows: map[string][]stremio.MetaPreview{
+			"tmdb.trending.movie":  previews("movie", "tt", 45),
+			"tmdb.trending.series": previews("series", "tt", 3),
+			"kitsu.trending.anime": []stremio.MetaPreview{{ID: "kitsu:9", Type: "anime", Name: "Your Name."}},
+			"tmdb.search.movie":    []stremio.MetaPreview{{ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption"}},
+			"tmdb.search.series":   []stremio.MetaPreview{{ID: "tt0903747", Type: "series", Name: "Breaking Bad"}},
+			"kitsu.search.anime":   nil,
+		},
+		metas: map[string]*stremio.MetaObject{
+			"movie/tt0111161":  movie,
+			"series/tt0903747": series,
+			"anime/kitsu:9":    kitsuMovie,
+		},
+	}
+}
+
+type fixture struct {
+	server   *Server
+	catalog  *fakeCatalog
+	play     *fakePlaystate
+	enabled  bool
+	serverID string
+}
+
+func newFixture() *fixture {
+	f := &fixture{catalog: testCatalog(), play: newFakePlaystate(), enabled: true, serverID: "srv-0001"}
+	f.server = New(Options{
+		Enabled:   func() bool { return f.enabled },
+		ServerID:  func() string { return f.serverID },
+		Admin:     func() (string, string, string) { return "admin", "$argon2id$hash", testAdminToken },
+		Streams:   fakeStreams{},
+		Catalog:   f.catalog,
+		Playstate: f.play,
+		Version:   "test",
+	})
+	return f
+}
+
+// do issues a request as the living-room stream, with the token in the
+// MediaBrowser header unless the path already carries one.
+func (f *fixture) do(method, path string, body string, headers ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if len(headers) == 0 {
+		req.Header.Set("Authorization", `MediaBrowser Client="Swiftfin", Device="iPhone 15, Pro", DeviceId="dev-1", Version="1.3", Token="`+testToken+`"`)
+	}
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, v any) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+		t.Fatalf("decode: %v: %s", err, rec.Body.String())
+	}
+}
+
+func TestDisabledIsNotFoundEverywhere(t *testing.T) {
+	f := newFixture()
+	f.enabled = false
+	for _, path := range []string{"/jellyfin/System/Info/Public", "/jellyfin/Users/AuthenticateByName", "/jellyfin/UserViews", "/jellyfin/"} {
+		if rec := f.do(http.MethodGet, path, ""); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: disabled server answered %d", path, rec.Code)
+		}
+	}
+}
+
+func TestPublicRoutesNeedNoToken(t *testing.T) {
+	f := newFixture()
+	var info publicSystemInfo
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/System/Info/Public", "", "X-Forwarded-Proto", "https"), &info)
+	if info.Version != reportedVersion || info.ID != "srv-0001" || info.LocalAddress != "https://example.com/jellyfin" {
+		t.Fatalf("public info: %+v", info)
+	}
+	// A reachability probe by HEAD is answered wherever GET is.
+	if rec := f.do(http.MethodHead, "/jellyfin/System/Info/Public", "", "X-Nothing", "x"); rec.Code != http.StatusOK {
+		t.Fatalf("HEAD on a public route: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodHead, "/jellyfin/", "", "X-Nothing", "x"); rec.Code != http.StatusOK {
+		t.Fatalf("HEAD on the bare mount: %d", rec.Code)
+	}
+	// The bare mount answers the same handshake, unauthenticated: it is what
+	// a client probes before it has a token to send.
+	var root publicSystemInfo
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/", "", "X-Nothing", "x"), &root)
+	if root.ID != "srv-0001" || root.ServerName != serverName {
+		t.Fatalf("bare mount: %+v", root)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/UserViews", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated views: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/UserViews", "", "X-Emby-Token", "wrong"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token: %d", rec.Code)
+	}
+}
+
+func TestAuthenticateByName(t *testing.T) {
+	f := newFixture()
+	var result authenticationResult
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/Users/AuthenticateByName", `{"Username":"Living-Room","Pw":"`+testToken+`"}`, "X-Emby-Authorization", `MediaBrowser Client="Findroid", Device="Pixel", DeviceId="d2", Version="0.15"`), &result)
+	if result.AccessToken != testToken || result.User.Name != "living-room" || result.ServerID != "srv-0001" {
+		t.Fatalf("login result: %+v", result)
+	}
+	if result.User.Policy.IsAdministrator {
+		t.Fatalf("stream login must not be an administrator")
+	}
+	if result.SessionInfo.Client != "Findroid" || result.SessionInfo.DeviceName != "Pixel" {
+		t.Fatalf("session info did not read the client header: %+v", result.SessionInfo)
+	}
+
+	// The token signs in only under its own stream's name.
+	if rec := f.do(http.MethodPost, "/jellyfin/Users/AuthenticateByName", `{"Username":"someone-else","Pw":"`+testToken+`"}`, "X-None", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("token under another name: %d", rec.Code)
+	}
+	// A stream signs in with its own password as well as its token.
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/emby/Users/AuthenticateByName", `{"Username":"Living-Room","Password":"`+testPassword+`"}`, "X-None", ""), &result)
+	if result.AccessToken != testToken || result.User.Name != "living-room" {
+		t.Fatalf("password login: %+v", result)
+	}
+	// The admin is not a stream: it has nothing to play, so it is refused at
+	// the door rather than allowed to browse its way to a failure.
+	if rec := f.do(http.MethodPost, "/jellyfin/Users/AuthenticateByName", `{"Username":"admin","Password":"admin-pw"}`, "X-None", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("admin login: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/UserViews", "", "X-Emby-Token", testAdminToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("admin token: %d", rec.Code)
+	}
+}
+
+func TestTokenFormsAndCaseInsensitivity(t *testing.T) {
+	f := newFixture()
+	forms := [][]string{
+		{"Authorization", `MediaBrowser Token="` + testToken + `", Client="x"`},
+		{"X-Emby-Authorization", `Emby Client=x, Token=` + testToken},
+		{"X-Emby-Token", testToken},
+		{"X-MediaBrowser-Token", testToken},
+	}
+	for _, form := range forms {
+		var result queryResult
+		decodeInto(t, f.do(http.MethodGet, "/jellyfin/USERVIEWS", "", form...), &result)
+		if len(result.Items) != 3 {
+			t.Fatalf("%s: %d views", form[0], len(result.Items))
+		}
+	}
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/abc/Views?API_KEY="+testToken, "", "X-None", ""), &result)
+	if len(result.Items) != 3 || result.Items[0].CollectionType != "movies" || result.Items[2].CollectionType != "tvshows" {
+		t.Fatalf("views via api_key: %+v", result.Items)
+	}
+	// Query names are case-insensitive too.
+	view := result.Items[0].ID
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?PARENTID="+view+"&LIMIT=5", ""), &result)
+	if len(result.Items) != 5 {
+		t.Fatalf("upper-cased query: %d items", len(result.Items))
+	}
+}
+
+func TestViewsPageThroughCatalogs(t *testing.T) {
+	f := newFixture()
+	view := viewID("tmdb.trending.movie")
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=20&Limit=20", ""), &result)
+	if len(result.Items) != 20 || result.Items[0].Name != "Title 21" || result.Items[19].Name != "Title 40" {
+		t.Fatalf("page 2: %d items, first %q", len(result.Items), result.Items[0].Name)
+	}
+	if result.TotalRecordCount <= 40 {
+		t.Fatalf("a full page must leave room for more: total %d", result.TotalRecordCount)
+	}
+	if result.Items[0].Type != "Movie" || result.Items[0].ParentID != view || result.Items[0].ImageTags["Primary"] == "" || len(result.Items[0].BackdropImageTags) != 1 {
+		t.Fatalf("row shape: %+v", result.Items[0])
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
+	if len(result.Items) != 5 || result.TotalRecordCount != 45 {
+		t.Fatalf("last page: %d items, total %d", len(result.Items), result.TotalRecordCount)
+	}
+	// A catalog that cannot skip has only its first page.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+viewID("kitsu.trending.anime")+"&StartIndex=20&Limit=20", ""), &result)
+	if len(result.Items) != 0 {
+		t.Fatalf("skipless catalog paged: %d", len(result.Items))
+	}
+	// Type filters apply to the folder.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&IncludeItemTypes=Series", ""), &result)
+	if len(result.Items) != 0 {
+		t.Fatalf("series filter on a movie folder returned %d", len(result.Items))
+	}
+	// Latest is a bare array off the top of the folder.
+	var latest []*baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/Latest?ParentId="+view+"&Limit=3", ""), &latest)
+	if len(latest) != 3 || latest[0].Name != "Title 1" {
+		t.Fatalf("latest: %+v", latest)
+	}
+	// No metadata profile: no views, and items are not found.
+	f.catalog.disabled = true
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserViews", ""), &result)
+	if len(result.Items) != 0 {
+		t.Fatalf("disabled metadata listed views")
+	}
+	movie, _ := itemIDFor("movie", "tt0111161")
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("item with metadata disabled: %d", rec.Code)
+	}
+}
+
+func TestMovieDetail(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	if item.Type != "Movie" || item.Name != "The Shawshank Redemption" || item.MediaType != "Video" || item.IsFolder {
+		t.Fatalf("movie: %+v", item)
+	}
+	if item.RunTimeTicks == nil || *item.RunTimeTicks != 142*60*ticksPerSecond {
+		t.Fatalf("runtime ticks: %v", item.RunTimeTicks)
+	}
+	if item.ProductionYear == nil || *item.ProductionYear != 1994 || !strings.HasPrefix(item.PremiereDate, "1994-09-23T") {
+		t.Fatalf("year/premiere: %v %q", item.ProductionYear, item.PremiereDate)
+	}
+	if item.CommunityRating == nil || *item.CommunityRating != 9.3 || item.ProviderIDs["Imdb"] != "tt0111161" {
+		t.Fatalf("rating/provider: %v %v", item.CommunityRating, item.ProviderIDs)
+	}
+	if len(item.People) != 2 || item.People[0].Type != "Actor" || item.People[1].Type != "Director" {
+		t.Fatalf("people: %+v", item.People)
+	}
+	if len(item.RemoteTrailers) != 1 || !strings.Contains(item.RemoteTrailers[0].URL, "6hB3S9bIaco") {
+		t.Fatalf("trailers: %+v", item.RemoteTrailers)
+	}
+	if item.UserData == nil || item.UserData.Played || item.UserData.ItemID != item.ID {
+		t.Fatalf("user data: %+v", item.UserData)
+	}
+	if item.ImageTags["Primary"] == "" || item.ImageTags["Logo"] == "" || len(item.BackdropImageTags) != 1 {
+		t.Fatalf("image tags: %+v %+v", item.ImageTags, item.BackdropImageTags)
+	}
+	// Images redirect to the provider URL the tag hashes.
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary?tag="+item.ImageTags["Primary"], "")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/shawshank.jpg" {
+		t.Fatalf("primary image: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	// A client's image loader carries no token; the tag alone must serve it,
+	// and an image it cannot resolve is a missing image, never a 401.
+	anon := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary?tag="+item.ImageTags["Primary"], "", "X-Nothing", "x")
+	if anon.Code != http.StatusFound || anon.Header().Get("Location") != rec.Header().Get("Location") {
+		t.Fatalf("anonymous image by tag: %d %s", anon.Code, anon.Header().Get("Location"))
+	}
+	if anon := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary", "", "X-Nothing", "x"); anon.Code != http.StatusNotFound {
+		t.Fatalf("anonymous image without a tag: %d", anon.Code)
+	}
+	rec = f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Backdrop/0?tag="+item.BackdropImageTags[0], "")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/shawshank-bg.jpg" {
+		t.Fatalf("backdrop image: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	// Item lookup by ids.
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?Ids="+item.ID+",zzz", ""), &result)
+	if len(result.Items) != 1 || result.Items[0].Name != item.Name {
+		t.Fatalf("ids lookup: %+v", result.Items)
+	}
+}
+
+func TestImageMissResolvesFromMetadata(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	ep := series.episode(1, 1)
+	// A fresh server has no tag map; the id alone must be enough.
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+ep.encode()+"/Images/Primary?tag=stale", "")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/bb-s1e1.jpg" {
+		t.Fatalf("episode primary on a miss: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = f.do(http.MethodGet, "/jellyfin/Items/"+series.season(2).encode()+"/Images/Backdrop", "")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/bb-bg.jpg" {
+		t.Fatalf("season backdrop: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+series.encode()+"/Images/Logo", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing logo: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+userID("person:Tim Robbins")+"/Images/Primary", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("person image: %d", rec.Code)
+	}
+}
+
+func TestSeriesSeasonsAndEpisodes(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+series.encode(), ""), &item)
+	if item.Type != "Series" || !item.IsFolder || item.Status != "Ended" || item.ChildCount == nil || *item.ChildCount != 3 {
+		t.Fatalf("series: %+v", item)
+	}
+	var seasons queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Seasons?UserId=u", ""), &seasons)
+	if len(seasons.Items) != 3 || seasons.Items[0].Name != "Season 1" || seasons.Items[2].Name != "Specials" || *seasons.Items[0].ChildCount != 2 {
+		t.Fatalf("seasons: %+v", seasons.Items)
+	}
+	if seasons.Items[0].SeriesID != series.encode() || seasons.Items[0].ImageTags["Primary"] == "" {
+		t.Fatalf("season parentage/art: %+v", seasons.Items[0])
+	}
+	var episodes queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+seasons.Items[0].ID, ""), &episodes)
+	if len(episodes.Items) != 2 || episodes.Items[0].Name != "Pilot" || *episodes.Items[0].IndexNumber != 1 || *episodes.Items[0].ParentIndexNumber != 1 {
+		t.Fatalf("episodes: %+v", episodes.Items)
+	}
+	ep := episodes.Items[0]
+	if ep.SeriesName != "Breaking Bad" || ep.SeasonID != seasons.Items[0].ID || ep.SeriesPrimaryImageTag == "" || ep.RunTimeTicks == nil || ep.UserData == nil {
+		t.Fatalf("episode shape: %+v", ep)
+	}
+	// Whole-series episode listing, and the same through /Items.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes", ""), &episodes)
+	if len(episodes.Items) != 4 {
+		t.Fatalf("all episodes: %d", len(episodes.Items))
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+series.encode(), ""), &seasons)
+	if len(seasons.Items) != 3 || seasons.Items[0].Type != "Season" {
+		t.Fatalf("items under series: %+v", seasons.Items)
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+series.encode()+"&IncludeItemTypes=Episode&Recursive=true", ""), &episodes)
+	if len(episodes.Items) != 4 || episodes.Items[0].Type != "Episode" {
+		t.Fatalf("recursive episodes: %d", len(episodes.Items))
+	}
+	// An episode the series does not have is not found.
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+series.episode(9, 9).encode(), ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing episode: %d", rec.Code)
+	}
+	// A Kitsu movie is a one-episode series that plays as the entry.
+	anime, _ := itemIDFor("anime", "kitsu:9")
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+anime.encode(), ""), &item)
+	if item.Type != "Series" || *item.RecursiveItemCount != 1 {
+		t.Fatalf("kitsu movie: %+v", item)
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+anime.encode()+"/Episodes", ""), &episodes)
+	if len(episodes.Items) != 1 || episodes.Items[0].Name != "Your Name." {
+		t.Fatalf("kitsu movie episodes: %+v", episodes.Items)
+	}
+	if id, _ := decodeItemID(episodes.Items[0].ID); id.playStremioID() != "kitsu:9" {
+		t.Fatalf("kitsu movie episode plays %q", id.playStremioID())
+	}
+}
+
+func TestSearchRunsTheCarriers(t *testing.T) {
+	f := newFixture()
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie,Series", ""), &result)
+	if len(result.Items) != 2 {
+		t.Fatalf("search results: %+v", result.Items)
+	}
+	// Anime is carried as a Series, so a Movie,Series search runs all three
+	// carriers; the carriers run in parallel, so compare them as a set.
+	if got := f.catalog.searchSet(); !reflect.DeepEqual(got, map[string]bool{"tmdb.search.movie=shaw": true, "tmdb.search.series=shaw": true, "kitsu.search.anime=shaw": true}) {
+		t.Fatalf("searches run: %v", got)
+	}
+	// A Movie-only search leaves the series carriers alone.
+	f.catalog.searches = nil
+	f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie", "")
+	if got := f.catalog.searchSet(); !reflect.DeepEqual(got, map[string]bool{"tmdb.search.movie=shaw": true}) {
+		t.Fatalf("movie-only searches run: %v", got)
+	}
+	var hints struct {
+		SearchHints      []searchHint
+		TotalRecordCount int
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Search/Hints?searchTerm=bad&includeItemTypes=Series", ""), &hints)
+	if hints.TotalRecordCount != 1 || hints.SearchHints[0].Name != "Breaking Bad" || hints.SearchHints[0].Type != "Series" {
+		t.Fatalf("hints: %+v", hints)
+	}
+}
+
+// A media player fetches the stream URL with no credentials at all: Findroid
+// hands ExoPlayer a bare URL from the SDK, which carries neither an
+// Authorization header nor an api_key. The media source id is what identifies
+// the stream, and it must open the video without opening anything else.
+func TestStreamServesAPlayerCarryingNoCredentials(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	stream := &auth.Stream{Username: "living-room", Token: testToken}
+	source := movie.source(0).encode() + "." + testToken
+
+	// No headers of any kind, exactly as the player sends it.
+	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&mediaSourceId="+source, "", "X-Nothing", "x")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bare player fetch: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(f.catalog.served) != 1 || f.catalog.served[0].slotPath != stremio.SlotPathFor(stream, "movie", "tt0111161", 0) {
+		t.Fatalf("served %+v", f.catalog.served)
+	}
+
+	// Without a usable media source id it is still refused.
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no media source id: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?mediaSourceId="+movie.source(0).encode()+".not-a-token", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token in media source id: %d", rec.Code)
+	}
+
+	// The token travels on the stream route and nowhere else: it opens one
+	// video, and cannot be spent on browsing or on another stream's progress.
+	for _, path := range []string{
+		"/jellyfin/UserViews?mediaSourceId=" + source,
+		"/jellyfin/Items/" + movie.encode() + "?mediaSourceId=" + source,
+		"/jellyfin/UserItems/Resume?mediaSourceId=" + source,
+		"/jellyfin/Items/" + movie.encode() + "/PlaybackInfo?mediaSourceId=" + source,
+	} {
+		if rec := f.do(http.MethodGet, path, "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: media source token was accepted off the stream route: %d", path, rec.Code)
+		}
+	}
+}
+
+func TestPlaybackInfo(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	f.catalog.playlist = &stremio.PlaylistView{
+		ContentTitle:   "The Shawshank Redemption",
+		RuntimeSeconds: 142 * 60,
+		Entries: []stremio.PlaylistEntry{
+			{Index: 0, SlotPath: "stream:living-room:movie:tt0111161:0", Title: "The.Shawshank.Redemption.1994.2160p.UHD.BluRay.x265.HDR.DTS-HD.MA.5.1-GRP", Size: 40 << 30, Score: 90},
+			{Index: 1, SlotPath: "stream:living-room:movie:tt0111161:1", Title: "The.Shawshank.Redemption.1994.1080p.BluRay.x264.DD5.1-GRP.mkv", Size: 12 << 30, Score: 70},
+		},
+	}
+	var info playbackInfoResponse
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo?UserId=u", `{"DeviceProfile":{}}`), &info)
+	if len(info.MediaSources) != 2 || info.ErrorCode != "" || info.PlaySessionID == "" {
+		t.Fatalf("playback info: %+v", info)
+	}
+	best := info.MediaSources[0]
+	// The id carries the stream's token: the player that fetches the stream
+	// sends no credentials of its own.
+	if best.ID != movie.source(0).encode()+"."+testToken || !best.SupportsDirectPlay || best.SupportsTranscoding || best.Protocol != "File" || best.RequiredHTTPHeaders == nil {
+		t.Fatalf("media source: %+v", best)
+	}
+	if best.RunTimeTicks == nil || *best.RunTimeTicks != 142*60*ticksPerSecond || best.Size == nil || best.Bitrate == nil {
+		t.Fatalf("source runtime/size: %+v", best)
+	}
+	if len(best.MediaStreams) < 2 || best.MediaStreams[0].Codec != "hevc" || *best.MediaStreams[0].Height != 2160 || best.MediaStreams[0].VideoRangeType != "HDR10" || best.MediaStreams[1].Type != "Audio" {
+		t.Fatalf("media streams: %+v", best.MediaStreams)
+	}
+	if second := info.MediaSources[1]; second.MediaStreams[0].Codec != "h264" || second.Container != "mkv" {
+		t.Fatalf("second source: %+v", second)
+	}
+	// Nothing found is the Jellyfin "no compatible stream" answer, not an
+	// error status.
+	f.catalog.playlist = nil
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	if len(info.MediaSources) != 0 || info.ErrorCode != "NoCompatibleStream" {
+		t.Fatalf("empty playback info: %+v", info)
+	}
+	f.catalog.playErr = errors.New("indexers down")
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	if info.ErrorCode != "NoCompatibleStream" {
+		t.Fatalf("failed playback info: %+v", info)
+	}
+	// A source id works as the item too.
+	f.catalog.playErr = nil
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.source(1).encode()+"/PlaybackInfo", ""); rec.Code != http.StatusOK {
+		t.Fatalf("playback info by source id: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+viewID("tmdb.trending.movie")+"/PlaybackInfo", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("playback info for a folder: %d", rec.Code)
+	}
+}
+
+func TestStreamServesTheSlotAndRewritesFailover(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	ep := series.episode(1, 2)
+	stream := &auth.Stream{Username: "living-room", Token: testToken}
+	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+ep.encode()+"/stream.mkv?Static=true&MediaSourceId="+ep.source(1).encode(), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream: %d %s", rec.Code, rec.Body.String())
+	}
+	want := stremio.SlotPathFor(stream, "series", "tt0903747:1:2", 1)
+	if len(f.catalog.served) != 1 || f.catalog.served[0].slotPath != want {
+		t.Fatalf("served %+v, want %s", f.catalog.served, want)
+	}
+	opts := f.catalog.served[0].opts
+	if !opts.FailWithStatus || opts.SlotLocation == nil {
+		t.Fatalf("play options: %+v", opts)
+	}
+	// A failover to slot 3 lands back on this route with the next source
+	// and the token carried in the query, since the header may not
+	// survive the client's redirect.
+	loc, err := url.Parse(opts.SlotLocation(stremio.SlotPathFor(stream, "series", "tt0903747:1:2", 3)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.Path != "/jellyfin/videos/"+ep.encode()+"/stream" {
+		t.Fatalf("redirect path %q", loc.Path)
+	}
+	q := loc.Query()
+	// The client sent MediaSourceId; the redirect must carry exactly one
+	// media source, under the casing this layer writes.
+	if len(q["MediaSourceId"]) != 0 {
+		t.Fatalf("redirect kept the client's casing too: %v", q)
+	}
+	if q.Get("mediaSourceId") != ep.source(3).encode()+"."+testToken || q.Get("Static") != "true" || q.Get("api_key") != testToken {
+		t.Fatalf("redirect query %v", q)
+	}
+	// The redirect target authenticates by that query alone.
+	rec = f.do(http.MethodGet, loc.String(), "", "X-None", "")
+	if rec.Code != http.StatusOK || f.catalog.served[1].slotPath != stremio.SlotPathFor(stream, "series", "tt0903747:1:2", 3) {
+		t.Fatalf("redirected stream: %d served %+v", rec.Code, f.catalog.served)
+	}
+	// A media source of another item does not steer the slot.
+	other, _ := itemIDFor("movie", "tt0111161")
+	f.do(http.MethodGet, "/jellyfin/Videos/"+ep.encode()+"/stream?mediaSourceId="+other.source(2).encode()+"."+testToken, "")
+	if got := f.catalog.served[2].slotPath; got != stremio.SlotPathFor(stream, "series", "tt0903747:1:2", 0) {
+		t.Fatalf("foreign media source steered to %s", got)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+ep.encode()+"/main.m3u8", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("hls form: %d", rec.Code)
+	}
+}
+
+func TestProgressResumeAndPlayed(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	id := movie.encode()
+	report := func(event string, ticks int64, paused bool) {
+		body := fmt.Sprintf(`{"ItemId":"%s","MediaSourceId":"%s","PositionTicks":%d,"IsPaused":%v,"PlaySessionId":"ps"}`, id, movie.source(0).encode(), ticks, paused)
+		if rec := f.do(http.MethodPost, "/jellyfin/Sessions/Playing"+event, body); rec.Code != http.StatusNoContent {
+			t.Fatalf("%s: %d", event, rec.Code)
+		}
+	}
+	report("", 0, false)
+	if st, ok := f.play.Get("living-room", id); !ok || st.PlayCount != 1 || st.RuntimeTicks != 142*60*ticksPerSecond || st.ContentID != "tt0111161" {
+		t.Fatalf("after start: %+v %v", st, ok)
+	}
+	// Ticks are debounced: the first writes, the next within the interval
+	// does not, a pause always does.
+	report("/Progress", 10*ticksPerSecond, false)
+	report("/Progress", 20*ticksPerSecond, false)
+	if st, _ := f.play.Get("living-room", id); st.PositionTicks != 10*ticksPerSecond {
+		t.Fatalf("tick debounce: position %d", st.PositionTicks/ticksPerSecond)
+	}
+	report("/Progress", 30*ticksPerSecond, true)
+	if st, _ := f.play.Get("living-room", id); st.PositionTicks != 30*ticksPerSecond {
+		t.Fatalf("pause write: position %d", st.PositionTicks/ticksPerSecond)
+	}
+	report("/Stopped", 40*60*ticksPerSecond, false)
+
+	// Resume lists it with its position and percentage.
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/Resume?Limit=12&MediaTypes=Video", ""), &result)
+	if len(result.Items) != 1 || result.Items[0].ID != id || result.Items[0].UserData.PlaybackPositionTicks != 40*60*ticksPerSecond {
+		t.Fatalf("resume: %+v", result.Items)
+	}
+	if pct := result.Items[0].UserData.PlayedPercentage; pct == nil || *pct < 28 || *pct > 29 {
+		t.Fatalf("played percentage: %v", pct)
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?Filters=IsResumable&Recursive=true", ""), &result)
+	if len(result.Items) != 1 {
+		t.Fatalf("IsResumable filter: %d", len(result.Items))
+	}
+
+	// Past 90% the item is played and leaves Resume.
+	report("/Stopped", 135*60*ticksPerSecond, false)
+	if st, _ := f.play.Get("living-room", id); !st.Played || st.PositionTicks != 0 {
+		t.Fatalf("watched through: %+v", st)
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserItems/Resume", ""), &result)
+	if len(result.Items) != 0 {
+		t.Fatalf("played item still resumable")
+	}
+	var ud userData
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserItems/"+id+"/UserData", ""), &ud)
+	if !ud.Played || ud.PlayCount != 1 {
+		t.Fatalf("user data: %+v", ud)
+	}
+	// Explicit marks, both route forms.
+	decodeInto(t, f.do(http.MethodDelete, "/jellyfin/Users/u/PlayedItems/"+id, ""), &ud)
+	if ud.Played {
+		t.Fatalf("unmark did not clear")
+	}
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserPlayedItems/"+id, ""), &ud)
+	if !ud.Played {
+		t.Fatalf("mark did not set")
+	}
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserItems/"+id+"/UserData", `{"Played":false,"PlaybackPositionTicks":600000000}`), &ud)
+	if ud.Played || ud.PlaybackPositionTicks != 60*ticksPerSecond {
+		t.Fatalf("user data update: %+v", ud)
+	}
+	// The legacy query-parameter form reports too.
+	rec := f.do(http.MethodPost, "/jellyfin/Users/u/PlayingItems/"+id+"/Progress?PositionTicks=900000000&IsPaused=true", "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("legacy progress: %d", rec.Code)
+	}
+	if st, _ := f.play.Get("living-room", id); st.PositionTicks != 90*ticksPerSecond {
+		t.Fatalf("legacy progress position %d", st.PositionTicks/ticksPerSecond)
+	}
+	// Episode progress shows on the episode listing.
+	series, _ := itemIDFor("series", "tt0903747")
+	ep := series.episode(1, 1)
+	epBody := fmt.Sprintf(`{"ItemId":"%s","PositionTicks":%d}`, ep.encode(), 20*60*ticksPerSecond)
+	f.do(http.MethodPost, "/jellyfin/Sessions/Playing/Stopped", epBody)
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?Season=1", ""), &result)
+	if result.Items[0].UserData.PlaybackPositionTicks != 20*60*ticksPerSecond || result.Items[1].UserData.PlaybackPositionTicks != 0 {
+		t.Fatalf("episode user data: %+v %+v", result.Items[0].UserData, result.Items[1].UserData)
+	}
+	// Per-stream: a different stream sees none of it, while this one still does.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserItems/Resume", "", "X-Emby-Token", testToken), &result)
+	if len(result.Items) == 0 {
+		t.Fatalf("own stream lost its progress")
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserItems/Resume", "", "X-Emby-Token", testOtherToken), &result)
+	if len(result.Items) != 0 {
+		t.Fatalf("another stream saw this one's progress")
+	}
+}
+
+func TestPlayedThresholdUsesProbedDuration(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	// The metadata says 142 min, the candidate that played says 100.
+	f.catalog.cached = &stremio.PlaylistView{RuntimeSeconds: 142 * 60, Entries: []stremio.PlaylistEntry{{Caps: &releaseCaps}}}
+	body := fmt.Sprintf(`{"ItemId":"%s","PositionTicks":%d}`, movie.encode(), 92*60*ticksPerSecond)
+	f.do(http.MethodPost, "/jellyfin/Sessions/Playing/Stopped", body)
+	if st, _ := f.play.Get("living-room", movie.encode()); !st.Played || st.RuntimeTicks != 100*60*ticksPerSecond {
+		t.Fatalf("probed duration not used: %+v", st)
+	}
+}
+
+func TestStubsAnswerClients(t *testing.T) {
+	f := newFixture()
+	checks := []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodGet, "/jellyfin/System/Info", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Users/Me", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Users/abc", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Sessions", http.StatusOK},
+		{http.MethodPost, "/jellyfin/Sessions/Capabilities/Full", http.StatusNoContent},
+		{http.MethodPost, "/jellyfin/Sessions/Logout", http.StatusNoContent},
+		{http.MethodGet, "/jellyfin/DisplayPreferences/usersettings?client=emby&userId=u", http.StatusOK},
+		{http.MethodPost, "/jellyfin/DisplayPreferences/usersettings?client=emby&userId=u", http.StatusNoContent},
+		{http.MethodGet, "/jellyfin/Localization/Cultures", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Plugins", http.StatusOK},
+		{http.MethodGet, "/jellyfin/ScheduledTasks", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Shows/NextUp?UserId=u", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Genres", http.StatusOK},
+		{http.MethodGet, "/jellyfin/MediaSegments/020101000000163ff900000000000007", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Items/Filters2", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Playback/BitrateTest?size=1000", http.StatusOK},
+		{http.MethodGet, "/jellyfin/QuickConnect/Enabled", http.StatusOK},
+		{http.MethodGet, "/jellyfin/Branding/Configuration", http.StatusOK},
+		{http.MethodGet, "/jellyfin/socket", http.StatusNotFound},
+		{http.MethodGet, "/jellyfin/no/such/route", http.StatusNotFound},
+		{http.MethodGet, "/jellyfin/Users/u/Images/Primary", http.StatusNotFound},
+	}
+	for _, c := range checks {
+		if rec := f.do(c.method, c.path, ""); rec.Code != c.status {
+			t.Fatalf("%s %s: %d, want %d (%s)", c.method, c.path, rec.Code, c.status, rec.Body.String())
+		}
+	}
+	var me userDto
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/Me", ""), &me)
+	if me.Name != "living-room" || me.ID != userID("living-room") || me.Policy.IsAdministrator || !me.Policy.EnableMediaPlayback {
+		t.Fatalf("me: %+v", me)
+	}
+}
+
+func TestMediaBrowserHeaderParsing(t *testing.T) {
+	id, ok := parseMediaBrowserHeader(`MediaBrowser Client="Jellyfin Android", Device="Pixel 8, black", DeviceId="abc", Version="2.6.1", Token="t1"`)
+	if !ok || id.Client != "Jellyfin Android" || id.Device != "Pixel 8, black" || id.DeviceID != "abc" || id.Version != "2.6.1" || id.Token != "t1" {
+		t.Fatalf("parsed %+v", id)
+	}
+	if _, ok := parseMediaBrowserHeader(`Bearer abc`); ok {
+		t.Fatalf("bearer parsed as MediaBrowser")
+	}
+	if id, ok := parseMediaBrowserHeader(`Emby UserId="", Client="Infuse", Device="Apple TV", DeviceId="d", Version="7", Token=abc`); !ok || id.Token != "abc" || id.Client != "Infuse" {
+		t.Fatalf("emby form: %+v %v", id, ok)
+	}
+}
+
+func TestJellyfinTime(t *testing.T) {
+	if got := jellyfinTime(time.Date(2024, 5, 1, 12, 30, 0, 0, time.UTC)); got != "2024-05-01T12:30:00.0000000Z" {
+		t.Fatalf("time format %q", got)
+	}
+	if got := premiereDate("1994-09-23"); got != "1994-09-23T00:00:00.0000000Z" {
+		t.Fatalf("date-only premiere %q", got)
+	}
+}

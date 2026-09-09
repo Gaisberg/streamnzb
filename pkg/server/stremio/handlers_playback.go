@@ -488,14 +488,19 @@ func (s *Server) GetStreams(ctx context.Context, contentType, id string, stream 
 // or an external player: those need a real status code and a cause, not
 // 2.4 MB of placeholder bytes behind a 200 that read as success. The split is
 // by the session's origin (the /api/play surface stamps ContentType
-// "direct"), never by sniffing the client.
+// "direct") or by the request's PlayServeOptions (the Jellyfin layer asks for
+// a status), never by sniffing the client.
 func failPlayback(w http.ResponseWriter, r *http.Request, sess *session.Session, baseURL string, muted bool, cause error) {
-	if sess != nil && sess.ContentType == "direct" {
+	if (sess != nil && sess.ContentType == "direct") || playServeOptionsFromContext(r.Context()).FailWithStatus {
 		msg := "playback failed: no playable stream and no remaining candidates"
 		if cause != nil {
 			msg = "playback failed: " + cause.Error()
 		}
-		logger.Info("Direct-play session failed; answering with an error status", "session", sess.ID, "err", cause)
+		sessionID := ""
+		if sess != nil {
+			sessionID = sess.ID
+		}
+		logger.Info("Playback failed; answering with an error status", "session", sessionID, "err", cause)
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		http.Error(w, msg, http.StatusBadGateway)
 		return
@@ -1231,7 +1236,7 @@ func (s *Server) redirectToNextSlotOrFail(w http.ResponseWriter, r *http.Request
 	rt := s.runtime()
 	if nextID, deriveErr := s.deriveNextSlotID(r.Context(), sessionID, streamConfig); nextID != "" && deriveErr == nil {
 		logger.Info(logMsg, "from", sessionID, "to", nextID)
-		w.Header().Set("Location", s.baseURLWithToken(streamConfig)+"/play/"+nextID)
+		w.Header().Set("Location", s.slotLocation(r, streamConfig, nextID))
 		w.WriteHeader(http.StatusFound)
 		return
 	}
@@ -1239,11 +1244,31 @@ func (s *Server) redirectToNextSlotOrFail(w http.ResponseWriter, r *http.Request
 	failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
 }
 
-// handlePlay: resolve session (by slot path or existing), recover after cache/session eviction,
-// optionally redirect if slot previously failed, then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
+// slotLocation renders the Location for a redirect to another slot. The
+// request's PlayServeOptions win, because a client on another origin (the
+// Jellyfin layer) has no use for the addon base URL; otherwise it is the
+// token-scoped play URL with the query carried along, so whatever the client
+// appended survives the hop.
+func (s *Server) slotLocation(r *http.Request, streamConfig *auth.Stream, slotPath string) string {
+	if opts := playServeOptionsFromContext(r.Context()); opts.SlotLocation != nil {
+		return opts.SlotLocation(slotPath)
+	}
+	location := s.baseURLWithToken(streamConfig) + "/play/" + slotPath
+	if r.URL.RawQuery != "" {
+		location += "?" + r.URL.RawQuery
+	}
+	return location
+}
+
+// handlePlay serves /play/{slot} for a Stremio client.
 func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream) {
+	s.servePlaySlot(w, r, streamConfig, strings.TrimPrefix(r.URL.Path, "/play/"))
+}
+
+// servePlaySlot: resolve session (by slot path or existing), recover after cache/session eviction,
+// optionally redirect if slot previously failed, then loop: try play → on error/probe/seek failure switch to next fallback → serve content.
+func (s *Server) servePlaySlot(w http.ResponseWriter, r *http.Request, streamConfig *auth.Stream, requestedSessionID string) {
 	playStart := time.Now()
-	requestedSessionID := strings.TrimPrefix(r.URL.Path, "/play/")
 	logger.Debug("Play request", "session", requestedSessionID)
 
 	// The user committed to a stream; stop any preload sweep for

@@ -751,6 +751,16 @@ type Config struct {
 	// key would either lock the endpoint out of use or leave it open.
 	NewznabAPIKey string `json:"newznab_api_key"`
 
+	// JellyfinEnabled exposes the catalogs and playback pipeline as a
+	// Jellyfin-compatible server at /jellyfin, so Jellyfin clients (Swiftfin,
+	// Infuse, Findroid, ...) can sign in with a stream name and its token.
+	// Like Newznab it rides on the addon listener.
+	JellyfinEnabled bool `json:"jellyfin_enabled"`
+	// JellyfinServerID is the stable id Jellyfin clients key their saved
+	// servers and per-server state by. Generated when empty and never
+	// rotated afterwards: changing it makes every client forget its login.
+	JellyfinServerID string `json:"jellyfin_server_id"`
+
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
 
@@ -953,8 +963,13 @@ type CatalogToggle struct {
 }
 
 type StreamEntry struct {
-	Username          string `json:"username"`
-	Token             string `json:"token"`
+	Username string `json:"username"`
+	Token    string `json:"token"`
+	// PasswordHash lets a stream sign in with a password instead of its
+	// token, for clients where the token is typed by hand on a remote. It is
+	// an argon2id hash, empty when no password is set, and never leaves the
+	// server. The token stays a valid password either way.
+	PasswordHash      string `json:"password_hash,omitempty"`
 	Order             int    `json:"order,omitempty"`
 	FilterSortingMode string `json:"filter_sorting_mode,omitempty"`
 	IndexerMode       string `json:"indexer_mode,omitempty"`
@@ -1368,6 +1383,12 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 			needSave = true
 		}
 	}
+	if cfg.JellyfinServerID == "" {
+		if id, err := NewJellyfinServerID(); err == nil {
+			cfg.JellyfinServerID = id
+			needSave = true
+		}
+	}
 	if cfg.AdminPasswordHash == "" {
 		cfg.AdminPasswordHash = defaultAdminPasswordHash
 		cfg.AdminMustChangePassword = true
@@ -1688,6 +1709,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyProxyAuthPass:          func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
 	env.KeyNewznabEnabled:         func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
 	env.KeyNewznabAPIKey:          func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
+	env.KeyJellyfinEnabled:        func(d, s *Config) { d.JellyfinEnabled = s.JellyfinEnabled },
 	env.KeyAdminUsername:          func(d, s *Config) { d.AdminUsername = s.AdminUsername },
 	env.KeyAdminMustChangePwd:     func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyTrustedProxyAuthHeader: func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
@@ -1769,6 +1791,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		ProxyAuthPass:           o.ProxyAuthPass,
 		NewznabEnabled:          o.NewznabEnabled,
 		NewznabAPIKey:           o.NewznabAPIKey,
+		JellyfinEnabled:         o.JellyfinEnabled,
 		AdminUsername:           o.AdminUsername,
 		AdminMustChangePassword: o.AdminMustChangePwd,
 		TrustedProxyAuthHeader:  o.TrustedProxyAuthHeader,
@@ -1837,6 +1860,16 @@ func NewAPIKey() (string, error) {
 	}
 	hash := sha256.Sum256(buf)
 	return hex.EncodeToString(hash[:]), nil
+}
+
+// NewJellyfinServerID returns a random 32-hex id, the shape Jellyfin clients
+// expect a server id to have (a GUID without dashes).
+func NewJellyfinServerID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // RedactForAPI blanks every credential for the non-admin view of the config.

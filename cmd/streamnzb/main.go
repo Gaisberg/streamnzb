@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/api"
+	"streamnzb/pkg/server/jellyfin"
 	"streamnzb/pkg/server/newznab"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/server/web"
@@ -318,6 +319,39 @@ func main() {
 		logger.Info("Newznab endpoint enabled", "path", newznab.APIPath)
 	} else {
 		logger.Info("Newznab endpoint disabled")
+	}
+
+	// The catalogs and playback pipeline, re-served as a Jellyfin server for
+	// clients that speak Jellyfin rather than Stremio. It reads the live
+	// config per request for the same reason Newznab does.
+	jellyfinServer := jellyfin.New(jellyfin.Options{
+		Enabled: func() bool {
+			liveCfg := apiServer.Config()
+			return liveCfg != nil && liveCfg.JellyfinEnabled
+		},
+		ServerID: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.JellyfinServerID
+			}
+			return ""
+		},
+		Admin: func() (string, string, string) {
+			liveCfg := apiServer.Config()
+			if liveCfg == nil {
+				return "", "", ""
+			}
+			return liveCfg.GetAdminUsername(), liveCfg.AdminPasswordHash, liveCfg.AdminToken
+		},
+		Streams:   streamManager,
+		Catalog:   stremioServer,
+		Playstate: stateMgr.JellyfinPlaystateStore(),
+		Version:   Version,
+	})
+	mux.Handle(jellyfin.Mount, jellyfinServer.Handler())
+	if comp.Config.JellyfinEnabled {
+		logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)
+	} else {
+		logger.Info("Jellyfin endpoint disabled")
 	}
 
 	{

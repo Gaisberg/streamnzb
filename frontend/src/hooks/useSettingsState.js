@@ -25,6 +25,7 @@ const INTEGRATIONS_TAB_FIELDS = [
   'proxy_auth_pass',
   'newznab_enabled',
   'newznab_api_key',
+  'jellyfin_enabled',
 ]
 
 const ADVANCED_TAB_FIELDS = [
@@ -236,6 +237,7 @@ export function useSettingsState({
     addon: 'Addon',
     proxy: 'NNTP Proxy Server',
     newznab: 'Newznab Endpoint',
+    jellyfin: 'Jellyfin Endpoint',
     useragent: 'User-Agent',
     database: 'Database',
     admin: 'Logs',

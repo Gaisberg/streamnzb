@@ -28,6 +28,7 @@ const (
 	NNTPProxyAuthPass                  = "NNTP_PROXY_AUTH_PASS"
 	NewznabEnabledEnv                  = "NEWZNAB_ENABLED"
 	NewznabAPIKeyEnv                   = "NEWZNAB_API_KEY"
+	JellyfinEnabledEnv                 = "JELLYFIN_ENABLED"
 	TZVar                              = "TZ"
 	ProviderPrefix                     = "PROVIDER_"
 	IndexerPrefix                      = "INDEXER_"
@@ -67,6 +68,7 @@ const (
 	KeyProxyAuthPass          = "proxy_auth_pass"
 	KeyNewznabEnabled         = "newznab_enabled"
 	KeyNewznabAPIKey          = "newznab_api_key"
+	KeyJellyfinEnabled        = "jellyfin_enabled"
 	KeyProviders              = "providers"
 	KeyIndexers               = "indexers"
 	KeyAvailNZBURL            = "availnzb_url"
@@ -327,6 +329,7 @@ var booleanEnvNames = []string{
 	MetadataEnabledEnv,
 	NNTPProxyEnabled,
 	NewznabEnabledEnv,
+	JellyfinEnabledEnv,
 	AdminForcePasswordResetEnv,
 	EasynewsAdvancedSearchEnv,
 	StreamNZBEasynewsAdvancedSearchEnv,
@@ -414,6 +417,7 @@ type ConfigOverrides struct {
 	ProxyAuthPass          string
 	NewznabEnabled         bool
 	NewznabAPIKey          string
+	JellyfinEnabled        bool
 	AdminUsername          string
 	AdminMustChangePwd     bool
 	TrustedProxyAuthHeader string
@@ -491,6 +495,10 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		r.keys = append(r.keys, KeyNewznabEnabled)
 	}
 	r.str(&o.NewznabAPIKey, KeyNewznabAPIKey, NewznabAPIKeyEnv)
+	if v, ok := os.LookupEnv(JellyfinEnabledEnv); ok && v != "" {
+		o.JellyfinEnabled = getEnvBool(JellyfinEnabledEnv, true)
+		r.keys = append(r.keys, KeyJellyfinEnabled)
+	}
 	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
 	r.str(&o.DatabaseDriver, KeyDatabaseDriver, StreamNZBDatabaseDriverEnv, DatabaseDriverEnv)
 	r.str(&o.DatabaseURL, KeyDatabaseURL, StreamNZBDatabaseURLEnv, DatabaseURLEnv)

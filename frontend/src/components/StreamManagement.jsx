@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Switch } from "@/components/ui/switch"
 import { CONTENT_KINDS } from "@/lib/profiles"
 import {
@@ -841,6 +842,9 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const [footerStatusVisible, setFooterStatusVisible] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState('')
   const [regenerateTarget, setRegenerateTarget] = useState('')
+  // Draft Jellyfin passwords, per stream. Held here rather than in the stream
+  // list because the server only ever returns whether one is set, never a value.
+  const [passwordDrafts, setPasswordDrafts] = useState({})
   const [expandedStreams, setExpandedStreams] = useState({})
 
   const indexerNames = useMemo(
@@ -1153,6 +1157,39 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     }
   }
 
+  // Setting a Jellyfin password is a request of its own rather than part of the
+  // stream config save: the plaintext should not travel with everything else,
+  // and the server hands back only whether one is now set.
+  const handleSetPassword = async (username, clear = false) => {
+    const password = clear ? '' : (passwordDrafts[username] || '')
+    setActionLoading(`password-${username}`)
+    showStatus(null)
+    try {
+      const payload = await apiFetch(`/api/streams/${encodeURIComponent(username)}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      })
+      setStreams((prev) => {
+        const next = prev.map((stream) => stream.username === username ? { ...stream, has_password: payload.has_password } : stream)
+        onStreamsChange?.(mapStreamsByUsername(next))
+        return next
+      })
+      setPasswordDrafts((prev) => ({ ...prev, [username]: '' }))
+      const status = {
+        type: 'success',
+        message: payload.has_password ? `Jellyfin password set for "${username}"` : `Jellyfin password removed for "${username}"`,
+      }
+      showStatus(status)
+      showFooterStatus(status)
+    } catch (err) {
+      const status = { type: 'error', message: err.message || 'Failed to update the Jellyfin password' }
+      showStatus(status)
+      showFooterStatus(status)
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   const toggleExpandedStream = (username) => {
     setExpandedStreams((current) => ({
       ...current,
@@ -1263,6 +1300,46 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                                 <TooltipContent>Regenerate token</TooltipContent>
                               </Tooltip>
                             </div>
+                          </div>
+                          <div className="space-y-1.5 pt-3">
+                            <Label className="block text-xs text-muted-foreground" htmlFor={`jellyfin-password-${stream.username}`}>
+                              Jellyfin password {stream.has_password ? '(set)' : '(not set)'}
+                            </Label>
+                            <div className="flex items-center gap-2">
+                              <PasswordInput
+                                id={`jellyfin-password-${stream.username}`}
+                                className="h-8 w-full min-w-0 text-[11px]"
+                                placeholder={stream.has_password ? 'Set a new password' : 'Set a password'}
+                                autoComplete="new-password"
+                                value={passwordDrafts[stream.username] || ''}
+                                onChange={(e) => setPasswordDrafts((prev) => ({ ...prev, [stream.username]: e.target.value }))}
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-8 shrink-0"
+                                disabled={actionLoading !== null || loading || !(passwordDrafts[stream.username] || '').trim()}
+                                onClick={() => void handleSetPassword(stream.username)}
+                              >
+                                {actionLoading === `password-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
+                              </Button>
+                              {stream.has_password ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 shrink-0"
+                                  disabled={actionLoading !== null || loading}
+                                  onClick={() => void handleSetPassword(stream.username, true)}
+                                >
+                                  Remove
+                                </Button>
+                              ) : null}
+                            </div>
+                            <p className="text-[11px] leading-4 text-muted-foreground">
+                              Signs this stream in to Jellyfin clients, where the token is awkward to type. Not a dashboard login — the dashboard stays admin-only. The token works as a password too, so leaving this unset changes nothing.
+                            </p>
                           </div>
                         </div>
                       </div>

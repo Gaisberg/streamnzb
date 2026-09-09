@@ -124,6 +124,15 @@ var importTables = []importTable{
 		),
 	},
 	{
+		name:     "jellyfin_playstate",
+		conflict: "stream_name, item_id",
+		columns: cols(
+			txt("stream_name"), txt("item_id"), txt("content_type"), txt("content_id"),
+			num("position_ticks"), num("runtime_ticks"), num("played"), num("play_count"),
+			num("last_played_at"),
+		),
+	},
+	{
 		name:       "provider_metrics",
 		syncColumn: "collected_at",
 		columns: cols(
@@ -314,13 +323,20 @@ func conflictClause(t importTable, sourceWins bool) string {
 	if t.conflict == "" {
 		return ""
 	}
-	target := ` ON CONFLICT("` + t.conflict + `")`
+	keyColumns := map[string]bool{}
+	quotedKeys := make([]string, 0, 2)
+	for _, key := range strings.Split(t.conflict, ",") {
+		key = strings.TrimSpace(key)
+		keyColumns[key] = true
+		quotedKeys = append(quotedKeys, `"`+key+`"`)
+	}
+	target := ` ON CONFLICT(` + strings.Join(quotedKeys, ", ") + `)`
 	if !sourceWins {
 		return target + " DO NOTHING"
 	}
 	sets := make([]string, 0, len(t.columns))
 	for _, c := range t.columns {
-		if c.name == t.conflict {
+		if keyColumns[c.name] {
 			continue
 		}
 		sets = append(sets, `"`+c.name+`" = excluded."`+c.name+`"`)

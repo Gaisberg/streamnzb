@@ -79,6 +79,14 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 			newCfg.NewznabAPIKey = key
 		}
 	}
+	// The Jellyfin server id is never patched: Jellyfin clients key their saved
+	// login by it, so it only gets minted when nothing was ever stored.
+	newCfg.JellyfinServerID = currentCfg.JellyfinServerID
+	if newCfg.JellyfinServerID == "" {
+		if id, err := config.NewJellyfinServerID(); err == nil {
+			newCfg.JellyfinServerID = id
+		}
+	}
 
 	plan := validationPlanFromPatch(patch, currentCfg, &newCfg)
 	if fieldErrors := s.validateConfigWithPlan(&newCfg, plan); len(fieldErrors) > 0 {

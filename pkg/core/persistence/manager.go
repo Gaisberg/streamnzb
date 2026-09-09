@@ -71,6 +71,7 @@ type StateManager struct {
 	badReleaseStore *BadReleaseStore
 	animeMappings   *AnimeMappingStore
 	metadataCache   *MetadataCacheStore
+	jellyfinPlay    *JellyfinPlaystateStore
 	mu              sync.RWMutex
 	saveTimer       *time.Timer
 	saveMu          sync.Mutex
@@ -159,6 +160,7 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		libraryStore:    NewLibraryStore(db, wdb),
 		badReleaseStore: NewBadReleaseStore(db, wdb),
 		metadataCache:   NewMetadataCacheStore(db, wdb),
+		jellyfinPlay:    NewJellyfinPlaystateStore(db, wdb),
 	}
 	mgr.animeMappings = NewAnimeMappingStore(mgr, db, wdb)
 	return mgr, nil
@@ -293,6 +295,13 @@ func (m *StateManager) MetadataCacheStore() *MetadataCacheStore {
 		return nil
 	}
 	return m.metadataCache
+}
+
+func (m *StateManager) JellyfinPlaystateStore() *JellyfinPlaystateStore {
+	if m == nil {
+		return nil
+	}
+	return m.jellyfinPlay
 }
 
 func mergeMisplacedDatabases(target *connRef, dataDir string) {

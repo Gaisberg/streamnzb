@@ -361,7 +361,7 @@ func TestProviderBlockDefaults(t *testing.T) {
 func TestOverrideKeysAreReportedOnlyForVariablesThatAreSet(t *testing.T) {
 	clearNumberedBlocks(t)
 	clear(t, ADDONPort, ADDONBaseURL, LOGLevel, KeepLogFiles, AdminUsernameEnv,
-		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, AdminForcePasswordResetEnv,
+		MetadataEnabledEnv, NNTPProxyEnabled, NewznabEnabledEnv, JellyfinEnabledEnv, AdminForcePasswordResetEnv,
 		AvailNZBAPIKey, TMDBAPIKey, TVDBAPIKey, SimklClientID, NNTPProxyPort, NNTPProxyHost,
 		NNTPProxyAuthUser, NNTPProxyAuthPass, NewznabAPIKeyEnv,
 		StreamNZBDatabaseDriverEnv, DatabaseDriverEnv, StreamNZBDatabaseURLEnv, DatabaseURLEnv,
@@ -531,6 +531,7 @@ func TestBooleanEnvNamesCoversEveryFixedName(t *testing.T) {
 	nameOf := map[string]string{
 		"MetadataEnabledEnv": MetadataEnabledEnv, "NNTPProxyEnabled": NNTPProxyEnabled,
 		"NewznabEnabledEnv": NewznabEnabledEnv, "AdminForcePasswordResetEnv": AdminForcePasswordResetEnv,
+		"JellyfinEnabledEnv":                 JellyfinEnabledEnv,
 		"EasynewsAdvancedSearchEnv":          EasynewsAdvancedSearchEnv,
 		"StreamNZBEasynewsAdvancedSearchEnv": StreamNZBEasynewsAdvancedSearchEnv,
 		"EasynewsSpamFilterEnv":              EasynewsSpamFilterEnv,

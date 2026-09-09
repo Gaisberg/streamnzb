@@ -16,6 +16,7 @@ It also watches what it is configured with: when a provider rejects your passwor
 |---|---|---|
 | **Stremio** | A complete addon: catalogs, search, title pages, air dates and streams. No Cinemeta, no companion addons | [Metadata & catalogs](docs/metadata.md) |
 | **Prowlarr, Sonarr, Radarr** | Every indexer you configured, as one Newznab API behind one key | [Newznab endpoint](docs/newznab.md) |
+| **Swiftfin, Infuse, Findroid** | The same catalogs and playback, as a Jellyfin server | [Jellyfin endpoint](docs/jellyfin.md) |
 | **SABnzbd, NZBGet** | Your whole provider pool, as one NNTP server | [NNTP proxy](docs/nntp-proxy.md) |
 | **AIOStreams** | StreamNZB as a preset, alongside what it already runs | [Using with AIOStreams](docs/aiostreams.md) |
 
@@ -29,6 +30,7 @@ One config, one IP, no extra containers — just your Usenet provider(s) and ind
 - **The only addon you need** — StreamNZB serves catalogs and full metadata alongside streams: trending/popular/top-rated rows, search, series pages with episode lists and exact air dates, plus per-stream **Continue Watching** and **Because You Watched** rows built from your own playback history. Works out of the box in any Stremio-compatible client, including ones without Cinemeta.
 - **Standalone Stremio Addon** — Install StreamNZB directly into your Stremio client with built-in release parsing and ranking powered by [jhin](https://github.com/dreulavelle/jhin), customizable filter profiles, or optionally plug it into [AIOStreams](https://github.com/Viren070/AIOStreams).
 - **Newznab endpoint** — Every configured indexer re-served as a single Newznab API (off by default), so Prowlarr, Sonarr, Radarr or any Newznab client searches the whole set through one URL and one key. Your indexers' own API keys are never handed to the client.
+- **Jellyfin endpoint** — The same catalogs, metadata and playback re-served as a Jellyfin server (off by default), so Swiftfin, Infuse, Findroid or any Jellyfin client browses and plays them without a Stremio client in between. A stream name and its token are the login; watch progress is kept per stream.
 - **NNTP proxy** — Standard NNTP (default port 1119, off by default) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
 - **AvailNZB** — Community availability database, opt-in. Bad releases are skipped; success/failure is reported on play so the shared DB stays current. Off by default, and nothing is sent until you enable it.
 - **Search history & diagnostics** — The **History** page shows every search with its play attempts nested under it: per-indexer API timings, what validation/dedup/filtering dropped and why, including searches that returned nothing. An optional **Search debug stream** toggle (under Advanced) prepends the same summary as a result row in Stremio — selecting it just plays the top real result.
@@ -140,6 +142,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Integrations](docs/integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
 - [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](docs/newznab.md) — serving your configured indexers to any Newznab-compatible application
+- [Jellyfin endpoint](docs/jellyfin.md) — serving your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid)
 - [AvailNZB](docs/availnzb.md) — community availability database integration
 - [Using with AIOStreams](docs/aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 - [Troubleshooting](docs/troubleshooting.md) — reporting problems, Cloudflare Tunnel buffering, admin password recovery

@@ -36,8 +36,12 @@ func parseTrailingNumber(value string) (int, bool) {
 }
 
 type Stream struct {
-	Username          string `json:"username"`
-	Token             string `json:"token"`
+	Username string `json:"username"`
+	Token    string `json:"token"`
+	// PasswordHash is this stream's own password, argon2id-hashed. See
+	// config.StreamEntry; the two structs are converted into each other, so
+	// their fields must stay in step.
+	PasswordHash      string `json:"password_hash,omitempty"`
 	Order             int    `json:"order,omitempty"`
 	FilterSortingMode string `json:"filter_sorting_mode,omitempty"`
 	IndexerMode       string `json:"indexer_mode,omitempty"`
@@ -412,6 +416,69 @@ func (dm *StreamManager) Authenticate(loginUsername, password, adminUsername, ad
 		Token:            adminToken,
 		IndexerOverrides: nil,
 	}, nil
+}
+
+// AuthenticateStream resolves a stream login by name and password. It is the
+// credential pair a media client asks for, as opposed to the addon URL a
+// Stremio client is handed, and it never admits the admin: the dashboard login
+// is checked by Authenticate and is not a stream, so it has nothing to play.
+//
+// A stream's token stays valid in place of its password, so a client set up
+// before passwords existed keeps working, and a stream with no password set
+// still has a way in.
+//
+// Every attempt pays the same argon2id cost whether or not the name exists, so
+// which names are real cannot be read off the response time.
+func (dm *StreamManager) AuthenticateStream(username, password string) (*Stream, error) {
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	dm.mu.RLock()
+	var match *Stream
+	for _, stream := range dm.streams {
+		if strings.EqualFold(stream.Username, username) {
+			match = stream
+			break
+		}
+	}
+	dm.mu.RUnlock()
+
+	storedHash := ""
+	if match != nil {
+		storedHash = match.PasswordHash
+	}
+	// Runs for an unknown stream too, on an empty hash that never matches:
+	// VerifyPassword spends the same work either way.
+	passwordOK := VerifyPassword(password, storedHash)
+	if match == nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	if passwordOK {
+		return match, nil
+	}
+	if subtle.ConstantTimeCompare([]byte(password), []byte(match.Token)) == 1 {
+		return match, nil
+	}
+	return nil, fmt.Errorf("invalid credentials")
+}
+
+// SetStreamPassword sets or clears a stream's password. An empty password
+// removes it, leaving the token as the only way in.
+func (dm *StreamManager) SetStreamPassword(username, password string) error {
+	hash := ""
+	if strings.TrimSpace(password) != "" {
+		var err error
+		if hash, err = HashPassword(password); err != nil {
+			return fmt.Errorf("hash password: %w", err)
+		}
+	}
+	if err := dm.mutate(username, "stream password", func(s *Stream) { s.PasswordHash = hash }); err != nil {
+		return err
+	}
+	logger.Info("Stream password updated", "username", username, "set", hash != "")
+	return nil
 }
 
 func (dm *StreamManager) AuthenticateToken(token string, adminUsername, adminToken string) (*Stream, error) {

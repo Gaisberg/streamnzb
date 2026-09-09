@@ -50,6 +50,19 @@ type FFprobeStream struct {
 	NbReadFrames     string             `json:"nb_read_frames"`
 	Disposition      ffprobeDisposition `json:"disposition"`
 	Tags             ffprobeTags        `json:"tags"`
+	// SideDataList carries the DOVI configuration record. Dolby Vision
+	// profile 8 rides on an ordinary hvc1/hev1 stream with an HDR10 base
+	// layer, so the codec tag says nothing and this is the only place the
+	// profile shows up at all.
+	SideDataList []ffprobeSideData `json:"side_data_list"`
+}
+
+// ffprobeSideData is one stream side-data entry. Only the Dolby Vision
+// configuration record is read; the rest are ignored.
+type ffprobeSideData struct {
+	SideDataType string `json:"side_data_type"`
+	DVProfile    *int   `json:"dv_profile"`
+	DVLevel      *int   `json:"dv_level"`
 }
 
 // FFprobeFormat carries the container-level fields we ask for. Duration comes
@@ -169,6 +182,7 @@ const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt,"
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
 	"stream_disposition=attached_pic:" +
 	"stream_tags=language:" +
+	"stream_side_data=side_data_type,dv_profile,dv_level:" +
 	"format=duration"
 
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
@@ -424,8 +438,16 @@ func classifyHDR(st FFprobeStream) string {
 	}
 }
 
-// isDolbyVision detects Dolby Vision from the codec tag / profile. DV profile 5
-// commonly reports a dvhe/dvh1 tag which most React Native players cannot decode.
+// isDolbyVision detects Dolby Vision.
+//
+// Three tiers, because DV hides in a different place per profile. Profile 5
+// announces itself in the codec tag (dvhe/dvh1), which most players cannot
+// decode. Profile 8 — what a "DV HDR" or "DV HDR10Plus" WEB-DL almost always
+// is — rides on an ordinary hvc1/hev1 HEVC stream with an HDR10 base layer:
+// the tag is unremarkable and the only evidence is the DOVI configuration
+// record in the stream's side data. Reading the tag alone reports such a file
+// as plain HDR10, which is how a release named DV reaches a viewer who asked
+// for no DV.
 func isDolbyVision(st FFprobeStream) bool {
 	switch strings.ToLower(strings.TrimSpace(st.CodecTagString)) {
 	case "dvhe", "dvh1", "dva1", "dav1", "dvav":
@@ -433,6 +455,15 @@ func isDolbyVision(st FFprobeStream) bool {
 	}
 	if strings.Contains(strings.ToLower(st.Profile), "dolby vision") {
 		return true
+	}
+	for _, side := range st.SideDataList {
+		if strings.Contains(strings.ToLower(side.SideDataType), "dovi") ||
+			strings.Contains(strings.ToLower(side.SideDataType), "dolby vision") {
+			return true
+		}
+		if side.DVProfile != nil && *side.DVProfile > 0 {
+			return true
+		}
 	}
 	return false
 }
