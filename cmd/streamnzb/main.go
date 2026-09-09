@@ -342,6 +342,12 @@ func main() {
 			}
 			return liveCfg.GetAdminUsername(), liveCfg.AdminPasswordHash, liveCfg.AdminToken
 		},
+		MaxPlaybackSources: func() int {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.JellyfinMaxPlaybackSources
+			}
+			return 0
+		},
 		Streams:   streamManager,
 		Catalog:   stremioServer,
 		Playstate: stateMgr.JellyfinPlaystateStore(),

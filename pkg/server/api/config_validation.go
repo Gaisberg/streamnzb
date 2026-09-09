@@ -114,6 +114,7 @@ var patchKeysNoCacheImpact = map[string]bool{
 	"newznab_enabled":                     true,
 	"newznab_api_key":                     true,
 	"jellyfin_enabled":                    true,
+	"jellyfin_max_playback_sources":       true,
 	"indexer_query_header":                true,
 	"indexer_grab_header":                 true,
 	"provider_header":                     true,

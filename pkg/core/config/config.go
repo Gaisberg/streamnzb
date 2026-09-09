@@ -523,6 +523,9 @@ const (
 	DefaultVariantAttempts = 1
 	// VariantAttemptsUnlimited asks for every copy the merge kept.
 	VariantAttemptsUnlimited = -1
+	// DefaultJellyfinMaxPlaybackSources is how many ranked candidates
+	// PlaybackInfo offers when the operator has not set a limit.
+	DefaultJellyfinMaxPlaybackSources = 20
 )
 
 func (c *Config) EffectiveLibrarySearchMode() string {
@@ -760,6 +763,11 @@ type Config struct {
 	// servers and per-server state by. Generated when empty and never
 	// rotated afterwards: changing it makes every client forget its login.
 	JellyfinServerID string `json:"jellyfin_server_id"`
+	// JellyfinMaxPlaybackSources caps how many ranked candidates PlaybackInfo
+	// hands a client as media sources. Some pickers (SenPlayer's) break on a
+	// long list; the candidates are already ranked best-first, so capping
+	// only drops the tail. Defaulted to 20 when zero.
+	JellyfinMaxPlaybackSources int `json:"jellyfin_max_playback_sources,omitempty"`
 
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
@@ -1389,6 +1397,11 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 			needSave = true
 		}
 	}
+	// Unlike the server id this default is not persisted: it is a computed
+	// fallback, not a value the operator needs to see written to disk.
+	if cfg.JellyfinMaxPlaybackSources <= 0 || cfg.JellyfinMaxPlaybackSources > 200 {
+		cfg.JellyfinMaxPlaybackSources = DefaultJellyfinMaxPlaybackSources
+	}
 	if cfg.AdminPasswordHash == "" {
 		cfg.AdminPasswordHash = defaultAdminPasswordHash
 		cfg.AdminMustChangePassword = true
@@ -1691,34 +1704,35 @@ func keySet(list []string, s string) bool {
 // so a new override is one entry instead of two hand-maintained mirrors that
 // can (and did) drift apart.
 var envFieldCopiers = map[string]func(dst, src *Config){
-	env.KeyAddonPort:              func(d, s *Config) { d.AddonPort = s.AddonPort },
-	env.KeyAddonBaseURL:           func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
-	env.KeyLogLevel:               func(d, s *Config) { d.LogLevel = s.LogLevel },
-	env.KeyKeepLogFiles:           func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
-	env.KeyAvailNZBAPIKey:         func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
-	env.KeyTMDBAPIKey:             func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
-	env.KeyTVDBAPIKey:             func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
-	env.KeySimklClientID:          func(d, s *Config) { d.SimklClientID = s.SimklClientID },
-	env.KeyIndexerQueryHeader:     func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
-	env.KeyIndexerGrabHeader:      func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
-	env.KeyProviderHeader:         func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
-	env.KeyProxyPort:              func(d, s *Config) { d.ProxyPort = s.ProxyPort },
-	env.KeyProxyHost:              func(d, s *Config) { d.ProxyHost = s.ProxyHost },
-	env.KeyProxyEnabled:           func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
-	env.KeyProxyAuthUser:          func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
-	env.KeyProxyAuthPass:          func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
-	env.KeyNewznabEnabled:         func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
-	env.KeyNewznabAPIKey:          func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
-	env.KeyJellyfinEnabled:        func(d, s *Config) { d.JellyfinEnabled = s.JellyfinEnabled },
-	env.KeyAdminUsername:          func(d, s *Config) { d.AdminUsername = s.AdminUsername },
-	env.KeyAdminMustChangePwd:     func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
-	env.KeyTrustedProxyAuthHeader: func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
-	env.KeyTrustedProxies:         func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
-	env.KeyProviders:              func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
-	env.KeyIndexers:               func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
-	env.KeyDatabaseDriver:         func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
-	env.KeyDatabaseURL:            func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
-	env.KeyMetadataEnabled:        func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
+	env.KeyAddonPort:                  func(d, s *Config) { d.AddonPort = s.AddonPort },
+	env.KeyAddonBaseURL:               func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
+	env.KeyLogLevel:                   func(d, s *Config) { d.LogLevel = s.LogLevel },
+	env.KeyKeepLogFiles:               func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
+	env.KeyAvailNZBAPIKey:             func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
+	env.KeyTMDBAPIKey:                 func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
+	env.KeyTVDBAPIKey:                 func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeySimklClientID:              func(d, s *Config) { d.SimklClientID = s.SimklClientID },
+	env.KeyIndexerQueryHeader:         func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
+	env.KeyIndexerGrabHeader:          func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
+	env.KeyProviderHeader:             func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
+	env.KeyProxyPort:                  func(d, s *Config) { d.ProxyPort = s.ProxyPort },
+	env.KeyProxyHost:                  func(d, s *Config) { d.ProxyHost = s.ProxyHost },
+	env.KeyProxyEnabled:               func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
+	env.KeyProxyAuthUser:              func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
+	env.KeyProxyAuthPass:              func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyNewznabEnabled:             func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
+	env.KeyNewznabAPIKey:              func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
+	env.KeyJellyfinEnabled:            func(d, s *Config) { d.JellyfinEnabled = s.JellyfinEnabled },
+	env.KeyJellyfinMaxPlaybackSources: func(d, s *Config) { d.JellyfinMaxPlaybackSources = s.JellyfinMaxPlaybackSources },
+	env.KeyAdminUsername:              func(d, s *Config) { d.AdminUsername = s.AdminUsername },
+	env.KeyAdminMustChangePwd:         func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
+	env.KeyTrustedProxyAuthHeader:     func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
+	env.KeyTrustedProxies:             func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
+	env.KeyProviders:                  func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:                   func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:             func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:                func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled:            func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1773,32 +1787,33 @@ func copyEnvKeys(dst, src *Config, keys []string) {
 // declared via env are always newznab and default to enabled).
 func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 	cfg := &Config{
-		AddonPort:               o.AddonPort,
-		AddonBaseURL:            o.AddonBaseURL,
-		LogLevel:                o.LogLevel,
-		KeepLogFiles:            o.KeepLogFiles,
-		AvailNZBAPIKey:          o.AvailNZBAPIKey,
-		TMDBAPIKey:              o.TMDBAPIKey,
-		TVDBAPIKey:              o.TVDBAPIKey,
-		SimklClientID:           o.SimklClientID,
-		IndexerQueryHeader:      o.IndexerQueryHeader,
-		IndexerGrabHeader:       o.IndexerGrabHeader,
-		ProviderHeader:          o.ProviderHeader,
-		ProxyPort:               o.ProxyPort,
-		ProxyHost:               o.ProxyHost,
-		ProxyEnabled:            o.ProxyEnabled,
-		ProxyAuthUser:           o.ProxyAuthUser,
-		ProxyAuthPass:           o.ProxyAuthPass,
-		NewznabEnabled:          o.NewznabEnabled,
-		NewznabAPIKey:           o.NewznabAPIKey,
-		JellyfinEnabled:         o.JellyfinEnabled,
-		AdminUsername:           o.AdminUsername,
-		AdminMustChangePassword: o.AdminMustChangePwd,
-		TrustedProxyAuthHeader:  o.TrustedProxyAuthHeader,
-		TrustedProxies:          append([]string(nil), o.TrustedProxies...),
-		DatabaseDriver:          o.DatabaseDriver,
-		DatabaseURL:             o.DatabaseURL,
-		Metadata:                MetadataConfig{Enabled: &o.MetadataEnabled},
+		AddonPort:                  o.AddonPort,
+		AddonBaseURL:               o.AddonBaseURL,
+		LogLevel:                   o.LogLevel,
+		KeepLogFiles:               o.KeepLogFiles,
+		AvailNZBAPIKey:             o.AvailNZBAPIKey,
+		TMDBAPIKey:                 o.TMDBAPIKey,
+		TVDBAPIKey:                 o.TVDBAPIKey,
+		SimklClientID:              o.SimklClientID,
+		IndexerQueryHeader:         o.IndexerQueryHeader,
+		IndexerGrabHeader:          o.IndexerGrabHeader,
+		ProviderHeader:             o.ProviderHeader,
+		ProxyPort:                  o.ProxyPort,
+		ProxyHost:                  o.ProxyHost,
+		ProxyEnabled:               o.ProxyEnabled,
+		ProxyAuthUser:              o.ProxyAuthUser,
+		ProxyAuthPass:              o.ProxyAuthPass,
+		NewznabEnabled:             o.NewznabEnabled,
+		NewznabAPIKey:              o.NewznabAPIKey,
+		JellyfinEnabled:            o.JellyfinEnabled,
+		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
+		AdminUsername:              o.AdminUsername,
+		AdminMustChangePassword:    o.AdminMustChangePwd,
+		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,
+		TrustedProxies:             append([]string(nil), o.TrustedProxies...),
+		DatabaseDriver:             o.DatabaseDriver,
+		DatabaseURL:                o.DatabaseURL,
+		Metadata:                   MetadataConfig{Enabled: &o.MetadataEnabled},
 	}
 	cfg.Providers = make([]Provider, len(o.Providers))
 	for i, p := range o.Providers {

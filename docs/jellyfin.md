@@ -65,7 +65,9 @@ stream never sees another's.
   URLs Stremio is given. They are never proxied through StreamNZB.
 - **Playback** — pressing play searches, ranks and returns every candidate
   release as a *media source*, best first. The client's media-source picker is
-  therefore the stream list, and switching source is switching release.
+  therefore the stream list, and switching source is switching release. At
+  most 20 sources are offered per play (`JELLYFIN_MAX_PLAYBACK_SOURCES`); some
+  clients' pickers break on longer lists.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
