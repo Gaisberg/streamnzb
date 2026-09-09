@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -218,19 +219,44 @@ func previews(contentType, prefix string, n int) []stremio.MetaPreview {
 	return out
 }
 
+// testCDNServer stands in for a provider's image CDN: it answers any path
+// with 200 and the path itself as the body, so a test can tell which URL
+// the relay actually fetched, and answers a path containing "missing" with
+// 404. One instance covers the whole test binary; there is nothing to
+// serve differently per test that a distinct path can't already express.
+var testCDNServer = sync.OnceValue(func() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "missing") {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.Contains(r.URL.Path, "huge") {
+			// Announces a body far past the relay cap; a well-behaved client
+			// gets refused before either header reaches it.
+			w.Header().Set("Content-Length", strconv.Itoa(maxImageBody+1))
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Write([]byte("not the whole thing"))
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write([]byte(r.URL.Path))
+	}))
+})
+
 func testCatalog() *fakeCatalog {
+	cdn := testCDNServer().URL
 	movie := &stremio.MetaObject{
 		ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption",
-		Poster: "https://img.test/shawshank.jpg", Background: "https://img.test/shawshank-bg.jpg", Logo: "https://img.test/shawshank-logo.png",
+		Poster: cdn + "/shawshank.jpg", Background: cdn + "/shawshank-bg.jpg", Logo: cdn + "/shawshank-logo.png",
 		Description: "Two imprisoned men bond.", ReleaseInfo: "1994", Released: "1994-09-23T00:00:00.000Z",
 		IMDBRating: "9.3", Runtime: "142 min", Genres: []string{"Drama"}, Cast: []string{"Tim Robbins"}, Director: []string{"Frank Darabont"},
 		Trailers: []stremio.MetaTrailer{{Source: "6hB3S9bIaco", Type: "Trailer"}},
 	}
 	series := &stremio.MetaObject{
-		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: "https://img.test/bb-bg.jpg",
+		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: cdn + "/bb-bg.jpg",
 		ReleaseInfo: "2008-2013", Runtime: "49 min",
 		Videos: []stremio.MetaVideo{
-			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: "https://img.test/bb-s1e1.jpg"},
+			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg"},
 			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
 			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1},
 			{ID: "tt0903747:0:1", Title: "Minisode", Season: 0, Episode: 1},
@@ -484,23 +510,24 @@ func TestMovieDetail(t *testing.T) {
 	if item.ImageTags["Primary"] == "" || item.ImageTags["Logo"] == "" || len(item.BackdropImageTags) != 1 {
 		t.Fatalf("image tags: %+v %+v", item.ImageTags, item.BackdropImageTags)
 	}
-	// Images redirect to the provider URL the tag hashes.
+	// Images are relayed from the provider URL the tag hashes, not redirected
+	// to it: Infuse ignores a 302 on artwork and is left with nothing.
 	rec := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary?tag="+item.ImageTags["Primary"], "")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/shawshank.jpg" {
-		t.Fatalf("primary image: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || rec.Body.String() != "/shawshank.jpg" || rec.Header().Get("Cache-Control") != "public, max-age=86400" {
+		t.Fatalf("primary image: %d %q %q", rec.Code, rec.Body.String(), rec.Header().Get("Cache-Control"))
 	}
 	// A client's image loader carries no token; the tag alone must serve it,
 	// and an image it cannot resolve is a missing image, never a 401.
 	anon := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary?tag="+item.ImageTags["Primary"], "", "X-Nothing", "x")
-	if anon.Code != http.StatusFound || anon.Header().Get("Location") != rec.Header().Get("Location") {
-		t.Fatalf("anonymous image by tag: %d %s", anon.Code, anon.Header().Get("Location"))
+	if anon.Code != http.StatusOK || anon.Body.String() != rec.Body.String() {
+		t.Fatalf("anonymous image by tag: %d %s", anon.Code, anon.Body.String())
 	}
 	if anon := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary", "", "X-Nothing", "x"); anon.Code != http.StatusNotFound {
 		t.Fatalf("anonymous image without a tag: %d", anon.Code)
 	}
 	rec = f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Backdrop/0?tag="+item.BackdropImageTags[0], "")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/shawshank-bg.jpg" {
-		t.Fatalf("backdrop image: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || rec.Body.String() != "/shawshank-bg.jpg" {
+		t.Fatalf("backdrop image: %d %s", rec.Code, rec.Body.String())
 	}
 	// Item lookup by ids.
 	var result queryResult
@@ -516,18 +543,90 @@ func TestImageMissResolvesFromMetadata(t *testing.T) {
 	ep := series.episode(1, 1)
 	// A fresh server has no tag map; the id alone must be enough.
 	rec := f.do(http.MethodGet, "/jellyfin/Items/"+ep.encode()+"/Images/Primary?tag=stale", "")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/bb-s1e1.jpg" {
-		t.Fatalf("episode primary on a miss: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || rec.Body.String() != "/bb-s1e1.jpg" {
+		t.Fatalf("episode primary on a miss: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = f.do(http.MethodGet, "/jellyfin/Items/"+series.season(2).encode()+"/Images/Backdrop", "")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://img.test/bb-bg.jpg" {
-		t.Fatalf("season backdrop: %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || rec.Body.String() != "/bb-bg.jpg" {
+		t.Fatalf("season backdrop: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+series.encode()+"/Images/Logo", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing logo: %d", rec.Code)
 	}
 	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+userID("person:Tim Robbins")+"/Images/Primary", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("person image: %d", rec.Code)
+	}
+}
+
+func TestImageRelayHEADHasHeadersButNoBody(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodHead, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD relay: %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("HEAD content-type: %q", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=86400" {
+		t.Fatalf("HEAD cache-control: %q", cc)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("HEAD body: %q", rec.Body.String())
+	}
+}
+
+func TestImageRelayUpstream404(t *testing.T) {
+	f := newFixture()
+	f.catalog.metas["movie/tt0111161"].Poster = testCDNServer().URL + "/missing.jpg"
+	movie, _ := itemIDFor("movie", "tt0111161")
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusBadGateway {
+		t.Fatalf("upstream 404: %d", rec.Code)
+	}
+}
+
+func TestImageRelayRefusesOversizedContentLength(t *testing.T) {
+	f := newFixture()
+	f.catalog.metas["movie/tt0111161"].Poster = testCDNServer().URL + "/huge.jpg"
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("oversized content-length: %d", rec.Code)
+	}
+	// Refused before any of the CDN's response reaches the client.
+	if rec.Header().Get("Content-Type") == "image/jpeg" || strings.Contains(rec.Body.String(), "not the whole thing") {
+		t.Fatalf("oversized content-length leaked upstream headers/body: %+v %q", rec.Header(), rec.Body.String())
+	}
+}
+
+func TestImageRelayUpstreamUnreachable(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL + "/gone.jpg"
+	dead.Close() // closed before use: nothing answers this address any more.
+	f := newFixture()
+	f.catalog.metas["movie/tt0111161"].Poster = deadURL
+	movie, _ := itemIDFor("movie", "tt0111161")
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusBadGateway {
+		t.Fatalf("upstream unreachable: %d", rec.Code)
+	}
+}
+
+func TestRewriteImageSize(t *testing.T) {
+	base := "https://image.tmdb.org/t/p/original/abc.jpg"
+	if got := rewriteImageSize(base, "backdrop"); got != "https://image.tmdb.org/t/p/w1280/abc.jpg" {
+		t.Fatalf("backdrop: %q", got)
+	}
+	if got := rewriteImageSize(base, "primary"); got != "https://image.tmdb.org/t/p/w780/abc.jpg" {
+		t.Fatalf("primary: %q", got)
+	}
+	if got := rewriteImageSize(base, "thumb"); got != "https://image.tmdb.org/t/p/w780/abc.jpg" {
+		t.Fatalf("thumb: %q", got)
+	}
+	if got := rewriteImageSize(base, "logo"); got != base {
+		t.Fatalf("logo passthrough: %q", got)
+	}
+	if got := rewriteImageSize("https://img.test/abc.jpg", "backdrop"); got != "https://img.test/abc.jpg" {
+		t.Fatalf("non-tmdb passthrough: %q", got)
 	}
 }
 

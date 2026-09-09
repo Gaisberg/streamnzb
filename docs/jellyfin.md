@@ -61,8 +61,10 @@ stream never sees another's.
   from the same metadata providers the addon uses.
 - **Search** — the client's search box runs the addon's search carriers
   (TMDB movies, TMDB series, Kitsu anime) in parallel.
-- **Images** — posters and backdrops redirect to the provider's CDN, the same
-  URLs Stremio is given. They are never proxied through StreamNZB.
+- **Images** — posters and backdrops are fetched from the provider's CDN and
+  relayed by StreamNZB, because some clients (Infuse) do not follow redirects
+  for artwork. TMDB images are requested at bounded sizes (backdrops 1280px
+  wide, posters 780px) and sent with a one-day cache header.
 - **Playback** — pressing play searches, ranks and returns every candidate
   release as a *media source*, best first. The client's media-source picker is
   therefore the stream list, and switching source is switching release.
