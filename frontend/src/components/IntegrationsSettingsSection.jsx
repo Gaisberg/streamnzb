@@ -229,7 +229,7 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
               <EndpointAddress
                 label="Server URL"
                 value={jellyfinURL}
-                hint="Add this as a Jellyfin server in the client, then sign in with a stream name as the username and that stream's token as the password. The admin signs in with the dashboard username and password."
+                hint="Add this as a Jellyfin server in the client, then sign in with a stream name as the username and that stream's token as the password. The dashboard admin cannot sign in here — only streams can."
               />
               <FormField control={control} name="jellyfin_enabled" render={({ field }) => (
                 <FormItem className="rounded-md border border-border/60 p-3">
