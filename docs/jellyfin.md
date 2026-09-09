@@ -58,7 +58,8 @@ stream never sees another's.
 
 - **Libraries** — one folder per enabled browse catalog, paged as you scroll.
 - **Movies and series** — with seasons, episodes, overviews, years and ratings
-  from the same metadata providers the addon uses.
+  from the same metadata providers the addon uses, with cast and crew, photos
+  included.
 - **Search** — the client's search box runs the addon's search carriers
   (TMDB movies, TMDB series, Kitsu anime) in parallel.
 - **Images** — posters and backdrops are fetched from the provider's CDN and

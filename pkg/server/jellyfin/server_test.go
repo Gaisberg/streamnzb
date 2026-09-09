@@ -255,6 +255,9 @@ func testCatalog() *fakeCatalog {
 		Description: "Two imprisoned men bond.", ReleaseInfo: "1994", Released: "1994-09-23T00:00:00.000Z",
 		IMDBRating: "9.3", Runtime: "142 min", Genres: []string{"Drama"}, Cast: []string{"Tim Robbins"}, Director: []string{"Frank Darabont"},
 		Trailers: []stremio.MetaTrailer{{Source: "6hB3S9bIaco", Type: "Trailer"}},
+		AppExtras: &stremio.MetaAppExtras{Cast: []stremio.MetaCastMember{
+			{Name: "Tim Robbins", Character: "Andy Dufresne", Photo: cdn + "/tim-robbins.jpg"},
+		}},
 	}
 	series := &stremio.MetaObject{
 		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: cdn + "/bb-bg.jpg",
@@ -635,6 +638,48 @@ func TestRewriteImageSize(t *testing.T) {
 	}
 	if got := rewriteImageSize("https://img.test/abc.jpg", "backdrop"); got != "https://img.test/abc.jpg" {
 		t.Fatalf("non-tmdb passthrough: %q", got)
+	}
+	if got := rewriteImageSize(base, "person"); got != "https://image.tmdb.org/t/p/h632/abc.jpg" {
+		t.Fatalf("person: %q", got)
+	}
+}
+
+// TestCastPhotos checks that a cast member with a headshot gets a
+// PrimaryImageTag the item document can carry, and that the tag relays the
+// same way any other image does.
+func TestCastPhotos(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	if len(item.People) != 2 || item.People[0].Name != "Tim Robbins" || item.People[0].PrimaryImageTag == "" {
+		t.Fatalf("cast photo tag missing: %+v", item.People)
+	}
+	if tag := item.People[1].PrimaryImageTag; tag != "" {
+		t.Fatalf("director has no photo, got a tag: %q", tag)
+	}
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+item.People[0].ID+"/Images/Primary?tag="+item.People[0].PrimaryImageTag, "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "/tim-robbins.jpg" {
+		t.Fatalf("cast photo relay: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCastPhotoRegisteredAtPersonSize checks that a TMDB cast photo is
+// registered at h632 — resolved once, at registration, since the images
+// route has no kind to size by when a request arrives by tag alone.
+func TestCastPhotoRegisteredAtPersonSize(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	f.catalog.metas["movie/tt0111161"].AppExtras.Cast[0].Photo = "https://image.tmdb.org/t/p/original/tim-robbins.jpg"
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
+	tag := item.People[0].PrimaryImageTag
+	if tag == "" {
+		t.Fatalf("no photo tag registered: %+v", item.People[0])
+	}
+	url, ok := f.server.images.urlFor(tag)
+	if !ok || url != "https://image.tmdb.org/t/p/h632/tim-robbins.jpg" {
+		t.Fatalf("person photo not registered at h632: ok=%v url=%q", ok, url)
 	}
 }
 

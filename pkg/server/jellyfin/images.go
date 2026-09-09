@@ -227,7 +227,9 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 // clients render it, rather than the "original" full-resolution file the
 // catalog hands out: relaying a multi-megabyte poster for a thumbnail wastes
 // bandwidth neither side needs. Any other host is passed through unchanged.
-// There are no person items in this layer, so no people size.
+// "person" is a cast headshot — there is no /Items/{personId}/Images/Primary
+// request to carry a kind, so a person photo is sized once, at registration,
+// rather than by the request that later relays it.
 func rewriteImageSize(rawURL, kind string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host != "image.tmdb.org" {
@@ -243,6 +245,8 @@ func rewriteImageSize(rawURL, kind string) string {
 		size = "w1280"
 	case "primary", "thumb":
 		size = "w780"
+	case "person":
+		size = "h632"
 	default:
 		return rawURL
 	}

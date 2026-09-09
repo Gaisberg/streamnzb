@@ -293,7 +293,7 @@ func (s *Server) metaItem(id itemID, meta *stremio.MetaObject) *baseItem {
 			item.RemoteTrailers = append(item.RemoteTrailers, remoteTrailer{URL: "https://www.youtube.com/watch?v=" + t.Source, Name: "Trailer"})
 		}
 	}
-	item.People = people(meta)
+	item.People = s.people(meta)
 	if id.Scheme == schemeIMDb {
 		item.ExternalURLs = []externalURL{{Name: "IMDb", URL: "https://www.imdb.com/title/" + id.baseStremioID()}}
 	}
@@ -307,29 +307,39 @@ func (s *Server) metaItem(id itemID, meta *stremio.MetaObject) *baseItem {
 	return item
 }
 
-// people renders cast and crew. Names are all the addon has; ids are
-// derived so clients can key on them.
-func people(meta *stremio.MetaObject) []person {
+// people renders cast and crew. Plain metadata carries names only; app_extras
+// cast members also carry a TMDB or TVDB headshot, which becomes the person's
+// PrimaryImageTag so a client's cast row shows faces instead of initials. Ids
+// are derived from the name so clients can key on them.
+func (s *Server) people(meta *stremio.MetaObject) []person {
 	var out []person
-	add := func(name, role, kind string) {
-		if name = strings.TrimSpace(name); name != "" {
-			out = append(out, person{Name: name, ID: userID("person:" + name), Role: role, Type: kind})
+	add := func(name, role, kind, photo string) {
+		if name = strings.TrimSpace(name); name == "" {
+			return
 		}
+		p := person{Name: name, ID: userID("person:" + name), Role: role, Type: kind}
+		if photo = strings.TrimSpace(photo); photo != "" {
+			// Registered at a fixed size, not "original": a cast row renders
+			// dozens of these at once, and nothing here ever asks for a
+			// bigger one.
+			p.PrimaryImageTag = s.images.register(rewriteImageSize(photo, "person"))
+		}
+		out = append(out, p)
 	}
 	if meta.AppExtras != nil && len(meta.AppExtras.Cast) > 0 {
 		for _, c := range meta.AppExtras.Cast {
-			add(c.Name, c.Character, "Actor")
+			add(c.Name, c.Character, "Actor", c.Photo)
 		}
 	} else {
 		for _, name := range meta.Cast {
-			add(name, "", "Actor")
+			add(name, "", "Actor", "")
 		}
 	}
 	for _, name := range meta.Director {
-		add(name, "", "Director")
+		add(name, "", "Director", "")
 	}
 	for _, name := range meta.Writer {
-		add(name, "", "Writer")
+		add(name, "", "Writer", "")
 	}
 	return out
 }
