@@ -25,7 +25,6 @@ const INTEGRATIONS_TAB_FIELDS = [
   'proxy_auth_pass',
   'newznab_enabled',
   'newznab_api_key',
-  'jellyfin_enabled',
 ]
 
 const ADVANCED_TAB_FIELDS = [

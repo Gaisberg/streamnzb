@@ -754,11 +754,6 @@ type Config struct {
 	// key would either lock the endpoint out of use or leave it open.
 	NewznabAPIKey string `json:"newznab_api_key"`
 
-	// JellyfinEnabled exposes the catalogs and playback pipeline as a
-	// Jellyfin-compatible server at /jellyfin, so Jellyfin clients (Swiftfin,
-	// Infuse, Findroid, ...) can sign in with a stream name and its token.
-	// Like Newznab it rides on the addon listener.
-	JellyfinEnabled bool `json:"jellyfin_enabled"`
 	// JellyfinServerID is the stable id Jellyfin clients key their saved
 	// servers and per-server state by. Generated when empty and never
 	// rotated afterwards: changing it makes every client forget its login.
@@ -1728,7 +1723,6 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyProxyAuthPass:              func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
 	env.KeyNewznabEnabled:             func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
 	env.KeyNewznabAPIKey:              func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
-	env.KeyJellyfinEnabled:            func(d, s *Config) { d.JellyfinEnabled = s.JellyfinEnabled },
 	env.KeyJellyfinMaxPlaybackSources: func(d, s *Config) { d.JellyfinMaxPlaybackSources = s.JellyfinMaxPlaybackSources },
 	env.KeyJellyfinResolveOnOpen:      func(d, s *Config) { d.JellyfinResolveOnOpen = s.JellyfinResolveOnOpen },
 	env.KeyAdminUsername:              func(d, s *Config) { d.AdminUsername = s.AdminUsername },
@@ -1812,7 +1806,6 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		ProxyAuthPass:              o.ProxyAuthPass,
 		NewznabEnabled:             o.NewznabEnabled,
 		NewznabAPIKey:              o.NewznabAPIKey,
-		JellyfinEnabled:            o.JellyfinEnabled,
 		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
 		JellyfinResolveOnOpen:      o.JellyfinResolveOnOpen,
 		AdminUsername:              o.AdminUsername,

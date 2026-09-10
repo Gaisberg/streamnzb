@@ -28,7 +28,6 @@ const (
 	NNTPProxyAuthPass                  = "NNTP_PROXY_AUTH_PASS"
 	NewznabEnabledEnv                  = "NEWZNAB_ENABLED"
 	NewznabAPIKeyEnv                   = "NEWZNAB_API_KEY"
-	JellyfinEnabledEnv                 = "JELLYFIN_ENABLED"
 	JellyfinMaxPlaybackSourcesEnv      = "JELLYFIN_MAX_PLAYBACK_SOURCES"
 	JellyfinResolveOnOpenEnv           = "JELLYFIN_RESOLVE_ON_OPEN"
 	TZVar                              = "TZ"
@@ -70,7 +69,6 @@ const (
 	KeyProxyAuthPass              = "proxy_auth_pass"
 	KeyNewznabEnabled             = "newznab_enabled"
 	KeyNewznabAPIKey              = "newznab_api_key"
-	KeyJellyfinEnabled            = "jellyfin_enabled"
 	KeyJellyfinMaxPlaybackSources = "jellyfin_max_playback_sources"
 	KeyJellyfinResolveOnOpen      = "jellyfin_resolve_on_open"
 	KeyProviders                  = "providers"
@@ -333,7 +331,6 @@ var booleanEnvNames = []string{
 	MetadataEnabledEnv,
 	NNTPProxyEnabled,
 	NewznabEnabledEnv,
-	JellyfinEnabledEnv,
 	JellyfinResolveOnOpenEnv,
 	AdminForcePasswordResetEnv,
 	EasynewsAdvancedSearchEnv,
@@ -422,7 +419,6 @@ type ConfigOverrides struct {
 	ProxyAuthPass              string
 	NewznabEnabled             bool
 	NewznabAPIKey              string
-	JellyfinEnabled            bool
 	JellyfinMaxPlaybackSources int
 	JellyfinResolveOnOpen      bool
 	AdminUsername              string
@@ -502,10 +498,6 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		r.keys = append(r.keys, KeyNewznabEnabled)
 	}
 	r.str(&o.NewznabAPIKey, KeyNewznabAPIKey, NewznabAPIKeyEnv)
-	if v, ok := os.LookupEnv(JellyfinEnabledEnv); ok && v != "" {
-		o.JellyfinEnabled = getEnvBool(JellyfinEnabledEnv, true)
-		r.keys = append(r.keys, KeyJellyfinEnabled)
-	}
 	r.intVal(&o.JellyfinMaxPlaybackSources, KeyJellyfinMaxPlaybackSources, JellyfinMaxPlaybackSourcesEnv, func(n int) bool { return n >= 1 && n <= 200 })
 	if v, ok := os.LookupEnv(JellyfinResolveOnOpenEnv); ok && v != "" {
 		o.JellyfinResolveOnOpen = getEnvBool(JellyfinResolveOnOpenEnv, true)

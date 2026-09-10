@@ -73,6 +73,6 @@ If you already run [AIOStreams](https://github.com/Viren070/AIOStreams), StreamN
 
 ## Putting it together
 
-The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the Jellyfin endpoint is the addon itself wearing another client's clothes. Enable them and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
+The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the always-on authenticated Jellyfin endpoint is the addon itself wearing another client's clothes. Enable the optional endpoints and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
 
-All of them are off by default and independent; turn on only what you need.
+Newznab and the NNTP proxy are off by default and independent; turn on only what you need.

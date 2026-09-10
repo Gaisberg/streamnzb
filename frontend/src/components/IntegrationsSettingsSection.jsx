@@ -15,11 +15,12 @@ import { cn, copyToClipboard } from "@/lib/utils"
 // Every card here hands StreamNZB's own resources to another application: the
 // proxy shares the provider pool with a download client, the Newznab endpoint
 // shares the indexer pool with any Newznab-compatible application, and the
-// Jellyfin endpoint shares the catalogs and playback with a Jellyfin client.
+// Jellyfin itself is always available and stream-authenticated, so it has no
+// integration toggle. The other cards below are services that can be
+// independently enabled or disabled.
 const CARD_FIELDS = {
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   newznab: ['newznab_enabled', 'newznab_api_key'],
-  jellyfin: ['jellyfin_enabled'],
 }
 
 const FIELD_CARD = Object.fromEntries(
@@ -35,7 +36,6 @@ function pickInitialValues(values = {}) {
     proxy_auth_pass: values.proxy_auth_pass ?? '',
     newznab_enabled: values.newznab_enabled === true,
     newznab_api_key: values.newznab_api_key ?? '',
-    jellyfin_enabled: values.jellyfin_enabled === true,
   }
 }
 
@@ -209,37 +209,19 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
             </CardContent>
           </Card>
 
-
           <Card>
             <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                  <CardTitle>Jellyfin Endpoint</CardTitle>
-                  <CardDescription>Serve your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid) as a Jellyfin server.</CardDescription>
-                </div>
-                <div className="shrink-0">{renderCardSpinner('jellyfin')}</div>
+              <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                <CardTitle>Jellyfin Endpoint</CardTitle>
+                <CardDescription>Serve your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid) as a Jellyfin server.</CardDescription>
               </div>
-              {envOverrides.includes('jellyfin_enabled') && (
-                <div className="mt-1">
-                  <EnvOverrideIndicator show message="This setting is overwritten by JELLYFIN_ENABLED on restart." />
-                </div>
-              )}
             </CardHeader>
             <CardContent>
               <EndpointAddress
                 label="Server URL"
                 value={jellyfinURL}
-                hint="Add this as a Jellyfin server in the client, then sign in with a stream name as the username and that stream's token as the password. The dashboard admin cannot sign in here — only streams can."
+                hint="Always available to authenticated streams. Add this as a Jellyfin server in the client, then sign in with a stream name as the username and that stream's token as the password. The dashboard admin cannot sign in here — only streams can."
               />
-              <FormField control={control} name="jellyfin_enabled" render={({ field }) => (
-                <FormItem className="rounded-md border border-border/60 p-3">
-                  <div className={stackedFieldRowClass}>
-                    <FormLabel className={labelClass}>Enable Jellyfin Endpoint</FormLabel>
-                    <FormControl><Switch checked={field.value === true} onCheckedChange={(checked) => { field.onChange(checked); commitField('jellyfin_enabled') }} /></FormControl>
-                  </div>
-                  <FormDescription className="mt-3">Browse and play the same catalogs the Stremio addon serves, from a Jellyfin client. While off, the endpoint answers nothing at all.</FormDescription>
-                </FormItem>
-              )} />
             </CardContent>
           </Card>
 

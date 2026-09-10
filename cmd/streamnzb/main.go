@@ -321,14 +321,11 @@ func main() {
 		logger.Info("Newznab endpoint disabled")
 	}
 
-	// The catalogs and playback pipeline, re-served as a Jellyfin server for
-	// clients that speak Jellyfin rather than Stremio. It reads the live
-	// config per request for the same reason Newznab does.
+	// The catalogs and playback pipeline, re-served as an always-on Jellyfin
+	// server for clients that speak Jellyfin rather than Stremio. Every useful
+	// route remains stream-authenticated; there is no unauthenticated library
+	// or playback surface to disable separately.
 	jellyfinServer := jellyfin.New(jellyfin.Options{
-		Enabled: func() bool {
-			liveCfg := apiServer.Config()
-			return liveCfg != nil && liveCfg.JellyfinEnabled
-		},
 		ServerID: func() string {
 			if liveCfg := apiServer.Config(); liveCfg != nil {
 				return liveCfg.JellyfinServerID
@@ -358,11 +355,7 @@ func main() {
 		Version:   Version,
 	})
 	mux.Handle(jellyfin.Mount, jellyfinServer.Handler())
-	if comp.Config.JellyfinEnabled {
-		logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)
-	} else {
-		logger.Info("Jellyfin endpoint disabled")
-	}
+	logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)
 
 	{
 		if comp.Config.ProxyEnabled {

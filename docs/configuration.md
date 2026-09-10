@@ -95,7 +95,6 @@ See [Database backends](database.md) for how switching and migration work.
 
 | Variable | Meaning |
 |---|---|
-| `JELLYFIN_ENABLED` | Enable/disable the Jellyfin endpoint (default off) — see [Jellyfin endpoint](jellyfin.md) |
 | `JELLYFIN_MAX_PLAYBACK_SOURCES` | Cap on media sources offered per play, 1-200 (default 20) |
 | `JELLYFIN_RESOLVE_ON_OPEN` | Search when a title page opens instead of waiting for play (default off) |
 

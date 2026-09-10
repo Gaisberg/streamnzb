@@ -8,21 +8,14 @@ It is a translation layer, not a second media server: every library, detail
 page and play request maps onto what the addon already answers. Nothing is
 scanned, nothing is stored on disk, and no separate library needs setting up.
 
-## Enabling it
+## Connecting to it
 
-**Settings → Integrations → Jellyfin Endpoint** has the switch and the server
-URL to hand the client. It rides on the addon listener, so it needs no port of
-its own:
+The authenticated endpoint is always available. It rides on the addon listener,
+so it needs no port of its own:
 
 ```
 https://your-streamnzb-host/jellyfin
 ```
-
-While the switch is off the endpoint answers nothing at all — a client probing
-the URL sees what it would see had the feature never been built.
-
-`JELLYFIN_ENABLED=true` sets the switch from the environment; like every env
-override it wins over the dashboard on restart.
 
 ## Signing in
 
