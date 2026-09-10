@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/media/loader"
 	"streamnzb/pkg/media/nzb"
 )
 
@@ -14,9 +13,8 @@ func TestShutdownClosesLiveSessions(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
-		stopCh:    make(chan struct{}),
+		sessions: make(map[string]*Session),
+		stopCh:   make(chan struct{}),
 	}
 	nzbData := &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 10}}}}}
 
@@ -62,9 +60,8 @@ func TestShutdownIsIdempotent(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
-		stopCh:    make(chan struct{}),
+		sessions: make(map[string]*Session),
+		stopCh:   make(chan struct{}),
 	}
 
 	// Shutdown can be reached from a signal and from a failed listener at the

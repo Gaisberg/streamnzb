@@ -100,8 +100,18 @@ type Session struct {
 	nzbDownloadDone     chan struct{}
 	nzbDownloadErr      error
 
-	segmentFetcher     loader.SegmentFetcher
-	providerHosts      []string
+	segmentFetcher loader.SegmentFetcher
+	providerHosts  []string
+	// estimator caches measured decoded article sizes for this release only.
+	// A yEnc article's decoded length is not in the NZB, so the map costs one
+	// probe per size class per volume; caching it across a release's volumes
+	// is the whole point. Sharing one estimator process-wide was not: it is
+	// keyed on the NZB-declared article size alone, so an unrelated poster
+	// whose articles happen to declare a similar size inherited a decoded
+	// length it never measured, and every read against the resulting map was
+	// refused by verifyMappedSegmentLength. Set once — at construction, or
+	// lazily under mu for a Session built without one — and never replaced.
+	estimator          *loader.SegmentSizeEstimator
 	attemptedProviders map[string]struct{}
 	usedProviders      map[string]struct{}
 	servedProviders    map[string]struct{}
@@ -634,7 +644,6 @@ type failoverOrderEntry struct {
 type Manager struct {
 	sessions                 map[string]*Session
 	usenetPool               *pool.Pool
-	estimator                *loader.SegmentSizeEstimator
 	ttl                      time.Duration
 	postPlaybackEvictTTL     time.Duration
 	maxPlaybackDuration      time.Duration
@@ -938,7 +947,6 @@ func NewManager(usenetPool *pool.Pool, ttl time.Duration) *Manager {
 	m := &Manager{
 		sessions:             make(map[string]*Session),
 		usenetPool:           usenetPool,
-		estimator:            loader.NewSegmentSizeEstimator(),
 		ttl:                  ttl,
 		postPlaybackEvictTTL: 4 * time.Hour,
 		maxPlaybackDuration:  MaxPlaybackDuration,
@@ -1051,7 +1059,6 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	}
 	m.mu.RLock()
 	usenetPool := m.usenetPool
-	estimator := m.estimator
 	m.mu.RUnlock()
 	if segmentFetcher == nil && usenetPool != nil {
 		segmentFetcher = usenetPool.Subset(nil)
@@ -1060,6 +1067,7 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &Session{
 		ID:             sessionID,
+		estimator:      loader.NewSegmentSizeEstimator(),
 		nzbData:        nzbData,
 		rel:            rel,
 		ContentIDs:     contentIDs,
@@ -1072,7 +1080,7 @@ func (m *Manager) CreateSessionWithFetcher(sessionID string, nzbData *nzb.NZB, r
 		providerHosts:  append([]string(nil), providerHosts...),
 	}
 	session.segmentFetcher = attachProviderTracking(session, session.segmentFetcher)
-	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, session.segmentFetcher, estimator)
+	loaderFiles := buildLoaderFiles(ctx, sessionID, contentFiles, session.segmentFetcher, session.estimator)
 	session.files = loaderFiles
 	session.file = loaderFiles[0]
 
@@ -1131,7 +1139,6 @@ func (m *Manager) VerifyLibraryNZB(ctx context.Context, nzbBytes []byte, content
 
 	m.mu.RLock()
 	usenetPool := m.usenetPool
-	estimator := m.estimator
 	m.mu.RUnlock()
 
 	var fetcher loader.SegmentFetcher
@@ -1142,7 +1149,7 @@ func (m *Manager) VerifyLibraryNZB(ctx context.Context, nzbBytes []byte, content
 		return false, fmt.Errorf("no usenet providers available")
 	}
 
-	files := buildLoaderFiles(ctx, "library-verify", contentFiles[:1], fetcher, estimator)
+	files := buildLoaderFiles(ctx, "library-verify", contentFiles[:1], fetcher, loader.NewSegmentSizeEstimator())
 	if len(files) == 0 {
 		return false, fmt.Errorf("no loader files built")
 	}
@@ -1210,6 +1217,7 @@ func (m *Manager) CreateDeferredSessionWithFetcherOutcome(sessionID, downloadURL
 	session := &Session{
 		ID:             sessionID,
 		StreamName:     streamName,
+		estimator:      loader.NewSegmentSizeEstimator(),
 		nzbData:        nil,
 		rel:            rel,
 		ContentIDs:     contentIDs,
@@ -1309,6 +1317,10 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 		contentIDs := s.ContentIDs
 		sessionID := s.ID
 		segmentFetcher := s.segmentFetcher
+		if s.estimator == nil {
+			s.estimator = loader.NewSegmentSizeEstimator()
+		}
+		estimator := s.estimator
 		itemTitle := ""
 		indexerName := ""
 		if s.rel != nil {
@@ -1376,7 +1388,6 @@ func (s *Session) GetOrDownloadNZBWithContext(ctx context.Context, manager *Mana
 				} else {
 					manager.mu.RLock()
 					usenetPool := manager.usenetPool
-					estimator := manager.estimator
 					manager.mu.RUnlock()
 					if segmentFetcher == nil && usenetPool != nil {
 						segmentFetcher = usenetPool.Subset(nil)

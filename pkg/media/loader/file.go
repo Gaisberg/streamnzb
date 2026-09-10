@@ -235,6 +235,14 @@ type File struct {
 	mapSkipGap bool
 	mapYenc    yencGeometry
 
+	// mapCorrections holds decoded lengths a read measured after the map
+	// claimed something else, mapDistrusted marks a map thrown away for that
+	// reason, and mapRemaps bounds how often one file may do it. All guarded
+	// by mu; see distrustSegmentMap.
+	mapCorrections map[int]int64
+	mapDistrusted  bool
+	mapRemaps      int
+
 	// yencGeo accumulates the "=ybegin size=" / "=ypart begin=" geometry of
 	// every article decoded before the segment map exists. The articles carry
 	// the exact map the poster wrote; collecting it costs nothing on downloads
@@ -628,6 +636,11 @@ func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
 	if !hasUniformNZBSegmentBytes(f.segments) {
 		return false
 	}
+	// A read already caught an inherited size lying about this file; rebuilding
+	// from the same shortcut would reinstate it.
+	if len(f.segmentMapCorrections()) > 0 {
+		return false
+	}
 	first := f.segments[0]
 	decoded, ok := f.estimator.Get(first.Bytes)
 	if !ok || decoded <= 0 {
@@ -644,6 +657,7 @@ func (f *File) PrimeUniformSegmentMapFromEstimator() bool {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
+	f.mapDistrusted = false
 	f.recordSegmentMapInputsLocked(nil, knownByNZBBytes, true, yencGeometry{})
 	logger.Trace("Primed uniform segment map from estimator",
 		"name", f.Name(),
@@ -679,6 +693,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 		f.mu.Lock()
 		f.totalSize = 0
 		f.detected = true
+		f.mapDistrusted = false
 		f.mu.Unlock()
 		return nil
 	}
@@ -698,6 +713,14 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	probedByIndex, err := f.probeSegmentIndicesParallel(ctx, indices)
 	if err != nil {
 		return err
+	}
+
+	// Lengths a refused read already measured are real probes of this file —
+	// better evidence than anything the plan can infer, and free.
+	for idx, decoded := range f.segmentMapCorrections() {
+		if idx >= 0 && idx < len(f.segments) && decoded > 0 {
+			probedByIndex[idx] = decoded
+		}
 	}
 
 	// The probes just decoded articles, and each article names its own exact
@@ -778,6 +801,7 @@ func (f *File) detectSegmentSizeLocked(ctx context.Context) error {
 	}
 	f.totalSize = applySegmentDecodedSizes(f.segments, sizes)
 	f.detected = true
+	f.mapDistrusted = false
 	f.recordSegmentMapInputsLocked(probedByIndex, knownByNZBBytes, IsSkipGapProbingEnabled(ctx), geo)
 	nzbSum := sumNZBSegmentBytes(f.segments)
 	logSegmentMapSizeCheck(f.Name(), f.segments, nzbSum, f.totalSize, probedByIndex)
@@ -845,11 +869,22 @@ func (f *File) segmentDecodedLen(idx int) int64 {
 // the Warn names the segment so the estimator can be fixed from the field.
 // Before the map is detected, mapped lengths are still encoded sizes, so a
 // mismatch there is expected and not checked.
+//
+// The refusal is also the one place holding the ground truth, so it does not
+// just refuse: it throws the disproved map away (distrustSegmentMap) and lets
+// the next EnsureSegmentMap rebuild one from real probes.
 func (f *File) verifyMappedSegmentLength(index int, data []byte) error {
 	f.mu.Lock()
 	detected := f.detected
+	distrusted := f.mapDistrusted
 	f.mu.Unlock()
 	if !detected {
+		if distrusted {
+			// Mapped lengths are encoded sizes again until the rebuild runs,
+			// so passing here would serve exactly the shifted bytes the
+			// refusal exists to prevent.
+			return fmt.Errorf("segment map for %q was disproved and has not been rebuilt yet", f.Name())
+		}
 		return nil
 	}
 	mapped := f.segmentDecodedLen(index)
@@ -858,7 +893,72 @@ func (f *File) verifyMappedSegmentLength(index int, data []byte) error {
 	}
 	logger.Warn("Segment decoded length disagrees with the segment map",
 		"file", f.Name(), "index", index, "mapped", mapped, "decoded", len(data))
+	f.distrustSegmentMap(index, int64(len(data)))
 	return fmt.Errorf("segment %d decoded %d bytes but is mapped as %d: refusing to serve shifted bytes", index, len(data), mapped)
+}
+
+// maxSegmentMapRemaps bounds how often one file may throw its map away and
+// re-probe. A map that still disagrees with the articles after two rebuilds is
+// not going to be fixed by a third, and every rebuild costs NNTP fetches.
+const maxSegmentMapRemaps = 2
+
+// distrustSegmentMap discards a segment map that a decoded article just
+// disproved, keeping the measurement that disproved it.
+//
+// A mismatch means some length in the map was inferred rather than measured:
+// the usual source is an estimator entry painted across a size class no article
+// of this file was ever probed for. Left in place that is permanent — every
+// read of the class is refused, the container layer fills the resulting holes,
+// and the player receives a well-formed file it cannot decode instead of the
+// addon failing over. So the entry that may have taught it is forgotten, the
+// real length is kept as a probe, and the map reverts to undetected so the next
+// EnsureSegmentMap rebuilds it against actual articles.
+func (f *File) distrustSegmentMap(index int, decoded int64) {
+	if f == nil || index < 0 || index >= len(f.segments) || decoded <= 0 {
+		return
+	}
+
+	f.mu.Lock()
+	if !f.detected || f.mapRemaps >= maxSegmentMapRemaps {
+		f.mu.Unlock()
+		return
+	}
+	f.mapRemaps++
+	if f.mapCorrections == nil {
+		f.mapCorrections = make(map[int]int64, 1)
+	}
+	f.mapCorrections[index] = decoded
+	f.detected = false
+	f.mapDistrusted = true
+	f.mapProbes, f.mapKnown, f.mapYenc = nil, nil, yencGeometry{}
+	// Back to the pre-detection layout NewFile starts from, so totalSize and
+	// the offsets stay consistent with each other while the map is missing.
+	f.totalSize = applySegmentDecodedSizes(f.segments, nzbSegmentSizes(f.segments))
+	nzbBytes := f.segments[index].Bytes
+	attempt := f.mapRemaps
+	f.mu.Unlock()
+
+	if f.estimator != nil {
+		f.estimator.Forget(nzbBytes)
+	}
+	logger.Warn("Discarded a segment map disproved by a decoded article",
+		"file", f.Name(), "index", index, "decoded", decoded, "nzb_bytes", nzbBytes, "attempt", attempt)
+}
+
+// segmentMapCorrections returns the decoded lengths reads measured against a
+// map that turned out to be wrong. They are ground truth, so a rebuild folds
+// them in alongside its own probes instead of re-fetching those articles.
+func (f *File) segmentMapCorrections() map[int]int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.mapCorrections) == 0 {
+		return nil
+	}
+	out := make(map[int]int64, len(f.mapCorrections))
+	for idx, decoded := range f.mapCorrections {
+		out[idx] = decoded
+	}
+	return out
 }
 
 func (f *File) FindSegmentIndex(offset int64) int {
@@ -1541,6 +1641,21 @@ func (f *File) PrefetchPlaybackRange(ctx context.Context, offset, length int64) 
 // MaxSegmentSizeEstimatorEntries caps the number of size entries to prevent unbounded growth.
 const MaxSegmentSizeEstimatorEntries = 128
 
+// segmentSizeEstimatorTolerance is how far an NZB-declared article size may sit
+// from a recorded one and still be treated as the same class. Get, Set and
+// Forget must all use it: a value handed out under this window has to be
+// removable under the same window.
+const segmentSizeEstimatorTolerance = 4096
+
+// SegmentSizeEstimator remembers the decoded length measured for an
+// NZB-declared article size, so the later volumes of a release do not re-probe
+// a class an earlier volume already measured.
+//
+// It is scoped to one release. The key is the declared article size alone, and
+// two unrelated posters routinely declare sizes within tolerance of each other
+// while their articles decode to different lengths — a process-wide instance
+// therefore handed one poster's decoded size to another's file, and every read
+// against the resulting map was refused by verifyMappedSegmentLength.
 type SegmentSizeEstimator struct {
 	entries []sizeEntry
 	mu      sync.RWMutex
@@ -1563,7 +1678,7 @@ func (e *SegmentSizeEstimator) Get(encodedSize int64) (int64, bool) {
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff < 4096 {
+		if diff < segmentSizeEstimatorTolerance {
 			return entry.decoded, true
 		}
 	}
@@ -1578,7 +1693,7 @@ func (e *SegmentSizeEstimator) Set(encodedSize, decodedSize int64) {
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff < 4096 {
+		if diff < segmentSizeEstimatorTolerance {
 			return
 		}
 	}
@@ -1586,4 +1701,25 @@ func (e *SegmentSizeEstimator) Set(encodedSize, decodedSize int64) {
 		e.entries = e.entries[1:]
 	}
 	e.entries = append(e.entries, sizeEntry{encoded: encodedSize, decoded: decodedSize})
+}
+
+// Forget drops every entry a Get for encodedSize could match. A decoded article
+// disproved the size this class was handing out, so it must stop being handed
+// out — otherwise the remaining volumes of the release inherit the same wrong
+// map, and Set's first-write-wins rule would keep the bad entry forever.
+func (e *SegmentSizeEstimator) Forget(encodedSize int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	kept := e.entries[:0]
+	for _, entry := range e.entries {
+		diff := entry.encoded - encodedSize
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < segmentSizeEstimatorTolerance {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	e.entries = kept
 }

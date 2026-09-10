@@ -102,6 +102,11 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	if f == nil || len(data) == 0 || len(f.segments) == 0 {
 		return false
 	}
+	// A read has already disproved a map for this file; a snapshot written
+	// before that is the same evidence that just failed.
+	if len(f.segmentMapCorrections()) > 0 {
+		return false
+	}
 	var snap SegmentMapSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return false
@@ -168,6 +173,7 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	}
 	f.totalSize = total
 	f.detected = true
+	f.mapDistrusted = false
 	f.mapProbes = probes
 	f.mapKnown = known
 	f.mapSkipGap = snap.SkipGap
