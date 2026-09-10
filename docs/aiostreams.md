@@ -20,6 +20,31 @@ None of that competes with what AIOStreams is for. Run both if you want its aggr
 4. **No Usenet service required in AIOStreams** — StreamNZB handles all Usenet provider connections, NZB fetching, and streaming internally. Skip the AIOStreams Usenet service configuration entirely.
 5. Optionally configure additional filtering, sorting, or formatting rules in the AIOStreams UI if desired.
 
+## Language filters
+
+AIOStreams' **Required languages** and **Excluded languages** filters need to
+know what language a stream is in, and a Stremio stream has no field for that —
+every aggregator reads it off the release name and the flags in the
+description. That is enough for a release named `...MULTi.FRENCH...` and
+nothing at all for the common case of a dub posted under an untouched English
+name, where the language lives only in the indexer's own metadata.
+
+StreamNZB reads that metadata (the newznab `language` attribute) and hands it
+on, so those releases survive a language filter on either side:
+
+- Every stream carries a `languages` field with the release's languages as ISO
+  639-1 codes — the name's tokens and the indexer's tag merged.
+- In AIOStreams mode the description also carries them as flag emojis, which is
+  what today's AIOStreams parses. A flag names a country rather than a
+  language, and AIOStreams reads 🇮🇳 back as Hindi and 🇹🇷 as Kurdish, so
+  Turkish, Persian and the Indian languages other than Hindi are deliberately
+  left out rather than mislabelled. Filter on those in StreamNZB instead.
+
+Indexers vary in how much they tag, and none of this invents a language for a
+release nobody labelled. If a required-language filter still returns nothing,
+check the [History](troubleshooting.md) page for what the indexers actually
+returned before assuming the filter is at fault.
+
 ## Which layer should filter?
 
 Both can. StreamNZB's filter profiles and [rules](rules.md) run before results ever reach AIOStreams, and AIOStreams can filter and sort again on top.

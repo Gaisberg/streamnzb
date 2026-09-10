@@ -451,7 +451,15 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			}
 			includeScore := list != nil && !list.IsAIOStreams
 			capsLine := capsSummaryLine(cand.Release)
-			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine)
+			langCodes := releaseLanguageCodes(cand.Release, cand.Metadata)
+			// AIOStreams reads a stream's languages out of the flags in its
+			// description; the plain Stremio description stays as it was, and
+			// a result format that wants flags asks for {{.LanguageFlags}}.
+			flagLine := ""
+			if list != nil && list.IsAIOStreams {
+				flagLine = languageFlagLine(langCodes)
+			}
+			desc := buildAIOStreamDescription(contentTitle, relTitle, indexerNameFromRelease(cand.Release), cand.Score, includeScore, capsLine, flagLine)
 			if format != nil {
 				ctx := newFormatContext(cand, i+1, len(list.Candidates), topScore, service, key.StreamID, contentTitle, capsLine, isAvail, contentRuntime)
 				sName = renderResultTemplate(format.name, ctx, sName)
@@ -473,6 +481,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 				Name:          sName,
 				URL:           streamURL,
 				Description:   desc,
+				Languages:     langCodes,
 				BehaviorHints: hints,
 			})
 		}
@@ -511,6 +520,12 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		if capsLine := capsSummaryLine(firstRel); capsLine != "" {
 			description += "\n" + capsLine
 		}
+		langCodes := releaseLanguageCodes(firstRel, firstMeta)
+		if list != nil && list.IsAIOStreams {
+			if flagLine := languageFlagLine(langCodes); flagLine != "" {
+				description += "\n" + flagLine
+			}
+		}
 		playPath := key.SlotPath(0)
 		if useSlotPaths {
 			playPath = list.SlotPaths[0]
@@ -528,6 +543,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			Name:          nameLeft,
 			URL:           streamURL,
 			Description:   description,
+			Languages:     langCodes,
 			BehaviorHints: hints,
 		})
 		if len(list.Candidates) >= 2 {

@@ -28,11 +28,11 @@ release's parsed data.
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` `.Seadex.DualAudio` |
-| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` |
+| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` `.LanguageFlags` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
 | Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
 
-List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.Seasons`,
+List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.LanguageFlags`, `.Seasons`,
 `.Episodes`, `.Volumes`) render comma-separated by default and work with
 `range`, `index`, and the list helpers below. `.Caps` is the ffprobe-verified
 media summary, present on library releases only. `.Duration` is the humanized
@@ -79,10 +79,11 @@ guess from the release name. `.Kind` is the full content kind: `movie`,
 
 `.OriginalLanguage` is the requested title's original language from metadata
 as an ISO 639-1 code, empty when it did not say. `.Languages` holds the same
-codes when they came from the release name; when the name carried no language
-token it falls back to what the indexer reported, which may be a word
-(`English`) rather than a code — `has` then finds no match and the badge stays
-off, which is the honest answer. Use `has`, which is membership on the list;
+codes for the release: what the name says, merged with the language the indexer
+tagged it with, whichever spelling the indexer used (`Arabic`, `ara` and `ar`
+all arrive as `ar`). The indexer's tag is regularly the only place a dub's
+language appears at all, so the two sources are a union rather than one
+falling back to the other. Use `has`, which is membership on the list;
 `contains` is a substring test over the list's text and would light up `en`
 inside `French`. A badge for original-audio releases needs no per-language
 line:
@@ -90,6 +91,19 @@ line:
 ```
 {{if and .OriginalLanguage (has .OriginalLanguage .Languages)}}🎙 original audio{{end}}
 ```
+
+`.LanguageFlags` is the same list as flag emojis:
+
+```
+{{if .LanguageFlags}}{{join .LanguageFlags " "}}{{end}}
+```
+
+It is shorter than `.Languages` more often than not. A flag stands for a
+country, not a language, and one that reads back as the wrong language is worse
+than none — so Turkish, Persian and the Indian languages other than Hindi have
+no flag here and appear in `.Languages` only. See
+[Using with AIOStreams](aiostreams.md) for why the distinction matters to an
+aggregator reading the description.
 
 ### Matched rules
 

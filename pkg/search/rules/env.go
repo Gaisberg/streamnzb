@@ -36,6 +36,7 @@ import (
 	"github.com/dreulavelle/jhin/rank"
 	jhinrules "github.com/dreulavelle/jhin/rules"
 
+	"streamnzb/pkg/core/config/pttoptions"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/triage"
@@ -70,9 +71,13 @@ type Env struct {
 
 	// ---- inferred only ----
 
-	Quality    string
-	Audio      []string
-	Channels   []string
+	Quality  string
+	Audio    []string
+	Channels []string
+	// Languages is what the name says merged with the indexer's own language
+	// tag, as ISO 639-1 codes. A dub is regularly tagged by the indexer and
+	// left out of the release name, and a rule asking for a language means
+	// the release rather than the spelling of its title.
 	Languages  []string
 	Group      string
 	Edition    string
@@ -574,6 +579,7 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 			// "smaller than" rule by default.
 			env.SizePerEpisodeGB = -1
 		}
+		env.Languages = pttoptions.MergeLanguageCodes(env.Languages, rel.Languages)
 		env.Grabs = rel.Grabs
 		env.Passworded = rel.Password
 		env.Indexer = rel.Indexer

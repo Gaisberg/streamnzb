@@ -52,11 +52,18 @@ type FormatContext struct {
 	// VariantIndexers names the indexers behind those copies, best first,
 	// starting with the one that plays.
 	VariantIndexers stringList
-	Grabs           int        // indexer-reported grab count
-	Age             string     // humanized age from pub date, e.g. "2y", "37d"
-	Duration        string     // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
-	Languages       stringList // parsed language codes
-	Caps            string     // ffprobe-verified caps summary (library releases only)
+	Grabs           int    // indexer-reported grab count
+	Age             string // humanized age from pub date, e.g. "2y", "37d"
+	Duration        string // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
+	// Languages are the release's languages as ISO 639-1 codes: what the name
+	// says, merged with the language the indexer tagged the release with.
+	Languages stringList
+	// LanguageFlags are the same languages as flag emojis. Languages that no
+	// one flag identifies are skipped — Turkish, Persian and the Indian
+	// languages other than Hindi have no flag here, so this list is shorter
+	// than .Languages more often than not.
+	LanguageFlags stringList
+	Caps          string // ffprobe-verified caps summary (library releases only)
 
 	// Kind is the content kind the request was ranked as: "movie", "series",
 	// "anime_movie" or "anime_show". IsAnime is the anime half of that
@@ -714,7 +721,6 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 		ctx.Grabs = rel.Grabs
 		ctx.Age = humanAge(rel.PubDate)
 		ctx.Duration = humanDuration(rel.Duration)
-		ctx.Languages = rel.Languages
 	}
 	meta := cand.Metadata
 	if meta == nil && rel != nil {
@@ -762,10 +768,12 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 		ctx.Episodes = meta.Episodes
 		ctx.EpisodeCode = meta.EpisodeCode
 		ctx.Volumes = meta.Volumes
-		if len(meta.Languages) > 0 {
-			ctx.Languages = meta.Languages
-		}
 	}
+	// Neither source is complete: the name carries the tokens the group chose
+	// to put in it, and the indexer's tag is regularly the only place a dub's
+	// language appears at all.
+	ctx.Languages = releaseLanguageCodes(rel, meta)
+	ctx.LanguageFlags = languageFlags(ctx.Languages)
 	if probed := cand.Verdict.Probed; probed != nil && probed.DurationSeconds > 0 {
 		// A probed library release is measured, not estimated: the container's
 		// own duration, against the media file's exact size when the library
@@ -974,8 +982,9 @@ type formatPreviewFixture struct {
 	kind             string
 	isAnime          bool
 	originalLanguage string
-	// languages is what the indexer reported, used when the title carries no
-	// language token, so at least one fixture renders the original-audio badge.
+	// languages is what the indexer reported; it merges with whatever the
+	// title says, so at least one fixture renders the original-audio badge
+	// and {{.LanguageFlags}} has something to draw.
 	languages []string
 	// variants are the other indexers holding a copy of this release, so a
 	// preview of {{.Variants}} shows a merged result rather than a lone one.

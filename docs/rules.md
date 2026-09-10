@@ -290,15 +290,19 @@ the same thing whichever tier answered, and `hdrFallback` is the one that
 matters: it is false for SDR and for DV-with-no-base-layer alike, which is
 exactly the distinction a device without Dolby Vision support cares about.
 
-Two on `languages`. It holds **ISO 639-1 codes** — `"en"`, `"ja"`, `"fr"` —
+Three on `languages`. It holds **ISO 639-1 codes** — `"en"`, `"ja"`, `"fr"` —
 so `"eng"` and `"English"` match nothing and a rule written with either
-compiles cleanly and then never fires. And it is **empty unless the title says
-otherwise**: most English releases carry no language tag at all, so
-`"en" in languages` finds the ones that announce it, not the ones that are in
-English. To demote other languages rather than reward English, say so directly:
+compiles cleanly and then never fires. It is the one name in this tier that is
+not inferred only: the indexer's own language tag is merged in, normalized to
+the same codes whichever spelling the indexer used, because a dub is regularly
+posted under an untouched English name and tagged nowhere else. And it is still
+**empty unless one of the two said something**: most English releases carry no
+language token, and plenty of indexers tag nothing, so `"en" in languages`
+finds the ones that announce it, not the ones that are in English. To demote
+other languages rather than reward English, say so directly:
 
 ```
-"en" in languages                      # the title claims English
+"en" in languages                      # the title or the indexer claims English
 not ("en" in languages)                # everything else, untagged included
 "ja" in languages and not dubbed       # the ones you actually want to demote
 ```

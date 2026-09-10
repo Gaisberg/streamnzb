@@ -697,3 +697,31 @@ func TestUngroupedLimitReportsNoBucket(t *testing.T) {
 		t.Errorf("Group = %q, want empty", got.Limits[0].Group)
 	}
 }
+
+// The indexer's language tag is evidence the title does not carry: an Arabic
+// dub is regularly posted under an untouched English name and tagged only in
+// the newznab feed. A language rule means the release, so it reads both.
+func TestLanguagesMergeIndexerTag(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name:   "Require Arabic",
+		When:   `not ("ar" in languages)`,
+		Action: config.RuleActionReject,
+	})
+
+	tagged := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Languages = []string{"ar"}
+	})
+	if got := set.Evaluate(tagged, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("indexer-tagged Arabic release was rejected: %v", got.Rejections)
+	}
+
+	// The name still answers on its own, and a release neither source calls
+	// Arabic is still rejected.
+	named := envFor("Movie 2020 1080p WEB-DL ARABIC-GRP", nil)
+	if got := set.Evaluate(named, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("Arabic release named as such was rejected: %v", got.Rejections)
+	}
+	if got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", nil), "movie"); len(got.Rejections) != 1 {
+		t.Errorf("release with no Arabic anywhere was kept: %+v", got)
+	}
+}
