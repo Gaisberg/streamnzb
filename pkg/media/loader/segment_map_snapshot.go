@@ -161,6 +161,14 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	if f.detected {
 		return true
 	}
+	// Re-checked under mu, not just on the way in: a read can disprove the map
+	// while this call is unmarshalling and rebuilding sizes, and applying the
+	// snapshot then would reinstate the map that read just refused and clear
+	// the mapDistrusted flag holding reads closed. Read directly rather than
+	// through segmentMapCorrections, which takes mu.
+	if len(f.mapCorrections) > 0 {
+		return false
+	}
 	total := applySegmentDecodedSizes(f.segments, sizes)
 	if total != snap.Total {
 		// The size builder changed since the snapshot was written. Offsets

@@ -936,11 +936,17 @@ func (f *File) distrustSegmentMap(index int, decoded int64) {
 	f.totalSize = applySegmentDecodedSizes(f.segments, nzbSegmentSizes(f.segments))
 	nzbBytes := f.segments[index].Bytes
 	attempt := f.mapRemaps
-	f.mu.Unlock()
-
+	// Under mu, so the entry is gone before the map is observably undetected:
+	// a reader entering EnsureSegmentMapCtx in the gap would otherwise rebuild
+	// from the very value this call is throwing the map away for. The
+	// estimator never calls back into File, and RestoreSegmentMapJSON already
+	// takes its lock under mu, so the mu -> estimator order is the established
+	// one.
 	if f.estimator != nil {
 		f.estimator.Forget(nzbBytes)
 	}
+	f.mu.Unlock()
+
 	logger.Warn("Discarded a segment map disproved by a decoded article",
 		"file", f.Name(), "index", index, "decoded", decoded, "nzb_bytes", nzbBytes, "attempt", attempt)
 }
