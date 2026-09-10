@@ -102,6 +102,11 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	if f == nil || len(data) == 0 || len(f.segments) == 0 {
 		return false
 	}
+	// A read has already disproved a map for this file; a snapshot written
+	// before that is the same evidence that just failed.
+	if len(f.segmentMapCorrections()) > 0 {
+		return false
+	}
 	var snap SegmentMapSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return false
@@ -156,6 +161,14 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	if f.detected {
 		return true
 	}
+	// Re-checked under mu, not just on the way in: a read can disprove the map
+	// while this call is unmarshalling and rebuilding sizes, and applying the
+	// snapshot then would reinstate the map that read just refused and clear
+	// the mapDistrusted flag holding reads closed. Read directly rather than
+	// through segmentMapCorrections, which takes mu.
+	if len(f.mapCorrections) > 0 {
+		return false
+	}
 	total := applySegmentDecodedSizes(f.segments, sizes)
 	if total != snap.Total {
 		// The size builder changed since the snapshot was written. Offsets
@@ -168,6 +181,7 @@ func (f *File) RestoreSegmentMapJSON(data []byte) bool {
 	}
 	f.totalSize = total
 	f.detected = true
+	f.mapDistrusted = false
 	f.mapProbes = probes
 	f.mapKnown = known
 	f.mapSkipGap = snap.SkipGap

@@ -158,8 +158,7 @@ func TestCreateSessionAssignsFileOwners(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	nzbData := &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 10}}}}}
 
@@ -227,8 +226,7 @@ func TestCreateSessionSelectsRequestedEpisode(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	nzbData := &nzb.NZB{Files: []nzb.File{
 		{Subject: "Show.S01E06.1080p.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 60}}},
@@ -252,8 +250,7 @@ func TestGetOrDownloadNZBSelectsRequestedEpisode(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	data := marshalTestNZB(t, &nzb.NZB{Files: []nzb.File{
 		{Subject: "Show.S01E06.1080p.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 60}}},
@@ -610,8 +607,7 @@ func TestCreateSessionKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.T) 
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	nzbData := &nzb.NZB{Files: []nzb.File{
 		{Subject: "Altered.Carbon.Release.A.part02.rar", Segments: []nzb.Segment{{ID: "<a>", Bytes: 310}}},
@@ -647,8 +643,7 @@ func TestGetOrDownloadNZBKeepsBroadCandidatesWhenEpisodeMatchUnknown(t *testing.
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	data := marshalTestNZB(t, &nzb.NZB{Files: []nzb.File{
 		{Subject: "Altered.Carbon.Release.A.part02.rar", Segments: []nzb.Segment{{ID: "<a>", Bytes: 310}}},
@@ -687,8 +682,7 @@ func TestGetOrDownloadNZBDownloadsKeylessURL(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	data := marshalTestNZB(t, &nzb.NZB{Files: []nzb.File{{
 		Subject:  "Movie.2024.1080p.mkv",
@@ -715,8 +709,7 @@ func TestGetOrDownloadNZBWithContextHonorsCancellation(t *testing.T) {
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	idx := &fakeIndexer{err: context.DeadlineExceeded}
 	s, err := m.CreateDeferredSession("sess-cancel", "https://example.invalid/get?nzb=1", nil, idx, nil, "movie", "tt123", "", "")
@@ -742,8 +735,7 @@ func TestGetOrDownloadNZBWithContextDeduplicatesConcurrentDownloads(t *testing.T
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	data := marshalTestNZB(t, &nzb.NZB{Files: []nzb.File{{
 		Subject:  "Movie.2024.1080p.mkv",
@@ -812,8 +804,7 @@ func TestGetOrDownloadNZBWithContextDoesNotRepopulateClosedSession(t *testing.T)
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	data := marshalTestNZB(t, &nzb.NZB{Files: []nzb.File{{
 		Subject:  "Movie.2024.1080p.mkv",
@@ -862,8 +853,7 @@ func TestGetOrDownloadNZBWithContextPropagatesLeaderFailureToWaiters(t *testing.
 	logger.Init("ERROR")
 
 	m := &Manager{
-		sessions:  make(map[string]*Session),
-		estimator: loader.NewSegmentSizeEstimator(),
+		sessions: make(map[string]*Session),
 	}
 	wait := make(chan struct{})
 	started := make(chan struct{}, 1)
@@ -1268,5 +1258,40 @@ func TestManagerTTLConfigurationAndEviction(t *testing.T) {
 	m.cleanup()
 	if _, ok := m.sessions["sess-ended"]; ok {
 		t.Fatalf("session should have been evicted under 5m post-playback TTL")
+	}
+}
+
+// The segment size estimator is keyed on the NZB-declared article size alone,
+// so two releases whose posters declare similar sizes look identical to it.
+// Sharing one across the process let the first release's decoded size be
+// painted onto the second's segment map, and every read against that map was
+// refused. Each release gets its own.
+func TestSessionsDoNotShareASegmentSizeEstimator(t *testing.T) {
+	logger.Init("ERROR")
+
+	m := &Manager{sessions: make(map[string]*Session)}
+	nzbData := &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<a>", Bytes: 739600}}}}}
+
+	first, err := m.CreateSession("sess-a", nzbData, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSession(sess-a): %v", err)
+	}
+	defer first.Close()
+	second, err := m.CreateSession("sess-b", nzbData, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSession(sess-b): %v", err)
+	}
+	defer second.Close()
+
+	if first.estimator == nil || second.estimator == nil {
+		t.Fatal("expected every session to carry an estimator")
+	}
+	if first.estimator == second.estimator {
+		t.Fatal("sessions share one estimator: one release's article geometry can define another's")
+	}
+
+	first.estimator.Set(739600, 716800)
+	if decoded, ok := second.estimator.Get(739600); ok {
+		t.Fatalf("second session inherited %d for a class it never measured", decoded)
 	}
 }
