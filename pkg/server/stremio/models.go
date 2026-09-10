@@ -24,8 +24,15 @@ type Stream struct {
 
 	Release *release.Release `json:"-"`
 
-	Title         string         `json:"title,omitempty"`
-	Description   string         `json:"description,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Languages are the release's languages as ISO 639-1 codes, from the
+	// release name and the indexer's own tag. Stremio ignores the field;
+	// aggregators that filter by language read it instead of guessing from
+	// the description text.
+	Languages []string `json:"languages,omitempty"`
+
 	BehaviorHints *BehaviorHints `json:"behaviorHints,omitempty"`
 	StreamType    string         `json:"streamType,omitempty"`
 }

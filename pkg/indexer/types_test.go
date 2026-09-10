@@ -36,3 +36,38 @@ func TestToReleasePasswordAndUsenetDate(t *testing.T) {
 		})
 	}
 }
+
+// The language attribute is written in whatever form the indexer's source
+// used. It normalizes on the way in so a filter never has to know whether a
+// given indexer says "Arabic", "ara" or "ar".
+func TestToReleaseNormalizesLanguages(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{"full name", "Arabic", []string{"ar"}},
+		{"iso 639-2", "ara", []string{"ar"}},
+		{"list", "English, ger", []string{"en", "de"}},
+		{"duplicates collapse", "English,eng,en", []string{"en"}},
+		{"unknown passes through", "Klingon", []string{"Klingon"}},
+		{"absent", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := &Item{Title: "Movie 2020 1080p BluRay-GRP"}
+			if tt.value != "" {
+				item.Attributes = []Attribute{{Name: "language", Value: tt.value}}
+			}
+			got := item.ToRelease().Languages
+			if len(got) != len(tt.want) {
+				t.Fatalf("Languages = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("Languages = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

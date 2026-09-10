@@ -59,6 +59,23 @@ var languageFullNameToCode = map[string]string{
 	"arabic": "ar", "turkish": "tr", "hebrew": "he", "persian": "fa",
 }
 
+// languageISO6392ToCode maps ISO 639-2 three-letter codes to the two-letter
+// codes the rest of the pipeline speaks. Indexers report the newznab
+// "language" attribute in whichever form their source used — "English",
+// "eng" and "en" all occur — so a release tagged "ara" has to normalize to
+// the same "ar" a title token would parse to. Both the bibliographic and the
+// terminological form are listed where they differ (fre/fra, ger/deu).
+var languageISO6392ToCode = map[string]string{
+	"eng": "en", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh", "fre": "fr", "fra": "fr",
+	"spa": "es", "por": "pt", "ita": "it", "ger": "de", "deu": "de", "rus": "ru", "ukr": "uk",
+	"dut": "nl", "nld": "nl", "dan": "da", "fin": "fi", "swe": "sv", "nor": "no", "gre": "el",
+	"ell": "el", "lit": "lt", "lav": "lv", "est": "et", "pol": "pl", "cze": "cs", "ces": "cs",
+	"slo": "sk", "slk": "sk", "hun": "hu", "rum": "ro", "ron": "ro", "bul": "bg", "srp": "sr",
+	"hrv": "hr", "slv": "sl", "hin": "hi", "tel": "te", "tam": "ta", "mal": "ml", "kan": "kn",
+	"mar": "mr", "guj": "gu", "pan": "pa", "ben": "bn", "vie": "vi", "ind": "id", "tha": "th",
+	"may": "ms", "msa": "ms", "ara": "ar", "tur": "tr", "heb": "he", "per": "fa", "fas": "fa",
+}
+
 // LanguageAliases maps release-title alias words to the language codes they represent.
 // These are group/region terms commonly used in release names (e.g. "NORDIC" in a title
 // means the release includes Danish, Finnish, Norwegian and Swedish audio/subs).
@@ -86,6 +103,9 @@ func NormalizeLanguageToCode(value string) string {
 	if code, ok := languageFullNameToCode[v]; ok {
 		return code
 	}
+	if code, ok := languageISO6392ToCode[v]; ok {
+		return code
+	}
 
 	for _, code := range LanguageOptions {
 		if strings.EqualFold(code, value) {
@@ -109,6 +129,19 @@ func NormalizeLanguageSlice(s []string) []string {
 		}
 	}
 	return out
+}
+
+// MergeLanguageCodes normalizes and concatenates language lists into one
+// deduplicated list, earlier lists first. The parsed title and the indexer's
+// own tag each know languages the other does not — a dub is regularly tagged
+// by the indexer and left out of the release name — so a release's languages
+// are the union of both.
+func MergeLanguageCodes(lists ...[]string) []string {
+	var all []string
+	for _, list := range lists {
+		all = append(all, list...)
+	}
+	return NormalizeLanguageSlice(all)
 }
 
 var NetworkOptions = []string{

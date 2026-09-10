@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/config/pttoptions"
 	"streamnzb/pkg/release"
 )
 
@@ -179,6 +180,10 @@ func (i *Item) ToRelease() *release.Release {
 		}
 	}
 
+	// The newznab "language" attribute is what the indexer knows and the title
+	// often does not — an Arabic dub whose name carries no language token is
+	// only ever tagged here. Normalizing to the same two-letter codes the
+	// title parser emits lets filters and clients treat both sources alike.
 	var languages []string
 	if lang := i.GetAttribute("language"); lang != "" {
 		for _, part := range strings.Split(lang, ",") {
@@ -186,6 +191,7 @@ func (i *Item) ToRelease() *release.Release {
 				languages = append(languages, t)
 			}
 		}
+		languages = pttoptions.NormalizeLanguageSlice(languages)
 	}
 	indexerName := i.ActualIndexer
 	if indexerName == "" && i.SourceIndexer != nil {
