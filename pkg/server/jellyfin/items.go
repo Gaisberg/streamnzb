@@ -295,7 +295,7 @@ func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit i
 	offset := start - firstPage*bucket
 	parent := viewID(def.ID)
 	for i := offset; i < len(rows) && len(result.Items) < limit; i++ {
-		if item, ok := s.previewItem(rows[i], parent); ok {
+		if item, ok := s.previewItem(rq, rows[i], parent); ok {
 			result.Items = append(result.Items, item)
 		}
 	}
@@ -340,7 +340,7 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 	for i, def := range defs {
 		parent := viewID(def.ID)
 		for _, preview := range rows[i] {
-			item, ok := s.previewItem(preview, parent)
+			item, ok := s.previewItem(rq, preview, parent)
 			if !ok || seen[item.ID] {
 				continue
 			}
@@ -375,7 +375,7 @@ func (s *Server) search(rq *request, term string, include []string) []*baseItem 
 	seen := map[string]bool{}
 	for _, metas := range rows {
 		for _, preview := range metas {
-			item, ok := s.previewItem(preview, "")
+			item, ok := s.previewItem(rq, preview, "")
 			if !ok || seen[item.ID] {
 				continue
 			}
@@ -521,7 +521,7 @@ func (s *Server) resolveOnOpen(rq *request, id itemID, item *baseItem) {
 		logger.Debug("Jellyfin resolve on open failed", "item", id.playStremioID(), "stream", rq.streamName(), "err", err)
 		return
 	}
-	item.MediaSources = s.renderedSources(rq, id, view)
+	setItemMediaSources(item, s.renderedSources(rq, id, view))
 }
 
 func (s *Server) writeItemError(w http.ResponseWriter, rq *request, raw string, err error) {
@@ -644,6 +644,9 @@ func (s *Server) childrenOf(rq *request, id itemID, include []string, recursive 
 		item := s.episodeItem(series, meta, v)
 		st, ok := states[item.ID]
 		item.UserData = userDataFor(item.ID, st, ok)
+		// Episodes are also list rows in Infuse's Direct Mode, so they need the
+		// same inexpensive multi-version signal as movie catalog rows.
+		s.attachMediaSourceStubs(rq, series.episode(v.Season, v.Episode), item)
 		items = append(items, item)
 	}
 	return items, nil

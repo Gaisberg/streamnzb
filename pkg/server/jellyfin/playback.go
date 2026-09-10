@@ -26,9 +26,11 @@ import (
 // by redirect, so the client re-issues its Range request against the new
 // slot instead of receiving the tail of a different file.
 
-// mediaSource is Jellyfin's MediaSourceInfo. Protocol "File" with direct
-// play and no transcoding tells every client to build the plain stream URL
-// itself, which is the only URL there is.
+// mediaSource is Jellyfin's MediaSourceInfo. Each source is an HTTP resource
+// served by this addon's /Videos/{id}/stream endpoint, not a local Jellyfin
+// file. Advertising it as remote HTTP is important: Apple and Android clients
+// otherwise may choose local-file/direct-stream code paths even though the
+// only supported operation here is a ranged direct-play request.
 type mediaSource struct {
 	Protocol              string `json:"Protocol"`
 	ID                    string `json:"Id"`
@@ -221,6 +223,45 @@ func (s *Server) renderedSources(rq *request, id itemID, view *stremio.PlaylistV
 	return out
 }
 
+// setItemMediaSources applies Jellyfin's item-level multi-version contract.
+// Clients such as Infuse use MediaSourceCount and EnableMediaSourceDisplay to
+// decide whether to surface a version picker; the MediaSources array by itself
+// is treated as ordinary playback metadata.
+func setItemMediaSources(item *baseItem, sources []mediaSource) {
+	if item == nil {
+		return
+	}
+	item.MediaSources = sources
+	item.AlternateMediaSources = sources
+	item.MediaSourceCount = nil
+	item.EnableMediaSourceDisplay = nil
+	if len(sources) == 0 {
+		return
+	}
+	item.EnableMediaSourceDisplay = boolPtr(true)
+	if len(sources) > 1 {
+		item.MediaSourceCount = intPtr(len(sources))
+	}
+}
+
+// attachMediaSourceStubs supplies the two list-level sources Infuse's Direct
+// Mode uses to decide whether a movie or episode has selectable versions.
+// They are deliberately cheap: the item-open path replaces them with actual
+// ranked releases, and slot 0 remains a valid direct-play fallback.
+func (s *Server) attachMediaSourceStubs(rq *request, id itemID, item *baseItem) {
+	if item == nil || (id.Kind != kindMovie && id.Kind != kindEpisode) {
+		return
+	}
+	runtime := float64(0)
+	if item.RunTimeTicks != nil {
+		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
+	}
+	setItemMediaSources(item, []mediaSource{
+		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 0, Title: item.Name}, runtime),
+		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 1, Title: item.Name + " (2)"}, runtime),
+	})
+}
+
 func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
 	id, _, ok := playableID(raw)
 	if !ok {
@@ -266,17 +307,10 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 		return
 	}
 	if view, ok := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); ok && view != nil && len(view.Entries) > 0 {
-		item.MediaSources = append(item.MediaSources, s.renderedSources(rq, id, view)...)
+		setItemMediaSources(item, s.renderedSources(rq, id, view))
 		return
 	}
-	runtime := float64(0)
-	if item.RunTimeTicks != nil {
-		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
-	}
-	item.MediaSources = []mediaSource{s.mediaSourceOf(rq, id, stremio.PlaylistEntry{
-		Index: 0,
-		Title: item.Name,
-	}, runtime)}
+	s.attachMediaSourceStubs(rq, id, item)
 }
 
 // mediaSourceOf renders one candidate. Path is informational — clients
@@ -289,15 +323,16 @@ func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEnt
 		container = strings.ToLower(parsed.Container)
 	}
 	src := mediaSource{
-		Protocol:               "File",
+		Protocol:               "Http",
 		ID:                     mediaSourceIDFor(id, entry.Index, rq.stream),
 		Path:                   entry.Title,
 		Type:                   "Default",
 		Container:              container,
 		Name:                   entry.Title,
-		SupportsDirectStream:   true,
+		IsRemote:               true,
+		SupportsDirectStream:   false,
 		SupportsDirectPlay:     true,
-		SupportsProbing:        true,
+		SupportsProbing:        false,
 		TranscodingSubProtocol: "http",
 		VideoType:              "VideoFile",
 		MediaStreams:           mediaStreamsOf(parsed, entry.Caps),

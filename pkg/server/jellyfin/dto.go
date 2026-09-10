@@ -91,10 +91,16 @@ type baseItem struct {
 	LocationType             string            `json:"LocationType"`
 	VideoType                string            `json:"VideoType,omitempty"`
 	MediaSources             []mediaSource     `json:"MediaSources,omitempty"`
-	MediaStreams             []mediaStream     `json:"MediaStreams,omitempty"`
-	Container                string            `json:"Container,omitempty"`
-	Taglines                 []string          `json:"Taglines,omitempty"`
-	Tags                     []string          `json:"Tags,omitempty"`
+	AlternateMediaSources    []mediaSource     `json:"AlternateMediaSources,omitempty"`
+	// EnableMediaSourceDisplay and MediaSourceCount are the Jellyfin item-level
+	// signals clients use to expose a version selector. MediaSources alone is
+	// not sufficient for Infuse's multi-version UI.
+	EnableMediaSourceDisplay *bool         `json:"EnableMediaSourceDisplay,omitempty"`
+	MediaSourceCount         *int          `json:"MediaSourceCount,omitempty"`
+	MediaStreams             []mediaStream `json:"MediaStreams,omitempty"`
+	Container                string        `json:"Container,omitempty"`
+	Taglines                 []string      `json:"Taglines,omitempty"`
+	Tags                     []string      `json:"Tags,omitempty"`
 }
 
 type externalURL struct {
@@ -146,6 +152,7 @@ func emptyResult() queryResult {
 func intPtr(n int) *int           { return &n }
 func int64Ptr(n int64) *int64     { return &n }
 func floatPtr(f float64) *float64 { return &f }
+func boolPtr(b bool) *bool        { return &b }
 
 // Stremio meta conventions the addon writes and the DTOs read back.
 var (
@@ -260,9 +267,10 @@ func (s *Server) setIdentity(item *baseItem, path string) {
 		item.DateCreated = dateCreatedFallback
 	}
 	// Same hash style as an image tag (images.go tagFor): first 20 hex of a
-	// sha1. Changes with the poster or the title, which is what an etag is
-	// for; a client refetches on either.
-	item.Etag = s.images.tagFor(item.ID + item.ImageTags["Primary"] + item.Name)
+	// sha1. Version the item DTO as well as its content: Infuse caches item
+	// documents aggressively and otherwise can keep a document that predates
+	// a compatibility-field change.
+	item.Etag = s.images.tagFor("jellyfin-dto-v2:" + item.ID + item.ImageTags["Primary"] + item.Name)
 }
 
 // viewItem is the library folder for a catalog.
@@ -285,7 +293,7 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 
 // previewItem renders a catalog row. Rows carry no runtime or year, which is
 // what a Jellyfin library grid shows anyway: poster and title.
-func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
+func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
 	id, err := itemIDFor(preview.Type, preview.ID)
 	if err != nil {
 		return nil, false
@@ -294,6 +302,10 @@ func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*bas
 	item.ParentID = parentID
 	item.Overview = preview.Description
 	s.setImages(item, id, preview.Poster, preview.Background, "")
+	// Infuse decides whether to offer a version picker from the library row,
+	// before it opens the richer item document. Two cheap playable stand-ins
+	// expose that signal without resolving providers during grid browsing.
+	s.attachMediaSourceStubs(rq, id, item)
 	return item, true
 }
 

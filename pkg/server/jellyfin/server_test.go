@@ -460,6 +460,9 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	if result.Items[0].Type != "Movie" || result.Items[0].ParentID != view || result.Items[0].ImageTags["Primary"] == "" || len(result.Items[0].BackdropImageTags) != 1 {
 		t.Fatalf("row shape: %+v", result.Items[0])
 	}
+	if len(result.Items[0].MediaSources) != 2 || len(result.Items[0].AlternateMediaSources) != 2 || result.Items[0].MediaSourceCount == nil || *result.Items[0].MediaSourceCount != 2 || result.Items[0].EnableMediaSourceDisplay == nil || !*result.Items[0].EnableMediaSourceDisplay {
+		t.Fatalf("Infuse picker row contract: %+v", result.Items[0])
+	}
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
 	if len(result.Items) != 5 || result.TotalRecordCount != 45 {
 		t.Fatalf("last page: %d items, total %d", len(result.Items), result.TotalRecordCount)
@@ -893,7 +896,7 @@ func TestPlaybackInfo(t *testing.T) {
 	best := info.MediaSources[0]
 	// The id carries the stream's token: the player that fetches the stream
 	// sends no credentials of its own.
-	if best.ID != movie.source(0).encode()+"."+testToken || !best.SupportsDirectPlay || best.SupportsTranscoding || best.Protocol != "File" || best.RequiredHTTPHeaders == nil {
+	if best.ID != movie.source(0).encode()+"."+testToken || !best.SupportsDirectPlay || best.SupportsTranscoding || best.SupportsDirectStream || best.SupportsProbing || !best.IsRemote || best.Protocol != "Http" || best.RequiredHTTPHeaders == nil {
 		t.Fatalf("media source: %+v", best)
 	}
 	if best.RunTimeTicks == nil || *best.RunTimeTicks != 142*60*ticksPerSecond || best.Size == nil || best.Bitrate == nil {
@@ -961,8 +964,8 @@ func TestPlaybackInfoCapsSources(t *testing.T) {
 // TestResolveOnOpenAttachesFullPlaylist checks the opt-in behaviour SenPlayer
 // needs: with JellyfinResolveOnOpen on, opening an unplayed movie's item page
 // runs the search immediately and the item carries the full (capped) list,
-// rather than the single stand-in source PlaybackInfo would otherwise leave
-// it with.
+// rather than the two cheap stand-in sources Infuse needs on list and detail
+// documents to expose its version picker.
 func TestResolveOnOpenAttachesFullPlaylist(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")
@@ -972,11 +975,14 @@ func TestResolveOnOpenAttachesFullPlaylist(t *testing.T) {
 	}
 	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
 
-	// Off by default: one stand-in source, and nothing was searched to build it.
+	// Off by default: two picker stand-ins, and nothing was searched to build them.
 	var item baseItem
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
-	if len(item.MediaSources) != 1 {
-		t.Fatalf("resolve on open off: want 1 stand-in source, got %d", len(item.MediaSources))
+	if len(item.MediaSources) != 2 || len(item.AlternateMediaSources) != 2 {
+		t.Fatalf("resolve on open off: want 2 stand-in sources, got media=%d alternate=%d", len(item.MediaSources), len(item.AlternateMediaSources))
+	}
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 2 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("stand-in version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
 	}
 	if calls := f.catalog.playlistCalls; calls != 0 {
 		t.Fatalf("resolve on open off: Playlist called %d times, want 0", calls)
@@ -985,11 +991,14 @@ func TestResolveOnOpenAttachesFullPlaylist(t *testing.T) {
 	// On: the same route resolves and attaches the full list.
 	f.resolveOnOpen = true
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
-	if len(item.MediaSources) != 3 {
-		t.Fatalf("resolve on open: want 3 sources, got %d", len(item.MediaSources))
+	if len(item.MediaSources) != 3 || len(item.AlternateMediaSources) != 3 {
+		t.Fatalf("resolve on open: want 3 sources, got media=%d alternate=%d", len(item.MediaSources), len(item.AlternateMediaSources))
 	}
 	if item.MediaSources[0].Name != "Release.00.mkv" {
 		t.Fatalf("resolve on open: sources out of order: %+v", item.MediaSources)
+	}
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 3 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("multi-source version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
 	}
 	if calls := f.catalog.playlistCalls; calls != 1 {
 		t.Fatalf("resolve on open: Playlist called %d times, want 1", calls)
