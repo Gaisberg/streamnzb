@@ -185,6 +185,20 @@ const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt,"
 	"stream_side_data=side_data_type,dv_profile,dv_level:" +
 	"format=duration"
 
+// legacyShowEntries deliberately omits stream_side_data. FFmpeg 4.4, including
+// the ARM64 static binary this service installs, rejects that section before it
+// reads the input at all. We retain the richer query for newer ffprobe builds
+// and only retry with this one after that exact capability error.
+const legacyShowEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt," +
+	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
+	"stream_disposition=attached_pic:" +
+	"stream_tags=language:" +
+	"format=duration"
+
+func needsLegacyShowEntries(stderr string) bool {
+	return strings.Contains(stderr, "No match for section 'stream_side_data'")
+}
+
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
 func ProbeStream(ctx context.Context, stream io.Reader, customPath string) (*FFprobeResult, error) {
 	return ProbeStreamWithOptions(ctx, stream, customPath, ProbeOptions{})
@@ -210,30 +224,12 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	if opts.QuickHeader {
 		probesize, analyzeduration = "5M", "5M"
 	}
-	args := []string{
-		"-v", "error",
-		"-probesize", probesize,
-		"-analyzeduration", analyzeduration,
-		"-show_entries", showEntries,
-		"-of", "json",
-	}
-	if opts.ForceDecode {
-		frames := opts.DecodeFrames
-		if frames <= 0 {
-			frames = DefaultDecodeFrames
-		}
-		// "%+#N" = starting at the current position (offset 0, no seek needed for
-		// a pipe), read N packets. Combined with -count_frames this forces a real
-		// decode of the opening N frames.
-		args = append(args, "-count_frames", "-read_intervals", fmt.Sprintf("%%+#%d", frames))
-	}
 	// A seekable stream is served over a loopback range server instead of a
 	// pipe. On a pipe ffprobe cannot seek, so an MP4/MOV whose moov sits at the
 	// tail (anything not written with faststart) is structurally unprobeable,
 	// and even a happy probe streams the full -probesize window through stdin.
 	// Over HTTP with Accept-Ranges, ffprobe seeks to exactly the boxes it
 	// needs. A stream that cannot seek keeps the pipe path.
-	var rr *recordingReader
 	var srv *probeStreamServer
 	// QuickHeader stays on the pipe deliberately: that probe sits on
 	// time-to-first-byte and is bounded BY being unseekable — over a seekable
@@ -252,42 +248,65 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	}
 	if srv != nil {
 		defer srv.Close()
-		args = append(args, srv.URL())
-	} else {
-		args = append(args, "pipe:0")
 	}
 
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	if srv == nil {
-		// Wrap stdin so we can recover the underlying stream error: when ffprobe exits
-		// non-zero because a segment read failed (e.g. 430), exec masks the copy error
-		// behind the ExitError. Capturing it lets callers tell a real broken release
-		// (missing/corrupt article) from an inconclusive probe (timeout, codec).
-		rr = &recordingReader{r: stream}
-		cmd.Stdin = rr
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	run := func(entries string) (string, string, error, error) {
+		args := []string{
+			"-v", "error",
+			"-probesize", probesize,
+			"-analyzeduration", analyzeduration,
+			"-show_entries", entries,
+			"-of", "json",
+		}
+		if opts.ForceDecode {
+			frames := opts.DecodeFrames
+			if frames <= 0 {
+				frames = DefaultDecodeFrames
+			}
+			args = append(args, "-count_frames", "-read_intervals", fmt.Sprintf("%%+#%d", frames))
+		}
+		if srv != nil {
+			args = append(args, srv.URL())
+		} else {
+			args = append(args, "pipe:0")
+		}
 
-	if err := cmd.Run(); err != nil {
+		cmd := exec.CommandContext(ctx, binaryPath, args...)
+		var rr *recordingReader
+		if srv == nil {
+			rr = &recordingReader{r: stream}
+			cmd.Stdin = rr
+		}
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if err := cmd.Run(); err != nil {
+			var streamErr error
+			if rr != nil {
+				streamErr = rr.lastErr
+			} else if srv != nil {
+				streamErr = srv.LastErr()
+			}
+			return stdout.String(), stderr.String(), err, streamErr
+		}
+		return stdout.String(), stderr.String(), nil, nil
+	}
+
+	stdout, stderr, runErr, streamErr := run(showEntries)
+	if runErr != nil && streamErr == nil && needsLegacyShowEntries(stderr) {
+		logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
+		stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+	}
+	if runErr != nil {
 		// Same error recovery as the pipe path: the stream's own failure
 		// outranks ffprobe's opaque non-zero exit.
-		var streamErr error
-		if rr != nil {
-			streamErr = rr.lastErr
-		} else if srv != nil {
-			streamErr = srv.LastErr()
-		}
 		if streamErr != nil {
-			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", err, strings.TrimSpace(stderr.String()), streamErr)
+			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", runErr, strings.TrimSpace(stderr), streamErr)
 		}
-		return nil, fmt.Errorf("ffprobe execution failed (%v): %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("ffprobe execution failed (%v): %s", runErr, strings.TrimSpace(stderr))
 	}
 
 	var output FFprobeOutput
-	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		return nil, fmt.Errorf("parse ffprobe json output: %w", err)
 	}
 
