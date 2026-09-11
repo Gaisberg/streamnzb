@@ -579,7 +579,8 @@ func TestParseCatalogPath(t *testing.T) {
 		{"/catalog/movie/tmdb.trending.movie/search=dune.json", catalogRequest{Type: "movie", ID: "tmdb.trending.movie", Search: "dune"}, true},
 		{"/catalog/movie/tmdb.trending.movie/search=the%20matrix&skip=20.json", catalogRequest{Type: "movie", ID: "tmdb.trending.movie", Search: "the matrix", Skip: 20}, true},
 		{"/catalog/movie.json", catalogRequest{}, false},
-		{"/catalog/movie/id/extra/too-deep.json", catalogRequest{}, false},
+		{"/catalog/movie/external.mdblist.movie/owner/slug.json", catalogRequest{Type: "movie", ID: "external.mdblist.movie/owner/slug"}, true},
+		{"/catalog/movie/external.mdblist.movie/owner/slug/skip=40.json", catalogRequest{Type: "movie", ID: "external.mdblist.movie/owner/slug", Skip: 40}, true},
 	}
 	for _, tc := range cases {
 		got, ok := parseCatalogPath(tc.path)

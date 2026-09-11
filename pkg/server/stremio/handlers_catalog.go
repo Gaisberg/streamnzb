@@ -186,18 +186,23 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 
 // parseCatalogPath splits "/catalog/{type}/{id}.json" or
 // "/catalog/{type}/{id}/{extra}.json", where extra is a URL-encoded query
-// string ("search=dune", "skip=40").
+// string ("search=dune", "skip=40"). Existing user catalog ids can contain
+// slashes, so the optional extra is detected from the final query segment.
 func parseCatalogPath(path string) (catalogRequest, bool) {
 	path = strings.TrimPrefix(path, "/catalog/")
 	path = strings.TrimSuffix(path, ".json")
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return catalogRequest{}, false
 	}
-	req := catalogRequest{Type: parts[0], ID: parts[1]}
-	if len(parts) == 3 {
-		extra, err := url.ParseQuery(parts[2])
+	req := catalogRequest{Type: parts[0], ID: strings.Join(parts[1:], "/")}
+	if len(parts) >= 3 && strings.Contains(parts[len(parts)-1], "=") {
+		extra, err := url.ParseQuery(parts[len(parts)-1])
 		if err != nil {
+			return catalogRequest{}, false
+		}
+		req.ID = strings.Join(parts[1:len(parts)-1], "/")
+		if req.ID == "" {
 			return catalogRequest{}, false
 		}
 		req.Search = strings.TrimSpace(extra.Get("search"))
@@ -242,6 +247,9 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		// clients so they render with the same poster/backdrop treatment as every
 		// built-in row.
 		s.enrichExternalCatalogPreviews(ctx, metas, def.Type, req.Profile.EffectiveLanguage())
+		if cap, capped := capForProfile(req.Profile); capped {
+			metas = s.filterPreviewsByCertification(ctx, cap, metas, def.Type)
+		}
 	}
 	// External rows are explicitly chosen by the user as complete lists. Do
 	// not remove overlaps with an earlier board row: apart from making a saved
