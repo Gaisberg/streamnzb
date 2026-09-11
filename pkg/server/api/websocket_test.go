@@ -31,6 +31,25 @@ func TestValidateConfigRejectsUncompilableFilterProfile(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsMalformedExternalCatalogURLWithoutPanicking(t *testing.T) {
+	s := &Server{}
+	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
+		Name: "Default",
+		ExternalCatalogs: []config.ExternalCatalogConfig{{
+			ID:          "external.bad-url",
+			Name:        "Broken source",
+			Kind:        "mdblist",
+			ManifestURL: "https://exa mple.com/lists/owner/slug",
+			RemoteType:  "movie",
+			RemoteID:    "owner/slug",
+		}},
+	}}}
+	err := s.validateConfig(cfg)
+	if got := err["metadata_profiles.0.external_catalogs.0.manifest_url"]; got == "" {
+		t.Fatalf("malformed external URL was not rejected: %#v", err)
+	}
+}
+
 // NZB limits must be non-negative, and min size must not exceed max size —
 // including when the contradiction only appears after a kind entry merges
 // over the default entry.

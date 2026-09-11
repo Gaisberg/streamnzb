@@ -677,14 +677,17 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[path+".name"] = "Name is required"
 				}
 				u, err := url.Parse(strings.TrimSpace(source.ManifestURL))
-				validSourceURL := err == nil && u.Scheme == "https" && u.Host != ""
+				validSourceURL := err == nil && u != nil && u.Scheme == "https" && u.Host != ""
+				host, sourcePath := "", ""
+				if u != nil {
+					host, sourcePath = strings.ToLower(u.Host), u.Path
+				}
 				if source.Kind == "tmdb_list" {
-					validSourceURL = validSourceURL && strings.Contains(strings.ToLower(u.Host), "themoviedb.org") && strings.HasPrefix(u.Path, "/list/")
+					validSourceURL = validSourceURL && strings.Contains(host, "themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
 				} else if source.Kind == "mdblist" {
-					host := strings.ToLower(u.Host)
-					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(u.Path, "/lists/")
+					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(sourcePath, "/lists/")
 				} else {
-					validSourceURL = validSourceURL && strings.HasSuffix(u.Path, "/manifest.json")
+					validSourceURL = validSourceURL && strings.HasSuffix(sourcePath, "/manifest.json")
 				}
 				if !validSourceURL {
 					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, or MDBList URL"
