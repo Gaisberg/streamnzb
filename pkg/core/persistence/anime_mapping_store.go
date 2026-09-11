@@ -115,8 +115,10 @@ func (as *AnimeMappingStore) LookupMAL(malID int) (*AnimeMapping, bool) {
 }
 
 // LookupTVDB resolves a TVDB series id to the Kitsu entry that owns the
-// playable anime identity. Multiple cours can share one TVDB id; the first
-// entry is the stable series-level choice for a TVDB-originated search result.
+// playable anime identity. Multiple cours can share one TVDB id; prefer the
+// series-level TV entry, then entries with no explicit season, before any
+// season/special row. That prevents an OVA or specials mapping from winning
+// a TVDB-originated discovery result just because it has a smaller Kitsu id.
 func (as *AnimeMappingStore) LookupTVDB(tvdbID string) (*AnimeMapping, bool) {
 	if as == nil || as.db == nil {
 		return nil, false
@@ -125,7 +127,9 @@ func (as *AnimeMappingStore) LookupTVDB(tvdbID string) (*AnimeMapping, bool) {
 	if id == "" {
 		return nil, false
 	}
-	return as.lookupOne(`WHERE tvdb_id = ? ORDER BY kitsu_id ASC`, id)
+	return as.lookupOne(`WHERE tvdb_id = ? ORDER BY
+		CASE WHEN entry_type = 'TV' THEN 0 WHEN has_season = 0 THEN 1 ELSE 2 END,
+		kitsu_id ASC`, id)
 }
 
 func (as *AnimeMappingStore) lookupOne(where string, arg any) (*AnimeMapping, bool) {

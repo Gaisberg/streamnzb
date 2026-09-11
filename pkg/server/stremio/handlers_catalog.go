@@ -627,10 +627,10 @@ func (s *Server) resolveIMDbIDs(mediaType string, results []tmdb.SearchMultiResu
 // hundreds of rows, so board pages slice into the cached first page. tt ids
 // resolve through each row's extended record (bounded fan-out, cached, and
 // reused later by the series meta pages those rows open).
-func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+func (s *Server) tvdbCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
 	rt := s.runtime()
 	if req.Search != "" {
-		return s.tvdbAnimeSearchCatalog(def, req)
+		return s.tvdbAnimeSearchCatalog(ctx, def, req)
 	}
 	sort := "score"
 	if def.Kind == "new" {
@@ -703,15 +703,15 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 // to a playable Kitsu entry; unrelated shows and Kitsu's broad fuzzy matches
 // never leak into the result grid. If TVDB has no usable row, Kitsu is the
 // explicit backup.
-func (s *Server) tvdbAnimeSearchCatalog(def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
 	rt := s.runtime()
 	if rt.tvdbClient == nil {
-		return s.kitsuCatalog(context.Background(), CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
 	}
 	results, err := rt.tvdbClient.SearchSeries(req.Search)
 	if err != nil {
 		logger.Debug("TVDB anime search failed; trying Kitsu backup", "search", req.Search, "err", err)
-		return s.kitsuCatalog(context.Background(), CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
 	}
 	previews := make([]MetaPreview, 0, len(results))
 	seen := map[string]bool{}
@@ -734,9 +734,12 @@ func (s *Server) tvdbAnimeSearchCatalog(def CatalogDef, req catalogRequest) ([]M
 		}
 	}
 	if len(previews) > 0 {
+		if cap, capped := capForProfile(req.Profile); capped {
+			previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
+		}
 		return previews, nil
 	}
-	return s.kitsuCatalog(context.Background(), CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+	return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
 }
 
 func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {

@@ -57,6 +57,9 @@ func TestAnimeMappingStoreReplaceAndLookup(t *testing.T) {
 	if byTVDB, ok := store.LookupTVDB("355480"); !ok || byTVDB.KitsuID != 49016 {
 		t.Fatalf("tvdb 355480 = %+v (ok=%v), want Kitsu 49016", byTVDB, ok)
 	}
+	if byTVDB, ok := store.LookupTVDB("76703"); !ok || byTVDB.KitsuID != 486 {
+		t.Fatalf("tvdb 76703 = %+v (ok=%v), want series-level Kitsu 486", byTVDB, ok)
+	}
 
 	// An absent season must not come back looking like season 0, or a
 	// series-spanning entry would be mistaken for specials.
