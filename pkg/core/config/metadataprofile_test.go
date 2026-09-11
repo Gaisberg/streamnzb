@@ -20,6 +20,25 @@ func loadFromJSON(t *testing.T, content string) *Config {
 	return cfg
 }
 
+func TestEffectiveAnimeMetaSourcesAreOrderedAndDistinct(t *testing.T) {
+	tests := []struct {
+		name, primary, backup, wantPrimary, wantBackup string
+	}{
+		{"default", "", "", "kitsu", "tvdb"},
+		{"tvdb primary", "tvdb", "kitsu", "tvdb", "kitsu"},
+		{"duplicate normalizes", "tvdb", "tvdb", "tvdb", "kitsu"},
+		{"invalid normalizes", "invalid", "invalid", "kitsu", "tvdb"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, backup := (&MetadataProfileConfig{AnimeSource: tc.primary, AnimeBackupSource: tc.backup}).EffectiveAnimeMetaSources()
+			if primary != tc.wantPrimary || backup != tc.wantBackup {
+				t.Fatalf("sources = %q, %q; want %q, %q", primary, backup, tc.wantPrimary, tc.wantBackup)
+			}
+		})
+	}
+}
+
 func TestMetadataProfileMigrationSeedsAndBinds(t *testing.T) {
 	cfg := loadFromJSON(t, `{
 		"config_version": 2,

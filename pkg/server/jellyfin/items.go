@@ -34,7 +34,13 @@ const (
 // allCatalogs is every catalog an id may name: the browse registry plus the
 // search carriers.
 func allCatalogs() []stremio.CatalogDef {
-	return append(stremio.CatalogRegistry(), stremio.SearchCatalogs()...)
+	// View ids are decoded before a request's stream/profile is known. Keep
+	// both possible anime search carriers here solely for that reverse lookup;
+	// the profile-aware SearchCatalogs call below decides which one can serve.
+	return append(stremio.CatalogRegistry(),
+		stremio.CatalogDef{ID: "kitsu.search.anime", Type: "anime"},
+		stremio.CatalogDef{ID: "tvdb.search.anime", Type: "anime"},
+	)
 }
 
 func catalogByID(id string) (stremio.CatalogDef, bool) {
@@ -373,7 +379,7 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 
 // search runs the search carriers the filter admits, in parallel.
 func (s *Server) search(rq *request, term string, include []string) []*baseItem {
-	defs := stremio.SearchCatalogs()
+	defs := s.opts.Catalog.SearchCatalogs(rq.stream)
 	var wg sync.WaitGroup
 	rows := make([][]stremio.MetaPreview, len(defs))
 	for i, def := range defs {

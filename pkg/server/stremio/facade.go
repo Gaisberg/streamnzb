@@ -77,12 +77,11 @@ func (s *Server) EnabledCatalogs(stream *auth.Stream) ([]CatalogDef, error) {
 	return enabledCatalogDefs(profile), nil
 }
 
-// SearchCatalogs lists the hidden search carriers, one per content type. They
-// answer for every profile and only with a query.
-func SearchCatalogs() []CatalogDef {
-	out := make([]CatalogDef, len(searchCatalogs))
-	copy(out, searchCatalogs)
-	return out
+// SearchCatalogs lists the hidden search carriers for a stream's profile.
+// Anime has a single primary carrier, while its configured backup remains a
+// fallback inside that carrier rather than a duplicate result source.
+func (s *Server) SearchCatalogs(stream *auth.Stream) []CatalogDef {
+	return searchCatalogDefs(s.metadataProfileFor(stream))
 }
 
 // Catalog serves one page of a catalog under the same rules as the HTTP

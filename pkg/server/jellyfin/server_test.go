@@ -101,6 +101,14 @@ func (f *fakeCatalog) EnabledCatalogs(*auth.Stream) ([]stremio.CatalogDef, error
 	return f.catalogs, nil
 }
 
+func (f *fakeCatalog) SearchCatalogs(*auth.Stream) []stremio.CatalogDef {
+	return []stremio.CatalogDef{
+		{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
+		{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
+		{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true},
+	}
+}
+
 func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, search string, skip int) ([]stremio.MetaPreview, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

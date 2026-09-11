@@ -57,6 +57,7 @@ type Streams interface {
 // *stremio.Server satisfies it.
 type Catalog interface {
 	EnabledCatalogs(stream *auth.Stream) ([]stremio.CatalogDef, error)
+	SearchCatalogs(stream *auth.Stream) []stremio.CatalogDef
 	Catalog(ctx context.Context, stream *auth.Stream, catalogID, contentType, search string, skip int) ([]stremio.MetaPreview, error)
 	Meta(ctx context.Context, stream *auth.Stream, contentType, id string) (*stremio.MetaObject, error)
 	Playlist(ctx context.Context, stream *auth.Stream, contentType, id string) (*stremio.PlaylistView, error)

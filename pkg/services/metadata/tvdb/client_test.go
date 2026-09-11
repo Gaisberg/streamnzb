@@ -322,6 +322,27 @@ func TestResolveTVDBIDPicksSeriesOverMovie(t *testing.T) {
 	}
 }
 
+func TestSearchSeriesUsesSeriesEndpointAndNormalizesIDs(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" || r.URL.Query().Get("query") != "Solo Leveling" || r.URL.Query().Get("type") != "series" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":[
+			{"objectID":"series-447898","name":"Solo Leveling","image_url":"https://art.test/solo.jpg"},
+			{"tvdb_id":"451793","name_translated":"Solo Leveling: Arise"}
+		]}`))
+	})
+
+	results, err := client.SearchSeries("Solo Leveling")
+	if err != nil {
+		t.Fatalf("SearchSeries: %v", err)
+	}
+	if len(results) != 2 || results[0].SeriesID() != "447898" || results[0].Title() != "Solo Leveling" || results[1].SeriesID() != "451793" || results[1].Title() != "Solo Leveling: Arise" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
 // A key TVDB will not accept comes back as a bare 401. The message is what the
 // settings UI shows, so it has to say what to do about it.
 func TestLoginRejectedKeyExplains401(t *testing.T) {
