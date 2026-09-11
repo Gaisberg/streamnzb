@@ -213,7 +213,12 @@ function AttributeReference({ onInsert, rules = [], libraryRules = [] }) {
               expression — <code className="font-mono">releaseName matches &quot;(?i)\bIMAX\b&quot;</code>. There is no
               lookahead, and rules are why you do not need one:{" "}
               <code className="font-mono">\bDV\b(?!.*HDR10)</code> is{" "}
-              <code className="font-mono">dolbyVision and not hdrFallback</code>.
+              <code className="font-mono">dolbyVision and not hdrFallback</code>. A token that collides with a phrase
+              is{" "}
+              <code className="font-mono">
+                matchesExcept(releaseName, &quot;(?i)\bMA\b&quot;, &quot;(?i)DTS-HD MA&quot;)
+              </code>
+              , which judges the occurrence rather than the whole name.
             </p>
           </div>
         </div>

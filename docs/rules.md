@@ -690,19 +690,66 @@ release names:
 | Logic | `and` `or` `not` |
 | Membership | `"DV" in hdr` |
 | Text | `releaseName matches "(?i)regex"`, `releaseName contains "IMAX"`, `startsWith`, `endsWith` |
+| Patterns in context | `matchesExcept(releaseName, "(?i)\bMA\b", "(?i)DTS-HD MA")` |
 | Arithmetic | `+` `-` `*` `/` |
 | Grouping | `( … )` |
 | Conditional | `cond ? a : b` |
 
 `matches` takes a Go (RE2) regular expression. RE2 has no lookahead or
 lookbehind, and rules are the reason it does not need one: `\bDV\b(?!.*HDR10)`
-becomes `dolbyVision and not hdrFallback`.
+becomes `dolbyVision and not hdrFallback`. A negative lookahead over the whole
+name is `not`, which needs no function of its own —
+`releaseName matches "(?i)\bIMAX\b" and not releaseName matches "(?i)\bOpen[. ]Matte\b"` —
+and a *positive* one is nothing at all: a condition asks whether the pattern
+matched, never what it consumed, so `A(?=B)` is written `AB`.
 
 Write the regex as-is: backslashes in a condition string are taken literally,
 so `\+`, `\d` and `\b` mean what they mean in the regex — no doubling needed,
 though a defensively written `\\+` means the same thing. This is what lets a
 [define library](#define-libraries) generated from an upstream regex list be
 consumed without rewriting its escapes.
+
+### Patterns that need context
+
+That leaves the one form neither covers, and it is the one an upstream
+classification list is built out of: a token that means one thing alone and
+another inside a phrase. `MA` is a streaming service until it is the tail of
+`DTS-HD MA`. `MAX` is one until it is the tail of `HBO Max`.
+
+`and not` is not that condition, because it judges the whole name. A release
+carrying the token *and* the phrase — `Movie 2020 2160p MA WEB-DL DTS-HD MA
+5.1` — has a perfectly good service tag, and the audio track hides it:
+
+```
+releaseName matches "(?i)\bMA\b" and not releaseName matches "(?i)DTS-HD MA"
+                                                            → false, wrongly
+matchesExcept(releaseName, "(?i)\bMA\b", "(?i)DTS[-. ]?HD[-. ]?MA")
+                                                            → true
+```
+
+`matchesExcept(text, pattern, except)` judges the occurrence instead of the
+name: it holds when `pattern` matches somewhere `except` does not cover. It is
+`(?<!DTS-HD )\bMA\b` and `\bMA\b(?! 5\.1)` and every other collision guard the
+pattern was carrying a lookaround for, with the context named as what it is
+rather than as what may not surround it.
+
+The exclusion is the **whole phrase, including the token** — where the pattern
+does not count, not what must not follow it. Several are one alternation:
+
+```
+matchesExcept(releaseName, "(?i)\bMAX\b", "(?i)HBO[. -]?Max|Mad[. ]Max")
+```
+
+Any text answers it, not only `releaseName`: `matchesExcept(group, …)` reads a
+release group, `matchesExcept(parsed.title, …)` the parsed title. An exclusion
+matching nothing leaves the pattern to its own verdict, and an empty one
+excludes nothing — the pattern alone.
+
+A pattern that will not compile is refused when the profile is saved, the same
+as one written for `matches`. The exception is a pattern the condition builds
+out of an attribute, which has no value until a search runs: that one is
+reported as a rule that could not be judged on the release that produced it,
+alongside the rules [skipped](#fail-open) for want of a tier.
 
 ## Coming from AIOStreams
 
@@ -731,7 +778,7 @@ compatibility layer:
 | `cached()` / `uncached()` | `avail.status`, `avail.onMyBackbone` | **Not equivalent.** SEL's `cached` is a guarantee from a debrid service; ours is a community report that can be months stale and is per backbone. |
 | `service(...)`, `type(...)` | — | No analogue. StreamNZB has one source type. |
 | `seadex(...)` | `seadex.best`, `seadex.alternative`, `seadex.known` | Matched per title by release group, and skipped when no lookup could run. |
-| `regexMatched()` / `regexScore()` | `releaseName matches "…"` | |
+| `regexMatched()` / `regexScore()` | `releaseName matches "…"` | Lookaround is `and not`, or [`matchesExcept`](#patterns-that-need-context). |
 | `count()` | `count(condition)` | Over the [result set](#about-the-result-set); `exists()` and `none()` alongside it. |
 | `max()`, `avg()`, `median()`, … | — | No analogue: rules ask about the set, they do not select from it. |
 | — | `matched("Rule name")` | No SEL analogue: a rule may reuse another rule's condition rather than repeat it. |

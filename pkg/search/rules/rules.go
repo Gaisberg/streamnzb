@@ -113,6 +113,10 @@ func buildRegistry() *jhinrules.Registry {
 	// carries no tier; a rule that needs it can guard on it being non-empty.
 	reg.Field("originalLanguage", jhinrules.Str, "")
 
+	// The pattern vocabulary: the one lookaround form a condition cannot
+	// already say without it. See patterns.go.
+	registerPatternFuncs(reg)
+
 	if err := reg.Err(); err != nil {
 		// A registration that fails is a programming error in this file, not
 		// a condition any profile can cause.
@@ -287,6 +291,20 @@ func explainPostOnlyAttr(err error) error {
 func compileWith(reg *jhinrules.Registry, cfgs, library []config.RuleConfig) (*Set, error) {
 	if len(cfgs) == 0 {
 		return nil, nil
+	}
+	// The patterns a function is called with are checked here rather than by
+	// jhin, which sees them as arguments and only while a search runs. Doing
+	// it first means a mistyped one is refused with the rest of the profile,
+	// and a disabled rule is skipped because jhin never compiles one either.
+	for _, rc := range cfgs {
+		if !rc.IsEnabled() {
+			continue
+		}
+		for _, src := range []string{rc.When, rc.GroupBy} {
+			if err := checkPatterns(reg, src); err != nil {
+				return nil, &Error{Rule: strings.TrimSpace(rc.Name), Err: err}
+			}
+		}
 	}
 	eng, err := jhinrules.Compile(reg, toJhinRules(cfgs), toJhinRules(library)...)
 	if err != nil {

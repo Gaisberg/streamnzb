@@ -417,6 +417,18 @@ export const RULE_ATTRIBUTES = [
     ],
   },
   {
+    title: "Matching in context",
+    note: "matchesExcept(text, pattern, except) judges an occurrence instead of the whole name: it holds where the pattern matches and the exclusion does not cover it. It is the lookaround RE2 does not have — \\bMA\\b except where it is the tail of DTS-HD MA — and unlike `matches A and not matches B` it still holds for a name carrying both the token and the phrase. The exclusion names the whole phrase, token included; several go in one alternation.",
+    items: [
+      {
+        name: "matchesExcept(…)",
+        insert: 'matchesExcept(releaseName, "(?i)", "(?i)")',
+        type: "yes/no",
+        example: 'matchesExcept(releaseName, "(?i)\\bMAX\\b", "(?i)HBO[. -]?Max")',
+      },
+    ],
+  },
+  {
     title: "After scoring",
     note: "finalScore and finalRank are the finished verdict: the accumulated score, and the release's position (1 = best) among the surviving results sorted by it. They only exist once every rule has run, so only a prune rule can read them — a score or reject rule using either is refused. Combined with count(), a prune rule can drop the weak tail only while stronger alternatives remain: prune if finalScore < -500 and count(finalScore >= -500) >= 6.",
     items: [
