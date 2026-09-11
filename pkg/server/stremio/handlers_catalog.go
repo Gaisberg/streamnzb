@@ -1157,6 +1157,12 @@ func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.Met
 		if def.Type != current.Type {
 			continue
 		}
+		// User-pasted catalogs are intentionally excluded from cross-board
+		// deduplication. Never fetch an uncached third-party catalog merely to
+		// build the duplicate set for a built-in board row.
+		if def.Provider == "external" {
+			continue
+		}
 		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID, Profile: profile})
 		if err != nil {
 			continue
