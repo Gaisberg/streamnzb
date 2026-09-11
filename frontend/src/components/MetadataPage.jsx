@@ -24,6 +24,46 @@ const PROVIDER_LABELS = {
   local: "This server",
 }
 
+const EXTERNAL_SOURCE_LABELS = {
+  tmdb_list: "TMDB",
+  mdblist: "MDBList",
+  letterboxd: "Letterboxd",
+}
+
+function externalSourceLabel(source) {
+  if (source?.source_label) return source.source_label
+  if (EXTERNAL_SOURCE_LABELS[source?.kind]) return EXTERNAL_SOURCE_LABELS[source.kind]
+  try {
+    const name = new URL(source?.manifest_url).hostname.replace(/^www\./, "").split(".")[0]
+    if (name) return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+  } catch {
+    // A malformed legacy source remains editable and falls through to a clear label.
+  }
+  return "Stremio catalog"
+}
+
+const GENERATED_SOURCE_COLORS = [
+  "border-amber-400/25 bg-amber-400/10 text-amber-700 dark:text-amber-300",
+  "border-cyan-400/25 bg-cyan-400/10 text-cyan-700 dark:text-cyan-300",
+  "border-fuchsia-400/25 bg-fuchsia-400/10 text-fuchsia-700 dark:text-fuchsia-300",
+  "border-lime-400/25 bg-lime-400/10 text-lime-700 dark:text-lime-300",
+  "border-orange-400/25 bg-orange-400/10 text-orange-700 dark:text-orange-300",
+  "border-rose-400/25 bg-rose-400/10 text-rose-700 dark:text-rose-300",
+]
+
+function sourceBadgeClass(label, key) {
+  const normalized = String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "")
+  if (normalized === "tmdb") return "border-sky-400/25 bg-sky-400/10 text-sky-700 dark:text-sky-300"
+  if (normalized === "mdblist") return "border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-300"
+  if (normalized === "letterboxd") return "border-emerald-400/25 bg-emerald-400/10 text-emerald-700 dark:text-emerald-300"
+  // A deterministic hash means unknown sources feel distinct but never change
+  // color after a refresh, profile save, or client restart.
+  const seed = String(key || label || "catalog")
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) | 0
+  return GENERATED_SOURCE_COLORS[Math.abs(hash) % GENERATED_SOURCE_COLORS.length]
+}
+
 
 // Display languages for meta responses and catalog rows, as TMDB-style tags.
 // TMDB localizes fully; TVDB series pick up translated names/overviews where
@@ -113,9 +153,10 @@ function describeDelete(profile, usage) {
 }
 
 function CatalogBadges({ def }) {
+  const source = def.source_label || PROVIDER_LABELS[def.provider] || def.provider
   return (
     <span className="flex flex-wrap items-center gap-1">
-      <Badge variant="outline" className="shrink-0 text-[10px]">{PROVIDER_LABELS[def.provider] || def.provider}</Badge>
+      <Badge variant="outline" className={cn("shrink-0 border px-2 text-[10px] font-medium", sourceBadgeClass(source, source))}>{source}</Badge>
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">{def.type}</Badge>
     </span>
   )
@@ -135,7 +176,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   const [editingExternalName, setEditingExternalName] = useState("")
 
   const externalRows = useMemo(() => draft.external_catalogs || [], [draft.external_catalogs])
-  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", supports_skip: source.supports_skip !== false })), [externalRows])
+  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", source_label: externalSourceLabel(source), supports_skip: source.supports_skip !== false })), [externalRows])
   const allDefs = useMemo(() => [...registry, ...externalDefs], [registry, externalDefs])
   const defsByID = useMemo(() => new Map(allDefs.map((def) => [def.id, def])), [allDefs])
   const rows = useMemo(() => seedRows(allDefs, draft.catalogs ?? null), [allDefs, draft.catalogs])
@@ -152,7 +193,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
     const q = query.trim().toLowerCase()
     if (!q) return available
     return available.filter((def) =>
-      [def.name, def.type, def.provider, PROVIDER_LABELS[def.provider] || ""]
+      [def.name, def.type, def.provider, def.source_label || "", PROVIDER_LABELS[def.provider] || ""]
         .some((text) => text.toLowerCase().includes(q))
     )
   }, [available, query])
@@ -178,10 +219,12 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
 
   const addExternalCatalog = (catalog) => {
     const sourceKey = sourceURL.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
+    const remoteKey = String(catalog.remote_id || "catalog").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "catalog"
     const next = [...externalRows, {
-      id: `external.${sourceKey}.${catalog.remote_type}.${catalog.remote_id}`,
+      id: `external.${sourceKey}.${catalog.remote_type}.${remoteKey}`,
       name: catalog.name,
       kind: sourcePreview?.kind || "",
+      source_label: EXTERNAL_SOURCE_LABELS[sourcePreview?.kind] || sourcePreview?.name || externalSourceLabel({ kind: sourcePreview?.kind, manifest_url: sourceURL.trim() }),
       manifest_url: sourceURL.trim(),
       remote_type: catalog.remote_type,
       remote_id: catalog.remote_id,
@@ -510,17 +553,17 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
         <DialogContent className="max-w-xl p-4 sm:p-6">
           <DialogHeader>
             <DialogTitle>Add catalog source</DialogTitle>
-            <DialogDescription>Paste a public Stremio manifest URL, public TMDB list URL, or public MDBList URL. StreamNZB imports browse catalogs only — never external search, streams, subtitles or credentials.</DialogDescription>
+            <DialogDescription>Paste a public Stremio manifest URL, public TMDB/MDBList/Letterboxd list URL. StreamNZB imports browse catalogs only — never external search, streams, subtitles or credentials.</DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
             <Label htmlFor="catalog-source-url" className="text-sm">Source or list URL</Label>
             <div className="flex gap-2">
-              <Input id="catalog-source-url" autoFocus value={sourceURL} onChange={(e) => setSourceURL(e.target.value)} placeholder="…/manifest.json, themoviedb.org/list/…, or mdblist.com/lists/…" className="h-9 font-mono text-xs" />
+              <Input id="catalog-source-url" autoFocus value={sourceURL} onChange={(e) => setSourceURL(e.target.value)} placeholder="…/manifest.json, TMDB/MDBList URL, or letterboxd.com/…/list/…" className="h-9 font-mono text-xs" />
               <Button type="button" size="sm" onClick={inspectSource} disabled={!sourceURL.trim() || sourceLoading}>
-                {sourceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+                {sourceLoading ? <><Loader2 className="h-4 w-4 animate-spin" /> Checking…</> : "Check source"}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Supported now: public Stremio manifests, public TMDB lists, and public MDBList lists. More list sites are added only after a real fetch test.</p>
+            <p className="text-xs text-muted-foreground">Supported now: public Stremio manifests, TMDB lists, MDBList lists, and Letterboxd film lists. More list sites are added only after a real fetch test.</p>
           </div>
           {sourceError && <p className="text-sm text-destructive">{sourceError}</p>}
           {sourcePreview && (

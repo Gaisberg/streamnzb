@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/metadata/metacache"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -312,9 +314,190 @@ type ListingResponse struct {
 // public lists despite the page containing entries, so public-list sources
 // deliberately use the public page the user supplied as their source.
 type PublicListItem struct {
-	ID   int
-	Type string
-	Name string
+	ID     int
+	IMDbID string
+	Type   string
+	Name   string
+}
+
+// ErrPublicListPageNotFound marks the natural end of a public HTML list.
+// Consumers use it to stop pagination rather than turn a request beyond the
+// final page into a failed catalog response.
+var ErrPublicListPageNotFound = errors.New("public list page not found")
+
+var (
+	letterboxdFilmPattern      = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
+	letterboxdOGTitlePattern   = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
+	letterboxdFilmTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*\(\d{4}\)`)
+	letterboxdPageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*(?:&bull;|•|\|)\s*Letterboxd`)
+	letterboxdIMDbPattern      = regexp.MustCompile(`imdb\.com/title/(tt\d{7,8})`)
+)
+
+func letterboxdTitle(body []byte) string {
+	// Film pages' og:title often includes a tagline, while their document title
+	// holds the canonical year-qualified name. List titles do not match the
+	// film pattern and naturally fall through to og:title.
+	patterns := []*regexp.Regexp{letterboxdFilmTitlePattern, letterboxdOGTitlePattern, letterboxdPageTitlePattern}
+	for _, pattern := range patterns {
+		if m := pattern.FindStringSubmatch(string(body)); len(m) == 2 {
+			title := strings.TrimSpace(html.UnescapeString(m[1]))
+			// html.UnescapeString has already turned &lrm; into U+200E, so
+			// strip the actual directional marks rather than the entity text.
+			title = strings.TrimSpace(strings.TrimLeft(title, "\u200e\u200f"))
+			if title != "" {
+				return title
+			}
+		}
+	}
+	return ""
+}
+
+// FetchLetterboxdPage reads a public Letterboxd list page and resolves the
+// IMDb id exposed by each public film page. No account, API key or title guess
+// is used; rows without a canonical IMDb id are omitted.
+func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (PublicListPage, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "letterboxd.com" && u.Host != "www.letterboxd.com") || !strings.Contains(u.Path, "/list/") {
+		return PublicListPage{}, fmt.Errorf("invalid public Letterboxd list URL")
+	}
+	if pageNumber > 1 {
+		u.Path = strings.TrimSuffix(u.Path, "/") + "/page/" + strconv.Itoa(pageNumber) + "/"
+	}
+	cacheKey := u.String()
+	if cached, ok := loadLetterboxdListPage(cacheKey); ok {
+		return cached, nil
+	}
+	body, err := fetchPublicHTML(ctx, u.String())
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	out := PublicListPage{Items: []PublicListItem{}}
+	out.Name = letterboxdTitle(body)
+	seen := map[string]bool{}
+	filmURLs := make([]string, 0)
+	for _, m := range letterboxdFilmPattern.FindAllStringSubmatch(string(body), -1) {
+		filmURL := "https://letterboxd.com" + m[1]
+		if seen[filmURL] {
+			continue
+		}
+		seen[filmURL] = true
+		filmURLs = append(filmURLs, filmURL)
+	}
+
+	// Film pages are the public canonical-ID boundary. Fetching them serially
+	// made one 100-row Letterboxd page take long enough for Jellyfin clients to
+	// abandon the catalog. Keep list order while using a small, polite pool.
+	items := make([]PublicListItem, len(filmURLs))
+	workers := min(12, len(filmURLs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				film, err := fetchPublicHTML(ctx, filmURLs[i])
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetch Letterboxd film %s: %w", filmURLs[i], err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
+				name := letterboxdTitle(film)
+				if len(id) == 2 && name != "" {
+					items[i] = PublicListItem{IMDbID: id[1], Type: "movie", Name: name}
+				}
+			}
+		}()
+	}
+	for i := range filmURLs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		// Never silently change a page's membership between requests. A caller
+		// can retry a failed page; serving a partial page causes duplicate and
+		// missing items once the client follows Skip pagination.
+		return PublicListPage{}, firstErr
+	}
+	for _, item := range items {
+		if item.IMDbID != "" {
+			out.Items = append(out.Items, item)
+		}
+	}
+	storeLetterboxdListPage(cacheKey, out)
+	return out, nil
+}
+
+const publicHTMLMaxAttempts = 3
+
+// fetchPublicHTML retries the throttling and transient server failures public
+// list sites commonly return. Letterboxd rows depend on every film page being
+// canonical, so a short bounded retry is safer than serving a partial page.
+func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < publicHTMLMaxAttempts; attempt++ {
+		body, retryAfter, retry, err := fetchPublicHTMLOnce(ctx, rawURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !retry || attempt == publicHTMLMaxAttempts-1 {
+			break
+		}
+		if retryAfter <= 0 {
+			retryAfter = time.Duration(attempt+1) * 250 * time.Millisecond
+		}
+		timer := time.NewTimer(retryAfter)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func fetchPublicHTMLOnce(ctx context.Context, rawURL string) ([]byte, time.Duration, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, 0, false, fmt.Errorf("%w: %s", ErrPublicListPageNotFound, resp.Status)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return nil, publicHTMLRetryAfter(resp.Header.Get("Retry-After")), true, fmt.Errorf("public list returned %s", resp.Status)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, false, fmt.Errorf("public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	return body, 0, false, err
+}
+
+func publicHTMLRetryAfter(raw string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	// A public site can ask for minutes. Keep the configuration request and a
+	// client catalog response bounded; later requests can retry from cache.
+	return min(time.Duration(seconds)*time.Second, 2*time.Second)
 }
 
 // PublicListPage is the title and canonical TMDB rows exposed by a public
@@ -322,6 +505,54 @@ type PublicListItem struct {
 type PublicListPage struct {
 	Name  string
 	Items []PublicListItem
+}
+
+const (
+	letterboxdListCacheTTL = 15 * time.Minute
+	letterboxdListCacheMax = 128
+)
+
+type cachedPublicListPage struct {
+	page      PublicListPage
+	expiresAt time.Time
+}
+
+var letterboxdListCache = struct {
+	sync.Mutex
+	pages map[string]cachedPublicListPage
+}{pages: make(map[string]cachedPublicListPage)}
+
+func loadLetterboxdListPage(key string) (PublicListPage, bool) {
+	letterboxdListCache.Lock()
+	defer letterboxdListCache.Unlock()
+	cached, ok := letterboxdListCache.pages[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(letterboxdListCache.pages, key)
+		return PublicListPage{}, false
+	}
+	return clonePublicListPage(cached.page), true
+}
+
+func storeLetterboxdListPage(key string, page PublicListPage) {
+	letterboxdListCache.Lock()
+	defer letterboxdListCache.Unlock()
+	if len(letterboxdListCache.pages) >= letterboxdListCacheMax {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for candidate, cached := range letterboxdListCache.pages {
+			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = candidate, cached.expiresAt
+			}
+		}
+		delete(letterboxdListCache.pages, oldestKey)
+	}
+	letterboxdListCache.pages[key] = cachedPublicListPage{page: clonePublicListPage(page), expiresAt: time.Now().Add(letterboxdListCacheTTL)}
+}
+
+func clonePublicListPage(page PublicListPage) PublicListPage {
+	cloned := page
+	cloned.Items = append([]PublicListItem(nil), page.Items...)
+	return cloned
 }
 
 // FetchPublicListPage reads one page of a public TMDB list. It accepts only
@@ -529,18 +760,6 @@ func (c *Client) GetListing(mediaType, kind string, page int, lang string) (*Lis
 		return nil, fmt.Errorf("unknown TMDB listing kind %q", kind)
 	}
 	return getJSON[ListingResponse](c, endpoint, params, "listing "+kind)
-}
-
-// GetPublicList fetches one public TMDB list page. Private lists are rejected
-// by TMDB unless the owner supplies a user token, which StreamNZB never asks
-// catalog-source users to provide.
-func (c *Client) GetPublicList(listID string, page int, lang string) (*ListingResponse, error) {
-	params := url.Values{}
-	params.Set("page", strconv.Itoa(max(page, 1)))
-	if lang != "" {
-		params.Set("language", lang)
-	}
-	return getJSON[ListingResponse](c, fmt.Sprintf(c.BaseURL+"/list/%s", url.PathEscape(listID)), params, "public list")
 }
 
 // GetRecommendations fetches TMDB's recommendations for one title — the seed

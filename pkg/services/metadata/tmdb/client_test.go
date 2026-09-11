@@ -1,6 +1,7 @@
 package tmdb
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,45 @@ import (
 
 	"streamnzb/pkg/services/metadata/metacache"
 )
+
+func TestLetterboxdTitleParsesPublicFilmAndListPages(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		html string
+		want string
+	}{
+		{"film", `<title>&lrm;The Departed (2006) directed by Martin Scorsese • Reviews, film + cast &bull; Letterboxd</title>`, "The Departed"},
+		{"list", `<meta property="og:title" content="Movies everyone should watch at least once during their lifetime"><title>&lrm;Movies everyone should watch at least once during their lifetime, a list of films by fcbarcelona &bull; Letterboxd</title>`, "Movies everyone should watch at least once during their lifetime"},
+		{"list og directional mark", `<meta property="og:title" content="&lrm;Movies everyone should watch">`, "Movies everyone should watch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := letterboxdTitle([]byte(tc.html)); got != tc.want {
+				t.Fatalf("letterboxdTitle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchPublicHTMLRetriesTransientRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	}))
+	defer server.Close()
+
+	body, err := fetchPublicHTML(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchPublicHTML() error = %v", err)
+	}
+	if string(body) != "<html>ok</html>" || calls.Load() != 2 {
+		t.Fatalf("body/calls = %q/%d, want success after two requests", body, calls.Load())
+	}
+}
 
 // TestDisplayLanguageParams pins the localization request shape: language on
 // the details call, image/video language lists carrying the configured

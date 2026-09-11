@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -344,9 +345,19 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		if def.ExternalKind == "mdblist" {
 			return s.mdbListCatalog(ctx, def, req)
 		}
+		if def.ExternalKind == "letterboxd" {
+			return s.letterboxdCatalog(ctx, def, req)
+		}
 		return externalManifestCatalog(ctx, def, req)
 	}
 	return nil, fmt.Errorf("unknown catalog provider %q", def.Provider)
+}
+
+func (s *Server) letterboxdCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	return s.publicListCatalog(ctx, def, req, 1, func(page int) ([]tmdb.PublicListItem, error) {
+		list, err := tmdb.FetchLetterboxdPage(ctx, def.ExternalManifestURL, page)
+		return list.Items, err
+	})
 }
 
 func (s *Server) tmdbExternalListCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -373,24 +384,33 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 	for page := firstPage; page < firstPage+externalListMaxPages && len(previews) < needed; page++ {
 		items, err := fetch(page)
 		if err != nil {
+			// Public HTML lists often signal their final page with a 404. It is
+			// terminal pagination, not a failed catalog the client should retry.
+			if errors.Is(err, tmdb.ErrPublicListPageNotFound) {
+				break
+			}
 			return nil, err
 		}
-		added := 0
 		for _, item := range items {
 			isMovie := item.Type == "movie"
 			name := cleanExternalPreviewName(item.Name)
-			if (def.Type == "movie") != isMovie || item.ID <= 0 || name == "" {
+			if (def.Type == "movie") != isMovie || (item.ID <= 0 && strings.TrimSpace(item.IMDbID) == "") || name == "" {
 				continue
 			}
-			id := fmt.Sprintf("tmdb:%d", item.ID)
+			id := strings.TrimSpace(item.IMDbID)
+			if id == "" {
+				id = fmt.Sprintf("tmdb:%d", item.ID)
+			}
 			if _, exists := seen[id]; exists {
 				continue
 			}
 			seen[id] = struct{}{}
 			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name})
-			added++
 		}
-		if len(items) == 0 || added == 0 {
+		// An empty remote page is terminal. A mixed page, duplicate page, or a
+		// page containing only the other media type is not: later pages may
+		// still hold matching rows for this catalog.
+		if len(items) == 0 {
 			break
 		}
 	}
@@ -455,14 +475,15 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int) 
 		return nil, err
 	}
 	metas := make([]MetaPreview, 0, len(remote.Metas))
-	for _, meta := range remote.Metas {
-		meta.ID = canonicalExternalCatalogID(meta.ID)
-		meta.Name = cleanExternalPreviewName(meta.Name)
-		if meta.ID == "" || meta.Name == "" {
+	for _, remoteMeta := range remote.Metas {
+		id := canonicalExternalCatalogID(remoteMeta.ID)
+		name := cleanExternalPreviewName(remoteMeta.Name)
+		if id == "" || name == "" {
 			continue
 		}
-		meta.Type = def.Type
-		metas = append(metas, meta)
+		// A pasted manifest supplies browse coordinates only. Its presentation
+		// fields are untrusted; local metadata enrichment owns artwork and copy.
+		metas = append(metas, MetaPreview{ID: id, Type: def.Type, Name: name})
 	}
 	return metas, nil
 }

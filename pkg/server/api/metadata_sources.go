@@ -49,12 +49,48 @@ func (s *Server) handleInspectMetadataSource(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, inspection)
 		return
 	}
+	if listID, ok := letterboxdListID(body.ManifestURL); ok {
+		inspection, err := inspectLetterboxdList(ctx, body.ManifestURL, listID)
+		if err != nil {
+			http.Error(w, "Could not inspect catalog source: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, http.StatusOK, inspection)
+		return
+	}
 	inspection, err := stremio.InspectExternalManifest(ctx, body.ManifestURL)
 	if err != nil {
 		http.Error(w, "Could not inspect catalog source: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, inspection)
+}
+
+func letterboxdListID(raw string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (strings.ToLower(u.Host) != "letterboxd.com" && strings.ToLower(u.Host) != "www.letterboxd.com") {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 3 || parts[1] != "list" {
+		return "", false
+	}
+	return strings.Join(parts[:3], "/"), true
+}
+
+func inspectLetterboxdList(ctx context.Context, rawURL, listID string) (any, error) {
+	page, err := tmdb.FetchLetterboxdPage(ctx, rawURL, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(page.Items) == 0 {
+		return nil, fmt.Errorf("Letterboxd exposes no canonical IMDb items on this public list")
+	}
+	name := strings.TrimSpace(page.Name)
+	if name == "" {
+		name = "Letterboxd List"
+	}
+	return map[string]any{"name": name, "kind": "letterboxd", "source_url": rawURL, "catalogs": []map[string]any{{"name": name + " (Movies)", "type": "movie", "remote_type": "movie", "remote_id": listID, "row_count": len(page.Items)}}}, nil
 }
 
 func tmdbListID(raw string) (string, bool) {
