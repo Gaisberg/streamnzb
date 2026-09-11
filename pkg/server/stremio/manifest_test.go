@@ -152,10 +152,10 @@ func TestEnabledCatalogDefsRespectstogglesAndOrder(t *testing.T) {
 func TestExternalCatalogSourceLabelsStayHumanFacing(t *testing.T) {
 	profile := &config.MetadataProfileConfig{ExternalCatalogs: []config.ExternalCatalogConfig{
 		{ID: "external.letterboxd", Name: "Essentials", Kind: "letterboxd", ManifestURL: "https://letterboxd.com/example/list/essentials/", RemoteType: "movie", RemoteID: "example/essentials"},
-		{ID: "external.manifest", Name: "Front Row", Kind: "manifest", SourceLabel: "Marquee", ManifestURL: "https://example.com/manifest.json", RemoteType: "movie", RemoteID: "front-row"},
+		{ID: "external.manifest", Name: "Front Row", Kind: "manifest", SourceLabel: "Custom source", ManifestURL: "https://example.com/manifest.json", RemoteType: "movie", RemoteID: "front-row"},
 	}}
 	defs := externalCatalogDefs(profile)
-	if len(defs) != 2 || defs[0].SourceLabel != "Letterboxd" || defs[1].SourceLabel != "Marquee" {
+	if len(defs) != 2 || defs[0].SourceLabel != "Letterboxd" || defs[1].SourceLabel != "Custom source" {
 		t.Fatalf("source labels = %#v", defs)
 	}
 }
