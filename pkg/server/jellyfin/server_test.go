@@ -497,7 +497,7 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 
 func TestProfileOwnedCatalogViewPages(t *testing.T) {
 	f := newFixture()
-	def := stremio.CatalogDef{ID: "external.marquee.front-row", Type: "movie", Name: "Marquee: Front Row", Provider: "external", SupportsSkip: true}
+	def := stremio.CatalogDef{ID: "external.profile.front-row", Type: "movie", Name: "Profile: Front Row", Provider: "external", SupportsSkip: true}
 	f.catalog.catalogs = append(f.catalog.catalogs, def)
 	f.catalog.rows[def.ID] = previews("movie", "tt", 2)
 
