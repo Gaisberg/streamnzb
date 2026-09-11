@@ -332,6 +332,12 @@ func main() {
 			}
 			return ""
 		},
+		BaseURL: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.AddonBaseURL
+			}
+			return ""
+		},
 		Admin: func() (string, string, string) {
 			liveCfg := apiServer.Config()
 			if liveCfg == nil {

@@ -93,6 +93,8 @@ See [Database backends](database.md) for how switching and migration work.
 
 ### Jellyfin endpoint
 
+The endpoint is always served; see [Jellyfin endpoint](jellyfin.md).
+
 | Variable | Meaning |
 |---|---|
 | `JELLYFIN_MAX_PLAYBACK_SOURCES` | Cap on media sources offered per play, 1-200 (default 20) |

@@ -77,11 +77,12 @@ type Playstate interface {
 // Options wires the server to the live process state. Config-derived fields
 // are functions so a config reload reaches them without a rebind.
 type Options struct {
-	// Enabled reports whether the server answers at all; read per request. A
-	// nil Enabled means always on.
-	Enabled func() bool
 	// ServerID is the stable id clients key their saved servers on.
 	ServerID func() string
+	// BaseURL is the externally reachable address of this StreamNZB, used to
+	// build the absolute stream URL a media source carries. Read per request
+	// so a reconfigured base URL reaches it without a restart.
+	BaseURL func() string
 	// Admin returns the dashboard login: username, password hash and token.
 	// The admin signs in with the dashboard credentials and is served as the
 	// admin stream, the same as in the Stremio addon.
@@ -116,8 +117,12 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(s.serve)
 }
 
-func (s *Server) enabled() bool {
-	return s.opts.Enabled == nil || s.opts.Enabled()
+// baseURL is the externally reachable address, without a trailing slash.
+func (s *Server) baseURL() string {
+	if s.opts.BaseURL == nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSpace(s.opts.BaseURL()), "/")
 }
 
 // defaultMaxPlaybackSources is applied when the operator has not set a
@@ -269,13 +274,6 @@ func (rq *request) is(method string) bool {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
-	// A disabled server is not here at all, rather than here and refusing:
-	// a client testing the URL sees what it would see had the feature never
-	// been built.
-	if !s.enabled() {
-		http.NotFound(w, r)
-		return
-	}
 	rq := parseRequest(r)
 	// Every request is logged while the layer is young: a client that cannot
 	// connect is otherwise indistinguishable from one that never called, and
@@ -296,10 +294,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The video player signs in the same way: not at all. It is handed a URL
-	// and fetches it bare, so the stream route resolves its stream from the
-	// media source id in the query instead.
+	// and fetches it bare. The URL the media source carries authenticates
+	// itself with api_key, which the pass above already accepts; a client
+	// that built its own URL instead has only the tag it copied off the
+	// media source, so the stream route reads the token back out of that.
 	if rq.stream == nil {
-		if stream, ok := s.streamFromMediaSource(rq); ok {
+		if stream, ok := s.streamFromTag(rq); ok {
 			rq.stream = stream
 			rq.Request = r.WithContext(auth.ContextWithStream(r.Context(), stream))
 		}

@@ -296,17 +296,17 @@ type fixture struct {
 	server        *Server
 	catalog       *fakeCatalog
 	play          *fakePlaystate
-	enabled       bool
 	serverID      string
+	baseURL       string
 	maxSources    int
 	resolveOnOpen bool
 }
 
 func newFixture() *fixture {
-	f := &fixture{catalog: testCatalog(), play: newFakePlaystate(), enabled: true, serverID: "srv-0001"}
+	f := &fixture{catalog: testCatalog(), play: newFakePlaystate(), serverID: "srv-0001", baseURL: "https://nzb.example"}
 	f.server = New(Options{
-		Enabled:            func() bool { return f.enabled },
 		ServerID:           func() string { return f.serverID },
+		BaseURL:            func() string { return f.baseURL },
 		Admin:              func() (string, string, string) { return "admin", "$argon2id$hash", testAdminToken },
 		MaxPlaybackSources: func() int { return f.maxSources },
 		ResolveOnOpen:      func() bool { return f.resolveOnOpen },
@@ -336,6 +336,23 @@ func (f *fixture) do(method, path string, body string, headers ...string) *httpt
 	return rec
 }
 
+// isGUIDShaped mirrors what the Jellyfin Kotlin SDK's String.toUUID() accepts:
+// 32 unseparated hex characters, which it hyphenates before handing to
+// UUID.fromString. Wholphin runs every media source id through it and throws
+// IllegalArgumentException — crashing the app — on anything else, so the ids
+// this layer mints have to satisfy it.
+func isGUIDShaped(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -343,16 +360,6 @@ func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
 		t.Fatalf("decode: %v: %s", err, rec.Body.String())
-	}
-}
-
-func TestDisabledIsNotFoundEverywhere(t *testing.T) {
-	f := newFixture()
-	f.enabled = false
-	for _, path := range []string{"/jellyfin/System/Info/Public", "/jellyfin/Users/AuthenticateByName", "/jellyfin/UserViews", "/jellyfin/"} {
-		if rec := f.do(http.MethodGet, path, ""); rec.Code != http.StatusNotFound {
-			t.Fatalf("%s: disabled server answered %d", path, rec.Code)
-		}
 	}
 }
 
@@ -838,16 +845,18 @@ func TestSearchRunsTheCarriers(t *testing.T) {
 
 // A media player fetches the stream URL with no credentials at all: Findroid
 // hands ExoPlayer a bare URL from the SDK, which carries neither an
-// Authorization header nor an api_key. The media source id is what identifies
-// the stream, and it must open the video without opening anything else.
+// Authorization header nor an api_key. Whatever the client copied off the
+// media source is all there is, and it must open the video without opening
+// anything else.
 func TestStreamServesAPlayerCarryingNoCredentials(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")
 	stream := &auth.Stream{Username: "living-room", Token: testToken}
-	source := movie.source(0).encode() + "." + testToken
+	source := movie.source(0).encode()
 
-	// No headers of any kind, exactly as the player sends it.
-	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&mediaSourceId="+source, "", "X-Nothing", "x")
+	// The URL the media source carries in Path, played verbatim: no headers
+	// of any kind, exactly as the player sends it.
+	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&mediaSourceId="+source+"&api_key="+testToken, "", "X-Nothing", "x")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bare player fetch: %d %s", rec.Code, rec.Body.String())
 	}
@@ -855,24 +864,42 @@ func TestStreamServesAPlayerCarryingNoCredentials(t *testing.T) {
 		t.Fatalf("served %+v", f.catalog.served)
 	}
 
-	// Without a usable media source id it is still refused.
-	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no media source id: %d", rec.Code)
+	// A client that built its own URL instead sends the ETag it copied as
+	// tag, and nothing else.
+	f.catalog.served = nil
+	rec = f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&mediaSourceId="+source+"&tag="+testToken, "", "X-Nothing", "x")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("player fetch by tag: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?mediaSourceId="+movie.source(0).encode()+".not-a-token", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("bad token in media source id: %d", rec.Code)
+	if len(f.catalog.served) != 1 || f.catalog.served[0].slotPath != stremio.SlotPathFor(stream, "movie", "tt0111161", 0) {
+		t.Fatalf("served by tag %+v", f.catalog.served)
+	}
+
+	// Swiftfin's SDK writes the query name as Tag, so the casing cannot
+	// matter: reading only a lowercase tag would refuse every Swiftfin play.
+	f.catalog.served = nil
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?MediaSourceId="+source+"&Tag="+testToken, "", "X-Nothing", "x"); rec.Code != http.StatusOK {
+		t.Fatalf("player fetch by Tag: %d", rec.Code)
+	}
+
+	// Carrying no token at all is still refused.
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?mediaSourceId="+source, "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rec.Code)
+	}
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?mediaSourceId="+source+"&tag=not-a-token", "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token in tag: %d", rec.Code)
 	}
 
 	// The token travels on the stream route and nowhere else: it opens one
 	// video, and cannot be spent on browsing or on another stream's progress.
 	for _, path := range []string{
-		"/jellyfin/UserViews?mediaSourceId=" + source,
-		"/jellyfin/Items/" + movie.encode() + "?mediaSourceId=" + source,
-		"/jellyfin/UserItems/Resume?mediaSourceId=" + source,
-		"/jellyfin/Items/" + movie.encode() + "/PlaybackInfo?mediaSourceId=" + source,
+		"/jellyfin/UserViews?tag=" + testToken,
+		"/jellyfin/Items/" + movie.encode() + "?tag=" + testToken,
+		"/jellyfin/UserItems/Resume?tag=" + testToken,
+		"/jellyfin/Items/" + movie.encode() + "/PlaybackInfo?tag=" + testToken,
 	} {
 		if rec := f.do(http.MethodGet, path, "", "X-Nothing", "x"); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("%s: media source token was accepted off the stream route: %d", path, rec.Code)
+			t.Fatalf("%s: a tag token was accepted off the stream route: %d", path, rec.Code)
 		}
 	}
 }
@@ -894,10 +921,20 @@ func TestPlaybackInfo(t *testing.T) {
 		t.Fatalf("playback info: %+v", info)
 	}
 	best := info.MediaSources[0]
-	// The id carries the stream's token: the player that fetches the stream
-	// sends no credentials of its own.
-	if best.ID != movie.source(0).encode()+"."+testToken || !best.SupportsDirectPlay || best.SupportsTranscoding || best.SupportsDirectStream || best.SupportsProbing || !best.IsRemote || best.Protocol != "Http" || best.RequiredHTTPHeaders == nil {
+	// The id is a bare GUID; the token travels on Path and ETag instead,
+	// because the player that fetches the stream sends no credentials of
+	// its own. See streamURLFor.
+	if best.ID != movie.source(0).encode() || !best.SupportsDirectPlay || best.SupportsTranscoding || best.SupportsDirectStream || best.SupportsProbing || !best.IsRemote || best.Protocol != "Http" || best.RequiredHTTPHeaders == nil {
 		t.Fatalf("media source: %+v", best)
+	}
+	if !isGUIDShaped(best.ID) {
+		t.Fatalf("media source id is not a GUID (Wholphin parses it as one): %q", best.ID)
+	}
+	if best.ETag != testToken || !best.IsRemote {
+		t.Fatalf("token carriers: %+v", best)
+	}
+	if best.Path != "https://nzb.example/jellyfin/videos/"+movie.encode()+"/stream?api_key="+testToken+"&mediaSourceId="+movie.source(0).encode()+"&static=true" {
+		t.Fatalf("stream URL: %q", best.Path)
 	}
 	if best.RunTimeTicks == nil || *best.RunTimeTicks != 142*60*ticksPerSecond || best.Size == nil || best.Bitrate == nil {
 		t.Fatalf("source runtime/size: %+v", best)
@@ -928,6 +965,114 @@ func TestPlaybackInfo(t *testing.T) {
 	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+viewID("tmdb.trending.movie")+"/PlaybackInfo", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("playback info for a folder: %d", rec.Code)
 	}
+}
+
+// TestPlaybackInfoHonoursChosenSource covers switching release. A client
+// re-requests PlaybackInfo naming the source it picked, and some clients then
+// play mediaSources[0] without rereading the ids, so the pick has to come back
+// at the front of the list or the switch silently plays the old release.
+func TestPlaybackInfoHonoursChosenSource(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	f.catalog.playlist = &stremio.PlaylistView{
+		Entries: []stremio.PlaylistEntry{
+			{Index: 0, Title: "Release.00.mkv"},
+			{Index: 1, Title: "Release.01.mkv"},
+			{Index: 2, Title: "Release.02.mkv"},
+		},
+	}
+	chosen := movie.source(1).encode()
+
+	assertChosenFirst := func(what string, info playbackInfoResponse) {
+		t.Helper()
+		if len(info.MediaSources) != 3 {
+			t.Fatalf("%s: the releases not picked must stay in the list, got %d", what, len(info.MediaSources))
+		}
+		if info.MediaSources[0].Name != "Release.01.mkv" || info.MediaSources[0].ID != chosen {
+			t.Fatalf("%s: chosen source is not first: %+v", what, info.MediaSources[0])
+		}
+		// Everything else keeps its ranking behind the pick.
+		if info.MediaSources[1].Name != "Release.00.mkv" || info.MediaSources[2].Name != "Release.02.mkv" {
+			t.Fatalf("%s: ranking lost: %+v", what, info.MediaSources)
+		}
+	}
+
+	var info playbackInfoResponse
+	// In the posted DTO, which is where the Jellyfin SDK puts it.
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", `{"DeviceProfile":{},"MediaSourceId":"`+chosen+`"}`), &info)
+	assertChosenFirst("posted", info)
+
+	// In the query.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo?mediaSourceId="+chosen, ""), &info)
+	assertChosenFirst("query", info)
+
+	// Encoded in the path, for a client that navigates by source id.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.source(1).encode()+"/PlaybackInfo", ""), &info)
+	assertChosenFirst("path", info)
+
+	// A pick belonging to another title steers nothing: the ranking stands.
+	other, _ := itemIDFor("movie", "tt0068646")
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo?mediaSourceId="+other.source(1).encode(), ""), &info)
+	if info.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("a foreign media source id was honoured: %+v", info.MediaSources[0])
+	}
+
+	// A pick that ranked outside the cap survives it, or a switch would be
+	// answered with the release it switched away from.
+	f.maxSources = 2
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo?mediaSourceId="+movie.source(2).encode(), ""), &info)
+	if len(info.MediaSources) != 2 || info.MediaSources[0].Name != "Release.02.mkv" {
+		t.Fatalf("capped pick: %+v", info.MediaSources)
+	}
+}
+
+// TestMediaSourceIDsAreGUIDs guards the shape of every media source id this
+// layer hands out, wherever it is rendered. Clients read the field as a GUID
+// even though the Jellyfin API types it as a string — Wholphin parses it with
+// the SDK's toUUID() and crashes on anything else — so an id that stops being
+// one is a client crash, not a cosmetic change.
+func TestMediaSourceIDsAreGUIDs(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	f.catalog.playlist = &stremio.PlaylistView{
+		Entries: []stremio.PlaylistEntry{
+			{Index: 0, Title: "Release.00.mkv"},
+			{Index: 1, Title: "Release.01.mkv"},
+		},
+	}
+
+	check := func(what string, sources []mediaSource) {
+		t.Helper()
+		if len(sources) == 0 {
+			t.Fatalf("%s: no media sources to check", what)
+		}
+		for _, src := range sources {
+			if !isGUIDShaped(src.ID) {
+				t.Fatalf("%s: media source id is not a GUID: %q", what, src.ID)
+			}
+			// The token must still reach the player, on both carriers.
+			if src.ETag != testToken {
+				t.Fatalf("%s: ETag does not carry the token: %+v", what, src)
+			}
+			if !strings.Contains(src.Path, "api_key="+testToken) {
+				t.Fatalf("%s: Path does not carry the token: %q", what, src.Path)
+			}
+		}
+	}
+
+	var info playbackInfoResponse
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	check("PlaybackInfo", info.MediaSources)
+
+	// The stand-in source an item document carries before anything is cached.
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &item)
+	check("item document", item.MediaSources)
+
+	// And the full list it carries once the playlist is cached.
+	f.catalog.cached = f.catalog.playlist
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &item)
+	check("cached item document", item.MediaSources)
 }
 
 // TestPlaybackInfoCapsSources checks that a playlist longer than the
@@ -1065,7 +1210,7 @@ func TestStreamServesTheSlotAndRewritesFailover(t *testing.T) {
 	if len(q["MediaSourceId"]) != 0 {
 		t.Fatalf("redirect kept the client's casing too: %v", q)
 	}
-	if q.Get("mediaSourceId") != ep.source(3).encode()+"."+testToken || q.Get("Static") != "true" || q.Get("api_key") != testToken {
+	if q.Get("mediaSourceId") != ep.source(3).encode() || q.Get("Static") != "true" || q.Get("api_key") != testToken {
 		t.Fatalf("redirect query %v", q)
 	}
 	// The redirect target authenticates by that query alone.

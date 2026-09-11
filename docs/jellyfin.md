@@ -8,10 +8,11 @@ It is a translation layer, not a second media server: every library, detail
 page and play request maps onto what the addon already answers. Nothing is
 scanned, nothing is stored on disk, and no separate library needs setting up.
 
-## Connecting to it
+## Connecting a client
 
-The authenticated endpoint is always available. It rides on the addon listener,
-so it needs no port of its own:
+There is no switch. The authenticated endpoint is always available. It rides
+on the addon listener, so it needs no port of its own, and — like a manifest
+URL — it answers nothing useful without a stream's credentials:
 
 ```
 https://your-streamnzb-host/jellyfin
@@ -19,15 +20,17 @@ https://your-streamnzb-host/jellyfin
 
 ## Signing in
 
-A login is a stream:
+A login is a stream. Every stream card under **Settings → Streams** has a
+**Jellyfin** panel next to the Stremio manifest, with the three things a
+client asks for:
 
 | Client field | What to enter |
 |---|---|
+| Server | the URL shown (`/jellyfin` on the addon base URL) |
 | Username | the stream name |
-| Password | the stream's Jellyfin password, or its token |
+| Password | the password set in that panel, or the stream's token |
 
-Set a password per stream under **Settings → Streams**, next to that stream's
-manifest URL. It exists because a token is 64 characters and a TV remote is a
+The password exists because a token is 64 characters and a TV remote is a
 poor place to type one. It is stored as an argon2id hash and never leaves the
 server, so a forgotten password is replaced rather than recovered.
 
@@ -92,10 +95,35 @@ receiving the tail of a different file. The access token is carried in the
 redirect URL, since a client that sent it in a header may not replay the header
 on a redirect.
 
+## How a player authenticates
+
+The app that fetches the video is not the client that signed in. It is handed a
+URL and plays it with no session of its own — no `Authorization` header, no
+`api_key` — because neither Jellyfin SDK attaches credentials to a stream URL.
+
+So each media source carries the stream's token in two places, and clients take
+whichever they read:
+
+- **`Path`**, the full stream URL, played verbatim by Findroid and by Wholphin.
+- **`ETag`**, which Swiftfin and Wholphin copy into the `tag` parameter of a URL
+  they build themselves.
+
+Both are accepted on the stream route and nowhere else, so a token lifted off
+either one opens a single video and cannot list a library or read progress.
+
+This is why **`addon_base_url` has to be right** for the Jellyfin endpoint, not
+just for Stremio: it is the address baked into `Path`. If it points somewhere a
+client cannot reach, clients that play `Path` fail while clients that build
+their own URL keep working — which looks like "it works on my phone but not on
+the TV" rather than like a misconfiguration.
+
 ## Notes
 
 - **Changing the server id makes every client forget its login.** The id is
   generated once on first start and never rotated; it is what clients key their
   saved server and its state by.
+- **Media source ids are GUIDs.** The Jellyfin API types the field as a plain
+  string, but enough clients parse it as a GUID — and crash when it is not one —
+  that it is not worth being right about.
 - Clients that prefix routes with `/emby` are answered too — those are the same
   routes under an older name.

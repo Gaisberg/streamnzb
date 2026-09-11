@@ -163,34 +163,127 @@ func playableID(raw string) (itemID, int, bool) {
 	return itemID{}, 0, false
 }
 
-// A media source id is the one thing this layer controls that travels on the
-// stream URL, so it carries the stream's token.
+// mediaSourceIDFor names a slot. It is 32 hex characters and nothing else,
+// because clients read it as a GUID: Wholphin parses it with the SDK's
+// toUUID(), which throws on anything that is not one, and takes the app down
+// with it. The Jellyfin API types the field as a plain string, so that is
+// arguably their bug — but a media source id has no reason not to be a GUID,
+// and being one costs nothing.
 //
-// The player that fetches the video is not the client that signed in. Findroid
-// hands ExoPlayer a bare URL built by the SDK — no Authorization header, no
-// api_key — and ExoPlayer sends exactly that. The request therefore arrives
-// with nothing to say which stream it belongs to, and this layer cannot serve
-// a slot without knowing whose config to resolve it against. Putting the token
-// in the URL is the same bargain the Stremio play URL already makes.
-//
-// The suffix is only ever honoured on the stream route, so a token read out of
-// a media source id cannot be used to browse.
-const mediaSourceTokenSep = "."
-
-func mediaSourceIDFor(id itemID, index int, stream *auth.Stream) string {
-	encoded := id.source(index).encode()
-	if stream == nil || stream.Token == "" {
-		return encoded
-	}
-	return encoded + mediaSourceTokenSep + stream.Token
+// What it deliberately does not carry is the stream's token; see
+// streamURLFor for where that went and why it had to go somewhere.
+func mediaSourceIDFor(id itemID, index int) string {
+	return id.source(index).encode()
 }
 
-// splitMediaSourceID separates the id from the token a client handed back.
-func splitMediaSourceID(raw string) (string, string) {
-	if before, after, found := strings.Cut(raw, mediaSourceTokenSep); found {
-		return before, after
+// streamURLFor builds the absolute, authenticated URL for a slot.
+//
+// The player that fetches the video is not the client that signed in, and it
+// is handed a URL rather than a session: Findroid gives ExoPlayer a bare URL
+// built by the SDK, and neither SDK attaches credentials to it — Kotlin's
+// createUrl is baseUrl + path + query, and Swift's url(with:) only appends
+// api_key when asked, which Swiftfin does not. So the token has to be
+// somewhere in what the client is given, and the media source id used to be
+// where it was.
+//
+// Now it rides on two fields instead, because the clients disagree about
+// which one reaches the player:
+//
+//   - Path, with Protocol "Http" and IsRemote — Findroid plays
+//     MediaSourceInfo.path verbatim for an HTTP protocol source, and Wholphin
+//     does the same whenever IsRemote is set and the path is non-empty.
+//   - ETag — Swiftfin builds its own URL and passes mediaSource.eTag through
+//     as the tag parameter (falling back to the *item's* etag when it is
+//     empty, which would not authenticate anything), and Wholphin passes it
+//     the same way on the path where it does not use Path.
+//
+// Both are honoured only on the stream route, so a token read off either one
+// opens one video and cannot be spent on browsing.
+func (s *Server) streamURLFor(id itemID, index int, stream *auth.Stream) string {
+	base := s.baseURL()
+	if base == "" {
+		return ""
 	}
-	return raw, ""
+	q := url.Values{}
+	q.Set("mediaSourceId", mediaSourceIDFor(id, index))
+	q.Set("static", "true")
+	if token := streamTokenOf(stream); token != "" {
+		q.Set("api_key", token)
+	}
+	return base + Mount + "videos/" + id.encode() + "/stream?" + q.Encode()
+}
+
+func streamTokenOf(stream *auth.Stream) string {
+	if stream == nil {
+		return ""
+	}
+	return stream.Token
+}
+
+// sourceIndexFrom resolves a media source id a client handed back to the slot
+// it names on this item. An id naming a different item is reported as absent
+// rather than honoured, so a pick left over from another title cannot steer
+// playback here.
+func sourceIndexFrom(src string, id itemID) (int, bool) {
+	if src == "" {
+		return 0, false
+	}
+	if sid, sidx, ok := playableID(src); ok && sid.encode() == id.encode() {
+		return sidx, true
+	}
+	return 0, false
+}
+
+// mediaSourceIDFromBody reads the pick out of a posted PlaybackInfoDto. The
+// Jellyfin SDK sends MediaSourceId in the body on this route rather than the
+// query, so reading the query alone would miss every client that uses it.
+// Nothing else in the DTO is read: device profiles and bitrate caps describe
+// transcoding decisions this layer does not make.
+func mediaSourceIDFromBody(rq *request) string {
+	if rq.Body == nil || !rq.is(http.MethodPost) {
+		return ""
+	}
+	var body struct {
+		MediaSourceID string `json:"MediaSourceId"`
+	}
+	// Device profiles are large; the limit only guards against a body that
+	// never ends, since a truncated decode simply reports no pick.
+	if err := json.NewDecoder(io.LimitReader(rq.Body, 1<<20)).Decode(&body); err != nil {
+		return ""
+	}
+	return body.MediaSourceID
+}
+
+// promoteSource moves the entry a client asked for to the front of the ranked
+// list, keeping the rest in rank order.
+//
+// Clients disagree about what a media source list means after a pick. Some
+// re-request PlaybackInfo naming the source they chose and then play
+// mediaSources[0] without rereading the ids (Wholphin does), so a pick that
+// survives only as an id is silently ignored and the best-ranked release plays
+// instead. Stock Jellyfin answers that by returning the picked source alone,
+// but here the list is also the picker for clients that build their version
+// menu from it, and returning one entry would collapse that menu to a single
+// choice. Reordering satisfies both readings.
+func promoteSource(entries []stremio.PlaylistEntry, index int) []stremio.PlaylistEntry {
+	if index <= 0 {
+		return entries
+	}
+	for i, entry := range entries {
+		if entry.Index != index {
+			continue
+		}
+		if i == 0 {
+			return entries
+		}
+		// A fresh slice: the entries belong to a cached playlist view that
+		// other requests are reading concurrently.
+		out := make([]stremio.PlaylistEntry, 0, len(entries))
+		out = append(out, entry)
+		out = append(out, entries[:i]...)
+		return append(out, entries[i+1:]...)
+	}
+	return entries
 }
 
 func playSessionID(streamName, itemID string) string {
@@ -263,10 +356,19 @@ func (s *Server) attachMediaSourceStubs(rq *request, id itemID, item *baseItem) 
 }
 
 func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
-	id, _, ok := playableID(raw)
+	// The slot travels three ways: encoded in the path when the client asks
+	// about a source id, in the query, or in the posted DTO. The later forms
+	// win because they are the client naming a pick, while the path may be
+	// nothing more than where it happened to navigate from.
+	id, index, ok := playableID(raw)
 	if !ok {
 		http.NotFound(w, rq.Request)
 		return
+	}
+	if idx, ok := sourceIndexFrom(rq.param("mediaSourceId"), id); ok {
+		index = idx
+	} else if idx, ok := sourceIndexFrom(mediaSourceIDFromBody(rq), id); ok {
+		index = idx
 	}
 	resp := playbackInfoResponse{MediaSources: []mediaSource{}, PlaySessionID: playSessionID(rq.streamName(), id.encode())}
 	view, err := s.opts.Catalog.Playlist(rq.Context(), rq.stream, id.ContentType, id.playStremioID())
@@ -280,13 +382,16 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw stri
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	for _, entry := range s.cappedEntries(rq, id, view.Entries) {
+	// Promoting before capping keeps a pick that ranked outside the cap: the
+	// client is naming a release it was offered, so dropping it here would
+	// answer a switch with the release it was switching away from.
+	for _, entry := range s.cappedEntries(rq, id, promoteSource(view.Entries, index)) {
 		resp.MediaSources = append(resp.MediaSources, s.mediaSourceOf(rq, id, entry, view.RuntimeSeconds))
 	}
 	if len(resp.MediaSources) == 0 {
 		resp.ErrorCode = "NoCompatibleStream"
 	}
-	logger.Info("Jellyfin playback info", "stream", rq.streamName(), "content", id.playStremioID(), "sources", len(resp.MediaSources))
+	logger.Info("Jellyfin playback info", "stream", rq.streamName(), "content", id.playStremioID(), "sources", len(resp.MediaSources), "slot", index)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -313,9 +418,12 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 	s.attachMediaSourceStubs(rq, id, item)
 }
 
-// mediaSourceOf renders one candidate. Path is informational — clients
-// display it and nothing fetches it — and carries the release title, which
-// is what a user picking between sources wants to see.
+// mediaSourceOf renders one candidate.
+//
+// Protocol is "Http" and Path is the stream URL rather than the release
+// title: the release title is what a user picking between sources wants to
+// read, but it is already in Name, and Path is one of the two fields that
+// carry the token to the player — see streamURLFor.
 func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEntry, runtimeSeconds float64) mediaSource {
 	parsed := parser.ParseReleaseTitle(entry.Title)
 	container := "mkv"
@@ -324,8 +432,9 @@ func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEnt
 	}
 	src := mediaSource{
 		Protocol:               "Http",
-		ID:                     mediaSourceIDFor(id, entry.Index, rq.stream),
-		Path:                   entry.Title,
+		ID:                     mediaSourceIDFor(id, entry.Index),
+		Path:                   s.streamURLFor(id, entry.Index, rq.stream),
+		ETag:                   streamTokenOf(rq.stream),
 		Type:                   "Default",
 		Container:              container,
 		Name:                   entry.Title,
@@ -466,11 +575,8 @@ func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
 		http.NotFound(w, rq.Request)
 		return
 	}
-	if src := rq.param("mediaSourceId"); src != "" {
-		raw, _ := splitMediaSourceID(src)
-		if sid, sidx, ok := playableID(raw); ok && sid.encode() == id.encode() {
-			index = sidx
-		}
+	if idx, ok := sourceIndexFrom(rq.param("mediaSourceId"), id); ok {
+		index = idx
 	}
 	contentID := id.playStremioID()
 	slotPath := stremio.SlotPathFor(rq.stream, id.ContentType, contentID, index)
@@ -494,7 +600,7 @@ func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
 			for k, v := range query {
 				q[k] = v
 			}
-			setParam(q, "mediaSourceId", mediaSourceIDFor(id, nextIndex, rq.stream))
+			setParam(q, "mediaSourceId", mediaSourceIDFor(id, nextIndex))
 			return Mount + "videos/" + id.encode() + "/stream?" + q.Encode()
 		},
 	}

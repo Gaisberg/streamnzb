@@ -755,7 +755,11 @@ type Config struct {
 	NewznabAPIKey string `json:"newznab_api_key"`
 
 	// JellyfinServerID is the stable id Jellyfin clients key their saved
-	// servers and per-server state by. Generated when empty and never
+	// servers and per-server state by. The Jellyfin endpoint itself is always
+	// served at /jellyfin on the addon listener: like a manifest URL it is
+	// only reachable with a stream's credentials, so it needs no switch.
+	// Clients (Swiftfin, Infuse, Findroid, ...) sign in with a stream name
+	// and that stream's password or token. Generated when empty and never
 	// rotated afterwards: changing it makes every client forget its login.
 	JellyfinServerID string `json:"jellyfin_server_id"`
 	// JellyfinMaxPlaybackSources caps how many ranked candidates PlaybackInfo

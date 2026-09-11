@@ -236,7 +236,6 @@ export function useSettingsState({
     addon: 'Addon',
     proxy: 'NNTP Proxy Server',
     newznab: 'Newznab Endpoint',
-    jellyfin: 'Jellyfin Endpoint',
     useragent: 'User-Agent',
     database: 'Database',
     admin: 'Logs',

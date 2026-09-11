@@ -12,12 +12,11 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { cn, copyToClipboard } from "@/lib/utils"
 
-// Every card here hands StreamNZB's own resources to another application: the
+// Both cards here hand StreamNZB's own resources to another application: the
 // proxy shares the provider pool with a download client, the Newznab endpoint
-// shares the indexer pool with any Newznab-compatible application, and the
-// Jellyfin itself is always available and stream-authenticated, so it has no
-// integration toggle. The other cards below are services that can be
-// independently enabled or disabled.
+// shares the indexer pool with any Newznab-compatible application. The
+// Jellyfin endpoint is not here: it is a per-stream login, so it lives with
+// the stream's manifest URL under Streams.
 const CARD_FIELDS = {
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   newznab: ['newznab_enabled', 'newznab_api_key'],
@@ -97,7 +96,6 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
   const proxyAddress = `${proxyReachableHost}:${proxyPort || 1119}`
   const endpointBaseURL = (addonBaseURL || window.location.origin).replace(/\/$/, '')
   const newznabURL = `${endpointBaseURL}/newznab/api?apikey=${newznabKey || ''}`
-  const jellyfinURL = `${endpointBaseURL}/jellyfin`
 
   useEffect(() => {
     if (saveStatus?.type === 'error' && saveStatus.errors) {
@@ -206,22 +204,6 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
                   </FormItem>
                 )} />
               </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
-                <CardTitle>Jellyfin Endpoint</CardTitle>
-                <CardDescription>Serve your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid) as a Jellyfin server.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <EndpointAddress
-                label="Server URL"
-                value={jellyfinURL}
-                hint="Always available to authenticated streams. Add this as a Jellyfin server in the client, then sign in with a stream name as the username and that stream's token as the password. The dashboard admin cannot sign in here — only streams can."
-              />
             </CardContent>
           </Card>
 

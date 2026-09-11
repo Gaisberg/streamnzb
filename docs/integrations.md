@@ -43,7 +43,7 @@ Full reference, including the supported functions and what is deliberately *not*
 
 The same catalogs, metadata and playback the Stremio addon serves, presented as a **Jellyfin server** — for clients that speak Jellyfin rather than Stremio, and for platforms where a Stremio client is not an option.
 
-Turn it on in **Integrations** → **Jellyfin Endpoint**, add the URL it shows as a server in the client, and sign in with a stream name as the username and that stream's token as the password. It rides on the addon listener, so there is no extra port to open.
+There is nothing to turn on: every stream card under **Settings → Streams** shows the server URL to add in the client next to that stream's login — the stream name as the username and a password you set there (or the stream's token). It rides on the addon listener, so there is no extra port to open.
 
 Each stream is its own Jellyfin user, with its own libraries and its own server-side watch progress. Nothing is transcoded: every release is offered as a direct-play media source, so the client's own decoder decides what it can handle.
 
@@ -75,4 +75,4 @@ If you already run [AIOStreams](https://github.com/Viren070/AIOStreams), StreamN
 
 The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the always-on authenticated Jellyfin endpoint is the addon itself wearing another client's clothes. Enable the optional endpoints and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
 
-Newznab and the NNTP proxy are off by default and independent; turn on only what you need.
+The Newznab endpoint and the NNTP proxy are off by default and independent; turn on only what you need. The Jellyfin endpoint, like the Stremio manifest, is simply there — a stream's credentials are the only key to it.

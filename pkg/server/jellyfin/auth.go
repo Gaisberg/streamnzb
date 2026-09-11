@@ -143,20 +143,26 @@ func (s *Server) authenticate(rq *request) (*auth.Stream, bool) {
 	return stream, true
 }
 
-// streamFromMediaSource resolves the stream a bare video request belongs to,
-// from the token carried on its media source id.
+// streamFromTag resolves the stream a bare video request belongs to, from the
+// token carried in its tag parameter.
 //
-// It is scoped to the stream route alone. A token lifted out of a media source
-// id opens one video and nothing else — it cannot list a library, read progress
-// or reach any other route, because no other route consults it.
-func (s *Server) streamFromMediaSource(rq *request) (*auth.Stream, bool) {
+// A client that builds its own stream URL rather than playing the media
+// source's Path sends nothing that identifies the stream — no Authorization
+// header, no api_key — except the media source's ETag, which Swiftfin and
+// Wholphin both pass through as tag. That is where the token is put, and this
+// reads it back; see streamURLFor for the whole arrangement.
+//
+// It is scoped to the stream route alone. A token lifted out of a tag opens
+// one video and nothing else — it cannot list a library, read progress or
+// reach any other route, because no other route consults it.
+func (s *Server) streamFromTag(rq *request) (*auth.Stream, bool) {
 	if len(rq.segs) != 3 || rq.segs[0] != "videos" {
 		return nil, false
 	}
 	if name, _, _ := strings.Cut(rq.segs[2], "."); name != "stream" {
 		return nil, false
 	}
-	_, token := splitMediaSourceID(rq.param("mediaSourceId"))
+	token := rq.param("tag")
 	if token == "" || s.opts.Streams == nil {
 		return nil, false
 	}
