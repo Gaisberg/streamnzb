@@ -377,6 +377,13 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 }
 
 func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	return s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, rid, true)
+}
+
+// buildSeriesMetaFromTVDBWithVideos fetches the common TVDB record and, for
+// ordinary series, its episode list. Anime keeps Kitsu episode identities, so
+// its TVDB metadata path deliberately skips TVDB/TVMaze episode work.
+func (s *Server) buildSeriesMetaFromTVDBWithVideos(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID, includeVideos bool) (*MetaObject, error) {
 	rt := s.runtime()
 	tvdbID := s.resolveTVDBIDForMeta(rid)
 	if tvdbID == "" {
@@ -439,6 +446,9 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 				break
 			}
 		}
+	}
+	if !includeVideos {
+		return meta, nil
 	}
 
 	episodes, err := rt.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
@@ -718,16 +728,13 @@ func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.Met
 	if tvdbRID.imdbID == "" {
 		tvdbRID.imdbID = mapping.IMDbID
 	}
-	// The TVDB builder uses this when creating videos; it is reset below and
-	// never exposed to clients, keeping the Kitsu request canonical.
 	tvdbRID.canonicalID = rid.canonicalID
-	meta, err := s.buildSeriesMetaFromTVDB(ctx, profile, contentType, &tvdbRID)
+	meta, err := s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, &tvdbRID, false)
 	if err != nil {
 		return nil, err
 	}
 	meta.ID = rid.canonicalID
 	meta.Type = seriesMetaType(contentType)
-	meta.Videos = nil
 	if contentType != "movie" {
 		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
 	}
