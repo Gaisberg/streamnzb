@@ -385,22 +385,26 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 		if err != nil {
 			return nil, err
 		}
-		added := 0
 		for _, item := range items {
 			isMovie := item.Type == "movie"
 			name := cleanExternalPreviewName(item.Name)
-			if (def.Type == "movie") != isMovie || item.ID <= 0 || name == "" {
+			if (def.Type == "movie") != isMovie || (item.ID <= 0 && strings.TrimSpace(item.IMDbID) == "") || name == "" {
 				continue
 			}
-			id := fmt.Sprintf("tmdb:%d", item.ID)
+			id := strings.TrimSpace(item.IMDbID)
+			if id == "" {
+				id = fmt.Sprintf("tmdb:%d", item.ID)
+			}
 			if _, exists := seen[id]; exists {
 				continue
 			}
 			seen[id] = struct{}{}
 			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name})
-			added++
 		}
-		if len(items) == 0 || added == 0 {
+		// An empty remote page is terminal. A mixed page, duplicate page, or a
+		// page containing only the other media type is not: later pages may
+		// still hold matching rows for this catalog.
+		if len(items) == 0 {
 			break
 		}
 	}
@@ -465,14 +469,15 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int) 
 		return nil, err
 	}
 	metas := make([]MetaPreview, 0, len(remote.Metas))
-	for _, meta := range remote.Metas {
-		meta.ID = canonicalExternalCatalogID(meta.ID)
-		meta.Name = cleanExternalPreviewName(meta.Name)
-		if meta.ID == "" || meta.Name == "" {
+	for _, remoteMeta := range remote.Metas {
+		id := canonicalExternalCatalogID(remoteMeta.ID)
+		name := cleanExternalPreviewName(remoteMeta.Name)
+		if id == "" || name == "" {
 			continue
 		}
-		meta.Type = def.Type
-		metas = append(metas, meta)
+		// A pasted manifest supplies browse coordinates only. Its presentation
+		// fields are untrusted; local metadata enrichment owns artwork and copy.
+		metas = append(metas, MetaPreview{ID: id, Type: def.Type, Name: name})
 	}
 	return metas, nil
 }
