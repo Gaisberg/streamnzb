@@ -128,7 +128,10 @@ func (as *AnimeMappingStore) LookupTVDB(tvdbID string) (*AnimeMapping, bool) {
 		return nil, false
 	}
 	return as.lookupOne(`WHERE tvdb_id = ? ORDER BY
-		CASE WHEN entry_type = 'TV' THEN 0 WHEN has_season = 0 THEN 1 ELSE 2 END,
+		CASE WHEN entry_type = 'TV' AND has_season = 0 THEN 0
+			WHEN entry_type = 'TV' THEN 1
+			WHEN has_season = 0 THEN 2
+			ELSE 3 END,
 		kitsu_id ASC`, id)
 }
 
