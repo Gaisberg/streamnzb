@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -685,11 +686,19 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 	}
 	meta, err := build(primary)
 	if err == nil {
+		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
 		return meta, nil
+	}
+	if errors.Is(err, errCertificationBlocked) {
+		return nil, err
 	}
 	logger.Debug("Primary anime meta source unavailable; falling back",
 		"source", primary, "backup", backup, "kitsu_id", rid.kitsuID, "err", err)
-	return build(backup)
+	meta, err = build(backup)
+	if err == nil {
+		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
+	}
+	return meta, err
 }
 
 // buildAnimeMetaFromTVDB uses the anime-lists crosswalk to fetch a complete
