@@ -728,7 +728,9 @@ func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.Met
 	meta.ID = rid.canonicalID
 	meta.Type = seriesMetaType(contentType)
 	meta.Videos = nil
-	s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
+	if contentType != "movie" {
+		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
+	}
 	return meta, nil
 }
 
