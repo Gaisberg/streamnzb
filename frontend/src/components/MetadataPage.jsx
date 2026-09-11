@@ -159,7 +159,7 @@ function CatalogBadges({ def }) {
   const source = def.source_label || PROVIDER_LABELS[def.provider] || def.provider
   return (
     <span className="flex flex-wrap items-center gap-1">
-      <Badge variant="outline" className={cn("shrink-0 border px-2 text-[10px] font-medium", sourceBadgeClass(source, def.id))}>{source}</Badge>
+      <Badge variant="outline" className={cn("shrink-0 border px-2 text-[10px] font-medium", sourceBadgeClass(source, source))}>{source}</Badge>
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">{def.type}</Badge>
     </span>
   )
