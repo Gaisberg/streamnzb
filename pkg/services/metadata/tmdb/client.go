@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -319,6 +320,11 @@ type PublicListItem struct {
 	Name   string
 }
 
+// ErrPublicListPageNotFound marks the natural end of a public HTML list.
+// Consumers use it to stop pagination rather than turn a request beyond the
+// final page into a failed catalog response.
+var ErrPublicListPageNotFound = errors.New("public list page not found")
+
 var (
 	letterboxdFilmPattern      = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
 	letterboxdOGTitlePattern   = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
@@ -434,6 +440,9 @@ func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrPublicListPageNotFound, resp.Status)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("public list returned %s", resp.Status)
 	}
@@ -652,18 +661,6 @@ func (c *Client) GetListing(mediaType, kind string, page int, lang string) (*Lis
 		return nil, fmt.Errorf("unknown TMDB listing kind %q", kind)
 	}
 	return getJSON[ListingResponse](c, endpoint, params, "listing "+kind)
-}
-
-// GetPublicList fetches one public TMDB list page. Private lists are rejected
-// by TMDB unless the owner supplies a user token, which StreamNZB never asks
-// catalog-source users to provide.
-func (c *Client) GetPublicList(listID string, page int, lang string) (*ListingResponse, error) {
-	params := url.Values{}
-	params.Set("page", strconv.Itoa(max(page, 1)))
-	if lang != "" {
-		params.Set("language", lang)
-	}
-	return getJSON[ListingResponse](c, fmt.Sprintf(c.BaseURL+"/list/%s", url.PathEscape(listID)), params, "public list")
 }
 
 // GetRecommendations fetches TMDB's recommendations for one title — the seed

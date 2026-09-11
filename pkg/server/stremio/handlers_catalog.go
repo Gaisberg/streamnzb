@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -383,6 +384,11 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 	for page := firstPage; page < firstPage+externalListMaxPages && len(previews) < needed; page++ {
 		items, err := fetch(page)
 		if err != nil {
+			// Public HTML lists often signal their final page with a 404. It is
+			// terminal pagination, not a failed catalog the client should retry.
+			if errors.Is(err, tmdb.ErrPublicListPageNotFound) {
+				break
+			}
 			return nil, err
 		}
 		for _, item := range items {
