@@ -35,6 +35,15 @@ func TestFindFFprobeBinaryCustomPath(t *testing.T) {
 	}
 }
 
+func TestNeedsLegacyShowEntries(t *testing.T) {
+	if !needsLegacyShowEntries("No match for section 'stream_side_data'") {
+		t.Fatal("expected old ffprobe capability error to select the compatibility query")
+	}
+	if needsLegacyShowEntries("Invalid data found when processing input") {
+		t.Fatal("a media error must not be retried as an old-ffprobe capability error")
+	}
+}
+
 func TestFFprobeDownloadURLForAllTargets(t *testing.T) {
 	targets := []struct{ goos, goarch string }{
 		{"windows", "amd64"},

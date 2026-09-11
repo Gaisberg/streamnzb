@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Switch } from "@/components/ui/switch"
 import { CONTENT_KINDS } from "@/lib/profiles"
 import {
@@ -40,7 +41,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { apiFetch } from "@/api"
 import { copyToClipboard } from "@/lib/utils"
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, RefreshCw, Search, Server, Settings, Trash2, Type } from "lucide-react"
+import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
@@ -61,6 +62,51 @@ function SummaryRow({ label, values, icon: Icon }) {
         </div>
       )}
     </div>
+  )
+}
+
+// EndpointPanel groups what a client needs to connect to a stream: one panel
+// per client kind (Stremio gets a manifest URL, Jellyfin a server URL and a
+// login), each row being a label, a value and its actions.
+function EndpointPanel({ title, icon: Icon, hint, children }) {
+  return (
+    <div className="min-w-0 space-y-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {Icon && <Icon className="h-3.5 w-3.5" />}
+        <span>{title}</span>
+      </div>
+      <div className="space-y-1.5">{children}</div>
+      {hint ? <p className="text-[11px] leading-4 text-muted-foreground">{hint}</p> : null}
+    </div>
+  )
+}
+
+// EndpointRow lays out a label beside a read-only value (or an input when
+// there is no value) and trailing action buttons.
+function EndpointRow({ label, value, htmlFor, children }) {
+  return (
+    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2">
+      <Label className="text-xs text-muted-foreground" htmlFor={htmlFor}>{label}</Label>
+      <div className="flex min-w-0 items-center gap-2">
+        {value !== undefined ? (
+          <code className="block min-w-0 flex-1 break-all rounded bg-muted px-2.5 py-1.5 text-[11px] leading-5">{value}</code>
+        ) : null}
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function CopyButton({ copied, onCopy, label }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" onClick={onCopy} className="h-8 w-8 shrink-0 bg-muted hover:bg-muted" aria-label={label}>
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{copied ? 'Copied' : label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -836,11 +882,14 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [addDialogDraft, setAddDialogDraft] = useState(null)
   const [editingStream, setEditingStream] = useState(null)
-  const [copiedToken, setCopiedToken] = useState('')
+  const [copiedKey, setCopiedKey] = useState('')
   const [visibleFooterStatus, setVisibleFooterStatus] = useState(null)
   const [footerStatusVisible, setFooterStatusVisible] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState('')
   const [regenerateTarget, setRegenerateTarget] = useState('')
+  // Draft Jellyfin passwords, per stream. Held here rather than in the stream
+  // list because the server only ever returns whether one is set, never a value.
+  const [passwordDrafts, setPasswordDrafts] = useState({})
   const [expandedStreams, setExpandedStreams] = useState({})
 
   const indexerNames = useMemo(
@@ -946,17 +995,18 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     fetchStreams(false).catch(() => {})
   }, [fetchStreams])
 
-  const getManifestUrl = (token) => {
-    const baseUrl = globalConfig?.addon_base_url
-      ? globalConfig.addon_base_url.replace(/\/$/, '')
-      : window.location.origin
-    return `${baseUrl}/${token}/manifest.json`
-  }
+  const endpointBaseUrl = globalConfig?.addon_base_url
+    ? globalConfig.addon_base_url.replace(/\/$/, '')
+    : window.location.origin
+  const getManifestUrl = (token) => `${endpointBaseUrl}/${token}/manifest.json`
+  // The Jellyfin endpoint is one URL for every stream; what differs per stream
+  // is the login, which is the stream name and its password (or token).
+  const jellyfinUrl = `${endpointBaseUrl}/jellyfin`
 
-  const copyManifestUrl = (token) => {
-    copyToClipboard(getManifestUrl(token)).then(() => {
-      setCopiedToken(token)
-      setTimeout(() => setCopiedToken(''), 2000)
+  const copyValue = (key, value) => {
+    copyToClipboard(value).then(() => {
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(''), 2000)
     })
   }
 
@@ -1088,6 +1138,16 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         onStreamsChange?.(mapStreamsByUsername(next))
         return next
       })
+      // The draft follows the rename: it was typed for this stream, and
+      // leaving it under the old name would strand it there for whatever
+      // stream takes that name next.
+      if (savedName !== previousName) {
+        setPasswordDrafts((prev) => {
+          if (!(previousName in prev)) return prev
+          const { [previousName]: moved, ...rest } = prev
+          return moved ? { ...rest, [savedName]: moved } : rest
+        })
+      }
       const status = { type: 'success', message: `Stream "${savedName}" saved successfully.${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)
       showFooterStatus(status)
@@ -1115,6 +1175,14 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         const next = prev.filter((stream) => stream.username !== username)
         onStreamsChange?.(mapStreamsByUsername(next))
         return next
+      })
+      // Drop any unsaved password typed for the stream that just went away,
+      // or a stream later created under the same name would open with it
+      // already in the field.
+      setPasswordDrafts((prev) => {
+        if (!(username in prev)) return prev
+        const { [username]: _removed, ...rest } = prev
+        return rest
       })
       const status = { type: 'success', message: `Stream "${username}" deleted successfully.${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)
@@ -1146,6 +1214,39 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       showFooterStatus(status)
     } catch (err) {
       const status = { type: 'error', message: err.message || 'Failed to regenerate token' }
+      showStatus(status)
+      showFooterStatus(status)
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  // Setting a Jellyfin password is a request of its own rather than part of the
+  // stream config save: the plaintext should not travel with everything else,
+  // and the server hands back only whether one is now set.
+  const handleSetPassword = async (username, clear = false) => {
+    const password = clear ? '' : (passwordDrafts[username] || '')
+    setActionLoading(`password-${username}`)
+    showStatus(null)
+    try {
+      const payload = await apiFetch(`/api/streams/${encodeURIComponent(username)}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      })
+      setStreams((prev) => {
+        const next = prev.map((stream) => stream.username === username ? { ...stream, has_password: payload.has_password } : stream)
+        onStreamsChange?.(mapStreamsByUsername(next))
+        return next
+      })
+      setPasswordDrafts((prev) => ({ ...prev, [username]: '' }))
+      const status = {
+        type: 'success',
+        message: payload.has_password ? `Jellyfin password set for "${username}"` : `Jellyfin password removed for "${username}"`,
+      }
+      showStatus(status)
+      showFooterStatus(status)
+    } catch (err) {
+      const status = { type: 'error', message: err.message || 'Failed to update the Jellyfin password' }
       showStatus(status)
       showFooterStatus(status)
     } finally {
@@ -1240,31 +1341,86 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                         </div>
                       </div>
 
-                      <div className="min-w-0 flex-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                        <div className="space-y-1.5">
-                          <Label className="block text-xs text-muted-foreground">Manifest</Label>
-                          <div className="flex items-center gap-2">
-                            <code className="block min-w-0 flex-1 break-all rounded bg-muted px-2.5 py-1.5 text-[11px] leading-5">{getManifestUrl(stream.token)}</code>
-                            <div className="flex shrink-0 items-center gap-2 self-center">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <EndpointPanel title="Stremio" icon={Puzzle}>
+                          <EndpointRow label="Manifest" value={getManifestUrl(stream.token)}>
+                            <CopyButton
+                              copied={copiedKey === `manifest-${stream.username}`}
+                              onCopy={() => copyValue(`manifest-${stream.username}`, getManifestUrl(stream.token))}
+                              label="Copy manifest URL"
+                            />
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button type="button" variant="outline" size="icon" onClick={() => setRegenerateTarget(stream.username)} disabled={actionLoading !== null || loading} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
+                                  {actionLoading === `regenerate-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Regenerate token</TooltipContent>
+                            </Tooltip>
+                          </EndpointRow>
+                        </EndpointPanel>
+
+                        <EndpointPanel title="Jellyfin" icon={Tv} hint="Sign in from Swiftfin, Infuse or Findroid with these. The stream token works as the password too.">
+                          <EndpointRow label="Server" value={jellyfinUrl}>
+                            <CopyButton
+                              copied={copiedKey === `jellyfin-url-${stream.username}`}
+                              onCopy={() => copyValue(`jellyfin-url-${stream.username}`, jellyfinUrl)}
+                              label="Copy server URL"
+                            />
+                          </EndpointRow>
+                          <EndpointRow label="Username" value={stream.username}>
+                            <CopyButton
+                              copied={copiedKey === `jellyfin-user-${stream.username}`}
+                              onCopy={() => copyValue(`jellyfin-user-${stream.username}`, stream.username)}
+                              label="Copy username"
+                            />
+                          </EndpointRow>
+                          <EndpointRow label="Password" htmlFor={`jellyfin-password-${stream.username}`}>
+                            <PasswordInput
+                              id={`jellyfin-password-${stream.username}`}
+                              className="h-8 text-[11px]"
+                              placeholder={stream.has_password ? 'Password set — type to replace' : 'Not set — type to set one'}
+                              autoComplete="new-password"
+                              value={passwordDrafts[stream.username] || ''}
+                              onChange={(e) => setPasswordDrafts((prev) => ({ ...prev, [stream.username]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === 'Enter' && (passwordDrafts[stream.username] || '').trim()) void handleSetPassword(stream.username) }}
+                            />
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-8 w-8 shrink-0"
+                                  disabled={actionLoading !== null || loading || !(passwordDrafts[stream.username] || '').trim()}
+                                  onClick={() => void handleSetPassword(stream.username)}
+                                  aria-label={`Save Jellyfin password for ${stream.username}`}
+                                >
+                                  {actionLoading === `password-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Save password</TooltipContent>
+                            </Tooltip>
+                            {stream.has_password ? (
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Button type="button" variant="ghost" size="icon" onClick={() => copyManifestUrl(stream.token)} className="h-8 w-8 shrink-0 bg-muted hover:bg-muted" aria-label={`Copy manifest URL for ${stream.username}`}>
-                                    {copiedToken === stream.token ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 shrink-0"
+                                    disabled={actionLoading !== null || loading}
+                                    onClick={() => void handleSetPassword(stream.username, true)}
+                                    aria-label={`Remove Jellyfin password for ${stream.username}`}
+                                  >
+                                    <X className="h-3.5 w-3.5" />
                                   </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>{copiedToken === stream.token ? 'Copied' : 'Copy manifest URL'}</TooltipContent>
+                                <TooltipContent>Remove password (token still works)</TooltipContent>
                               </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button type="button" variant="outline" size="icon" onClick={() => setRegenerateTarget(stream.username)} disabled={actionLoading !== null || loading} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
-                                    {actionLoading === `regenerate-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Regenerate token</TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </div>
-                        </div>
+                            ) : null}
+                          </EndpointRow>
+                        </EndpointPanel>
                       </div>
 
                       <div className="relative rounded-md border border-border/70 bg-muted/10 px-3 py-3 pb-6">

@@ -1,6 +1,7 @@
 package rules_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,40 @@ func envFor(title string, mutate func(*triage.Candidate)) rules.Env {
 		mutate(&cand)
 	}
 	return rules.BuildEnv(cand, jhin.Parse(title), rules.Context{Kind: "movie"})
+}
+
+// A probe that reports HDR10 and no Dolby Vision must not clear a DV claim in
+// the release name. Dolby Vision profile 8 is an HDR10 stream carrying a DOVI
+// side-data record, so a probe blind to that record — an older ffprobe, or a
+// library item measured before it was read — reports exactly this. Letting it
+// overrule the name is how a release named DV reaches a viewer who rejected DV.
+func TestProbeWithoutDolbyVisionDoesNotClearADolbyVisionName(t *testing.T) {
+	const title = "The.Runner.2026.2160p.AMZN.WEB-DL.DDP5.1.Atmos.DV.HDR10Plus.H.265-Kitsune"
+
+	env := envFor(title, func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 2160, HDR: "HDR10"}
+	})
+	if !env.DolbyVision {
+		t.Fatal("a silent probe cleared a Dolby Vision release name")
+	}
+	if !slices.Contains(env.HDR, "DV") {
+		t.Fatalf("hdr list lost DV: %v", env.HDR)
+	}
+
+	// A rejection written against the trait must actually reject it.
+	set := compile(t, config.RuleConfig{Name: "No DV", When: `dolbyVision`, Action: config.RuleActionReject})
+	if got := set.Evaluate(env, "movie"); len(got.Rejections) == 0 {
+		t.Fatalf("reject-DV rule did not reject: %+v", got)
+	}
+
+	// A probe that does see DV still reports it, and a title with no DV claim
+	// and a probe that found none stays clear.
+	clean := envFor("The.Runner.2026.2160p.AMZN.WEB-DL.H.264-Kitsune", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "h264", Height: 2160, HDR: "HDR10"}
+	})
+	if clean.DolbyVision || slices.Contains(clean.HDR, "DV") {
+		t.Fatalf("DV asserted with no evidence: %v", clean.HDR)
+	}
 }
 
 func TestScoreRuleMatchesByName(t *testing.T) {

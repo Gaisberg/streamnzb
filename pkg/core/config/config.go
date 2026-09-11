@@ -523,6 +523,9 @@ const (
 	DefaultVariantAttempts = 1
 	// VariantAttemptsUnlimited asks for every copy the merge kept.
 	VariantAttemptsUnlimited = -1
+	// DefaultJellyfinMaxPlaybackSources is how many ranked candidates
+	// PlaybackInfo offers when the operator has not set a limit.
+	DefaultJellyfinMaxPlaybackSources = 20
 )
 
 func (c *Config) EffectiveLibrarySearchMode() string {
@@ -751,6 +754,26 @@ type Config struct {
 	// key would either lock the endpoint out of use or leave it open.
 	NewznabAPIKey string `json:"newznab_api_key"`
 
+	// JellyfinServerID is the stable id Jellyfin clients key their saved
+	// servers and per-server state by. The Jellyfin endpoint itself is always
+	// served at /jellyfin on the addon listener: like a manifest URL it is
+	// only reachable with a stream's credentials, so it needs no switch.
+	// Clients (Swiftfin, Infuse, Findroid, ...) sign in with a stream name
+	// and that stream's password or token. Generated when empty and never
+	// rotated afterwards: changing it makes every client forget its login.
+	JellyfinServerID string `json:"jellyfin_server_id"`
+	// JellyfinMaxPlaybackSources caps how many ranked candidates PlaybackInfo
+	// hands a client as media sources. Some pickers (SenPlayer's) break on a
+	// long list; the candidates are already ranked best-first, so capping
+	// only drops the tail. Defaulted to 20 when zero.
+	JellyfinMaxPlaybackSources int `json:"jellyfin_max_playback_sources,omitempty"`
+	// JellyfinResolveOnOpen runs the indexer search when a title page is
+	// opened, rather than waiting for PlaybackInfo. SenPlayer builds its
+	// version picker from the item document's MediaSources, so without this
+	// an unplayed title shows only "Play" and no list. Off by default: it
+	// costs one search per title page open.
+	JellyfinResolveOnOpen bool `json:"jellyfin_resolve_on_open,omitempty"`
+
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
 
@@ -953,8 +976,13 @@ type CatalogToggle struct {
 }
 
 type StreamEntry struct {
-	Username          string `json:"username"`
-	Token             string `json:"token"`
+	Username string `json:"username"`
+	Token    string `json:"token"`
+	// PasswordHash lets a stream sign in with a password instead of its
+	// token, for clients where the token is typed by hand on a remote. It is
+	// an argon2id hash, empty when no password is set, and never leaves the
+	// server. The token stays a valid password either way.
+	PasswordHash      string `json:"password_hash,omitempty"`
 	Order             int    `json:"order,omitempty"`
 	FilterSortingMode string `json:"filter_sorting_mode,omitempty"`
 	IndexerMode       string `json:"indexer_mode,omitempty"`
@@ -1368,6 +1396,17 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 			needSave = true
 		}
 	}
+	if cfg.JellyfinServerID == "" {
+		if id, err := NewJellyfinServerID(); err == nil {
+			cfg.JellyfinServerID = id
+			needSave = true
+		}
+	}
+	// Unlike the server id this default is not persisted: it is a computed
+	// fallback, not a value the operator needs to see written to disk.
+	if cfg.JellyfinMaxPlaybackSources <= 0 || cfg.JellyfinMaxPlaybackSources > 200 {
+		cfg.JellyfinMaxPlaybackSources = DefaultJellyfinMaxPlaybackSources
+	}
 	if cfg.AdminPasswordHash == "" {
 		cfg.AdminPasswordHash = defaultAdminPasswordHash
 		cfg.AdminMustChangePassword = true
@@ -1670,33 +1709,35 @@ func keySet(list []string, s string) bool {
 // so a new override is one entry instead of two hand-maintained mirrors that
 // can (and did) drift apart.
 var envFieldCopiers = map[string]func(dst, src *Config){
-	env.KeyAddonPort:              func(d, s *Config) { d.AddonPort = s.AddonPort },
-	env.KeyAddonBaseURL:           func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
-	env.KeyLogLevel:               func(d, s *Config) { d.LogLevel = s.LogLevel },
-	env.KeyKeepLogFiles:           func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
-	env.KeyAvailNZBAPIKey:         func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
-	env.KeyTMDBAPIKey:             func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
-	env.KeyTVDBAPIKey:             func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
-	env.KeySimklClientID:          func(d, s *Config) { d.SimklClientID = s.SimklClientID },
-	env.KeyIndexerQueryHeader:     func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
-	env.KeyIndexerGrabHeader:      func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
-	env.KeyProviderHeader:         func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
-	env.KeyProxyPort:              func(d, s *Config) { d.ProxyPort = s.ProxyPort },
-	env.KeyProxyHost:              func(d, s *Config) { d.ProxyHost = s.ProxyHost },
-	env.KeyProxyEnabled:           func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
-	env.KeyProxyAuthUser:          func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
-	env.KeyProxyAuthPass:          func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
-	env.KeyNewznabEnabled:         func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
-	env.KeyNewznabAPIKey:          func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
-	env.KeyAdminUsername:          func(d, s *Config) { d.AdminUsername = s.AdminUsername },
-	env.KeyAdminMustChangePwd:     func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
-	env.KeyTrustedProxyAuthHeader: func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
-	env.KeyTrustedProxies:         func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
-	env.KeyProviders:              func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
-	env.KeyIndexers:               func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
-	env.KeyDatabaseDriver:         func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
-	env.KeyDatabaseURL:            func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
-	env.KeyMetadataEnabled:        func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
+	env.KeyAddonPort:                  func(d, s *Config) { d.AddonPort = s.AddonPort },
+	env.KeyAddonBaseURL:               func(d, s *Config) { d.AddonBaseURL = s.AddonBaseURL },
+	env.KeyLogLevel:                   func(d, s *Config) { d.LogLevel = s.LogLevel },
+	env.KeyKeepLogFiles:               func(d, s *Config) { d.KeepLogFiles = s.KeepLogFiles },
+	env.KeyAvailNZBAPIKey:             func(d, s *Config) { d.AvailNZBAPIKey = s.AvailNZBAPIKey },
+	env.KeyTMDBAPIKey:                 func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
+	env.KeyTVDBAPIKey:                 func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
+	env.KeySimklClientID:              func(d, s *Config) { d.SimklClientID = s.SimklClientID },
+	env.KeyIndexerQueryHeader:         func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
+	env.KeyIndexerGrabHeader:          func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
+	env.KeyProviderHeader:             func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
+	env.KeyProxyPort:                  func(d, s *Config) { d.ProxyPort = s.ProxyPort },
+	env.KeyProxyHost:                  func(d, s *Config) { d.ProxyHost = s.ProxyHost },
+	env.KeyProxyEnabled:               func(d, s *Config) { d.ProxyEnabled = s.ProxyEnabled },
+	env.KeyProxyAuthUser:              func(d, s *Config) { d.ProxyAuthUser = s.ProxyAuthUser },
+	env.KeyProxyAuthPass:              func(d, s *Config) { d.ProxyAuthPass = s.ProxyAuthPass },
+	env.KeyNewznabEnabled:             func(d, s *Config) { d.NewznabEnabled = s.NewznabEnabled },
+	env.KeyNewznabAPIKey:              func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
+	env.KeyJellyfinMaxPlaybackSources: func(d, s *Config) { d.JellyfinMaxPlaybackSources = s.JellyfinMaxPlaybackSources },
+	env.KeyJellyfinResolveOnOpen:      func(d, s *Config) { d.JellyfinResolveOnOpen = s.JellyfinResolveOnOpen },
+	env.KeyAdminUsername:              func(d, s *Config) { d.AdminUsername = s.AdminUsername },
+	env.KeyAdminMustChangePwd:         func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
+	env.KeyTrustedProxyAuthHeader:     func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
+	env.KeyTrustedProxies:             func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
+	env.KeyProviders:                  func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:                   func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:             func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:                func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled:            func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1751,31 +1792,33 @@ func copyEnvKeys(dst, src *Config, keys []string) {
 // declared via env are always newznab and default to enabled).
 func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 	cfg := &Config{
-		AddonPort:               o.AddonPort,
-		AddonBaseURL:            o.AddonBaseURL,
-		LogLevel:                o.LogLevel,
-		KeepLogFiles:            o.KeepLogFiles,
-		AvailNZBAPIKey:          o.AvailNZBAPIKey,
-		TMDBAPIKey:              o.TMDBAPIKey,
-		TVDBAPIKey:              o.TVDBAPIKey,
-		SimklClientID:           o.SimklClientID,
-		IndexerQueryHeader:      o.IndexerQueryHeader,
-		IndexerGrabHeader:       o.IndexerGrabHeader,
-		ProviderHeader:          o.ProviderHeader,
-		ProxyPort:               o.ProxyPort,
-		ProxyHost:               o.ProxyHost,
-		ProxyEnabled:            o.ProxyEnabled,
-		ProxyAuthUser:           o.ProxyAuthUser,
-		ProxyAuthPass:           o.ProxyAuthPass,
-		NewznabEnabled:          o.NewznabEnabled,
-		NewznabAPIKey:           o.NewznabAPIKey,
-		AdminUsername:           o.AdminUsername,
-		AdminMustChangePassword: o.AdminMustChangePwd,
-		TrustedProxyAuthHeader:  o.TrustedProxyAuthHeader,
-		TrustedProxies:          append([]string(nil), o.TrustedProxies...),
-		DatabaseDriver:          o.DatabaseDriver,
-		DatabaseURL:             o.DatabaseURL,
-		Metadata:                MetadataConfig{Enabled: &o.MetadataEnabled},
+		AddonPort:                  o.AddonPort,
+		AddonBaseURL:               o.AddonBaseURL,
+		LogLevel:                   o.LogLevel,
+		KeepLogFiles:               o.KeepLogFiles,
+		AvailNZBAPIKey:             o.AvailNZBAPIKey,
+		TMDBAPIKey:                 o.TMDBAPIKey,
+		TVDBAPIKey:                 o.TVDBAPIKey,
+		SimklClientID:              o.SimklClientID,
+		IndexerQueryHeader:         o.IndexerQueryHeader,
+		IndexerGrabHeader:          o.IndexerGrabHeader,
+		ProviderHeader:             o.ProviderHeader,
+		ProxyPort:                  o.ProxyPort,
+		ProxyHost:                  o.ProxyHost,
+		ProxyEnabled:               o.ProxyEnabled,
+		ProxyAuthUser:              o.ProxyAuthUser,
+		ProxyAuthPass:              o.ProxyAuthPass,
+		NewznabEnabled:             o.NewznabEnabled,
+		NewznabAPIKey:              o.NewznabAPIKey,
+		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
+		JellyfinResolveOnOpen:      o.JellyfinResolveOnOpen,
+		AdminUsername:              o.AdminUsername,
+		AdminMustChangePassword:    o.AdminMustChangePwd,
+		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,
+		TrustedProxies:             append([]string(nil), o.TrustedProxies...),
+		DatabaseDriver:             o.DatabaseDriver,
+		DatabaseURL:                o.DatabaseURL,
+		Metadata:                   MetadataConfig{Enabled: &o.MetadataEnabled},
 	}
 	cfg.Providers = make([]Provider, len(o.Providers))
 	for i, p := range o.Providers {
@@ -1837,6 +1880,16 @@ func NewAPIKey() (string, error) {
 	}
 	hash := sha256.Sum256(buf)
 	return hex.EncodeToString(hash[:]), nil
+}
+
+// NewJellyfinServerID returns a random 32-hex id, the shape Jellyfin clients
+// expect a server id to have (a GUID without dashes).
+func NewJellyfinServerID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // RedactForAPI blanks every credential for the non-admin view of the config.

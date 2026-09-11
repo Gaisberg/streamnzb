@@ -29,6 +29,7 @@
 package rules
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -643,8 +644,18 @@ func applyMerged(env *Env, caps *release.MediaCaps) {
 		env.BitDepth = caps.BitDepth
 	}
 	if hdr := measuredHDRList(caps); hdr != nil {
+		// A probe can prove Dolby Vision is there; it cannot prove it is not.
+		// Profile 8 shows up only in the DOVI side-data record, which an older
+		// ffprobe does not report and which library items measured before that
+		// record was read do not carry. So the measurement may add DV, and a
+		// silent probe does not overrule a name that claims it — the same
+		// reason this function will not assert SDR from a probe that found no
+		// HDR. Rejecting DV has to mean rejecting everything that might be DV.
+		env.DolbyVision = caps.DolbyVision || env.Parsed.DolbyVision
+		if env.DolbyVision && !slices.Contains(hdr, "DV") {
+			hdr = append([]string{"DV"}, hdr...)
+		}
 		env.HDR = hdr
-		env.DolbyVision = caps.DolbyVision
 		env.HDRFallback = caps.HasHDRFallback()
 	}
 }

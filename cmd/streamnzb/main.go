@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/server/api"
+	"streamnzb/pkg/server/jellyfin"
 	"streamnzb/pkg/server/newznab"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/server/web"
@@ -319,6 +320,48 @@ func main() {
 	} else {
 		logger.Info("Newznab endpoint disabled")
 	}
+
+	// The catalogs and playback pipeline, re-served as an always-on Jellyfin
+	// server for clients that speak Jellyfin rather than Stremio. Every useful
+	// route remains stream-authenticated; there is no unauthenticated library
+	// or playback surface to disable separately.
+	jellyfinServer := jellyfin.New(jellyfin.Options{
+		ServerID: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.JellyfinServerID
+			}
+			return ""
+		},
+		BaseURL: func() string {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.AddonBaseURL
+			}
+			return ""
+		},
+		Admin: func() (string, string, string) {
+			liveCfg := apiServer.Config()
+			if liveCfg == nil {
+				return "", "", ""
+			}
+			return liveCfg.GetAdminUsername(), liveCfg.AdminPasswordHash, liveCfg.AdminToken
+		},
+		MaxPlaybackSources: func() int {
+			if liveCfg := apiServer.Config(); liveCfg != nil {
+				return liveCfg.JellyfinMaxPlaybackSources
+			}
+			return 0
+		},
+		ResolveOnOpen: func() bool {
+			liveCfg := apiServer.Config()
+			return liveCfg != nil && liveCfg.JellyfinResolveOnOpen
+		},
+		Streams:   streamManager,
+		Catalog:   stremioServer,
+		Playstate: stateMgr.JellyfinPlaystateStore(),
+		Version:   Version,
+	})
+	mux.Handle(jellyfin.Mount, jellyfinServer.Handler())
+	logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)
 
 	{
 		if comp.Config.ProxyEnabled {

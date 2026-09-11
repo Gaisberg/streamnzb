@@ -50,6 +50,19 @@ type FFprobeStream struct {
 	NbReadFrames     string             `json:"nb_read_frames"`
 	Disposition      ffprobeDisposition `json:"disposition"`
 	Tags             ffprobeTags        `json:"tags"`
+	// SideDataList carries the DOVI configuration record. Dolby Vision
+	// profile 8 rides on an ordinary hvc1/hev1 stream with an HDR10 base
+	// layer, so the codec tag says nothing and this is the only place the
+	// profile shows up at all.
+	SideDataList []ffprobeSideData `json:"side_data_list"`
+}
+
+// ffprobeSideData is one stream side-data entry. Only the Dolby Vision
+// configuration record is read; the rest are ignored.
+type ffprobeSideData struct {
+	SideDataType string `json:"side_data_type"`
+	DVProfile    *int   `json:"dv_profile"`
+	DVLevel      *int   `json:"dv_level"`
 }
 
 // FFprobeFormat carries the container-level fields we ask for. Duration comes
@@ -169,7 +182,34 @@ const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt,"
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
 	"stream_disposition=attached_pic:" +
 	"stream_tags=language:" +
+	"stream_side_data=side_data_type,dv_profile,dv_level:" +
 	"format=duration"
+
+// legacyShowEntries deliberately omits stream_side_data. FFmpeg 4.4, including
+// the ARM64 static binary this service installs, rejects that section before it
+// reads the input at all. We retain the richer query for newer ffprobe builds
+// and only retry with this one after that exact capability error.
+const legacyShowEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt," +
+	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
+	"stream_disposition=attached_pic:" +
+	"stream_tags=language:" +
+	"format=duration"
+
+func needsLegacyShowEntries(stderr string) bool {
+	return strings.Contains(stderr, "No match for section 'stream_side_data'")
+}
+
+// rewindProbeStream returns the stream to the start so a second ffprobe run
+// reads the container header rather than resuming wherever the first run's
+// stdin copy left off. Reports false when the stream cannot be rewound.
+func rewindProbeStream(stream io.Reader) bool {
+	seeker, ok := stream.(io.Seeker)
+	if !ok {
+		return false
+	}
+	_, err := seeker.Seek(0, io.SeekStart)
+	return err == nil
+}
 
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
 func ProbeStream(ctx context.Context, stream io.Reader, customPath string) (*FFprobeResult, error) {
@@ -196,30 +236,12 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	if opts.QuickHeader {
 		probesize, analyzeduration = "5M", "5M"
 	}
-	args := []string{
-		"-v", "error",
-		"-probesize", probesize,
-		"-analyzeduration", analyzeduration,
-		"-show_entries", showEntries,
-		"-of", "json",
-	}
-	if opts.ForceDecode {
-		frames := opts.DecodeFrames
-		if frames <= 0 {
-			frames = DefaultDecodeFrames
-		}
-		// "%+#N" = starting at the current position (offset 0, no seek needed for
-		// a pipe), read N packets. Combined with -count_frames this forces a real
-		// decode of the opening N frames.
-		args = append(args, "-count_frames", "-read_intervals", fmt.Sprintf("%%+#%d", frames))
-	}
 	// A seekable stream is served over a loopback range server instead of a
 	// pipe. On a pipe ffprobe cannot seek, so an MP4/MOV whose moov sits at the
 	// tail (anything not written with faststart) is structurally unprobeable,
 	// and even a happy probe streams the full -probesize window through stdin.
 	// Over HTTP with Accept-Ranges, ffprobe seeks to exactly the boxes it
 	// needs. A stream that cannot seek keeps the pipe path.
-	var rr *recordingReader
 	var srv *probeStreamServer
 	// QuickHeader stays on the pipe deliberately: that probe sits on
 	// time-to-first-byte and is bounded BY being unseekable — over a seekable
@@ -238,42 +260,93 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	}
 	if srv != nil {
 		defer srv.Close()
-		args = append(args, srv.URL())
-	} else {
-		args = append(args, "pipe:0")
 	}
 
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	if srv == nil {
-		// Wrap stdin so we can recover the underlying stream error: when ffprobe exits
-		// non-zero because a segment read failed (e.g. 430), exec masks the copy error
-		// behind the ExitError. Capturing it lets callers tell a real broken release
-		// (missing/corrupt article) from an inconclusive probe (timeout, codec).
-		rr = &recordingReader{r: stream}
-		cmd.Stdin = rr
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	run := func(entries string) (string, string, error, error) {
+		args := []string{
+			"-v", "error",
+			"-probesize", probesize,
+			"-analyzeduration", analyzeduration,
+			"-show_entries", entries,
+			"-of", "json",
+		}
+		if opts.ForceDecode {
+			frames := opts.DecodeFrames
+			if frames <= 0 {
+				frames = DefaultDecodeFrames
+			}
+			args = append(args, "-count_frames", "-read_intervals", fmt.Sprintf("%%+#%d", frames))
+		}
+		if srv != nil {
+			args = append(args, srv.URL())
+		} else {
+			args = append(args, "pipe:0")
+		}
 
-	if err := cmd.Run(); err != nil {
+		cmd := exec.CommandContext(ctx, binaryPath, args...)
+		var rr *recordingReader
+		if srv == nil {
+			rr = &recordingReader{r: stream}
+			cmd.Stdin = rr
+		}
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			var streamErr error
+			if rr != nil {
+				streamErr = rr.lastErr
+			} else if srv != nil {
+				streamErr = srv.LastErr()
+			}
+			return stdout.String(), stderr.String(), err, streamErr
+		}
+		return stdout.String(), stderr.String(), nil, nil
+	}
+
+	stdout, stderr, runErr, streamErr := run(showEntries)
+	if runErr != nil && streamErr == nil && needsLegacyShowEntries(stderr) {
+		// The first attempt died in ffprobe's option parsing without reading a
+		// byte — but on the pipe path exec has already started a goroutine
+		// copying the stream into the child's stdin, and it drains a pipe
+		// buffer's worth (64 KiB on Linux) before noticing the process is
+		// gone. Those bytes are consumed from the reader for good.
+		//
+		// Retrying without rewinding therefore hands ffprobe a stream that
+		// starts mid-container. It finds no header and no duration, reports
+		// whatever elementary stream it stumbles into, and exits 0 — which the
+		// validation layer above reads as a definitive "audio-only, missing
+		// video track" verdict against a perfectly good remux, and records as
+		// a two-week bad-release blacklisting.
+		//
+		// The loopback server path needs nothing: each run makes its own range
+		// requests and the handler seeks per request. Rewinding the shared
+		// seeker from here would race those handlers instead.
+		switch {
+		case srv != nil:
+			logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
+			stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+		case rewindProbeStream(stream):
+			logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
+			stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+		default:
+			// Probing a partially drained stream would answer confidently
+			// about the wrong bytes, which is worse than not answering.
+			logger.Debug("FFprobe lacks stream_side_data support but the stream cannot be rewound; not retrying", "binary", binaryPath)
+		}
+	}
+	if runErr != nil {
 		// Same error recovery as the pipe path: the stream's own failure
 		// outranks ffprobe's opaque non-zero exit.
-		var streamErr error
-		if rr != nil {
-			streamErr = rr.lastErr
-		} else if srv != nil {
-			streamErr = srv.LastErr()
-		}
 		if streamErr != nil {
-			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", err, strings.TrimSpace(stderr.String()), streamErr)
+			return nil, fmt.Errorf("ffprobe execution failed (%v): %s: %w", runErr, strings.TrimSpace(stderr), streamErr)
 		}
-		return nil, fmt.Errorf("ffprobe execution failed (%v): %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("ffprobe execution failed (%v): %s", runErr, strings.TrimSpace(stderr))
 	}
 
 	var output FFprobeOutput
-	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		return nil, fmt.Errorf("parse ffprobe json output: %w", err)
 	}
 
@@ -424,8 +497,16 @@ func classifyHDR(st FFprobeStream) string {
 	}
 }
 
-// isDolbyVision detects Dolby Vision from the codec tag / profile. DV profile 5
-// commonly reports a dvhe/dvh1 tag which most React Native players cannot decode.
+// isDolbyVision detects Dolby Vision.
+//
+// Three tiers, because DV hides in a different place per profile. Profile 5
+// announces itself in the codec tag (dvhe/dvh1), which most players cannot
+// decode. Profile 8 — what a "DV HDR" or "DV HDR10Plus" WEB-DL almost always
+// is — rides on an ordinary hvc1/hev1 HEVC stream with an HDR10 base layer:
+// the tag is unremarkable and the only evidence is the DOVI configuration
+// record in the stream's side data. Reading the tag alone reports such a file
+// as plain HDR10, which is how a release named DV reaches a viewer who asked
+// for no DV.
 func isDolbyVision(st FFprobeStream) bool {
 	switch strings.ToLower(strings.TrimSpace(st.CodecTagString)) {
 	case "dvhe", "dvh1", "dva1", "dav1", "dvav":
@@ -433,6 +514,15 @@ func isDolbyVision(st FFprobeStream) bool {
 	}
 	if strings.Contains(strings.ToLower(st.Profile), "dolby vision") {
 		return true
+	}
+	for _, side := range st.SideDataList {
+		if strings.Contains(strings.ToLower(side.SideDataType), "dovi") ||
+			strings.Contains(strings.ToLower(side.SideDataType), "dolby vision") {
+			return true
+		}
+		if side.DVProfile != nil && *side.DVProfile > 0 {
+			return true
+		}
 	}
 	return false
 }

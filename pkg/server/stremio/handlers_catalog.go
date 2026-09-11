@@ -73,54 +73,16 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	req.StreamName = streamID(stream)
 	req.Profile = profile
-	def, isSearchCatalog := searchCatalogDefByID(req.ID)
-	if isSearchCatalog {
-		// The hidden search carriers answer for every profile, but only with
-		// a query — their search extra is declared required, so a bare
-		// listing request is a client ignoring the manifest.
-		if def.Type != req.Type || req.Search == "" {
-			http.NotFound(w, r)
-			return
-		}
-	} else {
-		def, ok = catalogDefByID(req.ID)
-		if !ok || def.Type != req.Type {
-			http.NotFound(w, r)
-			return
-		}
-		enabled := false
-		for _, d := range enabledCatalogDefs(profile) {
-			if d.ID == def.ID {
-				enabled = true
-				break
-			}
-		}
-		if !enabled {
-			http.NotFound(w, r)
-			return
-		}
-		if req.Search != "" && !def.SupportsSearch {
-			http.NotFound(w, r)
-			return
-		}
+	def, ok := resolveCatalogDef(profile, req)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), catalogRequestTimeout)
 	defer cancel()
 
-	metas, err := s.buildCatalog(ctx, def, req)
-	if err != nil {
-		logger.Debug("Catalog build failed; serving empty page",
-			"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
-		metas = nil
-	}
-	if req.Search == "" && len(metas) > 0 {
-		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, profile, def))
-	}
-	s.applyPosterOverlays(profile, metas)
-	if metas == nil {
-		metas = []MetaPreview{}
-	}
+	metas := s.serveCatalog(ctx, def, req)
 	maxAge := catalogListingCacheMaxAge
 	switch {
 	case def.Provider == "local" || def.Provider == "simkl":
@@ -154,6 +116,53 @@ func parseCatalogPath(path string) (catalogRequest, bool) {
 		}
 	}
 	return req, true
+}
+
+// resolveCatalogDef finds the catalog a request names and decides whether
+// this profile may read it. The hidden search carriers answer for every
+// profile, but only with a query — their search extra is declared required, so
+// a bare listing request is a client ignoring the manifest. Browse catalogs
+// must be enabled on the profile, and only take a query when they support one.
+func resolveCatalogDef(profile *config.MetadataProfileConfig, req catalogRequest) (CatalogDef, bool) {
+	if def, ok := searchCatalogDefByID(req.ID); ok {
+		return def, def.Type == req.Type && req.Search != ""
+	}
+	def, ok := catalogDefByID(req.ID)
+	if !ok || def.Type != req.Type {
+		return CatalogDef{}, false
+	}
+	enabled := false
+	for _, d := range enabledCatalogDefs(profile) {
+		if d.ID == def.ID {
+			enabled = true
+			break
+		}
+	}
+	if !enabled || (req.Search != "" && !def.SupportsSearch) {
+		return CatalogDef{}, false
+	}
+	return def, true
+}
+
+// serveCatalog is the one catalog page path: build, drop rows a higher-ranked
+// catalog already shows, overlay posters. Upstream failures degrade to an
+// empty page so a flaky provider never renders as a client error row. The
+// result is never nil.
+func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRequest) []MetaPreview {
+	metas, err := s.buildCatalog(ctx, def, req)
+	if err != nil {
+		logger.Debug("Catalog build failed; serving empty page",
+			"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
+		metas = nil
+	}
+	if req.Search == "" && len(metas) > 0 {
+		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, req.Profile, def))
+	}
+	s.applyPosterOverlays(req.Profile, metas)
+	if metas == nil {
+		metas = []MetaPreview{}
+	}
+	return metas
 }
 
 func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {

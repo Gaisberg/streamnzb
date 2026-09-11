@@ -49,6 +49,7 @@ func streamToMap(d *auth.Stream) map[string]interface{} {
 	return map[string]interface{}{
 		"username":                    d.Username,
 		"token":                       d.Token,
+		"has_password":                d.PasswordHash != "",
 		"filter_sorting_mode":         d.FilterSortingMode,
 		"indexer_mode":                d.IndexerMode,
 		"use_availnzb":                d.UseAvailNZB,
@@ -167,6 +168,8 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "token": token})
+		case "password":
+			s.handleStreamPassword(w, r, username)
 		case "rename":
 			s.handleStreamRename(w, r, username)
 		default:
@@ -175,6 +178,25 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleStreamPassword sets or clears a stream's password, the credential a
+// media client asks for when it cannot sensibly be handed a token. The hash
+// never leaves the server and the plaintext is never stored, so the only way
+// back from a forgotten password is to set a new one.
+func (s *Server) handleStreamPassword(w http.ResponseWriter, r *http.Request, username string) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := s.streamManager.SetStreamPassword(username, req.Password); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "has_password": strings.TrimSpace(req.Password) != ""})
 }
 
 // handleStreamRename renames a stream in place. The token is untouched, so an

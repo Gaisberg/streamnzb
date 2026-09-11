@@ -218,6 +218,25 @@ const (
 	);`
 	metadataCacheIndexExpires = `CREATE INDEX IF NOT EXISTS idx_metadata_cache_expires ON metadata_cache(expires_at);`
 	metadataCacheIndexFetched = `CREATE INDEX IF NOT EXISTS idx_metadata_cache_fetched ON metadata_cache(fetched_at);`
+
+	// jellyfin_playstate is per-stream playback progress reported by Jellyfin
+	// clients (position, played flag, play count). It is user state, so unlike
+	// metadata_cache it is carried across backend switches. item_id is the
+	// Jellyfin item id; content_type/content_id are the Stremio-side keys so
+	// resume rows can be re-rendered without decoding the item id.
+	jellyfinPlaystateSchema = `CREATE TABLE IF NOT EXISTS jellyfin_playstate (
+		stream_name {TEXT} NOT NULL,
+		item_id {TEXT} NOT NULL,
+		content_type {TEXT} NOT NULL,
+		content_id {TEXT} NOT NULL,
+		position_ticks {INT} NOT NULL DEFAULT 0,
+		runtime_ticks {INT} NOT NULL DEFAULT 0,
+		played {INT} NOT NULL DEFAULT 0,
+		play_count {INT} NOT NULL DEFAULT 0,
+		last_played_at {INT} NOT NULL DEFAULT 0,
+		PRIMARY KEY (stream_name, item_id)
+	);`
+	jellyfinPlaystateIndexPlayed = `CREATE INDEX IF NOT EXISTS idx_jellyfin_playstate_played ON jellyfin_playstate(stream_name, last_played_at DESC);`
 )
 
 // addedColumn is one idempotent ALTER TABLE ADD COLUMN migration. Existing
@@ -340,6 +359,8 @@ func initSchema(c *connRef) error {
 		metadataCacheSchema,
 		metadataCacheIndexExpires,
 		metadataCacheIndexFetched,
+		jellyfinPlaystateSchema,
+		jellyfinPlaystateIndexPlayed,
 	} {
 		if _, err := c.Exec(d.ExpandDDL(stmt)); err != nil {
 			return fmt.Errorf("schema: %w", err)

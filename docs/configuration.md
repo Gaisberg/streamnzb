@@ -91,6 +91,15 @@ See [Database backends](database.md) for how switching and migration work.
 | `NEWZNAB_ENABLED` | Enable/disable the Newznab endpoint (default off) — see [Newznab endpoint](newznab.md) |
 | `NEWZNAB_API_KEY` | The key clients authenticate with (one is generated on first start) |
 
+### Jellyfin endpoint
+
+The endpoint is always served; see [Jellyfin endpoint](jellyfin.md).
+
+| Variable | Meaning |
+|---|---|
+| `JELLYFIN_MAX_PLAYBACK_SOURCES` | Cap on media sources offered per play, 1-200 (default 20) |
+| `JELLYFIN_RESOLVE_ON_OPEN` | Search when a title page opens instead of waiting for play (default off) |
+
 ### Outbound User-Agent headers
 
 | Variable | Meaning |

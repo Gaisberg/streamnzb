@@ -14,7 +14,9 @@ import { cn, copyToClipboard } from "@/lib/utils"
 
 // Both cards here hand StreamNZB's own resources to another application: the
 // proxy shares the provider pool with a download client, the Newznab endpoint
-// shares the indexer pool with any Newznab-compatible application.
+// shares the indexer pool with any Newznab-compatible application. The
+// Jellyfin endpoint is not here: it is a per-stream login, so it lives with
+// the stream's manifest URL under Streams.
 const CARD_FIELDS = {
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   newznab: ['newznab_enabled', 'newznab_api_key'],

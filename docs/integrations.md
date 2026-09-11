@@ -3,8 +3,8 @@
 Everything StreamNZB knows about Usenet — your providers, your indexers, your filter and ranking rules — is configured once and then re-served to whatever else you run. This page is the whole picture in one place; each surface has its own reference page for the details.
 
 ```
-                      indexers ──┐
-                                 ├── StreamNZB ──┬── Stremio          (addon: catalogs + streams)
+                      indexers ──┐               ┌── Stremio          (addon: catalogs + streams)
+                                 ├── StreamNZB ──┼── Swiftfin / Infuse (Jellyfin API)
                      providers ──┘               ├── Prowlarr / *arr  (Newznab API)
                                                  └── SABnzbd / NZBGet (NNTP)
 ```
@@ -39,6 +39,16 @@ What this buys you:
 
 Full reference, including the supported functions and what is deliberately *not* done (no ranking, no filtering — that machinery serves playback): [Newznab endpoint](newznab.md).
 
+## Swiftfin, Infuse, Findroid
+
+The same catalogs, metadata and playback the Stremio addon serves, presented as a **Jellyfin server** — for clients that speak Jellyfin rather than Stremio, and for platforms where a Stremio client is not an option.
+
+There is nothing to turn on: every stream card under **Settings → Streams** shows the server URL to add in the client next to that stream's login — the stream name as the username and a password you set there (or the stream's token). It rides on the addon listener, so there is no extra port to open.
+
+Each stream is its own Jellyfin user, with its own libraries and its own server-side watch progress. Nothing is transcoded: every release is offered as a direct-play media source, so the client's own decoder decides what it can handle.
+
+Full reference: [Jellyfin endpoint](jellyfin.md).
+
 ## SABnzbd, NZBGet
 
 The download-client half. StreamNZB's NNTP proxy hands other apps **your whole provider pool**, with the same multi-provider failover the addon uses.
@@ -63,6 +73,6 @@ If you already run [AIOStreams](https://github.com/Viren070/AIOStreams), StreamN
 
 ## Putting it together
 
-The two endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers. Enable both and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio streams through it, and the credentials for all of it live in one `config.json` on one host.
+The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the always-on authenticated Jellyfin endpoint is the addon itself wearing another client's clothes. Enable the optional endpoints and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
 
-Both are off by default and independent; turn on only what you need.
+The Newznab endpoint and the NNTP proxy are off by default and independent; turn on only what you need. The Jellyfin endpoint, like the Stremio manifest, is simply there — a stream's credentials are the only key to it.

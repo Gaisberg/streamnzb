@@ -149,6 +149,19 @@ func ValidateMediaStreamWithOptions(ctx context.Context, stream ReadSeekCloser, 
 			logger.Warn("Failed to seek stream back after ffprobe", "err", seekErr)
 		}
 		if err == nil {
+			// A zero exit says ffprobe ran, not that it understood the input.
+			// Handed a partial or misaligned stream it still exits 0, having
+			// found no container header, no duration, and whichever elementary
+			// stream it happened to land on. Reading that as "this release has
+			// no video" blacklists a perfectly good remux for weeks, so a probe
+			// that could not even read a duration is inconclusive and fails
+			// open — the same rule article checks follow.
+			conclusive := res.DurationSeconds > 0
+			if !conclusive && !res.HasVideo {
+				logger.Warn("FFprobe reported no video track and no container duration; treating the probe as inconclusive rather than rejecting the release",
+					"file", fileName, "audio_codec", res.AudioCodec, "audio_streams", res.AudioStreams)
+				return res, nil
+			}
 			if res.HasAudio && !res.HasVideo {
 				return res, fmt.Errorf("FFprobe verified media stream is audio-only (audio_codec=%s, file=%s): missing video track", res.AudioCodec, fileName)
 			}
