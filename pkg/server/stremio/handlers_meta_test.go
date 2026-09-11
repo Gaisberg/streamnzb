@@ -1098,6 +1098,15 @@ func TestCatalogCrossDeduplication(t *testing.T) {
 	}
 }
 
+func TestExternalCatalogsKeepAllSelectedRows(t *testing.T) {
+	if catalogUsesCrossDedup(CatalogDef{Provider: "external"}) {
+		t.Fatal("pasted external catalog must retain every selected source row")
+	}
+	if !catalogUsesCrossDedup(CatalogDef{Provider: "tmdb"}) {
+		t.Fatal("built-in board catalog must retain normal cross-board de-duplication")
+	}
+}
+
 // TestHandleCatalogSearchOnlyCarrier pins the hidden search carriers: they
 // answer search for every profile — even one whose browse rows carry no
 // search — and 404 a bare listing request (their search extra is required).

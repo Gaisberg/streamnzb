@@ -2,12 +2,15 @@ package tmdb
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
@@ -23,6 +26,17 @@ const responseCacheTTL = 24 * time.Hour
 // volatileCacheTTL covers endpoints whose results are expected to change
 // between visits (trending, popular, search listings).
 const volatileCacheTTL = 3 * time.Hour
+
+const publicListPageMaxBody = 4 << 20
+
+const publicListMaxPages = 100
+
+var publicListItemPattern = regexp.MustCompile(`(?is)<a[^>]*\btitle="([^"]+)"[^>]*\bhref="/(movie|tv)/(\d+)[^"]*"`)
+
+var (
+	mdbListTitlePattern = regexp.MustCompile(`(?is)<title>\s*([^<]+?)\s*,?\s*(?:a list by .+?)?\s*-\s*mdblist\.com\s*</title>`)
+	mdbListItemPattern  = regexp.MustCompile(`(?is)<div\s+class="card"\s+data-media-id="[^"]+"\s+data-mediatype="(?:movie|show)"[^>]*>.*?https://www\.themoviedb\.org/(movie|tv)/(\d+).*?<div\s+class="header\s+movie-title"\s+title="([^"]+)"`)
+)
 
 // Client is shared by every stream; display language is a per-call parameter
 // on the meta-path methods (metadata profiles differ per stream), never
@@ -293,6 +307,208 @@ type ListingResponse struct {
 	TotalPages int                 `json:"total_pages"`
 }
 
+// PublicListItem is one title visible on TMDB's public list page. TMDB's
+// documented /list endpoint currently returns an empty results array for
+// public lists despite the page containing entries, so public-list sources
+// deliberately use the public page the user supplied as their source.
+type PublicListItem struct {
+	ID   int
+	Type string
+	Name string
+}
+
+// PublicListPage is the title and canonical TMDB rows exposed by a public
+// list page. It contains no account identity, credentials, or playback data.
+type PublicListPage struct {
+	Name  string
+	Items []PublicListItem
+}
+
+// FetchPublicListPage reads one page of a public TMDB list. It accepts only
+// TMDB list URLs, makes no authenticated request, and returns the media IDs
+// exposed by the page itself.
+func FetchPublicListPage(ctx context.Context, rawURL string, page int) ([]PublicListItem, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "www.themoviedb.org" && u.Host != "themoviedb.org") {
+		return nil, fmt.Errorf("invalid public TMDB list URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 || parts[0] != "list" {
+		return nil, fmt.Errorf("invalid public TMDB list URL")
+	}
+	q := u.Query()
+	q.Set("page", strconv.Itoa(max(page, 1)))
+	q.Set("language", "en-US")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TMDB public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	if err != nil {
+		return nil, err
+	}
+	matches := publicListItemPattern.FindAllStringSubmatch(string(body), -1)
+	items := make([]PublicListItem, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		id, err := strconv.Atoi(match[3])
+		name := strings.TrimSpace(html.UnescapeString(match[1]))
+		if err != nil || id <= 0 || name == "" {
+			continue
+		}
+		key := match[2] + ":" + strconv.Itoa(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, PublicListItem{ID: id, Type: match[2], Name: name})
+	}
+	return items, nil
+}
+
+// FetchAllPublicListPages reads all reachable public TMDB list pages. This is
+// used by source inspection so the UI reports the full catalog size rather
+// than just the first website page.
+func FetchAllPublicListPages(ctx context.Context, rawURL string) ([]PublicListItem, error) {
+	items := make([]PublicListItem, 0)
+	seen := make(map[string]struct{})
+	for page := 1; page <= publicListMaxPages; page++ {
+		current, err := FetchPublicListPage(ctx, rawURL, page)
+		if err != nil {
+			return nil, err
+		}
+		if len(current) == 0 {
+			break
+		}
+		added := 0
+		for _, item := range current {
+			key := item.Type + ":" + strconv.Itoa(item.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			items = append(items, item)
+			added++
+		}
+		if added == 0 {
+			break
+		}
+	}
+	return items, nil
+}
+
+// FetchMDBListPage reads one public MDBList page. MDBList renders canonical
+// TMDB links into its public HTML, which makes it suitable for a catalog-only
+// import without requesting the administrator's MDBList API key or account.
+func FetchMDBListPage(ctx context.Context, rawURL string, pageNumber int) (PublicListPage, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "mdblist.com" && u.Host != "www.mdblist.com") {
+		return PublicListPage{}, fmt.Errorf("invalid public MDBList URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 3 || parts[0] != "lists" {
+		return PublicListPage{}, fmt.Errorf("invalid public MDBList URL")
+	}
+	// MDBList's later infinite-scroll pages use the public list page with
+	// append enabled. Page zero stays the normal document so its list title is
+	// available to the selector.
+	if pageNumber > 0 {
+		query := u.Query()
+		query.Set("append", "yes")
+		query.Set("q_current_page", strconv.Itoa(pageNumber))
+		query.Set("filter", "")
+		query.Set("new_items", "false")
+		query.Set("show_hidden", "false")
+		query.Set("item_filter", "")
+		query.Set("mediatype", "")
+		u.RawQuery = query.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return PublicListPage{}, fmt.Errorf("MDBList public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	page := PublicListPage{Items: make([]PublicListItem, 0)}
+	if title := mdbListTitlePattern.FindStringSubmatch(string(body)); len(title) == 2 {
+		page.Name = strings.TrimSpace(html.UnescapeString(title[1]))
+	}
+	seen := make(map[string]struct{})
+	for _, match := range mdbListItemPattern.FindAllStringSubmatch(string(body), -1) {
+		id, err := strconv.Atoi(match[2])
+		name := strings.TrimSpace(html.UnescapeString(match[3]))
+		if err != nil || id <= 0 || name == "" {
+			continue
+		}
+		key := match[1] + ":" + strconv.Itoa(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		page.Items = append(page.Items, PublicListItem{ID: id, Type: match[1], Name: name})
+	}
+	return page, nil
+}
+
+// FetchAllMDBListPages follows MDBList's public infinite-scroll pages until
+// the source is exhausted. It powers the source tester's total row count;
+// runtime catalog requests still fetch only as deep as their Stremio skip
+// requires.
+func FetchAllMDBListPages(ctx context.Context, rawURL string) (PublicListPage, error) {
+	all := PublicListPage{Items: make([]PublicListItem, 0)}
+	seen := make(map[string]struct{})
+	for pageNumber := 0; pageNumber < publicListMaxPages; pageNumber++ {
+		page, err := FetchMDBListPage(ctx, rawURL, pageNumber)
+		if err != nil {
+			return PublicListPage{}, err
+		}
+		if all.Name == "" {
+			all.Name = page.Name
+		}
+		added := 0
+		for _, item := range page.Items {
+			key := item.Type + ":" + strconv.Itoa(item.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			all.Items = append(all.Items, item)
+			added++
+		}
+		if len(page.Items) == 0 || added == 0 {
+			break
+		}
+	}
+	if len(all.Items) == 0 {
+		return PublicListPage{}, fmt.Errorf("MDBList exposes no fetchable TMDB items on this public list")
+	}
+	return all, nil
+}
+
 // GetListing fetches one paged listing. mediaType is "movie" or "tv"; kind is
 // "trending" (the weekly window) or one of TMDB's list endpoints (popular,
 // top_rated, now_playing, upcoming, on_the_air). lang is the display language
@@ -313,6 +529,18 @@ func (c *Client) GetListing(mediaType, kind string, page int, lang string) (*Lis
 		return nil, fmt.Errorf("unknown TMDB listing kind %q", kind)
 	}
 	return getJSON[ListingResponse](c, endpoint, params, "listing "+kind)
+}
+
+// GetPublicList fetches one public TMDB list page. Private lists are rejected
+// by TMDB unless the owner supplies a user token, which StreamNZB never asks
+// catalog-source users to provide.
+func (c *Client) GetPublicList(listID string, page int, lang string) (*ListingResponse, error) {
+	params := url.Values{}
+	params.Set("page", strconv.Itoa(max(page, 1)))
+	if lang != "" {
+		params.Set("language", lang)
+	}
+	return getJSON[ListingResponse](c, fmt.Sprintf(c.BaseURL+"/list/%s", url.PathEscape(listID)), params, "public list")
 }
 
 // GetRecommendations fetches TMDB's recommendations for one title — the seed

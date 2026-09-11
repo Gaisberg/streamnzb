@@ -121,7 +121,12 @@ func decodeItemID(s string) (itemID, error) {
 				return id, nil
 			}
 		}
-		return itemID{}, errBadItemID
+		// Profile-owned external catalog IDs are not part of the static
+		// registry, so retain their opaque view id. The request-specific
+		// catalog resolver verifies it against the stream's enabled rows before
+		// it can be opened.
+		id.CatalogID = hex.EncodeToString(b)
+		return id, nil
 	}
 	if id.Kind < kindMovie || id.Kind > kindSource {
 		return itemID{}, errBadItemID

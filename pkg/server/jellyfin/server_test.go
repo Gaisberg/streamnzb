@@ -495,6 +495,61 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	}
 }
 
+func TestProfileOwnedCatalogViewPages(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.marquee.front-row", Type: "movie", Name: "Marquee: Front Row", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 2)
+
+	view := viewID(def.ID)
+	var views queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserViews", ""), &views)
+	found := false
+	for _, item := range views.Items {
+		found = found || (item.ID == view && item.Name == def.Name)
+	}
+	if !found {
+		t.Fatalf("external profile view missing: %+v", views.Items)
+	}
+	var page queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&Limit=20", ""), &page)
+	if len(page.Items) != 2 || page.Items[0].ParentID != view {
+		t.Fatalf("external catalog page: %+v", page)
+	}
+}
+
+func TestExternalCatalogShortFinalPageLeavesPagingOpen(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.complete-list", Type: "movie", Name: "Complete List", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 45)
+
+	var result queryResult
+	view := viewID(def.ID)
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
+	if len(result.Items) != 5 || result.Items[0].Name != "Title 41" {
+		t.Fatalf("external final rows: %+v", result.Items)
+	}
+	if result.TotalRecordCount <= 45 {
+		t.Fatalf("external short page must not close catalog pagination: %d", result.TotalRecordCount)
+	}
+}
+
+func TestInfuseLatestReturnsFullExternalCatalog(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.infuse-list", Type: "movie", Name: "Infuse List", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 45)
+
+	var latest []*baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/Latest?ParentId="+viewID(def.ID)+"&Limit=20", "",
+		"Authorization", `MediaBrowser Client="Infuse", Device="Apple TV", DeviceId="dev-1", Version="8.5.3", Token="`+testToken+`"`,
+		"User-Agent", "Infuse-Direct/8.5.3"), &latest)
+	if len(latest) != 45 || latest[44].Name != "Title 45" {
+		t.Fatalf("Infuse external latest = %d rows, want complete 45", len(latest))
+	}
+}
+
 func TestMovieDetail(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")

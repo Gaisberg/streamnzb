@@ -1,6 +1,10 @@
 package stremio
 
-import "streamnzb/pkg/core/config"
+import (
+	"strings"
+
+	"streamnzb/pkg/core/config"
+)
 
 // CatalogDef is one catalog the addon can serve. The registry is the single
 // source of truth for which catalogs exist: the manifest, the catalog handler,
@@ -25,6 +29,12 @@ type CatalogDef struct {
 	// even on an uncapped profile. A capped profile tightens it further
 	// (effective ceiling = min of the two); "" means no built-in ceiling.
 	CertCeiling string `json:"-"`
+	// External coordinates are deliberately not serialised into manifests or
+	// Jellyfin views. They are dispatch data for a selected public catalog row.
+	ExternalManifestURL string `json:"-"`
+	ExternalRemoteType  string `json:"-"`
+	ExternalRemoteID    string `json:"-"`
+	ExternalKind        string `json:"-"`
 }
 
 // catalogRegistry lists every browse catalog the addon can serve, in default
@@ -151,6 +161,7 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 		return nil
 	}
 	toggles := profile.Catalogs
+	external := externalCatalogDefs(profile)
 	if toggles == nil {
 		var defs []CatalogDef
 		for _, def := range catalogRegistry {
@@ -158,18 +169,51 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 				defs = append(defs, def)
 			}
 		}
-		return defs
+		return append(defs, external...)
 	}
+	allDefs := append(CatalogRegistry(), external...)
 	var defs []CatalogDef
 	seen := make(map[string]bool, len(toggles))
 	for _, t := range toggles {
 		if !t.Enabled || seen[t.ID] {
 			continue
 		}
-		if def, ok := catalogDefByID(t.ID); ok {
-			seen[t.ID] = true
-			defs = append(defs, def)
+		for _, def := range allDefs {
+			if def.ID == t.ID {
+				seen[t.ID] = true
+				defs = append(defs, def)
+				break
+			}
 		}
+	}
+	return defs
+}
+
+// externalCatalogDefs turns the explicit, selected rows on a profile into
+// ordinary catalog definitions. A source never imports a manifest wholesale:
+// search-only rows are rejected when saved and the remote coordinates are
+// retained only for the catalog fetcher.
+func externalCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
+	if profile == nil {
+		return nil
+	}
+	defs := make([]CatalogDef, 0, len(profile.ExternalCatalogs))
+	seen := make(map[string]bool, len(profile.ExternalCatalogs))
+	for _, source := range profile.ExternalCatalogs {
+		id := strings.TrimSpace(source.ID)
+		name := strings.TrimSpace(source.Name)
+		remoteType := strings.TrimSpace(source.RemoteType)
+		remoteID := strings.TrimSpace(source.RemoteID)
+		manifestURL := strings.TrimSpace(source.ManifestURL)
+		contentType := strings.ToLower(remoteType)
+		if contentType == "tv" {
+			contentType = "series"
+		}
+		if id == "" || name == "" || manifestURL == "" || remoteID == "" || seen[id] || (contentType != "movie" && contentType != "series" && contentType != "anime") {
+			continue
+		}
+		seen[id] = true
+		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: true, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind})
 	}
 	return defs
 }

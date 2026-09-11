@@ -663,8 +663,43 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Not a valid http(s) URL"
 				}
 			}
+			externalIDs := make(map[string]bool, len(mp.ExternalCatalogs))
+			for j, source := range mp.ExternalCatalogs {
+				path := fmt.Sprintf("metadata_profiles.%d.external_catalogs.%d", i, j)
+				id := strings.TrimSpace(source.ID)
+				if id == "" {
+					errors[path+".id"] = "ID is required"
+				} else if externalIDs[id] || knownCatalogIDs[id] {
+					errors[path+".id"] = "ID must be unique"
+				}
+				externalIDs[id] = true
+				if strings.TrimSpace(source.Name) == "" {
+					errors[path+".name"] = "Name is required"
+				}
+				u, err := url.Parse(strings.TrimSpace(source.ManifestURL))
+				validSourceURL := err == nil && u.Scheme == "https" && u.Host != ""
+				if source.Kind == "tmdb_list" {
+					validSourceURL = validSourceURL && strings.Contains(strings.ToLower(u.Host), "themoviedb.org") && strings.HasPrefix(u.Path, "/list/")
+				} else if source.Kind == "mdblist" {
+					host := strings.ToLower(u.Host)
+					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(u.Path, "/lists/")
+				} else {
+					validSourceURL = validSourceURL && strings.HasSuffix(u.Path, "/manifest.json")
+				}
+				if !validSourceURL {
+					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, or MDBList URL"
+				}
+				if strings.TrimSpace(source.RemoteID) == "" {
+					errors[path+".remote_id"] = "Catalog id is required"
+				}
+				switch strings.ToLower(strings.TrimSpace(source.RemoteType)) {
+				case "movie", "series", "anime", "tv":
+				default:
+					errors[path+".remote_type"] = "Only movie, series, anime, or tv browse catalogs are supported"
+				}
+			}
 			for j, toggle := range mp.Catalogs {
-				if !knownCatalogIDs[toggle.ID] {
+				if !knownCatalogIDs[toggle.ID] && !externalIDs[toggle.ID] {
 					errors[fmt.Sprintf("metadata_profiles.%d.catalogs.%d", i, j)] = "Unknown catalog id"
 				}
 			}

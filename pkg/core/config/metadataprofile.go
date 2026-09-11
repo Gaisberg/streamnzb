@@ -20,6 +20,11 @@ type MetadataProfileConfig struct {
 	// save. Unknown ids are ignored read-side.
 	Catalogs []CatalogToggle `json:"catalogs"`
 
+	// ExternalCatalogs are selected browse rows from public Stremio manifests.
+	// They deliberately carry no credentials and do not import remote search,
+	// stream, subtitle, or configuration resources.
+	ExternalCatalogs []ExternalCatalogConfig `json:"external_catalogs,omitempty"`
+
 	// Per-media-type meta sources. Empty means the default; unknown values
 	// normalize to the default read-side. Today only series has a real choice
 	// (TVDB default, TMDB alternative).
@@ -51,6 +56,19 @@ type MetadataProfileConfig struct {
 	// this is a parental control — the deliberate opposite of the fail-open
 	// doctrine release limits follow.
 	AllowUnrated *bool `json:"allow_unrated,omitempty"`
+}
+
+// ExternalCatalogConfig records one chosen catalog row rather than an entire
+// addon. ID is a locally generated stable key; ManifestURL is always the
+// public manifest URL the administrator pasted; RemoteType and RemoteID are
+// the exact resource coordinates declared by that manifest.
+type ExternalCatalogConfig struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Kind        string `json:"kind,omitempty"`
+	ManifestURL string `json:"manifest_url"`
+	RemoteType  string `json:"remote_type"`
+	RemoteID    string `json:"remote_id"`
 }
 
 // EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"
