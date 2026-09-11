@@ -69,6 +69,10 @@ type ExternalCatalogConfig struct {
 	ManifestURL string `json:"manifest_url"`
 	RemoteType  string `json:"remote_type"`
 	RemoteID    string `json:"remote_id"`
+	// SupportsSkip records the pasted manifest's explicit pagination contract.
+	// Nil is a legacy row saved before this field existed and retains the old
+	// behavior until it is re-added through the inspected-source flow.
+	SupportsSkip *bool `json:"supports_skip,omitempty"`
 }
 
 // EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"

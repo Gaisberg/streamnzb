@@ -135,7 +135,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   const [editingExternalName, setEditingExternalName] = useState("")
 
   const externalRows = useMemo(() => draft.external_catalogs || [], [draft.external_catalogs])
-  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", supports_skip: true })), [externalRows])
+  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", supports_skip: source.supports_skip !== false })), [externalRows])
   const allDefs = useMemo(() => [...registry, ...externalDefs], [registry, externalDefs])
   const defsByID = useMemo(() => new Map(allDefs.map((def) => [def.id, def])), [allDefs])
   const rows = useMemo(() => seedRows(allDefs, draft.catalogs ?? null), [allDefs, draft.catalogs])
@@ -185,6 +185,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
       manifest_url: sourceURL.trim(),
       remote_type: catalog.remote_type,
       remote_id: catalog.remote_id,
+      supports_skip: catalog.supports_skip !== false,
     }]
     onChange({ ...draft, external_catalogs: next, catalogs: [...rows, next[next.length - 1].id].map((id) => ({ id, enabled: true })) })
   }

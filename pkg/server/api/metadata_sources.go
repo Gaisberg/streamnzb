@@ -103,10 +103,10 @@ func inspectTMDBList(ctx context.Context, rawURL, listID string) (any, error) {
 	}
 	cats := []map[string]any{}
 	if movie > 0 {
-		cats = append(cats, map[string]any{"name": "TMDB List (Movies)", "type": "movie", "remote_type": "movie", "remote_id": listID, "row_count": movie})
+		cats = append(cats, map[string]any{"name": "TMDB List (Movies)", "type": "movie", "remote_type": "movie", "remote_id": listID, "row_count": movie, "supports_skip": true})
 	}
 	if series > 0 {
-		cats = append(cats, map[string]any{"name": "TMDB List (Series)", "type": "series", "remote_type": "series", "remote_id": listID, "row_count": series})
+		cats = append(cats, map[string]any{"name": "TMDB List (Series)", "type": "series", "remote_type": "series", "remote_id": listID, "row_count": series, "supports_skip": true})
 	}
 	return map[string]any{"name": "TMDB List", "kind": "tmdb_list", "source_url": rawURL, "catalogs": cats}, nil
 }
@@ -130,10 +130,10 @@ func inspectMDBList(ctx context.Context, rawURL, listID string) (any, error) {
 	}
 	cats := []map[string]any{}
 	if movie > 0 {
-		cats = append(cats, map[string]any{"name": name + " (Movies)", "type": "movie", "remote_type": "movie", "remote_id": listID, "row_count": movie})
+		cats = append(cats, map[string]any{"name": name + " (Movies)", "type": "movie", "remote_type": "movie", "remote_id": listID, "row_count": movie, "supports_skip": true})
 	}
 	if series > 0 {
-		cats = append(cats, map[string]any{"name": name + " (Series)", "type": "series", "remote_type": "series", "remote_id": listID, "row_count": series})
+		cats = append(cats, map[string]any{"name": name + " (Series)", "type": "series", "remote_type": "series", "remote_id": listID, "row_count": series, "supports_skip": true})
 	}
 	return map[string]any{"name": name, "kind": "mdblist", "source_url": rawURL, "catalogs": cats}, nil
 }

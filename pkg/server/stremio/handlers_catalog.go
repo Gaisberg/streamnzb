@@ -72,6 +72,7 @@ type ExternalCatalogPreview struct {
 	RemoteType string `json:"remote_type"`
 	RemoteID   string `json:"remote_id"`
 	RowCount   int    `json:"row_count"`
+	SupportsSkip bool  `json:"supports_skip"`
 }
 
 // ExternalManifestInspection is the safe result of testing every eligible
@@ -120,8 +121,9 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 	}
 	inspection := &ExternalManifestInspection{Name: strings.TrimSpace(manifest.Name)}
 	type candidate struct {
-		def  CatalogDef
-		name string
+		def          CatalogDef
+		name         string
+		supportsSkip bool
 	}
 	var candidates []candidate
 	for _, cat := range manifest.Catalogs {
@@ -132,19 +134,22 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		if cat.ID == "" || cat.Name == "" || (contentType != "movie" && contentType != "series" && contentType != "anime") {
 			continue
 		}
-		searchOnly := false
+		searchOnly, supportsSkip := false, false
 		for _, extra := range cat.Extra {
 			if extra.Name == "search" && extra.IsRequired {
 				searchOnly = true
-				break
+			}
+			if extra.Name == "skip" {
+				supportsSkip = true
 			}
 		}
 		if searchOnly {
 			continue
 		}
 		candidates = append(candidates, candidate{
-			def:  CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
-			name: strings.TrimSpace(cat.Name),
+			def:          CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
+			name:         strings.TrimSpace(cat.Name),
+			supportsSkip: supportsSkip,
 		})
 	}
 	if len(candidates) == 0 {
@@ -172,7 +177,7 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 					results[i].err = fmt.Errorf("catalog returned no canonical items")
 					continue
 				}
-				results[i].preview = ExternalCatalogPreview{Name: candidate.name, Type: candidate.def.Type, RemoteType: candidate.def.ExternalRemoteType, RemoteID: candidate.def.ExternalRemoteID, RowCount: len(metas)}
+				results[i].preview = ExternalCatalogPreview{Name: candidate.name, Type: candidate.def.Type, RemoteType: candidate.def.ExternalRemoteType, RemoteID: candidate.def.ExternalRemoteID, RowCount: len(metas), SupportsSkip: candidate.supportsSkip}
 			}
 		}()
 	}

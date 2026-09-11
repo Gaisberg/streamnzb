@@ -307,10 +307,7 @@ func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit i
 			break
 		}
 		rows = append(rows, metas...)
-		// A non-empty short response is not an end marker for a pasted source.
-		// It may be a source's own page size; treating it as the end leaves the
-		// rest of an otherwise healthy user-selected list unreachable.
-		if len(metas) == 0 || !def.SupportsSkip || (def.Provider != "external" && len(metas) < bucket) {
+		if len(metas) == 0 || !def.SupportsSkip || len(metas) < bucket {
 			short = true
 			break
 		}

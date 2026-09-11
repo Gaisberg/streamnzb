@@ -518,7 +518,7 @@ func TestProfileOwnedCatalogViewPages(t *testing.T) {
 	}
 }
 
-func TestExternalCatalogShortFinalPageLeavesPagingOpen(t *testing.T) {
+func TestExternalCatalogShortFinalPageClosesPaging(t *testing.T) {
 	f := newFixture()
 	def := stremio.CatalogDef{ID: "external.complete-list", Type: "movie", Name: "Complete List", Provider: "external", SupportsSkip: true}
 	f.catalog.catalogs = append(f.catalog.catalogs, def)
@@ -530,8 +530,8 @@ func TestExternalCatalogShortFinalPageLeavesPagingOpen(t *testing.T) {
 	if len(result.Items) != 5 || result.Items[0].Name != "Title 41" {
 		t.Fatalf("external final rows: %+v", result.Items)
 	}
-	if result.TotalRecordCount <= 45 {
-		t.Fatalf("external short page must not close catalog pagination: %d", result.TotalRecordCount)
+	if result.TotalRecordCount != 45 {
+		t.Fatalf("external short page total = %d, want 45", result.TotalRecordCount)
 	}
 }
 

@@ -213,7 +213,8 @@ func externalCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 			continue
 		}
 		seen[id] = true
-		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: true, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind})
+		supportsSkip := source.Kind != "manifest" || source.SupportsSkip == nil || *source.SupportsSkip
+		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: supportsSkip, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind})
 	}
 	return defs
 }
