@@ -24,6 +24,48 @@ var languageAliasPattern = func() *regexp.Regexp {
 	return regexp.MustCompile(pattern)
 }()
 
+// subtitleLanguagePattern matches a language named right before a subtitle
+// word — "Arabic.Subs", "ENG-Subbed", "French Subtitles" — the one way a
+// release name says which language its subtitles are in. jhin reports the
+// language and that the release is subbed, but not that the two are related,
+// so a subtitle-only release reads to it exactly like a dub.
+var subtitleLanguagePattern = func() *regexp.Regexp {
+	words := pttoptions.LanguageNameWords()
+	parts := make([]string, 0, len(words))
+	for _, w := range words {
+		parts = append(parts, regexp.QuoteMeta(w))
+	}
+	pattern := `(?i)(?:^|[\s._\-(\[])(` + strings.Join(parts, "|") + `)[\s._\-]?(?:subs?|subbed|subtitles?)(?:$|[\s._\-)\]])`
+	return regexp.MustCompile(pattern)
+}()
+
+// SubtitleLanguages lifts the languages a release name attaches to a subtitle
+// word, normalized to ISO 639-1 codes and in name order without repeats.
+//
+// Matches are found one at a time, resuming on the separator that closed the
+// last one: the pattern consumes that separator, and "Eng.Subs.Ger.Subs" needs
+// it back as the opening boundary of the next match.
+func SubtitleLanguages(rawTitle string) []string {
+	var names []string
+	rest := rawTitle
+	for {
+		loc := subtitleLanguagePattern.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			break
+		}
+		names = append(names, rest[loc[2]:loc[3]])
+		if loc[1] == len(rest) {
+			break
+		}
+		// Not at the end, so the match closed on a separator: hand it back.
+		rest = rest[loc[1]-1:]
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return pttoptions.NormalizeLanguageSlice(names)
+}
+
 // ParsedRelease exposes jhin's full parse output through the embedded
 // jhin.Result, so every attribute jhin extracts is available to filtering,
 // ranking and stream descriptions without this type having to mirror it.
@@ -43,6 +85,13 @@ type ParsedRelease struct {
 
 	Season  int
 	Episode int
+
+	// Subtitles are the subtitle languages the name spells out, as ISO 639-1
+	// codes — "Arabic.Subs" is a subtitle track, not a dub. jhin generally
+	// folds them into Languages as well, and they are left there: a
+	// required-language filter on the profile has always read them, and a
+	// subtitle track is still one way to watch a release in that language.
+	Subtitles []string
 }
 
 // ParseReleaseTitle parses a release title using the full jhin parser.
@@ -93,6 +142,7 @@ func FromResult(title string, info *jhin.Result) *ParsedRelease {
 		parsed.Episode = parsed.Episodes[0]
 	}
 	expandLanguageAliases(title, parsed)
+	parsed.Subtitles = SubtitleLanguages(title)
 
 	return parsed
 }

@@ -32,9 +32,24 @@ type Stream struct {
 	// aggregators that filter by language read it instead of guessing from
 	// the description text.
 	Languages []string `json:"languages,omitempty"`
+	// MediaInfo is the same knowledge in the shape AIOStreams' own Newznab
+	// integration attaches to its streams, and the only place a release's
+	// subtitle languages can travel: Stremio's "subtitles" field is a list of
+	// subtitle files, and a code in it fails AIOStreams' schema for the whole
+	// stream. Nil when neither list has anything in it.
+	MediaInfo *StreamMediaInfo `json:"parsedMediaInfo,omitempty"`
 
 	BehaviorHints *BehaviorHints `json:"behaviorHints,omitempty"`
 	StreamType    string         `json:"streamType,omitempty"`
+}
+
+// StreamMediaInfo is the AIOStreams parsedMediaInfo contract, as far as a
+// release's metadata can fill it. Quality is its provenance tier: "indexer"
+// for what the feed's attributes said, "probe" once the file itself was read.
+type StreamMediaInfo struct {
+	Quality   string   `json:"mediaInfoQuality,omitempty"`
+	Languages []string `json:"languages,omitempty"`
+	Subtitles []string `json:"subtitles,omitempty"`
 }
 
 type BehaviorHints struct {

@@ -202,6 +202,7 @@ func TestConvertAIOStreamsBuiltinFormatterCorpus(t *testing.T) {
 		Audio:        stringList{"DDP"},
 		Channels:     stringList{"5.1"},
 		Languages:    stringList{"en", "fi"},
+		Subtitles:    stringList{"ar"},
 		Size:         1_832_627_684,
 		Indexer:      "altHUB",
 		Grabs:        37,
@@ -221,6 +222,30 @@ func TestConvertAIOStreamsBuiltinFormatterCorpus(t *testing.T) {
 		if err := tpl.Execute(&b, ctx); err != nil {
 			t.Errorf("%s: converted template failed to execute: %v\n%s", name, err, res.Template)
 		}
+	}
+}
+
+// Subtitle languages map to {{.Subtitles}} and their flags to the same
+// helper the language emojis use, so a Torrentio-style "Subs / 🇸🇦" line
+// renders from the merged subtitle list.
+func TestConvertAIOStreamsSubtitles(t *testing.T) {
+	res := ConvertAIOStreamsFormat(`{stream.subtitles::exists["Subs / {stream.subtitleEmojis::join(' / ')}"||""]}`)
+	tpl, err := template.New("subs").Funcs(formatTemplateFuncs).Parse(res.Template)
+	if err != nil {
+		t.Fatalf("converted template does not compile: %v\n%s", err, res.Template)
+	}
+	var b strings.Builder
+	if err := tpl.Execute(&b, FormatContext{Subtitles: stringList{"ar", "tr"}}); err != nil {
+		t.Fatalf("converted template failed to execute: %v", err)
+	}
+	if got := b.String(); got != "Subs / 🇸🇦" {
+		t.Errorf("rendered %q, want %q (Turkish has no unambiguous flag)", got, "Subs / 🇸🇦")
+	}
+	if err := tpl.Execute(&b, FormatContext{}); err != nil {
+		t.Fatalf("converted template failed on an empty context: %v", err)
+	}
+	if got := b.String(); got != "Subs / 🇸🇦" {
+		t.Errorf("no subtitles rendered %q, want nothing appended", got[len("Subs / 🇸🇦"):])
 	}
 }
 

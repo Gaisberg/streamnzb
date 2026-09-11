@@ -63,7 +63,12 @@ type FormatContext struct {
 	// languages other than Hindi have no flag here, so this list is shorter
 	// than .Languages more often than not.
 	LanguageFlags stringList
-	Caps          string // ffprobe-verified caps summary (library releases only)
+	// Subtitles are the release's subtitle languages as ISO 639-1 codes: the
+	// indexer's tag, merged with the tracks ffprobe found when the file has
+	// been opened. A release name never lists them, so this is empty for
+	// anything the indexer left untagged.
+	Subtitles stringList
+	Caps      string // ffprobe-verified caps summary (library releases only)
 
 	// Kind is the content kind the request was ranked as: "movie", "series",
 	// "anime_movie" or "anime_show". IsAnime is the anime half of that
@@ -525,6 +530,17 @@ var formatTemplateFuncs = template.FuncMap{
 		}
 		return false
 	},
+	// flags renders a list of language codes as flag emojis, the way
+	// .LanguageFlags already is for .Languages: {{join (flags .Subtitles) " "}}.
+	"flags": func(v any) stringList {
+		switch list := v.(type) {
+		case stringList:
+			return languageFlags(list)
+		case []string:
+			return languageFlags(list)
+		}
+		return nil
+	},
 	"hasPrefix": func(prefix string, v any) bool {
 		return strings.HasPrefix(templateText(v), prefix)
 	},
@@ -774,6 +790,7 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 	// language appears at all.
 	ctx.Languages = releaseLanguageCodes(rel, meta)
 	ctx.LanguageFlags = languageFlags(ctx.Languages)
+	ctx.Subtitles = releaseSubtitleCodes(rel, meta, cand.Verdict.Probed)
 	if probed := cand.Verdict.Probed; probed != nil && probed.DurationSeconds > 0 {
 		// A probed library release is measured, not estimated: the container's
 		// own duration, against the media file's exact size when the library
@@ -986,6 +1003,9 @@ type formatPreviewFixture struct {
 	// title says, so at least one fixture renders the original-audio badge
 	// and {{.LanguageFlags}} has something to draw.
 	languages []string
+	// subtitles is the indexer's subs tag, so {{.Subtitles}} previews on the
+	// fixture whose name says nothing about subtitles.
+	subtitles []string
 	// variants are the other indexers holding a copy of this release, so a
 	// preview of {{.Variants}} shows a merged result rather than a lone one.
 	variants []string
@@ -1006,6 +1026,7 @@ func formatPreviewFixtures() []formatPreviewFixture {
 			kind:             "movie",
 			originalLanguage: "en",
 			languages:        []string{"en"},
+			subtitles:        []string{"en", "ar"},
 			variants:         []string{"NZBGeek", "NinjaCentral"},
 		},
 		{
@@ -1097,6 +1118,7 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 			Grabs:     fx.grabs,
 			Duration:  fx.duration,
 			Languages: fx.languages,
+			Subtitles: fx.subtitles,
 		}
 		for _, name := range fx.variants {
 			rel.Variants = append(rel.Variants, &release.Release{Title: fx.title, Size: fx.size, Indexer: name, PubDate: fx.pubDate})

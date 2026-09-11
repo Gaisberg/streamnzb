@@ -32,7 +32,7 @@ const FORMAT_FIELDS = [
       '{{range .MatchedRules}}{{.Name}} {{score .Score}} · {{end}}',
     ],
   },
-  { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages', '.LanguageFlags'] },
+  { group: 'Parsed', fields: ['.ParsedTitle', '.Year', '.Date', '.Resolution', '.Quality', '.Codec', '.BitDepth', '.Bitrate', '.Container', '.Extension', '.Group', '.Edition', '.Network', '.Site', '.Country', '.Region', '.Audio', '.Channels', '.HDR', '.Languages', '.LanguageFlags', '.Subtitles'] },
   { group: 'Episode', fields: ['.Season', '.Episode', '.Seasons', '.Episodes', '.EpisodeCode', '.Volumes'] },
   { group: 'Flags', fields: ['.Proper', '.Repack', '.Remastered', '.Upscaled', '.ThreeD', '.Scene', '.Retail', '.Hardcoded', '.Dubbed', '.Subbed', '.Commentary', '.Complete', '.Documentary', '.Unrated', '.Uncensored', '.PPV'] },
   { group: 'Kind', fields: ['.Kind', '.IsAnime', '.OriginalLanguage'] },
@@ -40,7 +40,7 @@ const FORMAT_FIELDS = [
   { group: 'Avail', fields: ['.Availability.Status', '.Availability.Known', '.Availability.OnMyBackbone', '.Availability.CheckedDaysAgo', '.Availability.Compression'] },
   { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative', '.Seadex.DualAudio'] },
   { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network', '.ParsedTitle | title | truncate 24'] },
-  { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "'] },
+  { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "', 'join (flags .Subtitles) " "'] },
   { group: 'Math', fields: ['add 100 .Score', 'sub 100 .Score', 'mul 2 .Season', 'div 1000 .Score', 'mod 10 .Score', 'min 50 .Score', 'max 0 .Score', 'stars 5 .TopScore .Score', 'repeat "▰" 3', '.Score | div 1000 | repeat "▰"'] },
   {
     group: 'Checks',

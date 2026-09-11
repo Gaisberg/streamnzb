@@ -1,6 +1,7 @@
 package pttoptions
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/dreulavelle/jhin/parser"
@@ -74,6 +75,25 @@ var languageISO6392ToCode = map[string]string{
 	"hrv": "hr", "slv": "sl", "hin": "hi", "tel": "te", "tam": "ta", "mal": "ml", "kan": "kn",
 	"mar": "mr", "guj": "gu", "pan": "pa", "ben": "bn", "vie": "vi", "ind": "id", "tha": "th",
 	"may": "ms", "msa": "ms", "ara": "ar", "tur": "tr", "heb": "he", "per": "fa", "fas": "fa",
+}
+
+// LanguageNameWords returns every word a release name spells a language out
+// with — the full names and the three-letter ISO 639-2 codes — in a stable
+// order for regex building. Two-letter codes are left out on purpose: "NO",
+// "IT" and "ID" are English words far more often than they are languages.
+func LanguageNameWords() []string {
+	words := make([]string, 0, len(languageFullNameToCode)+len(languageISO6392ToCode))
+	for name := range languageFullNameToCode {
+		if strings.Contains(name, " ") {
+			continue // "multi subs" and friends are not one language
+		}
+		words = append(words, name)
+	}
+	for code := range languageISO6392ToCode {
+		words = append(words, code)
+	}
+	sort.Strings(words)
+	return words
 }
 
 // LanguageAliases maps release-title alias words to the language codes they represent.

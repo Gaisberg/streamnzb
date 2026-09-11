@@ -40,6 +40,34 @@ on, so those releases survive a language filter on either side:
   Turkish, Persian and the Indian languages other than Hindi are deliberately
   left out rather than mislabelled. Filter on those in StreamNZB instead.
 
+### Subtitle filters
+
+AIOStreams' **Required subtitles** and **Excluded subtitles** filters are a
+separate thing, and flags do not feed them: AIOStreams reads a stream's
+subtitle languages from a `parsedMediaInfo` block on the stream, the one its
+own Newznab integration builds from the feed's `subs` attribute. A stream
+without the block has *Unknown* subtitles and fails every required-subtitle
+filter — which is what made a required Arabic subtitle filter drop every
+StreamNZB result while the same indexer through AIOStreams' Newznab worked
+(issue #283).
+
+Every StreamNZB stream now carries that block:
+
+```json
+"parsedMediaInfo": { "mediaInfoQuality": "indexer", "languages": ["ar"], "subtitles": ["ar"] }
+```
+
+`subtitles` is the union of what the release name spells out (`Arabic.Subs`),
+the indexer's `subs` tag, and — for a library release that has been probed —
+the subtitle tracks ffprobe found. It is omitted when nothing is known, so a
+release nobody labelled stays *Unknown* rather than becoming "no subtitles".
+
+Reading the block is on AIOStreams' side of the fence: its StreamNZB preset
+uses the generic stream parser, which only knows flags. Until a release of
+AIOStreams reads `parsedMediaInfo` from StreamNZB streams, a required-subtitle
+filter there still sees *Unknown*. Filter on subtitles in StreamNZB instead —
+a rule such as `not ("ar" in subtitles)` → reject — see [Rules](rules.md).
+
 Indexers vary in how much they tag, and none of this invents a language for a
 release nobody labelled. If a required-language filter still returns nothing,
 check the [History](troubleshooting.md) page for what the indexers actually

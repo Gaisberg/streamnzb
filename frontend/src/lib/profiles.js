@@ -304,6 +304,7 @@ export const RULE_ATTRIBUTES = [
       { name: "audio", type: "list", example: '"TrueHD" in audio' },
       { name: "channels", type: "list", example: '"7.1" in channels' },
       { name: "languages", type: "list", example: '"en" in languages' },
+      { name: "subtitles", type: "list", example: '"ar" in subtitles — from the name, the indexer and a probe' },
       { name: "group", type: "text" },
       { name: "edition", type: "text" },
       { name: "container", type: "text" },

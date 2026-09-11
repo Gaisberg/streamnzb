@@ -48,6 +48,13 @@ release and a tagged one rather than a preference for English. A profile that
 wants a language ranked writes a rule: `"en" in languages → +500`. See
 [the languages note](rules.md#inferred--from-the-release-name) for the codes.
 
+A profile's language controls — required, allowed, excluded and preferred
+languages, and *remove unknown languages* — judge the same list a language
+rule reads: what the name says merged with what the indexer tagged the release
+as. A dub posted under an untouched English name and tagged Arabic only in the
+feed satisfies a required Arabic and is caught by an excluded one, rather than
+counting as a release with no language.
+
 The preset decides which resolutions are offered. It does not decide the order
 they arrive in — the score does, and only the score. A resolution is worth
 20000 points per tier, so 4K leads a list nobody has written a rule about, but a

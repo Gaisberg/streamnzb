@@ -266,9 +266,9 @@ decides how to write a rule — and whether it can run at all.
 ### inferred — from the release name
 
 `resolution` `quality` `codec` `bitDepth` `hdr` `dolbyVision` `hdrFallback`
-`audio` `channels` `languages` `group` `edition` `container` `year`
-`seasonPack` `proper` `repack` `remastered` `upscaled` `threeD` `dubbed`
-`subbed` `hardcoded` `complete` `verified`
+`audio` `channels` `languages` `subtitles` `group` `edition` `container`
+`year` `seasonPack` `proper` `repack` `remastered` `upscaled` `threeD`
+`dubbed` `subbed` `hardcoded` `complete` `verified`
 
 Also `parsed.resolution`, `parsed.codec`, `parsed.hdr`, `parsed.bitDepth`,
 `parsed.dolbyVision`, `parsed.hdrFallback`, `parsed.title`.
@@ -306,6 +306,13 @@ other languages rather than reward English, say so directly:
 not ("en" in languages)                # everything else, untagged included
 "ja" in languages and not dubbed       # the ones you actually want to demote
 ```
+
+`subtitles` is the same idea for subtitle languages, and reads every source
+there is: a name that spells one out (`Arabic.Subs`, `ENG-Subbed`), the
+indexer's `subs` tag, and the subtitle tracks ffprobe found when the file has
+been opened. `subbed` only says the name mentioned subtitles at all;
+`"ar" in subtitles` says which. A release none of the three said anything
+about has an empty list, so the rule is judged rather than skipped.
 
 ### reported — from the indexer
 

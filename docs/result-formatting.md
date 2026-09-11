@@ -28,11 +28,11 @@ release's parsed data.
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` `.Seadex.DualAudio` |
-| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` `.LanguageFlags` |
+| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` `.LanguageFlags` `.Subtitles` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
 | Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
 
-List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.LanguageFlags`, `.Seasons`,
+List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.LanguageFlags`, `.Subtitles`, `.Seasons`,
 `.Episodes`, `.Volumes`) render comma-separated by default and work with
 `range`, `index`, and the list helpers below. `.Caps` is the ffprobe-verified
 media summary, present on library releases only. `.Duration` is the humanized
@@ -104,6 +104,15 @@ than none — so Turkish, Persian and the Indian languages other than Hindi have
 no flag here and appear in `.Languages` only. See
 [Using with AIOStreams](aiostreams.md) for why the distinction matters to an
 aggregator reading the description.
+
+`.Subtitles` is the release's subtitle languages, as the same codes: what the
+name spells out (`Arabic.Subs`), merged with the indexer's `subs` tag and, for
+a probed library release, the subtitle tracks ffprobe found. `flags` renders
+any list of codes the way `.LanguageFlags` renders `.Languages`:
+
+```
+{{if .Subtitles}}📝 {{join (flags .Subtitles) " "}}{{end}}
+```
 
 ### Matched rules
 
@@ -189,6 +198,7 @@ comma-separated text.
 | `size` | `{{size .Size}}` | `1.83 GB` |
 | `score` | `{{score .Score}}` | `+2850` |
 | `join` | `{{join .HDR "\|"}}` | `DV\|HDR10` |
+| `flags` | `{{join (flags .Subtitles) " "}}` | `🇸🇦 🇫🇷` — codes as flag emojis, ambiguous ones skipped |
 | `upper` / `lower` | `{{upper .Codec}}` | `H265` |
 | `title` | `{{title .ParsedTitle}}` | `Ted Lasso` |
 | `smallcaps` | `{{smallcaps .Network}}` | `ɴᴇᴛꜰʟɪx` |

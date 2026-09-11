@@ -66,6 +66,13 @@ func buildRegistry() *jhinrules.Registry {
 	reg.Field("indexer", jhinrules.Str, tierIndexer)
 	reg.Field("querySource", jhinrules.Str, tierIndexer)
 
+	// Subtitle languages are the counterpart of languages: what the name
+	// spells out ("Arabic.Subs"), merged with the indexer's subs tag and with
+	// a probe's tracks when there was one. Like languages it carries no tier
+	// — a name that says nothing about subtitles is a release with none
+	// known, and "ar" in subtitles is false for it rather than skipped.
+	reg.Field("subtitles", jhinrules.StrList, "")
+
 	// Whether the release is already in the library is StreamNZB's own
 	// knowledge, not the indexer's, and every release has an answer: a bare
 	// name is simply not a library hit. No tier, so `not library` holds for

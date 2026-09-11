@@ -42,6 +42,36 @@ func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease) []st
 	return pttoptions.MergeLanguageCodes(parsed, reported)
 }
 
+// releaseSubtitleCodes is the union of the subtitle languages the release
+// name spells out ("Arabic.Subs"), the ones the indexer tagged the release
+// with, and the tracks ffprobe found when the file has been opened, as ISO
+// 639-1 codes.
+func releaseSubtitleCodes(rel *release.Release, meta *parser.ParsedRelease, probed *release.MediaCaps) []string {
+	var parsed, reported, measured []string
+	if meta != nil {
+		parsed = meta.Subtitles
+	}
+	if rel != nil {
+		reported = rel.Subtitles
+	}
+	if probed != nil && probed.TracksProbed {
+		measured = probed.SubtitleLanguages
+	}
+	return pttoptions.MergeLanguageCodes(parsed, reported, measured)
+}
+
+// streamMediaInfo is the AIOStreams parsedMediaInfo block for a release, or
+// nil when there is nothing to put in it. Its Newznab integration builds the
+// same block from the feed's language and subs attributes, and its subtitle
+// filters read nothing else — a stream without one has "Unknown" subtitles
+// and fails every required-subtitle filter (issue #283).
+func streamMediaInfo(languages, subtitles []string) *StreamMediaInfo {
+	if len(languages) == 0 && len(subtitles) == 0 {
+		return nil
+	}
+	return &StreamMediaInfo{Quality: "indexer", Languages: languages, Subtitles: subtitles}
+}
+
 // languageFlags renders the flags for the codes that have one, in order and
 // without repeats. Codes with no unambiguous flag are skipped.
 func languageFlags(codes []string) []string {

@@ -119,6 +119,10 @@ type Env struct {
 	Passworded       bool
 	Indexer          string
 	QuerySource      string
+	// Subtitles is every subtitle language the release is known to carry, as
+	// ISO 639-1 codes: what the name spells out ("Arabic.Subs"), the
+	// indexer's subtitle-language tag, and the tracks a probe found.
+	Subtitles []string
 
 	// ---- community ----
 
@@ -276,6 +280,8 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.StrOf(e.Indexer), true
 	case "querySource":
 		return jhinrules.StrOf(e.QuerySource), true
+	case "subtitles":
+		return jhinrules.StrListOf(e.Subtitles), true
 	case "library":
 		return jhinrules.BoolOf(e.Library), true
 
@@ -580,6 +586,7 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 			env.SizePerEpisodeGB = -1
 		}
 		env.Languages = pttoptions.MergeLanguageCodes(env.Languages, rel.Languages)
+		env.Subtitles = pttoptions.MergeLanguageCodes(parser.SubtitleLanguages(rel.Title), rel.Subtitles)
 		env.Grabs = rel.Grabs
 		env.Passworded = rel.Password
 		env.Indexer = rel.Indexer
@@ -597,6 +604,9 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 
 	env.Avail = availEnv(cand.Verdict.Avail)
 	env.Probed = probedEnv(cand.Verdict.Probed)
+	if env.Probed.TracksProbed {
+		env.Subtitles = pttoptions.MergeLanguageCodes(env.Subtitles, env.Probed.SubtitleLanguages)
+	}
 	env.Seadex = ctx.Seadex.For(env.Group)
 	applyMerged(&env, cand.Verdict.Probed)
 	env.core = jhinrules.FromResult(env.ReleaseName, parsed, env.Traits)

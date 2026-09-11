@@ -180,19 +180,14 @@ func (i *Item) ToRelease() *release.Release {
 		}
 	}
 
-	// The newznab "language" attribute is what the indexer knows and the title
-	// often does not — an Arabic dub whose name carries no language token is
-	// only ever tagged here. Normalizing to the same two-letter codes the
-	// title parser emits lets filters and clients treat both sources alike.
-	var languages []string
-	if lang := i.GetAttribute("language"); lang != "" {
-		for _, part := range strings.Split(lang, ",") {
-			if t := strings.TrimSpace(part); t != "" {
-				languages = append(languages, t)
-			}
-		}
-		languages = pttoptions.NormalizeLanguageSlice(languages)
-	}
+	// The newznab "language" and "subs" attributes are what the indexer knows
+	// and the title often does not — an Arabic dub whose name carries no
+	// language token is only ever tagged here, and a release name never
+	// lists its subtitle tracks at all. Normalizing to the same two-letter
+	// codes the title parser emits lets filters and clients treat every
+	// source alike.
+	languages := i.languageAttribute("language")
+	subtitles := i.languageAttribute("subs")
 	indexerName := i.ActualIndexer
 	if indexerName == "" && i.SourceIndexer != nil {
 		indexerName = i.SourceIndexer.Name()
@@ -223,9 +218,27 @@ func (i *Item) ToRelease() *release.Release {
 		QuerySource:   i.QuerySource,
 		Grabs:         grabs,
 		Languages:     languages,
+		Subtitles:     subtitles,
 		Password:      password,
 		Duration:      i.Duration,
 	}
+}
+
+// languageAttribute reads a comma-separated language attribute as ISO 639-1
+// codes, in whichever spelling the indexer's source used: "Arabic", "ara"
+// and "ar" all come back as "ar". Nil when the attribute is absent.
+func (i *Item) languageAttribute(name string) []string {
+	raw := i.GetAttribute(name)
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	for _, part := range strings.Split(raw, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			values = append(values, t)
+		}
+	}
+	return pttoptions.NormalizeLanguageSlice(values)
 }
 
 func (i *Item) ReleaseDetailsURL() string {

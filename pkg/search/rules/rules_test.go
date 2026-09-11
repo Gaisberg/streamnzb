@@ -725,3 +725,42 @@ func TestLanguagesMergeIndexerTag(t *testing.T) {
 		t.Errorf("release with no Arabic anywhere was kept: %+v", got)
 	}
 }
+
+// Subtitle languages read the same three sources a stream advertises: the
+// name, the indexer's subs tag, and a probe's tracks. Issue #283's reporter
+// wanted Arabic subtitles, and a release that has them under any of the
+// three is one that has them.
+func TestSubtitlesMergeEverySource(t *testing.T) {
+	set := compile(t, config.RuleConfig{
+		Name:   "Require Arabic subs",
+		When:   `not ("ar" in subtitles)`,
+		Action: config.RuleActionReject,
+	})
+
+	tagged := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Subtitles = []string{"ar"}
+	})
+	if got := set.Evaluate(tagged, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("release tagged with Arabic subs was rejected: %v", got.Rejections)
+	}
+	named := envFor("Movie 2020 1080p WEB-DL Arabic Subs-GRP", nil)
+	if got := set.Evaluate(named, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("release named with Arabic subs was rejected: %v", got.Rejections)
+	}
+	probed := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{TracksProbed: true, SubtitleLanguages: []string{"ar"}}
+	})
+	if got := set.Evaluate(probed, "movie"); len(got.Rejections) > 0 {
+		t.Errorf("release probed with Arabic subs was rejected: %v", got.Rejections)
+	}
+
+	// A bare name with no subtitles anywhere is judged, not skipped: it has
+	// none known, which is what "not in" asks about.
+	got := set.Evaluate(envFor("Movie 2020 1080p WEB-DL-GRP", nil), "movie")
+	if len(got.Rejections) != 1 {
+		t.Errorf("release with no Arabic subs anywhere was kept: %+v", got)
+	}
+	if len(got.Skipped) != 0 {
+		t.Errorf("subtitles rule was skipped on a bare name: %v", got.Skipped)
+	}
+}
