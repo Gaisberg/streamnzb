@@ -110,18 +110,49 @@ export function normalizeAttempt(attempt, kind) {
   return next
 }
 
-export function normalizeAttempts(attempts, kind) {
+// settleAttempts settles every attempt and keeps every row. The editor works
+// on this: a row stays where the user put it even when it momentarily asks
+// what another row already asks, so an edit is never answered by the row
+// silently disappearing.
+export function settleAttempts(attempts, kind) {
   const list = Array.isArray(attempts) ? attempts : []
+  return list.map((attempt) => normalizeAttempt(attempt, kind))
+}
+
+// attemptSignature is the question an attempt asks. Two rows sharing one are
+// one wasted indexer round trip, never a fallback — the same identity
+// config.NormalizeSearchAttempts dedupes on.
+export function attemptSignature(attempt, kind) {
+  return JSON.stringify(normalizeAttempt(attempt, kind))
+}
+
+export function normalizeAttempts(attempts, kind) {
   const seen = new Set()
   const out = []
-  for (const attempt of list) {
-    const normalized = normalizeAttempt(attempt, kind)
-    const key = JSON.stringify(normalized)
+  for (const attempt of settleAttempts(attempts, kind)) {
+    const key = attemptSignature(attempt, kind)
     if (seen.has(key)) continue
     seen.add(key)
-    out.push(normalized)
+    out.push(attempt)
   }
   return out
+}
+
+// duplicateAttemptSources maps each row that repeats an earlier question to
+// the row it repeats, for the editor to mark. These are exactly the rows
+// normalizeAttempts drops on the way out.
+export function duplicateAttemptSources(attempts, kind) {
+  const firstSeen = new Map()
+  const duplicates = new Map()
+  settleAttempts(attempts, kind).forEach((attempt, index) => {
+    const key = attemptSignature(attempt, kind)
+    if (firstSeen.has(key)) {
+      duplicates.set(index, firstSeen.get(key))
+      return
+    }
+    firstSeen.set(key, index)
+  })
+  return duplicates
 }
 
 // attemptKey identifies a row for drag reordering. Attempts have no id of
@@ -147,6 +178,28 @@ export function attemptLabel(attempt, kind) {
 
 export function defaultAttempt(kind) {
   return normalizeAttempt({ address: ADDRESS_ID, target: TARGET_EPISODE }, kind)
+}
+
+// The title language a new attempt queries under, matching the presets.
+const DEFAULT_TITLE_LANGUAGE = 'en-US'
+
+// nextAttempt is the attempt "Add attempt" adds: the first question the plan
+// does not already ask, so the new row is one the user sees and the plan runs.
+// A plan that already asks every combination gets the default back — a row the
+// editor marks as a duplicate rather than one that never appears.
+export function nextAttempt(attempts, kind) {
+  const asked = new Set(settleAttempts(attempts, kind).map((attempt) => attemptSignature(attempt, kind)))
+  const targets = isSeriesKind(kind) ? TARGET_OPTIONS.map((option) => option.value) : [undefined]
+  for (const target of targets) {
+    for (const address of [ADDRESS_ID, ADDRESS_TITLE]) {
+      // The absolute number is how anime is named, and an id request cannot
+      // ask under it — the executor drops that pairing.
+      if (address === ADDRESS_ID && target === TARGET_ABSOLUTE) continue
+      const candidate = normalizeAttempt({ address, target, title: DEFAULT_TITLE_LANGUAGE }, kind)
+      if (!asked.has(attemptSignature(candidate, kind))) return candidate
+    }
+  }
+  return defaultAttempt(kind)
 }
 
 // The presets are the stock plans, and the same lists pkg/core/config seeds a

@@ -10,7 +10,7 @@ stop**, and one description of what a matching release **must look like**.
 | Field | Meaning |
 |---|---|
 | **Name** | Unique identifier; streams reference it. Fixed after creation. |
-| **Attempts** | The questions the request asks indexers, in order — one indexer query per row. Each row has an **Address** and, for TV, a **Target**; Title rows also carry a language and whether to put the year in the query. Presets (*Balanced*, *Precise*, *Broad*) fill in a sensible list; drag rows to reorder. |
+| **Attempts** | The questions the request asks indexers, in order — one indexer query per row. Each row has an **Address** and, for TV, a **Target**; Title rows also carry a language and whether to put the year in the query. Presets (*Balanced*, *Precise*, *Broad*) fill in a sensible list; drag rows to reorder. Two rows asking exactly the same question are one wasted round trip rather than a fallback: the repeat is marked *same as #n* and the request will not save until it is changed or removed. |
 | **When to stop** | **Stop at first hit** walks the rows in order and stops at the first one that matched anything. **Stop after enough hits** keeps walking until the rows asked so far have matched at least **Minimum hits** distinct releases between them. **Run every attempt** asks every row every time and merges the results. |
 | **Minimum hits** | The threshold for *Stop after enough hits* (default 10). Counts releases that passed validation, with the same release listed by several indexers counted once; everything found on the way is kept. |
 | **Ordering** *(TV)* | **As listed** runs the rows as written. **Season first once it has aired** moves the Season rows to the front once every episode of the requested season has aired — a finished season is where the season pack lives, an airing one is where the single episode does. |
@@ -31,8 +31,9 @@ An attempt's **Address** is how it asks:
 Its **Target** is what it asks for, on TV: **Episode** (`S01E04` /
 `season=`+`ep=`), **Season** (`S01` / `season=`), **Series** (the title alone),
 or **Absolute** — the anime absolute episode number (`One Piece 63`), for
-indexers that number that way. Absolute rows are skipped outright for anything
-that is not anime, and a row whose target the content cannot supply (an Episode
+indexers that number that way. Absolute is a Title-only question — an ID search
+has no absolute number to name — so switching an Absolute row to ID moves it to
+Episode. Absolute rows are skipped outright for anything that is not anime, and a row whose target the content cannot supply (an Episode
 row for a season-only request) drops to the next narrower target rather than
 being skipped.
 

@@ -13,6 +13,8 @@ import {
   TARGET_SEASON,
   attemptLabel,
   attemptsInRunOrder,
+  duplicateAttemptSources,
+  nextAttempt,
   normalizeAttempt,
   normalizeAttempts,
   normalizeMinHits,
@@ -20,6 +22,7 @@ import {
   normalizeStop,
   planPresets,
   presetPlan,
+  settleAttempts,
 } from './searchPlan'
 
 const labels = (attempts, kind) => attempts.map((attempt) => attemptLabel(attempt, kind))
@@ -57,6 +60,67 @@ describe('normalizeAttempts', () => {
     expect(labels(attempts, 'series')).toEqual(['ID · Episode', 'Title · Episode', 'Title · Episode'])
     expect(attempts[1].title).toBe('en-US')
     expect(attempts[2].title).toBe('de-DE')
+  })
+})
+
+describe('settleAttempts', () => {
+  it('keeps a row that repeats another, which the editor has to be able to show', () => {
+    const attempts = settleAttempts([
+      { address: 'id', target: 'episode' },
+      { address: 'ID', target: 'EPISODE' },
+    ], 'series')
+    expect(labels(attempts, 'series')).toEqual(['ID · Episode', 'ID · Episode'])
+  })
+})
+
+describe('duplicateAttemptSources', () => {
+  it('points each repeat at the row it repeats', () => {
+    const duplicates = duplicateAttemptSources([
+      { address: 'id', target: 'episode' },
+      { address: 'title', target: 'episode', title: 'en-US' },
+      { address: 'ID', target: 'EPISODE' },
+      { address: 'title', target: 'episode', title: 'de-DE' },
+    ], 'series')
+    expect([...duplicates.entries()]).toEqual([[2, 0]])
+  })
+
+  it('reads an id attempt without its title language, as the executor does', () => {
+    const duplicates = duplicateAttemptSources([
+      { address: 'id', target: 'season', title: 'en-US' },
+      { address: 'id', target: 'season', title: 'de-DE', year: true },
+    ], 'series')
+    expect([...duplicates.entries()]).toEqual([[1, 0]])
+  })
+})
+
+describe('nextAttempt', () => {
+  // The bug this answers: adding an attempt the plan already asks looked like
+  // the button doing nothing at all, because the new row was deduped away.
+  it('adds a question the plan does not already ask', () => {
+    const plan = presetPlan('series', 'balanced')
+    expect(attemptLabel(nextAttempt(plan.attempts, 'series'), 'series')).toBe('ID · Series')
+  })
+
+  it('starts from the narrowest id question on an empty plan', () => {
+    expect(attemptLabel(nextAttempt([], 'series'), 'series')).toBe('ID · Episode')
+    expect(attemptLabel(nextAttempt([], 'movie'), 'movie')).toBe('ID')
+  })
+
+  it('never offers the absolute number to an id request, which cannot ask under it', () => {
+    const asked = [
+      { address: ADDRESS_ID, target: TARGET_EPISODE },
+      { address: ADDRESS_TITLE, target: TARGET_EPISODE, title: 'en-US' },
+      { address: ADDRESS_ID, target: TARGET_SEASON },
+      { address: ADDRESS_TITLE, target: TARGET_SEASON, title: 'en-US' },
+      { address: ADDRESS_ID, target: 'series' },
+      { address: ADDRESS_TITLE, target: 'series', title: 'en-US' },
+      { address: ADDRESS_TITLE, target: TARGET_ABSOLUTE, title: 'en-US' },
+    ]
+    expect(attemptLabel(nextAttempt(asked, 'series'), 'series')).toBe('ID · Episode')
+  })
+
+  it('falls back to the movie title attempt once the id one is taken', () => {
+    expect(attemptLabel(nextAttempt([{ address: ADDRESS_ID }], 'movie'), 'movie')).toBe('Title')
   })
 })
 
