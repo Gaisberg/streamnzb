@@ -435,20 +435,22 @@ func (dm *StreamManager) AuthenticateStream(username, password string) (*Stream,
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
+	// The credentials are copied out under the lock rather than read off the
+	// stream afterwards: SetStreamPassword and RegenerateToken write these two
+	// fields in place on the same pointer, so reading them unlocked races with
+	// a password being set. The lock is still released before VerifyPassword,
+	// which is deliberately expensive and must not be held across.
 	dm.mu.RLock()
 	var match *Stream
+	var storedHash, storedToken string
 	for _, stream := range dm.streams {
 		if strings.EqualFold(stream.Username, username) {
-			match = stream
+			match, storedHash, storedToken = stream, stream.PasswordHash, stream.Token
 			break
 		}
 	}
 	dm.mu.RUnlock()
 
-	storedHash := ""
-	if match != nil {
-		storedHash = match.PasswordHash
-	}
 	// Runs for an unknown stream too, on an empty hash that never matches:
 	// VerifyPassword spends the same work either way.
 	passwordOK := VerifyPassword(password, storedHash)
@@ -458,7 +460,7 @@ func (dm *StreamManager) AuthenticateStream(username, password string) (*Stream,
 	if passwordOK {
 		return match, nil
 	}
-	if subtle.ConstantTimeCompare([]byte(password), []byte(match.Token)) == 1 {
+	if subtle.ConstantTimeCompare([]byte(password), []byte(storedToken)) == 1 {
 		return match, nil
 	}
 	return nil, fmt.Errorf("invalid credentials")

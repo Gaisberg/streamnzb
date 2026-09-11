@@ -1138,6 +1138,16 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         onStreamsChange?.(mapStreamsByUsername(next))
         return next
       })
+      // The draft follows the rename: it was typed for this stream, and
+      // leaving it under the old name would strand it there for whatever
+      // stream takes that name next.
+      if (savedName !== previousName) {
+        setPasswordDrafts((prev) => {
+          if (!(previousName in prev)) return prev
+          const { [previousName]: moved, ...rest } = prev
+          return moved ? { ...rest, [savedName]: moved } : rest
+        })
+      }
       const status = { type: 'success', message: `Stream "${savedName}" saved successfully.${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)
       showFooterStatus(status)
@@ -1165,6 +1175,14 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         const next = prev.filter((stream) => stream.username !== username)
         onStreamsChange?.(mapStreamsByUsername(next))
         return next
+      })
+      // Drop any unsaved password typed for the stream that just went away,
+      // or a stream later created under the same name would open with it
+      // already in the field.
+      setPasswordDrafts((prev) => {
+        if (!(username in prev)) return prev
+        const { [username]: _removed, ...rest } = prev
+        return rest
       })
       const status = { type: 'success', message: `Stream "${username}" deleted successfully.${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)

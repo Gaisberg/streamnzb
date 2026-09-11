@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -153,6 +154,41 @@ var imageClient = &http.Client{
 // more is answered with a 502 rather than trusted to actually send that much.
 const maxImageBody = 20 << 20 // 20 MiB
 
+// relayableImageTypes are the inert raster formats a poster or backdrop can
+// legitimately be. Anything outside this set is refused rather than relayed:
+// the relay serves the result from this server's origin, so the upstream must
+// not get to choose a type the browser will execute.
+var relayableImageTypes = map[string]bool{
+	"image/jpeg":               true,
+	"image/png":                true,
+	"image/webp":               true,
+	"image/gif":                true,
+	"image/avif":               true,
+	"image/bmp":                true,
+	"image/tiff":               true,
+	"image/x-icon":             true,
+	"image/vnd.microsoft.icon": true,
+}
+
+// relayableImageType normalises an upstream Content-Type and reports whether
+// it may be relayed. An absent header is treated as image/jpeg, the same
+// assumption the relay has always made for CDNs that omit it.
+func relayableImageType(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "image/jpeg", true
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return "", false
+	}
+	mediaType = strings.ToLower(mediaType)
+	if !relayableImageTypes[mediaType] {
+		return "", false
+	}
+	return mediaType, true
+}
+
 // relayImage fetches url and streams it back as the response, instead of
 // redirecting the client to it: Infuse and some other clients ignore a 302
 // on an artwork request and are left with a blank image.
@@ -198,9 +234,15 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 			return
 		}
 	}
-	ct := resp.Header.Get("Content-Type")
-	if ct == "" {
-		ct = "image/jpeg"
+	ct, ok := relayableImageType(resp.Header.Get("Content-Type"))
+	if !ok {
+		// Whatever this is, it is not a poster. Relaying it would put a
+		// document of the upstream's choosing on this server's own origin,
+		// which is exactly what an image relay must not do — image/svg+xml
+		// carries script, text/html plainly so.
+		logger.Debug("Jellyfin image relay refused", "url", target, "type", resp.Header.Get("Content-Type"))
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
 	}
 	w.Header().Set("Content-Type", ct)
 	if cl := resp.Header.Get("Content-Length"); cl != "" {

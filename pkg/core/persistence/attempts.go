@@ -406,6 +406,17 @@ func (m *StateManager) RenameStreamReferences(oldName, newName string) (int64, e
 	var updated int64
 	err := m.withWriteLock(func(db *connRef) error {
 		return m.withTx(db, func(tx *txn) error {
+			// jellyfin_playstate is keyed (stream_name, item_id), so rows
+			// already sitting under the new name collide with the ones being
+			// moved and fail the whole rename. They are stale by definition —
+			// a stream holding that name now is the one being renamed to it —
+			// so the incoming progress wins. nzb_attempts and
+			// search_diagnostics have no such key and just carry over.
+			if _, err := tx.Exec(`DELETE FROM jellyfin_playstate WHERE stream_name = ? AND item_id IN (
+				SELECT item_id FROM jellyfin_playstate WHERE stream_name = ?
+			)`, newName, oldName); err != nil {
+				return err
+			}
 			for _, table := range []string{"nzb_attempts", "search_diagnostics", "jellyfin_playstate"} {
 				res, err := tx.Exec(`UPDATE `+table+` SET stream_name = ? WHERE stream_name = ?`, newName, oldName)
 				if err != nil {

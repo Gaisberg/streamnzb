@@ -279,6 +279,8 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 		}
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			var streamErr error
 			if rr != nil {

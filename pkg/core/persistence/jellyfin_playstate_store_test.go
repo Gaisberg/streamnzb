@@ -103,3 +103,40 @@ func TestJellyfinPlaystateRenameAndDelete(t *testing.T) {
 		t.Fatalf("expected no rows after delete, got %+v", rows)
 	}
 }
+
+// TestJellyfinPlaystateRenameOverStaleRows covers renaming onto a name that
+// still has play state of its own. The table is keyed (stream_name, item_id),
+// so rows left behind by a deleted stream collide with the ones being moved;
+// before this was handled the whole rename failed, taking the NZB attempt and
+// search diagnostic rewrites down with it.
+func TestJellyfinPlaystateRenameOverStaleRows(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+
+	// "tv" was deleted without its play state being purged.
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "tv", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 11}); err != nil {
+		t.Fatalf("stale upsert: %v", err)
+	}
+	// The stream being renamed has progress on the same item, and on another.
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "living-room", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 99}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "living-room", ItemID: "b", ContentType: "movie", ContentID: "ttb", PositionTicks: 7}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if _, err := m.RenameStreamReferences("living-room", "tv"); err != nil {
+		t.Fatalf("rename onto stale rows: %v", err)
+	}
+	// The renamed stream's own progress wins over what was left behind.
+	got, ok := store.Get("tv", "a")
+	if !ok || got.PositionTicks != 99 {
+		t.Fatalf("stale row was not displaced: %+v (ok=%v)", got, ok)
+	}
+	if _, ok := store.Get("tv", "b"); !ok {
+		t.Fatal("non-colliding row did not move")
+	}
+	if rows := store.ListForStream("living-room"); len(rows) != 0 {
+		t.Fatalf("old name kept rows: %+v", rows)
+	}
+}
