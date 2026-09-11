@@ -697,6 +697,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				if strings.TrimSpace(source.RemoteID) == "" {
 					errors[path+".remote_id"] = "Catalog id is required"
 				}
+				if strings.Contains(id, "/") {
+					errors[path+".id"] = "Catalog id cannot contain a slash"
+				}
 				switch strings.ToLower(strings.TrimSpace(source.RemoteType)) {
 				case "movie", "series", "anime", "tv":
 				default:

@@ -222,8 +222,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
 
   const addExternalCatalog = (catalog) => {
     const sourceKey = sourceURL.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
+    const remoteKey = String(catalog.remote_id || "catalog").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "catalog"
     const next = [...externalRows, {
-      id: `external.${sourceKey}.${catalog.remote_type}.${catalog.remote_id}`,
+      id: `external.${sourceKey}.${catalog.remote_type}.${remoteKey}`,
       name: catalog.name,
       kind: sourcePreview?.kind || "",
       source_label: EXTERNAL_SOURCE_LABELS[sourcePreview?.kind] || sourcePreview?.name || externalSourceLabel({ kind: sourcePreview?.kind, manifest_url: sourceURL.trim() }),
