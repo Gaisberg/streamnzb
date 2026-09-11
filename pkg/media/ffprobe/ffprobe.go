@@ -199,6 +199,18 @@ func needsLegacyShowEntries(stderr string) bool {
 	return strings.Contains(stderr, "No match for section 'stream_side_data'")
 }
 
+// rewindProbeStream returns the stream to the start so a second ffprobe run
+// reads the container header rather than resuming wherever the first run's
+// stdin copy left off. Reports false when the stream cannot be rewound.
+func rewindProbeStream(stream io.Reader) bool {
+	seeker, ok := stream.(io.Seeker)
+	if !ok {
+		return false
+	}
+	_, err := seeker.Seek(0, io.SeekStart)
+	return err == nil
+}
+
 // ProbeStream runs a lightweight, header-only inspection (backwards-compatible).
 func ProbeStream(ctx context.Context, stream io.Reader, customPath string) (*FFprobeResult, error) {
 	return ProbeStreamWithOptions(ctx, stream, customPath, ProbeOptions{})
@@ -295,8 +307,34 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 
 	stdout, stderr, runErr, streamErr := run(showEntries)
 	if runErr != nil && streamErr == nil && needsLegacyShowEntries(stderr) {
-		logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
-		stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+		// The first attempt died in ffprobe's option parsing without reading a
+		// byte — but on the pipe path exec has already started a goroutine
+		// copying the stream into the child's stdin, and it drains a pipe
+		// buffer's worth (64 KiB on Linux) before noticing the process is
+		// gone. Those bytes are consumed from the reader for good.
+		//
+		// Retrying without rewinding therefore hands ffprobe a stream that
+		// starts mid-container. It finds no header and no duration, reports
+		// whatever elementary stream it stumbles into, and exits 0 — which the
+		// validation layer above reads as a definitive "audio-only, missing
+		// video track" verdict against a perfectly good remux, and records as
+		// a two-week bad-release blacklisting.
+		//
+		// The loopback server path needs nothing: each run makes its own range
+		// requests and the handler seeks per request. Rewinding the shared
+		// seeker from here would race those handlers instead.
+		switch {
+		case srv != nil:
+			logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
+			stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+		case rewindProbeStream(stream):
+			logger.Debug("FFprobe lacks stream_side_data support; retrying compatibility query", "binary", binaryPath)
+			stdout, stderr, runErr, streamErr = run(legacyShowEntries)
+		default:
+			// Probing a partially drained stream would answer confidently
+			// about the wrong bytes, which is worse than not answering.
+			logger.Debug("FFprobe lacks stream_side_data support but the stream cannot be rewound; not retrying", "binary", binaryPath)
+		}
 	}
 	if runErr != nil {
 		// Same error recovery as the pipe path: the stream's own failure
