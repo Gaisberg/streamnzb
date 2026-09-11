@@ -10,6 +10,23 @@ import (
 	"streamnzb/pkg/services/metadata/metacache"
 )
 
+func TestLetterboxdTitleParsesPublicFilmAndListPages(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		html string
+		want string
+	}{
+		{"film", `<title>&lrm;The Departed (2006) directed by Martin Scorsese • Reviews, film + cast &bull; Letterboxd</title>`, "The Departed"},
+		{"list", `<meta property="og:title" content="Movies everyone should watch at least once during their lifetime"><title>&lrm;Movies everyone should watch at least once during their lifetime, a list of films by fcbarcelona &bull; Letterboxd</title>`, "Movies everyone should watch at least once during their lifetime"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := letterboxdTitle([]byte(tc.html)); got != tc.want {
+				t.Fatalf("letterboxdTitle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDisplayLanguageParams pins the localization request shape: language on
 // the details call, image/video language lists carrying the configured
 // language ahead of the English and textless fallbacks.

@@ -686,11 +686,13 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					validSourceURL = validSourceURL && strings.Contains(host, "themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
 				} else if source.Kind == "mdblist" {
 					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(sourcePath, "/lists/")
+				} else if source.Kind == "letterboxd" {
+					validSourceURL = validSourceURL && (host == "letterboxd.com" || host == "www.letterboxd.com") && strings.Contains(sourcePath, "/list/")
 				} else {
 					validSourceURL = validSourceURL && strings.HasSuffix(sourcePath, "/manifest.json")
 				}
 				if !validSourceURL {
-					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, or MDBList URL"
+					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, MDBList URL, or Letterboxd list URL"
 				}
 				if strings.TrimSpace(source.RemoteID) == "" {
 					errors[path+".remote_id"] = "Catalog id is required"

@@ -35,6 +35,7 @@ type CatalogDef struct {
 	ExternalRemoteType  string `json:"-"`
 	ExternalRemoteID    string `json:"-"`
 	ExternalKind        string `json:"-"`
+	SourceLabel         string `json:"source_label,omitempty"`
 }
 
 // catalogRegistry lists every browse catalog the addon can serve, in default
@@ -214,9 +215,25 @@ func externalCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 		}
 		seen[id] = true
 		supportsSkip := source.Kind != "manifest" || source.SupportsSkip == nil || *source.SupportsSkip
-		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: supportsSkip, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind})
+		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: supportsSkip, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind, SourceLabel: externalSourceLabel(source)})
 	}
 	return defs
+}
+
+func externalSourceLabel(source config.ExternalCatalogConfig) string {
+	if label := strings.TrimSpace(source.SourceLabel); label != "" {
+		return label
+	}
+	switch source.Kind {
+	case "tmdb_list":
+		return "TMDB"
+	case "mdblist":
+		return "MDBList"
+	case "letterboxd":
+		return "Letterboxd"
+	default:
+		return "Stremio catalog"
+	}
 }
 
 // enabledCatalogs renders the profile's manifest entries: the enabled browse

@@ -16,6 +16,7 @@ import (
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/metadata/metacache"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -312,9 +313,116 @@ type ListingResponse struct {
 // public lists despite the page containing entries, so public-list sources
 // deliberately use the public page the user supplied as their source.
 type PublicListItem struct {
-	ID   int
-	Type string
-	Name string
+	ID     int
+	IMDbID string
+	Type   string
+	Name   string
+}
+
+var (
+	letterboxdFilmPattern      = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
+	letterboxdOGTitlePattern   = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
+	letterboxdFilmTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*\(\d{4}\)`)
+	letterboxdPageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*(?:&bull;|•|\|)\s*Letterboxd`)
+	letterboxdIMDbPattern      = regexp.MustCompile(`imdb\.com/title/(tt\d{7,8})`)
+)
+
+func letterboxdTitle(body []byte) string {
+	// Letterboxd's page title appends its author and description, whereas
+	// og:title is the user-visible list title. Prefer it whenever it exists.
+	for _, pattern := range []*regexp.Regexp{letterboxdOGTitlePattern, letterboxdFilmTitlePattern, letterboxdPageTitlePattern} {
+		if m := pattern.FindStringSubmatch(string(body)); len(m) == 2 {
+			title := strings.TrimSpace(html.UnescapeString(m[1]))
+			title = strings.TrimSpace(strings.TrimPrefix(title, "&lrm;"))
+			if title != "" {
+				return title
+			}
+		}
+	}
+	return ""
+}
+
+// FetchLetterboxdPage reads a public Letterboxd list page and resolves the
+// IMDb id exposed by each public film page. No account, API key or title guess
+// is used; rows without a canonical IMDb id are omitted.
+func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (PublicListPage, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "letterboxd.com" && u.Host != "www.letterboxd.com") || !strings.Contains(u.Path, "/list/") {
+		return PublicListPage{}, fmt.Errorf("invalid public Letterboxd list URL")
+	}
+	if pageNumber > 1 {
+		u.Path = strings.TrimSuffix(u.Path, "/") + "/page/" + strconv.Itoa(pageNumber) + "/"
+	}
+	body, err := fetchPublicHTML(ctx, u.String())
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	out := PublicListPage{Items: []PublicListItem{}}
+	out.Name = letterboxdTitle(body)
+	seen := map[string]bool{}
+	filmURLs := make([]string, 0)
+	for _, m := range letterboxdFilmPattern.FindAllStringSubmatch(string(body), -1) {
+		filmURL := "https://letterboxd.com" + m[1]
+		if seen[filmURL] {
+			continue
+		}
+		seen[filmURL] = true
+		filmURLs = append(filmURLs, filmURL)
+	}
+
+	// Film pages are the public canonical-ID boundary. Fetching them serially
+	// made one 100-row Letterboxd page take long enough for Jellyfin clients to
+	// abandon the catalog. Keep list order while using a small, polite pool.
+	items := make([]PublicListItem, len(filmURLs))
+	workers := min(12, len(filmURLs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				film, err := fetchPublicHTML(ctx, filmURLs[i])
+				if err != nil {
+					continue
+				}
+				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
+				name := letterboxdTitle(film)
+				if len(id) == 2 && name != "" {
+					items[i] = PublicListItem{IMDbID: id[1], Type: "movie", Name: name}
+				}
+			}
+		}()
+	}
+	for i := range filmURLs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	for _, item := range items {
+		if item.IMDbID != "" {
+			out.Items = append(out.Items, item)
+		}
+	}
+	return out, nil
+}
+
+func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("public list returned %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
 }
 
 // PublicListPage is the title and canonical TMDB rows exposed by a public

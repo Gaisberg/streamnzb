@@ -344,9 +344,19 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		if def.ExternalKind == "mdblist" {
 			return s.mdbListCatalog(ctx, def, req)
 		}
+		if def.ExternalKind == "letterboxd" {
+			return s.letterboxdCatalog(ctx, def, req)
+		}
 		return externalManifestCatalog(ctx, def, req)
 	}
 	return nil, fmt.Errorf("unknown catalog provider %q", def.Provider)
+}
+
+func (s *Server) letterboxdCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	return s.publicListCatalog(ctx, def, req, 1, func(page int) ([]tmdb.PublicListItem, error) {
+		list, err := tmdb.FetchLetterboxdPage(ctx, def.ExternalManifestURL, page)
+		return list.Items, err
+	})
 }
 
 func (s *Server) tmdbExternalListCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {

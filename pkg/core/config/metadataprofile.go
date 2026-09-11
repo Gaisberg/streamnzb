@@ -63,9 +63,12 @@ type MetadataProfileConfig struct {
 // public manifest URL the administrator pasted; RemoteType and RemoteID are
 // the exact resource coordinates declared by that manifest.
 type ExternalCatalogConfig struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind,omitempty"`
+	// SourceLabel is the human-facing identity of the pasted source. Kind is
+	// only a dispatch detail and must not appear in the editor as "external".
+	SourceLabel string `json:"source_label,omitempty"`
 	ManifestURL string `json:"manifest_url"`
 	RemoteType  string `json:"remote_type"`
 	RemoteID    string `json:"remote_id"`
