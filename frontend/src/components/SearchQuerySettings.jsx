@@ -22,12 +22,14 @@ import {
   STOP_ENOUGH_HITS,
   STOP_OPTIONS,
   TARGET_ABSOLUTE,
+  TARGET_EPISODE,
   TARGET_OPTIONS,
   attemptKey,
   attemptLabel,
   attemptsInRunOrder,
-  defaultAttempt,
+  duplicateAttemptSources,
   isSeriesKind,
+  nextAttempt,
   normalizeAddress,
   normalizeAttempt,
   normalizeAttempts,
@@ -37,6 +39,7 @@ import {
   normalizeTarget,
   planPresets,
   presetPlan,
+  settleAttempts,
 } from "@/lib/searchPlan"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { moveItem } from "@/lib/lists"
@@ -241,7 +244,10 @@ function normalizeDraft(kind, draft) {
   const value = draft || {}
   return {
     name: (value.name || '').trim(),
-    attempts: normalizeAttempts(value.attempts, kind),
+    // Settled but not deduped: the editor has to be able to show a row that
+    // repeats another one, or an edit that produces one looks like the row
+    // being deleted.
+    attempts: settleAttempts(value.attempts, kind),
     stop: normalizeStop(value.stop),
     min_hits: normalizeMinHits(value.stop, value.min_hits),
     order: isSeriesKind(kind) ? normalizeOrder(value.order) : undefined,
@@ -252,11 +258,15 @@ function normalizeDraft(kind, draft) {
 }
 
 function persistableDraft(kind, draft) {
-  return normalizeDraft(kind, draft)
+  const next = normalizeDraft(kind, draft)
+  // Two attempts asking the same question are one wasted round trip; saving
+  // one of each matches what the backend would keep anyway.
+  next.attempts = normalizeAttempts(next.attempts, kind)
+  return next
 }
 
 function comparableQuerySignature(kind, draft) {
-  const value = normalizeDraft(kind, draft)
+  const value = persistableDraft(kind, draft)
   return JSON.stringify({
     attempts: value.attempts,
     stop: value.stop,
@@ -482,12 +492,21 @@ const attemptSelectClass = "h-8 rounded-md border border-input bg-background px-
 // AttemptRow is one question in the plan. Everything it needs is on the row —
 // address, target, and for a title attempt the language it queries under and
 // whether the year rides along — because that is exactly what gets dispatched.
-function AttemptRow({ kind, index, attempt, onChange, onRemove, canRemove }) {
+function AttemptRow({ kind, index, attempt, onChange, onRemove, canRemove, duplicateOf = -1 }) {
   const address = normalizeAddress(attempt.address)
   const target = normalizeTarget(attempt.target)
   const isTitle = address === ADDRESS_TITLE
   const isSeries = isSeriesKind(kind)
-  const update = (patch) => onChange(normalizeAttempt({ ...attempt, ...patch }, kind))
+  const update = (patch) => {
+    const next = { ...attempt, ...patch }
+    // The absolute number is how anime is named, and an id request cannot ask
+    // under it — the option is disabled for id, so a row switched to id lands
+    // on the episode rather than keeping a target the executor would drop.
+    if (normalizeAddress(next.address) === ADDRESS_ID && normalizeTarget(next.target) === TARGET_ABSOLUTE) {
+      next.target = TARGET_EPISODE
+    }
+    onChange(normalizeAttempt(next, kind))
+  }
 
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -543,6 +562,18 @@ function AttemptRow({ kind, index, attempt, onChange, onRemove, canRemove }) {
       {isSeries && target === TARGET_ABSOLUTE ? (
         <Badge variant="outline" className="rounded-full px-2 py-0 text-[11px] font-normal text-muted-foreground">anime only</Badge>
       ) : null}
+      {duplicateOf >= 0 ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="rounded-full border-destructive/50 px-2 py-0 text-[11px] font-normal text-destructive">
+              same as #{duplicateOf + 1}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            This row asks exactly what attempt {duplicateOf + 1} asks. Change or remove it — the same question twice is a wasted round trip, not a fallback.
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -552,6 +583,7 @@ function AttemptRow({ kind, index, attempt, onChange, onRemove, canRemove }) {
             className="ml-auto h-8 w-8 text-muted-foreground hover:text-destructive"
             onClick={onRemove}
             disabled={!canRemove}
+            aria-label={`Remove attempt ${index + 1}`}
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -580,9 +612,12 @@ function AttemptChain({ kind, attempts, order, seasonCompleted = false }) {
   )
 }
 
-function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors = {} }) {
+// Exported for the editor tests, which drive the attempt rows directly rather
+// than through the dialog chrome around them.
+export function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors = {} }) {
   const isSeries = isSeriesKind(kind)
-  const attempts = normalizeAttempts(draft.attempts, kind)
+  const attempts = settleAttempts(draft.attempts, kind)
+  const duplicates = duplicateAttemptSources(attempts, kind)
   const accept = normalizeAccept(kind, draft.accept)
   const stop = normalizeStop(draft.stop)
   const order = normalizeOrder(draft.order)
@@ -661,6 +696,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
                     kind={kind}
                     index={index}
                     attempt={attempt}
+                    duplicateOf={duplicates.has(index) ? duplicates.get(index) : -1}
                     canRemove={attempts.length > 1}
                     onChange={(next) => setAttempts(attempts.map((current, at) => (at === index ? next : current)))}
                     onRemove={() => setAttempts(attempts.filter((_, at) => at !== index))}
@@ -677,7 +713,7 @@ function QueryDraftFields({ kind, draft, setDraft, editing = false, fieldErrors 
               type="button"
               variant="outline"
               className="h-8 w-full gap-1.5 border-dashed text-xs font-normal"
-              onClick={() => setAttempts([...attempts, defaultAttempt(kind)])}
+              onClick={() => setAttempts([...attempts, nextAttempt(attempts, kind)])}
             >
               <Plus className="h-3.5 w-3.5" />
               Add attempt
@@ -900,6 +936,7 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
 
   const handleSave = () => {
     const next = persistableDraft(kind, draft)
+    const duplicateAttempts = duplicateAttemptSources(draft.attempts, kind)
     const limit = Number(next.search_result_limit)
     return dialog.runSave({
       validate: () => {
@@ -909,6 +946,9 @@ function QueryDialog({ open, onOpenChange, kind, initialValue, existingNames = [
         if (duplicateQuery) nextFieldErrors.name = `An identical search request already exists: "${duplicateQueryName}".`
         if (next.attempts.length === 0) {
           nextFieldErrors.attempts = 'Add at least one attempt.'
+        } else if (duplicateAttempts.size > 0) {
+          const [index, source] = duplicateAttempts.entries().next().value
+          nextFieldErrors.attempts = `Attempt ${index + 1} asks exactly what attempt ${source + 1} asks. Change or remove it.`
         }
         if (Number.isNaN(limit) || limit < 0) {
           nextFieldErrors.search_result_limit = 'Limit must be 0 or greater.'
