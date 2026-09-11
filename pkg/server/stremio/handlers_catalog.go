@@ -364,18 +364,8 @@ func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogReq
 		return nil, fmt.Errorf("external catalogs do not support search")
 	}
 	metas, err := externalManifestCatalogPage(ctx, def, req.Skip)
-	if err != nil || req.Skip == 0 || len(metas) == 0 {
-		return limitCatalogPage(metas), err
-	}
-	// Some catalog addons serve their complete list but ignore Stremio's
-	// skip extra. Detect that by comparing its leading id with page zero, then
-	// page the complete response locally rather than repeating the first rows.
-	first, firstErr := externalManifestCatalogPage(ctx, def, 0)
-	if firstErr == nil && len(first) > 0 && first[0].ID == metas[0].ID {
-		if req.Skip >= len(first) {
-			return nil, nil
-		}
-		metas = first[req.Skip:]
+	if err != nil {
+		return nil, err
 	}
 	return limitCatalogPage(metas), nil
 }
