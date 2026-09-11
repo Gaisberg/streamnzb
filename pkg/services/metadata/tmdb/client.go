@@ -361,6 +361,10 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 	if pageNumber > 1 {
 		u.Path = strings.TrimSuffix(u.Path, "/") + "/page/" + strconv.Itoa(pageNumber) + "/"
 	}
+	cacheKey := u.String()
+	if cached, ok := loadLetterboxdListPage(cacheKey); ok {
+		return cached, nil
+	}
 	body, err := fetchPublicHTML(ctx, u.String())
 	if err != nil {
 		return PublicListPage{}, err
@@ -425,6 +429,7 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 			out.Items = append(out.Items, item)
 		}
 	}
+	storeLetterboxdListPage(cacheKey, out)
 	return out, nil
 }
 
@@ -454,6 +459,54 @@ func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
 type PublicListPage struct {
 	Name  string
 	Items []PublicListItem
+}
+
+const (
+	letterboxdListCacheTTL = 15 * time.Minute
+	letterboxdListCacheMax = 128
+)
+
+type cachedPublicListPage struct {
+	page      PublicListPage
+	expiresAt time.Time
+}
+
+var letterboxdListCache = struct {
+	sync.Mutex
+	pages map[string]cachedPublicListPage
+}{pages: make(map[string]cachedPublicListPage)}
+
+func loadLetterboxdListPage(key string) (PublicListPage, bool) {
+	letterboxdListCache.Lock()
+	defer letterboxdListCache.Unlock()
+	cached, ok := letterboxdListCache.pages[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(letterboxdListCache.pages, key)
+		return PublicListPage{}, false
+	}
+	return clonePublicListPage(cached.page), true
+}
+
+func storeLetterboxdListPage(key string, page PublicListPage) {
+	letterboxdListCache.Lock()
+	defer letterboxdListCache.Unlock()
+	if len(letterboxdListCache.pages) >= letterboxdListCacheMax {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for candidate, cached := range letterboxdListCache.pages {
+			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = candidate, cached.expiresAt
+			}
+		}
+		delete(letterboxdListCache.pages, oldestKey)
+	}
+	letterboxdListCache.pages[key] = cachedPublicListPage{page: clonePublicListPage(page), expiresAt: time.Now().Add(letterboxdListCacheTTL)}
+}
+
+func clonePublicListPage(page PublicListPage) PublicListPage {
+	cloned := page
+	cloned.Items = append([]PublicListItem(nil), page.Items...)
+	return cloned
 }
 
 // FetchPublicListPage reads one page of a public TMDB list. It accepts only
