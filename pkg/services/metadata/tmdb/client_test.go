@@ -18,6 +18,7 @@ func TestLetterboxdTitleParsesPublicFilmAndListPages(t *testing.T) {
 	}{
 		{"film", `<title>&lrm;The Departed (2006) directed by Martin Scorsese • Reviews, film + cast &bull; Letterboxd</title>`, "The Departed"},
 		{"list", `<meta property="og:title" content="Movies everyone should watch at least once during their lifetime"><title>&lrm;Movies everyone should watch at least once during their lifetime, a list of films by fcbarcelona &bull; Letterboxd</title>`, "Movies everyone should watch at least once during their lifetime"},
+		{"list og directional mark", `<meta property="og:title" content="&lrm;Movies everyone should watch">`, "Movies everyone should watch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := letterboxdTitle([]byte(tc.html)); got != tc.want {

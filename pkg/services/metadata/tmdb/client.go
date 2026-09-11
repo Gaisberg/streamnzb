@@ -341,7 +341,9 @@ func letterboxdTitle(body []byte) string {
 	for _, pattern := range patterns {
 		if m := pattern.FindStringSubmatch(string(body)); len(m) == 2 {
 			title := strings.TrimSpace(html.UnescapeString(m[1]))
-			title = strings.TrimSpace(strings.TrimPrefix(title, "&lrm;"))
+			// html.UnescapeString has already turned &lrm; into U+200E, so
+			// strip the actual directional marks rather than the entity text.
+			title = strings.TrimSpace(strings.TrimLeft(title, "\u200e\u200f"))
 			if title != "" {
 				return title
 			}
