@@ -41,6 +41,9 @@ const (
 	// externalIDConcurrency caps the parallel TMDB external-id lookups per
 	// catalog page (politeness bound; the response cache makes repeats free).
 	externalIDConcurrency = 8
+	// externalInspectionConcurrency bounds the independent browse probes made
+	// when someone tests a pasted manifest in the configuration UI.
+	externalInspectionConcurrency = 4
 	// externalListMaxPages is a guardrail for public web list adapters. Clients
 	// still request one 20-row Stremio page at a time; this only bounds how far
 	// a single deep skip may walk before a malformed source is stopped.
@@ -77,6 +80,7 @@ type ExternalCatalogPreview struct {
 type ExternalManifestInspection struct {
 	Name     string                   `json:"name"`
 	Catalogs []ExternalCatalogPreview `json:"catalogs"`
+	Warnings []string                 `json:"warnings,omitempty"`
 }
 
 // InspectExternalManifest reads a public manifest and live-tests every
@@ -115,6 +119,11 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		return nil, err
 	}
 	inspection := &ExternalManifestInspection{Name: strings.TrimSpace(manifest.Name)}
+	type candidate struct {
+		def  CatalogDef
+		name string
+	}
+	var candidates []candidate
 	for _, cat := range manifest.Catalogs {
 		contentType := strings.ToLower(strings.TrimSpace(cat.Type))
 		if contentType == "tv" {
@@ -133,12 +142,51 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		if searchOnly {
 			continue
 		}
-		def := CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID}
-		metas, err := externalManifestCatalog(ctx, def, catalogRequest{Type: contentType})
-		if err != nil || len(metas) == 0 {
+		candidates = append(candidates, candidate{
+			def:  CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
+			name: strings.TrimSpace(cat.Name),
+		})
+	}
+	if len(candidates) == 0 {
+		return inspection, nil
+	}
+	type result struct {
+		preview ExternalCatalogPreview
+		err     error
+	}
+	results := make([]result, len(candidates))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(externalInspectionConcurrency, len(candidates)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				candidate := candidates[i]
+				metas, err := externalManifestCatalog(ctx, candidate.def, catalogRequest{Type: candidate.def.Type})
+				if err != nil {
+					results[i].err = err
+					continue
+				}
+				if len(metas) == 0 {
+					results[i].err = fmt.Errorf("catalog returned no canonical items")
+					continue
+				}
+				results[i].preview = ExternalCatalogPreview{Name: candidate.name, Type: candidate.def.Type, RemoteType: candidate.def.ExternalRemoteType, RemoteID: candidate.def.ExternalRemoteID, RowCount: len(metas)}
+			}
+		}()
+	}
+	for i := range candidates {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	for i, result := range results {
+		if result.err != nil {
+			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf("%s: %v", candidates[i].name, result.err))
 			continue
 		}
-		inspection.Catalogs = append(inspection.Catalogs, ExternalCatalogPreview{Name: strings.TrimSpace(cat.Name), Type: contentType, RemoteType: cat.Type, RemoteID: cat.ID, RowCount: len(metas)})
+		inspection.Catalogs = append(inspection.Catalogs, result.preview)
 	}
 	return inspection, nil
 }

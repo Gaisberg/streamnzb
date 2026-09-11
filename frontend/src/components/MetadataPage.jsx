@@ -525,6 +525,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           {sourcePreview && (
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
+              {sourcePreview.warnings?.length > 0 && (
+                <p className="text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
+              )}
               <div className="max-h-72 space-y-1 overflow-y-auto">
                 {(sourcePreview.catalogs || []).map((catalog) => {
                   const alreadyAdded = externalRows.some((row) => row.manifest_url === sourceURL.trim() && row.remote_type === catalog.remote_type && row.remote_id === catalog.remote_id)
