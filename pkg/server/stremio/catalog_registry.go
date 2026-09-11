@@ -110,11 +110,26 @@ var catalogRegistry = []CatalogDef{
 var searchCatalogs = []CatalogDef{
 	{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
 	{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
-	{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true},
 }
 
-func searchCatalogDefByID(id string) (CatalogDef, bool) {
-	for _, def := range searchCatalogs {
+// searchCatalogDefs gives anime exactly one discovery source: the user's
+// primary. Its backup is intentionally not a second result set; it is used
+// only when the primary cannot return a viable match.
+func searchCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
+	defs := make([]CatalogDef, len(searchCatalogs), len(searchCatalogs)+1)
+	copy(defs, searchCatalogs)
+	primary := "kitsu"
+	if profile != nil {
+		primary, _ = profile.EffectiveAnimeMetaSources()
+	}
+	if primary == "tvdb" {
+		return append(defs, CatalogDef{ID: "tvdb.search.anime", Type: "anime", Name: "Search Anime", Provider: "tvdb", Kind: "search", SupportsSearch: true})
+	}
+	return append(defs, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true})
+}
+
+func searchCatalogDefByID(profile *config.MetadataProfileConfig, id string) (CatalogDef, bool) {
+	for _, def := range searchCatalogDefs(profile) {
 		if def.ID == id {
 			return def, true
 		}
@@ -252,7 +267,8 @@ func enabledCatalogs(profile *config.MetadataProfileConfig, dropProviders ...str
 		dropped[provider] = true
 	}
 	defs := enabledCatalogDefs(profile)
-	catalogs := make([]Catalog, 0, len(defs)+len(searchCatalogs))
+	searchDefs := searchCatalogDefs(profile)
+	catalogs := make([]Catalog, 0, len(defs)+len(searchDefs))
 	for _, def := range defs {
 		if dropped[def.Provider] {
 			continue
@@ -263,7 +279,7 @@ func enabledCatalogs(profile *config.MetadataProfileConfig, dropProviders ...str
 		}
 		catalogs = append(catalogs, cat)
 	}
-	for _, def := range searchCatalogs {
+	for _, def := range searchDefs {
 		catalogs = append(catalogs, Catalog{
 			Type:  def.Type,
 			ID:    def.ID,
