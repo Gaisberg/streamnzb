@@ -25,6 +25,10 @@ const (
 	maxLimit     = 200
 	latestLimit  = 16
 	resumeLimit  = 12
+	// Infuse uses Items/Latest as its catalog browser and otherwise never
+	// follows the normal paged Items route. Keep its external-source response
+	// bounded, but large enough to render the complete common public lists.
+	infuseExternalLatestLimit = maxLimit
 )
 
 // allCatalogs is every catalog an id may name: the browse registry plus the
@@ -169,6 +173,22 @@ func (s *Server) views(rq *request) ([]stremio.CatalogDef, error) {
 	return defs, err
 }
 
+// enabledCatalogByID resolves against this request's profile rather than the
+// static built-in registry. External catalog sources are profile-owned, so a
+// static lookup would display their Jellyfin library but make it unopenable.
+func (s *Server) enabledCatalogByID(rq *request, catalogID string) (stremio.CatalogDef, bool) {
+	defs, err := s.views(rq)
+	if err != nil {
+		return stremio.CatalogDef{}, false
+	}
+	for _, def := range defs {
+		if def.ID == catalogID || viewID(def.ID) == catalogID {
+			return def, true
+		}
+	}
+	return stremio.CatalogDef{}, false
+}
+
 func (s *Server) handleViews(w http.ResponseWriter, rq *request) {
 	defs, err := s.views(rq)
 	if err != nil {
@@ -230,7 +250,7 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	}
 	switch id.Kind {
 	case kindView:
-		def, ok := catalogByID(id.CatalogID)
+		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
 		if !ok || !wantsType(include, def.Type) {
 			writeJSON(w, http.StatusOK, emptyResult())
 			return
@@ -287,7 +307,7 @@ func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit i
 			break
 		}
 		rows = append(rows, metas...)
-		if len(metas) < bucket || !def.SupportsSkip {
+		if len(metas) == 0 || !def.SupportsSkip || len(metas) < bucket {
 			short = true
 			break
 		}
@@ -431,7 +451,13 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 	items := []*baseItem{}
 	if parent := rq.param("parentId"); parent != "" {
 		if id, err := decodeItemID(parent); err == nil && id.Kind == kindView {
-			if def, ok := catalogByID(id.CatalogID); ok && wantsType(include, def.Type) {
+			if def, ok := s.enabledCatalogByID(rq, id.CatalogID); ok && wantsType(include, def.Type) {
+				// Infuse always asks its Latest browser for 20 rows and never
+				// continues with a later page. Override that client limit only for
+				// pasted sources so their chosen list stays complete in Infuse.
+				if def.Provider == "external" && isInfuseRequest(rq) {
+					limit = infuseExternalLatestLimit
+				}
 				items = s.catalogPage(rq, def, 0, limit).Items
 			}
 		}
@@ -440,6 +466,10 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 		items = all[:min(limit, len(all))]
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func isInfuseRequest(rq *request) bool {
+	return strings.Contains(strings.ToLower(rq.UserAgent()), "infuse")
 }
 
 // resumeResult lists what the stream has partway through, newest first.
@@ -562,7 +592,7 @@ func (s *Server) meta(ctx context.Context, rq *request, id itemID) (*stremio.Met
 func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 	switch id.Kind {
 	case kindView:
-		def, ok := catalogByID(id.CatalogID)
+		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
 		if !ok {
 			return nil, nil
 		}

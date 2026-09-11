@@ -11,7 +11,7 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { moveItem } from "@/lib/lists"
-import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Pencil, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { nameKey, usageByName } from "@/lib/usage"
 import { cn, selectClass } from "@/lib/utils"
@@ -126,17 +126,27 @@ function CatalogBadges({ def }) {
 function MetadataProfileEditor({ draft, onChange, registry, registryError, certOptions, simklCard }) {
   const [addOpen, setAddOpen] = useState(false)
   const [query, setQuery] = useState("")
+  const [sourceOpen, setSourceOpen] = useState(false)
+  const [sourceURL, setSourceURL] = useState("")
+  const [sourcePreview, setSourcePreview] = useState(null)
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState("")
+  const [editingExternalID, setEditingExternalID] = useState(null)
+  const [editingExternalName, setEditingExternalName] = useState("")
 
-  const defsByID = useMemo(() => new Map(registry.map((def) => [def.id, def])), [registry])
-  const rows = useMemo(() => seedRows(registry, draft.catalogs ?? null), [registry, draft.catalogs])
+  const externalRows = useMemo(() => draft.external_catalogs || [], [draft.external_catalogs])
+  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", supports_skip: source.supports_skip !== false })), [externalRows])
+  const allDefs = useMemo(() => [...registry, ...externalDefs], [registry, externalDefs])
+  const defsByID = useMemo(() => new Map(allDefs.map((def) => [def.id, def])), [allDefs])
+  const rows = useMemo(() => seedRows(allDefs, draft.catalogs ?? null), [allDefs, draft.catalogs])
 
   const setRows = (next) => {
     onChange({ ...draft, catalogs: next.map((id) => ({ id, enabled: true })) })
   }
 
   const available = useMemo(
-    () => registry.filter((def) => !rows.includes(def.id)),
-    [registry, rows]
+    () => allDefs.filter((def) => !rows.includes(def.id)),
+    [allDefs, rows]
   )
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -148,6 +158,54 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   }, [available, query])
 
   const capped = Boolean(draft.max_certification)
+
+  const inspectSource = async () => {
+    setSourceLoading(true)
+    setSourceError("")
+    setSourcePreview(null)
+    try {
+      setSourcePreview(await apiFetch("/api/metadata/sources/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manifest_url: sourceURL }),
+      }))
+    } catch (err) {
+      setSourceError(err.message || "Could not test this source.")
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
+  const addExternalCatalog = (catalog) => {
+    const sourceKey = sourceURL.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
+    const next = [...externalRows, {
+      id: `external.${sourceKey}.${catalog.remote_type}.${catalog.remote_id}`,
+      name: catalog.name,
+      kind: sourcePreview?.kind || "",
+      manifest_url: sourceURL.trim(),
+      remote_type: catalog.remote_type,
+      remote_id: catalog.remote_id,
+      supports_skip: catalog.supports_skip !== false,
+    }]
+    onChange({ ...draft, external_catalogs: next, catalogs: [...rows, next[next.length - 1].id].map((id) => ({ id, enabled: true })) })
+  }
+
+  const renameExternalCatalog = (id, name) => onChange({ ...draft, external_catalogs: externalRows.map((source) => source.id === id ? { ...source, name } : source) })
+  const removeCatalog = (id) => onChange({ ...draft, catalogs: rows.filter((rowID) => rowID !== id).map((rowID) => ({ id: rowID, enabled: true })), external_catalogs: externalRows.filter((source) => source.id !== id) })
+  const startRenameExternalCatalog = (source) => {
+    setEditingExternalID(source.id)
+    setEditingExternalName(source.name)
+  }
+  const finishRenameExternalCatalog = (id) => {
+    const name = editingExternalName.trim()
+    if (name) renameExternalCatalog(id, name)
+    setEditingExternalID(null)
+    setEditingExternalName("")
+  }
+  const cancelRenameExternalCatalog = () => {
+    setEditingExternalID(null)
+    setEditingExternalName("")
+  }
 
   return (
     <div className="space-y-4">
@@ -188,7 +246,36 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                   return (
                     <SortableRow key={id} id={id}>
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="truncate text-sm font-medium">{def.name}</span>
+                        {def.provider === "external" ? (
+                          editingExternalID === def.id ? (
+                            <div className="flex min-w-0 items-center gap-1">
+                              <Input
+                                autoFocus
+                                className="h-7 max-w-sm text-sm"
+                                value={editingExternalName}
+                                onChange={(e) => setEditingExternalName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") finishRenameExternalCatalog(def.id)
+                                  if (e.key === "Escape") cancelRenameExternalCatalog()
+                                }}
+                                aria-label={`Rename ${def.name}`}
+                              />
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => finishRenameExternalCatalog(def.id)} aria-label={`Save ${def.name}`}>
+                                <Check className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground" onClick={cancelRenameExternalCatalog} aria-label="Cancel rename">
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex min-w-0 items-center gap-1">
+                              <span className="truncate text-sm font-medium">{def.name}</span>
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" onClick={() => startRenameExternalCatalog(externalRows.find((source) => source.id === def.id))} aria-label={`Rename ${def.name}`}>
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )
+                        ) : <span className="truncate text-sm font-medium">{def.name}</span>}
                         <CatalogBadges def={def} />
                       </div>
                       <Button
@@ -196,7 +283,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => setRows(rows.filter((rowID) => rowID !== id))}
+                        onClick={() => removeCatalog(id)}
                         aria-label={`Remove ${def.name}`}
                       >
                         <X className="h-4 w-4" />
@@ -209,6 +296,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           )}
         </CardContent>
       </Card>
+
 
       <Card className="border border-border bg-card">
         <CardHeader className="pb-3">
@@ -390,6 +478,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               className="h-9 pl-8"
             />
           </div>
+          <Button type="button" variant="outline" size="sm" className="w-full" onClick={() => { setSourceURL(""); setSourcePreview(null); setSourceError(""); setSourceOpen(true); setAddOpen(false) }}>
+            <Link2 className="mr-2 h-4 w-4" /> Add source or public list URL
+          </Button>
           <div className="max-h-72 space-y-1 overflow-y-auto">
             {filtered.length === 0 ? (
               <p className="px-1 py-4 text-center text-sm text-muted-foreground">
@@ -412,6 +503,43 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               ))
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={sourceOpen} onOpenChange={setSourceOpen}>
+        <DialogContent className="max-w-xl p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>Add catalog source</DialogTitle>
+            <DialogDescription>Paste a public Stremio manifest URL, public TMDB list URL, or public MDBList URL. StreamNZB imports browse catalogs only — never external search, streams, subtitles or credentials.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="catalog-source-url" className="text-sm">Source or list URL</Label>
+            <div className="flex gap-2">
+              <Input id="catalog-source-url" autoFocus value={sourceURL} onChange={(e) => setSourceURL(e.target.value)} placeholder="…/manifest.json, themoviedb.org/list/…, or mdblist.com/lists/…" className="h-9 font-mono text-xs" />
+              <Button type="button" size="sm" onClick={inspectSource} disabled={!sourceURL.trim() || sourceLoading}>
+                {sourceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Supported now: public Stremio manifests, public TMDB lists, and public MDBList lists. More list sites are added only after a real fetch test.</p>
+          </div>
+          {sourceError && <p className="text-sm text-destructive">{sourceError}</p>}
+          {sourcePreview && (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
+              {sourcePreview.warnings?.length > 0 && (
+                <p className="text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
+              )}
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                {(sourcePreview.catalogs || []).map((catalog) => {
+                  const alreadyAdded = externalRows.some((row) => row.manifest_url === sourceURL.trim() && row.remote_type === catalog.remote_type && row.remote_id === catalog.remote_id)
+                  return <button key={`${catalog.remote_type}/${catalog.remote_id}`} type="button" disabled={alreadyAdded} onClick={() => addExternalCatalog(catalog)} className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50">
+                    <span className="min-w-0"><span className="block truncate text-sm">{catalog.name}</span><span className="text-xs text-muted-foreground">{catalog.type} · tested {catalog.row_count} rows</span></span>
+                    {alreadyAdded ? <Check className="h-4 w-4 text-muted-foreground" /> : <Plus className="h-4 w-4 text-muted-foreground" />}
+                  </button>
+                })}
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
