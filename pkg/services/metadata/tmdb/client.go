@@ -328,9 +328,11 @@ var (
 )
 
 func letterboxdTitle(body []byte) string {
-	// Letterboxd's page title appends its author and description, whereas
-	// og:title is the user-visible list title. Prefer it whenever it exists.
-	for _, pattern := range []*regexp.Regexp{letterboxdOGTitlePattern, letterboxdFilmTitlePattern, letterboxdPageTitlePattern} {
+	// Film pages' og:title often includes a tagline, while their document title
+	// holds the canonical year-qualified name. List titles do not match the
+	// film pattern and naturally fall through to og:title.
+	patterns := []*regexp.Regexp{letterboxdFilmTitlePattern, letterboxdOGTitlePattern, letterboxdPageTitlePattern}
+	for _, pattern := range patterns {
 		if m := pattern.FindStringSubmatch(string(body)); len(m) == 2 {
 			title := strings.TrimSpace(html.UnescapeString(m[1]))
 			title = strings.TrimSpace(strings.TrimPrefix(title, "&lrm;"))
@@ -377,6 +379,8 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 	workers := min(12, len(filmURLs))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
 	for range workers {
 		wg.Add(1)
 		go func() {
@@ -384,6 +388,11 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 			for i := range jobs {
 				film, err := fetchPublicHTML(ctx, filmURLs[i])
 				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetch Letterboxd film %s: %w", filmURLs[i], err)
+					}
+					errMu.Unlock()
 					continue
 				}
 				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
@@ -399,6 +408,12 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 	}
 	close(jobs)
 	wg.Wait()
+	if firstErr != nil {
+		// Never silently change a page's membership between requests. A caller
+		// can retry a failed page; serving a partial page causes duplicate and
+		// missing items once the client follows Skip pagination.
+		return PublicListPage{}, firstErr
+	}
 	for _, item := range items {
 		if item.IMDbID != "" {
 			out.Items = append(out.Items, item)
