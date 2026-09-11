@@ -56,9 +56,6 @@ function sourceBadgeClass(label, key) {
   if (normalized === "tmdb") return "border-sky-400/25 bg-sky-400/10 text-sky-700 dark:text-sky-300"
   if (normalized === "mdblist") return "border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-300"
   if (normalized === "letterboxd") return "border-emerald-400/25 bg-emerald-400/10 text-emerald-700 dark:text-emerald-300"
-  if (normalized === "marquee") return "border-pink-400/25 bg-pink-400/10 text-pink-700 dark:text-pink-300"
-  if (normalized === "aiometadata") return "border-indigo-400/25 bg-indigo-400/10 text-indigo-700 dark:text-indigo-300"
-
   // A deterministic hash means unknown sources feel distinct but never change
   // color after a refresh, profile save, or client restart.
   const seed = String(key || label || "catalog")
