@@ -435,25 +435,69 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 	return out, nil
 }
 
+const publicHTMLMaxAttempts = 3
+
+// fetchPublicHTML retries the throttling and transient server failures public
+// list sites commonly return. Letterboxd rows depend on every film page being
+// canonical, so a short bounded retry is safer than serving a partial page.
 func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < publicHTMLMaxAttempts; attempt++ {
+		body, retryAfter, retry, err := fetchPublicHTMLOnce(ctx, rawURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !retry || attempt == publicHTMLMaxAttempts-1 {
+			break
+		}
+		if retryAfter <= 0 {
+			retryAfter = time.Duration(attempt+1) * 250 * time.Millisecond
+		}
+		timer := time.NewTimer(retryAfter)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func fetchPublicHTMLOnce(ctx context.Context, rawURL string) ([]byte, time.Duration, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, true, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: %s", ErrPublicListPageNotFound, resp.Status)
+		return nil, 0, false, fmt.Errorf("%w: %s", ErrPublicListPageNotFound, resp.Status)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return nil, publicHTMLRetryAfter(resp.Header.Get("Retry-After")), true, fmt.Errorf("public list returned %s", resp.Status)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("public list returned %s", resp.Status)
+		return nil, 0, false, fmt.Errorf("public list returned %s", resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	return body, 0, false, err
+}
+
+func publicHTMLRetryAfter(raw string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	// A public site can ask for minutes. Keep the configuration request and a
+	// client catalog response bounded; later requests can retry from cache.
+	return min(time.Duration(seconds)*time.Second, 2*time.Second)
 }
 
 // PublicListPage is the title and canonical TMDB rows exposed by a public

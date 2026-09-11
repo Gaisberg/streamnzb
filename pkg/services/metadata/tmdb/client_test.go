@@ -1,6 +1,7 @@
 package tmdb
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +26,27 @@ func TestLetterboxdTitleParsesPublicFilmAndListPages(t *testing.T) {
 				t.Fatalf("letterboxdTitle() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetchPublicHTMLRetriesTransientRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	}))
+	defer server.Close()
+
+	body, err := fetchPublicHTML(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchPublicHTML() error = %v", err)
+	}
+	if string(body) != "<html>ok</html>" || calls.Load() != 2 {
+		t.Fatalf("body/calls = %q/%d, want success after two requests", body, calls.Load())
 	}
 }
 
