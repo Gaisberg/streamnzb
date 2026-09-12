@@ -365,11 +365,15 @@ func withTVDBStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
 // from TVDB (resolved from the imdb id), with TVMaze still owning air dates.
 func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/find/") {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/"):
 			_, _ = w.Write([]byte(`{"tv_results": [{"id": 1399}]}`))
-			return
+		case strings.HasSuffix(r.URL.Path, "/tv/1399"):
+			// Only the rating is read from here on the TVDB path.
+			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones", "vote_average": 8.4}`))
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}
 	tvmazeStub := func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -428,6 +432,10 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 	if meta.ReleaseInfo != "2011-2019" {
 		t.Fatalf("releaseInfo = %q, want the ended-run year range", meta.ReleaseInfo)
+	}
+	// TVDB has no 0-10 rating; the TMDB vote average fills it in.
+	if meta.IMDBRating != "8.4" {
+		t.Fatalf("imdbRating = %q, want TMDB's 8.4 on the TVDB path", meta.IMDBRating)
 	}
 	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "KPLWWIOCOOQ" {
 		t.Fatalf("trailers = %v", meta.Trailers)

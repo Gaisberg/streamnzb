@@ -423,6 +423,16 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 	if ext.AverageRuntime > 0 {
 		meta.Runtime = fmt.Sprintf("%d min", ext.AverageRuntime)
 	}
+	// TVDB's "score" is a popularity rank, not a 0-10 rating, so the rating
+	// comes from TMDB when the id is known; a TVDB-only series stays unrated
+	// rather than carrying a number on the wrong scale.
+	if rid.tmdbID > 0 && rt.tmdbClient != nil {
+		if details, _, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage()); err == nil && details.VoteAverage > 0 {
+			meta.IMDBRating = fmt.Sprintf("%.1f", details.VoteAverage)
+		} else if err != nil {
+			logger.Debug("TMDB rating lookup for TVDB series failed", "tmdb_id", rid.tmdbID, "err", err)
+		}
+	}
 	// The canonical id stays as requested; the fallback logo CDN needs imdb.
 	if rid.imdbID == "" {
 		rid.imdbID = ext.IMDbID()
