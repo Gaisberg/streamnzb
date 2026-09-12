@@ -686,7 +686,9 @@ func TestImageRelayUpstream404(t *testing.T) {
 	f := newFixture()
 	f.catalog.metas["movie/tt0111161"].Poster = testCDNServer().URL + "/missing.jpg"
 	movie, _ := itemIDFor("movie", "tt0111161")
-	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusBadGateway {
+	// A missing image is a miss, not a gateway failure: 404, once the fallback
+	// (pointed at a 404 path in tests) has been tried too.
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("upstream 404: %d", rec.Code)
 	}
 }
