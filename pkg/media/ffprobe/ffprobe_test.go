@@ -169,14 +169,70 @@ func TestSummarizeStreamsCoverArtIsNotVideo(t *testing.T) {
 	}
 }
 
-func TestSummarizeStreamsUndecodableVideoRejected(t *testing.T) {
-	// Forced decode yielded 0 frames -> the "video" stream is not really playable.
-	streams := []FFprobeStream{
-		{CodecType: "video", CodecName: "hevc", Width: 3840, Height: 2160, NbReadFrames: "0"},
+// TestSummarizeStreamsVideoQualification pins down which video streams count.
+//
+// This used to assert the opposite for the zero-frame case — that a forced
+// decode yielding 0 frames meant the track was not really playable. It does
+// not. Probing one BluRay remux both ways showed the same file, same reported
+// duration, reporting hevc video on the header pass and no video at all on the
+// forced-decode pass; the only difference between the runs is -count_frames.
+// High-bitrate remuxes routinely complete no frame inside the read window
+// while the WEB-DLs beside them manage a few dozen, so the rule rejected
+// exactly the best releases — silently, because preloading probes with
+// StrictFFprobe and just moves to the next candidate.
+//
+// Zero frames is therefore inconclusive, not disqualifying. Exactly one frame
+// still is: that is what a still image decodes to, which is the whole point of
+// the test. Article holes are unaffected — the probe still reads its full
+// -probesize of payload, and a 430 surfaces as a stream error, which outranks
+// ffprobe's exit code upstream of here.
+func TestSummarizeStreamsVideoQualification(t *testing.T) {
+	video := func(codec, frames string, attachedPic int) FFprobeStream {
+		return FFprobeStream{
+			CodecType:    "video",
+			CodecName:    codec,
+			Width:        3840,
+			Height:       2160,
+			NbReadFrames: frames,
+			Disposition:  ffprobeDisposition{AttachedPic: attachedPic},
+		}
 	}
-	res := summarizeStreams(streams)
-	if res.HasVideo {
-		t.Fatal("a video stream that decoded 0 frames must not count as playable")
+	for _, tc := range []struct {
+		name     string
+		stream   FFprobeStream
+		wantReal bool
+	}{
+		{"remux completed no frame in the window", video("hevc", "0", 0), true},
+		{"web-dl completed a handful", video("hevc", "19", 0), true},
+		{"frames not counted at all", video("hevc", "N/A", 0), true},
+		{"frames field absent", video("hevc", "", 0), true},
+		{"exactly one frame is a still image", video("hevc", "1", 0), false},
+		{"attached picture", video("hevc", "240", 1), false},
+		{"still image codec", video("mjpeg", "240", 0), false},
+	} {
+		res := summarizeStreams([]FFprobeStream{tc.stream})
+		if res.HasVideo != tc.wantReal {
+			t.Errorf("%s: HasVideo = %v, want %v", tc.name, res.HasVideo, tc.wantReal)
+		}
+		if tc.wantReal && (res.Width != 3840 || res.Height != 2160) {
+			t.Errorf("%s: dimensions dropped: %dx%d", tc.name, res.Width, res.Height)
+		}
+	}
+
+	// The shape of the file that was being rejected: a video track the probe
+	// could not finish a frame of, three TrueHD tracks and dozens of
+	// subtitles. It must not read as audio-only.
+	res := summarizeStreams([]FFprobeStream{
+		video("hevc", "0", 0),
+		{CodecType: "audio", CodecName: "truehd"},
+		{CodecType: "audio", CodecName: "eac3"},
+		{CodecType: "subtitle", CodecName: "subrip"},
+	})
+	if !res.HasVideo || res.VideoCodec != "hevc" {
+		t.Fatalf("remux read as audio-only: %+v", res)
+	}
+	if res.AudioStreams != 2 || res.SubtitleStreams != 1 {
+		t.Fatalf("companion tracks miscounted: %+v", res)
 	}
 }
 

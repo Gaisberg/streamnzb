@@ -293,7 +293,7 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 
 // previewItem renders a catalog row. Rows carry no runtime or year, which is
 // what a Jellyfin library grid shows anyway: poster and title.
-func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
+func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
 	id, err := itemIDFor(preview.Type, preview.ID)
 	if err != nil {
 		return nil, false
@@ -302,10 +302,6 @@ func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID 
 	item.ParentID = parentID
 	item.Overview = preview.Description
 	s.setImages(item, id, preview.Poster, preview.Background, "")
-	// Infuse decides whether to offer a version picker from the library row,
-	// before it opens the richer item document. Two cheap playable stand-ins
-	// expose that signal without resolving providers during grid browsing.
-	s.attachMediaSourceStubs(rq, id, item)
 	return item, true
 }
 
@@ -472,7 +468,16 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 	}
 	// The episode still is its Primary image; the series poster and backdrop
 	// ride along as the parent's for the clients that show them.
-	s.setImages(item, id, video.Thumbnail, "", "")
+	// The series' backdrop and logo, because an episode has no landscape art
+	// of its own and a client rendering an episode — on a hero card, in a
+	// Continue Watching row — asks for exactly that. The still stays Primary,
+	// falling back to the series poster when the episode has none, since an
+	// unadvertised Primary is an episode with no artwork a client can reach.
+	poster := video.Thumbnail
+	if poster == "" {
+		poster = meta.Poster
+	}
+	s.setImages(item, id, poster, meta.Background, meta.Logo)
 	if tag := s.images.tagFor(meta.Poster); tag != "" {
 		item.SeriesPrimaryImageTag = tag
 		item.ParentPrimaryImageItemID = seriesID.encode()
@@ -487,18 +492,32 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 	return item
 }
 
-// setImages attaches the image tags an item has. Tags are hashes of the
-// upstream URLs, so a poster change is a tag change and clients refetch.
+// setImages registers an item's artwork and advertises the tags for it.
+//
+// Tags are hashes of the upstream URLs, so a poster change is a tag change and
+// clients refetch. They are also indexed per item and kind, because clients
+// are not consistent about quoting a tag back and the app that fetches an
+// image sends no credentials of its own: an image nothing can look up is a
+// blank poster, however well the server could have answered it.
 func (s *Server) setImages(item *baseItem, id itemID, poster, background, logo string) {
+	encoded := id.encode()
 	tags := map[string]string{}
-	if tag := s.images.register(poster); tag != "" {
+	if tag := s.images.registerFor(encoded, "primary", poster); tag != "" {
 		tags["Primary"] = tag
 	}
-	if tag := s.images.register(logo); tag != "" {
+	if tag := s.images.registerFor(encoded, "logo", logo); tag != "" {
 		tags["Logo"] = tag
 	}
-	if tag := s.images.register(background); tag != "" {
+	if tag := s.images.registerFor(encoded, "backdrop", background); tag != "" {
+		// Thumb resolves to the backdrop too, under its own key: a client asks
+		// for it by name and will not fall back to Backdrop on a 404.
+		s.images.registerFor(encoded, "thumb", background)
 		item.BackdropImageTags = []string{tag}
+		// Thumb is the landscape image clients put on a Continue Watching row
+		// and a hero card, and they ask for it by name rather than falling
+		// back to Backdrop. There is no separate 16:9 asset here and the
+		// backdrop is the right shape, so it answers for both.
+		tags["Thumb"] = tag
 	}
 	if len(tags) > 0 {
 		item.ImageTags = tags

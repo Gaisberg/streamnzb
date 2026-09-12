@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -1151,5 +1152,45 @@ func TestSearchPlanStopThreshold(t *testing.T) {
 	}
 	if NormalizeSearchStop(" Enough_Hits ") != SearchStopEnoughHits {
 		t.Error("expected enough_hits to normalize case-insensitively")
+	}
+}
+
+// Resolving on open is the default because the alternative was fabricating
+// placeholder media sources so a client would render a version picker. An
+// explicit false has to survive a reload, and LoadFile replaces the whole
+// struct — hence the pointer rather than a plain bool with a default.
+func TestEffectiveJellyfinResolveOnOpen(t *testing.T) {
+	if !(&Config{}).EffectiveJellyfinResolveOnOpen() {
+		t.Fatal("unset must resolve on open")
+	}
+	if !(*Config)(nil).EffectiveJellyfinResolveOnOpen() {
+		t.Fatal("a nil config must not disable it")
+	}
+	off := false
+	if (&Config{JellyfinResolveOnOpen: &off}).EffectiveJellyfinResolveOnOpen() {
+		t.Fatal("an explicit false must be honoured")
+	}
+	on := true
+	if !(&Config{JellyfinResolveOnOpen: &on}).EffectiveJellyfinResolveOnOpen() {
+		t.Fatal("an explicit true must be honoured")
+	}
+
+	// The round trip an operator actually gets: turn it off, save, reload.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	saved := &Config{JellyfinResolveOnOpen: &off}
+	data, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var reloaded Config
+	if err := reloaded.LoadFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.EffectiveJellyfinResolveOnOpen() {
+		t.Fatal("an explicit false did not survive a save and reload")
 	}
 }

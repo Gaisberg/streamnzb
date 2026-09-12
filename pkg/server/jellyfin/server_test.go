@@ -467,8 +467,11 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	if result.Items[0].Type != "Movie" || result.Items[0].ParentID != view || result.Items[0].ImageTags["Primary"] == "" || len(result.Items[0].BackdropImageTags) != 1 {
 		t.Fatalf("row shape: %+v", result.Items[0])
 	}
-	if len(result.Items[0].MediaSources) != 2 || len(result.Items[0].AlternateMediaSources) != 2 || result.Items[0].MediaSourceCount == nil || *result.Items[0].MediaSourceCount != 2 || result.Items[0].EnableMediaSourceDisplay == nil || !*result.Items[0].EnableMediaSourceDisplay {
-		t.Fatalf("Infuse picker row contract: %+v", result.Items[0])
+	// A browse row carries no media sources. Nobody opens a version picker
+	// from a grid thumbnail, and the sources are not free: each one is an
+	// absolute stream URL carrying the stream token, on every row of the page.
+	if len(result.Items[0].MediaSources) != 0 || len(result.Items[0].AlternateMediaSources) != 0 || result.Items[0].MediaSourceCount != nil {
+		t.Fatalf("browse row must stay free of media sources: %+v", result.Items[0])
 	}
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
 	if len(result.Items) != 5 || result.TotalRecordCount != 45 {
@@ -543,8 +546,25 @@ func TestMovieDetail(t *testing.T) {
 	if anon.Code != http.StatusOK || anon.Body.String() != rec.Body.String() {
 		t.Fatalf("anonymous image by tag: %d %s", anon.Code, anon.Body.String())
 	}
-	if anon := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary", "", "X-Nothing", "x"); anon.Code != http.StatusNotFound {
-		t.Fatalf("anonymous image without a tag: %d", anon.Code)
+	// A tagless request is answered too, from what this item's document
+	// advertised. Clients are not consistent about quoting tags: Fladder's URL
+	// builder passes one for Backdrop and omits it for Primary, Thumb and
+	// Logo, so refusing these left every poster it drew a blank rectangle.
+	//
+	// The trade is that provider artwork for an item whose document has been
+	// rendered is now anonymously fetchable by item id, and item ids are
+	// derived from tmdb/imdb ids rather than being secret. What is exposed is
+	// public CDN artwork relayed by this server — not a library listing, and
+	// not anything about who watched what.
+	anonNoTag := f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Primary", "", "X-Nothing", "x")
+	if anonNoTag.Code != http.StatusOK || anonNoTag.Body.String() != rec.Body.String() {
+		t.Fatalf("anonymous image without a tag: %d %s", anonNoTag.Code, anonNoTag.Body.String())
+	}
+	// An item this process never rendered stays a missing image, not a 401 and
+	// not a metadata lookup on some arbitrary stream's behalf.
+	other, _ := itemIDFor("movie", "tt0000009")
+	if miss := f.do(http.MethodGet, "/jellyfin/Items/"+other.encode()+"/Images/Primary", "", "X-Nothing", "x"); miss.Code != http.StatusNotFound {
+		t.Fatalf("unknown item image: %d", miss.Code)
 	}
 	rec = f.do(http.MethodGet, "/jellyfin/Items/"+item.ID+"/Images/Backdrop/0?tag="+item.BackdropImageTags[0], "")
 	if rec.Code != http.StatusOK || rec.Body.String() != "/shawshank-bg.jpg" {
@@ -1120,14 +1140,18 @@ func TestResolveOnOpenAttachesFullPlaylist(t *testing.T) {
 	}
 	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
 
-	// Off by default: two picker stand-ins, and nothing was searched to build them.
+	// Turned off: one stand-in naming slot 0, and nothing was searched to
+	// build it. One, not several — a second stand-in would claim a version
+	// that may not exist and put a picker on screen with nothing real in it.
 	var item baseItem
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+movie.encode(), ""), &item)
-	if len(item.MediaSources) != 2 || len(item.AlternateMediaSources) != 2 {
-		t.Fatalf("resolve on open off: want 2 stand-in sources, got media=%d alternate=%d", len(item.MediaSources), len(item.AlternateMediaSources))
+	if len(item.MediaSources) != 1 || len(item.AlternateMediaSources) != 1 {
+		t.Fatalf("resolve on open off: want 1 stand-in source, got media=%d alternate=%d", len(item.MediaSources), len(item.AlternateMediaSources))
 	}
-	if item.MediaSourceCount == nil || *item.MediaSourceCount != 2 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
-		t.Fatalf("stand-in version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
+	// No count is advertised for a single source: the count is what a client
+	// reads to decide there is a choice to offer.
+	if item.MediaSourceCount != nil {
+		t.Fatalf("a lone stand-in must not advertise a version count: %v", item.MediaSourceCount)
 	}
 	if calls := f.catalog.playlistCalls; calls != 0 {
 		t.Fatalf("resolve on open off: Playlist called %d times, want 0", calls)
@@ -1396,5 +1420,128 @@ func TestJellyfinTime(t *testing.T) {
 	}
 	if got := premiereDate("1994-09-23"); got != "1994-09-23T00:00:00.0000000Z" {
 		t.Fatalf("date-only premiere %q", got)
+	}
+}
+
+// TestMediaSourceNameUsesTheStreamFormat covers the formatted label reaching a
+// client's version picker, and the invariant that makes it safe: the label is
+// display only. Every codec, resolution and HDR field on a media source is
+// parsed out of the *raw* release title, so a stream whose format renders
+// something unparseable must still report the right capabilities.
+func TestMediaSourceNameUsesTheStreamFormat(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	raw := "The.Shawshank.Redemption.1994.2160p.UHD.BluRay.x265.HDR.DTS-HD.MA.5.1-GRP"
+	f.catalog.playlist = &stremio.PlaylistView{
+		RuntimeSeconds: 142 * 60,
+		Entries: []stremio.PlaylistEntry{
+			{Index: 0, Title: raw, DisplayTitle: "★★★★☆ 4K HDR · 40 GB · eweka", Size: 40 << 30},
+			// No DisplayTitle: a stream with no custom format falls back to
+			// the release title rather than to a blank row.
+			{Index: 1, Title: "The.Shawshank.Redemption.1994.1080p.BluRay.x264.DD5.1-GRP.mkv"},
+		},
+	}
+
+	var info playbackInfoResponse
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/PlaybackInfo", ""), &info)
+	if len(info.MediaSources) != 2 {
+		t.Fatalf("sources: %+v", info.MediaSources)
+	}
+	if got := info.MediaSources[0].Name; got != "★★★★☆ 4K HDR · 40 GB · eweka" {
+		t.Fatalf("formatted name not used: %q", got)
+	}
+	if got := info.MediaSources[1].Name; got != "The.Shawshank.Redemption.1994.1080p.BluRay.x264.DD5.1-GRP.mkv" {
+		t.Fatalf("unformatted entry should keep the release title: %q", got)
+	}
+	// The formatted label must not have been parsed in place of the title.
+	streams := info.MediaSources[0].MediaStreams
+	if len(streams) == 0 || streams[0].Codec != "hevc" || streams[0].Height == nil || *streams[0].Height != 2160 {
+		t.Fatalf("capabilities must come from the raw title, not the label: %+v", streams)
+	}
+}
+
+// TestAdvertisedImageTagsCoverWhatClientsAskFor guards the image contract.
+//
+// The app that fetches artwork is not the client that signed in: Flutter's and
+// Android's image loaders send a bare GET with no token, so the only image a
+// client can reach is one whose tag it was handed. An unadvertised kind is a
+// blank poster on screen, not a fallback — Fladder rendered a whole Continue
+// Watching row as flat colour because nothing advertised Thumb.
+func TestAdvertisedImageTagsCoverWhatClientsAskFor(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	series, _ := itemIDFor("series", "tt0903747")
+
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &item)
+	for _, kind := range []string{"Primary", "Thumb"} {
+		if item.ImageTags[kind] == "" {
+			t.Fatalf("movie advertises no %s tag: %+v", kind, item.ImageTags)
+		}
+	}
+	if len(item.BackdropImageTags) == 0 {
+		t.Fatal("movie advertises no backdrop")
+	}
+
+	// An episode has no landscape art of its own, so it borrows the series'.
+	// Without it, an episode hero and a Continue Watching row have nothing.
+	var episode baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+series.episode(1, 2).encode(), ""), &episode)
+	for _, kind := range []string{"Primary", "Thumb"} {
+		if episode.ImageTags[kind] == "" {
+			t.Fatalf("episode advertises no %s tag: %+v", kind, episode.ImageTags)
+		}
+	}
+	if len(episode.BackdropImageTags) == 0 {
+		t.Fatal("episode advertises no backdrop")
+	}
+
+	// Every advertised tag has to actually resolve without credentials, which
+	// is the half that makes advertising it worth anything.
+	for kind, tag := range episode.ImageTags {
+		rec := f.do(http.MethodGet, "/jellyfin/Items/"+episode.ID+"/Images/"+kind+"?tag="+tag, "", "X-Nothing", "x")
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("advertised %s tag does not resolve unauthenticated", kind)
+		}
+	}
+}
+
+// TestFladderImageURLShapes answers the exact URLs Fladder builds.
+//
+// From its lib/providers/image_provider.dart: getItemsImageUrl, used for
+// Primary, Thumb and Logo, sends only fillHeight/fillWidth/quality — no tag.
+// getBackdropImage sends the tag as well, under a /Backdrop/{index} path. The
+// tag in the item document is used for Fladder's cache key, not its URL, so
+// advertising more tags never helped; the request has to be answerable without
+// one. Its image loader also sends no credentials.
+func TestFladderImageURLShapes(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+
+	// The document has to be rendered first: that is what indexes the URLs.
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode(), ""), &item)
+
+	anon := func(path string) *httptest.ResponseRecorder {
+		return f.do(http.MethodGet, path, "", "X-Nothing", "x")
+	}
+	base := "/jellyfin/Items/" + item.ID + "/Images/"
+	sized := "?fillHeight=576&fillWidth=384&quality=90"
+
+	for _, kind := range []string{"Primary", "Thumb", "Logo"} {
+		if rec := anon(base + kind + sized); rec.Code != http.StatusOK {
+			t.Fatalf("Fladder %s URL: %d", kind, rec.Code)
+		}
+	}
+	// Backdrop is the one shape that already worked, tag and index included.
+	got := anon(base + "Backdrop/0?tag=" + item.BackdropImageTags[0] + "&fillHeight=576&fillWidth=384&quality=90")
+	if got.Code != http.StatusOK {
+		t.Fatalf("Fladder backdrop URL: %d", got.Code)
+	}
+	// Ids come back in whatever hyphenation a client likes; the index is keyed
+	// by the canonical form, so it has to be normalised on the way in.
+	dashed := item.ID[:8] + "-" + item.ID[8:12] + "-" + item.ID[12:16] + "-" + item.ID[16:20] + "-" + item.ID[20:]
+	if rec := anon("/jellyfin/Items/" + dashed + "/Images/Primary" + sized); rec.Code != http.StatusOK {
+		t.Fatalf("hyphenated item id: %d", rec.Code)
 	}
 }

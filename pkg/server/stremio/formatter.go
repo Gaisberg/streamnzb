@@ -772,7 +772,7 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 	// Neither source is complete: the name carries the tokens the group chose
 	// to put in it, and the indexer's tag is regularly the only place a dub's
 	// language appears at all.
-	ctx.Languages = releaseLanguageCodes(rel, meta)
+	ctx.Languages = releaseLanguageCodes(rel, meta, cand.Verdict.Probed)
 	ctx.LanguageFlags = languageFlags(ctx.Languages)
 	if probed := cand.Verdict.Probed; probed != nil && probed.DurationSeconds > 0 {
 		// A probed library release is measured, not estimated: the container's
@@ -908,6 +908,32 @@ func collapseBlankLines(s string) string {
 // renderResultTemplate executes tpl over ctx. Any failure — nil template,
 // execution error, empty output — falls back to the built-in string so a bad
 // template can never break stream responses.
+// maxSourceLabelRunes bounds a rendered label for a client that shows it on a
+// single line — a Jellyfin media source name, a version-picker row. The
+// Stremio budget (maxFormattedResultRunes) is sized for a multi-line
+// description card and is far too long for a label.
+const maxSourceLabelRunes = 160
+
+// singleLineLabel flattens a rendered template to one line.
+//
+// A name template written for Stremio legitimately contains newlines — the
+// built-in name is "<service>\n<stream>" — and a client that puts the value in
+// a picker row either draws the newline as a glyph or drops everything after
+// it. Segments are joined rather than truncated so nothing is silently lost.
+func singleLineLabel(s string) string {
+	var parts []string
+	for _, line := range strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	out := strings.Join(parts, " · ")
+	if runes := []rune(out); len(runes) > maxSourceLabelRunes {
+		out = strings.TrimSpace(string(runes[:maxSourceLabelRunes]))
+	}
+	return out
+}
+
 func renderResultTemplate(tpl *template.Template, ctx FormatContext, fallback string) string {
 	if tpl == nil {
 		return fallback

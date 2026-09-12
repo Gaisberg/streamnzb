@@ -144,6 +144,50 @@ func MergeLanguageCodes(lists ...[]string) []string {
 	return NormalizeLanguageSlice(all)
 }
 
+// LanguageSource names the strongest account that contributed to a resolved
+// language list, so a rule or a caller can ask how the list was arrived at
+// rather than trusting every entry equally.
+type LanguageSource string
+
+const (
+	// LanguagesUnknown is an empty list: nothing said anything.
+	LanguagesUnknown LanguageSource = ""
+	// LanguagesInferred is the release name alone.
+	LanguagesInferred LanguageSource = "inferred"
+	// LanguagesReported means the indexer's own language tag contributed.
+	LanguagesReported LanguageSource = "reported"
+	// LanguagesMeasured means the file was opened and its audio tracks read.
+	LanguagesMeasured LanguageSource = "measured"
+)
+
+// ResolveLanguages settles what a release is spoken in from the three accounts
+// of it, strongest first: the audio tracks a probe read out of the file, the
+// indexer's own language tag, and the tokens in the release name.
+//
+// The result is their union, not the strongest account that answered.
+// Measurement outranks the rest on what is *present* — a tagged German track
+// is proof of German — but never on what is absent: tracks tagged "und", an
+// older probe that read no tracks at all, or a season pack whose other
+// episodes were never opened would each erase a language the name got right.
+// So nothing here can shrink the list, and a rule that matched on a name goes
+// on matching once the file has been probed.
+//
+// The source returned is the strongest account that contributed anything,
+// which is how a caller asks whether the list was measured or merely claimed.
+func ResolveLanguages(measured, reported, inferred []string) ([]string, LanguageSource) {
+	codes := MergeLanguageCodes(measured, reported, inferred)
+	switch {
+	case len(codes) == 0:
+		return codes, LanguagesUnknown
+	case len(NormalizeLanguageSlice(measured)) > 0:
+		return codes, LanguagesMeasured
+	case len(NormalizeLanguageSlice(reported)) > 0:
+		return codes, LanguagesReported
+	default:
+		return codes, LanguagesInferred
+	}
+}
+
 var NetworkOptions = []string{
 	"Apple TV", "Amazon", "Netflix", "Nickelodeon", "Disney", "HBO", "Hulu", "CBS", "NBC", "AMC", "PBS", "Crunchyroll", "VICE", "Sony", "Hallmark", "Adult Swim", "Animal Planet", "Cartoon Network",
 }

@@ -451,7 +451,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			}
 			includeScore := list != nil && !list.IsAIOStreams
 			capsLine := capsSummaryLine(cand.Release)
-			langCodes := releaseLanguageCodes(cand.Release, cand.Metadata)
+			langCodes := releaseLanguageCodes(cand.Release, cand.Metadata, cand.Verdict.Probed)
 			// AIOStreams reads a stream's languages out of the flags in its
 			// description; the plain Stremio description stays as it was, and
 			// a result format that wants flags asks for {{.LanguageFlags}}.
@@ -493,6 +493,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		var line2 string
 		var firstRel *release.Release
 		var firstMeta *parser.ParsedRelease
+		var firstProbed *release.MediaCaps
 		if len(list.Candidates) > 0 {
 			if list.Candidates[0].Release != nil {
 				firstRel = list.Candidates[0].Release
@@ -505,6 +506,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 				line2 = fmt.Sprintf("%d possible releases", len(list.Candidates))
 			}
 			firstMeta = list.Candidates[0].Metadata
+			firstProbed = list.Candidates[0].Verdict.Probed
 		}
 		description := branding
 		if line2 != "" {
@@ -520,7 +522,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		if capsLine := capsSummaryLine(firstRel); capsLine != "" {
 			description += "\n" + capsLine
 		}
-		langCodes := releaseLanguageCodes(firstRel, firstMeta)
+		langCodes := releaseLanguageCodes(firstRel, firstMeta, firstProbed)
 		if list != nil && list.IsAIOStreams {
 			if flagLine := languageFlagLine(langCodes); flagLine != "" {
 				description += "\n" + flagLine

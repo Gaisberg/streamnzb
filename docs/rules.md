@@ -270,8 +270,9 @@ decides how to write a rule — and whether it can run at all.
 `seasonPack` `proper` `repack` `remastered` `upscaled` `threeD` `dubbed`
 `subbed` `hardcoded` `complete` `verified`
 
-Also `parsed.resolution`, `parsed.codec`, `parsed.hdr`, `parsed.bitDepth`,
-`parsed.dolbyVision`, `parsed.hdrFallback`, `parsed.title`.
+Also `languageSource`, and `parsed.resolution`, `parsed.codec`, `parsed.hdr`,
+`parsed.bitDepth`, `parsed.dolbyVision`, `parsed.hdrFallback`, `parsed.title`,
+`parsed.languages`.
 
 The bare names give the **best value available** — what ffprobe measured when
 the file has been opened, what the name claimed otherwise — and `verified`
@@ -290,21 +291,36 @@ the same thing whichever tier answered, and `hdrFallback` is the one that
 matters: it is false for SDR and for DV-with-no-base-layer alike, which is
 exactly the distinction a device without Dolby Vision support cares about.
 
-Three on `languages`. It holds **ISO 639-1 codes** — `"en"`, `"ja"`, `"fr"` —
+Four on `languages`. It holds **ISO 639-1 codes** — `"en"`, `"ja"`, `"fr"` —
 so `"eng"` and `"English"` match nothing and a rule written with either
-compiles cleanly and then never fires. It is the one name in this tier that is
-not inferred only: the indexer's own language tag is merged in, normalized to
-the same codes whichever spelling the indexer used, because a dub is regularly
-posted under an untouched English name and tagged nowhere else. And it is still
-**empty unless one of the two said something**: most English releases carry no
-language token, and plenty of indexers tag nothing, so `"en" in languages`
-finds the ones that announce it, not the ones that are in English. To demote
-other languages rather than reward English, say so directly:
+compiles cleanly and then never fires.
+
+It is the one name here that reads all three tiers at once: the audio tracks
+ffprobe read out of the file, the indexer's own language tag, and the tokens in
+the name, normalized to the same codes whichever spelling each used and unioned
+strongest-first. A dub is regularly known to exactly one of the three — posted
+under an untouched English name, tagged only in the newznab feed, or muxed in
+and announced nowhere. `languageSource` says which of them answered
+(`"measured"`, `"reported"`, `"inferred"`, or `""` for a release nothing said
+anything about), and `parsed.languages` is the name's own claim on its own.
+
+The union only ever grows. None of the three can prove a language *absent* — a
+muxer that tagged no tracks, a probe too old to have read them, a pack whose
+other episodes were never opened — so a measurement adds languages and never
+evicts one the name got right.
+
+And it is still **empty unless something said something**: most English
+releases carry no language token, plenty of indexers tag nothing, and a fresh
+indexer hit has never been opened. So `"en" in languages` finds the releases
+that announce English, not the ones that are in English. To demote other
+languages rather than reward English, say so directly:
 
 ```
-"en" in languages                      # the title or the indexer claims English
+"en" in languages                      # something claims English
 not ("en" in languages)                # everything else, untagged included
 "ja" in languages and not dubbed       # the ones you actually want to demote
+languageSource == "measured"           # the tracks were read, not the name
+"de" in parsed.languages               # the name says German, whatever the file holds
 ```
 
 ### reported — from the indexer
@@ -398,7 +414,9 @@ and `probed.dolbyVision` is independent of it — that pair is what makes
 
 `probed.audioLanguages` and `probed.subtitleLanguages` are the languages the
 tracks are tagged with, as the same ISO 639-1 codes `languages` uses, in
-stream order. They answer what a release name only claims: a title tagged
+stream order. The bare `languages` list already folds `probed.audioLanguages`
+in — reach for this one to ask about the file *only*, which skips every release
+that was never probed instead of falling back to its name. They answer what a release name only claims: a title tagged
 `DUAL` says nothing about which two, the tracks say `["ja", "en"]`. Not every
 muxer tags its tracks, so `probed.audioStreams` and `probed.subtitleStreams`
 count them regardless. A count is not a language claim, though: a

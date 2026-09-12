@@ -449,7 +449,23 @@ func isRealVideoStream(st FFprobeStream) bool {
 	if isStillImageCodec(st.CodecName) {
 		return false
 	}
-	if n, ok := parseIntOK(st.NbReadFrames); ok && n <= 1 {
+	// Exactly one decoded frame is cover art: a still image is one frame, which
+	// is the whole point of the test.
+	//
+	// Zero is a different thing entirely — the decoder produced nothing inside
+	// the sampled interval — and a bounded probe window does that to any
+	// high-bitrate track. A 2160p HEVC remux frame is megabytes, so -probesize
+	// runs out before one completes, while the 1080p h264 file next to it in
+	// the same playlist manages a couple of dozen. Counting that as artwork
+	// reported whole Dolby Vision remuxes as audio-only, and because
+	// preloading probes with StrictFFprobe a false reject silently moved on to
+	// the next candidate: the best releases were the ones being discarded.
+	//
+	// nb_read_frames is only a number when -count_frames was passed, so this
+	// test applies to the forced-decode paths alone; elsewhere it reads "N/A"
+	// and is skipped. A track that genuinely decodes nothing still shows up as
+	// a stream error, which outranks ffprobe's exit code upstream of here.
+	if n, ok := parseIntOK(st.NbReadFrames); ok && n == 1 {
 		return false
 	}
 	return true

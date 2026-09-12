@@ -553,6 +553,16 @@ func (c *Config) EffectiveLibraryMaxSizeMB() int {
 	return DefaultLibraryMaxSizeMB
 }
 
+// EffectiveJellyfinResolveOnOpen reports whether a Jellyfin item document
+// resolves its releases when opened. Unset means yes: a picker built from
+// placeholder sources is worse than paying for the search.
+func (c *Config) EffectiveJellyfinResolveOnOpen() bool {
+	if c != nil && c.JellyfinResolveOnOpen != nil {
+		return *c.JellyfinResolveOnOpen
+	}
+	return true
+}
+
 func (c *Config) EffectiveLibraryAutoSave() bool {
 	if c != nil && c.LibraryAutoSave != nil {
 		return *c.LibraryAutoSave
@@ -768,11 +778,17 @@ type Config struct {
 	// only drops the tail. Defaulted to 20 when zero.
 	JellyfinMaxPlaybackSources int `json:"jellyfin_max_playback_sources,omitempty"`
 	// JellyfinResolveOnOpen runs the indexer search when a title page is
-	// opened, rather than waiting for PlaybackInfo. SenPlayer builds its
-	// version picker from the item document's MediaSources, so without this
-	// an unplayed title shows only "Play" and no list. Off by default: it
-	// costs one search per title page open.
-	JellyfinResolveOnOpen bool `json:"jellyfin_resolve_on_open,omitempty"`
+	// opened, rather than waiting for PlaybackInfo. Clients build their
+	// version picker from the item document's MediaSources (SenPlayer and
+	// Infuse both do), so without this an unplayed title offers no list of
+	// releases at all — only whatever the server nominated.
+	//
+	// Default true, at the cost of one indexer search per title page opened.
+	// The alternative was fabricating placeholder sources to make a picker
+	// appear, which is a picker with nothing real in it. A pointer so an
+	// explicit false survives LoadFile, which replaces the whole struct and
+	// would otherwise turn "off" back into the default.
+	JellyfinResolveOnOpen *bool `json:"jellyfin_resolve_on_open,omitempty"`
 
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
@@ -1811,7 +1827,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		NewznabEnabled:             o.NewznabEnabled,
 		NewznabAPIKey:              o.NewznabAPIKey,
 		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
-		JellyfinResolveOnOpen:      o.JellyfinResolveOnOpen,
+		JellyfinResolveOnOpen:      &o.JellyfinResolveOnOpen,
 		AdminUsername:              o.AdminUsername,
 		AdminMustChangePassword:    o.AdminMustChangePwd,
 		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,

@@ -10,6 +10,12 @@ backend; a template that fails to compile is rejected at save time and can
 never break stream responses — the built-in format is the fallback at render
 time.
 
+The **name template** is also what labels each release in a Jellyfin client's
+version picker (see [Jellyfin endpoint](jellyfin.md)). A picker row is a single
+line, so the rendered name is flattened there — newlines become ` · ` and the
+label is capped well below the Stremio budget. Write the name half with that
+in mind if you use both clients; the description template is Stremio-only.
+
 Upgrading from per-stream inline templates converts them automatically:
 streams sharing identical templates collapse onto one shared profile
 ("Custom", "Custom 2", …) and are bound to it, so nothing changes visually.

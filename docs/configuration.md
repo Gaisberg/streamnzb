@@ -98,7 +98,7 @@ The endpoint is always served; see [Jellyfin endpoint](jellyfin.md).
 | Variable | Meaning |
 |---|---|
 | `JELLYFIN_MAX_PLAYBACK_SOURCES` | Cap on media sources offered per play, 1-200 (default 20) |
-| `JELLYFIN_RESOLVE_ON_OPEN` | Search when a title page opens instead of waiting for play (default off) |
+| `JELLYFIN_RESOLVE_ON_OPEN` | Search when a title page opens rather than waiting for play (default **on**) — set `false` to trade the version picker for fewer searches |
 
 ### Outbound User-Agent headers
 

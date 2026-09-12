@@ -337,24 +337,6 @@ func setItemMediaSources(item *baseItem, sources []mediaSource) {
 	}
 }
 
-// attachMediaSourceStubs supplies the two list-level sources Infuse's Direct
-// Mode uses to decide whether a movie or episode has selectable versions.
-// They are deliberately cheap: the item-open path replaces them with actual
-// ranked releases, and slot 0 remains a valid direct-play fallback.
-func (s *Server) attachMediaSourceStubs(rq *request, id itemID, item *baseItem) {
-	if item == nil || (id.Kind != kindMovie && id.Kind != kindEpisode) {
-		return
-	}
-	runtime := float64(0)
-	if item.RunTimeTicks != nil {
-		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
-	}
-	setItemMediaSources(item, []mediaSource{
-		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 0, Title: item.Name}, runtime),
-		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 1, Title: item.Name + " (2)"}, runtime),
-	})
-}
-
 func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw string) {
 	// The slot travels three ways: encoded in the path when the client asks
 	// about a source id, in the query, or in the posted DTO. The later forms
@@ -415,7 +397,13 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 		setItemMediaSources(item, s.renderedSources(rq, id, view))
 		return
 	}
-	s.attachMediaSourceStubs(rq, id, item)
+	runtime := float64(0)
+	if item.RunTimeTicks != nil {
+		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
+	}
+	setItemMediaSources(item, []mediaSource{
+		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 0, Title: item.Name}, runtime),
+	})
 }
 
 // mediaSourceOf renders one candidate.
@@ -425,10 +413,19 @@ func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 // read, but it is already in Name, and Path is one of the two fields that
 // carry the token to the player — see streamURLFor.
 func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEntry, runtimeSeconds float64) mediaSource {
+	// Always the raw release title, never the formatted label: every codec,
+	// resolution and HDR field below is parsed out of it, and a label shaped
+	// by someone's template would parse to nothing.
 	parsed := parser.ParseReleaseTitle(entry.Title)
 	container := "mkv"
 	if parsed != nil && parsed.Result != nil && parsed.Container != "" {
 		container = strings.ToLower(parsed.Container)
+	}
+	// The name is what a client puts in its version picker, so it follows the
+	// stream's result format when one is set.
+	name := entry.Title
+	if entry.DisplayTitle != "" {
+		name = entry.DisplayTitle
 	}
 	src := mediaSource{
 		Protocol:               "Http",
@@ -437,7 +434,7 @@ func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEnt
 		ETag:                   streamTokenOf(rq.stream),
 		Type:                   "Default",
 		Container:              container,
-		Name:                   entry.Title,
+		Name:                   name,
 		IsRemote:               true,
 		SupportsDirectStream:   false,
 		SupportsDirectPlay:     true,

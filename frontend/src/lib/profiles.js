@@ -307,7 +307,7 @@ export const RULE_ATTRIBUTES = [
       { name: "hdrFallback", type: "yes/no", example: "a non-DV device still gets HDR" },
       { name: "audio", type: "list", example: '"TrueHD" in audio' },
       { name: "channels", type: "list", example: '"7.1" in channels' },
-      { name: "languages", type: "list", example: '"en" in languages' },
+      { name: "languages", type: "list", example: '"en" in languages — the probed tracks, the indexer tag and the name, unioned' },
       { name: "group", type: "text" },
       { name: "edition", type: "text" },
       { name: "container", type: "text" },
@@ -323,6 +323,7 @@ export const RULE_ATTRIBUTES = [
       { name: "hardcoded", type: "yes/no" },
       { name: "complete", type: "yes/no" },
       { name: "verified", type: "yes/no", example: "the values above came from the file, not its name" },
+      { name: "languageSource", type: "text", example: 'languageSource == "measured" — which account answered: "measured", "reported", "inferred", or ""' },
       { name: "parsed.resolution", type: "text" },
       { name: "parsed.codec", type: "text" },
       { name: "parsed.hdr", type: "list" },
@@ -330,6 +331,7 @@ export const RULE_ATTRIBUTES = [
       { name: "parsed.dolbyVision", type: "yes/no" },
       { name: "parsed.hdrFallback", type: "yes/no" },
       { name: "parsed.title", type: "text" },
+      { name: "parsed.languages", type: "list", example: '"de" in parsed.languages — the name\'s own claim, whatever the file holds' },
     ],
   },
   {
@@ -398,7 +400,7 @@ export const RULE_ATTRIBUTES = [
     title: "From ffprobe — tracks",
     note: "The file's audio and subtitle tracks, read by probes newer than the codec and HDR fields. A library item probed before then has those but nothing about its tracks, so rules reading these skip it as well as everything unprobed.",
     items: [
-      { name: "probed.audioLanguages", type: "list", example: '"ja" in probed.audioLanguages — ISO 639-1, the same codes as languages' },
+      { name: "probed.audioLanguages", type: "list", example: '"ja" in probed.audioLanguages — ISO 639-1; the bare languages list reads these too, this one skips unprobed releases' },
       { name: "probed.subtitleLanguages", type: "list", example: '"ar" in probed.subtitleLanguages' },
       { name: "probed.audioStreams", type: "number", example: "counts every audio track, tagged or not — a commentary or a stereo downmix counts, so dual audio is len(probed.audioLanguages) >= 2" },
       { name: "probed.subtitleStreams", type: "number" },

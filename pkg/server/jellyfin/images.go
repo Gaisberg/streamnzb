@@ -28,12 +28,18 @@ import (
 const imageTagCap = 50_000
 
 type imageTags struct {
-	mu   sync.Mutex
+	mu sync.Mutex
+	// urls maps a tag to the URL it was minted from.
 	urls map[string]string
+	// byItem maps an item and image kind to the same URL, for clients that
+	// ask for an image without quoting a tag. Fladder is one: its URL builder
+	// passes the tag for Backdrop but not for Primary, Thumb or Logo, so
+	// every poster it asks for arrives with nothing to look up.
+	byItem map[string]string
 }
 
 func newImageTags() *imageTags {
-	return &imageTags{urls: make(map[string]string)}
+	return &imageTags{urls: make(map[string]string), byItem: make(map[string]string)}
 }
 
 // tagFor is the tag of a URL; "" for no URL.
@@ -70,6 +76,37 @@ func (t *imageTags) urlFor(tag string) (string, bool) {
 	return url, ok
 }
 
+func itemImageKey(itemID, kind string) string {
+	return itemID + "/" + strings.ToLower(strings.TrimSpace(kind))
+}
+
+// registerFor remembers a URL under its tag and under the item and kind it
+// belongs to, and returns the tag. The second index is what lets a tagless
+// request be answered: it needs no credentials and no metadata lookup, unlike
+// resolveImage, because the item's own document already named this URL.
+func (t *imageTags) registerFor(itemID, kind, url string) string {
+	tag := t.register(url)
+	url = strings.TrimSpace(url)
+	if tag == "" || itemID == "" || kind == "" || url == "" {
+		return tag
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.byItem) >= imageTagCap {
+		// Dropped rather than evicted, exactly as urls is: a miss re-resolves.
+		t.byItem = make(map[string]string)
+	}
+	t.byItem[itemImageKey(itemID, kind)] = url
+	return tag
+}
+
+func (t *imageTags) urlForItem(itemID, kind string) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	url, ok := t.byItem[itemImageKey(itemID, kind)]
+	return url, ok
+}
+
 // serveImages answers /Items/{id}/Images/{type}[/{index}].
 func (s *Server) serveImages(w http.ResponseWriter, rq *request) bool {
 	if !rq.is(http.MethodGet) && !rq.is(http.MethodHead) {
@@ -92,6 +129,15 @@ func (s *Server) serveImages(w http.ResponseWriter, rq *request) bool {
 			return true
 		}
 	}
+	// No tag, or one this process never minted: answer from what the item's
+	// own document advertised. Clients are not consistent about quoting tags —
+	// Fladder sends one for Backdrop and omits it for Primary, Thumb and Logo
+	// — and the resolve path below cannot help them, because an image is
+	// fetched by an image loader that sends no credentials.
+	if url, ok := s.itemImageURL(rawID, kind); ok {
+		s.relayImage(w, rq, url, kind)
+		return true
+	}
 	url := s.resolveImage(rq, rawID, kind)
 	if url == "" {
 		http.NotFound(w, rq.Request)
@@ -99,6 +145,18 @@ func (s *Server) serveImages(w http.ResponseWriter, rq *request) bool {
 	}
 	s.relayImage(w, rq, url, kind)
 	return true
+}
+
+// itemImageURL is the URL this item's document advertised for a kind, if one
+// was rendered by this process. The id is normalised through decodeItemID
+// first: clients echo item ids back in whatever casing and hyphenation they
+// like, and the index is keyed by the canonical form.
+func (s *Server) itemImageURL(rawID, kind string) (string, bool) {
+	id, err := decodeItemID(rawID)
+	if err != nil {
+		return "", false
+	}
+	return s.images.urlForItem(id.encode(), kind)
 }
 
 // resolveImage finds an item's image of a kind from its metadata, for a tag

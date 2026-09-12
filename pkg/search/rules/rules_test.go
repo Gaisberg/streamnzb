@@ -760,3 +760,54 @@ func TestLanguagesMergeIndexerTag(t *testing.T) {
 		t.Errorf("release with no Arabic anywhere was kept: %+v", got)
 	}
 }
+
+// The file itself is the third account of what a release is spoken in, and the
+// strongest: a German dub muxed into an untouched English release is tagged on
+// the audio track and nowhere else. A bare language rule reads it, while
+// parsed.languages keeps the name's own claim for a rule that must not.
+func TestLanguagesMergeProbedTracks(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "German", When: `"de" in languages`, Points: 100},
+		config.RuleConfig{Name: "Named German", When: `"de" in parsed.languages`, Points: 50},
+		config.RuleConfig{Name: "Measured", When: `languageSource == "measured"`, Points: 10},
+	)
+
+	probed := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Verdict.Probed = &release.MediaCaps{
+			VideoCodec: "hevc", Height: 1080, TracksProbed: true,
+			AudioLanguages: []string{"de"}, AudioStreams: 1,
+		}
+	})
+	if got := set.Evaluate(probed, "movie"); got.Points != 110 {
+		t.Errorf("probed German file scored %d, want 110 (languages + measured, not parsed)", got.Points)
+	}
+
+	named := envFor("Movie 2020 1080p WEB-DL GERMAN-GRP", nil)
+	if got := set.Evaluate(named, "movie"); got.Points != 150 {
+		t.Errorf("release named German scored %d, want 150 (languages + parsed, not measured)", got.Points)
+	}
+}
+
+// A probe that measured the video without reading the tracks — a library item
+// from before track reading — measures nothing about languages, and must not
+// claim to.
+func TestLanguageSourceIgnoresProbeWithoutTracks(t *testing.T) {
+	set := compile(t,
+		config.RuleConfig{Name: "Measured", When: `languageSource == "measured"`, Points: 10},
+		config.RuleConfig{Name: "Reported", When: `languageSource == "reported"`, Points: 20},
+		config.RuleConfig{Name: "Nothing", When: `languageSource == ""`, Points: 30},
+	)
+
+	old := envFor("Movie 2020 1080p WEB-DL-GRP", func(c *triage.Candidate) {
+		c.Release.Languages = []string{"ar"}
+		c.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080}
+	})
+	if got := set.Evaluate(old, "movie"); got.Points != 20 {
+		t.Errorf("untracked probe scored %d, want 20 (reported)", got.Points)
+	}
+
+	silent := envFor("Movie 2020 1080p WEB-DL-GRP", nil)
+	if got := set.Evaluate(silent, "movie"); got.Points != 30 {
+		t.Errorf("release nothing said anything about scored %d, want 30 (unknown)", got.Points)
+	}
+}

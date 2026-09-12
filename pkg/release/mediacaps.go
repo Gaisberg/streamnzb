@@ -44,6 +44,17 @@ type MediaCaps struct {
 	SubtitleStreams   int
 }
 
+// AudioLanguageCodes is everything a probe can say about the languages a
+// release is spoken in: the tagged audio track languages, and only once the
+// tracks were actually read. Subtitles are deliberately not part of it — a
+// Spanish subtitle track does not make a release Spanish.
+func (c *MediaCaps) AudioLanguageCodes() []string {
+	if c == nil || !c.TracksProbed {
+		return nil
+	}
+	return c.AudioLanguages
+}
+
 // Summary renders a short human-readable capability string suitable for a
 // Stremio stream description, e.g. "hevc Main 10 2160p 10-bit DV + HDR10".
 //

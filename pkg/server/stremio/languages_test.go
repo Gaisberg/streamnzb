@@ -80,11 +80,49 @@ func TestBuildStreamsSurfacesLanguagesOnCollapsedList(t *testing.T) {
 	}
 }
 
-func TestReleaseLanguageCodesMergesBothSources(t *testing.T) {
+// The list is ordered by how much each account is worth: what was measured
+// leads, then the indexer's tag, then the name. Only the order changed here —
+// the union is the same one AIOStreams has always been given.
+func TestReleaseLanguageCodesMergesEveryAccount(t *testing.T) {
 	cand := languageCandidate("Movie.2024.1080p.WEB-DL.FRENCH.x264-GRP", "Arabic")
-	got := releaseLanguageCodes(cand.Release, cand.Metadata)
-	if len(got) != 2 || got[0] != "fr" || got[1] != "ar" {
-		t.Errorf("codes = %v, want [fr ar]", got)
+	got := releaseLanguageCodes(cand.Release, cand.Metadata, nil)
+	if len(got) != 2 || got[0] != "ar" || got[1] != "fr" {
+		t.Errorf("codes = %v, want [ar fr]", got)
+	}
+}
+
+// A library item that was opened knows what its audio tracks are in, and that
+// is the one account of a release's languages nobody has to take on trust. The
+// stream's languages field, its flags and a `"ja" in languages` rule all read
+// it, or they disagree about the same file.
+func TestBuildStreamsSurfacesProbedTrackLanguages(t *testing.T) {
+	cand := languageCandidate("Movie.2024.1080p.WEB-DL.x264-GRP")
+	cand.Verdict.Probed = &release.MediaCaps{
+		VideoCodec: "hevc", Height: 1080, TracksProbed: true,
+		AudioLanguages: []string{"ja"}, AudioStreams: 1,
+	}
+	list := &playlistResult{IsAIOStreams: true, Candidates: []triage.Candidate{cand}}
+	key := StreamSlotKey{StreamID: "Standalone", ContentType: "movie", ID: "tt1"}
+	streams := buildStreamsFromPlaylist(list, key, "Standalone", DefaultServiceName, "http://host", true, nil)
+	if len(streams) != 1 {
+		t.Fatalf("got %d streams, want 1", len(streams))
+	}
+	if got := streams[0].Languages; len(got) != 1 || got[0] != "ja" {
+		t.Errorf("Languages = %v, want [ja]", got)
+	}
+	if !strings.Contains(streams[0].Description, "🇯🇵") {
+		t.Errorf("description carries no Japanese flag: %q", streams[0].Description)
+	}
+}
+
+// A probe from before track reading measured the video and nothing else, so it
+// must not be read as a file with no languages.
+func TestReleaseLanguageCodesIgnoresProbeWithoutTracks(t *testing.T) {
+	cand := languageCandidate("Movie.2024.1080p.WEB-DL.FRENCH.x264-GRP")
+	cand.Verdict.Probed = &release.MediaCaps{VideoCodec: "hevc", Height: 1080}
+	got := releaseLanguageCodes(cand.Release, cand.Metadata, cand.Verdict.Probed)
+	if len(got) != 1 || got[0] != "fr" {
+		t.Errorf("codes = %v, want [fr]", got)
 	}
 }
 

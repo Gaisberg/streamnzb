@@ -33,7 +33,9 @@ StreamNZB reads that metadata (the newznab `language` attribute) and hands it
 on, so those releases survive a language filter on either side:
 
 - Every stream carries a `languages` field with the release's languages as ISO
-  639-1 codes — the name's tokens and the indexer's tag merged.
+  639-1 codes: the audio tracks ffprobe read out of the file (library releases,
+  which are the only ones that have ever been opened), the indexer's tag and
+  the name's tokens, unioned with the measured ones first.
 - In AIOStreams mode the description also carries them as flag emojis, which is
   what today's AIOStreams parses. A flag names a country rather than a
   language, and AIOStreams reads 🇮🇳 back as Hindi and 🇹🇷 as Kurdish, so

@@ -29,9 +29,12 @@ var languageFlagByCode = map[string]string{
 	"th": "🇹🇭", "ms": "🇲🇾", "ar": "🇸🇦", "he": "🇮🇱",
 }
 
-// releaseLanguageCodes is the union of the languages parsed out of the release
-// name and the ones the indexer tagged the release with, as ISO 639-1 codes.
-func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease) []string {
+// releaseLanguageCodes is what the release is spoken in, as ISO 639-1 codes:
+// the audio tracks a probe read out of the file, the indexer's tag and the
+// release name, unioned by the same resolver the rule engine uses. The flags
+// in a description, the languages AIOStreams filters on and `"de" in
+// languages` are one answer or they are a bug report.
+func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease, caps *release.MediaCaps) []string {
 	var reported, parsed []string
 	if rel != nil {
 		reported = rel.Languages
@@ -39,7 +42,8 @@ func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease) []st
 	if meta != nil {
 		parsed = meta.Languages
 	}
-	return pttoptions.MergeLanguageCodes(parsed, reported)
+	codes, _ := pttoptions.ResolveLanguages(caps.AudioLanguageCodes(), reported, parsed)
+	return codes
 }
 
 // languageFlags renders the flags for the codes that have one, in order and

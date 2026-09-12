@@ -390,3 +390,26 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 		t.Errorf("{{.Variants}} for a single copy = %q, want %q", got, "1")
 	}
 }
+
+// A result name template is written for a Stremio card, where a newline is
+// normal — the built-in name is "<service>\n<stream>". Anything that shows the
+// value as a single-line label needs it flattened, not truncated at the first
+// break.
+func TestSingleLineLabel(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"StreamNZB", "StreamNZB"},
+		{"StreamNZB\nliving-room", "StreamNZB · living-room"},
+		{"  padded \r\n  lines  ", "padded · lines"},
+		{"blank\n\n\nlines", "blank · lines"},
+		{"\n\n", ""},
+	} {
+		if got := singleLineLabel(tc.in); got != tc.want {
+			t.Errorf("singleLineLabel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	long := singleLineLabel(strings.Repeat("ä", maxSourceLabelRunes+50))
+	if runes := []rune(long); len(runes) != maxSourceLabelRunes {
+		t.Errorf("label not capped at %d runes: got %d", maxSourceLabelRunes, len(runes))
+	}
+}

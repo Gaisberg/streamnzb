@@ -53,7 +53,15 @@ func buildRegistry() *jhinrules.Registry {
 	// for rules that must not accept a probe's word for it (or vice versa).
 	reg.Namespace("parsed", "").
 		Str("resolution").Str("codec").StrList("hdr").Num("bitDepth").
-		Str("title").Bool("dolbyVision").Bool("hdrFallback")
+		Str("title").Bool("dolbyVision").Bool("hdrFallback").StrList("languages")
+
+	// languageSource says which of the three accounts of a release's
+	// languages answered — "measured", "reported", "inferred", or "" for a
+	// release nothing said anything about. Like verified it is always
+	// answerable, so it carries no tier; unlike verified it speaks for one
+	// attribute, because a probe that read no tracks measures the video and
+	// leaves the languages claimed.
+	reg.Field("languageSource", jhinrules.Str, "")
 
 	// Reported by the indexer. A bare release name has none of these, which
 	// is why they share a tier: the preview builds releases from titles alone

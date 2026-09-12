@@ -153,6 +153,14 @@ type PlaylistEntry struct {
 	// Caps is what ffprobe measured, known only for releases that played
 	// before (library rows); nil for fresh indexer results.
 	Caps *release.MediaCaps
+	// DisplayTitle is Title put through the stream's result-name template,
+	// flattened to one line. Empty when the stream has no custom format, so a
+	// caller falls back to Title rather than to a blank label.
+	//
+	// It is rendered here because the template needs the whole triage
+	// candidate — score, verdict, rule matches, probe results — and a
+	// PlaylistEntry deliberately keeps none of that.
+	DisplayTitle string
 }
 
 // PlaylistView is the ranked candidate list for a content id — every
@@ -182,7 +190,7 @@ func (s *Server) Playlist(ctx context.Context, stream *auth.Stream, contentType,
 		return nil, err
 	}
 	go s.preloadTopPlaylistCandidates(key, list, stream)
-	return playlistViewOf(list, key), nil
+	return s.playlistViewOf(list, key, stream), nil
 }
 
 // PlaylistCached returns the candidate list already built for a content id,
@@ -202,10 +210,10 @@ func (s *Server) PlaylistCached(stream *auth.Stream, contentType, id string) (*P
 	if list == nil {
 		list = ent.result
 	}
-	return playlistViewOf(list, key), true
+	return s.playlistViewOf(list, key, stream), true
 }
 
-func playlistViewOf(list *playlistResult, key StreamSlotKey) *PlaylistView {
+func (s *Server) playlistViewOf(list *playlistResult, key StreamSlotKey, stream *auth.Stream) *PlaylistView {
 	view := &PlaylistView{}
 	if list == nil {
 		return view
@@ -214,6 +222,19 @@ func playlistViewOf(list *playlistResult, key StreamSlotKey) *PlaylistView {
 		view.ContentTitle = list.Params.ContentTitle
 		view.RuntimeSeconds = query.ContentRuntimeSeconds(list.Params.Metadata, list.Params.ContentType)
 	}
+	// Only the name half is rendered: a description template is a multi-line
+	// detail card, and every consumer of a view labels a row with one string.
+	var format *resultFormat
+	if f := s.resultFormatForStream(stream); f != nil && f.name != nil {
+		format = f
+	}
+	topScore := 0
+	if format != nil {
+		for _, cand := range list.Candidates {
+			topScore = max(topScore, cand.Score)
+		}
+	}
+	service := ServiceName(stream)
 	useSlotPaths := len(list.SlotPaths) == len(list.Candidates)
 	view.Entries = make([]PlaylistEntry, 0, len(list.Candidates))
 	for i, cand := range list.Candidates {
@@ -227,6 +248,13 @@ func playlistViewOf(list *playlistResult, key StreamSlotKey) *PlaylistView {
 			entry.Size = rel.Size
 			entry.Available = list.CachedAvailable != nil && rel.DetailsURL != "" && list.CachedAvailable[rel.DetailsURL]
 			entry.Caps = libraryCapsForRelease(rel)
+		}
+		if format != nil {
+			ctx := newFormatContext(cand, i+1, len(list.Candidates), topScore, service, key.StreamID,
+				view.ContentTitle, capsSummaryLine(cand.Release), entry.Available, view.RuntimeSeconds)
+			// An empty fallback keeps a failed or blank render out of the
+			// label, so the caller falls back to the release title.
+			entry.DisplayTitle = singleLineLabel(renderResultTemplate(format.name, ctx, ""))
 		}
 		view.Entries = append(view.Entries, entry)
 	}

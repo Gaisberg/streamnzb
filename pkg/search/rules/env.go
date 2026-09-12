@@ -49,7 +49,11 @@ import (
 // to jhin's own parse-result facts, so every core attribute jhin can read off
 // a name is available to rules without a field here.
 type Env struct {
-	// ---- inferred, merged with measured where the probe knows better ----
+	// ---- merged: the best account of one attribute, strongest tier first ----
+	//
+	// Verified answers for the video fields as a group; languages carries its
+	// own languageSource, because the probe that measures the video does not
+	// always read the tracks.
 
 	Resolution string
 	Codec      string
@@ -70,16 +74,26 @@ type Env struct {
 	// than from its name.
 	Verified bool
 
+	// Languages is the union of the three accounts of what the release is
+	// spoken in, as ISO 639-1 codes: the audio tracks a probe read, the
+	// indexer's own language tag, and the tokens in the name. A dub is
+	// regularly tagged by only one of the three, and a rule asking for a
+	// language means the release rather than the spelling of its title. The
+	// union never shrinks, because none of the three can prove a language
+	// absent — see pttoptions.ResolveLanguages.
+	Languages []string
+	// LanguageSource is the strongest account that contributed to Languages:
+	// "measured", "reported", "inferred", or "" for an empty list. It is the
+	// per-attribute form of Verified, which answers for the video fields
+	// only — a library item probed before track reading has measured video
+	// and nothing but claims about its languages.
+	LanguageSource string
+
 	// ---- inferred only ----
 
-	Quality  string
-	Audio    []string
-	Channels []string
-	// Languages is what the name says merged with the indexer's own language
-	// tag, as ISO 639-1 codes. A dub is regularly tagged by the indexer and
-	// left out of the release name, and a rule asking for a language means
-	// the release rather than the spelling of its title.
-	Languages  []string
+	Quality    string
+	Audio      []string
+	Channels   []string
 	Group      string
 	Edition    string
 	Container  string
@@ -215,6 +229,8 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.StrListOf(e.Channels), true
 	case "languages":
 		return jhinrules.StrListOf(e.Languages), true
+	case "languageSource":
+		return jhinrules.StrOf(e.LanguageSource), true
 	case "group":
 		return jhinrules.StrOf(e.Group), true
 	case "edition":
@@ -254,6 +270,8 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.StrListOf(e.Parsed.HDR), true
 	case "parsed.bitDepth":
 		return jhinrules.NumOf(float64(e.Parsed.BitDepth)), true
+	case "parsed.languages":
+		return jhinrules.StrListOf(e.Parsed.Languages), true
 	case "parsed.title":
 		return jhinrules.StrOf(e.Parsed.Title), true
 	case "parsed.dolbyVision":
@@ -399,6 +417,9 @@ type ParsedEnv struct {
 	Title       string
 	DolbyVision bool
 	HDRFallback bool
+	// Languages is what the name alone claims, for a rule that must not take
+	// a probe's or an indexer's word for it.
+	Languages []string
 }
 
 // AvailEnv is the community availability record.
@@ -542,11 +563,11 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 			Title:       parsed.Title,
 			DolbyVision: dv,
 			HDRFallback: fallback,
+			Languages:   parsed.Languages,
 		}
 		env.Quality = parsed.Quality
 		env.Audio = parsed.Audio
 		env.Channels = parsed.Channels
-		env.Languages = parsed.Languages
 		env.Group = parsed.Group
 		env.Edition = parsed.Edition
 		env.Container = parsed.Container
@@ -580,7 +601,6 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 			// "smaller than" rule by default.
 			env.SizePerEpisodeGB = -1
 		}
-		env.Languages = pttoptions.MergeLanguageCodes(env.Languages, rel.Languages)
 		env.Grabs = rel.Grabs
 		env.Passworded = rel.Password
 		env.Indexer = rel.Indexer
@@ -600,6 +620,7 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 	env.Probed = probedEnv(cand.Verdict.Probed)
 	env.Seadex = ctx.Seadex.For(env.Group)
 	applyMerged(&env, cand.Verdict.Probed)
+	applyLanguages(&env, cand.Release, cand.Verdict.Probed)
 	env.core = jhinrules.FromResult(env.ReleaseName, parsed, env.Traits)
 	return env
 }
@@ -619,6 +640,19 @@ func (c *SeadexContext) For(group string) SeadexEnv {
 		Alternative: g != "" && c.Alt[g],
 		DualAudio:   g != "" && c.DualAudio[g],
 	}
+}
+
+// applyLanguages fills the bare languages list from all three accounts of it,
+// so `"de" in languages` asks about the release rather than about the spelling
+// of its title. It runs after applyMerged because it reads the same probe.
+func applyLanguages(env *Env, rel *release.Release, caps *release.MediaCaps) {
+	var reported []string
+	if rel != nil {
+		reported = rel.Languages
+	}
+	codes, source := pttoptions.ResolveLanguages(caps.AudioLanguageCodes(), reported, env.Parsed.Languages)
+	env.Languages = codes
+	env.LanguageSource = string(source)
 }
 
 // applyMerged fills the bare attribute names: what the file measured when it

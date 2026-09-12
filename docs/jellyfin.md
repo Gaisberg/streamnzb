@@ -64,12 +64,19 @@ stream never sees another's.
   wide, posters 780px) and sent with a one-day cache header.
 - **Playback** — pressing play searches, ranks and returns every candidate
   release as a *media source*, best first. The client's media-source picker is
-  therefore the stream list, and switching source is switching release. At
-  most 20 sources are offered per play (`JELLYFIN_MAX_PLAYBACK_SOURCES`); some
-  clients' pickers break on longer lists. With `JELLYFIN_RESOLVE_ON_OPEN=true`
-  the search runs when a title page is opened instead, so clients that pick a
-  source before pressing play (SenPlayer) see the full list; it costs an
-  indexer search per title opened, so it is off by default.
+  therefore the stream list, and switching source is switching release. Each
+  source is labelled with the stream's own [result format](result-formatting.md)
+  when one is set, flattened to a single line — the same template that names
+  rows in Stremio. At most 20 sources are offered per play
+  (`JELLYFIN_MAX_PLAYBACK_SOURCES`); some clients' pickers break on longer
+  lists.
+- **The version picker** — Clients build their picker from the item document
+  rather than from the play request (Infuse and SenPlayer both do), so opening
+  a title runs the search then and there. That is `JELLYFIN_RESOLVE_ON_OPEN`,
+  and it is **on by default**: it costs one indexer search per title page
+  opened, and the alternative is a picker with nothing real in it. Set it to
+  `false` if you would rather not spend the search — a title then offers the
+  one best release until you press play.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
