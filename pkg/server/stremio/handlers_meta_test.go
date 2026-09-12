@@ -206,6 +206,9 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 					 "overview": "Ned Stark...", "air_date": "2011-04-17", "still_path": "/e1.jpg"},
 					{"episode_number": 2, "season_number": 1, "name": "The Kingsroad",
 					 "air_date": "2011-04-24"}
+				]},
+				"season/0": {"season_number": 0, "episodes": [
+					{"episode_number": 1, "season_number": 0, "name": "Inside Game of Thrones", "air_date": "2010-12-05"}
 				]}
 			}`))
 		default:
@@ -234,8 +237,11 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 	if meta.Name != "Game of Thrones" || meta.ID != "tt0944947" {
 		t.Fatalf("meta = %+v", meta)
 	}
-	if len(meta.Videos) != 2 {
-		t.Fatalf("videos = %d, want 2 (specials excluded)", len(meta.Videos))
+	if len(meta.Videos) != 3 {
+		t.Fatalf("videos = %d, want 3 (season 1, then the special)", len(meta.Videos))
+	}
+	if sp := meta.Videos[2]; sp.ID != "tt0944947:0:1" || sp.Season != 0 {
+		t.Fatalf("videos[2] = %+v, want the season-0 special listed last", sp)
 	}
 	ep1 := meta.Videos[0]
 	if ep1.ID != "tt0944947:1:1" {
@@ -390,8 +396,11 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	if meta.Poster != "https://artworks.thetvdb.com/got.jpg" || meta.Background != "https://artworks.thetvdb.com/got-fanart.jpg" {
 		t.Fatalf("artwork = %q / %q", meta.Poster, meta.Background)
 	}
-	if len(meta.Videos) != 1 {
-		t.Fatalf("videos = %d, want 1 (specials excluded)", len(meta.Videos))
+	if len(meta.Videos) != 2 {
+		t.Fatalf("videos = %d, want 2 (season 1, then the special)", len(meta.Videos))
+	}
+	if sp := meta.Videos[1]; sp.ID != "tt0944947:0:1" || sp.Season != 0 || sp.Title != "Special" {
+		t.Fatalf("videos[1] = %+v, want the season-0 special listed last", sp)
 	}
 	ep := meta.Videos[0]
 	if ep.ID != "tt0944947:1:1" {
