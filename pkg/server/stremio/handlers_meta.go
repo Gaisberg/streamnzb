@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -446,8 +447,8 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 	}
 	overlay := s.tvmazeEpisodeOverlay(ctx, profile, rid.imdbID, tvdbID)
 	for _, ep := range episodes {
-		// Season 0 is specials; out of scope for the videos array.
-		if ep.SeasonNumber < 1 || ep.Number < 1 {
+		// Season 0 is specials: listed, ordered after the numbered seasons.
+		if ep.SeasonNumber < 0 || ep.Number < 1 {
 			continue
 		}
 		video := MetaVideo{
@@ -464,7 +465,16 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 		applyTVMazeOverlay(&video, overlay)
 		meta.Videos = append(meta.Videos, video)
 	}
+	specialsLast(meta.Videos)
 	return meta, nil
+}
+
+// specialsLast keeps the provider's episode order but moves season 0 to the
+// end, so a client walking the list sees the numbered seasons first.
+func specialsLast(videos []MetaVideo) {
+	sort.SliceStable(videos, func(i, j int) bool {
+		return videos[i].Season != 0 && videos[j].Season == 0
+	})
 }
 
 func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
@@ -491,11 +501,18 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.Me
 	}
 
 	var seasonNumbers []int
+	hasSpecials := false
 	for _, si := range details.Seasons {
-		// Season 0 is specials; out of scope for the videos array.
-		if si.SeasonNumber >= 1 {
+		switch {
+		case si.SeasonNumber >= 1:
 			seasonNumbers = append(seasonNumbers, si.SeasonNumber)
+		case si.SeasonNumber == 0:
+			hasSpecials = true
 		}
+	}
+	// Season 0 is specials: fetched with the rest, listed after them.
+	if hasSpecials {
+		seasonNumbers = append(seasonNumbers, 0)
 	}
 	_, seasons, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, seasonNumbers, profile.EffectiveLanguage())
 	if err != nil {
