@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/server/stremio"
 )
@@ -296,6 +297,12 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
 	id, err := itemIDFor(preview.Type, preview.ID)
 	if err != nil {
+		// The row is dropped from the grid; say why once per id so a
+		// catalog that thins out is not mistaken for a provider miss.
+		if logger.Throttle("jellyfin-row-dropped:"+preview.Type+":"+preview.ID, time.Hour) {
+			logger.Debug("Jellyfin row dropped: id not representable",
+				"type", preview.Type, "id", preview.ID, "err", err)
+		}
 		return nil, false
 	}
 	item := s.newItem(id, preview.Name)
