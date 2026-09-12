@@ -72,6 +72,10 @@ type fakeCatalog struct {
 	playlistCalls int
 	served        []servedPlay
 	disabled      bool
+	// drop thins a bucket the way the addon does when a provider row has
+	// no id it can use: skip → rows removed from the end of that bucket.
+	drop         map[int]int
+	catalogCalls []int
 }
 
 // releaseCaps is what ffprobe measured on the candidate that played: a
@@ -108,6 +112,7 @@ func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, s
 		f.searches = append(f.searches, catalogID+"="+search)
 		return f.rows[catalogID], nil
 	}
+	f.catalogCalls = append(f.catalogCalls, skip)
 	rows := f.rows[catalogID]
 	if skip >= len(rows) {
 		return nil, nil
@@ -115,6 +120,9 @@ func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, s
 	rows = rows[skip:]
 	if len(rows) > stremio.CatalogPageSize {
 		rows = rows[:stremio.CatalogPageSize]
+	}
+	if n := f.drop[skip]; n > 0 && n <= len(rows) {
+		rows = rows[:len(rows)-n]
 	}
 	return rows, nil
 }
@@ -450,6 +458,55 @@ func TestTokenFormsAndCaseInsensitivity(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?PARENTID="+view+"&LIMIT=5", ""), &result)
 	if len(result.Items) != 5 {
 		t.Fatalf("upper-cased query: %d items", len(result.Items))
+	}
+}
+
+// A provider bucket comes back short whenever the addon drops rows it cannot
+// identify. That is not the end of the catalog: the client must be told to
+// keep paging, and the addon's positions must be kept so the next page
+// neither repeats nor skips rows.
+func TestShortBucketDoesNotEndCatalog(t *testing.T) {
+	f := newFixture()
+	f.catalog.rows["tmdb.trending.movie"] = previews("movie", "tt", 120)
+	f.catalog.drop = map[int]int{0: 2, 40: 1}
+	view := viewID("tmdb.trending.movie")
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=0&Limit=100", ""), &result)
+	if len(result.Items) != 97 || result.Items[0].Name != "Title 1" || result.Items[96].Name != "Title 100" {
+		t.Fatalf("first page: %d items (want 97: 18+20+19+20+20), first %q last %q", len(result.Items), result.Items[0].Name, result.Items[len(result.Items)-1].Name)
+	}
+	if result.TotalRecordCount <= 100 {
+		t.Fatalf("a thinned page must still read as more to come: total %d", result.TotalRecordCount)
+	}
+	// The client steps by its own page size, so the next page starts at the
+	// addon's position 100, not at row 97: no repeat, no gap.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=100&Limit=100", ""), &result)
+	if len(result.Items) != 20 || result.Items[0].Name != "Title 101" || result.Items[19].Name != "Title 120" {
+		t.Fatalf("second page: %d items, first %q", len(result.Items), result.Items[0].Name)
+	}
+	if result.TotalRecordCount != 120 {
+		t.Fatalf("an empty bucket ends the catalog with an exact total: got %d", result.TotalRecordCount)
+	}
+	// A short LAST bucket is probed, so a true last page is exact too.
+	f.catalog.drop = map[int]int{100: 3}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=100&Limit=20", ""), &result)
+	if len(result.Items) != 17 || result.TotalRecordCount != 117 {
+		t.Fatalf("short last page: %d items, total %d", len(result.Items), result.TotalRecordCount)
+	}
+	// Page-sized requests walk the same rows without duplicates.
+	f.catalog.drop = map[int]int{0: 2, 40: 1}
+	seen := map[string]bool{}
+	for start := 0; start < 120; start += 30 {
+		decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Users/u/Items?ParentId=%s&StartIndex=%d&Limit=30", view, start), ""), &result)
+		for _, item := range result.Items {
+			if seen[item.Name] {
+				t.Fatalf("row %q served twice", item.Name)
+			}
+			seen[item.Name] = true
+		}
+	}
+	if len(seen) != 117 {
+		t.Fatalf("walked %d distinct rows, want 117", len(seen))
 	}
 }
 
