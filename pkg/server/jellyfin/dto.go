@@ -179,6 +179,16 @@ func runtimeTicks(runtime string) *int64 {
 }
 
 // productionYear reads the leading year of "2019" or "2019-2023".
+// episodeRuntimeTicks prefers the episode's own length over the series
+// average: a finale or a special is rarely the average, and the client's
+// scrubber and "time left" read this number.
+func episodeRuntimeTicks(video stremio.MetaVideo, meta *stremio.MetaObject) *int64 {
+	if video.Runtime > 0 {
+		return int64Ptr(int64(video.Runtime) * 60 * ticksPerSecond)
+	}
+	return runtimeTicks(meta.Runtime)
+}
+
 func productionYear(releaseInfo string) *int {
 	if m := leadingYear.FindString(releaseInfo); m != "" {
 		y, _ := strconv.Atoi(m)
@@ -461,7 +471,7 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 		SeasonName:        "Season " + strconv.Itoa(video.Season),
 		PremiereDate:      premiereDate(video.Released),
 		ProviderIDs:       providerIDs(id),
-		RunTimeTicks:      runtimeTicks(meta.Runtime),
+		RunTimeTicks:      episodeRuntimeTicks(video, meta),
 	}
 	if video.Season == 0 {
 		item.SeasonName = "Specials"

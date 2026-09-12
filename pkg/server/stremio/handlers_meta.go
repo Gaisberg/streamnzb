@@ -457,6 +457,7 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 			Episode:   ep.Number,
 			Overview:  ep.Overview,
 			Thumbnail: ep.Image,
+			Runtime:   ep.Runtime,
 		}
 		if ep.Aired != "" {
 			video.Released = ep.Aired + "T00:00:00.000Z"
@@ -551,6 +552,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.Me
 				Season:   n,
 				Episode:  ep.EpisodeNumber,
 				Overview: ep.Overview,
+				Runtime:  ep.Runtime,
 			}
 			if ep.AirDate != "" {
 				video.Released = ep.AirDate + "T00:00:00.000Z"

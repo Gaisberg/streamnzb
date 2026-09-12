@@ -263,7 +263,7 @@ func testCatalog() *fakeCatalog {
 		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: cdn + "/bb-bg.jpg",
 		ReleaseInfo: "2008-2013", Released: "2008-01-20T00:00:00.000Z", Runtime: "49 min",
 		Videos: []stremio.MetaVideo{
-			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg"},
+			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg", Runtime: 58},
 			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
 			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1},
 			{ID: "tt0903747:0:1", Title: "Minisode", Season: 0, Episode: 1},
@@ -798,6 +798,14 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+seasons.Items[0].ID, ""), &episodes)
 	if len(episodes.Items) != 2 || episodes.Items[0].Name != "Pilot" || *episodes.Items[0].IndexNumber != 1 || *episodes.Items[0].ParentIndexNumber != 1 {
 		t.Fatalf("episodes: %+v", episodes.Items)
+	}
+	// The pilot carries its own 58-minute runtime; the second episode has
+	// none and inherits the series average of 49.
+	if got := episodes.Items[0].RunTimeTicks; got == nil || *got != 58*60*ticksPerSecond {
+		t.Fatalf("episode 1 runtime = %v, want the episode's own 58 min", got)
+	}
+	if got := episodes.Items[1].RunTimeTicks; got == nil || *got != 49*60*ticksPerSecond {
+		t.Fatalf("episode 2 runtime = %v, want the series average 49 min", got)
 	}
 	ep := episodes.Items[0]
 	if ep.SeriesName != "Breaking Bad" || ep.SeasonID != seasons.Items[0].ID || ep.SeriesPrimaryImageTag == "" || ep.RunTimeTicks == nil || ep.UserData == nil {
