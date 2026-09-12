@@ -336,6 +336,8 @@ func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID 
 	item := s.newItem(id, preview.Name)
 	item.ParentID = parentID
 	item.Overview = preview.Description
+	item.ProductionYear = productionYear(preview.ReleaseInfo)
+	item.CommunityRating = communityRating(preview.IMDBRating)
 	s.setImages(item, id, preview.Poster, preview.Background, "")
 	s.attachListSources(rq, id, item)
 	return item, true
