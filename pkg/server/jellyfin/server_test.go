@@ -265,7 +265,7 @@ func testCatalog() *fakeCatalog {
 		Videos: []stremio.MetaVideo{
 			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg", Runtime: 58},
 			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
-			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1},
+			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1, Released: "2099-01-01T00:00:00.000Z"},
 			{ID: "tt0903747:0:1", Title: "Minisode", Season: 0, Episode: 1},
 		},
 	}
@@ -806,6 +806,15 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	}
 	if got := episodes.Items[1].RunTimeTicks; got == nil || *got != 49*60*ticksPerSecond {
 		t.Fatalf("episode 2 runtime = %v, want the series average 49 min", got)
+	}
+	if episodes.Items[0].LocationType != "FileSystem" {
+		t.Fatalf("aired episode LocationType = %q, want FileSystem", episodes.Items[0].LocationType)
+	}
+	// Season 2's only episode airs in 2099: listed, but Virtual.
+	var future queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+seasons.Items[1].ID, ""), &future)
+	if len(future.Items) != 1 || future.Items[0].LocationType != "Virtual" {
+		t.Fatalf("unaired episode: %+v, want LocationType Virtual", future.Items)
 	}
 	ep := episodes.Items[0]
 	if ep.SeriesName != "Breaking Bad" || ep.SeasonID != seasons.Items[0].ID || ep.SeriesPrimaryImageTag == "" || ep.RunTimeTicks == nil || ep.UserData == nil {
