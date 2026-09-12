@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
@@ -327,6 +328,11 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 			defer wg.Done()
 			metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, "", 0)
 			if err != nil {
+				if !errors.Is(err, stremio.ErrMetadataDisabled) &&
+					logger.Throttle("jellyfin-all-items:"+def.ID, 5*time.Minute) {
+					logger.Warn("Jellyfin catalog failed; library omitted from listing",
+						"catalog", def.ID, "stream", rq.streamName(), "err", err)
+				}
 				return
 			}
 			mu.Lock()
@@ -365,7 +371,7 @@ func (s *Server) search(rq *request, term string, include []string) []*baseItem 
 			defer wg.Done()
 			metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, term, 0)
 			if err != nil && !errors.Is(err, stremio.ErrMetadataDisabled) {
-				logger.Debug("Jellyfin search failed", "catalog", def.ID, "err", err)
+				logger.Debug("Jellyfin search failed", "catalog", def.ID, "stream", rq.streamName(), "err", err)
 			}
 			rows[i] = metas
 		}(i, def)
@@ -430,8 +436,17 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 	include := rq.listParam("includeItemTypes")
 	items := []*baseItem{}
 	if parent := rq.param("parentId"); parent != "" {
-		if id, err := decodeItemID(parent); err == nil && id.Kind == kindView {
-			if def, ok := catalogByID(id.CatalogID); ok && wantsType(include, def.Type) {
+		id, err := decodeItemID(parent)
+		switch {
+		case err != nil || id.Kind != kindView:
+			logger.Debug("Jellyfin latest: parent is not a library; serving empty",
+				"parent", parent, "stream", rq.streamName(), "err", err)
+		default:
+			def, ok := catalogByID(id.CatalogID)
+			if !ok {
+				logger.Debug("Jellyfin latest: unknown catalog; serving empty",
+					"catalog", id.CatalogID, "stream", rq.streamName())
+			} else if wantsType(include, def.Type) {
 				items = s.catalogPage(rq, def, 0, limit).Items
 			}
 		}

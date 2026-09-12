@@ -151,8 +151,15 @@ func resolveCatalogDef(profile *config.MetadataProfileConfig, req catalogRequest
 func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRequest) []MetaPreview {
 	metas, err := s.buildCatalog(ctx, def, req)
 	if err != nil {
-		logger.Debug("Catalog build failed; serving empty page",
-			"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
+		// Warn, throttled per catalog: a library that renders empty with
+		// nothing above DEBUG in the log is indistinguishable from "no rows".
+		if logger.Throttle("catalog-build-failed:"+def.ID, 5*time.Minute) {
+			logger.Warn("Catalog build failed; serving empty page",
+				"catalog", def.ID, "provider", def.Provider, "search", req.Search, "skip", req.Skip, "err", err)
+		} else {
+			logger.Debug("Catalog build failed; serving empty page",
+				"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
+		}
 		metas = nil
 	}
 	if req.Search == "" && len(metas) > 0 {

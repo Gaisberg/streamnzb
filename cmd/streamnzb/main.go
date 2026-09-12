@@ -124,6 +124,9 @@ func main() {
 	userSimklID := firstNonEmpty(os.Getenv(env.SimklClientID), strings.TrimSpace(cfg.SimklClientID))
 	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
 	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
+	if effectiveTMDBKey == "" && cfg.EffectiveMetadataEnabled() {
+		logger.Warn("TMDB Read Access Token missing: TMDB catalogs and movie metadata will be empty until one is set")
+	}
 	env.SetRuntimeHeaders(cfg.IndexerQueryHeader, cfg.IndexerGrabHeader, cfg.ProviderHeader)
 
 	dataDir := filepath.Dir(cfg.LoadedPath)
