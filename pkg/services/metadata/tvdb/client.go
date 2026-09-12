@@ -642,6 +642,7 @@ type Episode struct {
 	Aired        string `json:"aired"`
 	Overview     string `json:"overview"`
 	Image        string `json:"image"`
+	Runtime      int    `json:"runtime"` // minutes, 0 when TVDB has none
 }
 
 type seriesEpisodesResponse struct {
