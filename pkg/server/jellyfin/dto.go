@@ -329,6 +329,8 @@ func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*bas
 	item := s.newItem(id, preview.Name)
 	item.ParentID = parentID
 	item.Overview = preview.Description
+	item.ProductionYear = productionYear(preview.ReleaseInfo)
+	item.CommunityRating = communityRating(preview.IMDBRating)
 	s.setImages(item, id, preview.Poster, preview.Background, "")
 	return item, true
 }
