@@ -643,8 +643,12 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 		if meta.Poster == "" {
 			meta.Poster = ext.Image
 		}
-		if _, overview := rt.tvdbClient.SeriesTranslation(mapping.TVDBID, tvdb.LanguageToISO3(profile.EffectiveLanguage())); overview != "" {
-			meta.Description = overview
+		// Kitsu's synopsis is already English; only a non-English display
+		// language asks TVDB for a translated overview to replace it.
+		if lang := profile.EffectiveLanguage(); lang != "" {
+			if _, overview := rt.tvdbClient.SeriesTranslation(mapping.TVDBID, tvdb.LanguageToISO3(lang)); overview != "" {
+				meta.Description = overview
+			}
 		}
 	case mapping.TMDBID != "" && strings.EqualFold(mapping.Type, "movie"):
 		tmdbID, err := strconv.Atoi(mapping.TMDBID)
