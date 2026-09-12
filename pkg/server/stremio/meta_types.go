@@ -12,6 +12,9 @@ type MetaVideo struct {
 	Released  string `json:"released,omitempty"` // ISO 8601
 	Overview  string `json:"overview,omitempty"`
 	Thumbnail string `json:"thumbnail,omitempty"`
+	// Runtime is the episode's own length in minutes when the provider has
+	// one; 0 means unknown and callers fall back to the series average.
+	Runtime int `json:"runtime,omitempty"`
 }
 
 // MetaObject is a Stremio meta resource object. Cast, Director, Writer,
