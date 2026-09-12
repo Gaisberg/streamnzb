@@ -77,6 +77,12 @@ stream never sees another's.
   opened, and the alternative is a picker with nothing real in it. Set it to
   `false` if you would rather not spend the search — a title then offers the
   one best release until you press play.
+- **List rows** — Infuse's Direct Mode never asks PlaybackInfo: it plays from
+  the row's media sources and reads the version count from the list
+  document. Every movie and episode row therefore carries two placeholder
+  sources (slots 0 and 1), or the resolved list when it is already cached.
+  Nothing is searched to build a row; playing a slot the search did not
+  fill falls back to the first playable release.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.

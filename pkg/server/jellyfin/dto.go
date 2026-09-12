@@ -294,7 +294,7 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 
 // previewItem renders a catalog row. Rows carry no runtime or year, which is
 // what a Jellyfin library grid shows anyway: poster and title.
-func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
+func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
 	id, err := itemIDFor(preview.Type, preview.ID)
 	if err != nil {
 		// The row is dropped from the grid; say why once per id so a
@@ -309,6 +309,7 @@ func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*bas
 	item.ParentID = parentID
 	item.Overview = preview.Description
 	s.setImages(item, id, preview.Poster, preview.Background, "")
+	s.attachListSources(rq, id, item)
 	return item, true
 }
 

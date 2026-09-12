@@ -467,11 +467,11 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	if result.Items[0].Type != "Movie" || result.Items[0].ParentID != view || result.Items[0].ImageTags["Primary"] == "" || len(result.Items[0].BackdropImageTags) != 1 {
 		t.Fatalf("row shape: %+v", result.Items[0])
 	}
-	// A browse row carries no media sources. Nobody opens a version picker
-	// from a grid thumbnail, and the sources are not free: each one is an
-	// absolute stream URL carrying the stream token, on every row of the page.
-	if len(result.Items[0].MediaSources) != 0 || len(result.Items[0].AlternateMediaSources) != 0 || result.Items[0].MediaSourceCount != nil {
-		t.Fatalf("browse row must stay free of media sources: %+v", result.Items[0])
+	// A browse row carries the two-slot version signal Infuse's Direct Mode
+	// reads from the list document (it never asks PlaybackInfo): two
+	// placeholders, a count of two, and the display flag.
+	if row := result.Items[0]; len(row.MediaSources) != 2 || len(row.AlternateMediaSources) != 2 || row.MediaSourceCount == nil || *row.MediaSourceCount != 2 || row.EnableMediaSourceDisplay == nil || !*row.EnableMediaSourceDisplay {
+		t.Fatalf("browse row must carry two placeholder media sources: %+v", row)
 	}
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
 	if len(result.Items) != 5 || result.TotalRecordCount != 45 {
@@ -1543,5 +1543,84 @@ func TestFladderImageURLShapes(t *testing.T) {
 	dashed := item.ID[:8] + "-" + item.ID[8:12] + "-" + item.ID[12:16] + "-" + item.ID[16:20] + "-" + item.ID[20:]
 	if rec := anon("/jellyfin/Items/" + dashed + "/Images/Primary" + sized); rec.Code != http.StatusOK {
 		t.Fatalf("hyphenated item id: %d", rec.Code)
+	}
+}
+
+// TestListRowsCarryVersionSignal pins the list-document contract Infuse's
+// Direct Mode depends on: movie rows, Latest rows and episode rows carry two
+// placeholder sources naming slots 0 and 1, a cached playlist is rendered in
+// their place, and none of it runs a search.
+func TestListRowsCarryVersionSignal(t *testing.T) {
+	f := newFixture()
+	f.resolveOnOpen = true
+	stream := &auth.Stream{Username: "living-room", Token: testToken}
+	requireTwo := func(row *baseItem, at string) {
+		t.Helper()
+		if len(row.MediaSources) != 2 || row.MediaSourceCount == nil || *row.MediaSourceCount != 2 || row.EnableMediaSourceDisplay == nil || !*row.EnableMediaSourceDisplay {
+			t.Fatalf("%s: want two placeholder sources with count and display, got %+v", at, row)
+		}
+		id, err := decodeItemID(row.ID)
+		if err != nil {
+			t.Fatalf("%s: row id: %v", at, err)
+		}
+		for i, src := range row.MediaSources {
+			if src.ID != mediaSourceIDFor(id, i) || src.Path != f.server.streamURLFor(id, i, stream) || !src.SupportsDirectPlay {
+				t.Fatalf("%s: slot %d is not a playable stand-in: %+v", at, i, src)
+			}
+		}
+		if row.MediaSources[0].Name != row.Name || row.MediaSources[1].Name == row.MediaSources[0].Name {
+			t.Fatalf("%s: placeholder names: %q %q", at, row.MediaSources[0].Name, row.MediaSources[1].Name)
+		}
+	}
+
+	var page queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.movie")+"&Limit=5", ""), &page)
+	requireTwo(page.Items[0], "movie row")
+
+	var latest []*baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/Latest?ParentId="+viewID("tmdb.trending.movie")+"&Limit=3", ""), &latest)
+	requireTwo(latest[0], "latest row")
+
+	series, _ := itemIDFor("series", "tt0903747")
+	var episodes queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+series.season(1).encode(), ""), &episodes)
+	if len(episodes.Items) == 0 {
+		t.Fatalf("no episodes")
+	}
+	requireTwo(episodes.Items[0], "episode row")
+
+	// Series rows are folders and carry nothing. (Fresh result: decoding
+	// into a reused slice of pointers keeps fields the JSON omits.)
+	var seriesPage queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.series"), ""), &seriesPage)
+	if len(seriesPage.Items[0].MediaSources) != 0 || seriesPage.Items[0].MediaSourceCount != nil {
+		t.Fatalf("series row carries media sources: %+v", seriesPage.Items[0])
+	}
+
+	// A playlist already in cache is rendered instead of the placeholders.
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.cached = &stremio.PlaylistView{Entries: entries}
+	var cachedPage queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.movie")+"&Limit=5", ""), &cachedPage)
+	if row := cachedPage.Items[0]; len(row.MediaSources) != 3 || row.MediaSources[0].Name != "Release.00.mkv" || *row.MediaSourceCount != 3 {
+		t.Fatalf("cached playlist not rendered on the row: %+v", row)
+	}
+
+	// None of the above searched: the list document is built from cache and
+	// placeholders only, whatever resolve-on-open is set to.
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("list rows ran %d searches, want 0", calls)
+	}
+
+	// Playing placeholder slot 1 goes to the addon as slot 1; when the list
+	// turns out shorter the addon's slot recovery wraps to the first
+	// playable candidate, so nothing here has to know how many were found.
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?Static=true&MediaSourceId="+movie.source(1).encode(), "")
+	if rec.Code != http.StatusOK || f.catalog.served[len(f.catalog.served)-1].slotPath != stremio.SlotPathFor(stream, "movie", "tt0111161", 1) {
+		t.Fatalf("slot 1 play: %d served %+v", rec.Code, f.catalog.served)
 	}
 }
