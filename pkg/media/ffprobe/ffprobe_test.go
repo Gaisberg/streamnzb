@@ -29,6 +29,10 @@ func TestFFprobeDownloadURL(t *testing.T) {
 }
 
 func TestFindFFprobeBinaryCustomPath(t *testing.T) {
+	// A missing custom path must not silently resolve to whatever ffprobe
+	// happens to be on PATH -- which many developer machines have (Homebrew,
+	// apt, ...) even though CI does not, which is why this only failed there.
+	t.Setenv("PATH", "")
 	_, ok := FindFFprobeBinary("non_existent_binary_path_xyz")
 	if ok {
 		t.Fatal("expected false for non-existent binary path")
