@@ -155,7 +155,7 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		// nothing above DEBUG in the log is indistinguishable from "no rows".
 		if logger.Throttle("catalog-build-failed:"+def.ID, 5*time.Minute) {
 			logger.Warn("Catalog build failed; serving empty page",
-				"catalog", def.ID, "provider", def.Provider, "search", req.Search, "skip", req.Skip, "err", err)
+				"catalog", def.ID, "provider", def.Provider, "searched", req.Search != "", "skip", req.Skip, "err", err)
 		} else {
 			logger.Debug("Catalog build failed; serving empty page",
 				"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
