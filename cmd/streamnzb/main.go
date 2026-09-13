@@ -122,7 +122,7 @@ func main() {
 	userTMDBKey := firstNonEmpty(os.Getenv(env.TMDBAPIKey), strings.TrimSpace(cfg.TMDBAPIKey))
 	userTVDBKey := firstNonEmpty(os.Getenv(env.TVDBAPIKey), strings.TrimSpace(cfg.TVDBAPIKey))
 	userSimklID := firstNonEmpty(os.Getenv(env.SimklClientID), strings.TrimSpace(cfg.SimklClientID))
-	effectiveTMDBKey := firstNonEmpty(userTMDBKey, TMDBKey)
+	effectiveTMDBKey := firstNonEmpty(strings.TrimSpace(userTMDBKey), strings.TrimSpace(TMDBKey))
 	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	if effectiveTMDBKey == "" && cfg.EffectiveMetadataEnabled() {
 		logger.Warn("TMDB Read Access Token missing: TMDB catalogs and movie metadata will be empty until one is set")
