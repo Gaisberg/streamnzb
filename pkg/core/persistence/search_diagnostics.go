@@ -115,7 +115,7 @@ func (m *StateManager) ListSearchDiagnostics(opts ListSearchDiagnosticsOptions) 
 		query += ` AND content_id = ?`
 		args = append(args, opts.ContentID)
 	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := m.db.Query(query, args...)
