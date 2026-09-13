@@ -14,6 +14,21 @@ import (
 	"streamnzb/pkg/services/metadata/metacache"
 )
 
+// DisplayTitle picks the title to show a viewer: the English title when the
+// profile's display language is English or unset (Kitsu has no other
+// translations, so any other language keeps the canonical title). Falls back
+// to whichever of the two is non-empty.
+func DisplayTitle(lang, english, canonical string) string {
+	isEnglish := lang == "" || strings.EqualFold(lang, "en") || strings.EqualFold(lang, "en-US")
+	if isEnglish && english != "" {
+		return english
+	}
+	if canonical != "" {
+		return canonical
+	}
+	return english
+}
+
 type AnimeDetails struct {
 	ID             string   `json:"id"`
 	CanonicalTitle string   `json:"canonical_title"`
@@ -274,6 +289,7 @@ func (c *Client) GetAnimeMeta(ctx context.Context, kitsuID string) (*AnimeMeta, 
 type EpisodeInfo struct {
 	Number         int
 	CanonicalTitle string
+	EnglishTitle   string
 	Synopsis       string
 	Airdate        string
 	Thumbnail      string
@@ -291,10 +307,13 @@ type episodesAPIResponse struct {
 	Data []struct {
 		Attributes struct {
 			CanonicalTitle string `json:"canonicalTitle"`
-			Synopsis       string `json:"synopsis"`
-			Number         int    `json:"number"`
-			Airdate        string `json:"airdate"`
-			Thumbnail      struct {
+			Titles         struct {
+				EN string `json:"en"`
+			} `json:"titles"`
+			Synopsis  string `json:"synopsis"`
+			Number    int    `json:"number"`
+			Airdate   string `json:"airdate"`
+			Thumbnail struct {
 				Original string `json:"original"`
 			} `json:"thumbnail"`
 		} `json:"attributes"`
@@ -328,6 +347,7 @@ func (c *Client) GetAnimeEpisodes(ctx context.Context, kitsuID string) ([]Episod
 			episodes = append(episodes, EpisodeInfo{
 				Number:         ep.Attributes.Number,
 				CanonicalTitle: strings.TrimSpace(ep.Attributes.CanonicalTitle),
+				EnglishTitle:   strings.TrimSpace(ep.Attributes.Titles.EN),
 				Synopsis:       strings.TrimSpace(ep.Attributes.Synopsis),
 				Airdate:        ep.Attributes.Airdate,
 				Thumbnail:      ep.Attributes.Thumbnail.Original,
@@ -347,6 +367,7 @@ const listingCacheTTL = 3 * time.Hour
 type AnimeListing struct {
 	ID             string
 	CanonicalTitle string
+	EnglishTitle   string
 	Synopsis       string
 	PosterImage    string
 	CoverImage     string
@@ -359,10 +380,13 @@ type listingAPIResponse struct {
 		ID         string `json:"id"`
 		Attributes struct {
 			CanonicalTitle string `json:"canonicalTitle"`
-			Synopsis       string `json:"synopsis"`
-			AgeRating      string `json:"ageRating"`
-			Nsfw           bool   `json:"nsfw"`
-			PosterImage    struct {
+			Titles         struct {
+				EN string `json:"en"`
+			} `json:"titles"`
+			Synopsis    string `json:"synopsis"`
+			AgeRating   string `json:"ageRating"`
+			Nsfw        bool   `json:"nsfw"`
+			PosterImage struct {
 				Medium   string `json:"medium"`
 				Original string `json:"original"`
 			} `json:"posterImage"`
@@ -423,6 +447,7 @@ func (c *Client) getListing(ctx context.Context, path string) ([]AnimeListing, e
 		listings = append(listings, AnimeListing{
 			ID:             item.ID,
 			CanonicalTitle: strings.TrimSpace(item.Attributes.CanonicalTitle),
+			EnglishTitle:   strings.TrimSpace(item.Attributes.Titles.EN),
 			Synopsis:       strings.TrimSpace(item.Attributes.Synopsis),
 			PosterImage:    poster,
 			CoverImage:     item.Attributes.CoverImage.Original,

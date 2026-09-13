@@ -300,6 +300,48 @@ func TestBuildAnimeMeta(t *testing.T) {
 	}
 }
 
+func TestBuildAnimeMetaPrefersEnglishTitle(t *testing.T) {
+	kitsuStub := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/episodes"):
+			_, _ = w.Write([]byte(`{"data": [
+				{"attributes": {"canonicalTitle": "Toubousha Miku", "titles": {"en": "The Runaway"}, "number": 1}}
+			]}`))
+		case strings.Contains(r.URL.Path, "/anime/1"):
+			_, _ = w.Write([]byte(`{"data": {"id": "1", "attributes": {
+				"canonicalTitle": "Shingeki no Kyojin", "titles": {"en": "Attack on Titan"},
+				"synopsis": "Humanity fights titans.", "showType": "TV"
+			}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	srv := metaTestServer(t, nil, nil, kitsuStub)
+
+	// English (default) profile: English title wins for both the series name
+	// and the episode title.
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "anime", "kitsu:1")
+	if err != nil {
+		t.Fatalf("buildMeta: %v", err)
+	}
+	if meta.Name != "Attack on Titan" {
+		t.Fatalf("meta.Name = %q, want English title", meta.Name)
+	}
+	if len(meta.Videos) != 1 || meta.Videos[0].Title != "The Runaway" {
+		t.Fatalf("videos = %+v, want English episode title", meta.Videos)
+	}
+
+	// A non-English profile has nothing else to translate to, so it keeps
+	// Kitsu's canonical (romaji) title.
+	deMeta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{Language: "de-DE"}, "anime", "kitsu:1")
+	if err != nil {
+		t.Fatalf("buildMeta (de-DE): %v", err)
+	}
+	if deMeta.Name != "Shingeki no Kyojin" {
+		t.Fatalf("meta.Name (de-DE) = %q, want canonical title", deMeta.Name)
+	}
+}
+
 // tvdbStubHandler serves the TVDB endpoints the series meta path needs:
 // login, remoteid resolution from imdb, extended details, and episodes.
 func tvdbStubHandler() http.HandlerFunc {
