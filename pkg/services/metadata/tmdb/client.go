@@ -114,17 +114,18 @@ type SearchMultiResponse struct {
 }
 
 type SearchMultiResult struct {
-	ID            int    `json:"id"`
-	Title         string `json:"title"`
-	Name          string `json:"name"`
-	MediaType     string `json:"media_type"`
-	ReleaseDate   string `json:"release_date"`
-	FirstAirDate  string `json:"first_air_date"`
-	OriginalTitle string `json:"original_title"`
-	OriginalName  string `json:"original_name"`
-	PosterPath    string `json:"poster_path"`
-	BackdropPath  string `json:"backdrop_path"`
-	Overview      string `json:"overview"`
+	ID            int     `json:"id"`
+	Title         string  `json:"title"`
+	Name          string  `json:"name"`
+	MediaType     string  `json:"media_type"`
+	ReleaseDate   string  `json:"release_date"`
+	FirstAirDate  string  `json:"first_air_date"`
+	OriginalTitle string  `json:"original_title"`
+	OriginalName  string  `json:"original_name"`
+	PosterPath    string  `json:"poster_path"`
+	BackdropPath  string  `json:"backdrop_path"`
+	Overview      string  `json:"overview"`
+	VoteAverage   float64 `json:"vote_average"`
 }
 
 type ExternalIDsResponse struct {
@@ -593,6 +594,7 @@ type TVEpisodeInfo struct {
 	Overview      string `json:"overview"`
 	AirDate       string `json:"air_date"`
 	StillPath     string `json:"still_path"`
+	Runtime       int    `json:"runtime"` // minutes, 0 when TMDB has none
 }
 
 func (c *Client) GetMovieTitle(imdbID string, tmdbID string) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
@@ -268,6 +269,13 @@ func page(items []*baseItem, start, limit int, open bool) queryResult {
 // in fixed buckets, so the request is mapped onto whole buckets and sliced;
 // a client whose page size is a multiple of the bucket lands exactly on
 // bucket edges, which is what every known client does.
+//
+// Positions are the addon's, not the row count served: a bucket comes back
+// short whenever the provider had rows the addon could not identify, so a
+// page may carry fewer rows than asked while the catalog goes on. Only an
+// empty bucket ends the catalog. When the last bucket in range is short the
+// next one is probed for that answer, so a true last page still reports an
+// exact total.
 func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit int) queryResult {
 	result := emptyResult()
 	result.StartIndex = start
@@ -277,33 +285,57 @@ func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit i
 	}
 	bucket := stremio.CatalogPageSize
 	firstPage, lastPage := start/bucket, (start+limit-1)/bucket
-	var rows []stremio.MetaPreview
-	short := false
+	parent := viewID(def.ID)
+	ended := false
 	for p := firstPage; p <= lastPage; p++ {
 		metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, "", p*bucket)
 		if err != nil {
 			logger.Debug("Jellyfin catalog page failed", "catalog", def.ID, "skip", p*bucket, "err", err)
-			short = true
+			ended = true
 			break
 		}
-		rows = append(rows, metas...)
-		if len(metas) < bucket || !def.SupportsSkip {
-			short = true
+		if len(metas) == 0 {
+			ended = true
 			break
 		}
-	}
-	offset := start - firstPage*bucket
-	parent := viewID(def.ID)
-	for i := offset; i < len(rows) && len(result.Items) < limit; i++ {
-		if item, ok := s.previewItem(rows[i], parent); ok {
-			result.Items = append(result.Items, item)
+		// Row j of bucket p sits at position p*bucket+j whatever the bucket
+		// lost, so a window is the same rows on every visit.
+		for j, preview := range metas {
+			pos := p*bucket + j
+			if pos < start || pos >= start+limit {
+				continue
+			}
+			if item, ok := s.previewItem(rq, preview, parent); ok {
+				result.Items = append(result.Items, item)
+			}
+		}
+		if !def.SupportsSkip {
+			ended = true
+			break
+		}
+		if p == lastPage && len(metas) < bucket {
+			ended = s.catalogEndsAt(rq, def, (p+1)*bucket)
 		}
 	}
 	result.TotalRecordCount = start + len(result.Items)
-	if !short {
-		result.TotalRecordCount += bucket
+	if !ended {
+		// Open-ended, as page() reports it: past the window the client
+		// asked for, so a page thinned by dropped rows still reads as
+		// "more to come" rather than as the last one.
+		result.TotalRecordCount = start + limit + bucket
 	}
 	return result
+}
+
+// catalogEndsAt reports whether the bucket at skip is empty, which is the
+// only signal the addon gives that a catalog is exhausted.
+func (s *Server) catalogEndsAt(rq *request, def stremio.CatalogDef, skip int) bool {
+	metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, "", skip)
+	if err != nil {
+		logger.Debug("Jellyfin catalog page failed", "catalog", def.ID, "skip", skip, "err", err)
+		return true
+	}
+	return len(metas) == 0
 }
 
 // allItems is the listing without a folder — "everything of this type",
@@ -327,6 +359,11 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 			defer wg.Done()
 			metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, "", 0)
 			if err != nil {
+				if !errors.Is(err, stremio.ErrMetadataDisabled) &&
+					logger.Throttle("jellyfin-all-items:"+def.ID, 5*time.Minute) {
+					logger.Warn("Jellyfin catalog failed; library omitted from listing",
+						"catalog", def.ID, "stream", rq.streamName(), "err", err)
+				}
 				return
 			}
 			mu.Lock()
@@ -340,7 +377,7 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 	for i, def := range defs {
 		parent := viewID(def.ID)
 		for _, preview := range rows[i] {
-			item, ok := s.previewItem(preview, parent)
+			item, ok := s.previewItem(rq, preview, parent)
 			if !ok || seen[item.ID] {
 				continue
 			}
@@ -365,7 +402,7 @@ func (s *Server) search(rq *request, term string, include []string) []*baseItem 
 			defer wg.Done()
 			metas, err := s.opts.Catalog.Catalog(rq.Context(), rq.stream, def.ID, def.Type, term, 0)
 			if err != nil && !errors.Is(err, stremio.ErrMetadataDisabled) {
-				logger.Debug("Jellyfin search failed", "catalog", def.ID, "err", err)
+				logger.Debug("Jellyfin search failed", "catalog", def.ID, "stream", rq.streamName(), "err", err)
 			}
 			rows[i] = metas
 		}(i, def)
@@ -375,7 +412,7 @@ func (s *Server) search(rq *request, term string, include []string) []*baseItem 
 	seen := map[string]bool{}
 	for _, metas := range rows {
 		for _, preview := range metas {
-			item, ok := s.previewItem(preview, "")
+			item, ok := s.previewItem(rq, preview, "")
 			if !ok || seen[item.ID] {
 				continue
 			}
@@ -430,8 +467,17 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 	include := rq.listParam("includeItemTypes")
 	items := []*baseItem{}
 	if parent := rq.param("parentId"); parent != "" {
-		if id, err := decodeItemID(parent); err == nil && id.Kind == kindView {
-			if def, ok := catalogByID(id.CatalogID); ok && wantsType(include, def.Type) {
+		id, err := decodeItemID(parent)
+		switch {
+		case err != nil || id.Kind != kindView:
+			logger.Debug("Jellyfin latest: parent is not a library; serving empty",
+				"parent", parent, "stream", rq.streamName(), "err", err)
+		default:
+			def, ok := catalogByID(id.CatalogID)
+			if !ok {
+				logger.Debug("Jellyfin latest: unknown catalog; serving empty",
+					"catalog", id.CatalogID, "stream", rq.streamName())
+			} else if wantsType(include, def.Type) {
 				items = s.catalogPage(rq, def, 0, limit).Items
 			}
 		}
@@ -644,6 +690,8 @@ func (s *Server) childrenOf(rq *request, id itemID, include []string, recursive 
 		item := s.episodeItem(series, meta, v)
 		st, ok := states[item.ID]
 		item.UserData = userDataFor(item.ID, st, ok)
+		// Episodes are list rows too in Infuse's Direct Mode.
+		s.attachListSources(rq, series.episode(v.Season, v.Episode), item)
 		items = append(items, item)
 	}
 	return items, nil

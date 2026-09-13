@@ -12,6 +12,9 @@ type MetaVideo struct {
 	Released  string `json:"released,omitempty"` // ISO 8601
 	Overview  string `json:"overview,omitempty"`
 	Thumbnail string `json:"thumbnail,omitempty"`
+	// Runtime is the episode's own length in minutes when the provider has
+	// one; 0 means unknown and callers fall back to the series average.
+	Runtime int `json:"runtime,omitempty"`
 }
 
 // MetaObject is a Stremio meta resource object. Cast, Director, Writer,
@@ -76,6 +79,10 @@ type MetaPreview struct {
 	Poster      string `json:"poster,omitempty"`
 	Background  string `json:"background,omitempty"`
 	Description string `json:"description,omitempty"`
+	// ReleaseInfo and IMDBRating are the row's year and rating; catalog
+	// grids show both, and a row without them shows a blank badge.
+	ReleaseInfo string `json:"releaseInfo,omitempty"`
+	IMDBRating  string `json:"imdbRating,omitempty"`
 }
 
 // CatalogResponse is the /catalog/{type}/{id}.json envelope.

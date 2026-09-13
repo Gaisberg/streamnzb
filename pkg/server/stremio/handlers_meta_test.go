@@ -206,6 +206,9 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 					 "overview": "Ned Stark...", "air_date": "2011-04-17", "still_path": "/e1.jpg"},
 					{"episode_number": 2, "season_number": 1, "name": "The Kingsroad",
 					 "air_date": "2011-04-24"}
+				]},
+				"season/0": {"season_number": 0, "episodes": [
+					{"episode_number": 1, "season_number": 0, "name": "Inside Game of Thrones", "air_date": "2010-12-05"}
 				]}
 			}`))
 		default:
@@ -234,8 +237,11 @@ func TestBuildSeriesMetaWithTVMazeOverlay(t *testing.T) {
 	if meta.Name != "Game of Thrones" || meta.ID != "tt0944947" {
 		t.Fatalf("meta = %+v", meta)
 	}
-	if len(meta.Videos) != 2 {
-		t.Fatalf("videos = %d, want 2 (specials excluded)", len(meta.Videos))
+	if len(meta.Videos) != 3 {
+		t.Fatalf("videos = %d, want 3 (season 1, then the special)", len(meta.Videos))
+	}
+	if sp := meta.Videos[2]; sp.ID != "tt0944947:0:1" || sp.Season != 0 {
+		t.Fatalf("videos[2] = %+v, want the season-0 special listed last", sp)
 	}
 	ep1 := meta.Videos[0]
 	if ep1.ID != "tt0944947:1:1" {
@@ -300,6 +306,48 @@ func TestBuildAnimeMeta(t *testing.T) {
 	}
 }
 
+func TestBuildAnimeMetaPrefersEnglishTitle(t *testing.T) {
+	kitsuStub := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/episodes"):
+			_, _ = w.Write([]byte(`{"data": [
+				{"attributes": {"canonicalTitle": "Toubousha Miku", "titles": {"en": "The Runaway"}, "number": 1}}
+			]}`))
+		case strings.Contains(r.URL.Path, "/anime/1"):
+			_, _ = w.Write([]byte(`{"data": {"id": "1", "attributes": {
+				"canonicalTitle": "Shingeki no Kyojin", "titles": {"en": "Attack on Titan"},
+				"synopsis": "Humanity fights titans.", "showType": "TV"
+			}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	srv := metaTestServer(t, nil, nil, kitsuStub)
+
+	// English (default) profile: English title wins for both the series name
+	// and the episode title.
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "anime", "kitsu:1")
+	if err != nil {
+		t.Fatalf("buildMeta: %v", err)
+	}
+	if meta.Name != "Attack on Titan" {
+		t.Fatalf("meta.Name = %q, want English title", meta.Name)
+	}
+	if len(meta.Videos) != 1 || meta.Videos[0].Title != "The Runaway" {
+		t.Fatalf("videos = %+v, want English episode title", meta.Videos)
+	}
+
+	// A non-English profile has nothing else to translate to, so it keeps
+	// Kitsu's canonical (romaji) title.
+	deMeta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{Language: "de-DE"}, "anime", "kitsu:1")
+	if err != nil {
+		t.Fatalf("buildMeta (de-DE): %v", err)
+	}
+	if deMeta.Name != "Shingeki no Kyojin" {
+		t.Fatalf("meta.Name (de-DE) = %q, want canonical title", deMeta.Name)
+	}
+}
+
 // tvdbStubHandler serves the TVDB endpoints the series meta path needs:
 // login, remoteid resolution from imdb, extended details, and episodes.
 func tvdbStubHandler() http.HandlerFunc {
@@ -330,7 +378,7 @@ func tvdbStubHandler() http.HandlerFunc {
 		case r.URL.Path == "/series/121361/episodes/default":
 			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
 				{"seasonNumber": 1, "number": 1, "name": "Winter Is Coming (TVDB)",
-				 "aired": "2011-04-17", "image": "https://artworks.thetvdb.com/e1.jpg"},
+				 "aired": "2011-04-17", "image": "https://artworks.thetvdb.com/e1.jpg", "runtime": 62},
 				{"seasonNumber": 0, "number": 1, "name": "Special", "aired": "2011-01-01"}
 			]}, "links": {"next": null}}`))
 		default:
@@ -359,11 +407,15 @@ func withTVDBStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
 // from TVDB (resolved from the imdb id), with TVMaze still owning air dates.
 func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/find/") {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/"):
 			_, _ = w.Write([]byte(`{"tv_results": [{"id": 1399}]}`))
-			return
+		case strings.HasSuffix(r.URL.Path, "/tv/1399"):
+			// Only the rating is read from here on the TVDB path.
+			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones", "vote_average": 8.4}`))
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}
 	tvmazeStub := func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -390,8 +442,11 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	if meta.Poster != "https://artworks.thetvdb.com/got.jpg" || meta.Background != "https://artworks.thetvdb.com/got-fanart.jpg" {
 		t.Fatalf("artwork = %q / %q", meta.Poster, meta.Background)
 	}
-	if len(meta.Videos) != 1 {
-		t.Fatalf("videos = %d, want 1 (specials excluded)", len(meta.Videos))
+	if len(meta.Videos) != 2 {
+		t.Fatalf("videos = %d, want 2 (season 1, then the special)", len(meta.Videos))
+	}
+	if sp := meta.Videos[1]; sp.ID != "tt0944947:0:1" || sp.Season != 0 || sp.Title != "Special" {
+		t.Fatalf("videos[1] = %+v, want the season-0 special listed last", sp)
 	}
 	ep := meta.Videos[0]
 	if ep.ID != "tt0944947:1:1" {
@@ -403,6 +458,9 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 	if ep.Thumbnail != "https://artworks.thetvdb.com/e1.jpg" {
 		t.Fatalf("thumbnail = %q, want TVDB's episode image", ep.Thumbnail)
+	}
+	if ep.Runtime != 62 {
+		t.Fatalf("runtime = %d, want the episode's own 62 min from TVDB", ep.Runtime)
 	}
 	// Details-panel enrichment: actors only, ended-run year range, trailer id.
 	if len(meta.Cast) != 2 || meta.Cast[0] != "Emilia Clarke" || meta.Cast[1] != "Kit Harington" {
@@ -416,6 +474,10 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 	if meta.ReleaseInfo != "2011-2019" {
 		t.Fatalf("releaseInfo = %q, want the ended-run year range", meta.ReleaseInfo)
+	}
+	// TVDB has no 0-10 rating; the TMDB vote average fills it in.
+	if meta.IMDBRating != "8.4" {
+		t.Fatalf("imdbRating = %q, want TMDB's 8.4 on the TVDB path", meta.IMDBRating)
 	}
 	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "KPLWWIOCOOQ" {
 		t.Fatalf("trailers = %v", meta.Trailers)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/server/stremio"
 )
@@ -179,12 +180,40 @@ func runtimeTicks(runtime string) *int64 {
 }
 
 // productionYear reads the leading year of "2019" or "2019-2023".
+// episodeRuntimeTicks prefers the episode's own length over the series
+// average: a finale or a special is rarely the average, and the client's
+// scrubber and "time left" read this number.
+func episodeRuntimeTicks(video stremio.MetaVideo, meta *stremio.MetaObject) *int64 {
+	if video.Runtime > 0 {
+		return int64Ptr(int64(video.Runtime) * 60 * ticksPerSecond)
+	}
+	return runtimeTicks(meta.Runtime)
+}
+
 func productionYear(releaseInfo string) *int {
 	if m := leadingYear.FindString(releaseInfo); m != "" {
 		y, _ := strconv.Atoi(m)
 		return intPtr(y)
 	}
 	return nil
+}
+
+// now is the clock unaired reads; tests pin it.
+var now = time.Now
+
+// unaired reports whether an episode's release date lies in the future. An
+// unknown date is not unaired: the provider may simply not have one.
+func unaired(released string) bool {
+	released = strings.TrimSpace(released)
+	if released == "" {
+		return false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, released); err == nil {
+			return t.After(now())
+		}
+	}
+	return false
 }
 
 // premiereDate normalises an ISO date to Jellyfin's timestamp form.
@@ -293,15 +322,24 @@ func (s *Server) viewItem(def stremio.CatalogDef) *baseItem {
 
 // previewItem renders a catalog row. Rows carry no runtime or year, which is
 // what a Jellyfin library grid shows anyway: poster and title.
-func (s *Server) previewItem(preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
+func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID string) (*baseItem, bool) {
 	id, err := itemIDFor(preview.Type, preview.ID)
 	if err != nil {
+		// The row is dropped from the grid; say why once per id so a
+		// catalog that thins out is not mistaken for a provider miss.
+		if logger.Throttle("jellyfin-row-dropped:"+preview.Type+":"+preview.ID, time.Hour) {
+			logger.Debug("Jellyfin row dropped: id not representable",
+				"type", preview.Type, "id", preview.ID, "err", err)
+		}
 		return nil, false
 	}
 	item := s.newItem(id, preview.Name)
 	item.ParentID = parentID
 	item.Overview = preview.Description
+	item.ProductionYear = productionYear(preview.ReleaseInfo)
+	item.CommunityRating = communityRating(preview.IMDBRating)
 	s.setImages(item, id, preview.Poster, preview.Background, "")
+	s.attachListSources(rq, id, item)
 	return item, true
 }
 
@@ -461,10 +499,16 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 		SeasonName:        "Season " + strconv.Itoa(video.Season),
 		PremiereDate:      premiereDate(video.Released),
 		ProviderIDs:       providerIDs(id),
-		RunTimeTicks:      runtimeTicks(meta.Runtime),
+		RunTimeTicks:      episodeRuntimeTicks(video, meta),
 	}
 	if video.Season == 0 {
 		item.SeasonName = "Specials"
+	}
+	// An episode that has not aired yet has nothing to play. Jellyfin marks
+	// its own unaired entries Virtual, and clients grey those out instead of
+	// offering a play button that ends in "no compatible stream".
+	if unaired(video.Released) {
+		item.LocationType = "Virtual"
 	}
 	// The episode still is its Primary image; the series poster and backdrop
 	// ride along as the parent's for the clients that show them.

@@ -72,6 +72,10 @@ type fakeCatalog struct {
 	playlistCalls int
 	served        []servedPlay
 	disabled      bool
+	// drop thins a bucket the way the addon does when a provider row has
+	// no id it can use: skip → rows removed from the end of that bucket.
+	drop         map[int]int
+	catalogCalls []int
 }
 
 // releaseCaps is what ffprobe measured on the candidate that played: a
@@ -108,6 +112,7 @@ func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, s
 		f.searches = append(f.searches, catalogID+"="+search)
 		return f.rows[catalogID], nil
 	}
+	f.catalogCalls = append(f.catalogCalls, skip)
 	rows := f.rows[catalogID]
 	if skip >= len(rows) {
 		return nil, nil
@@ -115,6 +120,9 @@ func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, s
 	rows = rows[skip:]
 	if len(rows) > stremio.CatalogPageSize {
 		rows = rows[:stremio.CatalogPageSize]
+	}
+	if n := f.drop[skip]; n > 0 && n <= len(rows) {
+		rows = rows[:len(rows)-n]
 	}
 	return rows, nil
 }
@@ -263,9 +271,9 @@ func testCatalog() *fakeCatalog {
 		ID: "tt0903747", Type: "series", Name: "Breaking Bad", Poster: "https://img.test/bb.jpg", Background: cdn + "/bb-bg.jpg",
 		ReleaseInfo: "2008-2013", Released: "2008-01-20T00:00:00.000Z", Runtime: "49 min",
 		Videos: []stremio.MetaVideo{
-			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg"},
+			{ID: "tt0903747:1:1", Title: "Pilot", Season: 1, Episode: 1, Released: "2008-01-20T00:00:00.000Z", Thumbnail: cdn + "/bb-s1e1.jpg", Runtime: 58},
 			{ID: "tt0903747:1:2", Title: "Cat's in the Bag...", Season: 1, Episode: 2},
-			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1},
+			{ID: "tt0903747:2:1", Title: "Seven Thirty-Seven", Season: 2, Episode: 1, Released: "2099-01-01T00:00:00.000Z"},
 			{ID: "tt0903747:0:1", Title: "Minisode", Season: 0, Episode: 1},
 		},
 	}
@@ -280,7 +288,7 @@ func testCatalog() *fakeCatalog {
 			"tmdb.trending.movie":  previews("movie", "tt", 45),
 			"tmdb.trending.series": previews("series", "tt", 3),
 			"kitsu.trending.anime": []stremio.MetaPreview{{ID: "kitsu:9", Type: "anime", Name: "Your Name."}},
-			"tmdb.search.movie":    []stremio.MetaPreview{{ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption"}},
+			"tmdb.search.movie":    []stremio.MetaPreview{{ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption", ReleaseInfo: "1994", IMDBRating: "9.3"}},
 			"tmdb.search.series":   []stremio.MetaPreview{{ID: "tt0903747", Type: "series", Name: "Breaking Bad"}},
 			"kitsu.search.anime":   nil,
 		},
@@ -453,6 +461,55 @@ func TestTokenFormsAndCaseInsensitivity(t *testing.T) {
 	}
 }
 
+// A provider bucket comes back short whenever the addon drops rows it cannot
+// identify. That is not the end of the catalog: the client must be told to
+// keep paging, and the addon's positions must be kept so the next page
+// neither repeats nor skips rows.
+func TestShortBucketDoesNotEndCatalog(t *testing.T) {
+	f := newFixture()
+	f.catalog.rows["tmdb.trending.movie"] = previews("movie", "tt", 120)
+	f.catalog.drop = map[int]int{0: 2, 40: 1}
+	view := viewID("tmdb.trending.movie")
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=0&Limit=100", ""), &result)
+	if len(result.Items) != 97 || result.Items[0].Name != "Title 1" || result.Items[96].Name != "Title 100" {
+		t.Fatalf("first page: %d items (want 97: 18+20+19+20+20), first %q last %q", len(result.Items), result.Items[0].Name, result.Items[len(result.Items)-1].Name)
+	}
+	if result.TotalRecordCount <= 100 {
+		t.Fatalf("a thinned page must still read as more to come: total %d", result.TotalRecordCount)
+	}
+	// The client steps by its own page size, so the next page starts at the
+	// addon's position 100, not at row 97: no repeat, no gap.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=100&Limit=100", ""), &result)
+	if len(result.Items) != 20 || result.Items[0].Name != "Title 101" || result.Items[19].Name != "Title 120" {
+		t.Fatalf("second page: %d items, first %q", len(result.Items), result.Items[0].Name)
+	}
+	if result.TotalRecordCount != 120 {
+		t.Fatalf("an empty bucket ends the catalog with an exact total: got %d", result.TotalRecordCount)
+	}
+	// A short LAST bucket is probed, so a true last page is exact too.
+	f.catalog.drop = map[int]int{100: 3}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+view+"&StartIndex=100&Limit=20", ""), &result)
+	if len(result.Items) != 17 || result.TotalRecordCount != 117 {
+		t.Fatalf("short last page: %d items, total %d", len(result.Items), result.TotalRecordCount)
+	}
+	// Page-sized requests walk the same rows without duplicates.
+	f.catalog.drop = map[int]int{0: 2, 40: 1}
+	seen := map[string]bool{}
+	for start := 0; start < 120; start += 30 {
+		decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Users/u/Items?ParentId=%s&StartIndex=%d&Limit=30", view, start), ""), &result)
+		for _, item := range result.Items {
+			if seen[item.Name] {
+				t.Fatalf("row %q served twice", item.Name)
+			}
+			seen[item.Name] = true
+		}
+	}
+	if len(seen) != 117 {
+		t.Fatalf("walked %d distinct rows, want 117", len(seen))
+	}
+}
+
 func TestViewsPageThroughCatalogs(t *testing.T) {
 	f := newFixture()
 	view := viewID("tmdb.trending.movie")
@@ -467,11 +524,11 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	if result.Items[0].Type != "Movie" || result.Items[0].ParentID != view || result.Items[0].ImageTags["Primary"] == "" || len(result.Items[0].BackdropImageTags) != 1 {
 		t.Fatalf("row shape: %+v", result.Items[0])
 	}
-	// A browse row carries no media sources. Nobody opens a version picker
-	// from a grid thumbnail, and the sources are not free: each one is an
-	// absolute stream URL carrying the stream token, on every row of the page.
-	if len(result.Items[0].MediaSources) != 0 || len(result.Items[0].AlternateMediaSources) != 0 || result.Items[0].MediaSourceCount != nil {
-		t.Fatalf("browse row must stay free of media sources: %+v", result.Items[0])
+	// A browse row carries the two-slot version signal Infuse's Direct Mode
+	// reads from the list document (it never asks PlaybackInfo): two
+	// placeholders, a count of two, and the display flag.
+	if row := result.Items[0]; len(row.MediaSources) != 2 || len(row.AlternateMediaSources) != 2 || row.MediaSourceCount == nil || *row.MediaSourceCount != 2 || row.EnableMediaSourceDisplay == nil || !*row.EnableMediaSourceDisplay {
+		t.Fatalf("browse row must carry two placeholder media sources: %+v", row)
 	}
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
 	if len(result.Items) != 5 || result.TotalRecordCount != 45 {
@@ -686,7 +743,9 @@ func TestImageRelayUpstream404(t *testing.T) {
 	f := newFixture()
 	f.catalog.metas["movie/tt0111161"].Poster = testCDNServer().URL + "/missing.jpg"
 	movie, _ := itemIDFor("movie", "tt0111161")
-	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusBadGateway {
+	// A missing image is a miss, not a gateway failure: 404, once the fallback
+	// (pointed at a 404 path in tests) has been tried too.
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("upstream 404: %d", rec.Code)
 	}
 }
@@ -799,6 +858,23 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	if len(episodes.Items) != 2 || episodes.Items[0].Name != "Pilot" || *episodes.Items[0].IndexNumber != 1 || *episodes.Items[0].ParentIndexNumber != 1 {
 		t.Fatalf("episodes: %+v", episodes.Items)
 	}
+	// The pilot carries its own 58-minute runtime; the second episode has
+	// none and inherits the series average of 49.
+	if got := episodes.Items[0].RunTimeTicks; got == nil || *got != 58*60*ticksPerSecond {
+		t.Fatalf("episode 1 runtime = %v, want the episode's own 58 min", got)
+	}
+	if got := episodes.Items[1].RunTimeTicks; got == nil || *got != 49*60*ticksPerSecond {
+		t.Fatalf("episode 2 runtime = %v, want the series average 49 min", got)
+	}
+	if episodes.Items[0].LocationType != "FileSystem" {
+		t.Fatalf("aired episode LocationType = %q, want FileSystem", episodes.Items[0].LocationType)
+	}
+	// Season 2's only episode airs in 2099: listed, but Virtual.
+	var future queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+seasons.Items[1].ID, ""), &future)
+	if len(future.Items) != 1 || future.Items[0].LocationType != "Virtual" {
+		t.Fatalf("unaired episode: %+v, want LocationType Virtual", future.Items)
+	}
 	ep := episodes.Items[0]
 	if ep.SeriesName != "Breaking Bad" || ep.SeasonID != seasons.Items[0].ID || ep.SeriesPrimaryImageTag == "" || ep.RunTimeTicks == nil || ep.UserData == nil {
 		t.Fatalf("episode shape: %+v", ep)
@@ -849,9 +925,14 @@ func TestSearchRunsTheCarriers(t *testing.T) {
 	}
 	// A Movie-only search leaves the series carriers alone.
 	f.catalog.searches = nil
-	f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie", "")
+	var rows queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie", ""), &rows)
 	if got := f.catalog.searchSet(); !reflect.DeepEqual(got, map[string]bool{"tmdb.search.movie=shaw": true}) {
 		t.Fatalf("movie-only searches run: %v", got)
+	}
+	// A list row carries the year and rating the grid badges show.
+	if len(rows.Items) != 1 || rows.Items[0].ProductionYear == nil || *rows.Items[0].ProductionYear != 1994 || rows.Items[0].CommunityRating == nil || *rows.Items[0].CommunityRating != 9.3 {
+		t.Fatalf("row year/rating: %+v", rows.Items)
 	}
 	var hints struct {
 		SearchHints      []searchHint
@@ -1543,5 +1624,84 @@ func TestFladderImageURLShapes(t *testing.T) {
 	dashed := item.ID[:8] + "-" + item.ID[8:12] + "-" + item.ID[12:16] + "-" + item.ID[16:20] + "-" + item.ID[20:]
 	if rec := anon("/jellyfin/Items/" + dashed + "/Images/Primary" + sized); rec.Code != http.StatusOK {
 		t.Fatalf("hyphenated item id: %d", rec.Code)
+	}
+}
+
+// TestListRowsCarryVersionSignal pins the list-document contract Infuse's
+// Direct Mode depends on: movie rows, Latest rows and episode rows carry two
+// placeholder sources naming slots 0 and 1, a cached playlist is rendered in
+// their place, and none of it runs a search.
+func TestListRowsCarryVersionSignal(t *testing.T) {
+	f := newFixture()
+	f.resolveOnOpen = true
+	stream := &auth.Stream{Username: "living-room", Token: testToken}
+	requireTwo := func(row *baseItem, at string) {
+		t.Helper()
+		if len(row.MediaSources) != 2 || row.MediaSourceCount == nil || *row.MediaSourceCount != 2 || row.EnableMediaSourceDisplay == nil || !*row.EnableMediaSourceDisplay {
+			t.Fatalf("%s: want two placeholder sources with count and display, got %+v", at, row)
+		}
+		id, err := decodeItemID(row.ID)
+		if err != nil {
+			t.Fatalf("%s: row id: %v", at, err)
+		}
+		for i, src := range row.MediaSources {
+			if src.ID != mediaSourceIDFor(id, i) || src.Path != f.server.streamURLFor(id, i, stream) || !src.SupportsDirectPlay {
+				t.Fatalf("%s: slot %d is not a playable stand-in: %+v", at, i, src)
+			}
+		}
+		if row.MediaSources[0].Name != row.Name || row.MediaSources[1].Name == row.MediaSources[0].Name {
+			t.Fatalf("%s: placeholder names: %q %q", at, row.MediaSources[0].Name, row.MediaSources[1].Name)
+		}
+	}
+
+	var page queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.movie")+"&Limit=5", ""), &page)
+	requireTwo(page.Items[0], "movie row")
+
+	var latest []*baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/Latest?ParentId="+viewID("tmdb.trending.movie")+"&Limit=3", ""), &latest)
+	requireTwo(latest[0], "latest row")
+
+	series, _ := itemIDFor("series", "tt0903747")
+	var episodes queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?SeasonId="+series.season(1).encode(), ""), &episodes)
+	if len(episodes.Items) == 0 {
+		t.Fatalf("no episodes")
+	}
+	requireTwo(episodes.Items[0], "episode row")
+
+	// Series rows are folders and carry nothing. (Fresh result: decoding
+	// into a reused slice of pointers keeps fields the JSON omits.)
+	var seriesPage queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.series"), ""), &seriesPage)
+	if len(seriesPage.Items[0].MediaSources) != 0 || seriesPage.Items[0].MediaSourceCount != nil {
+		t.Fatalf("series row carries media sources: %+v", seriesPage.Items[0])
+	}
+
+	// A playlist already in cache is rendered instead of the placeholders.
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.cached = &stremio.PlaylistView{Entries: entries}
+	var cachedPage queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?ParentId="+viewID("tmdb.trending.movie")+"&Limit=5", ""), &cachedPage)
+	if row := cachedPage.Items[0]; len(row.MediaSources) != 3 || row.MediaSources[0].Name != "Release.00.mkv" || *row.MediaSourceCount != 3 {
+		t.Fatalf("cached playlist not rendered on the row: %+v", row)
+	}
+
+	// None of the above searched: the list document is built from cache and
+	// placeholders only, whatever resolve-on-open is set to.
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("list rows ran %d searches, want 0", calls)
+	}
+
+	// Playing placeholder slot 1 goes to the addon as slot 1; when the list
+	// turns out shorter the addon's slot recovery wraps to the first
+	// playable candidate, so nothing here has to know how many were found.
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?Static=true&MediaSourceId="+movie.source(1).encode(), "")
+	if rec.Code != http.StatusOK || f.catalog.served[len(f.catalog.served)-1].slotPath != stremio.SlotPathFor(stream, "movie", "tt0111161", 1) {
+		t.Fatalf("slot 1 play: %d served %+v", rec.Code, f.catalog.served)
 	}
 }

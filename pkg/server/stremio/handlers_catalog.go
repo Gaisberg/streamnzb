@@ -151,8 +151,15 @@ func resolveCatalogDef(profile *config.MetadataProfileConfig, req catalogRequest
 func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRequest) []MetaPreview {
 	metas, err := s.buildCatalog(ctx, def, req)
 	if err != nil {
-		logger.Debug("Catalog build failed; serving empty page",
-			"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
+		// Warn, throttled per catalog: a library that renders empty with
+		// nothing above DEBUG in the log is indistinguishable from "no rows".
+		if logger.Throttle("catalog-build-failed:"+def.ID, 5*time.Minute) {
+			logger.Warn("Catalog build failed; serving empty page",
+				"catalog", def.ID, "provider", def.Provider, "searched", req.Search != "", "skip", req.Skip, "err", err)
+		} else {
+			logger.Debug("Catalog build failed; serving empty page",
+				"catalog", def.ID, "search", req.Search, "skip", req.Skip, "err", err)
+		}
 		metas = nil
 	}
 	if req.Search == "" && len(metas) > 0 {
@@ -166,6 +173,11 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 }
 
 func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	if req.Skip > 0 && req.Search == "" && !def.SupportsSkip {
+		// A catalog without paging has only its first page; answering a
+		// skip with the first page again would repeat it.
+		return nil, nil
+	}
 	switch def.Provider {
 	case "tmdb":
 		return s.tmdbCatalog(ctx, def, req)
@@ -233,6 +245,17 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 			id = fmt.Sprintf("tmdb:%d", res.ID)
 		}
 		preview := MetaPreview{ID: id, Type: def.Type, Name: name, Description: res.Overview}
+		if date := res.ReleaseDate; date != "" || res.FirstAirDate != "" {
+			if date == "" {
+				date = res.FirstAirDate
+			}
+			if len(date) >= 4 {
+				preview.ReleaseInfo = date[:4]
+			}
+		}
+		if res.VoteAverage > 0 {
+			preview.IMDBRating = fmt.Sprintf("%.1f", res.VoteAverage)
+		}
 		if res.PosterPath != "" {
 			preview.Poster = tmdbPosterURL + res.PosterPath
 		}
@@ -364,7 +387,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 	cap, capped := capForProfile(req.Profile)
 	previews := make([]MetaPreview, 0, len(listings))
 	for _, item := range listings {
-		if item.ID == "" || item.CanonicalTitle == "" {
+		if item.ID == "" || (item.CanonicalTitle == "" && item.EnglishTitle == "") {
 			continue
 		}
 		if capped && !cap.Allows(certification.NormalizeKitsu(item.AgeRating, item.Nsfw)) {
@@ -373,7 +396,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		previews = append(previews, MetaPreview{
 			ID:          "kitsu:" + item.ID,
 			Type:        "anime",
-			Name:        item.CanonicalTitle,
+			Name:        kitsu.DisplayTitle(req.Profile.EffectiveLanguage(), item.EnglishTitle, item.CanonicalTitle),
 			Poster:      item.PosterImage,
 			Background:  item.CoverImage,
 			Description: item.Synopsis,
@@ -709,6 +732,9 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 		if len(candidates) >= becauseYouWatchedWindow {
 			break
 		}
+		if ctx.Err() != nil {
+			break
+		}
 		tmdbID := s.tmdbIDForPreviewID(id, def.Type)
 		if tmdbID <= 0 || seenCandidates[tmdbID] {
 			continue
@@ -738,11 +764,14 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 	needed := req.Skip + catalogPageSize
 	seenTMDB := make(map[int]bool)
 	var previews []MetaPreview
-	for page := 1; page <= becauseYouWatchedMaxPages && len(previews) < needed; page++ {
+	for page := 1; page <= becauseYouWatchedMaxPages && len(previews) < needed && ctx.Err() == nil; page++ {
 		perSeed := make([][]tmdb.SearchMultiResult, 0, len(seeds))
 		for _, sd := range seeds {
 			if sd.exhausted {
 				continue
+			}
+			if ctx.Err() != nil {
+				break
 			}
 			resp, err := rt.tmdbClient.GetRecommendations(mediaType, sd.tmdbID, page, req.Profile.EffectiveLanguage())
 			if err != nil {
@@ -756,6 +785,14 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 			perSeed = append(perSeed, resp.Results)
 		}
 		if len(perSeed) == 0 {
+			break
+		}
+		if ctx.Err() != nil {
+			// A call already in flight when the deadline passed can still
+			// return real results, since GetRecommendations does not accept
+			// ctx. Stop here rather than paying for the enrichment below
+			// (filterTMDBResults, resolveIMDbIDs) on a page the deadline has
+			// already ended.
 			break
 		}
 
@@ -851,6 +888,14 @@ func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.Met
 		if def.Type != current.Type {
 			continue
 		}
+		// Best-effort de-duplication only: once the request's own deadline is
+		// gone, stop paying for more of it. A higher catalog that never
+		// checks ctx itself (tmdbCatalog and tvdbCatalog both discard it
+		// today) can otherwise burn the whole budget on its own, leaving
+		// nothing for the catalog actually being served.
+		if ctx.Err() != nil {
+			break
+		}
 		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID, Profile: profile})
 		if err != nil {
 			continue
@@ -901,7 +946,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 	rt := s.runtime()
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, kitsuID); err == nil && animeMeta.CanonicalTitle != "" {
-			preview.Name = animeMeta.CanonicalTitle
+			preview.Name = kitsu.DisplayTitle(lang, animeMeta.EnglishTitle, animeMeta.CanonicalTitle)
 			preview.Poster = animeMeta.PosterImage
 			preview.Background = animeMeta.CoverImage
 		}

@@ -3,6 +3,7 @@ package persistence
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestSearchDiagnosticsRoundTrip(t *testing.T) {
@@ -56,8 +57,14 @@ func TestSearchDiagnosticsEmptyPayloadIsDropped(t *testing.T) {
 
 func TestSearchDiagnosticsPruneKeepsNewestRows(t *testing.T) {
 	mgr := newTestStateManager(t)
+	// A fixed timestamp for every row deliberately ties them all: a fast
+	// insert loop routinely lands several hundred rows in the same
+	// millisecond in real use, so ordering must not depend on the clock
+	// resolving them, only on insertion (id) order.
+	same := time.Unix(1700000000, 0)
 	for i := 0; i < searchDiagnosticsKeepRows+25; i++ {
 		mgr.RecordSearchDiagnostic(SearchDiagnostic{
+			CreatedAt:   same,
 			ContentType: "movie",
 			ContentID:   fmt.Sprintf("tt%d", i),
 			Payload:     `{}`,

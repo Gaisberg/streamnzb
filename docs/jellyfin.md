@@ -61,7 +61,10 @@ stream never sees another's.
 - **Images** — posters and backdrops are fetched from the provider's CDN and
   relayed by StreamNZB, because some clients (Infuse) do not follow redirects
   for artwork. TMDB images are requested at bounded sizes (backdrops 1280px
-  wide, posters 780px) and sent with a one-day cache header.
+  wide, posters 780px) and sent with a one-day cache header. A poster the
+  advertised URL cannot supply — a `poster_url_pattern` overlay with no image
+  for that title, typically — falls back to Metahub's poster for the IMDb id;
+  an image nobody has is a 404, never a redirect.
 - **Playback** — pressing play searches, ranks and returns every candidate
   release as a *media source*, best first. The client's media-source picker is
   therefore the stream list, and switching source is switching release. Each
@@ -77,6 +80,12 @@ stream never sees another's.
   opened, and the alternative is a picker with nothing real in it. Set it to
   `false` if you would rather not spend the search — a title then offers the
   one best release until you press play.
+- **List rows** — Infuse's Direct Mode never asks PlaybackInfo: it plays from
+  the row's media sources and reads the version count from the list
+  document. Every movie and episode row therefore carries two placeholder
+  sources (slots 0 and 1), or the resolved list when it is already cached.
+  Nothing is searched to build a row; playing a slot the search did not
+  fill falls back to the first playable release.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
