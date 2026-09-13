@@ -61,7 +61,10 @@ stream never sees another's.
 - **Images** — posters and backdrops are fetched from the provider's CDN and
   relayed by StreamNZB, because some clients (Infuse) do not follow redirects
   for artwork. TMDB images are requested at bounded sizes (backdrops 1280px
-  wide, posters 780px) and sent with a one-day cache header.
+  wide, posters 780px) and sent with a one-day cache header. A poster the
+  advertised URL cannot supply — a `poster_url_pattern` overlay with no image
+  for that title, typically — falls back to Metahub's poster for the IMDb id;
+  an image nobody has is a 404, never a redirect.
 - **Playback** — pressing play searches, ranks and returns every candidate
   release as a *media source*, best first. The client's media-source picker is
   therefore the stream list, and switching source is switching release. Each

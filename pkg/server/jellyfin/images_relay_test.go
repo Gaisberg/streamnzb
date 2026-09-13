@@ -89,3 +89,75 @@ func TestImageRelayUnfetchableURLIsNotFoundNotRedirect(t *testing.T) {
 		}
 	}
 }
+
+// The poster fallback is a real CDN in production; tests must never reach it.
+// It is pointed at the test CDN's always-404 path so a relay that exhausts its
+// candidates ends the way it would with no fallback, and a test that wants a
+// serving fallback swaps in a served path for its own duration.
+func init() {
+	posterFallbackURL = testCDNServer().URL + "/fallback-missing/%s"
+}
+
+func withPosterFallback(t *testing.T, pattern string) {
+	t.Helper()
+	prev := posterFallbackURL
+	posterFallbackURL = pattern
+	t.Cleanup(func() { posterFallbackURL = prev })
+}
+
+// A profile's poster overlay (poster_url_pattern) replaces the provider poster
+// before this layer sees it, so when the overlay has no image for a title the
+// relay would answer 502 and the title lost its artwork entirely. The relay
+// now falls back to a poster reachable from the IMDb id alone.
+func TestImageRelayOverlayMissingFallsBackToIMDbPoster(t *testing.T) {
+	f := newFixture()
+	cdn := testCDNServer().URL
+	withPosterFallback(t, cdn+"/fallback/%s")
+	f.catalog.metas["movie/tt0111161"].Poster = cdn + "/overlay-missing/tt0111161.jpg"
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "/fallback/tt0111161" {
+		t.Fatalf("overlay missing: %d %q, want 200 /fallback/tt0111161", rec.Code, rec.Body.String())
+	}
+	if cl := rec.Header().Get("Content-Length"); cl != strconv.Itoa(len("/fallback/tt0111161")) {
+		t.Fatalf("fallback content-length: %q", cl)
+	}
+}
+
+// Only a Primary poster of an IMDb-keyed movie or series has a fallback. An
+// episode's Primary is a still and a backdrop has no id-keyed source, so those
+// stay a plain miss.
+func TestImageRelayFallbackOnlyForIMDbPosters(t *testing.T) {
+	f := newFixture()
+	cdn := testCDNServer().URL
+	withPosterFallback(t, cdn+"/fallback/%s")
+	f.catalog.metas["movie/tt0111161"].Background = cdn + "/bg-missing.jpg"
+	movie, _ := itemIDFor("movie", "tt0111161")
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Backdrop", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("backdrop missing with a poster fallback configured: %d", rec.Code)
+	}
+	series, _ := itemIDFor("series", "tt0903747")
+	meta := f.catalog.metas["series/tt0903747"]
+	for i := range meta.Videos {
+		if meta.Videos[i].Season == 1 && meta.Videos[i].Episode == 1 {
+			meta.Videos[i].Thumbnail = cdn + "/still-missing.jpg"
+		}
+	}
+	ep := series.episode(1, 1)
+	if rec := f.do(http.MethodGet, "/jellyfin/Items/"+ep.encode()+"/Images/Primary", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("episode still missing: %d", rec.Code)
+	}
+}
+
+// When neither the advertised poster nor the fallback has an image, the
+// answer is a plain 404 — not a 502, which is for an upstream that failed,
+// and never a redirect, which the clients that need relaying ignore.
+func TestImageRelayAllMissingIsNotFound(t *testing.T) {
+	f := newFixture()
+	f.catalog.metas["movie/tt0111161"].Poster = testCDNServer().URL + "/overlay-missing/tt0111161.jpg"
+	movie, _ := itemIDFor("movie", "tt0111161")
+	rec := f.do(http.MethodGet, "/jellyfin/Items/"+movie.encode()+"/Images/Primary", "")
+	if rec.Code != http.StatusNotFound || rec.Header().Get("Location") != "" {
+		t.Fatalf("all missing: %d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+}
