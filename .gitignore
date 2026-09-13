@@ -11,7 +11,11 @@ state.json
 streamnzb.db*
 releasepipeline
 .agents
-.claude
+# Local Claude Code state (settings, launch config) stays out; the skills
+# directory is shared so every contributor's assistant gets the same
+# architecture and workflow guidance. See CONTRIBUTING.md.
+.claude/*
+!.claude/skills/
 
 postgres_data
 

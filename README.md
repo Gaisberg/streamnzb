@@ -154,6 +154,11 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 If you're stuck, please either open a [GitHub issue](https://github.com/Gaisberg/streamnzb/issues) or report it in the [Discord](https://snzb.stream/discord) `#help` channel (they sync via [GitThread](https://gitthreadsync.snzb.stream/)). See the [troubleshooting guide](docs/troubleshooting.md) for what to include and common issues.
 
 
+## Contributing
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the verification script, and what a PR needs to be merged; the [development skill](.claude/skills/streamnzb-dev/SKILL.md) goes deeper into the architecture and conventions for humans and AI assistants alike.
+
+
 ## Support
 
 If StreamNZB is useful to you, you can support development here:
