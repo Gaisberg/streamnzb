@@ -656,6 +656,19 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			default:
 				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
 			}
+			switch mp.AnimeSource {
+			case "", "kitsu", "tvdb":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_source", i)] = "Unknown anime primary source"
+			}
+			switch mp.AnimeBackupSource {
+			case "", "kitsu", "tvdb":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Unknown anime backup source"
+			}
+			if mp.AnimeSource != "" && mp.AnimeBackupSource != "" && mp.AnimeSource == mp.AnimeBackupSource {
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Anime backup must be different from the primary source"
+			}
 			if pattern := strings.TrimSpace(mp.PosterURLPattern); pattern != "" {
 				if !strings.Contains(pattern, "{imdb_id}") {
 					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Must contain the {imdb_id} placeholder"

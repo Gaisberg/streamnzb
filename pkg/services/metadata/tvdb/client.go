@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"streamnzb/pkg/core/logger"
@@ -167,6 +168,42 @@ type searchRemoteIDResponse struct {
 			ID int `json:"id"`
 		} `json:"series"`
 	} `json:"data"`
+}
+
+// SearchResult is the series-shaped portion of TVDB's unified search
+// response. The API has changed field casing over time, so decoding keeps the
+// documented tvdb_id alongside the older id/objectID alternatives.
+type SearchResult struct {
+	TVDBID         string `json:"tvdb_id"`
+	ID             string `json:"id"`
+	ObjectID       string `json:"objectID"`
+	Name           string `json:"name"`
+	NameTranslated string `json:"name_translated"`
+	ImageURL       string `json:"image_url"`
+}
+
+type searchResponse struct {
+	Status string         `json:"status"`
+	Data   []SearchResult `json:"data"`
+}
+
+// SeriesID returns the numeric TVDB id regardless of which response spelling
+// the upstream currently uses ("123", "series-123", or tvdb_id).
+func (r SearchResult) SeriesID() string {
+	for _, raw := range []string{r.TVDBID, r.ID, r.ObjectID} {
+		id := strings.TrimPrefix(strings.TrimSpace(raw), "series-")
+		if _, err := strconv.Atoi(id); err == nil && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (r SearchResult) Title() string {
+	if title := strings.TrimSpace(r.NameTranslated); title != "" {
+		return title
+	}
+	return strings.TrimSpace(r.Name)
 }
 
 type tokenState struct {
@@ -365,6 +402,32 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no TVDB series ID found for remote ID: %s", remoteID)
+}
+
+// SearchSeries returns TVDB's own series results for a title. Keeping this in
+// the TVDB client is important: callers must not substitute a broad Kitsu
+// search when TVDB is the user-selected primary source.
+func (c *Client) SearchSeries(query string) ([]SearchResult, error) {
+	if c == nil || c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	path := "/search?query=" + url.QueryEscape(query) + "&type=series&limit=20"
+	body, err := c.getBodyCached(path, listingCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	var out searchResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("failed to decode TVDB series search: %w", err)
+	}
+	if out.Status != successVal {
+		return nil, fmt.Errorf("TVDB series search failed: status=%s", out.Status)
+	}
+	return out.Data, nil
 }
 
 // episodesCacheTTL bounds the episode-list cache: air dates and late episode

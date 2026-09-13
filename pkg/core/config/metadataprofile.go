@@ -28,9 +28,10 @@ type MetadataProfileConfig struct {
 	// Per-media-type meta sources. Empty means the default; unknown values
 	// normalize to the default read-side. Today only series has a real choice
 	// (TVDB default, TMDB alternative).
-	MovieSource  string `json:"movie_source,omitempty"`
-	SeriesSource string `json:"series_source,omitempty"`
-	AnimeSource  string `json:"anime_source,omitempty"`
+	MovieSource       string `json:"movie_source,omitempty"`
+	SeriesSource      string `json:"series_source,omitempty"`
+	AnimeSource       string `json:"anime_source,omitempty"`
+	AnimeBackupSource string `json:"anime_backup_source,omitempty"`
 
 	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
 	// unaired-episode gate). nil means enabled.
@@ -85,6 +86,31 @@ func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
 		return "tmdb"
 	}
 	return "tvdb"
+}
+
+// EffectiveAnimeMetaSources returns the user-selected ordered metadata
+// providers. Kitsu remains the default primary to preserve existing profiles;
+// TVDB is its fallback. Invalid or duplicate persisted values normalize to a
+// usable pair rather than making an installed profile unopenable.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSources() (primary, backup string) {
+	primary, backup = "kitsu", "tvdb"
+	if p == nil {
+		return primary, backup
+	}
+	if p.AnimeSource == "tvdb" || p.AnimeSource == "kitsu" {
+		primary = p.AnimeSource
+	}
+	if p.AnimeBackupSource == "tvdb" || p.AnimeBackupSource == "kitsu" {
+		backup = p.AnimeBackupSource
+	}
+	if primary == backup {
+		if primary == "kitsu" {
+			backup = "tvdb"
+		} else {
+			backup = "kitsu"
+		}
+	}
+	return primary, backup
 }
 
 // EffectiveLanguage returns the profile's display language tag, or "" for the

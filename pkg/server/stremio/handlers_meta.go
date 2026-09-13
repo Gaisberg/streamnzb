@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -376,6 +377,13 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 }
 
 func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	return s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, rid, true)
+}
+
+// buildSeriesMetaFromTVDBWithVideos fetches the common TVDB record and, for
+// ordinary series, its episode list. Anime keeps Kitsu episode identities, so
+// its TVDB metadata path deliberately skips TVDB/TVMaze episode work.
+func (s *Server) buildSeriesMetaFromTVDBWithVideos(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID, includeVideos bool) (*MetaObject, error) {
 	rt := s.runtime()
 	tvdbID := s.resolveTVDBIDForMeta(rid)
 	if tvdbID == "" {
@@ -438,6 +446,9 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 				break
 			}
 		}
+	}
+	if !includeVideos {
+		return meta, nil
 	}
 
 	episodes, err := rt.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
@@ -674,6 +685,63 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 }
 
 func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	primary, backup := profile.EffectiveAnimeMetaSources()
+	build := func(source string) (*MetaObject, error) {
+		switch source {
+		case "tvdb":
+			return s.buildAnimeMetaFromTVDB(ctx, profile, contentType, rid)
+		default:
+			return s.buildAnimeMetaFromKitsu(ctx, profile, contentType, rid)
+		}
+	}
+	meta, err := build(primary)
+	if err == nil {
+		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
+		return meta, nil
+	}
+	if errors.Is(err, errCertificationBlocked) {
+		return nil, err
+	}
+	logger.Debug("Primary anime meta source unavailable; falling back",
+		"source", primary, "backup", backup, "kitsu_id", rid.kitsuID, "err", err)
+	meta, err = build(backup)
+	if err == nil {
+		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
+	}
+	return meta, err
+}
+
+// buildAnimeMetaFromTVDB uses the anime-lists crosswalk to fetch a complete
+// TVDB record while retaining Kitsu as the public/playback identity. TVDB's
+// season rows cannot safely replace entry-local Kitsu episode ids, so videos
+// are rebuilt from Kitsu after the selected provider supplies show metadata.
+func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.animeLists == nil {
+		return nil, fmt.Errorf("anime id mapping unavailable")
+	}
+	mapping, ok := s.animeLists.LookupKitsu(rid.kitsuID)
+	if !ok || mapping.TVDBID == "" {
+		return nil, fmt.Errorf("no TVDB id mapped for kitsu:%s", rid.kitsuID)
+	}
+	tvdbRID := *rid
+	tvdbRID.tvdbID = mapping.TVDBID
+	if tvdbRID.imdbID == "" {
+		tvdbRID.imdbID = mapping.IMDbID
+	}
+	tvdbRID.canonicalID = rid.canonicalID
+	meta, err := s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, &tvdbRID, false)
+	if err != nil {
+		return nil, err
+	}
+	meta.ID = rid.canonicalID
+	meta.Type = seriesMetaType(contentType)
+	if contentType != "movie" {
+		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
+	}
+	return meta, nil
+}
+
+func (s *Server) buildAnimeMetaFromKitsu(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, rid.kitsuID)
 	if err != nil {
 		return nil, err
@@ -701,39 +769,34 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 	if rating, err := strconv.ParseFloat(animeMeta.AverageRating, 64); err == nil && rating > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", rating/10)
 	}
-	s.applyAnimeArtwork(meta, profile, rid.kitsuID)
-
 	// Movies get no episode list; everything else does. Kitsu numbering is
 	// entry-relative, which is exactly what kitsu:<id>:<ep> stream ids carry.
 	if contentType != "movie" && !strings.EqualFold(animeMeta.ShowType, "movie") {
-		episodes, err := s.kitsuClient.GetAnimeEpisodes(ctx, rid.kitsuID)
-		if err != nil {
-			logger.Debug("Kitsu episodes fetch failed; serving meta without videos",
-				"kitsu_id", rid.kitsuID, "err", err)
-		}
-		for _, ep := range episodes {
-			if ep.Number <= 0 {
-				continue
-			}
-			title := ep.CanonicalTitle
-			if title == "" {
-				title = fmt.Sprintf("Episode %d", ep.Number)
-			}
-			video := MetaVideo{
-				ID:        fmt.Sprintf("kitsu:%s:%d", rid.kitsuID, ep.Number),
-				Title:     title,
-				Season:    1,
-				Episode:   ep.Number,
-				Overview:  ep.Synopsis,
-				Thumbnail: ep.Thumbnail,
-			}
-			if ep.Airdate != "" {
-				video.Released = ep.Airdate + "T00:00:00.000Z"
-			}
-			meta.Videos = append(meta.Videos, video)
-		}
+		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
 	}
 	return meta, nil
+}
+
+func (s *Server) appendKitsuAnimeVideos(ctx context.Context, meta *MetaObject, kitsuID string) {
+	episodes, err := s.kitsuClient.GetAnimeEpisodes(ctx, kitsuID)
+	if err != nil {
+		logger.Debug("Kitsu episodes fetch failed; serving meta without videos", "kitsu_id", kitsuID, "err", err)
+		return
+	}
+	for _, ep := range episodes {
+		if ep.Number <= 0 {
+			continue
+		}
+		title := ep.CanonicalTitle
+		if title == "" {
+			title = fmt.Sprintf("Episode %d", ep.Number)
+		}
+		video := MetaVideo{ID: fmt.Sprintf("kitsu:%s:%d", kitsuID, ep.Number), Title: title, Season: 1, Episode: ep.Number, Overview: ep.Synopsis, Thumbnail: ep.Thumbnail}
+		if ep.Airdate != "" {
+			video.Released = ep.Airdate + "T00:00:00.000Z"
+		}
+		meta.Videos = append(meta.Videos, video)
+	}
 }
 
 // applyTVMazeOverlay makes TVMaze the air-date authority: its airstamp carries
