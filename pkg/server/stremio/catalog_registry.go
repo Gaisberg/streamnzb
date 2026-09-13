@@ -1,6 +1,7 @@
 package stremio
 
 import (
+	"strings"
 	"time"
 
 	"streamnzb/pkg/core/config"
@@ -30,6 +31,13 @@ type CatalogDef struct {
 	// even on an uncapped profile. A capped profile tightens it further
 	// (effective ceiling = min of the two); "" means no built-in ceiling.
 	CertCeiling string `json:"-"`
+	// External coordinates are deliberately not serialised into manifests or
+	// Jellyfin views. They are dispatch data for a selected public catalog row.
+	ExternalManifestURL string `json:"-"`
+	ExternalRemoteType  string `json:"-"`
+	ExternalRemoteID    string `json:"-"`
+	ExternalKind        string `json:"-"`
+	SourceLabel         string `json:"source_label,omitempty"`
 }
 
 // catalogRegistry lists every browse catalog the addon can serve, in default
@@ -104,11 +112,26 @@ var catalogRegistry = []CatalogDef{
 var searchCatalogs = []CatalogDef{
 	{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
 	{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
-	{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true},
 }
 
-func searchCatalogDefByID(id string) (CatalogDef, bool) {
-	for _, def := range searchCatalogs {
+// searchCatalogDefs gives anime exactly one discovery source: the user's
+// primary. Its backup is intentionally not a second result set; it is used
+// only when the primary cannot return a viable match.
+func searchCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
+	defs := make([]CatalogDef, len(searchCatalogs), len(searchCatalogs)+1)
+	copy(defs, searchCatalogs)
+	primary := "kitsu"
+	if profile != nil {
+		primary, _ = profile.EffectiveAnimeMetaSources()
+	}
+	if primary == "tvdb" {
+		return append(defs, CatalogDef{ID: "tvdb.search.anime", Type: "anime", Name: "Search Anime", Provider: "tvdb", Kind: "search", SupportsSearch: true})
+	}
+	return append(defs, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true})
+}
+
+func searchCatalogDefByID(profile *config.MetadataProfileConfig, id string) (CatalogDef, bool) {
+	for _, def := range searchCatalogDefs(profile) {
 		if def.ID == id {
 			return def, true
 		}
@@ -156,6 +179,7 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 		return nil
 	}
 	toggles := profile.Catalogs
+	external := externalCatalogDefs(profile)
 	if toggles == nil {
 		var defs []CatalogDef
 		for _, def := range catalogRegistry {
@@ -163,16 +187,25 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 				defs = append(defs, def)
 			}
 		}
-		return defs
+		return append(defs, external...)
 	}
+	allDefs := append(CatalogRegistry(), external...)
 	var defs []CatalogDef
 	seen := make(map[string]bool, len(toggles))
 	for _, t := range toggles {
 		if !t.Enabled || seen[t.ID] {
 			continue
 		}
-		def, ok := catalogDefByID(t.ID)
-		if !ok {
+		found := false
+		for _, def := range allDefs {
+			if def.ID == t.ID {
+				seen[t.ID] = true
+				defs = append(defs, def)
+				found = true
+				break
+			}
+		}
+		if !found {
 			// A saved toggle the registry no longer knows (removed catalog,
 			// or one from a build this binary is not) is skipped silently
 			// by design; say so once so the missing library is explainable.
@@ -180,12 +213,55 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 				logger.Warn("Metadata profile references an unknown catalog id; ignored",
 					"profile", profile.Name, "catalog", t.ID)
 			}
-			continue
 		}
-		seen[t.ID] = true
-		defs = append(defs, def)
 	}
 	return defs
+}
+
+// externalCatalogDefs turns the explicit, selected rows on a profile into
+// ordinary catalog definitions. A source never imports a manifest wholesale:
+// search-only rows are rejected when saved and the remote coordinates are
+// retained only for the catalog fetcher.
+func externalCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
+	if profile == nil {
+		return nil
+	}
+	defs := make([]CatalogDef, 0, len(profile.ExternalCatalogs))
+	seen := make(map[string]bool, len(profile.ExternalCatalogs))
+	for _, source := range profile.ExternalCatalogs {
+		id := strings.TrimSpace(source.ID)
+		name := strings.TrimSpace(source.Name)
+		remoteType := strings.TrimSpace(source.RemoteType)
+		remoteID := strings.TrimSpace(source.RemoteID)
+		manifestURL := strings.TrimSpace(source.ManifestURL)
+		contentType := strings.ToLower(remoteType)
+		if contentType == "tv" {
+			contentType = "series"
+		}
+		if id == "" || name == "" || manifestURL == "" || remoteID == "" || seen[id] || (contentType != "movie" && contentType != "series" && contentType != "anime") {
+			continue
+		}
+		seen[id] = true
+		supportsSkip := source.Kind != "manifest" || source.SupportsSkip == nil || *source.SupportsSkip
+		defs = append(defs, CatalogDef{ID: id, Type: contentType, Name: name, Provider: "external", SupportsSkip: supportsSkip, Kind: "manifest", ExternalManifestURL: manifestURL, ExternalRemoteType: remoteType, ExternalRemoteID: remoteID, ExternalKind: source.Kind, SourceLabel: externalSourceLabel(source)})
+	}
+	return defs
+}
+
+func externalSourceLabel(source config.ExternalCatalogConfig) string {
+	if label := strings.TrimSpace(source.SourceLabel); label != "" {
+		return label
+	}
+	switch source.Kind {
+	case "tmdb_list":
+		return "TMDB"
+	case "mdblist":
+		return "MDBList"
+	case "letterboxd":
+		return "Letterboxd"
+	default:
+		return "Stremio catalog"
+	}
 }
 
 // enabledCatalogs renders the profile's manifest entries: the enabled browse
@@ -204,7 +280,8 @@ func enabledCatalogs(profile *config.MetadataProfileConfig, dropProviders ...str
 		dropped[provider] = true
 	}
 	defs := enabledCatalogDefs(profile)
-	catalogs := make([]Catalog, 0, len(defs)+len(searchCatalogs))
+	searchDefs := searchCatalogDefs(profile)
+	catalogs := make([]Catalog, 0, len(defs)+len(searchDefs))
 	for _, def := range defs {
 		if dropped[def.Provider] {
 			continue
@@ -215,7 +292,7 @@ func enabledCatalogs(profile *config.MetadataProfileConfig, dropProviders ...str
 		}
 		catalogs = append(catalogs, cat)
 	}
-	for _, def := range searchCatalogs {
+	for _, def := range searchDefs {
 		catalogs = append(catalogs, Catalog{
 			Type:  def.Type,
 			ID:    def.ID,

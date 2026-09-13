@@ -26,12 +26,22 @@ const (
 	maxLimit     = 200
 	latestLimit  = 16
 	resumeLimit  = 12
+	// Infuse uses Items/Latest as its catalog browser and otherwise never
+	// follows the normal paged Items route. Keep its external-source response
+	// bounded, but large enough to render the complete common public lists.
+	infuseExternalLatestLimit = maxLimit
 )
 
 // allCatalogs is every catalog an id may name: the browse registry plus the
 // search carriers.
 func allCatalogs() []stremio.CatalogDef {
-	return append(stremio.CatalogRegistry(), stremio.SearchCatalogs()...)
+	// View ids are decoded before a request's stream/profile is known. Keep
+	// both possible anime search carriers here solely for that reverse lookup;
+	// the profile-aware SearchCatalogs call below decides which one can serve.
+	return append(stremio.CatalogRegistry(),
+		stremio.CatalogDef{ID: "kitsu.search.anime", Type: "anime"},
+		stremio.CatalogDef{ID: "tvdb.search.anime", Type: "anime"},
+	)
 }
 
 func catalogByID(id string) (stremio.CatalogDef, bool) {
@@ -170,6 +180,22 @@ func (s *Server) views(rq *request) ([]stremio.CatalogDef, error) {
 	return defs, err
 }
 
+// enabledCatalogByID resolves against this request's profile rather than the
+// static built-in registry. External catalog sources are profile-owned, so a
+// static lookup would display their Jellyfin library but make it unopenable.
+func (s *Server) enabledCatalogByID(rq *request, catalogID string) (stremio.CatalogDef, bool) {
+	defs, err := s.views(rq)
+	if err != nil {
+		return stremio.CatalogDef{}, false
+	}
+	for _, def := range defs {
+		if def.ID == catalogID || viewID(def.ID) == catalogID {
+			return def, true
+		}
+	}
+	return stremio.CatalogDef{}, false
+}
+
 func (s *Server) handleViews(w http.ResponseWriter, rq *request) {
 	defs, err := s.views(rq)
 	if err != nil {
@@ -231,7 +257,7 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	}
 	switch id.Kind {
 	case kindView:
-		def, ok := catalogByID(id.CatalogID)
+		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
 		if !ok || !wantsType(include, def.Type) {
 			writeJSON(w, http.StatusOK, emptyResult())
 			return
@@ -390,7 +416,7 @@ func (s *Server) allItems(rq *request, include []string) []*baseItem {
 
 // search runs the search carriers the filter admits, in parallel.
 func (s *Server) search(rq *request, term string, include []string) []*baseItem {
-	defs := stremio.SearchCatalogs()
+	defs := s.opts.Catalog.SearchCatalogs(rq.stream)
 	var wg sync.WaitGroup
 	rows := make([][]stremio.MetaPreview, len(defs))
 	for i, def := range defs {
@@ -473,11 +499,17 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 			logger.Debug("Jellyfin latest: parent is not a library; serving empty",
 				"parent", parent, "stream", rq.streamName(), "err", err)
 		default:
-			def, ok := catalogByID(id.CatalogID)
+			def, ok := s.enabledCatalogByID(rq, id.CatalogID)
 			if !ok {
 				logger.Debug("Jellyfin latest: unknown catalog; serving empty",
 					"catalog", id.CatalogID, "stream", rq.streamName())
 			} else if wantsType(include, def.Type) {
+				// Infuse always asks its Latest browser for 20 rows and never
+				// continues with a later page. Override that client limit only for
+				// pasted sources so their chosen list stays complete in Infuse.
+				if def.Provider == "external" && isInfuseRequest(rq) {
+					limit = infuseExternalLatestLimit
+				}
 				items = s.catalogPage(rq, def, 0, limit).Items
 			}
 		}
@@ -486,6 +518,10 @@ func (s *Server) handleLatest(w http.ResponseWriter, rq *request) {
 		items = all[:min(limit, len(all))]
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func isInfuseRequest(rq *request) bool {
+	return strings.Contains(strings.ToLower(rq.UserAgent()), "infuse")
 }
 
 // resumeResult lists what the stream has partway through, newest first.
@@ -608,7 +644,7 @@ func (s *Server) meta(ctx context.Context, rq *request, id itemID) (*stremio.Met
 func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 	switch id.Kind {
 	case kindView:
-		def, ok := catalogByID(id.CatalogID)
+		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
 		if !ok {
 			return nil, nil
 		}

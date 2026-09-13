@@ -20,12 +20,18 @@ type MetadataProfileConfig struct {
 	// save. Unknown ids are ignored read-side.
 	Catalogs []CatalogToggle `json:"catalogs"`
 
+	// ExternalCatalogs are selected browse rows from public Stremio manifests.
+	// They deliberately carry no credentials and do not import remote search,
+	// stream, subtitle, or configuration resources.
+	ExternalCatalogs []ExternalCatalogConfig `json:"external_catalogs,omitempty"`
+
 	// Per-media-type meta sources. Empty means the default; unknown values
 	// normalize to the default read-side. Today only series has a real choice
 	// (TVDB default, TMDB alternative).
-	MovieSource  string `json:"movie_source,omitempty"`
-	SeriesSource string `json:"series_source,omitempty"`
-	AnimeSource  string `json:"anime_source,omitempty"`
+	MovieSource       string `json:"movie_source,omitempty"`
+	SeriesSource      string `json:"series_source,omitempty"`
+	AnimeSource       string `json:"anime_source,omitempty"`
+	AnimeBackupSource string `json:"anime_backup_source,omitempty"`
 
 	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
 	// unaired-episode gate). nil means enabled.
@@ -53,6 +59,26 @@ type MetadataProfileConfig struct {
 	AllowUnrated *bool `json:"allow_unrated,omitempty"`
 }
 
+// ExternalCatalogConfig records one chosen catalog row rather than an entire
+// addon. ID is a locally generated stable key; ManifestURL is always the
+// public manifest URL the administrator pasted; RemoteType and RemoteID are
+// the exact resource coordinates declared by that manifest.
+type ExternalCatalogConfig struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind,omitempty"`
+	// SourceLabel is the human-facing identity of the pasted source. Kind is
+	// only a dispatch detail and must not appear in the editor as "external".
+	SourceLabel string `json:"source_label,omitempty"`
+	ManifestURL string `json:"manifest_url"`
+	RemoteType  string `json:"remote_type"`
+	RemoteID    string `json:"remote_id"`
+	// SupportsSkip records the pasted manifest's explicit pagination contract.
+	// Nil is a legacy row saved before this field existed and retains the old
+	// behavior until it is re-added through the inspected-source flow.
+	SupportsSkip *bool `json:"supports_skip,omitempty"`
+}
+
 // EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"
 // (default) or "tmdb". Whichever is not primary stays the fallback.
 func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
@@ -60,6 +86,31 @@ func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
 		return "tmdb"
 	}
 	return "tvdb"
+}
+
+// EffectiveAnimeMetaSources returns the user-selected ordered metadata
+// providers. Kitsu remains the default primary to preserve existing profiles;
+// TVDB is its fallback. Invalid or duplicate persisted values normalize to a
+// usable pair rather than making an installed profile unopenable.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSources() (primary, backup string) {
+	primary, backup = "kitsu", "tvdb"
+	if p == nil {
+		return primary, backup
+	}
+	if p.AnimeSource == "tvdb" || p.AnimeSource == "kitsu" {
+		primary = p.AnimeSource
+	}
+	if p.AnimeBackupSource == "tvdb" || p.AnimeBackupSource == "kitsu" {
+		backup = p.AnimeBackupSource
+	}
+	if primary == backup {
+		if primary == "kitsu" {
+			backup = "tvdb"
+		} else {
+			backup = "kitsu"
+		}
+	}
+	return primary, backup
 }
 
 // EffectiveLanguage returns the profile's display language tag, or "" for the

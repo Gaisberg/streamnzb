@@ -2,9 +2,13 @@ package stremio
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +42,13 @@ const (
 	// externalIDConcurrency caps the parallel TMDB external-id lookups per
 	// catalog page (politeness bound; the response cache makes repeats free).
 	externalIDConcurrency = 8
+	// externalInspectionConcurrency bounds the independent browse probes made
+	// when someone tests a pasted manifest in the configuration UI.
+	externalInspectionConcurrency = 4
+	// externalListMaxPages is a guardrail for public web list adapters. Clients
+	// still request one 20-row Stremio page at a time; this only bounds how far
+	// a single deep skip may walk before a malformed source is stopped.
+	externalListMaxPages = 100
 )
 
 // catalogRequest is one parsed /catalog/... request. StreamName comes from
@@ -51,6 +62,139 @@ type catalogRequest struct {
 	Skip       int
 	StreamName string
 	Profile    *config.MetadataProfileConfig
+}
+
+// ExternalCatalogPreview is one browseable row discovered from a pasted
+// public manifest. It contains only catalog coordinates — never remote
+// configuration, search, stream, or subtitle capabilities.
+type ExternalCatalogPreview struct {
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	RemoteType   string `json:"remote_type"`
+	RemoteID     string `json:"remote_id"`
+	RowCount     int    `json:"row_count"`
+	SupportsSkip bool   `json:"supports_skip"`
+}
+
+// ExternalManifestInspection is the safe result of testing every eligible
+// browse row in a pasted manifest. Unavailable lists are deliberately omitted
+// rather than presented as selectable dead rows.
+type ExternalManifestInspection struct {
+	Name     string                   `json:"name"`
+	Catalogs []ExternalCatalogPreview `json:"catalogs"`
+	Warnings []string                 `json:"warnings,omitempty"`
+}
+
+// InspectExternalManifest reads a public manifest and live-tests every
+// supported browse row. It is intentionally catalog-only: required-search
+// rows, custom content types, and all non-catalog resources are ignored.
+func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManifestInspection, error) {
+	manifestURL, err := validExternalManifestURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := externalHTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("manifest returned %s", resp.Status)
+	}
+	var manifest struct {
+		Name     string `json:"name"`
+		Catalogs []struct {
+			ID    string `json:"id"`
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Extra []struct {
+				Name       string `json:"name"`
+				IsRequired bool   `json:"isRequired"`
+			} `json:"extra"`
+		} `json:"catalogs"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, externalCatalogMaxBody)).Decode(&manifest); err != nil {
+		return nil, err
+	}
+	inspection := &ExternalManifestInspection{Name: strings.TrimSpace(manifest.Name)}
+	type candidate struct {
+		def          CatalogDef
+		name         string
+		supportsSkip bool
+	}
+	var candidates []candidate
+	for _, cat := range manifest.Catalogs {
+		contentType := strings.ToLower(strings.TrimSpace(cat.Type))
+		if contentType == "tv" {
+			contentType = "series"
+		}
+		if cat.ID == "" || cat.Name == "" || (contentType != "movie" && contentType != "series" && contentType != "anime") {
+			continue
+		}
+		searchOnly, supportsSkip := false, false
+		for _, extra := range cat.Extra {
+			if extra.Name == "search" && extra.IsRequired {
+				searchOnly = true
+			}
+			if extra.Name == "skip" {
+				supportsSkip = true
+			}
+		}
+		if searchOnly {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			def:          CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
+			name:         strings.TrimSpace(cat.Name),
+			supportsSkip: supportsSkip,
+		})
+	}
+	if len(candidates) == 0 {
+		return inspection, nil
+	}
+	type result struct {
+		preview ExternalCatalogPreview
+		err     error
+	}
+	results := make([]result, len(candidates))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(externalInspectionConcurrency, len(candidates)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				candidate := candidates[i]
+				metas, err := externalManifestCatalog(ctx, candidate.def, catalogRequest{Type: candidate.def.Type})
+				if err != nil {
+					results[i].err = err
+					continue
+				}
+				if len(metas) == 0 {
+					results[i].err = fmt.Errorf("catalog returned no canonical items")
+					continue
+				}
+				results[i].preview = ExternalCatalogPreview{Name: candidate.name, Type: candidate.def.Type, RemoteType: candidate.def.ExternalRemoteType, RemoteID: candidate.def.ExternalRemoteID, RowCount: len(metas), SupportsSkip: candidate.supportsSkip}
+			}
+		}()
+	}
+	for i := range candidates {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	for i, result := range results {
+		if result.err != nil {
+			inspection.Warnings = append(inspection.Warnings, fmt.Sprintf("%s: %v", candidates[i].name, result.err))
+			continue
+		}
+		inspection.Catalogs = append(inspection.Catalogs, result.preview)
+	}
+	return inspection, nil
 }
 
 // handleCatalog serves /catalog/{type}/{id}.json and
@@ -96,18 +240,23 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 
 // parseCatalogPath splits "/catalog/{type}/{id}.json" or
 // "/catalog/{type}/{id}/{extra}.json", where extra is a URL-encoded query
-// string ("search=dune", "skip=40").
+// string ("search=dune", "skip=40"). Existing user catalog ids can contain
+// slashes, so the optional extra is detected from the final query segment.
 func parseCatalogPath(path string) (catalogRequest, bool) {
 	path = strings.TrimPrefix(path, "/catalog/")
 	path = strings.TrimSuffix(path, ".json")
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return catalogRequest{}, false
 	}
-	req := catalogRequest{Type: parts[0], ID: parts[1]}
-	if len(parts) == 3 {
-		extra, err := url.ParseQuery(parts[2])
+	req := catalogRequest{Type: parts[0], ID: strings.Join(parts[1:], "/")}
+	if len(parts) >= 3 && strings.Contains(parts[len(parts)-1], "=") {
+		extra, err := url.ParseQuery(parts[len(parts)-1])
 		if err != nil {
+			return catalogRequest{}, false
+		}
+		req.ID = strings.Join(parts[1:len(parts)-1], "/")
+		if req.ID == "" {
 			return catalogRequest{}, false
 		}
 		req.Search = strings.TrimSpace(extra.Get("search"))
@@ -124,24 +273,15 @@ func parseCatalogPath(path string) (catalogRequest, bool) {
 // a bare listing request is a client ignoring the manifest. Browse catalogs
 // must be enabled on the profile, and only take a query when they support one.
 func resolveCatalogDef(profile *config.MetadataProfileConfig, req catalogRequest) (CatalogDef, bool) {
-	if def, ok := searchCatalogDefByID(req.ID); ok {
+	if def, ok := searchCatalogDefByID(profile, req.ID); ok {
 		return def, def.Type == req.Type && req.Search != ""
 	}
-	def, ok := catalogDefByID(req.ID)
-	if !ok || def.Type != req.Type {
-		return CatalogDef{}, false
-	}
-	enabled := false
 	for _, d := range enabledCatalogDefs(profile) {
-		if d.ID == def.ID {
-			enabled = true
-			break
+		if d.ID == req.ID && d.Type == req.Type {
+			return d, req.Search == "" || d.SupportsSearch
 		}
 	}
-	if !enabled || (req.Search != "" && !def.SupportsSearch) {
-		return CatalogDef{}, false
-	}
-	return def, true
+	return CatalogDef{}, false
 }
 
 // serveCatalog is the one catalog page path: build, drop rows a higher-ranked
@@ -162,7 +302,21 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		}
 		metas = nil
 	}
-	if req.Search == "" && len(metas) > 0 {
+	if def.Provider == "external" && len(metas) > 0 {
+		// Manifests and pasted list pages are catalog coordinates, not a trusted
+		// artwork provider. Fill their canonical ids through our cached metadata
+		// clients so they render with the same poster/backdrop treatment as every
+		// built-in row.
+		s.enrichExternalCatalogPreviews(ctx, metas, def.Type, req.Profile.EffectiveLanguage())
+		if cap, capped := capForProfile(req.Profile); capped {
+			metas = s.filterPreviewsByCertification(ctx, cap, metas, def.Type)
+		}
+	}
+	// External rows are explicitly chosen by the user as complete lists. Do
+	// not remove overlaps with an earlier board row: apart from making a saved
+	// list incomplete, a shortened Stremio page makes Jellyfin clients believe
+	// they reached the end and they never request the later pages.
+	if req.Search == "" && catalogUsesCrossDedup(def) && len(metas) > 0 {
 		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, req.Profile, def))
 	}
 	s.applyPosterOverlays(req.Profile, metas)
@@ -170,6 +324,10 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		metas = []MetaPreview{}
 	}
 	return metas
+}
+
+func catalogUsesCrossDedup(def CatalogDef) bool {
+	return def.Provider != "external"
 }
 
 func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -192,8 +350,202 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 			return s.becauseYouWatchedCatalog(ctx, def, req)
 		}
 		return s.continueWatchingCatalog(ctx, def, req)
+	case "external":
+		if def.ExternalKind == "tmdb_list" {
+			return s.tmdbExternalListCatalog(ctx, def, req)
+		}
+		if def.ExternalKind == "mdblist" {
+			return s.mdbListCatalog(ctx, def, req)
+		}
+		if def.ExternalKind == "letterboxd" {
+			return s.letterboxdCatalog(ctx, def, req)
+		}
+		return externalManifestCatalog(ctx, def, req)
 	}
 	return nil, fmt.Errorf("unknown catalog provider %q", def.Provider)
+}
+
+func (s *Server) letterboxdCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	return s.publicListCatalog(ctx, def, req, 1, func(page int) ([]tmdb.PublicListItem, error) {
+		list, err := tmdb.FetchLetterboxdPage(ctx, def.ExternalManifestURL, page)
+		return list.Items, err
+	})
+}
+
+func (s *Server) tmdbExternalListCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	return s.publicListCatalog(ctx, def, req, 1, func(page int) ([]tmdb.PublicListItem, error) {
+		return tmdb.FetchPublicListPage(ctx, def.ExternalManifestURL, page)
+	})
+}
+
+func (s *Server) mdbListCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	return s.publicListCatalog(ctx, def, req, 0, func(page int) ([]tmdb.PublicListItem, error) {
+		listing, err := tmdb.FetchMDBListPage(ctx, def.ExternalManifestURL, page)
+		return listing.Items, err
+	})
+}
+
+// publicListCatalog turns public web list pages into a normal Stremio page.
+// It reads as many upstream pages as the requested skip needs, then slices to
+// catalogPageSize. This is what makes a 200-item pasted list reachable in its
+// entirety instead of exposing only the source's first HTML page.
+func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalogRequest, firstPage int, fetch func(page int) ([]tmdb.PublicListItem, error)) ([]MetaPreview, error) {
+	needed := req.Skip + catalogPageSize
+	previews := make([]MetaPreview, 0, needed)
+	seen := make(map[string]struct{})
+	for page := firstPage; page < firstPage+externalListMaxPages && len(previews) < needed; page++ {
+		items, err := fetch(page)
+		if err != nil {
+			// Public HTML lists often signal their final page with a 404. It is
+			// terminal pagination, not a failed catalog the client should retry.
+			if errors.Is(err, tmdb.ErrPublicListPageNotFound) {
+				break
+			}
+			return nil, err
+		}
+		for _, item := range items {
+			isMovie := item.Type == "movie"
+			name := cleanExternalPreviewName(item.Name)
+			if (def.Type == "movie") != isMovie || (item.ID <= 0 && strings.TrimSpace(item.IMDbID) == "") || name == "" {
+				continue
+			}
+			id := strings.TrimSpace(item.IMDbID)
+			if id == "" {
+				id = fmt.Sprintf("tmdb:%d", item.ID)
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name})
+		}
+		// An empty remote page is terminal. A mixed page, duplicate page, or a
+		// page containing only the other media type is not: later pages may
+		// still hold matching rows for this catalog.
+		if len(items) == 0 {
+			break
+		}
+	}
+	if req.Skip >= len(previews) {
+		return nil, nil
+	}
+	previews = previews[req.Skip:]
+	if len(previews) > catalogPageSize {
+		previews = previews[:catalogPageSize]
+	}
+	return previews, nil
+}
+
+const externalCatalogMaxBody = 2 << 20
+
+var externalReleaseDateSuffix = regexp.MustCompile(`\s+\((?:18|19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?\)$`)
+
+// externalManifestCatalog fetches only a previously selected catalog resource
+// from a public HTTPS manifest. It never forwards a search term or any caller
+// credentials, so an external addon cannot become part of StreamNZB search or
+// playback.
+func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	if req.Search != "" {
+		return nil, fmt.Errorf("external catalogs do not support search")
+	}
+	metas, err := externalManifestCatalogPage(ctx, def, req.Skip)
+	if err != nil {
+		return nil, err
+	}
+	return limitCatalogPage(metas), nil
+}
+
+func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int) ([]MetaPreview, error) {
+	manifest, err := validExternalManifestURL(def.ExternalManifestURL)
+	if err != nil {
+		return nil, err
+	}
+	basePath := strings.TrimSuffix(manifest.Path, "manifest.json")
+	endpoint := *manifest
+	endpoint.Path = basePath + "catalog/" + url.PathEscape(def.ExternalRemoteType) + "/" + url.PathEscape(def.ExternalRemoteID) + ".json"
+	endpoint.RawQuery = ""
+	if skip > 0 {
+		endpoint.Path = strings.TrimSuffix(endpoint.Path, ".json") + "/skip=" + strconv.Itoa(skip) + ".json"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	resp, err := externalHTTPClient().Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("external catalog returned %s", resp.Status)
+	}
+	var remote struct {
+		Metas []MetaPreview `json:"metas"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, externalCatalogMaxBody)).Decode(&remote); err != nil {
+		return nil, err
+	}
+	metas := make([]MetaPreview, 0, len(remote.Metas))
+	for _, remoteMeta := range remote.Metas {
+		id := canonicalExternalCatalogID(remoteMeta.ID)
+		name := cleanExternalPreviewName(remoteMeta.Name)
+		if id == "" || name == "" {
+			continue
+		}
+		// A pasted manifest supplies browse coordinates only. Its presentation
+		// fields are untrusted; local metadata enrichment owns artwork and copy.
+		metas = append(metas, MetaPreview{ID: id, Type: def.Type, Name: name})
+	}
+	return metas, nil
+}
+
+// cleanExternalPreviewName removes only a trailing release year or ISO date
+// that public lists append to an otherwise canonical title. The preview id is
+// still authoritative; normal metadata supplies the real title and date.
+func cleanExternalPreviewName(name string) string {
+	return strings.TrimSpace(externalReleaseDateSuffix.ReplaceAllString(strings.TrimSpace(name), ""))
+}
+
+func limitCatalogPage(metas []MetaPreview) []MetaPreview {
+	if len(metas) > catalogPageSize {
+		return metas[:catalogPageSize]
+	}
+	return metas
+}
+
+func validExternalManifestURL(rawURL string) (*url.URL, error) {
+	manifest, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || manifest.Scheme != "https" || manifest.Host == "" || !strings.HasSuffix(manifest.Path, "/manifest.json") {
+		return nil, fmt.Errorf("invalid external manifest URL")
+	}
+	return manifest, nil
+}
+
+func externalHTTPClient() *http.Client {
+	return &http.Client{Timeout: catalogRequestTimeout, CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+		if next.URL.Scheme != "https" || next.URL.Host == "" {
+			return fmt.Errorf("external catalog redirect is not HTTPS")
+		}
+		return nil
+	}}
+}
+
+func canonicalExternalCatalogID(id string) string {
+	id = strings.TrimSpace(id)
+	if strings.HasPrefix(id, "tt") {
+		if _, err := strconv.ParseInt(strings.TrimPrefix(id, "tt"), 10, 64); err == nil {
+			return id
+		}
+	}
+	for _, prefix := range []string{"tmdb:", "tvdb:", "kitsu:"} {
+		if raw, ok := strings.CutPrefix(id, prefix); ok {
+			if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -298,8 +650,11 @@ func (s *Server) resolveIMDbIDs(mediaType string, results []tmdb.SearchMultiResu
 // hundreds of rows, so board pages slice into the cached first page. tt ids
 // resolve through each row's extended record (bounded fan-out, cached, and
 // reused later by the series meta pages those rows open).
-func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+func (s *Server) tvdbCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
 	rt := s.runtime()
+	if req.Search != "" {
+		return s.tvdbAnimeSearchCatalog(ctx, def, req)
+	}
 	sort := "score"
 	if def.Kind == "new" {
 		sort = "firstAired"
@@ -364,6 +719,50 @@ func (s *Server) tvdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		previews = append(previews, preview)
 	}
 	return previews, nil
+}
+
+// tvdbAnimeSearchCatalog keeps the search contract aligned with metadata
+// priority. A TVDB result is accepted only when anime-lists can translate it
+// to a playable Kitsu entry; unrelated shows and Kitsu's broad fuzzy matches
+// never leak into the result grid. If TVDB has no usable row, Kitsu is the
+// explicit backup.
+func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
+	if rt.tvdbClient == nil {
+		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+	}
+	results, err := rt.tvdbClient.SearchSeries(req.Search)
+	if err != nil {
+		logger.Debug("TVDB anime search failed; trying Kitsu backup", "search", req.Search, "err", err)
+		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+	}
+	previews := make([]MetaPreview, 0, len(results))
+	seen := map[string]bool{}
+	for _, result := range results {
+		if s.animeLists == nil {
+			break
+		}
+		mapping, ok := s.animeLists.LookupTVDB(result.SeriesID())
+		if !ok || mapping.KitsuID <= 0 || result.Title() == "" {
+			continue
+		}
+		id := fmt.Sprintf("kitsu:%d", mapping.KitsuID)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		previews = append(previews, MetaPreview{ID: id, Type: "anime", Name: result.Title(), Poster: result.ImageURL})
+		if len(previews) >= catalogPageSize {
+			break
+		}
+	}
+	if len(previews) > 0 {
+		if cap, capped := capForProfile(req.Profile); capped {
+			previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
+		}
+		return previews, nil
+	}
+	return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
 }
 
 func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -501,6 +900,24 @@ func (s *Server) applyPosterOverlays(profile *config.MetadataProfileConfig, meta
 			metas[i].Poster = overlay
 		}
 	}
+}
+
+// enrichExternalCatalogPreviews gives catalog-only imports the same artwork
+// contract as native rows. It is bounded and cache-backed: every worker owns
+// one preview slot, while the metadata client collapses repeat title requests.
+func (s *Server) enrichExternalCatalogPreviews(ctx context.Context, metas []MetaPreview, contentType, lang string) {
+	sem := make(chan struct{}, externalIDConcurrency)
+	var wg sync.WaitGroup
+	for i := range metas {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.fillPreviewFromMetadata(ctx, &metas[i], contentType, lang)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // animeSeriesIMDbID resolves a Kitsu id to its series-level IMDb id via the
@@ -886,6 +1303,12 @@ func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.Met
 			break
 		}
 		if def.Type != current.Type {
+			continue
+		}
+		// User-pasted catalogs are intentionally excluded from cross-board
+		// deduplication. Never fetch an uncached third-party catalog merely to
+		// build the duplicate set for a built-in board row.
+		if def.Provider == "external" {
 			continue
 		}
 		// Best-effort de-duplication only: once the request's own deadline is
