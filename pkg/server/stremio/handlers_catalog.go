@@ -709,6 +709,9 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 		if len(candidates) >= becauseYouWatchedWindow {
 			break
 		}
+		if ctx.Err() != nil {
+			break
+		}
 		tmdbID := s.tmdbIDForPreviewID(id, def.Type)
 		if tmdbID <= 0 || seenCandidates[tmdbID] {
 			continue
@@ -738,11 +741,14 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 	needed := req.Skip + catalogPageSize
 	seenTMDB := make(map[int]bool)
 	var previews []MetaPreview
-	for page := 1; page <= becauseYouWatchedMaxPages && len(previews) < needed; page++ {
+	for page := 1; page <= becauseYouWatchedMaxPages && len(previews) < needed && ctx.Err() == nil; page++ {
 		perSeed := make([][]tmdb.SearchMultiResult, 0, len(seeds))
 		for _, sd := range seeds {
 			if sd.exhausted {
 				continue
+			}
+			if ctx.Err() != nil {
+				break
 			}
 			resp, err := rt.tmdbClient.GetRecommendations(mediaType, sd.tmdbID, page, req.Profile.EffectiveLanguage())
 			if err != nil {
@@ -850,6 +856,14 @@ func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.Met
 		}
 		if def.Type != current.Type {
 			continue
+		}
+		// Best-effort de-duplication only: once the request's own deadline is
+		// gone, stop paying for more of it. A higher catalog that never
+		// checks ctx itself (tmdbCatalog and tvdbCatalog both discard it
+		// today) can otherwise burn the whole budget on its own, leaving
+		// nothing for the catalog actually being served.
+		if ctx.Err() != nil {
+			break
 		}
 		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID, Profile: profile})
 		if err != nil {
