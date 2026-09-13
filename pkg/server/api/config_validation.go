@@ -656,6 +656,19 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			default:
 				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
 			}
+			switch mp.AnimeSource {
+			case "", "kitsu", "tvdb":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_source", i)] = "Unknown anime primary source"
+			}
+			switch mp.AnimeBackupSource {
+			case "", "kitsu", "tvdb":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Unknown anime backup source"
+			}
+			if mp.AnimeSource != "" && mp.AnimeBackupSource != "" && mp.AnimeSource == mp.AnimeBackupSource {
+				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Anime backup must be different from the primary source"
+			}
 			if pattern := strings.TrimSpace(mp.PosterURLPattern); pattern != "" {
 				if !strings.Contains(pattern, "{imdb_id}") {
 					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Must contain the {imdb_id} placeholder"
@@ -663,8 +676,51 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Not a valid http(s) URL"
 				}
 			}
+			externalIDs := make(map[string]bool, len(mp.ExternalCatalogs))
+			for j, source := range mp.ExternalCatalogs {
+				path := fmt.Sprintf("metadata_profiles.%d.external_catalogs.%d", i, j)
+				id := strings.TrimSpace(source.ID)
+				if id == "" {
+					errors[path+".id"] = "ID is required"
+				} else if externalIDs[id] || knownCatalogIDs[id] {
+					errors[path+".id"] = "ID must be unique"
+				}
+				externalIDs[id] = true
+				if strings.TrimSpace(source.Name) == "" {
+					errors[path+".name"] = "Name is required"
+				}
+				u, err := url.Parse(strings.TrimSpace(source.ManifestURL))
+				validSourceURL := err == nil && u != nil && u.Scheme == "https" && u.Host != ""
+				host, sourcePath := "", ""
+				if u != nil {
+					host, sourcePath = strings.ToLower(u.Host), u.Path
+				}
+				if source.Kind == "tmdb_list" {
+					validSourceURL = validSourceURL && strings.Contains(host, "themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
+				} else if source.Kind == "mdblist" {
+					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(sourcePath, "/lists/")
+				} else if source.Kind == "letterboxd" {
+					validSourceURL = validSourceURL && (host == "letterboxd.com" || host == "www.letterboxd.com") && strings.Contains(sourcePath, "/list/")
+				} else {
+					validSourceURL = validSourceURL && strings.HasSuffix(sourcePath, "/manifest.json")
+				}
+				if !validSourceURL {
+					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, MDBList URL, or Letterboxd list URL"
+				}
+				if strings.TrimSpace(source.RemoteID) == "" {
+					errors[path+".remote_id"] = "Catalog id is required"
+				}
+				if strings.Contains(id, "/") {
+					errors[path+".id"] = "Catalog id cannot contain a slash"
+				}
+				switch strings.ToLower(strings.TrimSpace(source.RemoteType)) {
+				case "movie", "series", "anime", "tv":
+				default:
+					errors[path+".remote_type"] = "Only movie, series, anime, or tv browse catalogs are supported"
+				}
+			}
 			for j, toggle := range mp.Catalogs {
-				if !knownCatalogIDs[toggle.ID] {
+				if !knownCatalogIDs[toggle.ID] && !externalIDs[toggle.ID] {
 					errors[fmt.Sprintf("metadata_profiles.%d.catalogs.%d", i, j)] = "Unknown catalog id"
 				}
 			}
