@@ -280,7 +280,7 @@ func testCatalog() *fakeCatalog {
 			"tmdb.trending.movie":  previews("movie", "tt", 45),
 			"tmdb.trending.series": previews("series", "tt", 3),
 			"kitsu.trending.anime": []stremio.MetaPreview{{ID: "kitsu:9", Type: "anime", Name: "Your Name."}},
-			"tmdb.search.movie":    []stremio.MetaPreview{{ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption"}},
+			"tmdb.search.movie":    []stremio.MetaPreview{{ID: "tt0111161", Type: "movie", Name: "The Shawshank Redemption", ReleaseInfo: "1994", IMDBRating: "9.3"}},
 			"tmdb.search.series":   []stremio.MetaPreview{{ID: "tt0903747", Type: "series", Name: "Breaking Bad"}},
 			"kitsu.search.anime":   nil,
 		},
@@ -849,9 +849,14 @@ func TestSearchRunsTheCarriers(t *testing.T) {
 	}
 	// A Movie-only search leaves the series carriers alone.
 	f.catalog.searches = nil
-	f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie", "")
+	var rows queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?SearchTerm=shaw&Recursive=true&IncludeItemTypes=Movie", ""), &rows)
 	if got := f.catalog.searchSet(); !reflect.DeepEqual(got, map[string]bool{"tmdb.search.movie=shaw": true}) {
 		t.Fatalf("movie-only searches run: %v", got)
+	}
+	// A list row carries the year and rating the grid badges show.
+	if len(rows.Items) != 1 || rows.Items[0].ProductionYear == nil || *rows.Items[0].ProductionYear != 1994 || rows.Items[0].CommunityRating == nil || *rows.Items[0].CommunityRating != 9.3 {
+		t.Fatalf("row year/rating: %+v", rows.Items)
 	}
 	var hints struct {
 		SearchHints      []searchHint

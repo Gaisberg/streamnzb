@@ -76,6 +76,10 @@ type MetaPreview struct {
 	Poster      string `json:"poster,omitempty"`
 	Background  string `json:"background,omitempty"`
 	Description string `json:"description,omitempty"`
+	// ReleaseInfo and IMDBRating are the row's year and rating; catalog
+	// grids show both, and a row without them shows a blank badge.
+	ReleaseInfo string `json:"releaseInfo,omitempty"`
+	IMDBRating  string `json:"imdbRating,omitempty"`
 }
 
 // CatalogResponse is the /catalog/{type}/{id}.json envelope.
