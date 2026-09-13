@@ -389,6 +389,41 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, rq *request, raw stri
 // and the real ranked list arrives when the client asks for PlaybackInfo on
 // play. Playing the stand-in is correct either way: the slot resolves and
 // fails over exactly as it does for a Stremio client.
+// attachListSources gives a browse or episode row the version signal
+// Infuse's Direct Mode reads from the list document: it never asks
+// PlaybackInfo, plays from the row's MediaSources, and decides whether a
+// title has selectable versions from MediaSourceCount on that row. A
+// playlist already in cache is rendered as is; otherwise two placeholders
+// name slots 0 and 1. Nothing here searches — PlaylistCached is a map read.
+//
+// Slot 1 may outnumber the releases found at play time. That is safe: a play
+// request for a slot the list does not hold is recovered by the addon's
+// slot recovery, which wraps around to the first playable candidate and
+// redirects the client there.
+func (s *Server) attachListSources(rq *request, id itemID, item *baseItem) {
+	if item == nil || (id.Kind != kindMovie && id.Kind != kindEpisode) {
+		return
+	}
+	if view, ok := s.opts.Catalog.PlaylistCached(rq.stream, id.ContentType, id.playStremioID()); ok && view != nil && len(view.Entries) > 0 {
+		setItemMediaSources(item, s.renderedSources(rq, id, view))
+		return
+	}
+	setItemMediaSources(item, s.placeholderSources(rq, id, item))
+}
+
+// placeholderSources are the two stand-ins a list row carries before any
+// search has run: slot 0 is the best release once resolved, slot 1 the next.
+func (s *Server) placeholderSources(rq *request, id itemID, item *baseItem) []mediaSource {
+	runtime := float64(0)
+	if item.RunTimeTicks != nil {
+		runtime = float64(*item.RunTimeTicks) / float64(ticksPerSecond)
+	}
+	return []mediaSource{
+		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 0, Title: item.Name}, runtime),
+		s.mediaSourceOf(rq, id, stremio.PlaylistEntry{Index: 1, Title: item.Name + " (alternate release)"}, runtime),
+	}
+}
+
 func (s *Server) attachMediaSources(rq *request, id itemID, item *baseItem) {
 	if item == nil || (id.Kind != kindMovie && id.Kind != kindEpisode) {
 		return
