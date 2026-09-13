@@ -421,6 +421,28 @@ func TestSearchSeriesUsesSeriesEndpointAndNormalizesIDs(t *testing.T) {
 	}
 }
 
+// TestSearchResultTitleFallsBackToRawTitle covers a result shape that carries
+// only TVDB search's own "title" field, with neither name_translated nor
+// name set — Title() must not skip straight past it to an empty string.
+func TestSearchResultTitleFallsBackToRawTitle(t *testing.T) {
+	cases := []struct {
+		name   string
+		result SearchResult
+		want   string
+	}{
+		{"name_translated wins", SearchResult{NameTranslated: "Translated", RawTitle: "Raw", Name: "Plain"}, "Translated"},
+		{"raw title used when no translation", SearchResult{RawTitle: "Raw Title", Name: "Plain"}, "Raw Title"},
+		{"name is the last resort", SearchResult{Name: "Plain"}, "Plain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.Title(); got != tc.want {
+				t.Fatalf("Title() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A key TVDB will not accept comes back as a bare 401. The message is what the
 // settings UI shows, so it has to say what to do about it.
 func TestLoginRejectedKeyExplains401(t *testing.T) {

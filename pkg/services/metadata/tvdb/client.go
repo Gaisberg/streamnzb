@@ -187,7 +187,11 @@ type SearchResult struct {
 	ObjectID       string `json:"objectID"`
 	Name           string `json:"name"`
 	NameTranslated string `json:"name_translated"`
-	ImageURL       string `json:"image_url"`
+	// RawTitle is TVDB search's own "title" field. Some result shapes carry a
+	// title but no name/name_translated, so Title() falls back to it before
+	// giving up on the row entirely.
+	RawTitle string `json:"title"`
+	ImageURL string `json:"image_url"`
 }
 
 type searchResponse struct {
@@ -209,6 +213,9 @@ func (r SearchResult) SeriesID() string {
 
 func (r SearchResult) Title() string {
 	if title := strings.TrimSpace(r.NameTranslated); title != "" {
+		return title
+	}
+	if title := strings.TrimSpace(r.RawTitle); title != "" {
 		return title
 	}
 	return strings.TrimSpace(r.Name)

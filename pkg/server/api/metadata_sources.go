@@ -95,7 +95,11 @@ func inspectLetterboxdList(ctx context.Context, rawURL, listID string) (any, err
 
 func tmdbListID(raw string) (string, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || !strings.Contains(strings.ToLower(u.Host), "themoviedb.org") {
+	if err != nil {
+		return "", false
+	}
+	host := strings.ToLower(u.Host)
+	if host != "themoviedb.org" && host != "www.themoviedb.org" {
 		return "", false
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")

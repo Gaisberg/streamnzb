@@ -717,7 +717,7 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					host, sourcePath = strings.ToLower(u.Host), u.Path
 				}
 				if source.Kind == "tmdb_list" {
-					validSourceURL = validSourceURL && strings.Contains(host, "themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
+					validSourceURL = validSourceURL && (host == "themoviedb.org" || host == "www.themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
 				} else if source.Kind == "mdblist" {
 					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(sourcePath, "/lists/")
 				} else if source.Kind == "letterboxd" {

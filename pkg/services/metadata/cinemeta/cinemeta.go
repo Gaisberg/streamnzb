@@ -141,7 +141,7 @@ func (c *Client) GetMeta(ctx context.Context, contentType, imdbID string) (*Meta
 	}
 	path := fmt.Sprintf("/meta/%s/%s.json", contentType, imdbID)
 
-	body, _, err := c.getBody(ctx, path)
+	body, fromCache, err := c.fetchBody(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +151,14 @@ func (c *Client) GetMeta(ctx context.Context, contentType, imdbID string) (*Meta
 	}
 	if env.Meta == nil || env.Meta.Name == "" {
 		return nil, fmt.Errorf("cinemeta: no meta for %s %s", contentType, imdbID)
+	}
+	// Cache only a body that decoded into a usable meta object — caching
+	// before validation would let a malformed or empty response (Cinemeta has
+	// no entry for this title yet, a transient bad response, ...) sit in the
+	// cache for the full TTL and turn every later request for the same title
+	// into the same failure.
+	if !fromCache {
+		c.cache.Put(path, body, metaCacheTTL)
 	}
 	return mapMeta(env.Meta), nil
 }
@@ -208,7 +216,11 @@ func mapMeta(raw *rawMeta) *Meta {
 	return m
 }
 
-func (c *Client) getBody(ctx context.Context, path string) (body []byte, fromCache bool, err error) {
+// fetchBody returns the cached body for path, or fetches it fresh. It does
+// NOT write a freshly fetched body back to the cache — the caller does that
+// only once it has confirmed the body decodes into a usable response, so a
+// malformed or empty upstream reply never gets cached.
+func (c *Client) fetchBody(ctx context.Context, path string) (body []byte, fromCache bool, err error) {
 	if body, ok := c.cache.Get(path); ok {
 		return body, true, nil
 	}
@@ -231,6 +243,5 @@ func (c *Client) getBody(ctx context.Context, path string) (body []byte, fromCac
 	if err != nil {
 		return nil, false, err
 	}
-	c.cache.Put(path, body, metaCacheTTL)
 	return body, false, nil
 }

@@ -154,3 +154,34 @@ func TestGetMetaCachesResponses(t *testing.T) {
 		t.Fatalf("upstream calls = %d, want 1 (cached)", calls)
 	}
 }
+
+// TestGetMetaDoesNotCacheInvalidResponses pins the fix for caching bodies
+// before validation: a response that fails validation (here, an empty meta
+// object) must never get written to the cache, so a transient bad reply
+// doesn't turn every later request for the same title into the same failure
+// for the rest of the cache TTL. Once the upstream starts answering with a
+// valid body, the very next call must succeed.
+func TestGetMetaDoesNotCacheInvalidResponses(t *testing.T) {
+	calls := 0
+	valid := false
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if valid {
+			_, _ = w.Write([]byte(`{"meta":{"imdb_id":"tt1","name":"X"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"meta":{}}`))
+	})
+	for i := 0; i < 3; i++ {
+		if _, err := c.GetMeta(context.Background(), "movie", "tt1"); err == nil {
+			t.Fatal("expected an error for the empty meta object")
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3 — an invalid response must not be cached", calls)
+	}
+	valid = true
+	if _, err := c.GetMeta(context.Background(), "movie", "tt1"); err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+}

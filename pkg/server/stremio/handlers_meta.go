@@ -940,7 +940,10 @@ func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.Met
 	}
 	meta.ID = rid.canonicalID
 	meta.Type = seriesMetaType(contentType)
-	if contentType != "movie" {
+	// The request's own contentType can say "anime" for a mapped anime movie
+	// (the mapping's Type is the authority on that, independent of TVDBID) —
+	// appending an episode list would be wrong for a movie either way.
+	if contentType != "movie" && !strings.EqualFold(mapping.Type, "movie") {
 		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
 	}
 	return meta, nil

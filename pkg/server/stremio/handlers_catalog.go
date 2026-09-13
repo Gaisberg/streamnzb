@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"streamnzb/pkg/auth"
@@ -45,6 +47,12 @@ const (
 	// externalInspectionConcurrency bounds the independent browse probes made
 	// when someone tests a pasted manifest in the configuration UI.
 	externalInspectionConcurrency = 4
+	// externalInspectionMaxCatalogs caps how many catalog rows one pasted
+	// manifest can queue for a live probe. Nothing else in InspectExternalManifest
+	// limits candidate count, so a manifest declaring thousands of catalogs could
+	// otherwise occupy the request (bounded by inspectionTimeout) issuing that
+	// many outbound probes.
+	externalInspectionMaxCatalogs = 100
 	// externalListMaxPages is a guardrail for public web list adapters. Clients
 	// still request one 20-row Stremio page at a time; this only bounds how far
 	// a single deep skip may walk before a malformed source is stopped.
@@ -146,6 +154,10 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		}
 		if searchOnly {
 			continue
+		}
+		if len(candidates) >= externalInspectionMaxCatalogs {
+			inspection.Warnings = append(inspection.Warnings, "too many catalogs in this manifest; only the first rows were tested")
+			break
 		}
 		candidates = append(candidates, candidate{
 			def:          CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
@@ -522,13 +534,57 @@ func validExternalManifestURL(rawURL string) (*url.URL, error) {
 	return manifest, nil
 }
 
+// rejectPrivateDialAddr is a net.Dialer.Control hook that rejects a
+// connection to a loopback, private, link-local, or otherwise non-public
+// address. Control runs after DNS resolution but before the connection is
+// used, on the actual resolved address — so unlike a pre-resolve check, a
+// DNS answer that changes between validation and dial (or a redirect
+// pointing straight at an internal host) cannot slip through.
+func rejectPrivateDialAddr(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("external catalog manifest: could not parse resolved address %q", host)
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return fmt.Errorf("external catalog manifest may not target a private or local address")
+	}
+	return nil
+}
+
+// externalManifestTransport is built once and reused by every
+// externalHTTPClient() call. InspectExternalManifest alone can probe up to
+// externalInspectionMaxCatalogs candidates per request; a fresh
+// *http.Transport per call would mean a fresh, un-pooled TCP+TLS handshake
+// for each one instead of reusing keep-alive connections, working against
+// the very request-cost bound that cap exists for. Cloning
+// http.DefaultTransport keeps its other defaults (proxy-from-environment,
+// HTTP/2, idle-connection and TLS-handshake timeouts) and only swaps in the
+// SSRF-guarded dialer.
+var externalManifestTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{Timeout: catalogRequestTimeout, Control: rejectPrivateDialAddr}).DialContext
+	return t
+}()
+
+// externalHTTPClient is used to fetch a user-pasted manifest URL and its
+// catalog pages — an admin-supplied destination, so every dial (including
+// ones a redirect points at) is guarded against reaching internal
+// infrastructure (SSRF).
 func externalHTTPClient() *http.Client {
-	return &http.Client{Timeout: catalogRequestTimeout, CheckRedirect: func(next *http.Request, _ []*http.Request) error {
-		if next.URL.Scheme != "https" || next.URL.Host == "" {
-			return fmt.Errorf("external catalog redirect is not HTTPS")
-		}
-		return nil
-	}}
+	return &http.Client{
+		Timeout:   catalogRequestTimeout,
+		Transport: externalManifestTransport,
+		CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+			if next.URL.Scheme != "https" || next.URL.Host == "" {
+				return fmt.Errorf("external catalog redirect is not HTTPS")
+			}
+			return nil
+		},
+	}
 }
 
 func canonicalExternalCatalogID(id string) string {
