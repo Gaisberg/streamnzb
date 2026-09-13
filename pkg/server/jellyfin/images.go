@@ -253,9 +253,12 @@ func relayableImageType(raw string) (string, bool) {
 func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind string) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		// Nothing here to fetch on the client's behalf; the redirect is the
-		// only path left for a scheme this layer cannot relay.
-		http.Redirect(w, rq.Request, rawURL, http.StatusFound)
+		// Nothing here to fetch on the client's behalf, and a redirect is
+		// exactly what this relay exists to avoid: the clients that need
+		// relaying would not follow it either. A miss, not a gateway
+		// failure -- the image simply isn't reachable this way.
+		logger.Debug("Jellyfin image relay skipped", "url", rawURL, "reason", "not an http(s) url")
+		http.NotFound(w, rq.Request)
 		return
 	}
 	target := rewriteImageSize(rawURL, kind)
