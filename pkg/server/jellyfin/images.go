@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
@@ -282,15 +283,19 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
+	length := int64(-1)
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n > maxImageBody {
-			// Refused before a header is written: a Content-Length promising
-			// more than the cap would otherwise reach the client alongside a
-			// body truncated well short of it.
-			logger.Debug("Jellyfin image relay refused", "url", target, "length", n)
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			return
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			length = n
 		}
+	}
+	if length > maxImageBody {
+		// Refused before a header is written: a Content-Length promising
+		// more than the cap would otherwise reach the client alongside a
+		// body truncated well short of it.
+		logger.Debug("Jellyfin image relay refused", "url", target, "length", length)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
 	}
 	ct, ok := relayableImageType(resp.Header.Get("Content-Type"))
 	if !ok {
@@ -302,10 +307,29 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
-	w.Header().Set("Content-Type", ct)
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		w.Header().Set("Content-Length", cl)
+	var body io.Reader = resp.Body
+	if length < 0 {
+		// No Content-Length: the cap can only be enforced by reading. Read to
+		// the cap plus one byte before any header is written, so an oversized
+		// body is refused outright instead of cut off mid-image behind a 200 —
+		// a client cannot tell a truncated JPEG from a whole one. Bounded by
+		// the cap, and rare: CDNs send a length for a static file.
+		buf, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBody+1))
+		if err != nil {
+			logger.Debug("Jellyfin image relay failed", "url", target, "err", err)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		if len(buf) > maxImageBody {
+			logger.Debug("Jellyfin image relay refused", "url", target, "length", ">"+strconv.Itoa(maxImageBody))
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		length = int64(len(buf))
+		body = bytes.NewReader(buf)
 	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 	if etag := resp.Header.Get("ETag"); etag != "" {
 		w.Header().Set("ETag", etag)
 	}
@@ -317,10 +341,9 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 	if rq.Method == http.MethodHead {
 		return
 	}
-	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxImageBody)) // write errors ignored: the client went away
-	if written == maxImageBody {
-		logger.Debug("Jellyfin image relay body truncated", "url", target, "limit", maxImageBody)
-	}
+	// A declared length is enforced by net/http on the upstream side: the body
+	// ends at Content-Length whatever the CDN sends after it.
+	io.Copy(w, body) // write errors ignored: the client went away
 }
 
 // rewriteImageSize points a TMDB image at a size proportional to how large
