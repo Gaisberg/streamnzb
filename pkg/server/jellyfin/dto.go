@@ -187,6 +187,24 @@ func productionYear(releaseInfo string) *int {
 	return nil
 }
 
+// now is the clock unaired reads; tests pin it.
+var now = time.Now
+
+// unaired reports whether an episode's release date lies in the future. An
+// unknown date is not unaired: the provider may simply not have one.
+func unaired(released string) bool {
+	released = strings.TrimSpace(released)
+	if released == "" {
+		return false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, released); err == nil {
+			return t.After(now())
+		}
+	}
+	return false
+}
+
 // premiereDate normalises an ISO date to Jellyfin's timestamp form.
 func premiereDate(released string) string {
 	released = strings.TrimSpace(released)
@@ -465,6 +483,12 @@ func (s *Server) episodeItem(seriesID itemID, meta *stremio.MetaObject, video st
 	}
 	if video.Season == 0 {
 		item.SeasonName = "Specials"
+	}
+	// An episode that has not aired yet has nothing to play. Jellyfin marks
+	// its own unaired entries Virtual, and clients grey those out instead of
+	// offering a play button that ends in "no compatible stream".
+	if unaired(video.Released) {
+		item.LocationType = "Virtual"
 	}
 	// The episode still is its Primary image; the series poster and backdrop
 	// ride along as the parent's for the clients that show them.
