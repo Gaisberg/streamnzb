@@ -1,6 +1,11 @@
 package stremio
 
-import "streamnzb/pkg/core/config"
+import (
+	"time"
+
+	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/logger"
+)
 
 // CatalogDef is one catalog the addon can serve. The registry is the single
 // source of truth for which catalogs exist: the manifest, the catalog handler,
@@ -166,10 +171,19 @@ func enabledCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 		if !t.Enabled || seen[t.ID] {
 			continue
 		}
-		if def, ok := catalogDefByID(t.ID); ok {
-			seen[t.ID] = true
-			defs = append(defs, def)
+		def, ok := catalogDefByID(t.ID)
+		if !ok {
+			// A saved toggle the registry no longer knows (removed catalog,
+			// or one from a build this binary is not) is skipped silently
+			// by design; say so once so the missing library is explainable.
+			if logger.Throttle("unknown-catalog-toggle:"+t.ID, 24*time.Hour) {
+				logger.Warn("Metadata profile references an unknown catalog id; ignored",
+					"profile", profile.Name, "catalog", t.ID)
+			}
+			continue
 		}
+		seen[t.ID] = true
+		defs = append(defs, def)
 	}
 	return defs
 }
