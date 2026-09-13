@@ -407,62 +407,130 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
         <CardHeader className="pb-3">
           <CardTitle className="text-base font-semibold">Sources &amp; language</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="metadata-source-movie" className="text-sm">Movies</Label>
-              <select id="metadata-source-movie" className={selectClass} value="tmdb" disabled>
-                <option value="tmdb">TMDB</option>
-              </select>
+        <CardContent className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-1.5 rounded-lg border border-border/60 p-3">
+              <p className="text-xs font-medium text-muted-foreground">Movies</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-movie" className="text-xs text-muted-foreground">Primary</Label>
+                  <select
+                    id="metadata-source-movie"
+                    className={selectClass}
+                    value={draft.movie_source === "cinemeta" ? "cinemeta" : "tmdb"}
+                    onChange={(e) => {
+                      const primary = e.target.value
+                      const next = { ...draft, movie_source: primary === "tmdb" ? undefined : primary }
+                      if (primary === next.movie_backup_source) next.movie_backup_source = undefined
+                      onChange(next)
+                    }}
+                  >
+                    <option value="tmdb">TMDB (default)</option>
+                    <option value="cinemeta">Cinemeta</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-movie-backup" className="text-xs text-muted-foreground">Backup</Label>
+                  <select
+                    id="metadata-source-movie-backup"
+                    className={selectClass}
+                    value={["tmdb", "cinemeta"].includes(draft.movie_backup_source) ? draft.movie_backup_source : "none"}
+                    onChange={(e) => {
+                      const backup = e.target.value
+                      onChange({ ...draft, movie_backup_source: backup === "none" ? undefined : backup })
+                    }}
+                  >
+                    <option value="none">None (default)</option>
+                    <option value="tmdb" disabled={(draft.movie_source || "tmdb") === "tmdb"}>TMDB</option>
+                    <option value="cinemeta" disabled={draft.movie_source === "cinemeta"}>Cinemeta</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="metadata-source-series" className="text-sm">Series</Label>
-              <select
-                id="metadata-source-series"
-                className={selectClass}
-                value={draft.series_source === "tmdb" ? "tmdb" : "tvdb"}
-                onChange={(e) => onChange({ ...draft, series_source: e.target.value === "tmdb" ? "tmdb" : undefined })}
-              >
-                <option value="tvdb">TVDB (default)</option>
-                <option value="tmdb">TMDB</option>
-              </select>
+            <div className="space-y-1.5 rounded-lg border border-border/60 p-3">
+              <p className="text-xs font-medium text-muted-foreground">Series</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-series" className="text-xs text-muted-foreground">Primary</Label>
+                  <select
+                    id="metadata-source-series"
+                    className={selectClass}
+                    value={["tmdb", "cinemeta"].includes(draft.series_source) ? draft.series_source : "tvdb"}
+                    onChange={(e) => {
+                      const primary = e.target.value
+                      const next = { ...draft, series_source: primary === "tvdb" ? undefined : primary }
+                      if (primary === next.series_backup_source) next.series_backup_source = undefined
+                      onChange(next)
+                    }}
+                  >
+                    <option value="tvdb">TVDB (default)</option>
+                    <option value="tmdb">TMDB</option>
+                    <option value="cinemeta">Cinemeta</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-series-backup" className="text-xs text-muted-foreground">Backup</Label>
+                  <select
+                    id="metadata-source-series-backup"
+                    className={selectClass}
+                    value={["tvdb", "tmdb", "cinemeta"].includes(draft.series_backup_source) ? draft.series_backup_source : "auto"}
+                    onChange={(e) => {
+                      const backup = e.target.value
+                      onChange({ ...draft, series_backup_source: backup === "auto" ? undefined : backup })
+                    }}
+                  >
+                    <option value="auto">Automatic (default)</option>
+                    <option value="tvdb" disabled={(draft.series_source || "tvdb") === "tvdb"}>TVDB</option>
+                    <option value="tmdb" disabled={draft.series_source === "tmdb"}>TMDB</option>
+                    <option value="cinemeta" disabled={draft.series_source === "cinemeta"}>Cinemeta</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="metadata-source-anime" className="text-sm">Anime primary</Label>
-              <select
-                id="metadata-source-anime"
-                className={selectClass}
-                value={draft.anime_source === "tvdb" ? "tvdb" : "kitsu"}
-                onChange={(e) => {
-                  const primary = e.target.value
-                  const backup = primary === "kitsu" ? "tvdb" : "kitsu"
-                  onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
-                }}
-              >
-                <option value="kitsu">Kitsu (default)</option>
-                <option value="tvdb">TVDB</option>
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="metadata-source-anime-backup" className="text-sm">Anime backup</Label>
-              <select
-                id="metadata-source-anime-backup"
-                className={selectClass}
-                value={draft.anime_source === "tvdb" ? "kitsu" : (draft.anime_backup_source === "kitsu" ? "kitsu" : "tvdb")}
-                onChange={(e) => {
-                  const backup = e.target.value
-                  const primary = backup === "kitsu" ? "tvdb" : "kitsu"
-                  onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
-                }}
-              >
-                <option value={draft.anime_source === "tvdb" ? "kitsu" : "tvdb"}>{draft.anime_source === "tvdb" ? "Kitsu" : "TVDB"}</option>
-              </select>
+            <div className="space-y-1.5 rounded-lg border border-border/60 p-3">
+              <p className="text-xs font-medium text-muted-foreground">Anime</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-anime" className="text-xs text-muted-foreground">Primary</Label>
+                  <select
+                    id="metadata-source-anime"
+                    className={selectClass}
+                    value={draft.anime_source === "tvdb" ? "tvdb" : "kitsu"}
+                    onChange={(e) => {
+                      const primary = e.target.value
+                      const backup = primary === "kitsu" ? "tvdb" : "kitsu"
+                      onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
+                    }}
+                  >
+                    <option value="kitsu">Kitsu (default)</option>
+                    <option value="tvdb">TVDB</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="metadata-source-anime-backup" className="text-xs text-muted-foreground">Backup</Label>
+                  <select
+                    id="metadata-source-anime-backup"
+                    className={selectClass}
+                    value={draft.anime_source === "tvdb" ? "kitsu" : (draft.anime_backup_source === "kitsu" ? "kitsu" : "tvdb")}
+                    onChange={(e) => {
+                      const backup = e.target.value
+                      const primary = backup === "kitsu" ? "tvdb" : "kitsu"
+                      onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
+                    }}
+                  >
+                    <option value={draft.anime_source === "tvdb" ? "kitsu" : "tvdb"}>{draft.anime_source === "tvdb" ? "Kitsu" : "TVDB"}</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            The primary source supplies a media type&apos;s metadata. Its backup is used only when the primary
-            cannot serve that title. Anime always keeps Kitsu&apos;s stable playback IDs, so switching metadata
-            sources never changes episode matching or stream lookup.
+            Movies, series and anime each pick their metadata sources independently. The primary source supplies
+            that media type&apos;s metadata; its backup is used only when the primary cannot serve a title.
+            Cinemeta is opt-in only — it is never used unless you select it here, whether as a primary or a
+            backup. Cinemeta carries no age-rating data, so a title served from it stays hidden under a rating
+            limit unless &quot;Allow unrated content&quot; is on. Anime always keeps Kitsu&apos;s stable playback
+            IDs, so switching metadata sources never changes episode matching or stream lookup.
           </p>
           <div className="space-y-1.5">
             <Label htmlFor="metadata-language" className="text-sm">Language</Label>

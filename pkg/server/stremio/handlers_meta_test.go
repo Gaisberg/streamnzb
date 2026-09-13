@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/services/metadata/cinemeta"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -403,6 +405,14 @@ func withTVDBStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
 	srv.tvdbClient.BaseURL = ts.URL
 }
 
+func withCinemetaStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	srv.cinemetaClient = cinemeta.NewClient(ts.Client())
+	srv.cinemetaClient.BaseURL = ts.URL
+}
+
 // TestBuildSeriesMetaTVDBPrimary pins the source policy: series meta comes
 // from TVDB (resolved from the imdb id), with TVMaze still owning air dates.
 func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
@@ -514,6 +524,238 @@ func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 	}
 	if meta.Name != "Game of Thrones (TMDB)" {
 		t.Fatalf("name = %q, want the TMDB record when series_source=tmdb", meta.Name)
+	}
+}
+
+// TestBuildSeriesMetaCertificationBlockDoesNotFallBackToBackup pins a
+// deliberate behavior tightening that ships alongside the Cinemeta work:
+// previously buildSeriesMeta had no errCertificationBlocked short-circuit at
+// all, so a title whose primary source reported an over-cap rating would
+// silently fall through to the backup source and could still be served if
+// that backup had no rating for it (unknown ratings pass under
+// allow_unrated). The dispatcher now matches buildAnimeMeta's existing rule:
+// a certification block is final and never falls back to another source,
+// however the profile is configured — this must hold even for a profile
+// that never touches any of the new Cinemeta fields.
+func TestBuildSeriesMetaCertificationBlockDoesNotFallBackToBackup(t *testing.T) {
+	tmdbCalls := 0
+	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/find/"):
+			_, _ = w.Write([]byte(`{"tv_results": [{"id": 1399}]}`))
+		case strings.Contains(r.URL.Path, "/tv/1399"):
+			// TMDB carries no rating for this title, which would normally pass
+			// under allow_unrated — proving a reachable fallback would serve it.
+			tmdbCalls++
+			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones (TMDB)"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	tvdbWithRating := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/login":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"token": "t"}}`))
+		case strings.HasPrefix(r.URL.Path, "/search/remoteid/"):
+			_, _ = w.Write([]byte(`{"status": "success", "data": [{"series": {"id": 121361}}]}`))
+		case r.URL.Path == "/series/121361/extended":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"id": 121361, "name": "Game of Thrones (TVDB)",
+				"contentRatings": [{"country": "usa", "name": "TV-MA"}]
+			}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}
+	srv := metaTestServer(t, tmdbStub, nil, nil)
+	withTVDBStub(t, srv, tvdbWithRating)
+
+	profile := &config.MetadataProfileConfig{MaxCertification: "16", AllowUnrated: boolPtr(true)}
+	_, err := srv.buildMeta(context.Background(), profile, "series", "tt0944947")
+	if err == nil {
+		t.Fatal("expected the certification gate to block the over-cap TVDB rating")
+	}
+	if !errors.Is(err, errCertificationBlocked) {
+		t.Fatalf("err = %v, want errCertificationBlocked", err)
+	}
+	if tmdbCalls != 0 {
+		t.Fatalf("TMDB detail calls = %d, want 0 — a certification block must not fall through to the backup source", tmdbCalls)
+	}
+}
+
+// cinemetaMovieStub serves a minimal Cinemeta movie meta object.
+func cinemetaMovieStub() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/meta/movie/") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"meta":{
+			"imdb_id":"tt0133093","name":"The Matrix (Cinemeta)",
+			"description":"A hacker learns the truth.",
+			"poster":"https://images.metahub.space/poster/small/tt0133093/img",
+			"releaseInfo":"1999","imdbRating":"8.7","runtime":"136 min",
+			"genres":["Action","Sci-Fi"],"cast":["Keanu Reeves"],
+			"trailers":[{"source":"FVI84Dfx2-I","type":"Trailer"}],
+			"videos":[]
+		}}`))
+	}
+}
+
+// TestBuildMovieMetaCinemetaOptInBackup pins the opt-in rule: a profile that
+// never sets movie_backup_source gets the plain TMDB error on failure (no
+// silent Cinemeta fallback), while one that explicitly opts in falls back.
+func TestBuildMovieMetaCinemetaOptInBackup(t *testing.T) {
+	tmdbNotFound := func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}
+	cinemetaCalls := 0
+	cinemetaStub := func(w http.ResponseWriter, r *http.Request) {
+		cinemetaCalls++
+		cinemetaMovieStub()(w, r)
+	}
+
+	t.Run("default profile never calls Cinemeta", func(t *testing.T) {
+		srv := metaTestServer(t, tmdbNotFound, nil, nil)
+		withCinemetaStub(t, srv, cinemetaStub)
+		cinemetaCalls = 0
+
+		if _, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{}, "movie", "tt0133093"); err == nil {
+			t.Fatal("expected an error: TMDB failed and no backup is configured")
+		}
+		if cinemetaCalls != 0 {
+			t.Fatalf("Cinemeta calls = %d, want 0 — it must never engage without explicit opt-in", cinemetaCalls)
+		}
+	})
+
+	t.Run("explicit backup falls back to Cinemeta", func(t *testing.T) {
+		srv := metaTestServer(t, tmdbNotFound, nil, nil)
+		withCinemetaStub(t, srv, cinemetaStub)
+		cinemetaCalls = 0
+
+		meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieBackupSource: "cinemeta"}, "movie", "tt0133093")
+		if err != nil {
+			t.Fatalf("buildMeta: %v", err)
+		}
+		if meta.Name != "The Matrix (Cinemeta)" {
+			t.Fatalf("name = %q, want the Cinemeta record", meta.Name)
+		}
+		if meta.ID != "tt0133093" || meta.Type != "movie" {
+			t.Fatalf("meta id/type = %q/%q", meta.ID, meta.Type)
+		}
+		if cinemetaCalls != 1 {
+			t.Fatalf("Cinemeta calls = %d, want 1", cinemetaCalls)
+		}
+	})
+}
+
+// emptyTMDBFindStub answers TMDB's best-effort /find lookup with no results
+// — resolveMetaID always tries it regardless of which source will actually
+// serve the meta, so every test needs a live (if empty) tmdbClient.
+func emptyTMDBFindStub(w http.ResponseWriter, r *http.Request) {
+	_, _ = w.Write([]byte(`{}`))
+}
+
+// TestBuildMovieMetaCinemetaAsPrimary lets a profile pick Cinemeta outright.
+func TestBuildMovieMetaCinemetaAsPrimary(t *testing.T) {
+	srv := metaTestServer(t, emptyTMDBFindStub, nil, nil)
+	withCinemetaStub(t, srv, cinemetaMovieStub())
+
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieSource: "cinemeta"}, "movie", "tt0133093")
+	if err != nil {
+		t.Fatalf("buildMeta: %v", err)
+	}
+	if meta.Name != "The Matrix (Cinemeta)" || meta.IMDBRating != "8.7" || meta.Runtime != "136 min" {
+		t.Fatalf("meta = %+v", meta)
+	}
+	if len(meta.Genres) != 2 || len(meta.Cast) != 1 {
+		t.Fatalf("lists = %+v", meta)
+	}
+	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "FVI84Dfx2-I" {
+		t.Fatalf("trailers = %v", meta.Trailers)
+	}
+}
+
+// TestBuildMovieMetaCinemetaBlockedByCertificationCap confirms Cinemeta's
+// lack of certification data fails closed under a capped profile, and that
+// the block is not silently bypassed by falling back to TMDB.
+func TestBuildMovieMetaCinemetaBlockedByCertificationCap(t *testing.T) {
+	movieDetailCalls := 0
+	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/find/") {
+			_, _ = w.Write([]byte(`{"movie_results": [{"id": 603}]}`))
+			return
+		}
+		// Only the movie-details endpoint means the TMDB fallback actually ran.
+		movieDetailCalls++
+		_, _ = w.Write([]byte(`{
+			"id": 603, "title": "The Matrix", "imdb_id": "tt0133093",
+			"release_dates": {"results": []}
+		}`))
+	}
+	srv := metaTestServer(t, tmdbStub, nil, nil)
+	withCinemetaStub(t, srv, cinemetaMovieStub())
+
+	// A backup is deliberately configured too, to prove the certification
+	// block takes precedence over falling through to it.
+	profile := &config.MetadataProfileConfig{MovieSource: "cinemeta", MovieBackupSource: "tmdb", MaxCertification: "13"}
+	_, err := srv.buildMeta(context.Background(), profile, "movie", "tt0133093")
+	if err == nil {
+		t.Fatal("expected the certification gate to block an unrated Cinemeta title")
+	}
+	if !errors.Is(err, errCertificationBlocked) {
+		t.Fatalf("err = %v, want errCertificationBlocked", err)
+	}
+	if movieDetailCalls != 0 {
+		t.Fatalf("TMDB movie-detail calls = %d, want 0 — a certification block must not fall through to another source", movieDetailCalls)
+	}
+}
+
+// TestBuildSeriesMetaCinemetaPrimaryAnchorsVideoIDs pins the compatibility
+// requirement: episode ids returned to a client must match the id scheme the
+// stream handler parses, even when Cinemeta supplied the meta. The stub
+// deliberately returns ids that do NOT match rid.canonicalID — a test whose
+// stub already emits the "correct" id would still pass if the mapper started
+// trusting Cinemeta's own id verbatim.
+func TestBuildSeriesMetaCinemetaPrimaryAnchorsVideoIDs(t *testing.T) {
+	srv := metaTestServer(t, emptyTMDBFindStub, nil, nil)
+	withCinemetaStub(t, srv, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/meta/series/") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"meta":{
+			"imdb_id":"tt0944947","name":"Game of Thrones (Cinemeta)",
+			"releaseInfo":"2011-2019","imdbRating":"9.2","runtime":"57 min",
+			"videos":[
+				{"id":"BOGUS-NOT-A-REAL-ID:0:1","name":"Special","season":0,"number":1,
+				 "firstAired":"2010-12-06T05:00:00.000Z"},
+				{"id":"BOGUS-NOT-A-REAL-ID:1:1","name":"Winter Is Coming","season":1,"episode":1,
+				 "released":"2011-04-17T21:00:00.000Z","overview":"Ned Stark is troubled."}
+			]
+		}}`))
+	})
+
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSource: "cinemeta"}, "series", "tt0944947")
+	if err != nil {
+		t.Fatalf("buildMeta: %v", err)
+	}
+	if meta.Name != "Game of Thrones (Cinemeta)" {
+		t.Fatalf("name = %q", meta.Name)
+	}
+	if len(meta.Videos) != 2 {
+		t.Fatalf("videos = %d, want 2", len(meta.Videos))
+	}
+	// Specials sort last, matching every other source's convention.
+	ep, special := meta.Videos[0], meta.Videos[1]
+	if ep.ID != "tt0944947:1:1" || ep.Season != 1 || ep.Episode != 1 {
+		t.Fatalf("videos[0] = %+v", ep)
+	}
+	if ep.Overview != "Ned Stark is troubled." || ep.Released != "2011-04-17T21:00:00.000Z" {
+		t.Fatalf("videos[0] fields = %+v", ep)
+	}
+	if special.ID != "tt0944947:0:1" || special.Season != 0 {
+		t.Fatalf("videos[1] (special) = %+v", special)
 	}
 }
 

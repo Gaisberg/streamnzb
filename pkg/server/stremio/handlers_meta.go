@@ -17,6 +17,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
+	"streamnzb/pkg/services/metadata/cinemeta"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -212,7 +213,32 @@ func metaLogoLang(profile *config.MetadataProfileConfig) string {
 	return base
 }
 
+// buildMovieMeta applies the profile's source policy: movie metadata comes
+// from the primary source (TMDB by default), and the backup — Cinemeta only
+// — steps in when it is explicitly configured and the primary cannot serve.
+// A profile that never touches movie_source/movie_backup_source behaves
+// exactly as before Cinemeta support existed: TMDB-only, no fallback.
 func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	primary, backup := profile.EffectiveMovieMetaSources()
+	build := func(source string) (*MetaObject, error) {
+		if source == "cinemeta" {
+			return s.buildMovieMetaFromCinemeta(ctx, profile, rid)
+		}
+		return s.buildMovieMetaFromTMDB(ctx, profile, rid)
+	}
+	meta, err := build(primary)
+	if err == nil {
+		return meta, nil
+	}
+	if errors.Is(err, errCertificationBlocked) || backup == "" {
+		return nil, err
+	}
+	logger.Debug("Primary movie meta source unavailable; falling back",
+		"source", primary, "backup", backup, "tmdb_id", rid.tmdbID, "imdb_id", rid.imdbID, "err", err)
+	return build(backup)
+}
+
+func (s *Server) buildMovieMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
 	rt := s.runtime()
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
@@ -339,22 +365,33 @@ func (s *Server) currentConfig() *config.Config {
 }
 
 // buildSeriesMeta applies the profile's source policy: series metadata comes
-// from the primary source (TVDB by default), and the other source steps in
-// only when the primary cannot serve (no resolvable id, provider down) —
-// a fallback episode list beats none. Air dates are TVMaze's in both paths.
+// from the primary source (TVDB by default), and the backup steps in only
+// when the primary cannot serve (no resolvable id, provider down) — a
+// fallback episode list beats none. Cinemeta only ever appears here when a
+// profile explicitly names it. Air dates are TVMaze's on the TVDB/TMDB paths.
 func (s *Server) buildSeriesMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
-	primary, fallback := s.buildSeriesMetaFromTVDB, s.buildSeriesMetaFromTMDB
-	if profile.EffectiveSeriesMetaSource() == "tmdb" {
-		primary, fallback = fallback, primary
+	primary, backup := profile.EffectiveSeriesMetaSources()
+	build := func(source string) (*MetaObject, error) {
+		switch source {
+		case "tmdb":
+			return s.buildSeriesMetaFromTMDB(ctx, profile, contentType, rid)
+		case "cinemeta":
+			return s.buildSeriesMetaFromCinemeta(ctx, profile, contentType, rid)
+		default:
+			return s.buildSeriesMetaFromTVDB(ctx, profile, contentType, rid)
+		}
 	}
-	meta, err := primary(ctx, profile, contentType, rid)
+	meta, err := build(primary)
 	if err == nil {
 		return meta, nil
 	}
+	if errors.Is(err, errCertificationBlocked) {
+		return nil, err
+	}
 	logger.Debug("Primary series meta source unavailable; falling back",
-		"source", profile.EffectiveSeriesMetaSource(),
+		"source", primary, "backup", backup,
 		"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID, "err", err)
-	return fallback(ctx, profile, contentType, rid)
+	return build(backup)
 }
 
 // resolveTVDBIDForMeta fills rid.tvdbID from whichever id the request carried.
@@ -376,6 +413,140 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 		}
 	}
 	return ""
+}
+
+// resolveIMDbIDForMeta fills rid.imdbID from whichever id the request
+// carried, resolving through TMDB's external ids when only a TMDB id is
+// known. Cinemeta keys everything by IMDb id and has no other identity
+// scheme, so this is the one lookup its meta path needs before it can serve.
+// mediaType is TMDB's own vocabulary ("movie" or "tv").
+func (s *Server) resolveIMDbIDForMeta(rid *resolvedMetaID, mediaType string) string {
+	if rid.imdbID != "" {
+		return rid.imdbID
+	}
+	rt := s.runtime()
+	if rid.tmdbID > 0 && rt.tmdbClient != nil {
+		if ext, err := rt.tmdbClient.GetExternalIDs(rid.tmdbID, mediaType); err == nil && ext.IMDbID != "" {
+			return ext.IMDbID
+		}
+	}
+	return ""
+}
+
+// buildMovieMetaFromCinemeta serves movie meta from the public Cinemeta
+// addon API (opt-in via movie_source/movie_backup_source). Cinemeta only
+// resolves by IMDb id, so a request that arrived as a bare TMDB id needs one
+// more lookup first.
+func (s *Server) buildMovieMetaFromCinemeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.cinemetaClient == nil {
+		return nil, fmt.Errorf("cinemeta client unavailable")
+	}
+	// Cinemeta carries no certification data; a capped profile requires an
+	// explicit "allow unrated" to admit it, same fail-closed rule as any
+	// other title with an unknown rating. The verdict never depends on
+	// Cinemeta's response, so a capped profile without allow_unrated is
+	// rejected before spending a network request on a title it will never
+	// serve.
+	if err := certGateMeta(profile, 0, false); err != nil {
+		return nil, err
+	}
+	imdbID := s.resolveIMDbIDForMeta(rid, "movie")
+	if imdbID == "" {
+		return nil, fmt.Errorf("no IMDb id resolved for Cinemeta")
+	}
+	cm, err := s.cinemetaClient.GetMeta(ctx, "movie", imdbID)
+	if err != nil {
+		return nil, err
+	}
+	if rid.imdbID == "" {
+		rid.imdbID = imdbID
+		rid.canonicalID = imdbID
+	}
+	return cinemetaToMetaObject(cm, rid, "movie"), nil
+}
+
+// buildSeriesMetaFromCinemeta mirrors buildMovieMetaFromCinemeta for series.
+func (s *Server) buildSeriesMetaFromCinemeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.cinemetaClient == nil {
+		return nil, fmt.Errorf("cinemeta client unavailable")
+	}
+	if err := certGateMeta(profile, 0, false); err != nil {
+		return nil, err
+	}
+	imdbID := s.resolveIMDbIDForMeta(rid, "tv")
+	if imdbID == "" {
+		return nil, fmt.Errorf("no IMDb id resolved for Cinemeta")
+	}
+	cm, err := s.cinemetaClient.GetMeta(ctx, "series", imdbID)
+	if err != nil {
+		return nil, err
+	}
+	if rid.imdbID == "" {
+		rid.imdbID = imdbID
+		rid.canonicalID = imdbID
+	}
+	return cinemetaToMetaObject(cm, rid, seriesMetaType(contentType)), nil
+}
+
+// cinemetaToMetaObject maps a Cinemeta meta object onto our own MetaObject.
+// Cinemeta's shape already follows the Stremio addon spec our own MetaObject
+// is modeled on, so most fields carry straight across. Video ids are always
+// rebuilt from rid.canonicalID rather than trusted from Cinemeta's own
+// payload — clients match a stream request back to the video id the meta
+// resource handed them, so it must be anchored to the id the request
+// actually resolved to, exactly like the TVDB and TMDB series paths.
+func cinemetaToMetaObject(cm *cinemeta.Meta, rid *resolvedMetaID, metaType string) *MetaObject {
+	meta := &MetaObject{
+		ID:          rid.canonicalID,
+		Type:        metaType,
+		Name:        cm.Name,
+		Description: cm.Description,
+		Poster:      cm.Poster,
+		Background:  cm.Background,
+		Logo:        cm.Logo,
+		ReleaseInfo: cm.ReleaseInfo,
+		Released:    cm.Released,
+		IMDBRating:  cm.IMDBRating,
+		Runtime:     cm.Runtime,
+		Genres:      cm.Genres,
+		Cast:        cm.Cast,
+		Director:    cm.Director,
+		Writer:      cm.Writer,
+	}
+	// Cinemeta's cast has names only — no character or photo, unlike TMDB's
+	// credits payload — but app_extras.cast still needs an entry per name so
+	// clients that read cast avatars from there see the same list.
+	for _, name := range cm.Cast {
+		if name == "" {
+			continue
+		}
+		appendCastMember(meta, MetaCastMember{Name: name})
+	}
+	for _, t := range cm.Trailers {
+		if t.Source == "" {
+			continue
+		}
+		meta.Trailers = append(meta.Trailers, MetaTrailer{Source: t.Source, Type: t.Type})
+		if len(meta.Trailers) >= 3 {
+			break
+		}
+	}
+	for _, v := range cm.Videos {
+		if v.Season < 0 || v.Episode < 1 {
+			continue
+		}
+		meta.Videos = append(meta.Videos, MetaVideo{
+			ID:        fmt.Sprintf("%s:%d:%d", rid.canonicalID, v.Season, v.Episode),
+			Title:     v.Title,
+			Season:    v.Season,
+			Episode:   v.Episode,
+			Released:  v.Released,
+			Overview:  v.Overview,
+			Thumbnail: v.Thumbnail,
+		})
+	}
+	specialsLast(meta.Videos)
+	return meta
 }
 
 func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {

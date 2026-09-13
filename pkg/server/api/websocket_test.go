@@ -50,6 +50,61 @@ func TestValidateConfigRejectsMalformedExternalCatalogURLWithoutPanicking(t *tes
 	}
 }
 
+// The metadata source dropdowns let a profile name Cinemeta as either the
+// primary or backup source for movies and series; the config save must
+// accept it exactly like every other recognized source, and still reject
+// garbage and a backup equal to the primary.
+func TestValidateConfigAcceptsCinemetaAsMovieAndSeriesSource(t *testing.T) {
+	s := &Server{}
+	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
+		Name:               "Default",
+		MovieSource:        "cinemeta",
+		SeriesSource:       "tvdb",
+		SeriesBackupSource: "cinemeta",
+	}}}
+	errs := s.validateConfig(cfg)
+	for _, key := range []string{"metadata_profiles.0.movie_source", "metadata_profiles.0.series_source", "metadata_profiles.0.series_backup_source"} {
+		if got := errs[key]; got != "" {
+			t.Fatalf("%s: unexpected error %q", key, got)
+		}
+	}
+}
+
+func TestValidateConfigRejectsUnknownMetadataSources(t *testing.T) {
+	s := &Server{}
+	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
+		Name:               "Default",
+		MovieSource:        "netflix",
+		MovieBackupSource:  "hulu",
+		SeriesSource:       "tvdb",
+		SeriesBackupSource: "disney+",
+	}}}
+	errs := s.validateConfig(cfg)
+	for _, key := range []string{"metadata_profiles.0.movie_source", "metadata_profiles.0.movie_backup_source", "metadata_profiles.0.series_backup_source"} {
+		if got := errs[key]; got == "" {
+			t.Fatalf("%s: expected an error for the unknown source, got none: %#v", key, errs)
+		}
+	}
+}
+
+func TestValidateConfigRejectsMetadataBackupEqualToPrimary(t *testing.T) {
+	s := &Server{}
+	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
+		Name:               "Default",
+		MovieSource:        "cinemeta",
+		MovieBackupSource:  "cinemeta",
+		SeriesSource:       "cinemeta",
+		SeriesBackupSource: "cinemeta",
+	}}}
+	errs := s.validateConfig(cfg)
+	if got := errs["metadata_profiles.0.movie_backup_source"]; got == "" {
+		t.Fatal("expected an error: movie backup equals primary")
+	}
+	if got := errs["metadata_profiles.0.series_backup_source"]; got == "" {
+		t.Fatal("expected an error: series backup equals primary")
+	}
+}
+
 // NZB limits must be non-negative, and min size must not exceed max size —
 // including when the contradiction only appears after a kind entry merges
 // over the default entry.

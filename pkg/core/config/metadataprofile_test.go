@@ -39,6 +39,54 @@ func TestEffectiveAnimeMetaSourcesAreOrderedAndDistinct(t *testing.T) {
 	}
 }
 
+func TestEffectiveSeriesMetaSourcesAreOrderedAndDistinct(t *testing.T) {
+	tests := []struct {
+		name, primary, backup, wantPrimary, wantBackup string
+	}{
+		{"default", "", "", "tvdb", "tmdb"},
+		{"tmdb primary keeps old default backup", "tmdb", "", "tmdb", "tvdb"},
+		{"cinemeta only via explicit backup", "", "cinemeta", "tvdb", "cinemeta"},
+		{"cinemeta as explicit primary", "cinemeta", "", "cinemeta", "tmdb"},
+		{"cinemeta primary with tvdb backup", "cinemeta", "tvdb", "cinemeta", "tvdb"},
+		{"duplicate normalizes", "tvdb", "tvdb", "tvdb", "tmdb"},
+		{"invalid normalizes", "invalid", "invalid", "tvdb", "tmdb"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, backup := (&MetadataProfileConfig{SeriesSource: tc.primary, SeriesBackupSource: tc.backup}).EffectiveSeriesMetaSources()
+			if primary != tc.wantPrimary || backup != tc.wantBackup {
+				t.Fatalf("sources = %q, %q; want %q, %q", primary, backup, tc.wantPrimary, tc.wantBackup)
+			}
+		})
+	}
+}
+
+func TestEffectiveMovieMetaSourcesOptInOnly(t *testing.T) {
+	tests := []struct {
+		name, primary, backup, wantPrimary, wantBackup string
+	}{
+		{"default has no backup", "", "", "tmdb", ""},
+		{"invalid primary normalizes, still no backup", "invalid", "", "tmdb", ""},
+		{"cinemeta backup opts in", "", "cinemeta", "tmdb", "cinemeta"},
+		{"cinemeta primary, no backup unless chosen", "cinemeta", "", "cinemeta", ""},
+		{"cinemeta primary with tmdb backup", "cinemeta", "tmdb", "cinemeta", "tmdb"},
+		{"backup equal to primary is dropped", "tmdb", "tmdb", "tmdb", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, backup := (&MetadataProfileConfig{MovieSource: tc.primary, MovieBackupSource: tc.backup}).EffectiveMovieMetaSources()
+			if primary != tc.wantPrimary || backup != tc.wantBackup {
+				t.Fatalf("sources = %q, %q; want %q, %q", primary, backup, tc.wantPrimary, tc.wantBackup)
+			}
+		})
+	}
+	// A nil profile is a valid caller (unbound streams check EffectiveXxx too).
+	primary, backup := (*MetadataProfileConfig)(nil).EffectiveMovieMetaSources()
+	if primary != "tmdb" || backup != "" {
+		t.Fatalf("nil profile sources = %q, %q; want tmdb, \"\"", primary, backup)
+	}
+}
+
 func TestMetadataProfileMigrationSeedsAndBinds(t *testing.T) {
 	cfg := loadFromJSON(t, `{
 		"config_version": 2,

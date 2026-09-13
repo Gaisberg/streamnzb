@@ -25,13 +25,20 @@ type MetadataProfileConfig struct {
 	// stream, subtitle, or configuration resources.
 	ExternalCatalogs []ExternalCatalogConfig `json:"external_catalogs,omitempty"`
 
-	// Per-media-type meta sources. Empty means the default; unknown values
-	// normalize to the default read-side. Today only series has a real choice
-	// (TVDB default, TMDB alternative).
-	MovieSource       string `json:"movie_source,omitempty"`
-	SeriesSource      string `json:"series_source,omitempty"`
-	AnimeSource       string `json:"anime_source,omitempty"`
-	AnimeBackupSource string `json:"anime_backup_source,omitempty"`
+	// Per-media-type meta sources. Movies, series and anime are fully
+	// independent — choosing a source for one never affects the others.
+	// Empty means the default; unknown values normalize to the default
+	// read-side.
+	//
+	// Cinemeta is opt-in only: it is never selected automatically. A profile
+	// that never sets these fields behaves exactly as before Cinemeta support
+	// existed (TMDB-only movies, TVDB/TMDB series, Kitsu/TVDB anime).
+	MovieSource        string `json:"movie_source,omitempty"`
+	MovieBackupSource  string `json:"movie_backup_source,omitempty"`
+	SeriesSource       string `json:"series_source,omitempty"`
+	SeriesBackupSource string `json:"series_backup_source,omitempty"`
+	AnimeSource        string `json:"anime_source,omitempty"`
+	AnimeBackupSource  string `json:"anime_backup_source,omitempty"`
 
 	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
 	// unaired-episode gate). nil means enabled.
@@ -79,13 +86,72 @@ type ExternalCatalogConfig struct {
 	SupportsSkip *bool `json:"supports_skip,omitempty"`
 }
 
-// EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"
-// (default) or "tmdb". Whichever is not primary stays the fallback.
-func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
-	if p != nil && p.SeriesSource == "tmdb" {
-		return "tmdb"
+// validSeriesSources are the recognized series primary/backup values, in the
+// order added — tvdb and tmdb are the pre-Cinemeta pair.
+var validSeriesSources = map[string]bool{"tvdb": true, "tmdb": true, "cinemeta": true}
+
+// EffectiveSeriesMetaSources returns the user-selected primary/backup series
+// meta providers. TVDB remains the default primary to preserve existing
+// profiles; TMDB is its historical fallback. Cinemeta only ever appears here
+// when the profile explicitly names it — it is never chosen automatically,
+// so an untouched profile behaves exactly as it did before Cinemeta support
+// existed.
+func (p *MetadataProfileConfig) EffectiveSeriesMetaSources() (primary, backup string) {
+	primary, backup = "tvdb", "tmdb"
+	if p == nil {
+		return primary, backup
 	}
-	return "tvdb"
+	if validSeriesSources[p.SeriesSource] {
+		primary = p.SeriesSource
+	}
+	// The default backup is whichever of tvdb/tmdb is not primary, matching
+	// the pre-Cinemeta behavior exactly when no backup is configured.
+	backup = "tmdb"
+	if primary == "tmdb" {
+		backup = "tvdb"
+	}
+	if validSeriesSources[p.SeriesBackupSource] {
+		backup = p.SeriesBackupSource
+	}
+	if primary == backup {
+		// A profile explicitly pointing both fields at the same source has no
+		// real fallback; degrade to the historical pair rather than serving
+		// the same failure twice.
+		if primary == "tvdb" {
+			backup = "tmdb"
+		} else {
+			backup = "tvdb"
+		}
+	}
+	return primary, backup
+}
+
+// EffectiveSeriesMetaSource returns just the primary series meta source, for
+// callers that only need to know which one serves first.
+func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
+	primary, _ := p.EffectiveSeriesMetaSources()
+	return primary
+}
+
+// validMovieSources are the recognized movie primary/backup values.
+var validMovieSources = map[string]bool{"tmdb": true, "cinemeta": true}
+
+// EffectiveMovieMetaSources returns the user-selected primary/backup movie
+// meta providers. TMDB remains the default primary and has no backup unless
+// one is explicitly configured — Cinemeta never engages on its own, matching
+// the "opt-in only" rule for every media type.
+func (p *MetadataProfileConfig) EffectiveMovieMetaSources() (primary, backup string) {
+	primary = "tmdb"
+	if p == nil {
+		return primary, ""
+	}
+	if validMovieSources[p.MovieSource] {
+		primary = p.MovieSource
+	}
+	if validMovieSources[p.MovieBackupSource] && p.MovieBackupSource != primary {
+		backup = p.MovieBackupSource
+	}
+	return primary, backup
 }
 
 // EffectiveAnimeMetaSources returns the user-selected ordered metadata

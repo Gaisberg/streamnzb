@@ -651,10 +651,31 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.language", i)] = "Not a valid language tag"
 				}
 			}
+			switch mp.MovieSource {
+			case "", "tmdb", "cinemeta":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.movie_source", i)] = "Unknown movie source"
+			}
+			switch mp.MovieBackupSource {
+			case "", "tmdb", "cinemeta":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.movie_backup_source", i)] = "Unknown movie backup source"
+			}
+			if mp.MovieSource != "" && mp.MovieBackupSource != "" && mp.MovieSource == mp.MovieBackupSource {
+				errors[fmt.Sprintf("metadata_profiles.%d.movie_backup_source", i)] = "Movie backup must be different from the primary source"
+			}
 			switch mp.SeriesSource {
-			case "", "tvdb", "tmdb":
+			case "", "tvdb", "tmdb", "cinemeta":
 			default:
 				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
+			}
+			switch mp.SeriesBackupSource {
+			case "", "tvdb", "tmdb", "cinemeta":
+			default:
+				errors[fmt.Sprintf("metadata_profiles.%d.series_backup_source", i)] = "Unknown series backup source"
+			}
+			if mp.SeriesSource != "" && mp.SeriesBackupSource != "" && mp.SeriesSource == mp.SeriesBackupSource {
+				errors[fmt.Sprintf("metadata_profiles.%d.series_backup_source", i)] = "Series backup must be different from the primary source"
 			}
 			switch mp.AnimeSource {
 			case "", "kitsu", "tvdb":
