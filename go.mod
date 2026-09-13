@@ -1,6 +1,6 @@
 module streamnzb
 
-go 1.25.6
+go 1.26.0
 
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
@@ -15,19 +15,19 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/ulikunitz/xz v0.5.16 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.42.0
 )
 
-require golang.org/x/net v0.58.0
+require golang.org/x/net v0.59.0
 
 require github.com/gorilla/websocket v1.5.3
 
 require (
 	github.com/dreulavelle/jhin v0.7.1
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
-	golang.org/x/crypto v0.55.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sync v0.23.0
 	modernc.org/sqlite v1.58.0
 )
 
@@ -40,7 +40,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
