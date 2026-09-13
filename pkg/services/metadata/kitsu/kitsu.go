@@ -379,6 +379,11 @@ type listingAPIResponse struct {
 func (c *Client) GetAnimeListing(ctx context.Context, kind string, offset int) ([]AnimeListing, error) {
 	switch kind {
 	case "trending":
+		if offset > 0 {
+			// The trending feed is a fixed top 20 with no paging; a later
+			// page is empty, not the same twenty again.
+			return nil, nil
+		}
 		return c.getListing(ctx, "/trending/anime?limit=20")
 	case "top_rated":
 		return c.getListing(ctx, fmt.Sprintf("/anime?sort=-averageRating&page[limit]=20&page[offset]=%d", offset))

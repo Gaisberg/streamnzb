@@ -166,6 +166,11 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 }
 
 func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	if req.Skip > 0 && req.Search == "" && !def.SupportsSkip {
+		// A catalog without paging has only its first page; answering a
+		// skip with the first page again would repeat it.
+		return nil, nil
+	}
 	switch def.Provider {
 	case "tmdb":
 		return s.tmdbCatalog(ctx, def, req)
