@@ -1,5 +1,22 @@
 # Changelog
 
+## [5.19.0](https://github.com/Gaisberg/streamnzb/compare/v5.18.0...v5.19.0) (2026-09-13)
+
+
+### Features
+
+* implement jellyfin api translation layer ([396a965](https://github.com/Gaisberg/streamnzb/commit/396a965d48f33a312b85848a3be63922a298e5aa))
+
+
+### Bug Fixes
+
+* **ffprobe:** consecutive ffprobing sometimes resulted in false negative probing results ([396a965](https://github.com/Gaisberg/streamnzb/commit/396a965d48f33a312b85848a3be63922a298e5aa))
+* jellyfin client compatibility, language rules and ffprobe frame counts ([53144c6](https://github.com/Gaisberg/streamnzb/commit/53144c663a9cc84c017f901845bdd5d54d784736))
+* **loader:** scope the segment size estimator to one release ([#285](https://github.com/Gaisberg/streamnzb/issues/285)) ([007e6b5](https://github.com/Gaisberg/streamnzb/commit/007e6b5cd6582edcc3cdbb3ce6b61603b6a66cbc))
+* **search:** treat season 0 as Specials and stop ignoring short sequel suffixes ([3c69f1e](https://github.com/Gaisberg/streamnzb/commit/3c69f1e846db46009361a123bfb0a2ea0fca8982)), closes [#275](https://github.com/Gaisberg/streamnzb/issues/275) [#276](https://github.com/Gaisberg/streamnzb/issues/276)
+* **stremio:** surface indexer-reported languages so AIOStreams can filter on them ([#286](https://github.com/Gaisberg/streamnzb/issues/286)) ([2b44e49](https://github.com/Gaisberg/streamnzb/commit/2b44e49cf12b3bd149b8128669d55b64138c2871))
+* **tvdb:** request English translations when the display language is English ([#299](https://github.com/Gaisberg/streamnzb/issues/299)) ([eadac32](https://github.com/Gaisberg/streamnzb/commit/eadac321d79f696a6304441ffb1c3b8cf26dc414))
+
 ## [5.18.0](https://github.com/Gaisberg/streamnzb/compare/v5.17.0...v5.18.0) (2026-09-07)
 
 
