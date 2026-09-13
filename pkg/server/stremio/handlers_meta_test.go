@@ -330,7 +330,7 @@ func tvdbStubHandler() http.HandlerFunc {
 		case r.URL.Path == "/series/121361/episodes/default":
 			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
 				{"seasonNumber": 1, "number": 1, "name": "Winter Is Coming (TVDB)",
-				 "aired": "2011-04-17", "image": "https://artworks.thetvdb.com/e1.jpg"},
+				 "aired": "2011-04-17", "image": "https://artworks.thetvdb.com/e1.jpg", "runtime": 62},
 				{"seasonNumber": 0, "number": 1, "name": "Special", "aired": "2011-01-01"}
 			]}, "links": {"next": null}}`))
 		default:
@@ -403,6 +403,9 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 	if ep.Thumbnail != "https://artworks.thetvdb.com/e1.jpg" {
 		t.Fatalf("thumbnail = %q, want TVDB's episode image", ep.Thumbnail)
+	}
+	if ep.Runtime != 62 {
+		t.Fatalf("runtime = %d, want the episode's own 62 min from TVDB", ep.Runtime)
 	}
 	// Details-panel enrichment: actors only, ended-run year range, trailer id.
 	if len(meta.Cast) != 2 || meta.Cast[0] != "Emilia Clarke" || meta.Cast[1] != "Kit Harington" {

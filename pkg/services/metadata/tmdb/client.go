@@ -593,6 +593,7 @@ type TVEpisodeInfo struct {
 	Overview      string `json:"overview"`
 	AirDate       string `json:"air_date"`
 	StillPath     string `json:"still_path"`
+	Runtime       int    `json:"runtime"` // minutes, 0 when TMDB has none
 }
 
 func (c *Client) GetMovieTitle(imdbID string, tmdbID string) (string, error) {
