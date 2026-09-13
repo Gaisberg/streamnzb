@@ -364,7 +364,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 	cap, capped := capForProfile(req.Profile)
 	previews := make([]MetaPreview, 0, len(listings))
 	for _, item := range listings {
-		if item.ID == "" || item.CanonicalTitle == "" {
+		if item.ID == "" || (item.CanonicalTitle == "" && item.EnglishTitle == "") {
 			continue
 		}
 		if capped && !cap.Allows(certification.NormalizeKitsu(item.AgeRating, item.Nsfw)) {
