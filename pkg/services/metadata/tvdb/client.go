@@ -128,26 +128,34 @@ func (c *Client) Ping() error {
 	return err
 }
 
+// EnglishISO3 is the translation TVDB is asked for when the display language
+// is English or unset. TVDB's default record is the series' original language
+// (Squid Game is 오징어 게임, Attack on Titan is 進撃の巨人), so English is a
+// translation like any other and has to be requested explicitly.
+const EnglishISO3 = "eng"
+
 // LanguageToISO3 converts a TMDB-style display-language tag ("de-DE") to the
 // ISO 639-3 code TVDB's translation endpoints address ("deu"). An empty or
-// unparseable tag, or English, yields "" — translations off. The client is
-// shared by every stream, so language is always a per-call parameter derived
-// from the requesting stream's metadata profile, never client state.
+// unparseable tag, or English, yields EnglishISO3: translations are never
+// off, because the default record is not English. Callers that want the raw
+// default record use the untranslated getters with "". The client is shared
+// by every stream, so language is always a per-call parameter derived from
+// the requesting stream's metadata profile, never client state.
 func LanguageToISO3(tag string) string {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
-		return ""
+		return EnglishISO3
 	}
 	parsed, err := language.Parse(tag)
 	if err != nil {
 		logger.Debug("TVDB display language tag not parseable, staying English", "tag", tag, "err", err)
-		return ""
+		return EnglishISO3
 	}
 	base, _ := parsed.Base()
-	if iso3 := base.ISO3(); iso3 != "" && iso3 != "eng" {
+	if iso3 := base.ISO3(); iso3 != "" {
 		return iso3
 	}
-	return ""
+	return EnglishISO3
 }
 
 type loginResponse struct {

@@ -147,7 +147,8 @@ func TestDisplayLanguageTranslations(t *testing.T) {
 }
 
 // TestDisplayLanguageMissingTranslationFallsBack pins fail-open behavior: a
-// 404 translation keeps the default record, and English disables the lookups.
+// 404 translation keeps the default record, English included: it is asked
+// for once and the miss is cached.
 func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
 	var translationHits atomic.Int64
 	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -182,15 +183,92 @@ func TestDisplayLanguageMissingTranslationFallsBack(t *testing.T) {
 		t.Fatalf("translation hits after repeat = %d, want still 1 (404 cached)", translationHits.Load())
 	}
 
-	// English (any region) turns translation lookups off entirely.
-	if got := LanguageToISO3("en-GB"); got != "" {
-		t.Fatalf("LanguageToISO3(en-GB) = %q, want empty", got)
+	// English (any region) asks for the eng translation once; its 404 is
+	// cached like any other language's.
+	if got := LanguageToISO3("en-GB"); got != EnglishISO3 {
+		t.Fatalf("LanguageToISO3(en-GB) = %q, want %q", got, EnglishISO3)
 	}
 	if _, err := client.GetSeriesExtendedTranslated("73739", LanguageToISO3("en-GB")); err != nil {
 		t.Fatalf("english GetSeriesExtendedTranslated: %v", err)
 	}
-	if translationHits.Load() != 1 {
-		t.Fatalf("translation hits after en-GB = %d, want still 1", translationHits.Load())
+	if _, err := client.GetSeriesExtendedTranslated("73739", LanguageToISO3("en-GB")); err != nil {
+		t.Fatalf("second english GetSeriesExtendedTranslated: %v", err)
+	}
+	if translationHits.Load() != 2 {
+		t.Fatalf("translation hits after en-GB = %d, want 2 (one eng lookup, then cached)", translationHits.Load())
+	}
+}
+
+// TestEnglishDisplayLanguageRequestsEnglishTranslation pins the fix for
+// non-English-origin series: TVDB's default record is the original language,
+// so English (or an unset language) must ask for the eng translation for the
+// series and its episodes, while other languages keep addressing their own.
+func TestEnglishDisplayLanguageRequestsEnglishTranslation(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/series/383275/extended":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"id": 383275, "name": "오징어 게임", "overview": "빚에 쫓기는 사람들."
+			}}`))
+		case "/series/383275/translations/eng":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"name": "Squid Game", "overview": "Hundreds of cash-strapped players."
+			}}`))
+		case "/series/383275/translations/deu":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {
+				"name": "Squid Game (DE)", "overview": ""
+			}}`))
+		case "/series/383275/episodes/default":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+				{"seasonNumber": 1, "number": 1, "name": "무궁화 꽃이 피던 날", "overview": "첫 번째 게임."}
+			]}, "links": {"next": null}}`))
+		case "/series/383275/episodes/default/eng":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+				{"seasonNumber": 1, "number": 1, "name": "Red Light, Green Light", "overview": "The first game."}
+			]}, "links": {"next": null}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	for _, tag := range []string{"", "en", "en-US", "??"} {
+		lang3 := LanguageToISO3(tag)
+		if lang3 != "eng" {
+			t.Fatalf("LanguageToISO3(%q) = %q, want %q", tag, lang3, "eng")
+		}
+		ext, err := client.GetSeriesExtendedTranslated("383275", lang3)
+		if err != nil {
+			t.Fatalf("GetSeriesExtendedTranslated(%q): %v", tag, err)
+		}
+		if ext.Name != "Squid Game" || ext.Overview != "Hundreds of cash-strapped players." {
+			t.Fatalf("language %q: ext = %q / %q, want the English translation", tag, ext.Name, ext.Overview)
+		}
+		episodes, err := client.GetSeriesEpisodesTranslated("383275", lang3)
+		if err != nil {
+			t.Fatalf("GetSeriesEpisodesTranslated(%q): %v", tag, err)
+		}
+		if len(episodes) != 1 || episodes[0].Name != "Red Light, Green Light" || episodes[0].Overview != "The first game." {
+			t.Fatalf("language %q: episodes = %+v, want the English overlay", tag, episodes)
+		}
+	}
+
+	// Other languages still address their own translation; a missing
+	// German overview keeps the default record's, not English.
+	if lang3 := LanguageToISO3("de-DE"); lang3 != "deu" {
+		t.Fatalf("LanguageToISO3(de-DE) = %q, want deu", lang3)
+	}
+	ext, err := client.GetSeriesExtendedTranslated("383275", "deu")
+	if err != nil {
+		t.Fatalf("german GetSeriesExtendedTranslated: %v", err)
+	}
+	if ext.Name != "Squid Game (DE)" || ext.Overview != "빚에 쫓기는 사람들." {
+		t.Fatalf("german ext = %q / %q", ext.Name, ext.Overview)
+	}
+
+	// The untranslated getter is unchanged: "" means the raw default record.
+	raw, err := client.GetSeriesExtended("383275")
+	if err != nil || raw.Name != "오징어 게임" {
+		t.Fatalf("GetSeriesExtended = %+v, err = %v, want the default record", raw, err)
 	}
 }
 
