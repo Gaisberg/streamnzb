@@ -163,6 +163,18 @@ func (c *Client) GetMeta(ctx context.Context, contentType, imdbID string) (*Meta
 	return mapMeta(env.Meta), nil
 }
 
+// normalizeReleaseInfoDash rewrites Cinemeta's en dash ("2011–2019",
+// "2023–") to the plain ASCII hyphen every other source in this codebase
+// uses for the same "firstYear-lastYear" / "firstYear-" shape (see
+// seriesReleaseInfo in pkg/server/stremio/handlers_meta.go). Nothing else
+// here fixes this: our own Jellyfin-compatibility layer's seriesStatus()
+// parser (and, plausibly, some Stremio client's own parsing) matches an
+// ASCII "-" specifically, so left as Cinemeta serves it, a series sourced
+// from Cinemeta would never register as "Continuing" or "Ended" there.
+func normalizeReleaseInfoDash(releaseInfo string) string {
+	return strings.ReplaceAll(releaseInfo, "–", "-")
+}
+
 func mapMeta(raw *rawMeta) *Meta {
 	m := &Meta{
 		IMDbID:      raw.IMDbID,
@@ -171,7 +183,7 @@ func mapMeta(raw *rawMeta) *Meta {
 		Poster:      raw.Poster,
 		Background:  raw.Background,
 		Logo:        raw.Logo,
-		ReleaseInfo: raw.ReleaseInfo,
+		ReleaseInfo: normalizeReleaseInfoDash(raw.ReleaseInfo),
 		Released:    raw.Released,
 		IMDBRating:  raw.IMDBRating,
 		Runtime:     raw.Runtime,

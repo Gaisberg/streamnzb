@@ -78,6 +78,9 @@ func TestGetMetaSeriesVideos(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMeta: %v", err)
 	}
+	if meta.ReleaseInfo != "2011-2019" {
+		t.Fatalf("ReleaseInfo = %q, want the en dash normalized to an ASCII hyphen", meta.ReleaseInfo)
+	}
 	if len(meta.Videos) != 2 {
 		t.Fatalf("videos = %d, want 2", len(meta.Videos))
 	}
@@ -136,6 +139,42 @@ func TestGetMetaContentTypeNormalizesToSeries(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, "/meta/series/") {
 		t.Fatalf("path = %q, want the series resource for an unrecognized content type", gotPath)
+	}
+}
+
+// TestGetMetaNormalizesReleaseInfoDash pins a real cross-layer compatibility
+// bug: Cinemeta always renders its year range with a Unicode en dash ("–",
+// U+2013), for both an ended run ("2011–2019") and an ongoing one ("2023–"),
+// while every other metadata source in this codebase renders the exact same
+// shape with a plain ASCII hyphen (see seriesReleaseInfo in
+// pkg/server/stremio/handlers_meta.go). The Jellyfin-compatibility layer's
+// seriesStatus() (pkg/server/jellyfin/dto.go) — which Infuse and other
+// Jellyfin clients read this field through — matches an ASCII "-"
+// specifically, so an unnormalized en dash would silently make every
+// Cinemeta-sourced series report neither "Continuing" nor "Ended" there.
+func TestGetMetaNormalizesReleaseInfoDash(t *testing.T) {
+	cases := []struct {
+		name        string
+		releaseInfo string
+		want        string
+	}{
+		{"ended run", "2011–2019", "2011-2019"},
+		{"ongoing run", "2023–", "2023-"},
+		{"single year unaffected", "1999", "1999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"meta":{"imdb_id":"tt1","name":"X","releaseInfo":"` + tc.releaseInfo + `"}}`))
+			})
+			meta, err := c.GetMeta(context.Background(), "series", "tt1")
+			if err != nil {
+				t.Fatalf("GetMeta: %v", err)
+			}
+			if meta.ReleaseInfo != tc.want {
+				t.Fatalf("ReleaseInfo = %q, want %q", meta.ReleaseInfo, tc.want)
+			}
+		})
 	}
 }
 
