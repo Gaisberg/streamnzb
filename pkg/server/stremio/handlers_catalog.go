@@ -764,6 +764,14 @@ func (s *Server) becauseYouWatchedCatalog(ctx context.Context, def CatalogDef, r
 		if len(perSeed) == 0 {
 			break
 		}
+		if ctx.Err() != nil {
+			// A call already in flight when the deadline passed can still
+			// return real results, since GetRecommendations does not accept
+			// ctx. Stop here rather than paying for the enrichment below
+			// (filterTMDBResults, resolveIMDbIDs) on a page the deadline has
+			// already ended.
+			break
+		}
 
 		var merged []tmdb.SearchMultiResult
 		for round := 0; ; round++ {
