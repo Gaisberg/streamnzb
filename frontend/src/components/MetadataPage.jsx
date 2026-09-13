@@ -11,7 +11,7 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
 import { moveItem } from "@/lib/lists"
-import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Pencil, Plus, Search, ShieldCheck, TriangleAlert, X } from "lucide-react"
 import { apiFetch } from "@/api"
 import { nameKey, usageByName } from "@/lib/usage"
 import { cn, selectClass } from "@/lib/utils"
@@ -22,6 +22,46 @@ const PROVIDER_LABELS = {
   kitsu: "Kitsu",
   simkl: "Simkl",
   local: "This server",
+}
+
+const EXTERNAL_SOURCE_LABELS = {
+  tmdb_list: "TMDB",
+  mdblist: "MDBList",
+  letterboxd: "Letterboxd",
+}
+
+function externalSourceLabel(source) {
+  if (source?.source_label) return source.source_label
+  if (EXTERNAL_SOURCE_LABELS[source?.kind]) return EXTERNAL_SOURCE_LABELS[source.kind]
+  try {
+    const name = new URL(source?.manifest_url).hostname.replace(/^www\./, "").split(".")[0]
+    if (name) return name.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+  } catch {
+    // A malformed legacy source remains editable and falls through to a clear label.
+  }
+  return "Stremio catalog"
+}
+
+const GENERATED_SOURCE_COLORS = [
+  "border-amber-400/25 bg-amber-400/10 text-amber-700 dark:text-amber-300",
+  "border-cyan-400/25 bg-cyan-400/10 text-cyan-700 dark:text-cyan-300",
+  "border-fuchsia-400/25 bg-fuchsia-400/10 text-fuchsia-700 dark:text-fuchsia-300",
+  "border-lime-400/25 bg-lime-400/10 text-lime-700 dark:text-lime-300",
+  "border-orange-400/25 bg-orange-400/10 text-orange-700 dark:text-orange-300",
+  "border-rose-400/25 bg-rose-400/10 text-rose-700 dark:text-rose-300",
+]
+
+function sourceBadgeClass(label, key) {
+  const normalized = String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "")
+  if (normalized === "tmdb") return "border-sky-400/25 bg-sky-400/10 text-sky-700 dark:text-sky-300"
+  if (normalized === "mdblist") return "border-violet-400/25 bg-violet-400/10 text-violet-700 dark:text-violet-300"
+  if (normalized === "letterboxd") return "border-emerald-400/25 bg-emerald-400/10 text-emerald-700 dark:text-emerald-300"
+  // A deterministic hash means unknown sources feel distinct but never change
+  // color after a refresh, profile save, or client restart.
+  const seed = String(key || label || "catalog")
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) | 0
+  return GENERATED_SOURCE_COLORS[Math.abs(hash) % GENERATED_SOURCE_COLORS.length]
 }
 
 
@@ -113,9 +153,10 @@ function describeDelete(profile, usage) {
 }
 
 function CatalogBadges({ def }) {
+  const source = def.source_label || PROVIDER_LABELS[def.provider] || def.provider
   return (
     <span className="flex flex-wrap items-center gap-1">
-      <Badge variant="outline" className="shrink-0 text-[10px]">{PROVIDER_LABELS[def.provider] || def.provider}</Badge>
+      <Badge variant="outline" className={cn("shrink-0 border px-2 text-[10px] font-medium", sourceBadgeClass(source, source))}>{source}</Badge>
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">{def.type}</Badge>
     </span>
   )
@@ -126,28 +167,88 @@ function CatalogBadges({ def }) {
 function MetadataProfileEditor({ draft, onChange, registry, registryError, certOptions, simklCard }) {
   const [addOpen, setAddOpen] = useState(false)
   const [query, setQuery] = useState("")
+  const [sourceOpen, setSourceOpen] = useState(false)
+  const [sourceURL, setSourceURL] = useState("")
+  const [sourcePreview, setSourcePreview] = useState(null)
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState("")
+  const [editingExternalID, setEditingExternalID] = useState(null)
+  const [editingExternalName, setEditingExternalName] = useState("")
 
-  const defsByID = useMemo(() => new Map(registry.map((def) => [def.id, def])), [registry])
-  const rows = useMemo(() => seedRows(registry, draft.catalogs ?? null), [registry, draft.catalogs])
+  const externalRows = useMemo(() => draft.external_catalogs || [], [draft.external_catalogs])
+  const externalDefs = useMemo(() => externalRows.map((source) => ({ id: source.id, name: source.name, type: source.remote_type === "tv" ? "series" : String(source.remote_type || "").toLowerCase(), provider: "external", source_label: externalSourceLabel(source), supports_skip: source.supports_skip !== false })), [externalRows])
+  const allDefs = useMemo(() => [...registry, ...externalDefs], [registry, externalDefs])
+  const defsByID = useMemo(() => new Map(allDefs.map((def) => [def.id, def])), [allDefs])
+  const rows = useMemo(() => seedRows(allDefs, draft.catalogs ?? null), [allDefs, draft.catalogs])
 
   const setRows = (next) => {
     onChange({ ...draft, catalogs: next.map((id) => ({ id, enabled: true })) })
   }
 
   const available = useMemo(
-    () => registry.filter((def) => !rows.includes(def.id)),
-    [registry, rows]
+    () => allDefs.filter((def) => !rows.includes(def.id)),
+    [allDefs, rows]
   )
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return available
     return available.filter((def) =>
-      [def.name, def.type, def.provider, PROVIDER_LABELS[def.provider] || ""]
+      [def.name, def.type, def.provider, def.source_label || "", PROVIDER_LABELS[def.provider] || ""]
         .some((text) => text.toLowerCase().includes(q))
     )
   }, [available, query])
 
   const capped = Boolean(draft.max_certification)
+
+  const inspectSource = async () => {
+    setSourceLoading(true)
+    setSourceError("")
+    setSourcePreview(null)
+    try {
+      setSourcePreview(await apiFetch("/api/metadata/sources/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manifest_url: sourceURL }),
+      }))
+    } catch (err) {
+      setSourceError(err.message || "Could not test this source.")
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
+  const addExternalCatalog = (catalog) => {
+    const sourceKey = sourceURL.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
+    const remoteKey = String(catalog.remote_id || "catalog").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "catalog"
+    const next = [...externalRows, {
+      id: `external.${sourceKey}.${catalog.remote_type}.${remoteKey}`,
+      name: catalog.name,
+      kind: sourcePreview?.kind || "",
+      source_label: EXTERNAL_SOURCE_LABELS[sourcePreview?.kind] || sourcePreview?.name || externalSourceLabel({ kind: sourcePreview?.kind, manifest_url: sourceURL.trim() }),
+      manifest_url: sourceURL.trim(),
+      remote_type: catalog.remote_type,
+      remote_id: catalog.remote_id,
+      supports_skip: catalog.supports_skip !== false,
+    }]
+    onChange({ ...draft, external_catalogs: next, catalogs: [...rows, next[next.length - 1].id].map((id) => ({ id, enabled: true })) })
+  }
+
+  const renameExternalCatalog = (id, name) => onChange({ ...draft, external_catalogs: externalRows.map((source) => source.id === id ? { ...source, name } : source) })
+  const removeCatalog = (id) => onChange({ ...draft, catalogs: rows.filter((rowID) => rowID !== id).map((rowID) => ({ id: rowID, enabled: true })), external_catalogs: externalRows.filter((source) => source.id !== id) })
+  const startRenameExternalCatalog = (source) => {
+    setEditingExternalID(source.id)
+    setEditingExternalName(source.name)
+  }
+  const finishRenameExternalCatalog = (id) => {
+    const name = editingExternalName.trim()
+    if (name) renameExternalCatalog(id, name)
+    setEditingExternalID(null)
+    setEditingExternalName("")
+  }
+  const cancelRenameExternalCatalog = () => {
+    setEditingExternalID(null)
+    setEditingExternalName("")
+  }
 
   return (
     <div className="space-y-4">
@@ -188,7 +289,36 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                   return (
                     <SortableRow key={id} id={id}>
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="truncate text-sm font-medium">{def.name}</span>
+                        {def.provider === "external" ? (
+                          editingExternalID === def.id ? (
+                            <div className="flex min-w-0 items-center gap-1">
+                              <Input
+                                autoFocus
+                                className="h-7 max-w-sm text-sm"
+                                value={editingExternalName}
+                                onChange={(e) => setEditingExternalName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") finishRenameExternalCatalog(def.id)
+                                  if (e.key === "Escape") cancelRenameExternalCatalog()
+                                }}
+                                aria-label={`Rename ${def.name}`}
+                              />
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => finishRenameExternalCatalog(def.id)} aria-label={`Save ${def.name}`}>
+                                <Check className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground" onClick={cancelRenameExternalCatalog} aria-label="Cancel rename">
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex min-w-0 items-center gap-1">
+                              <span className="truncate text-sm font-medium">{def.name}</span>
+                              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" onClick={() => startRenameExternalCatalog(externalRows.find((source) => source.id === def.id))} aria-label={`Rename ${def.name}`}>
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )
+                        ) : <span className="truncate text-sm font-medium">{def.name}</span>}
                         <CatalogBadges def={def} />
                       </div>
                       <Button
@@ -196,7 +326,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => setRows(rows.filter((rowID) => rowID !== id))}
+                        onClick={() => removeCatalog(id)}
                         aria-label={`Remove ${def.name}`}
                       >
                         <X className="h-4 w-4" />
@@ -209,6 +339,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           )}
         </CardContent>
       </Card>
+
 
       <Card className="border border-border bg-card">
         <CardHeader className="pb-3">
@@ -277,7 +408,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
           <CardTitle className="text-base font-semibold">Sources &amp; language</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="metadata-source-movie" className="text-sm">Movies</Label>
               <select id="metadata-source-movie" className={selectClass} value="tmdb" disabled>
@@ -297,15 +428,41 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="metadata-source-anime" className="text-sm">Anime</Label>
-              <select id="metadata-source-anime" className={selectClass} value="kitsu" disabled>
-                <option value="kitsu">Kitsu</option>
+              <Label htmlFor="metadata-source-anime" className="text-sm">Anime primary</Label>
+              <select
+                id="metadata-source-anime"
+                className={selectClass}
+                value={draft.anime_source === "tvdb" ? "tvdb" : "kitsu"}
+                onChange={(e) => {
+                  const primary = e.target.value
+                  const backup = primary === "kitsu" ? "tvdb" : "kitsu"
+                  onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
+                }}
+              >
+                <option value="kitsu">Kitsu (default)</option>
+                <option value="tvdb">TVDB</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="metadata-source-anime-backup" className="text-sm">Anime backup</Label>
+              <select
+                id="metadata-source-anime-backup"
+                className={selectClass}
+                value={draft.anime_source === "tvdb" ? "kitsu" : (draft.anime_backup_source === "kitsu" ? "kitsu" : "tvdb")}
+                onChange={(e) => {
+                  const backup = e.target.value
+                  const primary = backup === "kitsu" ? "tvdb" : "kitsu"
+                  onChange({ ...draft, anime_source: primary === "kitsu" ? undefined : primary, anime_backup_source: backup === "tvdb" ? undefined : backup })
+                }}
+              >
+                <option value={draft.anime_source === "tvdb" ? "kitsu" : "tvdb"}>{draft.anime_source === "tvdb" ? "Kitsu" : "TVDB"}</option>
               </select>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            The source a media type&apos;s name, artwork and episode list come from. When the primary source
-            cannot serve a title, the other one steps in. Movies and anime have a single source today.
+            The primary source supplies a media type&apos;s metadata. Its backup is used only when the primary
+            cannot serve that title. Anime always keeps Kitsu&apos;s stable playback IDs, so switching metadata
+            sources never changes episode matching or stream lookup.
           </p>
           <div className="space-y-1.5">
             <Label htmlFor="metadata-language" className="text-sm">Language</Label>
@@ -390,6 +547,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               className="h-9 pl-8"
             />
           </div>
+          <Button type="button" variant="outline" size="sm" className="w-full" onClick={() => { setSourceURL(""); setSourcePreview(null); setSourceError(""); setSourceOpen(true); setAddOpen(false) }}>
+            <Link2 className="mr-2 h-4 w-4" /> Add source or public list URL
+          </Button>
           <div className="max-h-72 space-y-1 overflow-y-auto">
             {filtered.length === 0 ? (
               <p className="px-1 py-4 text-center text-sm text-muted-foreground">
@@ -412,6 +572,43 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               ))
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={sourceOpen} onOpenChange={setSourceOpen}>
+        <DialogContent className="max-w-xl p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>Add catalog source</DialogTitle>
+            <DialogDescription>Paste a public Stremio manifest URL, public TMDB/MDBList/Letterboxd list URL. StreamNZB imports browse catalogs only — never external search, streams, subtitles or credentials.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="catalog-source-url" className="text-sm">Source or list URL</Label>
+            <div className="flex gap-2">
+              <Input id="catalog-source-url" autoFocus value={sourceURL} onChange={(e) => setSourceURL(e.target.value)} placeholder="…/manifest.json, TMDB/MDBList URL, or letterboxd.com/…/list/…" className="h-9 font-mono text-xs" />
+              <Button type="button" size="sm" onClick={inspectSource} disabled={!sourceURL.trim() || sourceLoading}>
+                {sourceLoading ? <><Loader2 className="h-4 w-4 animate-spin" /> Checking…</> : "Check source"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Supported now: public Stremio manifests, TMDB lists, MDBList lists, and Letterboxd film lists. More list sites are added only after a real fetch test.</p>
+          </div>
+          {sourceError && <p className="text-sm text-destructive">{sourceError}</p>}
+          {sourcePreview && (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
+              {sourcePreview.warnings?.length > 0 && (
+                <p className="text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
+              )}
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                {(sourcePreview.catalogs || []).map((catalog) => {
+                  const alreadyAdded = externalRows.some((row) => row.manifest_url === sourceURL.trim() && row.remote_type === catalog.remote_type && row.remote_id === catalog.remote_id)
+                  return <button key={`${catalog.remote_type}/${catalog.remote_id}`} type="button" disabled={alreadyAdded} onClick={() => addExternalCatalog(catalog)} className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50">
+                    <span className="min-w-0"><span className="block truncate text-sm">{catalog.name}</span><span className="text-xs text-muted-foreground">{catalog.type} · tested {catalog.row_count} rows</span></span>
+                    {alreadyAdded ? <Check className="h-4 w-4 text-muted-foreground" /> : <Plus className="h-4 w-4 text-muted-foreground" />}
+                  </button>
+                })}
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
