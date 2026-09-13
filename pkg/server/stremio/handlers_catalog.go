@@ -373,7 +373,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		previews = append(previews, MetaPreview{
 			ID:          "kitsu:" + item.ID,
 			Type:        "anime",
-			Name:        item.CanonicalTitle,
+			Name:        kitsu.DisplayTitle(req.Profile.EffectiveLanguage(), item.EnglishTitle, item.CanonicalTitle),
 			Poster:      item.PosterImage,
 			Background:  item.CoverImage,
 			Description: item.Synopsis,
@@ -901,7 +901,7 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 	rt := s.runtime()
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, kitsuID); err == nil && animeMeta.CanonicalTitle != "" {
-			preview.Name = animeMeta.CanonicalTitle
+			preview.Name = kitsu.DisplayTitle(lang, animeMeta.EnglishTitle, animeMeta.CanonicalTitle)
 			preview.Poster = animeMeta.PosterImage
 			preview.Background = animeMeta.CoverImage
 		}

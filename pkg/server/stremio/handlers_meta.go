@@ -15,6 +15,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
+	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/services/metadata/tvmaze"
@@ -682,10 +683,7 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 	if err := certGateMeta(profile, certAge, certKnown); err != nil {
 		return nil, err
 	}
-	name := animeMeta.CanonicalTitle
-	if name == "" {
-		name = animeMeta.EnglishTitle
-	}
+	name := kitsu.DisplayTitle(profile.EffectiveLanguage(), animeMeta.EnglishTitle, animeMeta.CanonicalTitle)
 	meta := &MetaObject{
 		ID:          rid.canonicalID,
 		Type:        seriesMetaType(contentType),
@@ -715,7 +713,7 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 			if ep.Number <= 0 {
 				continue
 			}
-			title := ep.CanonicalTitle
+			title := kitsu.DisplayTitle(profile.EffectiveLanguage(), ep.EnglishTitle, ep.CanonicalTitle)
 			if title == "" {
 				title = fmt.Sprintf("Episode %d", ep.Number)
 			}
