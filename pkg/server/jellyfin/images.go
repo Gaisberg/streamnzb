@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"mime"
 	"net"
@@ -124,9 +125,10 @@ func (s *Server) serveImages(w http.ResponseWriter, rq *request) bool {
 	} else {
 		return false
 	}
+	fallbacks := s.imageFallbacks(rawID, kind)
 	if tag := rq.param("tag"); tag != "" {
 		if url, ok := s.images.urlFor(tag); ok {
-			s.relayImage(w, rq, url, kind)
+			s.relayImage(w, rq, kind, append([]string{url}, fallbacks...)...)
 			return true
 		}
 	}
@@ -136,16 +138,45 @@ func (s *Server) serveImages(w http.ResponseWriter, rq *request) bool {
 	// — and the resolve path below cannot help them, because an image is
 	// fetched by an image loader that sends no credentials.
 	if url, ok := s.itemImageURL(rawID, kind); ok {
-		s.relayImage(w, rq, url, kind)
+		s.relayImage(w, rq, kind, append([]string{url}, fallbacks...)...)
 		return true
 	}
 	url := s.resolveImage(rq, rawID, kind)
 	if url == "" {
-		http.NotFound(w, rq.Request)
+		if len(fallbacks) == 0 {
+			http.NotFound(w, rq.Request)
+			return true
+		}
+		s.relayImage(w, rq, kind, fallbacks...)
 		return true
 	}
-	s.relayImage(w, rq, url, kind)
+	s.relayImage(w, rq, kind, append([]string{url}, fallbacks...)...)
 	return true
+}
+
+// posterFallbackURL is where a poster comes from when the advertised one
+// cannot be fetched. The advertised URL may be a profile's poster overlay
+// (poster_url_pattern), which replaces the provider's poster before this layer
+// sees it, so the original is not available to fall back on; Metahub serves a
+// poster for any IMDb id without credentials — the same CDN the meta builder
+// already uses for logos — and is the one poster source reachable from an id
+// alone. A format string taking the IMDb id; a variable so tests can point it
+// at a local server.
+var posterFallbackURL = "https://images.metahub.space/poster/medium/%s/img"
+
+// imageFallbacks lists the URLs to try when an item's advertised image cannot
+// be relayed: today only a Metahub poster for the Primary image of an
+// IMDb-keyed movie or series. Episodes are left out — their Primary is a
+// still, and a series poster in its place would be wrong rather than missing.
+func (s *Server) imageFallbacks(rawID, kind string) []string {
+	if strings.ToLower(strings.TrimSpace(kind)) != "primary" {
+		return nil
+	}
+	id, err := decodeItemID(rawID)
+	if err != nil || id.Scheme != schemeIMDb || (id.Kind != kindMovie && id.Kind != kindSeries) {
+		return nil
+	}
+	return []string{fmt.Sprintf(posterFallbackURL, id.baseStremioID())}
 }
 
 // itemImageURL is the URL this item's document advertised for a kind, if one
@@ -248,19 +279,58 @@ func relayableImageType(raw string) (string, bool) {
 	return mediaType, true
 }
 
-// relayImage fetches url and streams it back as the response, instead of
-// redirecting the client to it: Infuse and some other clients ignore a 302
-// on an artwork request and are left with a blank image.
-func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind string) {
+// relayOutcome is what one attempt to relay a URL came to.
+type relayOutcome int
+
+const (
+	// relayServed: the response has been written; nothing more to do.
+	relayServed relayOutcome = iota
+	// relayMissing: the upstream has no such image (404, or a URL this layer
+	// cannot fetch). The next candidate may.
+	relayMissing
+	// relayFailed: the upstream misbehaved — unreachable, an error status, a
+	// body past the cap, a type that is not an image. The next candidate may
+	// still succeed, but if none does the client is told the gateway failed.
+	relayFailed
+)
+
+// relayImage fetches the first of urls that answers and streams it back as
+// the response, instead of redirecting the client to it: Infuse and some
+// other clients ignore a 302 on an artwork request and are left with a blank
+// image. Later urls are fallbacks, tried only when an earlier one is missing
+// or fails; when none serves, the client gets a 502 if any upstream failed
+// and a 404 when every one of them simply had no image.
+func (s *Server) relayImage(w http.ResponseWriter, rq *request, kind string, urls ...string) {
+	failed := false
+	for _, rawURL := range urls {
+		if rq.Context().Err() != nil {
+			// The client went away; no fallback is worth fetching for it.
+			return
+		}
+		switch s.relayOnce(w, rq, rawURL, kind) {
+		case relayServed:
+			return
+		case relayFailed:
+			failed = true
+		}
+	}
+	if failed {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
+	http.NotFound(w, rq.Request)
+}
+
+// relayOnce attempts to relay one URL. It writes to w only when it serves the
+// image, so a failed attempt leaves the response untouched for the next.
+func (s *Server) relayOnce(w http.ResponseWriter, rq *request, rawURL, kind string) relayOutcome {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		// Nothing here to fetch on the client's behalf, and a redirect is
 		// exactly what this relay exists to avoid: the clients that need
-		// relaying would not follow it either. A miss, not a gateway
-		// failure -- the image simply isn't reachable this way.
+		// relaying would not follow it either.
 		logger.Debug("Jellyfin image relay skipped", "url", rawURL, "reason", "not an http(s) url")
-		http.NotFound(w, rq.Request)
-		return
+		return relayMissing
 	}
 	target := rewriteImageSize(rawURL, kind)
 	// A GET is sent even for a HEAD request: some CDNs answer HEAD with the
@@ -268,8 +338,7 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 	req, err := http.NewRequestWithContext(rq.Context(), http.MethodGet, target, nil)
 	if err != nil {
 		logger.Debug("Jellyfin image relay failed", "url", target, "err", err)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
+		return relayFailed
 	}
 	resp, err := imageClient.Do(req)
 	if err != nil {
@@ -277,14 +346,16 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		// passed above, so the fetch dies with it instead of running to
 		// completion for no one.
 		logger.Debug("Jellyfin image relay failed", "url", target, "err", err)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
+		return relayFailed
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		logger.Debug("Jellyfin image relay missing", "url", target)
+		return relayMissing
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Debug("Jellyfin image relay failed", "url", target, "status", resp.StatusCode)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
+		return relayFailed
 	}
 	length := int64(-1)
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
@@ -297,8 +368,7 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		// more than the cap would otherwise reach the client alongside a
 		// body truncated well short of it.
 		logger.Debug("Jellyfin image relay refused", "url", target, "length", length)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
+		return relayFailed
 	}
 	ct, ok := relayableImageType(resp.Header.Get("Content-Type"))
 	if !ok {
@@ -307,8 +377,7 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		// which is exactly what an image relay must not do — image/svg+xml
 		// carries script, text/html plainly so.
 		logger.Debug("Jellyfin image relay refused", "url", target, "type", resp.Header.Get("Content-Type"))
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
+		return relayFailed
 	}
 	var body io.Reader = resp.Body
 	if length < 0 {
@@ -320,13 +389,11 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 		buf, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBody+1))
 		if err != nil {
 			logger.Debug("Jellyfin image relay failed", "url", target, "err", err)
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			return
+			return relayFailed
 		}
 		if len(buf) > maxImageBody {
 			logger.Debug("Jellyfin image relay refused", "url", target, "length", ">"+strconv.Itoa(maxImageBody))
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			return
+			return relayFailed
 		}
 		length = int64(len(buf))
 		body = bytes.NewReader(buf)
@@ -342,11 +409,12 @@ func (s *Server) relayImage(w http.ResponseWriter, rq *request, rawURL, kind str
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.WriteHeader(http.StatusOK)
 	if rq.Method == http.MethodHead {
-		return
+		return relayServed
 	}
 	// A declared length is enforced by net/http on the upstream side: the body
 	// ends at Content-Length whatever the CDN sends after it.
 	io.Copy(w, body) // write errors ignored: the client went away
+	return relayServed
 }
 
 // rewriteImageSize points a TMDB image at a size proportional to how large
