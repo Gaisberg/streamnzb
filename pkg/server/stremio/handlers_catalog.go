@@ -200,7 +200,7 @@ func InspectExternalManifest(ctx context.Context, rawURL string, allowPrivate []
 				// The untruncated first response: what the row is worth is how
 				// many rows the source really hands over, not the page size we
 				// serve it in.
-				metas, err := externalManifestCatalogPage(ctx, candidate.def, 0, allowPrivate)
+				metas, err := fetchExternalManifestCatalogPage(ctx, candidate.def, 0, allowPrivate)
 				if err != nil {
 					results[i].err = err
 					continue
@@ -930,10 +930,27 @@ func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogReq
 	return limitCatalogPage(metas[localSkip:]), nil
 }
 
+// externalManifestCatalogPage serves one page of a pasted manifest's row
+// through the page cache. Use fetchExternalManifestCatalogPage instead
+// wherever the point of the request is to find out what the source says
+// right now.
 func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
-	manifest, err := validExternalManifestURL(def.ExternalManifestURL)
+	cacheKey, err := externalCatalogPageURL(def, skip)
 	if err != nil {
 		return nil, err
+	}
+	if cached, ok := loadExternalManifestPage(cacheKey); ok {
+		return cached, nil
+	}
+	return fetchExternalManifestCatalogPage(ctx, def, skip, allowPrivate)
+}
+
+// externalCatalogPageURL resolves the upstream URL one page of a pasted
+// manifest's row lives at, which is also its cache key.
+func externalCatalogPageURL(def CatalogDef, skip int) (string, error) {
+	manifest, err := validExternalManifestURL(def.ExternalManifestURL)
+	if err != nil {
+		return "", err
 	}
 	basePath := strings.TrimSuffix(manifest.Path, "manifest.json")
 	endpoint := *manifest
@@ -942,11 +959,20 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, 
 	if skip > 0 {
 		endpoint.Path = strings.TrimSuffix(endpoint.Path, ".json") + "/skip=" + strconv.Itoa(skip) + ".json"
 	}
-	cacheKey := endpoint.String()
-	if cached, ok := loadExternalManifestPage(cacheKey); ok {
-		return cached, nil
+	return endpoint.String(), nil
+}
+
+// fetchExternalManifestCatalogPage reads the page from the source and fills
+// the cache with it. Testing a pasted source is a live question — the
+// operator is asking what it serves now, often having just changed it — so
+// the inspection path calls this directly rather than being answered from a
+// page cached before the change.
+func fetchExternalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
+	cacheKey, err := externalCatalogPageURL(def, skip)
+	if err != nil {
+		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, cacheKey, nil)
 	if err != nil {
 		return nil, err
 	}

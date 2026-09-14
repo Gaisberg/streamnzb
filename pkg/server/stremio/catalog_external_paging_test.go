@@ -137,3 +137,57 @@ func TestInspectExternalManifestReadsLegacyExtraFields(t *testing.T) {
 		t.Fatalf("row = %+v, want the paged row with SupportsSkip true", row)
 	}
 }
+
+// Testing a pasted source is a live question: the operator is asking what it
+// serves now, and often asking because they just changed it. Answering the
+// probe from a page cached before that change reports the old failure back to
+// them as if the fix had not worked.
+func TestInspectExternalManifestBypassesThePageCache(t *testing.T) {
+	logger.Init("ERROR")
+	var calls int64
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "manifest.json") {
+			fmt.Fprint(w, `{"name":"Self-hosted","catalogs":[{"id":"top","type":"movie","name":"Top","extra":[{"name":"skip"}]}]}`)
+			return
+		}
+		atomic.AddInt64(&calls, 1)
+		// The source was broken when the row was last served and works now.
+		fmt.Fprint(w, `{"metas":[{"id":"tt0000001","name":"Now Working"}]}`)
+	}))
+	t.Cleanup(ts.Close)
+	allowed := trustTestSource(t, ts)
+
+	def := CatalogDef{Type: "movie", Provider: "external", ExternalManifestURL: ts.URL + "/manifest.json", ExternalRemoteType: "movie", ExternalRemoteID: "top"}
+	key, err := externalCatalogPageURL(def, 0)
+	if err != nil {
+		t.Fatalf("externalCatalogPageURL: %v", err)
+	}
+	resetExternalManifestPageCache(t)
+	storeExternalManifestPage(key, []MetaPreview{{ID: "tt0000009", Type: "movie", Name: "Stale Row"}})
+
+	inspection, err := InspectExternalManifest(context.Background(), ts.URL+"/manifest.json", allowed)
+	if err != nil {
+		t.Fatalf("InspectExternalManifest: %v", err)
+	}
+	if atomic.LoadInt64(&calls) != 1 {
+		t.Fatalf("the source was asked %d times, want exactly one live request rather than a cached answer", atomic.LoadInt64(&calls))
+	}
+	if len(inspection.Catalogs) != 1 || inspection.Catalogs[0].RowCount != 1 {
+		t.Fatalf("inspection = %+v, want the row the source serves now", inspection.Catalogs)
+	}
+
+	// Serving the same row still goes through the cache.
+	resetExternalManifestPageCache(t)
+	storeExternalManifestPage(key, []MetaPreview{{ID: "tt0000009", Type: "movie", Name: "Cached Row"}})
+	metas, err := externalManifestCatalogPage(context.Background(), def, 0, allowed)
+	if err != nil {
+		t.Fatalf("externalManifestCatalogPage: %v", err)
+	}
+	if len(metas) != 1 || metas[0].ID != "tt0000009" {
+		t.Fatalf("serving path returned %+v, want the cached row", metas)
+	}
+	if atomic.LoadInt64(&calls) != 1 {
+		t.Fatalf("the serving path made another request; the cache should have answered it")
+	}
+}
