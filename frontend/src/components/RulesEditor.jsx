@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -510,17 +510,36 @@ export function RulesEditor({ values = [], onChange, libraryRules = [], ruleStat
   const [ruleText, setRuleText] = useState("")
   const [ruleTextError, setRuleTextError] = useState("")
   const textRef = useRef(null)
+  // committedRef is the text form of the rules the box last committed (or was
+  // seeded from). Rules arriving from anywhere else — another profile
+  // selected, an update applied from upstream — replace the text; the box's
+  // own rules coming back round through the parent leave it alone, so typing
+  // is never reformatted under the caret.
+  const committedRef = useRef("")
 
   const showText = () => {
-    setRuleText(rulesToText(values))
+    const text = rulesToText(values)
+    committedRef.current = text
+    setRuleText(text)
     setRuleTextError("")
     setMode("text")
   }
 
+  useEffect(() => {
+    if (mode !== "text") return
+    const incoming = rulesToText(values)
+    if (incoming === committedRef.current) return
+    committedRef.current = incoming
+    setRuleText(incoming)
+    setRuleTextError("")
+  }, [mode, values])
+
   const editText = (next) => {
     setRuleText(next)
     try {
-      onChange(rulesFromText(next))
+      const rules = rulesFromText(next)
+      committedRef.current = rulesToText(rules)
+      onChange(rules)
       setRuleTextError("")
     } catch (err) {
       setRuleTextError(err.message)

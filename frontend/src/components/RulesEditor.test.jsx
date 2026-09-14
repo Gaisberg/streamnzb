@@ -46,4 +46,34 @@ describe('RulesEditor rule references', () => {
     expect(next[0].name).toBe('Trusted 4K')
     expect(next[2].when).toBe('not matched("Trusted 4K")')
   })
+
+  // The text box is seeded once on the way in. Switching to another profile
+  // while in text mode has to reseed it — the old rules staying on screen is
+  // an editor lying about what it edits — but the box's own rules echoing back
+  // from the parent must not, or every keystroke would be reformatted.
+  describe('text mode', () => {
+    const showText = () => fireEvent.click(screen.getByRole('button', { name: 'Text' }))
+    const box = () => screen.getByLabelText('All rules as text')
+
+    it('follows a profile switch', () => {
+      const { rerender } = render(<RulesEditor values={TIERS} onChange={() => {}} />)
+      showText()
+      expect(box().value).toContain('Trusted UHD: score 100')
+
+      const other = [{ name: 'Remux only', when: 'remux', points: 5 }]
+      rerender(<RulesEditor values={other} onChange={() => {}} />)
+      expect(box().value).toBe('Remux only: score 5 if remux')
+    })
+
+    it('keeps what was typed when its own rules come back round', () => {
+      const onChange = vi.fn()
+      const { rerender } = render(<RulesEditor values={TIERS} onChange={onChange} />)
+      showText()
+      // Typed with a double space: parses fine, but the canonical text differs.
+      const typed = 'Trusted UHD: score 100 if group  == "GRP"'
+      fireEvent.change(box(), { target: { value: typed } })
+      rerender(<RulesEditor values={onChange.mock.calls[0][0]} onChange={onChange} />)
+      expect(box().value).toBe(typed)
+    })
+  })
 })
