@@ -942,6 +942,10 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, 
 	if skip > 0 {
 		endpoint.Path = strings.TrimSuffix(endpoint.Path, ".json") + "/skip=" + strconv.Itoa(skip) + ".json"
 	}
+	cacheKey := endpoint.String()
+	if cached, ok := loadExternalManifestPage(cacheKey); ok {
+		return cached, nil
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, err
@@ -978,7 +982,58 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, 
 		// fields are untrusted; local metadata enrichment owns artwork and copy.
 		metas = append(metas, MetaPreview{ID: id, Type: def.Type, Name: name})
 	}
+	storeExternalManifestPage(cacheKey, metas)
 	return metas, nil
+}
+
+// externalManifestCacheTTL/Max mirror the public TMDB/MDBList/Letterboxd list
+// page cache: a pasted manifest's own catalog page (Cinemeta, a self-hosted
+// addon, any other user-supplied source) had no caching at all, unlike those
+// three. Every page request was a live round-trip to that external host, and
+// when Infuse or a Jellyfin client loads several catalog rows in parallel on
+// a home screen, one slow host is enough to have the client give up and
+// cancel the request before it finishes — the row renders empty until a
+// manual refresh retries and (usually) gets a faster response.
+const (
+	externalManifestCacheTTL = 15 * time.Minute
+	externalManifestCacheMax = 256
+)
+
+type cachedExternalManifestPage struct {
+	metas     []MetaPreview
+	expiresAt time.Time
+}
+
+var externalManifestPageCache = struct {
+	sync.Mutex
+	pages map[string]cachedExternalManifestPage
+}{pages: make(map[string]cachedExternalManifestPage)}
+
+func loadExternalManifestPage(key string) ([]MetaPreview, bool) {
+	externalManifestPageCache.Lock()
+	defer externalManifestPageCache.Unlock()
+	cached, ok := externalManifestPageCache.pages[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(externalManifestPageCache.pages, key)
+		return nil, false
+	}
+	return append([]MetaPreview(nil), cached.metas...), true
+}
+
+func storeExternalManifestPage(key string, metas []MetaPreview) {
+	externalManifestPageCache.Lock()
+	defer externalManifestPageCache.Unlock()
+	if len(externalManifestPageCache.pages) >= externalManifestCacheMax {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for candidate, cached := range externalManifestPageCache.pages {
+			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = candidate, cached.expiresAt
+			}
+		}
+		delete(externalManifestPageCache.pages, oldestKey)
+	}
+	externalManifestPageCache.pages[key] = cachedExternalManifestPage{metas: append([]MetaPreview(nil), metas...), expiresAt: time.Now().Add(externalManifestCacheTTL)}
 }
 
 // cleanExternalPreviewName removes only a trailing release year or ISO date
