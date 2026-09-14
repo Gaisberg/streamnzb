@@ -51,6 +51,17 @@ type Release struct {
 	// False also covers indexers that never report the attribute.
 	Password bool
 
+	// Poster and UsenetDate are the newznab "poster" and "usenetdate"
+	// attributes, kept verbatim as the indexer reported them. AvailNZB mints
+	// the Warden dead-release fingerprint from the pair server-side, so
+	// StreamNZB never canonicalizes or hashes them itself — the algorithm can
+	// then change without a StreamNZB release, and a shared pool that only
+	// works when every participant hashes byte-for-byte identically keeps a
+	// single implementation. Sources that report neither (Easynews, the local
+	// library) leave both empty and simply never gain a verdict.
+	Poster     string
+	UsenetDate string
+
 	Available *bool
 	Duration  float64
 
@@ -163,6 +174,22 @@ func ParseDate(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// UsenetDateUnix parses UsenetDate into unix seconds; ok is false when the
+// release carries no usenet date, or one in none of the known layouts. Every
+// layout ParseDate accepts carries a zone, which is what a UTC day bucket
+// needs — a zone-less datetime ("2026-06-08 12:23:54") buckets differently per
+// host locale, so it is rejected rather than reported.
+func (r *Release) UsenetDateUnix() (int64, bool) {
+	if r == nil {
+		return 0, false
+	}
+	t, ok := ParseDate(r.UsenetDate)
+	if !ok {
+		return 0, false
+	}
+	return t.Unix(), true
 }
 
 // PublishedAt parses the release's PubDate; ok is false when the release

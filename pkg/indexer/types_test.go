@@ -94,3 +94,45 @@ func TestToReleaseNormalizesLanguages(t *testing.T) {
 		})
 	}
 }
+
+// poster and usenetdate travel verbatim to AvailNZB, which mints the Warden
+// dead-release fingerprint from the pair. An item missing either one leaves
+// that field empty rather than substituting anything — a half pair mints
+// nothing, and a guessed poster would mint the wrong thing.
+func TestToReleaseCarriesPosterAndUsenetDate(t *testing.T) {
+	const poster = "someone@example.com"
+	const usenetDate = "Sat, 31 May 2025 08:00:00 +0000"
+
+	tests := []struct {
+		name           string
+		attrs          []Attribute
+		wantPoster     string
+		wantUsenetDate string
+	}{
+		{"both present", []Attribute{{Name: "poster", Value: poster}, {Name: "usenetdate", Value: usenetDate}}, poster, usenetDate},
+		{"poster only", []Attribute{{Name: "poster", Value: poster}}, poster, ""},
+		{"usenetdate only", []Attribute{{Name: "usenetdate", Value: usenetDate}}, "", usenetDate},
+		{"neither", nil, "", ""},
+		{"whitespace trimmed", []Attribute{{Name: "poster", Value: "  " + poster + "  "}}, poster, ""},
+		// An unparseable date is still what the indexer said, so it is kept
+		// verbatim; the report layer is what refuses to send it.
+		{"unparseable usenetdate kept verbatim", []Attribute{{Name: "usenetdate", Value: "not a date"}}, "", "not a date"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := &Item{
+				Title:      "Movie 2020 1080p BluRay-GRP",
+				PubDate:    "Sun, 01 Jun 2025 10:00:00 +0000",
+				Attributes: tt.attrs,
+			}
+			rel := item.ToRelease()
+			if rel.Poster != tt.wantPoster {
+				t.Errorf("Poster = %q, want %q", rel.Poster, tt.wantPoster)
+			}
+			if rel.UsenetDate != tt.wantUsenetDate {
+				t.Errorf("UsenetDate = %q, want %q", rel.UsenetDate, tt.wantUsenetDate)
+			}
+		})
+	}
+}

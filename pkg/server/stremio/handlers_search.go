@@ -926,6 +926,11 @@ func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release
 		Size:          item.SizeBytes,
 		SourceIndexer: item,
 		IsLibrary:     true,
+		// Carried back so a replay served entirely from the library still has
+		// the pair AvailNZB fingerprints from. Items stored before this have
+		// neither, and fail open exactly as they do today.
+		Poster:     item.Poster,
+		UsenetDate: item.UsenetDate,
 	}
 }
 

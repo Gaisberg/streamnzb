@@ -195,9 +195,10 @@ func (i *Item) ToRelease() *release.Release {
 	// usenetdate is when the release hit usenet; pubDate is when the indexer
 	// listed it. Retention and age both care about the former.
 	pubDate := i.PubDate
-	if s := i.GetAttribute("usenetdate"); s != "" {
-		if _, ok := release.ParseDate(s); ok {
-			pubDate = s
+	usenetDate := strings.TrimSpace(i.GetAttribute("usenetdate"))
+	if usenetDate != "" {
+		if _, ok := release.ParseDate(usenetDate); ok {
+			pubDate = usenetDate
 		}
 	}
 	// Newznab reports password as 0 (none), 1 (passworded) or 2 (passworded
@@ -220,7 +221,13 @@ func (i *Item) ToRelease() *release.Release {
 		Languages:     languages,
 		Subtitles:     subtitles,
 		Password:      password,
-		Duration:      i.Duration,
+		// poster and usenetdate travel verbatim to AvailNZB, which mints the
+		// Warden dead-release fingerprint from the pair. Both are in the
+		// extended attribute set executeSearch always asks for. Indexers that
+		// report neither leave the pair empty, which fails open.
+		Poster:     strings.TrimSpace(i.GetAttribute("poster")),
+		UsenetDate: usenetDate,
+		Duration:   i.Duration,
 	}
 }
 

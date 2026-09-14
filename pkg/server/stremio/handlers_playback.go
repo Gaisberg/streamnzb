@@ -2381,6 +2381,8 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint
 		MediaFileSize: mediaFileSize,
 		MediaCapsJSON: capsJSON,
 		Status:        status,
+		Poster:        rel.Poster,
+		UsenetDate:    rel.UsenetDate,
 	}
 	if caps := sess.MediaCapabilities(); caps != nil {
 		item.VideoCodec = caps.VideoCodec

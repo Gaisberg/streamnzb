@@ -338,3 +338,67 @@ func TestLibraryDeleteAllRemovesPinnedAndBlueprints(t *testing.T) {
 		t.Fatalf("second delete all: deleted=%d err=%v", deleted, err)
 	}
 }
+
+// A library item usually wins the variant merge, so a replay reports from it.
+// The poster and usenet date have to round-trip, and a later save from a
+// source that reports neither must not erase a pair an earlier save captured.
+func TestLibraryStorePosterAndUsenetDateRoundTrip(t *testing.T) {
+	ls := newTestLibraryStore(t)
+
+	const poster = "cKTDtXjrI0VL@m3ZiWGct.3lP"
+	const usenetDate = "Fri, 04 Sep 2026 03:25:17 +0100"
+
+	base := func() *LibraryItem {
+		return &LibraryItem{
+			ContentType:  "movie",
+			ContentID:    "tt28014327",
+			ImdbID:       "tt28014327",
+			ReleaseTitle: "Mayday.2026.2160p.ATVP.WEB-DL-FLUX",
+			DetailsURL:   "https://drunkenslug.com/details/a",
+			NZBData:      []byte("<nzb/>"),
+		}
+	}
+
+	item := base()
+	item.Poster = poster
+	item.UsenetDate = usenetDate
+	if err := ls.StoreItem(item); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	got, err := ls.GetCandidatesByIDs("movie", "tt28014327", "", "", "", 0, 0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("lookup: err=%v n=%d", err, len(got))
+	}
+	if got[0].Poster != poster || got[0].UsenetDate != usenetDate {
+		t.Fatalf("pair not round-tripped: poster=%q usenet_date=%q", got[0].Poster, got[0].UsenetDate)
+	}
+
+	// A re-save from a source with neither (an NZBgeek copy, or any pre-
+	// migration path) leaves the stored pair alone.
+	if err := ls.StoreItem(base()); err != nil {
+		t.Fatalf("re-store: %v", err)
+	}
+	got, err = ls.GetCandidatesByIDs("movie", "tt28014327", "", "", "", 0, 0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("lookup after re-store: err=%v n=%d", err, len(got))
+	}
+	if got[0].Poster != poster || got[0].UsenetDate != usenetDate {
+		t.Fatalf("re-save erased the pair: poster=%q usenet_date=%q", got[0].Poster, got[0].UsenetDate)
+	}
+
+	// An item stored with neither reads back empty rather than failing, which
+	// is every row written before this migration.
+	bare := base()
+	bare.ReleaseTitle = "Mayday.2026.1080p-OTHER"
+	if err := ls.StoreItem(bare); err != nil {
+		t.Fatalf("store bare: %v", err)
+	}
+	fetched, err := ls.GetItem(bare.ID)
+	if err != nil || fetched == nil {
+		t.Fatalf("get bare: err=%v item=%v", err, fetched)
+	}
+	if fetched.Poster != "" || fetched.UsenetDate != "" {
+		t.Fatalf("bare item gained a pair: poster=%q usenet_date=%q", fetched.Poster, fetched.UsenetDate)
+	}
+}

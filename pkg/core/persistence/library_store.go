@@ -52,6 +52,14 @@ type LibraryItem struct {
 	Status         string    `json:"status"`
 	StatusReason   string    `json:"status_reason,omitempty"`
 
+	// Poster and UsenetDate are the newznab attributes of the release as the
+	// indexer reported them. They are stored so a replay served from the
+	// library still has the pair AvailNZB fingerprints from — a library item
+	// usually wins the variant merge, and without these a re-watch would
+	// report with nothing to match against a Warden list.
+	Poster     string `json:"poster,omitempty"`
+	UsenetDate string `json:"usenet_date,omitempty"`
+
 	// Indexed capability fields (informational / filtering / ranking only).
 	VideoCodec  string `json:"video_codec,omitempty"`
 	Height      int    `json:"height,omitempty"`
@@ -164,8 +172,8 @@ func (ls *LibraryStore) StoreItem(item *LibraryItem) error {
 	}
 	res, err := tx.Exec(`
 		INSERT INTO library_nzbs (
-			id, content_type, content_id, imdb_id, tmdb_id, tvdb_id, kitsu_id, season, episode, release_title, details_url, indexer_name, size_bytes, nzb_data, created_at, last_accessed_at, last_verified_at, pinned, status, status_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, content_type, content_id, imdb_id, tmdb_id, tvdb_id, kitsu_id, season, episode, release_title, details_url, indexer_name, size_bytes, nzb_data, created_at, last_accessed_at, last_verified_at, pinned, status, status_reason, poster, usenet_date
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			imdb_id = CASE WHEN excluded.imdb_id != '' THEN excluded.imdb_id ELSE library_nzbs.imdb_id END,
 			tmdb_id = CASE WHEN excluded.tmdb_id != '' THEN excluded.tmdb_id ELSE library_nzbs.tmdb_id END,
@@ -180,11 +188,14 @@ func (ls *LibraryStore) StoreItem(item *LibraryItem) error {
 			last_verified_at = excluded.last_verified_at,
 			pinned = CASE WHEN excluded.pinned = 1 THEN 1 ELSE library_nzbs.pinned END,
 			status = CASE WHEN excluded.status IN ('good','bad') THEN excluded.status ELSE library_nzbs.status END,
-			status_reason = CASE WHEN excluded.status IN ('good','bad') THEN excluded.status_reason ELSE library_nzbs.status_reason END
+			status_reason = CASE WHEN excluded.status IN ('good','bad') THEN excluded.status_reason ELSE library_nzbs.status_reason END,
+			poster = CASE WHEN excluded.poster != '' AND excluded.usenet_date != '' THEN excluded.poster ELSE library_nzbs.poster END,
+			usenet_date = CASE WHEN excluded.poster != '' AND excluded.usenet_date != '' THEN excluded.usenet_date ELSE library_nzbs.usenet_date END
 	`,
 		item.ID, item.ContentType, item.ContentID, item.ImdbID, item.TmdbID, item.TvdbID, item.KitsuID,
 		item.Season, item.Episode, item.ReleaseTitle, item.DetailsURL, item.IndexerName, item.SizeBytes,
 		compressedNZB, item.CreatedAt.Unix(), item.LastAccessedAt.Unix(), now, pinnedInt, status, item.StatusReason,
+		item.Poster, item.UsenetDate,
 	)
 	if err != nil {
 		return fmt.Errorf("insert library_nzbs: %w", err)
@@ -228,7 +239,7 @@ const candidatesSelectSQL = `
 	SELECT n.id, n.content_type, n.content_id, n.imdb_id, n.tmdb_id, n.tvdb_id, n.kitsu_id,
 	       n.season, n.episode, n.release_title, n.details_url, n.indexer_name, n.size_bytes,
 	       n.nzb_data, n.created_at, n.last_accessed_at, n.last_verified_at, n.pinned,
-	       n.status, n.status_reason,
+	       n.status, n.status_reason, n.poster, n.usenet_date,
 	       b.blueprint_json, b.media_file_name, b.media_file_size, b.media_caps_json,
 	       b.video_codec, b.height, b.bit_depth, b.hdr, b.dolby_vision, b.audio_codec
 	FROM library_nzbs n
@@ -325,6 +336,7 @@ func scanCandidateRow(rows *sql.Rows) (*LibraryItem, error) {
 	var pinnedInt int
 	var compressedNZB []byte
 	var imdbID, tmdbID, tvdbID, kitsuID, statusStr, statusReason sql.NullString
+	var poster, usenetDate sql.NullString
 	var bpJSON, mediaName, capsJSON, videoCodec, hdr, audioCodec sql.NullString
 	var mediaSize, height, bitDepth sql.NullInt64
 	var dolbyVision sql.NullInt64
@@ -333,7 +345,7 @@ func scanCandidateRow(rows *sql.Rows) (*LibraryItem, error) {
 		&item.ID, &item.ContentType, &item.ContentID, &imdbID, &tmdbID, &tvdbID, &kitsuID,
 		&item.Season, &item.Episode, &item.ReleaseTitle, &item.DetailsURL, &item.IndexerName, &item.SizeBytes,
 		&compressedNZB, &createdUnix, &accessedUnix, &verifiedUnix, &pinnedInt,
-		&statusStr, &statusReason,
+		&statusStr, &statusReason, &poster, &usenetDate,
 		&bpJSON, &mediaName, &mediaSize, &capsJSON,
 		&videoCodec, &height, &bitDepth, &hdr, &dolbyVision, &audioCodec,
 	); err != nil {
@@ -341,6 +353,8 @@ func scanCandidateRow(rows *sql.Rows) (*LibraryItem, error) {
 	}
 	item.Status = statusStr.String
 	item.StatusReason = statusReason.String
+	item.Poster = poster.String
+	item.UsenetDate = usenetDate.String
 	item.CreatedAt = time.Unix(createdUnix, 0)
 	item.LastAccessedAt = time.Unix(accessedUnix, 0)
 	if verifiedUnix > 0 {

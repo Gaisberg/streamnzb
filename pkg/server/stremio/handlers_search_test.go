@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"reflect"
+	"streamnzb/pkg/core/persistence"
 	"sync"
 	"testing"
 	"time"
@@ -1124,5 +1125,36 @@ func TestRunConfiguredSearchRequestsBuildsEachAttemptsOwnQuery(t *testing.T) {
 	want := []string{"Show Name S03E07", "Show Name S03"}
 	if !reflect.DeepEqual(queries, want) {
 		t.Fatalf("queries = %v, want %v", queries, want)
+	}
+}
+
+// A library item usually wins the variant merge and becomes the release that
+// gets reported, so the pair AvailNZB fingerprints from has to survive the
+// round trip out of the store. Items written before the columns existed carry
+// neither and fail open.
+func TestConvertLibraryItemToReleaseCarriesPosterAndUsenetDate(t *testing.T) {
+	const poster = "cKTDtXjrI0VL@m3ZiWGct.3lP"
+	const usenetDate = "Fri, 04 Sep 2026 03:25:17 +0100"
+
+	got := convertLibraryItemToRelease(&persistence.LibraryItem{
+		ReleaseTitle: "Mayday.2026.2160p.ATVP.WEB-DL-FLUX",
+		DetailsURL:   "https://drunkenslug.com/details/a",
+		IndexerName:  "DrunkenSlug",
+		Poster:       poster,
+		UsenetDate:   usenetDate,
+	})
+	if got.Poster != poster || got.UsenetDate != usenetDate {
+		t.Fatalf("poster/date = %q/%q, want %q/%q", got.Poster, got.UsenetDate, poster, usenetDate)
+	}
+	if unix, ok := got.UsenetDateUnix(); !ok || unix != 1788488717 {
+		t.Fatalf("UsenetDateUnix = %d, %v; want 1788488717, true", unix, ok)
+	}
+
+	legacy := convertLibraryItemToRelease(&persistence.LibraryItem{ReleaseTitle: "Old.Item", DetailsURL: "https://x/a"})
+	if legacy.Poster != "" || legacy.UsenetDate != "" {
+		t.Fatalf("legacy item gained a pair: %q/%q", legacy.Poster, legacy.UsenetDate)
+	}
+	if _, ok := legacy.UsenetDateUnix(); ok {
+		t.Fatal("legacy item must not mint a usenet date")
 	}
 }

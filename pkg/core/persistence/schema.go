@@ -285,6 +285,11 @@ var addedColumns = []addedColumn{
 	{"indexer_metrics", "grab_failure_count", "{INT} NOT NULL DEFAULT 0"},
 	{"indexer_metrics", "unique_success_count", "{INT} NOT NULL DEFAULT 0"},
 	{"indexer_metrics", "avg_grab_ms", "{REAL} NOT NULL DEFAULT 0.0"},
+	// The newznab poster and usenet date of the release, kept so a library
+	// replay can still be reported to AvailNZB with something to fingerprint.
+	// Rows written before this have neither; a later save fills them in.
+	{"library_nzbs", "poster", "{TEXT}"},
+	{"library_nzbs", "usenet_date", "{TEXT}"},
 	{"nzb_attempts", "preload", "{INT} NOT NULL DEFAULT 0"},
 	{"nzb_attempts", "served_file", "{TEXT}"},
 	{"nzb_attempts", "match_type", "{TEXT}"},

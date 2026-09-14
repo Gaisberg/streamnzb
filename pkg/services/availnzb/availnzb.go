@@ -46,6 +46,45 @@ type ReportRequest struct {
 	TvdbID          string `json:"tvdb_id,omitempty"`
 	Season          int    `json:"season,omitempty"`
 	Episode         int    `json:"episode,omitempty"`
+	// Poster and UsenetDate are the newznab attributes verbatim; AvailNZB
+	// derives the Warden fingerprint from them server-side and stores it on
+	// the release. Unix seconds is the unambiguous form of the date.
+	Poster     string `json:"poster,omitempty"`
+	UsenetDate int64  `json:"usenet_date,omitempty"`
+}
+
+// Warden is AvailNZB's dead-release verdict, already scoped to the providers
+// named in the request. It is absent for any release with no stored
+// fingerprint — every release reported before poster and usenet date were
+// sent, and every release from a source that reports neither. Absent means
+// "nothing known": it is never a reason to block, and Available already
+// accounts for a verdict that is present.
+type Warden struct {
+	Dead      bool     `json:"dead"`
+	Global    bool     `json:"global"`
+	Backbones []string `json:"backbones"`
+	// Sources counts independent lists that agree, computed by AvailNZB. It
+	// is not the n field of any raw Warden feed: in the 168,216-entry
+	// tweakapps/blocklist-all-warden list 73.9% of entries pin n at
+	// 1000000000 and ~43k carry exactly-Fibonacci values, the signature of
+	// aggregators re-publishing each other.
+	Sources int   `json:"sources"`
+	DeadAt  int64 `json:"dead_at"`
+}
+
+// wardenLogAttrs explains a dead verdict when one is present. Available
+// already accounts for it, so this only ever adds log context — a release with
+// no verdict logs nothing extra and is handled exactly as before.
+func wardenLogAttrs(w *Warden) []any {
+	if w == nil || !w.Dead {
+		return nil
+	}
+	return []any{
+		"warden_dead", true,
+		"warden_global", w.Global,
+		"warden_backbones", strings.Join(w.Backbones, ","),
+		"warden_sources", w.Sources,
+	}
 }
 
 type BackboneStatus struct {
@@ -63,6 +102,7 @@ type StatusResponse struct {
 	DownloadLink string                    `json:"download_link,omitempty"`
 	Size         int64                     `json:"size,omitempty"`
 	Summary      map[string]BackboneStatus `json:"summary"`
+	Warden       *Warden                   `json:"warden,omitempty"`
 }
 
 type MeResponse struct {
@@ -187,6 +227,7 @@ type releaseItemJSON struct {
 	Indexer         string                    `json:"indexer"`
 	Available       bool                      `json:"available"`
 	Summary         map[string]BackboneStatus `json:"summary"`
+	Warden          *Warden                   `json:"warden,omitempty"`
 }
 
 type ReleaseWithStatus struct {
@@ -194,6 +235,7 @@ type ReleaseWithStatus struct {
 	Available       bool
 	CompressionType string
 	Summary         map[string]BackboneStatus
+	Warden          *Warden
 }
 
 type ReleasesResult struct {
@@ -211,6 +253,8 @@ type ReportMeta struct {
 	TvdbID          string
 	Season          int
 	Episode         int
+	Poster          string
+	UsenetDate      int64
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -308,8 +352,14 @@ func (c *Client) ReportAvailability(releaseURL string, providerURL string, statu
 		logger.Debug("AvailNZB report skipped", "reason", "no imdb_id, tmdb_id or tvdb_id in meta", "url", releaseURL)
 		return nil
 	}
+	// A Warden fingerprint is minted from the poster and the usenet date
+	// together; one alone mints nothing, so the pair travels or neither does.
+	if meta.Poster != "" && meta.UsenetDate > 0 {
+		body.Poster = meta.Poster
+		body.UsenetDate = meta.UsenetDate
+	}
 
-	logger.Debug("AvailNZB report", "url", releaseURL, "release_name", body.ReleaseName, "provider", providerURL, "status", status, "imdb_id", body.ImdbID, "tmdb_id", body.TmdbID, "tvdb_id", body.TvdbID, "season", body.Season, "episode", body.Episode)
+	logger.Debug("AvailNZB report", "url", releaseURL, "release_name", body.ReleaseName, "provider", providerURL, "status", status, "imdb_id", body.ImdbID, "tmdb_id", body.TmdbID, "tvdb_id", body.TvdbID, "season", body.Season, "episode", body.Episode, "poster", body.Poster, "usenet_date", body.UsenetDate)
 
 	return c.doJSON(context.Background(), requestOptions{
 		method:        "POST",
@@ -401,15 +451,24 @@ func (c *Client) GetMe() (*MeResponse, error) {
 	return &me, nil
 }
 
-func (c *Client) GetStatus(releaseURL string) (*StatusResponse, error) {
+func (c *Client) GetStatus(releaseURL string, providers []string) (*StatusResponse, error) {
 	if c.BaseURL == "" {
 		logger.Trace("AvailNZB GetStatus skipped", "reason", "no base URL")
 		return nil, nil
 	}
 	params := url.Values{}
 	params.Set("url", releaseURL)
+	// Scope the answer to the backbones we actually reach, the same way
+	// GetReleases does. Matching runs server-side against AvailNZB's exact-host
+	// map, which resolves reseller subdomains a root-domain heuristic gets
+	// wrong: newshosting.tweaknews.eu sits on Omicron, not Base IP. Without
+	// this a Warden verdict comes back unscoped, so a release dead on a
+	// backbone we cannot reach would read as dead to us.
+	if len(providers) > 0 {
+		params.Set("providers", strings.Join(providers, ","))
+	}
 
-	logger.Debug("AvailNZB GetStatus", "url", releaseURL)
+	logger.Debug("AvailNZB GetStatus", "url", releaseURL, "providers", len(providers))
 
 	var status StatusResponse
 	err := c.doJSON(context.Background(), requestOptions{
@@ -429,7 +488,9 @@ func (c *Client) GetStatus(releaseURL string) (*StatusResponse, error) {
 		return nil, err
 	}
 
-	logger.Debug("AvailNZB GetStatus", "url", releaseURL, "available", status.Available, "backbones", len(status.Summary))
+	logger.Debug("AvailNZB GetStatus", append([]any{
+		"url", releaseURL, "available", status.Available, "backbones", len(status.Summary),
+	}, wardenLogAttrs(status.Warden)...)...)
 	return &status, nil
 }
 
@@ -516,6 +577,7 @@ func (c *Client) GetReleases(imdbID string, tmdbID string, tvdbID string, season
 
 	releases := make([]*ReleaseWithStatus, 0, len(raw.Releases))
 	availableCount := 0
+	wardenDeadCount := 0
 	for i := range raw.Releases {
 		r := &raw.Releases[i]
 		idx := r.Indexer
@@ -534,14 +596,19 @@ func (c *Client) GetReleases(imdbID string, tmdbID string, tvdbID string, season
 			Available:       r.Available,
 			CompressionType: r.CompressionType,
 			Summary:         r.Summary,
+			Warden:          r.Warden,
 		})
 		if r.Available {
 			availableCount++
+		}
+		if r.Warden != nil && r.Warden.Dead {
+			wardenDeadCount++
 		}
 	}
 	logger.Debug("AvailNZB GetReleases finished", availReleasesLogArgs(imdbID, tmdbID, tvdbID, season, episode,
 		"raw_results", raw.Count,
 		"available_results", availableCount,
+		"warden_dead_results", wardenDeadCount,
 	)...)
 	return &ReleasesResult{ImdbID: raw.ImdbID, Count: raw.Count, Releases: releases}, nil
 }
@@ -584,7 +651,7 @@ func (c *Client) CheckPreDownload(releaseURL string, validProviderHosts []string
 		return false, time.Time{}, "", nil
 	}
 
-	status, err := c.GetStatus(releaseURL)
+	status, err := c.GetStatus(releaseURL, validProviderHosts)
 	if err != nil {
 		logger.Debug("AvailNZB CheckPreDownload GetStatus failed", "url", releaseURL, "err", err)
 		return false, time.Time{}, "", err

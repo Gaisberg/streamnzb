@@ -177,6 +177,20 @@ func mergeCopyMetadata(primary *release.Release, variants []*release.Release) {
 		if primary.Duration == 0 {
 			primary.Duration = variant.Duration
 		}
+		// The poster and usenet date travel together, from one copy. They
+		// describe a single usenet post and AvailNZB mints the Warden
+		// fingerprint from both, so taking the poster from one copy and the
+		// date from another would mint a fingerprint for a post that never
+		// existed. This is not a rare gap: a library copy carries neither and
+		// usually wins the merge, and NZBgeek does not report poster at all —
+		// without this, a release that a sibling indexer did describe fully
+		// would report with nothing to fingerprint.
+		if primary.Poster == "" || primary.UsenetDate == "" {
+			if variant.Poster != "" && variant.UsenetDate != "" {
+				primary.Poster = variant.Poster
+				primary.UsenetDate = variant.UsenetDate
+			}
+		}
 		// Languages and subtitles are the union of every copy's tags, not the
 		// primary's alone. Indexers differ sharply in how much they tag — in
 		// practice only a couple of them report subs at all — so which copy

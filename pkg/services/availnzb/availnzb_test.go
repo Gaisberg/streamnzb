@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -579,5 +581,238 @@ func TestClientSetAPIKeyIsUsedBySubsequentRequests(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("GetMe returned nil response")
+	}
+}
+
+// The report carries poster and usenet_date so AvailNZB can mint the Warden
+// fingerprint server-side. StreamNZB never hashes anything itself: a shared
+// pool only works when every participant hashes byte-for-byte identically, and
+// one implementation on the server cannot drift from itself.
+func TestReportAvailabilitySendsPosterAndUsenetDate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		poster         string
+		usenetDate     int64
+		wantPoster     string
+		wantUsenetDate float64
+	}{
+		{"both present", "someone@example.com", 1781151834, "someone@example.com", 1781151834},
+		// One alone mints nothing, so neither half is sent on its own.
+		{"poster only", "someone@example.com", 0, "", 0},
+		{"usenet date only", "", 1781151834, "", 0},
+		{"neither", "", 0, "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/report" {
+					t.Errorf("path = %q, want %q", r.URL.Path, "/api/v1/report")
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode report body: %v", err)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "key")
+			client.HTTP = server.Client()
+
+			err := client.ReportAvailability("https://indexer/details/a", "news.example.com", true, ReportMeta{
+				ReleaseName: "Movie.2160p.Remux-GRP",
+				Size:        1234,
+				ImdbID:      "tt1234567",
+				Poster:      tt.poster,
+				UsenetDate:  tt.usenetDate,
+			})
+			if err != nil {
+				t.Fatalf("ReportAvailability: %v", err)
+			}
+
+			gotPoster, _ := body["poster"].(string)
+			if gotPoster != tt.wantPoster {
+				t.Errorf("poster = %v, want %q", body["poster"], tt.wantPoster)
+			}
+			gotDate, _ := body["usenet_date"].(float64)
+			if gotDate != tt.wantUsenetDate {
+				t.Errorf("usenet_date = %v, want %v", body["usenet_date"], tt.wantUsenetDate)
+			}
+			// Both fields are omitempty, so an unreportable pair leaves the
+			// payload byte-for-byte what it is today.
+			if tt.wantPoster == "" {
+				if _, ok := body["poster"]; ok {
+					t.Errorf("poster present in payload, want omitted")
+				}
+			}
+			if tt.wantUsenetDate == 0 {
+				if _, ok := body["usenet_date"]; ok {
+					t.Errorf("usenet_date present in payload, want omitted")
+				}
+			}
+		})
+	}
+}
+
+// A warden block is absent for every release with no stored fingerprint, which
+// is every release reported before poster and usenet date were sent. Absent
+// means "nothing known" — it decodes to nil and nothing changes, because
+// available already accounts for any verdict that is present.
+func TestGetStatusDecodesWardenAndFailsOpenWithoutIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		payload       string
+		wantAvailable bool
+		wantWarden    *Warden
+	}{
+		{
+			name:          "no warden block",
+			payload:       `{"url":"https://indexer/a","available":true,"summary":{"omicron":{"text":"ok","healthy":true,"last_updated":"2026-06-08T12:00:00Z"}}}`,
+			wantAvailable: true,
+		},
+		{
+			name:          "dead verdict",
+			payload:       `{"url":"https://indexer/a","available":false,"summary":{},"warden":{"dead":true,"global":false,"backbones":["omicron"],"sources":2,"dead_at":1785447545}}`,
+			wantAvailable: false,
+			wantWarden:    &Warden{Dead: true, Backbones: []string{"omicron"}, Sources: 2, DeadAt: 1785447545},
+		},
+		{
+			name:          "alive verdict leaves availability alone",
+			payload:       `{"url":"https://indexer/a","available":true,"summary":{},"warden":{"dead":false,"global":false,"sources":3,"dead_at":0}}`,
+			wantAvailable: true,
+			wantWarden:    &Warden{Sources: 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.payload))
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "key")
+			client.HTTP = server.Client()
+
+			status, err := client.GetStatus("https://indexer/a", nil)
+			if err != nil {
+				t.Fatalf("GetStatus: %v", err)
+			}
+			if status == nil {
+				t.Fatal("GetStatus returned nil status")
+			}
+			if status.Available != tt.wantAvailable {
+				t.Errorf("Available = %v, want %v", status.Available, tt.wantAvailable)
+			}
+			if tt.wantWarden == nil {
+				if status.Warden != nil {
+					t.Fatalf("Warden = %+v, want nil", status.Warden)
+				}
+				return
+			}
+			if status.Warden == nil {
+				t.Fatal("Warden = nil, want a verdict")
+			}
+			if !reflect.DeepEqual(status.Warden, tt.wantWarden) {
+				t.Errorf("Warden = %+v, want %+v", status.Warden, tt.wantWarden)
+			}
+		})
+	}
+}
+
+// Verdicts are scoped server-side to the backbones behind the hostnames we
+// name, because AvailNZB's exact-host map resolves reseller subdomains that a
+// root-domain heuristic gets wrong. An unscoped lookup would report a release
+// dead on a backbone we cannot even reach.
+func TestGetStatusScopesToProviders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		providers     []string
+		wantProviders string
+		wantPresent   bool
+	}{
+		{"scoped to our hosts", []string{"news.example.com", "newshosting.tweaknews.eu"}, "news.example.com,newshosting.tweaknews.eu", true},
+		{"no hosts leaves the param off", nil, "", false},
+		{"empty slice leaves the param off", []string{}, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var query url.Values
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				query = r.URL.Query()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"url":"https://indexer/a","available":true,"summary":{}}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "key")
+			client.HTTP = server.Client()
+
+			if _, err := client.GetStatus("https://indexer/a", tt.providers); err != nil {
+				t.Fatalf("GetStatus: %v", err)
+			}
+			if got := query.Get("url"); got != "https://indexer/a" {
+				t.Errorf("url = %q, want %q", got, "https://indexer/a")
+			}
+			if _, present := query["providers"]; present != tt.wantPresent {
+				t.Fatalf("providers present = %v, want %v", present, tt.wantPresent)
+			}
+			if got := query.Get("providers"); got != tt.wantProviders {
+				t.Errorf("providers = %q, want %q", got, tt.wantProviders)
+			}
+		})
+	}
+}
+
+// CheckPreDownload is the gate playback actually consults. A release whose
+// status carries no warden block has to come back exactly as it does today —
+// a missing verdict may never block a release.
+func TestCheckPreDownloadIgnoresAMissingWardenBlock(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/backbones":
+			_, _ = w.Write([]byte(`{"backbones":["omicron"],"provider_hostnames":{"omicron":["news.example.com"]}}`))
+		default:
+			if got := r.URL.Query().Get("providers"); got != "news.example.com" {
+				t.Errorf("providers = %q, want %q", got, "news.example.com")
+			}
+			_, _ = w.Write([]byte(`{"url":"https://indexer/a","available":true,"summary":{"omicron":{"text":"ok","healthy":true,"last_updated":"2026-06-08T12:00:00Z"}}}`))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key")
+	client.HTTP = server.Client()
+	if err := client.RefreshBackbones(); err != nil {
+		t.Fatalf("RefreshBackbones: %v", err)
+	}
+
+	available, _, capableProvider, err := client.CheckPreDownload("https://indexer/a", []string{"news.example.com"})
+	if err != nil {
+		t.Fatalf("CheckPreDownload: %v", err)
+	}
+	if !available {
+		t.Error("available = false, want true: a release with no verdict must fail open")
+	}
+	if capableProvider != "news.example.com" {
+		t.Errorf("capableProvider = %q, want %q", capableProvider, "news.example.com")
 	}
 }

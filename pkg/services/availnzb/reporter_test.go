@@ -268,3 +268,72 @@ func TestReportBadAllProvidersMergesConfiguredHosts(t *testing.T) {
 		t.Fatalf("provider = %q, want %q", gotProvider, "news-a.example.net,news-b.example.net,news-c.example.net")
 	}
 }
+
+// The values the indexer reported have to survive the whole way from the
+// search result to the report body — the release on the session is what the
+// reporter reads, so a copy that lost them would silently report a release
+// AvailNZB can never fingerprint.
+func TestReporterCarriesReleasePosterAndUsenetDate(t *testing.T) {
+	tests := []struct {
+		name           string
+		poster         string
+		usenetDate     string
+		wantPoster     string
+		wantUsenetDate float64
+	}{
+		{"indexer reported both", "someone@example.com", "Mon, 08 Jun 2026 12:23:54 +0000", "someone@example.com", 1780921434},
+		// A zone-less date buckets differently per host locale, so it is
+		// dropped rather than sent — and with it the poster, since one alone
+		// mints nothing.
+		{"zone-less date dropped", "someone@example.com", "2026-06-08 12:23:54", "", 0},
+		// Easynews and the local library report neither; those releases go out
+		// exactly as they do today and simply never gain a verdict.
+		{"source reports neither", "", "", "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode report body: %v", err)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "key")
+			client.HTTP = server.Client()
+
+			manager := session.NewManager(nil, 0)
+			defer manager.Shutdown()
+
+			rel := &release.Release{
+				Title:      "Movie.2160p.Remux-GRP",
+				DetailsURL: "https://indexer.example.com/details/a",
+				Size:       4321,
+				Poster:     tt.poster,
+				UsenetDate: tt.usenetDate,
+			}
+			sess, err := manager.CreateDeferredSession("s1", "https://indexer.example.com/nzb/a", rel, nil,
+				&session.AvailReportMeta{ImdbID: "tt1234567"}, "movie", "tt1234567", "Movie", "Movie")
+			if err != nil {
+				t.Fatalf("CreateDeferredSession: %v", err)
+			}
+
+			reporter := NewReporter(client, staticProviderHostsSource{hosts: []string{"news.example.com"}})
+			if outcome := reporter.ReportBadAllProviders(sess, ""); outcome.Status != "sent" {
+				t.Fatalf("report outcome = %+v, want sent", outcome)
+			}
+
+			gotPoster, _ := body["poster"].(string)
+			if gotPoster != tt.wantPoster {
+				t.Errorf("poster = %v, want %q", body["poster"], tt.wantPoster)
+			}
+			gotDate, _ := body["usenet_date"].(float64)
+			if gotDate != tt.wantUsenetDate {
+				t.Errorf("usenet_date = %v, want %v", body["usenet_date"], tt.wantUsenetDate)
+			}
+		})
+	}
+}

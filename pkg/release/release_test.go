@@ -51,3 +51,59 @@ func TestCloneCarriesUniqueHitOntoEveryCopy(t *testing.T) {
 		t.Fatal("clone.UniqueHit followed the original, want an independent copy")
 	}
 }
+
+// AvailNZB mints the Warden fingerprint from the poster and the usenet date
+// together, so a release has to carry both onto every copy a playlist hands to
+// playback — the report is sent from whichever copy actually played.
+func TestCloneCarriesPosterAndUsenetDate(t *testing.T) {
+	rel := &Release{
+		Title:      "Movie.2160p.Remux-GRP",
+		Poster:     "someone@example.com",
+		UsenetDate: "Mon, 08 Jun 2026 12:23:54 +0000",
+		Variants: []*Release{{
+			Title:      "Movie.2160p.Remux-GRP",
+			Poster:     "other@example.com",
+			UsenetDate: "Tue, 09 Jun 2026 01:02:03 +0000",
+		}},
+	}
+
+	clone := rel.Clone()
+	for i, c := range clone.Copies() {
+		want := rel.CopyAt(i)
+		if c.Poster != want.Poster || c.UsenetDate != want.UsenetDate {
+			t.Fatalf("copy %d: poster/date = %q/%q, want %q/%q", i, c.Poster, c.UsenetDate, want.Poster, want.UsenetDate)
+		}
+	}
+}
+
+// The usenet date goes to AvailNZB as unix seconds because that is the one
+// form no host locale can re-bucket. A value that carries no zone matches none
+// of the known layouts, so it is dropped rather than reported and guessed at.
+func TestUsenetDateUnix(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  string
+		want   int64
+		wantOK bool
+	}{
+		{"rfc1123z", "Mon, 08 Jun 2026 12:23:54 +0000", 1780921434, true},
+		{"rfc3339", "2026-06-08T12:23:54Z", 1780921434, true},
+		{"offset applied", "2026-06-08T14:23:54+02:00", 1780921434, true},
+		{"zone-less rejected", "2026-06-08 12:23:54", 0, false},
+		{"unparseable rejected", "not a date", 0, false},
+		{"absent", "", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := (&Release{UsenetDate: tt.value}).UsenetDateUnix()
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("UsenetDateUnix(%q) = %d, %v; want %d, %v", tt.value, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+
+	if got, ok := (*Release)(nil).UsenetDateUnix(); ok || got != 0 {
+		t.Fatalf("nil release: UsenetDateUnix = %d, %v; want 0, false", got, ok)
+	}
+}

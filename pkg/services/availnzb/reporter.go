@@ -117,6 +117,16 @@ func (r *Reporter) report(sess *session.Session, available bool, servedOnly bool
 		return SkippedOutcome("No public details URL is available for this release.")
 	}
 	meta := ReportMeta{ReleaseName: sess.ReportReleaseName(), Size: sess.ReportSize()}
+	// The poster and usenet date the indexer reported, passed straight
+	// through for AvailNZB to fingerprint. A release from a source that
+	// reports neither (Easynews, the local library) carries neither here, and
+	// the report goes out exactly as it does today.
+	if rel := sess.Release(); rel != nil {
+		meta.Poster = rel.Poster
+		if unix, ok := rel.UsenetDateUnix(); ok {
+			meta.UsenetDate = unix
+		}
+	}
 	if ids := sess.ContentIDs; ids != nil {
 		meta.TmdbID = ids.TmdbID
 

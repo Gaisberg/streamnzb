@@ -519,3 +519,69 @@ func TestDropCopiesRemovesReleaseWhenEveryCopyIsBad(t *testing.T) {
 		t.Fatalf("expected the release to disappear, got %+v (removed=%v)", got, removed)
 	}
 }
+
+// A library copy carries no poster or usenet date and usually wins the merge,
+// and NZBgeek does not report poster at all. The pair has to come forward from
+// whichever copy did describe the post, or a release AvailNZB could fingerprint
+// reports with nothing to fingerprint.
+func TestMergeSameReleaseVariantsCarriesPosterAndUsenetDateForward(t *testing.T) {
+	const poster = "cKTDtXjrI0VL@m3ZiWGct.3lP"
+	const usenetDate = "Fri, 04 Sep 2026 03:25:17 +0100"
+
+	tests := []struct {
+		name           string
+		primaryPoster  string
+		primaryDate    string
+		variantPoster  string
+		variantDate    string
+		wantPoster     string
+		wantUsenetDate string
+	}{
+		{"library primary takes the pair from the indexer copy", "", "", poster, usenetDate, poster, usenetDate},
+		// NZBgeek reports usenetdate but never poster, so a half pair on the
+		// primary is replaced wholesale rather than completed from elsewhere.
+		{"half pair replaced as a unit", "", "Sun, 13 Sep 2026 21:19:34 +0000", poster, usenetDate, poster, usenetDate},
+		{"primary keeps its own complete pair", poster, usenetDate, "other@example.com", "Tue, 01 Sep 2026 00:00:00 +0000", poster, usenetDate},
+		{"no copy reports the pair", "", "", "", "", "", ""},
+		// A variant with only half the pair cannot contribute: mixing one
+		// copy's poster with another's date fingerprints a post that never
+		// existed.
+		{"half pair on the variant is unusable", "", "", poster, "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			libraryRel := &release.Release{
+				Title: "Mayday.2026.2160p.ATVP.WEB-DL-FLUX", DetailsURL: "https://idx/details/a",
+				Indexer: "StreamNZB Library - DrunkenSlug", IsLibrary: true,
+				Poster: tt.primaryPoster, UsenetDate: tt.primaryDate,
+			}
+			indexerRel := &release.Release{
+				Title: "Mayday.2026.2160p.ATVP.WEB-DL-FLUX", DetailsURL: "https://idx/details/a",
+				Indexer: "DrunkenSlug",
+				Poster:  tt.variantPoster, UsenetDate: tt.variantDate,
+			}
+
+			got := MergeSameReleaseVariants([]*release.Release{indexerRel, libraryRel}, VariantMergeOptions{
+				Rank: func(rel *release.Release) int {
+					if rel.IsLibraryResult() {
+						return 1
+					}
+					return 0
+				},
+			})
+			if len(got) != 1 {
+				t.Fatalf("expected 1 merged release, got %d", len(got))
+			}
+			if !got[0].IsLibraryResult() {
+				t.Fatal("expected the library copy to lead the merge")
+			}
+			if got[0].Poster != tt.wantPoster {
+				t.Errorf("Poster = %q, want %q", got[0].Poster, tt.wantPoster)
+			}
+			if got[0].UsenetDate != tt.wantUsenetDate {
+				t.Errorf("UsenetDate = %q, want %q", got[0].UsenetDate, tt.wantUsenetDate)
+			}
+		})
+	}
+}
