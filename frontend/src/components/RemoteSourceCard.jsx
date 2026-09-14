@@ -8,6 +8,7 @@ import { Link2, Loader2, RefreshCw, Unlink } from "lucide-react"
 import { applySelectedChanges, changeKeys, checkForUpdate } from "@/lib/remoteProfiles"
 import { applySelectedFormatChanges, checkFormatForUpdate, formatChangeKeys } from "@/lib/formatProfiles"
 import { checkDefineLibraryForUpdate } from "@/lib/defineLibraries"
+import { collapseUnchanged, lineDiff } from "@/lib/lineDiff"
 import { sourceHost } from "@/lib/shareCodes"
 
 function formatWhen(value) {
@@ -113,16 +114,42 @@ function FilterDiff({ pending, selection }) {
   )
 }
 
-// The format diff shows each template whole. They are short enough to read,
-// and a line diff of Go template syntax would obscure more than it shows.
+const DIFF_LINE_TONE = {
+  same: "text-muted-foreground",
+  del: "text-destructive",
+  add: "text-emerald-600 dark:text-emerald-500",
+}
+const DIFF_LINE_MARK = { same: " ", del: "-", add: "+" }
+
+// contextLineLength clips unchanged lines. A template line can run to
+// thousands of characters — one {{if}}/{{else if}} chain per line is the
+// common style — and two of those as context would fill the dialog with text
+// that did not change. Context is for orientation; a prefix is enough.
+const contextLineLength = 120
+
+function contextLine(text) {
+  return text.length > contextLineLength ? `${text.slice(0, contextLineLength)}…` : text
+}
+
+// The format diff is a line diff of each template with the unchanged lines
+// folded away, so a long description template reads as the hunks that moved
+// rather than two full copies. A template is still one decision — the
+// checkbox takes or leaves it whole.
 function FormatDiff({ pending, selection }) {
   return (pending.diff?.changes || []).map((change) => (
     <div key={change.key} className="space-y-1">
       <p className="text-xs font-medium text-muted-foreground">{change.label}</p>
       <div className="rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
         <ChangeRow entryKey={change.key} {...selection}>
-          <div className="whitespace-pre-wrap break-all text-destructive">- {change.before}</div>
-          <div className="whitespace-pre-wrap break-all text-emerald-600 dark:text-emerald-500">+ {change.after}</div>
+          {collapseUnchanged(lineDiff(change.before, change.after)).map((line, i) => (
+            line.kind === "skip"
+              ? <div key={i} className="text-muted-foreground/60 italic">… {line.count} unchanged {line.count === 1 ? "line" : "lines"}</div>
+              : (
+                <div key={i} className={`whitespace-pre-wrap break-all ${DIFF_LINE_TONE[line.kind]}`}>
+                  {DIFF_LINE_MARK[line.kind]} {line.kind === "same" ? contextLine(line.text) : line.text}
+                </div>
+              )
+          ))}
         </ChangeRow>
       </div>
     </div>

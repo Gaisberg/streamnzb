@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { RemoteSourceCard } from '@/components/RemoteSourceCard'
 import { checkForUpdate, diffLinkedProfiles, mergeUpstream } from '@/lib/remoteProfiles'
+import { checkFormatForUpdate, diffFormatProfiles } from '@/lib/formatProfiles'
 
 // Only the fetch-and-decode half is stubbed — jsdom has no Blob.stream() for
 // the share-code encoder, and what the dialog does with an update is the
@@ -10,6 +11,10 @@ import { checkForUpdate, diffLinkedProfiles, mergeUpstream } from '@/lib/remoteP
 vi.mock('@/lib/remoteProfiles', async (importOriginal) => ({
   ...(await importOriginal()),
   checkForUpdate: vi.fn(),
+}))
+vi.mock('@/lib/formatProfiles', async (importOriginal) => ({
+  ...(await importOriginal()),
+  checkFormatForUpdate: vi.fn(),
 }))
 
 const rule = (name, points) => ({ name, when: 'true', points })
@@ -108,5 +113,41 @@ describe('RemoteSourceCard update dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
     fireEvent.click(screen.getByRole('button', { name: 'Apply update' }))
     expect(onChange.mock.calls[0][0].rules).toEqual([rule('Shared', 900), rule('Fresh', 100), rule('My own', 7)])
+  })
+
+  // A description template runs to dozens of lines; the dialog has to show
+  // the lines that moved, not two full copies of it.
+  it('shows a template update as a line diff with the unchanged lines folded', async () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `{{.Line${i}}}`)
+    // One template line is an {{if}} chain thousands of characters long, as
+    // description templates commonly are.
+    const chain = '{{if .Network}}' + '{{else if eq .Name "x"}}'.repeat(40) + '{{end}}'
+    lines[7] = chain
+    const profile = {
+      name: 'Mine',
+      result_description_template: lines.join('\n'),
+      source: { url: 'https://example.com/f.txt', code: 'SNZBF1:snapshot' },
+    }
+    const added = `{{.Added}}${chain}`
+    const merged = { ...profile, result_description_template: [...lines.slice(0, 6), added, ...lines.slice(6)].join('\n') }
+    checkFormatForUpdate.mockResolvedValue({
+      status: 'update', code: 'SNZBF1:upstream', merged, diff: diffFormatProfiles(profile, merged), remoteName: 'Community',
+    })
+    render(<RemoteSourceCard profile={profile} onChange={vi.fn()} flavor="format" />)
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
+    await screen.findByText('Description template')
+
+    // The changed line is shown whole, however long; the long context line
+    // is clipped to a prefix.
+    expect(screen.getByText(`+ ${added}`)).toBeTruthy()
+    expect(screen.getByText(`${chain.slice(0, 120)}…`)).toBeTruthy()
+    // Two lines of context either side, the rest folded.
+    expect(screen.getByText('{{.Line4}}', { exact: false })).toBeTruthy()
+    expect(screen.getByText('{{.Line6}}', { exact: false })).toBeTruthy()
+    expect(screen.queryByText('{{.Line0}}', { exact: false })).toBeNull()
+    expect(screen.queryByText('{{.Line11}}', { exact: false })).toBeNull()
+    expect(screen.getAllByText('… 4 unchanged lines')).toHaveLength(2)
+    // One decision: the template as a whole.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1)
   })
 })

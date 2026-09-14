@@ -91,11 +91,10 @@ export function mergeFormatUpstream(local, upstream) {
 }
 
 // diffFormatProfiles is what the confirmation dialog shows: each template
-// that would change, both sides in full — templates are short enough to read
-// whole, and a line-by-line diff of Go template syntax would obscure more
-// than it shows. An empty template renders the built-in format, so say that
-// rather than showing nothing. Each change carries the field it moves and a
-// `key`, so the dialog can offer the two templates as separate decisions.
+// that would change, both sides in full; the dialog draws them as a line
+// diff. An empty template renders the built-in format, so say that rather
+// than showing nothing. Each change carries the field it moves and a `key`,
+// so the dialog can offer the two templates as separate decisions.
 export function diffFormatProfiles(current, merged) {
   const changes = []
   const compare = (field, label) => {
