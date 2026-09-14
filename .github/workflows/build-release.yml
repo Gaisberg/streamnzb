@@ -71,7 +71,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: false
 
       # setup-go's built-in cache is keyed only on go.sum, so the build cache

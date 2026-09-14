@@ -20,7 +20,7 @@ It is written for AI coding assistants but applies to humans just the same.
 
 ## Setup
 
-You need **Go 1.25+** and **Node.js 22+**.
+You need **Go 1.26+** and **Node.js 22+**.
 
 ```bash
 git clone https://github.com/Gaisberg/streamnzb.git
@@ -48,7 +48,7 @@ They never replace a final `build.sh` run before you push.
 failure in a container:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh -c \
+docker run --rm -v "$PWD:/src" -w /src golang:1.26 sh -c \
   'rm -f /.dockerenv && mkdir -p pkg/server/web/static && touch pkg/server/web/static/.gitkeep && go test -race ./...'
 ```
 

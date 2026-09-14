@@ -107,7 +107,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: false
 
       # Same cache strategy as build-release: setup-go's built-in cache is keyed
@@ -202,7 +202,7 @@ jobs:
     # container. Note that GetDataDir() returns /app/data whenever /.dockerenv
     # exists, which breaks the data-dir tests, so remove that marker first:
     #
-    #   docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh -c 'rm -f /.dockerenv && mkdir -p pkg/server/web/static && touch pkg/server/web/static/.gitkeep && go test -race ./...'
+    #   docker run --rm -v "$PWD:/src" -w /src golang:1.26 sh -c 'rm -f /.dockerenv && mkdir -p pkg/server/web/static && touch pkg/server/web/static/.gitkeep && go test -race ./...'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -211,7 +211,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: false
 
       - name: Cache Go build and module cache
