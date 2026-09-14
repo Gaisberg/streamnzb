@@ -866,10 +866,17 @@ func (c *Client) Discover(mediaType string, filters DiscoverFilters, page int, l
 
 // SearchByType searches one media type ("movie" or "tv") — unlike SearchMulti,
 // results are homogeneous, which is what a typed catalog needs.
-func (c *Client) SearchByType(mediaType, query string, page int) (*ListingResponse, error) {
+// SearchByType searches one media type. lang localizes the names and
+// overviews the same way the browse listings are localized; "" sends no
+// parameter at all, which is what an English profile resolves to and what
+// keeps its cache keys stable.
+func (c *Client) SearchByType(mediaType, query string, page int, lang string) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("page", strconv.Itoa(max(page, 1)))
+	if lang != "" {
+		params.Set("language", lang)
+	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/search/%s", mediaType)
 	return getJSON[ListingResponse](c, endpoint, params, "search")
 }

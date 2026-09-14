@@ -192,6 +192,10 @@ type SearchResult struct {
 	// giving up on the row entirely.
 	RawTitle string `json:"title"`
 	ImageURL string `json:"image_url"`
+	// Translations is the search endpoint's own name-per-language map, keyed
+	// by ISO 639-3 ("eng", "jpn"). It is the only place a search row carries a
+	// readable name for a series whose record is not in the display language.
+	Translations map[string]string `json:"translations"`
 }
 
 type searchResponse struct {
@@ -219,6 +223,20 @@ func (r SearchResult) Title() string {
 		return title
 	}
 	return strings.TrimSpace(r.Name)
+}
+
+// TitleIn is the result's name in lang3, then English, then whatever the
+// record itself is named. Search rows need this for the same reason series
+// records do: TVDB's default name is the show's original language, so a
+// search for Solo Leveling answers with 俺だけレベルアップな件 unless the
+// translation the row already carries is used.
+func (r SearchResult) TitleIn(lang3 string) string {
+	for _, code := range []string{lang3, EnglishISO3} {
+		if title := strings.TrimSpace(r.Translations[code]); title != "" {
+			return title
+		}
+	}
+	return r.Title()
 }
 
 type tokenState struct {

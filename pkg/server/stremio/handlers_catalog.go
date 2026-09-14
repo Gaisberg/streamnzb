@@ -329,8 +329,11 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 	// not remove overlaps with an earlier board row: apart from making a saved
 	// list incomplete, a shortened Stremio page makes Jellyfin clients believe
 	// they reached the end and they never request the later pages.
-	if req.Search == "" && catalogUsesCrossDedup(def) && len(metas) > 0 {
-		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, req.Profile, def))
+	switch {
+	case req.Search == "" && catalogUsesCrossDedup(def) && len(metas) > 0:
+		metas = filterHigherRankedDuplicates(metas, s.higherRankedCatalogIDs(ctx, req.Profile, def), previewIDKeys)
+	case req.Search != "" && def.Kind == "search" && len(metas) > 0:
+		metas = filterHigherRankedDuplicates(metas, s.higherRankedSearchKeys(ctx, req.Profile, def, req.Search), s.canonicalKeysFor(def.Type))
 	}
 	s.applyPosterOverlays(req.Profile, metas)
 	if metas == nil {
@@ -596,7 +599,7 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 	var err error
 	switch {
 	case req.Search != "":
-		resp, err = rt.tmdbClient.SearchByType(mediaType, req.Search, page)
+		resp, err = rt.tmdbClient.SearchByType(mediaType, req.Search, page, req.Profile.EffectiveLanguage())
 	case def.Kind == "discover":
 		filters := tmdb.DiscoverFilters{Genres: def.DiscoverGenres}
 		// Movies push the ceiling upstream (certification.lte) so the row
@@ -774,12 +777,14 @@ func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req
 	}
 	previews := make([]MetaPreview, 0, len(results))
 	seen := map[string]bool{}
+	lang3 := tvdb.LanguageToISO3(req.Profile.EffectiveLanguage())
 	for _, result := range results {
 		if s.animeLists == nil {
 			break
 		}
 		mapping, ok := s.animeLists.LookupTVDB(result.SeriesID())
-		if !ok || mapping.KitsuID <= 0 || result.Title() == "" {
+		title := result.TitleIn(lang3)
+		if !ok || mapping.KitsuID <= 0 || title == "" {
 			continue
 		}
 		id := fmt.Sprintf("kitsu:%d", mapping.KitsuID)
@@ -787,7 +792,7 @@ func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req
 			continue
 		}
 		seen[id] = true
-		previews = append(previews, MetaPreview{ID: id, Type: "anime", Name: result.Title(), Poster: result.ImageURL})
+		previews = append(previews, MetaPreview{ID: id, Type: "anime", Name: title, Poster: result.ImageURL})
 		if len(previews) >= catalogPageSize {
 			break
 		}
@@ -802,6 +807,9 @@ func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req
 }
 
 func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	if s.kitsuClient == nil {
+		return nil, fmt.Errorf("kitsu client not configured")
+	}
 	var listings []kitsu.AnimeListing
 	var err error
 	switch {
@@ -1366,15 +1374,140 @@ func (s *Server) higherRankedCatalogIDs(ctx context.Context, profile *config.Met
 	return ids
 }
 
-// filterHigherRankedDuplicates drops previews already shown by a higher-ranked
-// catalog on the client's board.
-func filterHigherRankedDuplicates(metas []MetaPreview, higher map[string]bool) []MetaPreview {
+// higherRankedSearchKeys collects the ids a search carrier ranked above
+// current already answers this query with, so one title reaches the client
+// once rather than once per carrier. Only carriers that outrank current are
+// fetched: the winning side never pays for the losing side's query.
+func (s *Server) higherRankedSearchKeys(ctx context.Context, profile *config.MetadataProfileConfig, current CatalogDef, search string) map[string]bool {
+	keys := make(map[string]bool)
+	for _, def := range searchCatalogDefs(profile) {
+		if def.ID == current.ID || !searchCarrierOutranks(profile, def, current) {
+			continue
+		}
+		// Same best-effort budget as the board rows: once the request's own
+		// deadline is gone, stop paying for a de-duplication pass.
+		if ctx.Err() != nil {
+			break
+		}
+		metas, err := s.buildCatalog(ctx, def, catalogRequest{Type: def.Type, ID: def.ID, Search: search, Profile: profile})
+		if err != nil {
+			continue
+		}
+		canonical := s.canonicalKeysFor(def.Type)
+		for _, preview := range metas {
+			for _, key := range canonical(preview) {
+				keys[key] = true
+			}
+		}
+	}
+	return keys
+}
+
+// searchCarrierOutranks decides which of two search carriers keeps a title
+// they both return. Carriers of the same content type never collide — there
+// is exactly one per type — so the only overlap is an anime entry against the
+// aired series or film it belongs to, and the profile's anime priority list is
+// what ranks those sources. A source the list does not name ranks last, which
+// is why a TMDB series hit yields to whichever anime source the profile leads
+// with.
+func searchCarrierOutranks(profile *config.MetadataProfileConfig, def, current CatalogDef) bool {
+	if (def.Type == "anime") == (current.Type == "anime") {
+		return false
+	}
+	order := profile.EffectiveAnimeMetaSources()
+	return metaSourceRank(order, def.Provider) < metaSourceRank(order, current.Provider)
+}
+
+// metaSourceRank is a provider's position in a priority list; one past the end
+// for a provider the list does not name.
+func metaSourceRank(order []string, provider string) int {
+	for i, source := range order {
+		if source == provider {
+			return i
+		}
+	}
+	return len(order)
+}
+
+// canonicalKeysFor identifies previews of one catalog across provider id
+// spaces. kind is the media kind that catalog's own ids belong to, which TMDB
+// ids need: it numbers films and series separately, so "tmdb:5" names two
+// different titles depending on which list it came from.
+func (s *Server) canonicalKeysFor(kind string) func(MetaPreview) []string {
+	return func(preview MetaPreview) []string {
+		if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
+			return s.animeEntryKeys(preview.ID, kitsuID)
+		}
+		if tmdbID, ok := strings.CutPrefix(preview.ID, "tmdb:"); ok {
+			return []string{tmdbKey(kind, tmdbID)}
+		}
+		return []string{preview.ID}
+	}
+}
+
+// animeEntryKeys are the ids an anime entry is known by outside Kitsu. The
+// aired-series catalogs never use a Kitsu id, so the anime-lists mapping is
+// what makes "the same show" decidable across sources. Every cour maps onto
+// the same series ids, which is the point: the side that loses the priority
+// contest drops all of its entries for that series, not just the one that
+// happened to match.
+func (s *Server) animeEntryKeys(previewID, kitsuID string) []string {
+	keys := []string{previewID}
+	if s.animeLists == nil {
+		return keys
+	}
+	mapping, ok := s.animeLists.LookupKitsu(kitsuID)
+	if !ok {
+		return keys
+	}
+	if mapping.IMDbID != "" {
+		keys = append(keys, mapping.IMDbID)
+	}
+	if mapping.TMDBID != "" {
+		kind := "series"
+		if strings.EqualFold(mapping.Type, "movie") {
+			kind = "movie"
+		}
+		keys = append(keys, tmdbKey(kind, mapping.TMDBID))
+	}
+	if mapping.TVDBID != "" {
+		keys = append(keys, "tvdb:"+mapping.TVDBID)
+	}
+	return keys
+}
+
+// tmdbKey qualifies a TMDB id with the list it was drawn from.
+func tmdbKey(kind, id string) string {
+	if kind == "movie" {
+		return "tmdb:movie:" + id
+	}
+	return "tmdb:tv:" + id
+}
+
+// previewIDKeys is the board rows' identity: the catalog id itself. Rows of
+// one type share an id space already, and expanding a Kitsu id to its series
+// ids there would collapse the separate cours a Kitsu-backed row exists to
+// show.
+func previewIDKeys(preview MetaPreview) []string {
+	return []string{preview.ID}
+}
+
+// filterHigherRankedDuplicates drops previews a higher-ranked catalog already
+// shows. keys names the ids a preview can be recognised by.
+func filterHigherRankedDuplicates(metas []MetaPreview, higher map[string]bool, keys func(MetaPreview) []string) []MetaPreview {
 	if len(higher) == 0 {
 		return metas
 	}
 	filtered := metas[:0]
 	for _, preview := range metas {
-		if !higher[preview.ID] {
+		duplicate := false
+		for _, key := range keys(preview) {
+			if higher[key] {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
 			filtered = append(filtered, preview)
 		}
 	}
