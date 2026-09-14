@@ -50,6 +50,7 @@ var orderedSearchQueryKeys = []string{
 	"offset",
 	"limit",
 	"o",
+	"extended",
 }
 
 func encodeOrderedQuery(params url.Values, orderedKeys []string) string {
@@ -777,6 +778,16 @@ func (c *Client) passthroughParams(req indexer.SearchRequest, limit int) url.Val
 // result set. Shared by the stream-search mapping above and the Newznab
 // endpoint's passthrough queries, which differ only in how params are built.
 func (c *Client) executeSearch(ctx context.Context, req indexer.SearchRequest, params url.Values, limit int) (*indexer.SearchResponse, error) {
+	// Newznab returns a minimal attribute set — category, guid, size — unless
+	// the query asks for the extended one. Everything ToRelease reads beyond
+	// size lives in that extended set: grabs, password, usenetdate, and the
+	// language and subs tags a language or subtitle filter is judged on. A
+	// NZBgeek movie search without it reports zero grabs and no subtitles for
+	// every release (issue #283). A passthrough caller that named its own
+	// value keeps it.
+	if params.Get("extended") == "" {
+		params.Set("extended", "1")
+	}
 	apiURL := c.buildAPIURL(params)
 	logger.Debug("Search request",
 		"stream", req.StreamLabel,

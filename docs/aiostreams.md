@@ -68,9 +68,11 @@ stays *Unknown* rather than becoming "no subtitles".
 Indexers write the tag in different shapes and all of them are read: one
 comma-separated list, or — as NZBgeek does — one `subs` attribute per
 language, and names with a region after them (`Arabic (SA)`,
-`Spanish (Latin America)`) resolve to the language. In practice NZBgeek and
-NZB.life are the indexers that tag subtitles at all; a result from an indexer
-that does not is *Unknown* on every side.
+`Spanish (Latin America)`) resolve to the language. Searches ask for the
+newznab extended attribute set, without which an indexer returns only
+category, guid and size — no languages, no subtitles, and no grab counts.
+Indexers still vary in how much they tag; a result from one that tags nothing
+is *Unknown* on every side.
 
 Reading the block is on AIOStreams' side of the fence: its StreamNZB preset
 used the generic stream parser, which only knows flags, until

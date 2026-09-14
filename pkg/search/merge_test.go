@@ -399,6 +399,41 @@ func TestMergeSameReleaseVariantsKeepsDuplicatesAsVariants(t *testing.T) {
 	}
 }
 
+// Indexers differ sharply in how much they tag, and only a couple report the
+// subs attribute at all. When the copy that tagged nothing wins the merge, the
+// release must still be known to carry the subtitles the other copy reported —
+// otherwise whether a required-subtitle filter finds it depends on which
+// indexer happened to lead (issue #283).
+func TestMergeSameReleaseVariantsUnionsLanguagesAndSubtitles(t *testing.T) {
+	tagged := &release.Release{
+		Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek",
+		Languages: []string{"en"}, Subtitles: []string{"en", "ar"},
+	}
+	untagged := &release.Release{
+		Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug/2", Indexer: "DrunkenSlug", Grabs: 40,
+	}
+
+	got := MergeSameReleaseVariants([]*release.Release{tagged, untagged}, VariantMergeOptions{})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 merged release, got %d", len(got))
+	}
+	// The untagged copy leads on grabs, and still carries the other's tags.
+	if got[0].Indexer != "DrunkenSlug" {
+		t.Fatalf("expected the most-grabbed copy to lead, got %q", got[0].Indexer)
+	}
+	if subs := got[0].Subtitles; len(subs) != 2 || subs[0] != "en" || subs[1] != "ar" {
+		t.Fatalf("merged subtitles = %v, want [en ar]", subs)
+	}
+	if langs := got[0].Languages; len(langs) != 1 || langs[0] != "en" {
+		t.Fatalf("merged languages = %v, want [en]", langs)
+	}
+	// The union is built on a copy: the variant's own tags are untouched, so
+	// a cached release cannot be written through.
+	if len(tagged.Subtitles) != 2 {
+		t.Fatalf("variant subtitles were mutated: %v", tagged.Subtitles)
+	}
+}
+
 func TestMergeSameReleaseVariantsUsesRankForPrimary(t *testing.T) {
 	releases := []*release.Release{
 		{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://geek/1", Indexer: "NZBGeek", Grabs: 99},

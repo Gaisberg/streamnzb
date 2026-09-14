@@ -625,6 +625,65 @@ func TestSearchTVTextModeDoesNotUseTVSearchParams(t *testing.T) {
 	}
 }
 
+// Newznab sends a minimal attribute set — category, guid, size — unless the
+// query asks for the extended one, and everything ToRelease reads beyond size
+// is in the extended set: grabs, password, usenetdate, and the language and
+// subs tags a language or subtitle filter is judged on. A NZBgeek movie
+// search without it reported zero grabs and no subtitles at all (issue #283).
+func TestSearchRequestsExtendedAttributes(t *testing.T) {
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name: "MockIndexer", URL: server.URL, APIKey: "test-api-key",
+	}, nil)
+	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{MovieSearch: true}}
+
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat: "2000", IMDbID: "tt12042730", SearchMode: "id",
+	}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if got := gotQuery.Get("extended"); got != "1" {
+		t.Fatalf("extended = %q, want 1", got)
+	}
+}
+
+// A Newznab client proxying through us that named its own value keeps it:
+// the passthrough query is the caller's, not ours to rewrite.
+func TestPassthroughKeepsCallerExtendedValue(t *testing.T) {
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{
+		Name: "MockIndexer", URL: server.URL, APIKey: "test-api-key",
+	}, nil)
+	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{Search: true}}
+
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat: "2000",
+		Passthrough: &indexer.PassthroughQuery{
+			Function: "search",
+			Params:   url.Values{"q": {"movie"}, "extended": {"0"}},
+		},
+	}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if got := gotQuery.Get("extended"); got != "0" {
+		t.Fatalf("extended = %q, want the caller's 0", got)
+	}
+}
+
 func TestSearchTVIDModeKeepsTVSearchParams(t *testing.T) {
 	var gotQuery url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -992,7 +1051,7 @@ func TestSearchTextModeOrdersQueryParams(t *testing.T) {
 		t.Fatalf("Search() error = %v", err)
 	}
 
-	want := "apikey=test-api-key&t=search&cat=5000&q=The+Last+of+Us+S01E02&offset=0&limit=2000&o=xml"
+	want := "apikey=test-api-key&t=search&cat=5000&q=The+Last+of+Us+S01E02&offset=0&limit=2000&o=xml&extended=1"
 	if gotRawQuery != want {
 		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
 	}
@@ -1026,7 +1085,7 @@ func TestSearchTVIDModeOrdersQueryParams(t *testing.T) {
 		t.Fatalf("Search() error = %v", err)
 	}
 
-	want := "apikey=test-api-key&t=tvsearch&cat=5000&tvdbid=462715&season=1&ep=1&offset=0&limit=2000&o=xml"
+	want := "apikey=test-api-key&t=tvsearch&cat=5000&tvdbid=462715&season=1&ep=1&offset=0&limit=2000&o=xml&extended=1"
 	if gotRawQuery != want {
 		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
 	}
@@ -1059,7 +1118,7 @@ func TestSearchAggregatorIncludesCacheTimeParam(t *testing.T) {
 		t.Fatalf("Search() error = %v", err)
 	}
 
-	want := "apikey=test-api-key&t=search&cat=5000&q=Interstellar&cachetime=60&offset=0&limit=2000&o=xml"
+	want := "apikey=test-api-key&t=search&cat=5000&q=Interstellar&cachetime=60&offset=0&limit=2000&o=xml&extended=1"
 	if gotRawQuery != want {
 		t.Fatalf("raw query = %q, want %q", gotRawQuery, want)
 	}

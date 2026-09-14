@@ -177,12 +177,32 @@ func mergeCopyMetadata(primary *release.Release, variants []*release.Release) {
 		if primary.Duration == 0 {
 			primary.Duration = variant.Duration
 		}
-		for _, lang := range variant.Languages {
-			if !containsFold(primary.Languages, lang) {
-				primary.Languages = append(primary.Languages, lang)
-			}
-		}
+		// Languages and subtitles are the union of every copy's tags, not the
+		// primary's alone. Indexers differ sharply in how much they tag — in
+		// practice only a couple of them report subs at all — so which copy
+		// happened to win the merge must not decide whether a release is
+		// known to carry Arabic subtitles (issue #283).
+		primary.Languages = unionFold(primary.Languages, variant.Languages)
+		primary.Subtitles = unionFold(primary.Subtitles, variant.Subtitles)
 	}
+}
+
+// unionFold returns into plus the entries of add it is missing, compared
+// case-insensitively. It copies before the first append rather than growing
+// into in place: a release's tag slice is shared with the copy of it in the
+// query cache, and appending into spare capacity would write through to it.
+func unionFold(into, add []string) []string {
+	out := into
+	for _, v := range add {
+		if containsFold(out, v) {
+			continue
+		}
+		if len(out) == len(into) {
+			out = append(make([]string, 0, len(into)+len(add)), into...)
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func containsFold(list []string, want string) bool {
