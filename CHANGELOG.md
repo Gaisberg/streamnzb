@@ -1,5 +1,17 @@
 # Changelog
 
+## [6.1.0](https://github.com/Gaisberg/streamnzb/compare/v6.0.0...v6.1.0) (2026-09-14)
+
+
+### Features
+
+* **availnzb:** report poster and usenet date for Warden verdicts ([c3f02b6](https://github.com/Gaisberg/streamnzb/commit/c3f02b69964c796b658b274694b085b24e97f685)), closes [#264](https://github.com/Gaisberg/streamnzb/issues/264)
+
+
+### Bug Fixes
+
+* **playback:** stop nilling stream after Close in servePlaybackStream ([#322](https://github.com/Gaisberg/streamnzb/issues/322)) ([61b825d](https://github.com/Gaisberg/streamnzb/commit/61b825dabea7b8913cf286bc02b5defc4e5d7e85))
+
 ## [6.0.0](https://github.com/Gaisberg/streamnzb/compare/v5.18.0...v6.0.0) (2026-09-14)
 
 
