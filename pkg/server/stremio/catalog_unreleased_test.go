@@ -1,10 +1,18 @@
 package stremio
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/services/metadata/tvmaze"
 )
 
 // The window keeps what is about to land and drops what is only announced,
@@ -104,5 +112,68 @@ func TestEffectiveHideIncompleteMetadata(t *testing.T) {
 		if got := tc.profile.EffectiveHideIncompleteMetadata(); got != tc.want {
 			t.Errorf("EffectiveHideIncompleteMetadata() = %v, want %v", got, tc.want)
 		}
+	}
+}
+
+// tvmazeStub answers the lookup endpoint the way TVMaze does for a show it
+// has not dated yet, and for one it has.
+func tvmazeStub(t *testing.T) (*tvmaze.Client, *int64) {
+	t.Helper()
+	var calls int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.RawQuery, "tt35506453"):
+			fmt.Fprint(w, `{"id":89476,"name":"Solo Leveling","status":"In Development","premiered":null}`)
+		case strings.Contains(r.URL.RawQuery, "tt99999999"):
+			fmt.Fprint(w, `{"id":1,"name":"Dated Elsewhere","status":"To Be Determined","premiered":"2026-09-20"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	client := tvmaze.NewClient(nil, nil)
+	client.BaseURL = ts.URL
+	return client, &calls
+}
+
+// The air-date authority is what dates the rows the catalogue sources could
+// not, and says which of the rest have not come out at all — without it the
+// window has nothing to compare for exactly the records that need it.
+func TestFillPreviewAirDatesUsesTVMaze(t *testing.T) {
+	logger.Init("ERROR")
+	client, calls := tvmazeStub(t)
+	srv := &Server{tvmazeClient: client}
+
+	metas := []MetaPreview{
+		{ID: "tt35506453", Name: "Undated upcoming"},
+		{ID: "tt99999999", Name: "Dated by TVMaze"},
+		{ID: "tt11111111", Name: "Unknown to TVMaze"},
+		{ID: "kitsu:46231", Name: "Anime keeps Kitsu's own date", released: "2024-01-07"},
+	}
+	srv.fillPreviewAirDates(context.Background(), &config.MetadataProfileConfig{}, metas)
+
+	if !metas[0].unreleased || metas[0].released != "" {
+		t.Errorf("row 0 = %+v, want marked unreleased with no date", metas[0])
+	}
+	if metas[1].released != "2026-09-20" || metas[1].ReleaseInfo != "2026" {
+		t.Errorf("row 1 = %+v, want TVMaze's premiere date", metas[1])
+	}
+	if metas[2].unreleased || metas[2].released != "" {
+		t.Errorf("row 2 = %+v, want left alone when TVMaze has no record", metas[2])
+	}
+	// A row that already has a date, and one keyed by a scheme TVMaze cannot
+	// look up, cost no request at all.
+	if got := atomic.LoadInt64(calls); got != 3 {
+		t.Errorf("TVMaze was asked %d times, want 3 — only the undated, lookup-able rows", got)
+	}
+
+	// The profile's toggle governs it.
+	off := false
+	metas = []MetaPreview{{ID: "tt35506453"}}
+	srv.fillPreviewAirDates(context.Background(), &config.MetadataProfileConfig{TVMazeAirDates: &off}, metas)
+	if metas[0].unreleased {
+		t.Error("TVMaze was consulted with air dates switched off for the profile")
 	}
 }

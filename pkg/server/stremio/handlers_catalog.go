@@ -28,6 +28,7 @@ import (
 	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
+	"streamnzb/pkg/services/metadata/tvmaze"
 )
 
 const (
@@ -353,6 +354,7 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		metas = filterHigherRankedDuplicates(metas, s.higherRankedSearchKeys(ctx, req.Profile, def, req.Search), s.canonicalKeysFor(def.Type))
 	}
 	if len(metas) > 0 {
+		s.fillPreviewAirDates(ctx, req.Profile, metas)
 		metas = filterUnreleasedPreviews(metas, req.Profile.EffectiveUnreleasedWindowDays(), time.Now())
 	}
 	if len(metas) > 0 && hidesIncompleteRows(def) && req.Profile.EffectiveHideIncompleteMetadata() {
@@ -373,6 +375,76 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 // poster must not also cost it its place in the row.
 func hidesIncompleteRows(def CatalogDef) bool {
 	return def.Provider != "external" && def.Provider != "local"
+}
+
+// fillPreviewAirDates dates the rows nothing else could, from the air-date
+// authority. TMDB search publishes an empty first_air_date for a record
+// nobody has filled in and TVDB search carries a year at best, so without
+// this the unreleased window has nothing to compare and the row stays — which
+// is right for missing data and wrong for a title TVMaze knows perfectly well
+// is years off. It also supplies the "not out yet" statement TMDB rows never
+// carry. Only rows still missing a date are looked up, and only when the
+// profile has TVMaze air dates on.
+func (s *Server) fillPreviewAirDates(ctx context.Context, profile *config.MetadataProfileConfig, metas []MetaPreview) {
+	if s.tvmazeClient == nil || !profile.EffectiveTVMazeAirDates() {
+		return
+	}
+	sem := make(chan struct{}, externalIDConcurrency)
+	var wg sync.WaitGroup
+	for i := range metas {
+		if metas[i].released != "" || ctx.Err() != nil {
+			continue
+		}
+		// Anime keeps Kitsu ids, which TVMaze has no lookup for; its entries
+		// carry Kitsu's own start date instead.
+		imdbID, tvdbID := "", ""
+		switch {
+		case strings.HasPrefix(metas[i].ID, "tt"):
+			imdbID = metas[i].ID
+		case strings.HasPrefix(metas[i].ID, "tvdb:"):
+			tvdbID = strings.TrimPrefix(metas[i].ID, "tvdb:")
+		default:
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, imdbID, tvdbID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			var show *tvmaze.Show
+			var err error
+			if imdbID != "" {
+				show, err = s.tvmazeClient.LookupByIMDB(ctx, imdbID)
+			} else {
+				show, err = s.tvmazeClient.LookupByTVDB(ctx, tvdbID)
+			}
+			if err != nil || show == nil {
+				return
+			}
+			if premiered := strings.TrimSpace(show.Premiered); premiered != "" {
+				metas[i].released = premiered
+				if metas[i].ReleaseInfo == "" && len(premiered) >= 4 {
+					metas[i].ReleaseInfo = premiered[:4]
+				}
+				return
+			}
+			if tvmazeUnreleased(show.Status) {
+				metas[i].unreleased = true
+			}
+		}(i, imdbID, tvdbID)
+	}
+	wg.Wait()
+}
+
+// tvmazeUnreleased reads TVMaze's own words for a show that has not started.
+// "To Be Determined" is a show with a confirmed future run and no date yet;
+// "In Development" is one that has not even reached that.
+func tvmazeUnreleased(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "in development", "to be determined":
+		return true
+	}
+	return false
 }
 
 // filterIncompletePreviews drops rows that no source could describe. Artwork

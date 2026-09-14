@@ -591,8 +591,9 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               <Label htmlFor="metadata-tvmaze-airdates" className="text-sm">TVMaze air dates</Label>
               <p className="text-xs text-muted-foreground">
                 Show TVMaze&apos;s exact air times on title pages instead of the source&apos;s own dates;
-                TVMaze keeps them more closely for running shows. Display only — skipping unaired
-                episodes is an indexer setting and always uses the best air time it can find.
+                TVMaze keeps them more closely for running shows. Also what dates the rows the catalogue
+                sources could not, for the unreleased-content window above. Skipping unaired episodes is an
+                indexer setting and always uses the best air time it can find, whatever this is set to.
               </p>
             </div>
             <Switch
