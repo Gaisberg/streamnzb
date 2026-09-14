@@ -39,7 +39,25 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 			if stream != nil {
 				logger.Debug("play handler closing stream", "session", sessionID, "reason", reason)
 				stream.Close()
-				stream = nil
+				// stream is deliberately left set, not nilled: it is read
+				// again below to build the StreamMonitor, from this same
+				// closeStreamOnce-guarded callback, which can run
+				// concurrently with that read (this codebase notes
+				// elsewhere that "Stremio often cancels the initial probe
+				// request... immediately before sending a follow-up range
+				// request" — i.e. concurrent cancellation here is routine,
+				// not an edge case). Nilling it raced that read: an
+				// interface value is two words, and reading one while
+				// another goroutine writes it is undefined behavior with no
+				// guaranteed outcome — in the field it surfaced as
+				// StreamMonitor.Seek panicking on a nil interface the
+				// instant net/http.ServeContent called it, killing the
+				// connection outright. Handing the monitor the same
+				// already-closed stream instead is exactly what
+				// primeRangeStart(resolved.stream, ...) below already does
+				// with the equivalent struct field, and StreamMonitor's own
+				// nil guard remains as a backstop for any other way a nil
+				// stream could reach it.
 			}
 		})
 	}
