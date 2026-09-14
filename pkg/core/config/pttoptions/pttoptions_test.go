@@ -15,6 +15,16 @@ func TestNormalizeLanguageToCodeAcceptsEveryForm(t *testing.T) {
 		"deu":     "de",
 		"zh-TW":   "zh-tw",
 		"Klingon": "Klingon", // unknown values pass through untouched
+		// NZBgeek qualifies names with a region (AIOStreams issue #1152).
+		// The region survives only where the pipeline distinguishes it.
+		"Arabic (SA)":             "ar",
+		"French (FR)":             "fr",
+		"Portuguese (BR)":         "pt",
+		"Spanish (ES)":            "es",
+		"Spanish (Latin America)": "es-419",
+		"Chinese (Traditional)":   "zh-tw",
+		"English (US) (SDH)":      "en",
+		"Klingon (Qo'noS)":        "Klingon (Qo'noS)",
 	}
 	for in, want := range cases {
 		if got := NormalizeLanguageToCode(in); got != want {

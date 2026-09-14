@@ -1,6 +1,9 @@
 package indexer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // ToRelease reads the newznab attributes the limits filter on: password (0
 // means none, anything else protected) and usenetdate (preferred over pubDate
@@ -37,9 +40,9 @@ func TestToReleasePasswordAndUsenetDate(t *testing.T) {
 	}
 }
 
-// The language attribute is written in whatever form the indexer's source
-// used. It normalizes on the way in so a filter never has to know whether a
-// given indexer says "Arabic", "ara" or "ar".
+// The language and subs attributes are written in whatever form the indexer's
+// source used. They normalize on the way in so a filter never has to know
+// whether a given indexer says "Arabic", "ara" or "ar".
 func TestToReleaseNormalizesLanguages(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -50,22 +53,42 @@ func TestToReleaseNormalizesLanguages(t *testing.T) {
 		{"iso 639-2", "ara", []string{"ar"}},
 		{"list", "English, ger", []string{"en", "de"}},
 		{"duplicates collapse", "English,eng,en", []string{"en"}},
+		{"regional variant", "Arabic (SA)", []string{"ar"}},
 		{"unknown passes through", "Klingon", []string{"Klingon"}},
 		{"absent", "", nil},
+		// NZBgeek writes one attribute per language rather than one list
+		// (AIOStreams issue #1152); the first match alone would say
+		// "English" for a release carrying Arabic subtitles.
+		{"repeated attributes", "English|Arabic (SA)|German|Spanish (Latin America)|Portuguese (BR)",
+			[]string{"en", "ar", "de", "es-419", "pt"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			item := &Item{Title: "Movie 2020 1080p BluRay-GRP"}
-			if tt.value != "" {
-				item.Attributes = []Attribute{{Name: "language", Value: tt.value}}
-			}
-			got := item.ToRelease().Languages
-			if len(got) != len(tt.want) {
-				t.Fatalf("Languages = %v, want %v", got, tt.want)
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Fatalf("Languages = %v, want %v", got, tt.want)
+			// Issue #283: the subs attribute is the only place a release's
+			// subtitle languages are ever written down, so it reads the
+			// same way the language attribute does.
+			for _, attr := range []string{"language", "subs"} {
+				item := &Item{Title: "Movie 2020 1080p BluRay-GRP"}
+				if tt.value != "" {
+					for _, value := range strings.Split(tt.value, "|") {
+						item.Attributes = append(item.Attributes, Attribute{Name: attr, Value: value})
+					}
+				}
+				rel := item.ToRelease()
+				got, other := rel.Languages, rel.Subtitles
+				if attr == "subs" {
+					got, other = rel.Subtitles, rel.Languages
+				}
+				if len(got) != len(tt.want) {
+					t.Fatalf("%s: got %v, want %v", attr, got, tt.want)
+				}
+				for i := range got {
+					if got[i] != tt.want[i] {
+						t.Fatalf("%s: got %v, want %v", attr, got, tt.want)
+					}
+				}
+				if other != nil {
+					t.Fatalf("%s attribute leaked into the other list: %v", attr, other)
 				}
 			}
 		})

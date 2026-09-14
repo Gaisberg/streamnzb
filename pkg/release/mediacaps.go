@@ -55,6 +55,15 @@ func (c *MediaCaps) AudioLanguageCodes() []string {
 	return c.AudioLanguages
 }
 
+// SubtitleLanguageCodes is the tagged subtitle track languages, and like
+// AudioLanguageCodes only once the tracks were actually read.
+func (c *MediaCaps) SubtitleLanguageCodes() []string {
+	if c == nil || !c.TracksProbed {
+		return nil
+	}
+	return c.SubtitleLanguages
+}
+
 // Summary renders a short human-readable capability string suitable for a
 // Stremio stream description, e.g. "hevc Main 10 2160p 10-bit DV + HDR10".
 //

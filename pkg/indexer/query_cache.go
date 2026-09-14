@@ -128,6 +128,9 @@ func cloneSearchResponse(resp *SearchResponse) *SearchResponse {
 				if rel.Languages != nil {
 					relCopy.Languages = append([]string(nil), rel.Languages...)
 				}
+				if rel.Subtitles != nil {
+					relCopy.Subtitles = append([]string(nil), rel.Subtitles...)
+				}
 				cloned.Releases[i] = &relCopy
 			}
 		}
