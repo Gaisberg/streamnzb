@@ -1012,6 +1012,41 @@ func TestSeriesItemGetsVersionPickerFromCachedPlaylist(t *testing.T) {
 	}
 }
 
+// TestSeriesResolveOnOpenAttachesFullPlaylist is the series counterpart of
+// TestResolveOnOpenAttachesFullPlaylist: with JellyfinResolveOnOpen on,
+// opening an unplayed series' item page must get the same eager, full
+// candidate list a movie gets, on its first view — not only once someone has
+// separately opened its first episode before. resolveOnOpen's own guard
+// rejects a kindSeries id directly, so this pins that itemByID's kindSeries
+// case calls it with the representative episode's id instead.
+func TestSeriesResolveOnOpenAttachesFullPlaylist(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
+
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+series.encode(), ""), &item)
+	if len(item.MediaSources) != 1 || item.MediaSourceCount != nil {
+		t.Fatalf("resolve on open off: want 1 stand-in source and no count, got media=%d count=%v", len(item.MediaSources), item.MediaSourceCount)
+	}
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("resolve on open off: Playlist called %d times, want 0", calls)
+	}
+
+	f.resolveOnOpen = true
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+series.encode(), ""), &item)
+	if len(item.MediaSources) != 3 || item.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("resolve on open: want 3 sources in order, got %+v", item.MediaSources)
+	}
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 3 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("series version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
+	}
+}
+
 func TestSearchRunsTheCarriers(t *testing.T) {
 	f := newFixture()
 	var result queryResult

@@ -662,9 +662,18 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 		// A version-picker for the wrong episode once the user has actually
 		// progressed into the series is still strictly better than never
 		// offering one at all, which is the status quo this replaces.
+		//
+		// resolveOnOpen accepts kindEpisode, so passing the same representative
+		// episode's id — rather than this series id, which its own guard
+		// rejects — lets a series page get the same eager, full-candidate
+		// search on first view that JELLYFIN_RESOLVE_ON_OPEN already gives a
+		// movie, instead of only ever showing the lone placeholder source
+		// attachMediaSources falls back to when nothing is cached yet.
 		if videos := videosOf(meta); len(videos) > 0 {
 			first := videos[0]
-			s.attachMediaSources(rq, id.episode(first.Season, first.Episode), item)
+			episodeID := id.episode(first.Season, first.Episode)
+			s.attachMediaSources(rq, episodeID, item)
+			s.resolveOnOpen(rq, episodeID, item)
 		}
 		return item, nil
 	case kindSeason:
