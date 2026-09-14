@@ -114,6 +114,11 @@ func buildRegistry() *jhinrules.Registry {
 	// carries no tier; a rule that needs it can guard on it being non-empty.
 	reg.Field("originalLanguage", jhinrules.Str, "")
 
+	// The one function StreamNZB adds to the language: the positional form of
+	// "matches A but not the A inside B", which no combination of operators
+	// can express. See matchesexcept.go.
+	registerMatchesExcept(reg)
+
 	if err := reg.Err(); err != nil {
 		// A registration that fails is a programming error in this file, not
 		// a condition any profile can cause.

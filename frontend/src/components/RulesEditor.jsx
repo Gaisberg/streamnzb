@@ -197,7 +197,7 @@ function AttributeReference({ onInsert, rules = [], libraryRules = [] }) {
           <div className="space-y-1.5 border-t border-border/50 pt-3">
             <span className="text-[11px] font-medium text-foreground">Operators</span>
             <div className="flex flex-wrap gap-1">
-              {["and", "or", "not", "in", "==", "!=", ">", ">=", "<", "<=", "( )", "matches", "contains", "startsWith", "endsWith"].map((op) => (
+              {["and", "or", "not", "in", "==", "!=", ">", ">=", "<", "<=", "( )", "matches", "matchesExcept", "contains", "startsWith", "endsWith"].map((op) => (
                 <button
                   key={op}
                   type="button"
@@ -211,9 +211,15 @@ function AttributeReference({ onInsert, rules = [], libraryRules = [] }) {
             <p className="max-w-prose pt-1 text-[11px] text-muted-foreground">
               A condition has to answer yes or no. <code className="font-mono">matches</code> takes a Go regular
               expression — <code className="font-mono">releaseName matches &quot;(?i)\bIMAX\b&quot;</code>. There is no
-              lookahead, and rules are why you do not need one:{" "}
+              lookahead, and rules are usually why you do not need one:{" "}
               <code className="font-mono">\bDV\b(?!.*HDR10)</code> is{" "}
-              <code className="font-mono">dolbyVision and not hdrFallback</code>.
+              <code className="font-mono">dolbyVision and not hdrFallback</code>. When a lookaround was guarding a short
+              token against a longer one that contains it, use{" "}
+              <code className="font-mono">matchesExcept</code>:{" "}
+              <code className="font-mono">
+                matchesExcept(releaseName, &quot;(?i)\bMA\b&quot;, &quot;(?i)DTS-HD.MA&quot;)
+              </code>{" "}
+              matches the service tag without the audio codec, even on a release carrying both.
             </p>
           </div>
         </div>
