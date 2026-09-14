@@ -41,7 +41,12 @@ type Release struct {
 	GUID        string
 	QuerySource string
 	Grabs       int
-	Languages   []string
+	// Languages and Subtitles are the indexer's own tags for the release, as
+	// ISO 639-1 codes: the newznab "language" and "subs" attributes. A
+	// release name says nothing about its subtitle tracks, so Subtitles has
+	// no other source short of opening the file.
+	Languages []string
+	Subtitles []string
 	// Password reports the indexer flagged the release as password protected.
 	// False also covers indexers that never report the attribute.
 	Password bool
@@ -124,6 +129,9 @@ func (r *Release) Clone() *Release {
 	next := *r
 	if r.Languages != nil {
 		next.Languages = append([]string(nil), r.Languages...)
+	}
+	if r.Subtitles != nil {
+		next.Subtitles = append([]string(nil), r.Subtitles...)
 	}
 	if r.Available != nil {
 		available := *r.Available

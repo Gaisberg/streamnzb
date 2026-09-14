@@ -289,3 +289,57 @@ func TestResolutionGroupHandlesFullDimensions(t *testing.T) {
 		})
 	}
 }
+
+// A language named right before a subtitle word is a subtitle language. jhin
+// reports "Arabic.Subs" as Arabic and subbed without tying the two together,
+// which is the standalone half of issue #283: a subtitle filter needs to know
+// which language the subtitles are in. Arabic in particular has to come out
+// as "ar" whichever way the name spells it.
+func TestParseReleaseTitleLiftsSubtitleLanguages(t *testing.T) {
+	tests := []struct {
+		title string
+		want  []string
+	}{
+		{"Movie.2020.1080p.BluRay.Arabic.Subs-GRP", []string{"ar"}},
+		{"Movie.2020.1080p.BluRay.ARA.Subbed-GRP", []string{"ar"}},
+		{"Movie 2020 1080p French Subtitles-GRP", []string{"fr"}},
+		{"Movie.2020.1080p.Eng.Subs.Ger.Subs-GRP", []string{"en", "de"}},
+		{"Movie.2020.1080p.ENGSubs-GRP", []string{"en"}},
+		// "No.Subs" is not Norwegian subtitles, and MULTi is not a language.
+		{"Movie.2020.1080p.No.Subs-GRP", nil},
+		{"Movie.2020.1080p.MULTi.SUBS-GRP", nil},
+		// A plain language is audio, not a subtitle track.
+		{"Movie.2020.1080p.Arabic-GRP", nil},
+	}
+	for _, tt := range tests {
+		got := ParseReleaseTitle(tt.title).Subtitles
+		if len(got) != len(tt.want) {
+			t.Errorf("%s: subtitles %v, want %v", tt.title, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("%s: subtitles %v, want %v", tt.title, got, tt.want)
+				break
+			}
+		}
+	}
+	// Arabic in the name still parses as a language, however it is spelled.
+	for _, title := range []string{
+		"Movie.2020.1080p.BluRay.ARABIC-GRP",
+		"Movie.2020.1080p.BluRay.Arabic.Subs-GRP",
+		"Movie.2020.1080p.BluRay.ARA-GRP",
+		"Movie.2020.1080p.DUAL.ARA-ENG-GRP",
+	} {
+		langs := ParseReleaseTitle(title).Languages
+		found := false
+		for _, l := range langs {
+			if l == "ar" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: languages %v, want ar among them", title, langs)
+		}
+	}
+}

@@ -1,6 +1,8 @@
 package pttoptions
 
 import (
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dreulavelle/jhin/parser"
@@ -76,6 +78,25 @@ var languageISO6392ToCode = map[string]string{
 	"may": "ms", "msa": "ms", "ara": "ar", "tur": "tr", "heb": "he", "per": "fa", "fas": "fa",
 }
 
+// LanguageNameWords returns every word a release name spells a language out
+// with — the full names and the three-letter ISO 639-2 codes — in a stable
+// order for regex building. Two-letter codes are left out on purpose: "NO",
+// "IT" and "ID" are English words far more often than they are languages.
+func LanguageNameWords() []string {
+	words := make([]string, 0, len(languageFullNameToCode)+len(languageISO6392ToCode))
+	for name := range languageFullNameToCode {
+		if strings.Contains(name, " ") {
+			continue // "multi subs" and friends are not one language
+		}
+		words = append(words, name)
+	}
+	for code := range languageISO6392ToCode {
+		words = append(words, code)
+	}
+	sort.Strings(words)
+	return words
+}
+
 // LanguageAliases maps release-title alias words to the language codes they represent.
 // These are group/region terms commonly used in release names (e.g. "NORDIC" in a title
 // means the release includes Danish, Finnish, Norwegian and Swedish audio/subs).
@@ -95,24 +116,62 @@ func LanguageAliasWords() []string {
 	return []string{"nordic", "scandinavian", "baltic", "benelux", "iberian", "slavic", "multi", "truefrench"}
 }
 
+// languageRegionVariants maps a language plus the region an indexer wrote in
+// parentheses after it — "Spanish (Latin America)", "Chinese (TW)" — to the
+// regional code the rest of the pipeline distinguishes. Any other qualifier
+// is dropped and the bare language kept: "Arabic (SA)" is Arabic, and a
+// filter asking for "ar" has to see it as such.
+var languageRegionVariants = map[string]map[string]string{
+	"es": {"latin america": "es-419", "latam": "es-419", "la": "es-419", "419": "es-419", "mx": "es-419"},
+	"zh": {"traditional": "zh-tw", "tw": "zh-tw", "hk": "zh-tw", "taiwan": "zh-tw", "hong kong": "zh-tw"},
+}
+
+// qualifiedLanguagePattern splits "Language (Qualifier)" into its two parts.
+var qualifiedLanguagePattern = regexp.MustCompile(`^(.*\S)\s*\(([^()]+)\)$`)
+
 func NormalizeLanguageToCode(value string) string {
 	v := strings.TrimSpace(strings.ToLower(value))
 	if v == "" {
 		return value
 	}
-	if code, ok := languageFullNameToCode[v]; ok {
+	if code, ok := lookupLanguageCode(v, value); ok {
 		return code
 	}
-	if code, ok := languageISO6392ToCode[v]; ok {
-		return code
-	}
-
-	for _, code := range LanguageOptions {
-		if strings.EqualFold(code, value) {
-			return code
+	// A regional qualifier the tables do not spell out: resolve the language
+	// on its own and keep the region only where the pipeline tells them
+	// apart. Each pass strips one qualifier, so this always terminates.
+	for m := qualifiedLanguagePattern.FindStringSubmatch(v); m != nil; m = qualifiedLanguagePattern.FindStringSubmatch(v) {
+		v = strings.TrimSpace(m[1])
+		qualifier := strings.TrimSpace(m[2])
+		code, ok := lookupLanguageCode(v, v)
+		if !ok {
+			continue
 		}
+		if regional, ok := languageRegionVariants[code][qualifier]; ok {
+			return regional
+		}
+		return code
 	}
 	return value
+}
+
+// lookupLanguageCode resolves one spelling of a language — full name, ISO
+// 639-2 or a code the pipeline already speaks — to its code. lower is the
+// lowercased, trimmed form; raw is the original for the case-insensitive
+// code match.
+func lookupLanguageCode(lower, raw string) (string, bool) {
+	if code, ok := languageFullNameToCode[lower]; ok {
+		return code, true
+	}
+	if code, ok := languageISO6392ToCode[lower]; ok {
+		return code, true
+	}
+	for _, code := range LanguageOptions {
+		if strings.EqualFold(code, raw) {
+			return code, true
+		}
+	}
+	return "", false
 }
 
 func NormalizeLanguageSlice(s []string) []string {

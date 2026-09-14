@@ -42,6 +42,43 @@ on, so those releases survive a language filter on either side:
   Turkish, Persian and the Indian languages other than Hindi are deliberately
   left out rather than mislabelled. Filter on those in StreamNZB instead.
 
+### Subtitle filters
+
+AIOStreams' **Required subtitles** and **Excluded subtitles** filters are a
+separate thing, and flags do not feed them: AIOStreams reads a stream's
+subtitle languages from a `parsedMediaInfo` block on the stream, the one its
+own Newznab integration builds from the feed's `subs` attribute. A stream
+without the block has *Unknown* subtitles and fails every required-subtitle
+filter — which is what made a required Arabic subtitle filter drop every
+StreamNZB result while the same indexer through AIOStreams' Newznab worked
+(issue #283).
+
+Every StreamNZB stream now carries that block:
+
+```json
+"parsedMediaInfo": { "mediaInfoQuality": "indexer", "languages": ["ar"], "subtitles": ["ar"] }
+```
+
+`subtitles` is the union of what the release name spells out (`Arabic.Subs`),
+the indexer's `subs` tag, and — for a library release that has been probed —
+the subtitle tracks ffprobe found, at which point `mediaInfoQuality` becomes
+`probe`. It is omitted when nothing is known, so a release nobody labelled
+stays *Unknown* rather than becoming "no subtitles".
+
+Indexers write the tag in different shapes and all of them are read: one
+comma-separated list, or — as NZBgeek does — one `subs` attribute per
+language, and names with a region after them (`Arabic (SA)`,
+`Spanish (Latin America)`) resolve to the language. In practice NZBgeek and
+NZB.life are the indexers that tag subtitles at all; a result from an indexer
+that does not is *Unknown* on every side.
+
+Reading the block is on AIOStreams' side of the fence: its StreamNZB preset
+used the generic stream parser, which only knows flags, until
+[AIOStreams #1309](https://github.com/Viren070/AIOStreams/pull/1309). On an
+AIOStreams release without it a required-subtitle filter still sees
+*Unknown*. Filter on subtitles in StreamNZB instead — a rule such as
+`not ("ar" in subtitles)` → reject — see [Rules](rules.md).
+
 Indexers vary in how much they tag, and none of this invents a language for a
 release nobody labelled. If a required-language filter still returns nothing,
 check the [History](troubleshooting.md) page for what the indexers actually

@@ -452,6 +452,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			includeScore := list != nil && !list.IsAIOStreams
 			capsLine := capsSummaryLine(cand.Release)
 			langCodes := releaseLanguageCodes(cand.Release, cand.Metadata, cand.Verdict.Probed)
+			subCodes := releaseSubtitleCodes(cand.Release, cand.Metadata, cand.Verdict.Probed)
 			// AIOStreams reads a stream's languages out of the flags in its
 			// description; the plain Stremio description stays as it was, and
 			// a result format that wants flags asks for {{.LanguageFlags}}.
@@ -482,6 +483,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 				URL:           streamURL,
 				Description:   desc,
 				Languages:     langCodes,
+				MediaInfo:     streamMediaInfo(langCodes, subCodes, cand.Verdict.Probed),
 				BehaviorHints: hints,
 			})
 		}
@@ -495,6 +497,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 		var firstMeta *parser.ParsedRelease
 		var firstProbed *release.MediaCaps
 		if len(list.Candidates) > 0 {
+			firstProbed = list.Candidates[0].Verdict.Probed
 			if list.Candidates[0].Release != nil {
 				firstRel = list.Candidates[0].Release
 				if list.FirstIsAvailGood && firstRel.Title != "" {
@@ -523,6 +526,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			description += "\n" + capsLine
 		}
 		langCodes := releaseLanguageCodes(firstRel, firstMeta, firstProbed)
+		subCodes := releaseSubtitleCodes(firstRel, firstMeta, firstProbed)
 		if list != nil && list.IsAIOStreams {
 			if flagLine := languageFlagLine(langCodes); flagLine != "" {
 				description += "\n" + flagLine
@@ -546,6 +550,7 @@ func buildStreamsFromPlaylist(list *playlistResult, key StreamSlotKey, streamNam
 			URL:           streamURL,
 			Description:   description,
 			Languages:     langCodes,
+			MediaInfo:     streamMediaInfo(langCodes, subCodes, firstProbed),
 			BehaviorHints: hints,
 		})
 		if len(list.Candidates) >= 2 {

@@ -134,6 +134,10 @@ type Env struct {
 	Passworded       bool
 	Indexer          string
 	QuerySource      string
+	// Subtitles is every subtitle language the release is known to carry, as
+	// ISO 639-1 codes: what the name spells out ("Arabic.Subs"), the
+	// indexer's subtitle-language tag, and the tracks a probe found.
+	Subtitles []string
 
 	// ---- community ----
 
@@ -295,6 +299,10 @@ func (e *Env) Lookup(path string) (jhinrules.Value, bool) {
 		return jhinrules.StrOf(e.Indexer), true
 	case "querySource":
 		return jhinrules.StrOf(e.QuerySource), true
+	// subtitles is jhin's core field, answered here with the merged list so
+	// the indexer's subs tag and a probe's tracks count alongside the name.
+	case "subtitles":
+		return jhinrules.StrListOf(e.Subtitles), true
 	case "library":
 		return jhinrules.BoolOf(e.Library), true
 
@@ -621,6 +629,7 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 	env.Seadex = ctx.Seadex.For(env.Group)
 	applyMerged(&env, cand.Verdict.Probed)
 	applyLanguages(&env, cand.Release, cand.Verdict.Probed)
+	applySubtitles(&env, cand.Release, cand.Verdict.Probed)
 	env.core = jhinrules.FromResult(env.ReleaseName, parsed, env.Traits)
 	return env
 }
@@ -653,6 +662,19 @@ func applyLanguages(env *Env, rel *release.Release, caps *release.MediaCaps) {
 	codes, source := pttoptions.ResolveLanguages(caps.AudioLanguageCodes(), reported, env.Parsed.Languages)
 	env.Languages = codes
 	env.LanguageSource = string(source)
+}
+
+// applySubtitles is the subtitle counterpart of applyLanguages: the languages
+// the name attaches to a subtitle word, the indexer's subs tag and the tracks
+// a probe read, unioned. It carries no source — a release nothing tags is one
+// with no subtitles known, which is what "ar" in subtitles asks about.
+func applySubtitles(env *Env, rel *release.Release, caps *release.MediaCaps) {
+	var reported []string
+	if rel != nil {
+		reported = rel.Subtitles
+	}
+	inferred := parser.SubtitleLanguages(env.ReleaseName)
+	env.Subtitles = pttoptions.MergeLanguageCodes(inferred, reported, caps.SubtitleLanguageCodes())
 }
 
 // applyMerged fills the bare attribute names: what the file measured when it

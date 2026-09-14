@@ -88,6 +88,10 @@ type Profile struct {
 	// the library bonus and the rules all pay out afterwards, and a floor that
 	// judges a partial score rejects releases whose final score clears it.
 	minRank int
+	// languages is the profile's Languages block, judged here rather than by
+	// jhin for a similar reason: jhin only sees the languages the title
+	// spells out, and the indexer's own tag is regularly the only one there is.
+	languages languageJudge
 }
 
 // NeedsSeadex reports whether any of the profile's rules read the seadex
@@ -148,11 +152,14 @@ func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Prof
 	}
 	spec.Name = fp.Name
 
-	// jhin's own floor is disabled so that ours can judge the finished score.
-	// The spec kept on the profile is the one the user configured; only the
-	// copy handed to the ranker is altered.
+	// jhin's own floor is disabled so that ours can judge the finished score,
+	// and its language block so that ours can judge the indexer's tag along
+	// with the title (see languageJudge). The spec kept on the profile is the
+	// one the user configured; only the copy handed to the ranker is altered.
 	rankSpec := spec
 	rankSpec.Options.MinRank = math.MinInt
+	rankSpec.Languages = rank.Languages{}
+	rankSpec.Options.RemoveUnknownLanguages = false
 
 	ranker, err := rank.New(rankSpec)
 	if err != nil {
@@ -180,6 +187,7 @@ func Compile(fp config.FilterProfileConfig, library ...config.RuleConfig) (*Prof
 		rules:             ruleSet,
 		pruneRules:        pruneSet,
 		minRank:           spec.Options.MinRank,
+		languages:         compileLanguageJudge(spec),
 	}, nil
 }
 
@@ -595,7 +603,9 @@ func (p *Profile) recordVerdicts(req Request, results []Result) {
 	}
 }
 
-// Evaluate ranks every candidate without dropping anything.
+// Evaluate ranks every candidate without dropping anything: jhin's judgement
+// of the title, then the profile's language block judged over the indexer's
+// tag as well, since jhin cannot see it.
 func (p *Profile) Evaluate(candidates []triage.Candidate, opts rank.RankOptions) []Result {
 	if p == nil || p.Ranker == nil || len(candidates) == 0 {
 		return nil
@@ -614,6 +624,7 @@ func (p *Profile) Evaluate(candidates []triage.Candidate, opts rank.RankOptions)
 	for i := range candidates {
 		out[i] = Result{Candidate: candidates[i], Torrent: torrents[i]}
 	}
+	p.applyLanguages(out)
 	return out
 }
 
@@ -758,6 +769,11 @@ func (p *Profile) explainResult(r *Result) *Explanation {
 	}
 	for _, limit := range r.limits {
 		out.Limited = append(out.Limited, LimitedRule{Name: limit.Name, Group: limit.Group})
+	}
+	// The preferred-language bonus is paid here, not by jhin, so the ranker's
+	// breakdown does not know about it.
+	if c, ok := p.languageContribution(r); ok {
+		out.Contributions = append(out.Contributions, c)
 	}
 	for _, m := range r.Matched {
 		out.Contributions = append(out.Contributions, rank.Contribution{Source: "rule:" + m.Name, Rank: m.Score})
