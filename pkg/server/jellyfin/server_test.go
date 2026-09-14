@@ -908,6 +908,20 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	if item.Type != "Series" || !item.IsFolder || item.Status != "Ended" || item.ChildCount == nil || *item.ChildCount != 3 {
 		t.Fatalf("series: %+v", item)
 	}
+	// Infuse reads a series' own MediaSourceCount to decide whether its
+	// quick-play button gets a version-picker chevron, even though that
+	// button plays a specific episode — this addon has no per-episode resume
+	// state, so the series item stands in with the first numbered episode's
+	// sources (S1E1 here, "Pilot"). Like a never-opened movie, a never-opened
+	// series gets one placeholder source and no MediaSourceCount yet (a lone
+	// stand-in must not advertise a version count — see
+	// TestResolveOnOpenAttachesFullPlaylist); the point of this fix is that
+	// MediaSources is no longer empty, and once that episode's real playlist
+	// is cached (resolve-on-open, or after a play), the count follows exactly
+	// as it does for a movie.
+	if len(item.MediaSources) == 0 {
+		t.Fatalf("series item carries no media sources for its quick-play button: %+v", item)
+	}
 	var seasons queryResult
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Seasons?UserId=u", ""), &seasons)
 	if len(seasons.Items) != 3 || seasons.Items[0].Name != "Season 1" || seasons.Items[2].Name != "Specials" || *seasons.Items[0].ChildCount != 2 {
@@ -971,6 +985,30 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	}
 	if id, _ := decodeItemID(episodes.Items[0].ID); id.playStremioID() != "kitsu:9" {
 		t.Fatalf("kitsu movie episode plays %q", id.playStremioID())
+	}
+}
+
+// TestSeriesItemGetsVersionPickerFromCachedPlaylist confirms the fix end to
+// end: once the series' first episode has a real cached playlist (however it
+// got there — resolve-on-open or a prior play), the series-level item itself
+// carries the multi-source signal Infuse's quick-play chevron reads, matching
+// a movie in the same state (TestResolveOnOpenAttachesFullPlaylist).
+func TestSeriesItemGetsVersionPickerFromCachedPlaylist(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.cached = &stremio.PlaylistView{Entries: entries}
+
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+series.encode(), ""), &item)
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 3 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("series version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
+	}
+	if len(item.MediaSources) != 3 || item.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("series media sources: %+v", item.MediaSources)
 	}
 }
 

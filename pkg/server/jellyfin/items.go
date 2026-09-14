@@ -653,6 +653,19 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 	case kindSeries:
 		item := s.metaItem(id, meta)
 		item.UserData = &userData{Key: item.ID, ItemID: item.ID}
+		// Infuse (and other clients) read a series' own MediaSourceCount to
+		// decide whether its quick-play button gets a version-picker chevron,
+		// even though the button actually plays a specific episode. This addon
+		// has no per-episode resume state (see serveShows: NextUp is
+		// deliberately empty), so — matching the client's own fallback when it
+		// has no resume position either — the first numbered episode stands in.
+		// A version-picker for the wrong episode once the user has actually
+		// progressed into the series is still strictly better than never
+		// offering one at all, which is the status quo this replaces.
+		if videos := videosOf(meta); len(videos) > 0 {
+			first := videos[0]
+			s.attachMediaSources(rq, id.episode(first.Season, first.Episode), item)
+		}
 		return item, nil
 	case kindSeason:
 		for _, season := range seasonsOf(meta) {
