@@ -708,19 +708,66 @@ release names:
 | Logic | `and` `or` `not` |
 | Membership | `"DV" in hdr` |
 | Text | `releaseName matches "(?i)regex"`, `releaseName contains "IMAX"`, `startsWith`, `endsWith` |
+| Text, positional | `matchesExcept(releaseName, "(?i)\bMA\b", "(?i)DTS-HD.MA")` |
 | Arithmetic | `+` `-` `*` `/` |
 | Grouping | `( … )` |
 | Conditional | `cond ? a : b` |
 
 `matches` takes a Go (RE2) regular expression. RE2 has no lookahead or
-lookbehind, and rules are the reason it does not need one: `\bDV\b(?!.*HDR10)`
-becomes `dolbyVision and not hdrFallback`.
+lookbehind, and for most of what an upstream regex uses them for, rules are the
+reason it does not need one: `\bDV\b(?!.*HDR10)` becomes `dolbyVision and not
+hdrFallback`, which is clearer than the regex was.
 
 Write the regex as-is: backslashes in a condition string are taken literally,
 so `\+`, `\d` and `\b` mean what they mean in the regex — no doubling needed,
 though a defensively written `\\+` means the same thing. This is what lets a
 [define library](#define-libraries) generated from an upstream regex list be
 consumed without rewriting its escapes.
+
+### matchesExcept
+
+The one thing that rewrite does not cover is a lookaround protecting a short
+token from a **longer token that contains it**. `MA` is a streaming service and
+also the tail of `DTS-HD MA`, and a release can carry both:
+
+```
+Show.S01E01.1080p.MA.WEB-DL.DTS-HD.MA.5.1-GRP
+```
+
+The obvious translation reads the whole name twice, so it throws that release
+away along with the collision:
+
+```
+releaseName matches "(?i)\bMA\b" and not (releaseName matches "(?i)DTS-HD.MA")
+```
+
+`matchesExcept` asks *where* the match landed instead, which is what the
+lookaround was doing:
+
+```
+matchesExcept(releaseName, "(?i)\bMA\b", "(?i)DTS-HD.MA")
+```
+
+It holds when the second argument matches somewhere the third does not cover.
+Because the exclusion is matched against the name rather than anchored to one
+side of the token, one call replaces a lookbehind, a lookahead, or both at
+once — write the colliding text out whole instead of splitting it around the
+token:
+
+| PCRE | Here |
+|---|---|
+| `(?<!DTS-HD.)MA` | `matchesExcept(releaseName, "MA", "DTS-HD.MA")` |
+| `MAX(?!.Original)` | `matchesExcept(releaseName, "MAX", "MAX.Original")` |
+| `(?<!HBO.)Max` | `matchesExcept(releaseName, "Max", "HBO.Max")` |
+
+Positive lookaround needs no helper: as a yes/no question, `MA(?=.5\.1)` is just
+`releaseName matches "MA.5\.1"`.
+
+It reads any text attribute, not only `releaseName`. Both patterns are ordinary
+arguments rather than the literal `matches` pins down, which has one
+consequence worth knowing: a pattern that is not a valid regex cannot be caught
+when the profile is saved, so it is reported against the rule as a skip — the
+editor shows it beside the condition, in the same place a missing tier appears.
 
 ## Coming from AIOStreams
 
@@ -749,7 +796,7 @@ compatibility layer:
 | `cached()` / `uncached()` | `avail.status`, `avail.onMyBackbone` | **Not equivalent.** SEL's `cached` is a guarantee from a debrid service; ours is a community report that can be months stale and is per backbone. |
 | `service(...)`, `type(...)` | — | No analogue. StreamNZB has one source type. |
 | `seadex(...)` | `seadex.best`, `seadex.alternative`, `seadex.known` | Matched per title by release group, and skipped when no lookup could run. |
-| `regexMatched()` / `regexScore()` | `releaseName matches "…"` | |
+| `regexMatched()` / `regexScore()` | `releaseName matches "…"` | `matchesExcept(...)` where the upstream pattern used lookaround. |
 | `count()` | `count(condition)` | Over the [result set](#about-the-result-set); `exists()` and `none()` alongside it. |
 | `max()`, `avg()`, `median()`, … | — | No analogue: rules ask about the set, they do not select from it. |
 | — | `matched("Rule name")` | No SEL analogue: a rule may reuse another rule's condition rather than repeat it. |
