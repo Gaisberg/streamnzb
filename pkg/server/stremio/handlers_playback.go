@@ -162,7 +162,22 @@ type StreamMonitor struct {
 	maxPos atomic.Int64
 }
 
+// errNoUnderlyingStream is what Seek/Read return when the monitor was handed
+// a nil stream. ServeContent calls both on every request; without this check
+// a nil ReadSeekCloser panics with "invalid memory address or nil pointer
+// dereference" (a nil interface has no method table to call through), which
+// takes down the whole connection instead of failing the request cleanly.
+// This is a backstop, not the expected path: servePlaybackStream never hands
+// StreamMonitor a nil stream in the ordinary cancel-during-playback case (see
+// its own comment on why it closes rather than nils), so this logs at Debug
+// rather than Error.
+var errNoUnderlyingStream = errors.New("streamnzb: no underlying playback stream")
+
 func (s *StreamMonitor) Seek(offset int64, whence int) (int64, error) {
+	if s.ReadSeekCloser == nil {
+		logger.Debug("StreamMonitor.Seek called with no underlying stream", "session", s.sessionID)
+		return 0, errNoUnderlyingStream
+	}
 	n, err := s.ReadSeekCloser.Seek(offset, whence)
 	if err == nil {
 		s.pos.Store(n)
@@ -171,6 +186,10 @@ func (s *StreamMonitor) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (s *StreamMonitor) Read(p []byte) (n int, err error) {
+	if s.ReadSeekCloser == nil {
+		logger.Debug("StreamMonitor.Read called with no underlying stream", "session", s.sessionID)
+		return 0, errNoUnderlyingStream
+	}
 	s.readCalls.Add(1)
 	readStart := time.Now()
 	n, err = s.ReadSeekCloser.Read(p)
