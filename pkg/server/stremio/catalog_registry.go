@@ -114,15 +114,16 @@ var searchCatalogs = []CatalogDef{
 	{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
 }
 
-// searchCatalogDefs gives anime exactly one discovery source: the user's
-// primary. Its backup is intentionally not a second result set; it is used
-// only when the primary cannot return a viable match.
+// searchCatalogDefs gives anime exactly one discovery source: whichever source
+// the profile lists first. The rest of its order is intentionally not a second
+// result set; a lower-priority source is consulted only when the leading one
+// cannot return a viable match for a given query.
 func searchCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
 	defs := make([]CatalogDef, len(searchCatalogs), len(searchCatalogs)+1)
 	copy(defs, searchCatalogs)
 	primary := "kitsu"
 	if profile != nil {
-		primary, _ = profile.EffectiveAnimeMetaSources()
+		primary = profile.EffectiveAnimeMetaSource()
 	}
 	if primary == "tvdb" {
 		return append(defs, CatalogDef{ID: "tvdb.search.anime", Type: "anime", Name: "Search Anime", Provider: "tvdb", Kind: "search", SupportsSearch: true})

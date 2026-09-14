@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DefaultMetadataProfileName is the profile seeded by the one-shot migration
 // from the legacy global metadata section, and the admin token's fallback.
@@ -25,14 +28,23 @@ type MetadataProfileConfig struct {
 	// stream, subtitle, or configuration resources.
 	ExternalCatalogs []ExternalCatalogConfig `json:"external_catalogs,omitempty"`
 
-	// Per-media-type meta sources. Movies, series and anime are fully
-	// independent — choosing a source for one never affects the others.
-	// Empty means the default; unknown values normalize to the default
-	// read-side.
+	// Per-media-type meta sources, in priority order: the first one that can
+	// serve a title is used, and the rest are fallbacks tried in order. Movies,
+	// series and anime are fully independent — choosing sources for one never
+	// affects the others. Empty means that media type's default order; unknown
+	// and duplicate entries are dropped read-side.
 	//
-	// Cinemeta is opt-in only: it is never selected automatically. A profile
+	// Cinemeta is opt-in only: it appears in no default order, so a profile
 	// that never sets these fields behaves exactly as before Cinemeta support
-	// existed (TMDB-only movies, TVDB/TMDB series, Kitsu/TVDB anime).
+	// existed (TMDB-only movies, TVDB then TMDB series, Kitsu then TVDB anime).
+	MovieSources  []string `json:"movie_sources,omitempty"`
+	SeriesSources []string `json:"series_sources,omitempty"`
+	AnimeSources  []string `json:"anime_sources,omitempty"`
+
+	// Deprecated: the primary/backup pair these lists replaced, read once on
+	// load to migrate a profile saved by a pre-list build and never written
+	// back. Only ever written by unreleased builds, so this can be deleted
+	// after one release.
 	MovieSource        string `json:"movie_source,omitempty"`
 	MovieBackupSource  string `json:"movie_backup_source,omitempty"`
 	SeriesSource       string `json:"series_source,omitempty"`
@@ -86,97 +98,173 @@ type ExternalCatalogConfig struct {
 	SupportsSkip *bool `json:"supports_skip,omitempty"`
 }
 
-// validSeriesSources are the recognized series primary/backup values, in the
-// order added — tvdb and tmdb are the pre-Cinemeta pair.
-var validSeriesSources = map[string]bool{"tvdb": true, "tmdb": true, "cinemeta": true}
+// Metadata source orders. Each list is the media type's sources in priority
+// order; the first that can serve a title wins and the rest are fallbacks.
+// The defaults reproduce the behavior that predates per-profile selection, and
+// deliberately contain no Cinemeta: it carries no age-rating data, so a title
+// served from it is hidden under a rating limit unless the profile allows
+// unrated content. Nothing may opt a profile into it but the profile itself.
+var (
+	movieMetaSources  = []string{"tmdb", "cinemeta"}
+	seriesMetaSources = []string{"tvdb", "tmdb", "cinemeta"}
+	animeMetaSources  = []string{"kitsu", "tvdb"}
 
-// EffectiveSeriesMetaSources returns the user-selected primary/backup series
-// meta providers. TVDB remains the default primary to preserve existing
-// profiles; TMDB is its historical fallback. Cinemeta only ever appears here
-// when the profile explicitly names it — it is never chosen automatically,
-// so an untouched profile behaves exactly as it did before Cinemeta support
-// existed.
-func (p *MetadataProfileConfig) EffectiveSeriesMetaSources() (primary, backup string) {
-	primary, backup = "tvdb", "tmdb"
-	if p == nil {
-		return primary, backup
-	}
-	if validSeriesSources[p.SeriesSource] {
-		primary = p.SeriesSource
-	}
-	// The default backup is whichever of tvdb/tmdb is not primary, matching
-	// the pre-Cinemeta behavior exactly when no backup is configured.
-	backup = "tmdb"
-	if primary == "tmdb" {
-		backup = "tvdb"
-	}
-	if validSeriesSources[p.SeriesBackupSource] {
-		backup = p.SeriesBackupSource
-	}
-	if primary == backup {
-		// A profile explicitly pointing both fields at the same source has no
-		// real fallback; degrade to the historical pair rather than serving
-		// the same failure twice.
-		if primary == "tvdb" {
-			backup = "tmdb"
-		} else {
-			backup = "tvdb"
+	defaultMovieMetaSources  = []string{"tmdb"}
+	defaultSeriesMetaSources = []string{"tvdb", "tmdb"}
+	defaultAnimeMetaSources  = []string{"kitsu", "tvdb"}
+)
+
+// MovieMetaSourceOptions, SeriesMetaSourceOptions and AnimeMetaSourceOptions
+// are the sources each media type may list, for validation and for the editor.
+func MovieMetaSourceOptions() []string  { return append([]string(nil), movieMetaSources...) }
+func SeriesMetaSourceOptions() []string { return append([]string(nil), seriesMetaSources...) }
+func AnimeMetaSourceOptions() []string  { return append([]string(nil), animeMetaSources...) }
+
+// effectiveMetaSources filters a configured order down to the recognized
+// sources, dropping unknown entries and repeats while keeping the user's
+// order, and falls back to fallback when nothing usable is left. A profile
+// listing only sources this build does not know still serves metadata rather
+// than none.
+func effectiveMetaSources(configured, allowed, fallback []string) []string {
+	out := make([]string, 0, len(configured))
+	seen := make(map[string]bool, len(configured))
+	for _, raw := range configured {
+		source := strings.ToLower(strings.TrimSpace(raw))
+		if seen[source] || !slices.Contains(allowed, source) {
+			continue
 		}
+		seen[source] = true
+		out = append(out, source)
 	}
-	return primary, backup
+	if len(out) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return out
 }
 
-// EffectiveSeriesMetaSource returns just the primary series meta source, for
-// callers that only need to know which one serves first.
+// EffectiveMovieMetaSources returns the movie meta providers in priority
+// order, defaulting to TMDB alone.
+func (p *MetadataProfileConfig) EffectiveMovieMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultMovieMetaSources...)
+	}
+	return effectiveMetaSources(p.MovieSources, movieMetaSources, defaultMovieMetaSources)
+}
+
+// EffectiveSeriesMetaSources returns the series meta providers in priority
+// order, defaulting to TVDB then TMDB — the historical pair.
+func (p *MetadataProfileConfig) EffectiveSeriesMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultSeriesMetaSources...)
+	}
+	return effectiveMetaSources(p.SeriesSources, seriesMetaSources, defaultSeriesMetaSources)
+}
+
+// EffectiveAnimeMetaSources returns the anime meta providers in priority
+// order, defaulting to Kitsu then TVDB. Whichever serves the show's metadata,
+// Kitsu keeps the playback identity: episode ids stay kitsu:<id>:<ep>.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultAnimeMetaSources...)
+	}
+	return effectiveMetaSources(p.AnimeSources, animeMetaSources, defaultAnimeMetaSources)
+}
+
+// EffectiveSeriesMetaSource returns just the series source that serves first,
+// for callers that only need to know which one leads.
 func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
-	primary, _ := p.EffectiveSeriesMetaSources()
-	return primary
+	return p.EffectiveSeriesMetaSources()[0]
 }
 
-// validMovieSources are the recognized movie primary/backup values.
-var validMovieSources = map[string]bool{"tmdb": true, "cinemeta": true}
-
-// EffectiveMovieMetaSources returns the user-selected primary/backup movie
-// meta providers. TMDB remains the default primary and has no backup unless
-// one is explicitly configured — Cinemeta never engages on its own, matching
-// the "opt-in only" rule for every media type.
-func (p *MetadataProfileConfig) EffectiveMovieMetaSources() (primary, backup string) {
-	primary = "tmdb"
-	if p == nil {
-		return primary, ""
-	}
-	if validMovieSources[p.MovieSource] {
-		primary = p.MovieSource
-	}
-	if validMovieSources[p.MovieBackupSource] && p.MovieBackupSource != primary {
-		backup = p.MovieBackupSource
-	}
-	return primary, backup
+// EffectiveAnimeMetaSource returns just the anime source that serves first.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSource() string {
+	return p.EffectiveAnimeMetaSources()[0]
 }
 
-// EffectiveAnimeMetaSources returns the user-selected ordered metadata
-// providers. Kitsu remains the default primary to preserve existing profiles;
-// TVDB is its fallback. Invalid or duplicate persisted values normalize to a
-// usable pair rather than making an installed profile unopenable.
-func (p *MetadataProfileConfig) EffectiveAnimeMetaSources() (primary, backup string) {
-	primary, backup = "kitsu", "tvdb"
+// MigrateLegacySourcePairs converts the primary/backup fields that preceded
+// the priority lists into the order that replaced them, then clears them so
+// the next save writes only the list. A profile that already has lists keeps
+// them.
+//
+// The pair carried an implicit fallback the list has to spell out: a legacy
+// series_source of "tmdb" meant "TMDB, then TVDB", so migrating it to ["tmdb"]
+// alone would quietly delete a fallback the profile has always had. Each media
+// type below therefore reproduces the exact defaulting its old accessor did.
+func (p *MetadataProfileConfig) MigrateLegacySourcePairs() {
 	if p == nil {
-		return primary, backup
+		return
 	}
-	if p.AnimeSource == "tvdb" || p.AnimeSource == "kitsu" {
-		primary = p.AnimeSource
+	if p.MovieSource == "" && p.MovieBackupSource == "" &&
+		p.SeriesSource == "" && p.SeriesBackupSource == "" &&
+		p.AnimeSource == "" && p.AnimeBackupSource == "" {
+		return
 	}
-	if p.AnimeBackupSource == "tvdb" || p.AnimeBackupSource == "kitsu" {
-		backup = p.AnimeBackupSource
-	}
-	if primary == backup {
-		if primary == "kitsu" {
-			backup = "tvdb"
-		} else {
-			backup = "kitsu"
+
+	pick := func(value string, allowed []string, fallback string) string {
+		if value = strings.ToLower(strings.TrimSpace(value)); slices.Contains(allowed, value) {
+			return value
 		}
+		return fallback
 	}
-	return primary, backup
+	order := func(primary, backup string) []string {
+		if backup == "" || backup == primary {
+			return []string{primary}
+		}
+		return []string{primary, backup}
+	}
+
+	if len(p.MovieSources) == 0 {
+		// Movies never had an implicit backup: Cinemeta only ever ran when the
+		// profile explicitly named it.
+		primary := pick(p.MovieSource, movieMetaSources, "tmdb")
+		p.MovieSources = order(primary, pick(p.MovieBackupSource, movieMetaSources, ""))
+	}
+	if len(p.SeriesSources) == 0 {
+		primary := pick(p.SeriesSource, seriesMetaSources, "tvdb")
+		// The implicit backup was whichever of the historical tvdb/tmdb pair
+		// was not primary.
+		implicit := "tmdb"
+		if primary == "tmdb" {
+			implicit = "tvdb"
+		}
+		p.SeriesSources = order(primary, pick(p.SeriesBackupSource, seriesMetaSources, implicit))
+	}
+	if len(p.AnimeSources) == 0 {
+		primary := pick(p.AnimeSource, animeMetaSources, "kitsu")
+		implicit := "tvdb"
+		if primary == "tvdb" {
+			implicit = "kitsu"
+		}
+		p.AnimeSources = order(primary, pick(p.AnimeBackupSource, animeMetaSources, implicit))
+	}
+	p.MovieSource, p.MovieBackupSource = "", ""
+	p.SeriesSource, p.SeriesBackupSource = "", ""
+	p.AnimeSource, p.AnimeBackupSource = "", ""
+}
+
+// NormalizeSources rewrites each order to exactly what the profile resolves
+// to, dropping unknown entries and repeats, and clears a list that matches its
+// media type's default.
+//
+// Storing "unset" rather than a materialized default is what makes the default
+// mean something: a profile nobody has customized follows whatever the default
+// order is in the build it runs on, instead of being frozen at the one that
+// happened to be current when it was last saved. It also keeps the editor and
+// the stored config agreeing on what an untouched profile looks like.
+func (p *MetadataProfileConfig) NormalizeSources() {
+	if p == nil {
+		return
+	}
+	p.MigrateLegacySourcePairs()
+	unsetIfDefault := func(effective, fallback []string) []string {
+		if slices.Equal(effective, fallback) {
+			return nil
+		}
+		return effective
+	}
+	p.MovieSources = unsetIfDefault(p.EffectiveMovieMetaSources(), defaultMovieMetaSources)
+	p.SeriesSources = unsetIfDefault(p.EffectiveSeriesMetaSources(), defaultSeriesMetaSources)
+	p.AnimeSources = unsetIfDefault(p.EffectiveAnimeMetaSources(), defaultAnimeMetaSources)
 }
 
 // EffectiveLanguage returns the profile's display language tag, or "" for the

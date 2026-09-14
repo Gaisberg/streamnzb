@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,58 +51,138 @@ func TestValidateConfigRejectsMalformedExternalCatalogURLWithoutPanicking(t *tes
 	}
 }
 
-// The metadata source dropdowns let a profile name Cinemeta as either the
-// primary or backup source for movies and series; the config save must
-// accept it exactly like every other recognized source, and still reject
-// garbage and a backup equal to the primary.
-func TestValidateConfigAcceptsCinemetaAsMovieAndSeriesSource(t *testing.T) {
+// The source priority lists let a profile put Cinemeta anywhere in the movie
+// or series order; the config save must accept it exactly like every other
+// recognized source, including as the only source.
+func TestValidateConfigAcceptsCinemetaInSourceOrders(t *testing.T) {
 	s := &Server{}
 	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
-		Name:               "Default",
-		MovieSource:        "cinemeta",
-		SeriesSource:       "tvdb",
-		SeriesBackupSource: "cinemeta",
+		Name:          "Default",
+		MovieSources:  []string{"cinemeta"},
+		SeriesSources: []string{"tvdb", "cinemeta", "tmdb"},
+		AnimeSources:  []string{"tvdb", "kitsu"},
 	}}}
 	errs := s.validateConfig(cfg)
-	for _, key := range []string{"metadata_profiles.0.movie_source", "metadata_profiles.0.series_source", "metadata_profiles.0.series_backup_source"} {
+	for _, key := range []string{"metadata_profiles.0.movie_sources", "metadata_profiles.0.series_sources", "metadata_profiles.0.anime_sources"} {
 		if got := errs[key]; got != "" {
 			t.Fatalf("%s: unexpected error %q", key, got)
 		}
 	}
 }
 
+// An unknown entry is reported rather than dropped: a typo would otherwise
+// shorten the fallback chain with nothing to show for it.
 func TestValidateConfigRejectsUnknownMetadataSources(t *testing.T) {
 	s := &Server{}
 	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
-		Name:               "Default",
-		MovieSource:        "netflix",
-		MovieBackupSource:  "hulu",
-		SeriesSource:       "tvdb",
-		SeriesBackupSource: "disney+",
+		Name:          "Default",
+		MovieSources:  []string{"tmdb", "netflix"},
+		SeriesSources: []string{"disney+"},
+		// Cinemeta cannot serve anime, so it is not a valid entry here even
+		// though it is valid for the other two media types.
+		AnimeSources: []string{"kitsu", "cinemeta"},
 	}}}
 	errs := s.validateConfig(cfg)
-	for _, key := range []string{"metadata_profiles.0.movie_source", "metadata_profiles.0.movie_backup_source", "metadata_profiles.0.series_backup_source"} {
+	for _, key := range []string{"metadata_profiles.0.movie_sources", "metadata_profiles.0.series_sources", "metadata_profiles.0.anime_sources"} {
 		if got := errs[key]; got == "" {
 			t.Fatalf("%s: expected an error for the unknown source, got none: %#v", key, errs)
 		}
 	}
 }
 
-func TestValidateConfigRejectsMetadataBackupEqualToPrimary(t *testing.T) {
-	s := &Server{}
-	cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
-		Name:               "Default",
-		MovieSource:        "cinemeta",
-		MovieBackupSource:  "cinemeta",
-		SeriesSource:       "cinemeta",
-		SeriesBackupSource: "cinemeta",
-	}}}
-	errs := s.validateConfig(cfg)
-	if got := errs["metadata_profiles.0.movie_backup_source"]; got == "" {
-		t.Fatal("expected an error: movie backup equals primary")
+// Both characters are structural in "/catalog/{type}/{id}/{extra}.json":
+// parseCatalogPath splits on "/" and recognizes the optional extra segment by
+// the "=" in it, so an id carrying either is parsed as something other than an
+// id and the catalog becomes unreachable.
+func TestValidateConfigRejectsStructuralCharactersInExternalCatalogID(t *testing.T) {
+	for _, id := range []string{"external.has/slash", "external.has=equals"} {
+		t.Run(id, func(t *testing.T) {
+			s := &Server{}
+			cfg := &config.Config{MetadataProfiles: []config.MetadataProfileConfig{{
+				Name: "Default",
+				ExternalCatalogs: []config.ExternalCatalogConfig{{
+					ID:          id,
+					Name:        "Source",
+					ManifestURL: "https://example.com/manifest.json",
+					RemoteType:  "movie",
+					RemoteID:    "top",
+				}},
+			}}}
+			if got := s.validateConfig(cfg)["metadata_profiles.0.external_catalogs.0.id"]; got == "" {
+				t.Fatalf("%q was accepted as a catalog id", id)
+			}
+		})
 	}
-	if got := errs["metadata_profiles.0.series_backup_source"]; got == "" {
-		t.Fatal("expected an error: series backup equals primary")
+}
+
+// The LAN allowlist is what makes a self-hosted catalog source reachable, so a
+// typo in it has to be reported rather than silently leaving the source
+// unreachable — and a catch-all has to be refused rather than quietly turning
+// the SSRF guard off.
+func TestValidateConfigChecksCatalogSourceNetworks(t *testing.T) {
+	s := &Server{}
+	if got := s.validateConfig(&config.Config{CatalogSourceNetworks: []string{"192.168.1.0/24", "10.0.0.7"}})["catalog_source_networks"]; got != "" {
+		t.Fatalf("a valid allowlist was rejected: %q", got)
+	}
+	for _, entries := range [][]string{{"my-nas.local"}, {"0.0.0.0/0"}, {"192.168.1.0/24", " "}} {
+		if got := s.validateConfig(&config.Config{CatalogSourceNetworks: entries})["catalog_source_networks"]; got == "" {
+			t.Fatalf("%v was accepted", entries)
+		}
+	}
+}
+
+// catalog_source_networks is redacted from /api/config and has no dashboard
+// control, so a bad value can only have come from CATALOG_SOURCE_NETWORKS or a
+// hand-edited file — and the dashboard can neither display an error for it nor
+// clear it. Validating it on every save would therefore reject every unrelated
+// setting change with an error nothing in the UI can act on, locking the whole
+// settings page until someone edits the file by hand.
+func TestValidateConfigWithPlanIgnoresUneditedBadCatalogSourceNetworks(t *testing.T) {
+	s := &Server{}
+	cfg := &config.Config{
+		KeepLogFiles:          7,
+		CatalogSourceNetworks: []string{"my-nas.lan"},
+	}
+	// A patch that does not mention the field at all: the save must go through.
+	plan := configValidationPlan{validateKeepLogFiles: true}
+	if got := s.validateConfigWithPlan(cfg, plan)["catalog_source_networks"]; got != "" {
+		t.Fatalf("an unedited bad allowlist blocked an unrelated save: %q", got)
+	}
+	// Editing the field itself must still report the problem.
+	plan.validateCatalogSourceNetworks = true
+	if got := s.validateConfigWithPlan(cfg, plan)["catalog_source_networks"]; got == "" {
+		t.Fatal("editing the allowlist must report a bad entry")
+	}
+}
+
+// NormalizeSources stores exactly the order that runs, so the editor never
+// shows a source order the meta builders would not walk — and a profile saved
+// by a build that still had the primary/backup pair stays saveable, with the
+// fallback that pair implied preserved as a second entry.
+func TestNormalizeSourcesWritesTheEffectiveOrder(t *testing.T) {
+	profile := config.MetadataProfileConfig{
+		Name: "Default",
+		// Collapses to ["cinemeta"], which is not the movie default, so the
+		// order survives normalization and proves the dropping happened.
+		MovieSources:  []string{"cinemeta", "netflix", "cinemeta"},
+		SeriesSources: nil,
+	}
+	profile.NormalizeSources()
+	if !slices.Equal(profile.MovieSources, []string{"cinemeta"}) {
+		t.Fatalf("unknown and repeated entries survived: %v", profile.MovieSources)
+	}
+	if profile.SeriesSources != nil {
+		t.Fatalf("an order matching the default must stay unset, so the profile follows the default: %v", profile.SeriesSources)
+	}
+
+	legacy := config.MetadataProfileConfig{Name: "Default", SeriesSource: "tmdb"}
+	legacy.NormalizeSources()
+	if !slices.Equal(legacy.SeriesSources, []string{"tmdb", "tvdb"}) {
+		t.Fatalf("the legacy pair's implicit fallback was lost: %v", legacy.SeriesSources)
+	}
+	errs := (&Server{}).validateConfig(&config.Config{MetadataProfiles: []config.MetadataProfileConfig{legacy}})
+	if got := errs["metadata_profiles.0.series_sources"]; got != "" {
+		t.Fatalf("a normalized legacy profile must validate cleanly, got %q", got)
 	}
 }
 

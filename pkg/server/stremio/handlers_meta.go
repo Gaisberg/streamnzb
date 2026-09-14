@@ -213,29 +213,46 @@ func metaLogoLang(profile *config.MetadataProfileConfig) string {
 	return base
 }
 
-// buildMovieMeta applies the profile's source policy: movie metadata comes
-// from the primary source (TMDB by default), and the backup — Cinemeta only
-// — steps in when it is explicitly configured and the primary cannot serve.
-// A profile that never touches movie_source/movie_backup_source behaves
-// exactly as before Cinemeta support existed: TMDB-only, no fallback.
-func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
-	primary, backup := profile.EffectiveMovieMetaSources()
-	build := func(source string) (*MetaObject, error) {
-		if source == "cinemeta" {
-			return s.buildMovieMetaFromCinemeta(ctx, profile, rid)
+// buildMetaFromSources walks a profile's source order: the first source that
+// can serve the title wins, and each later one is tried only because the ones
+// before it could not (no resolvable id, provider down, no record). The error
+// returned is the last source's, so a total failure reports why the final
+// attempt failed rather than why the first did.
+//
+// A certification block is never a reason to try the next source. It is the
+// profile's own rating limit answering, not a source failing, and retrying
+// would hand the same title to a provider with no rating data at all.
+func buildMetaFromSources(sources []string, what string, logAttrs []any, build func(source string) (*MetaObject, error)) (*MetaObject, error) {
+	var lastErr error
+	for i, source := range sources {
+		meta, err := build(source)
+		if err == nil {
+			return meta, nil
 		}
-		return s.buildMovieMetaFromTMDB(ctx, profile, rid)
+		if errors.Is(err, errCertificationBlocked) {
+			return nil, err
+		}
+		lastErr = err
+		if i < len(sources)-1 {
+			logger.Debug("Meta source could not serve; trying the next one",
+				append(append([]any{}, logAttrs...), "what", what, "source", source, "next", sources[i+1], "err", err)...)
+		}
 	}
-	meta, err := build(primary)
-	if err == nil {
-		return meta, nil
-	}
-	if errors.Is(err, errCertificationBlocked) || backup == "" {
-		return nil, err
-	}
-	logger.Debug("Primary movie meta source unavailable; falling back",
-		"source", primary, "backup", backup, "tmdb_id", rid.tmdbID, "imdb_id", rid.imdbID, "err", err)
-	return build(backup)
+	return nil, lastErr
+}
+
+// buildMovieMeta serves movie metadata from the profile's source order. A
+// profile that never picks any behaves exactly as before Cinemeta support
+// existed: TMDB only, no fallback.
+func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	return buildMetaFromSources(profile.EffectiveMovieMetaSources(), "movie",
+		[]any{"tmdb_id", rid.tmdbID, "imdb_id", rid.imdbID},
+		func(source string) (*MetaObject, error) {
+			if source == "cinemeta" {
+				return s.buildMovieMetaFromCinemeta(ctx, profile, rid)
+			}
+			return s.buildMovieMetaFromTMDB(ctx, profile, rid)
+		})
 }
 
 func (s *Server) buildMovieMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
@@ -364,34 +381,22 @@ func (s *Server) currentConfig() *config.Config {
 	return s.config
 }
 
-// buildSeriesMeta applies the profile's source policy: series metadata comes
-// from the primary source (TVDB by default), and the backup steps in only
-// when the primary cannot serve (no resolvable id, provider down) — a
-// fallback episode list beats none. Cinemeta only ever appears here when a
-// profile explicitly names it. Air dates are TVMaze's on the TVDB/TMDB paths.
+// buildSeriesMeta serves series metadata from the profile's source order —
+// a fallback episode list beats none. Cinemeta only ever appears here when a
+// profile explicitly lists it. Air dates are TVMaze's on the TVDB/TMDB paths.
 func (s *Server) buildSeriesMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
-	primary, backup := profile.EffectiveSeriesMetaSources()
-	build := func(source string) (*MetaObject, error) {
-		switch source {
-		case "tmdb":
-			return s.buildSeriesMetaFromTMDB(ctx, profile, contentType, rid)
-		case "cinemeta":
-			return s.buildSeriesMetaFromCinemeta(ctx, profile, contentType, rid)
-		default:
-			return s.buildSeriesMetaFromTVDB(ctx, profile, contentType, rid)
-		}
-	}
-	meta, err := build(primary)
-	if err == nil {
-		return meta, nil
-	}
-	if errors.Is(err, errCertificationBlocked) {
-		return nil, err
-	}
-	logger.Debug("Primary series meta source unavailable; falling back",
-		"source", primary, "backup", backup,
-		"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID, "err", err)
-	return build(backup)
+	return buildMetaFromSources(profile.EffectiveSeriesMetaSources(), "series",
+		[]any{"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID},
+		func(source string) (*MetaObject, error) {
+			switch source {
+			case "tmdb":
+				return s.buildSeriesMetaFromTMDB(ctx, profile, contentType, rid)
+			case "cinemeta":
+				return s.buildSeriesMetaFromCinemeta(ctx, profile, contentType, rid)
+			default:
+				return s.buildSeriesMetaFromTVDB(ctx, profile, contentType, rid)
+			}
+		})
 }
 
 // resolveTVDBIDForMeta fills rid.tvdbID from whichever id the request carried.
@@ -434,7 +439,7 @@ func (s *Server) resolveIMDbIDForMeta(rid *resolvedMetaID, mediaType string) str
 }
 
 // buildMovieMetaFromCinemeta serves movie meta from the public Cinemeta
-// addon API (opt-in via movie_source/movie_backup_source). Cinemeta only
+// addon API (opt-in by listing it in movie_sources). Cinemeta only
 // resolves by IMDb id, so a request that arrived as a bare TMDB id needs one
 // more lookup first.
 func (s *Server) buildMovieMetaFromCinemeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
@@ -890,30 +895,24 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 }
 
 func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
-	primary, backup := profile.EffectiveAnimeMetaSources()
-	build := func(source string) (*MetaObject, error) {
-		switch source {
-		case "tvdb":
-			return s.buildAnimeMetaFromTVDB(ctx, profile, contentType, rid)
-		default:
-			return s.buildAnimeMetaFromKitsu(ctx, profile, contentType, rid)
-		}
-	}
-	meta, err := build(primary)
-	if err == nil {
-		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
-		return meta, nil
-	}
-	if errors.Is(err, errCertificationBlocked) {
+	meta, err := buildMetaFromSources(profile.EffectiveAnimeMetaSources(), "anime",
+		[]any{"kitsu_id", rid.kitsuID},
+		func(source string) (*MetaObject, error) {
+			switch source {
+			case "tvdb":
+				return s.buildAnimeMetaFromTVDB(ctx, profile, contentType, rid)
+			default:
+				return s.buildAnimeMetaFromKitsu(ctx, profile, contentType, rid)
+			}
+		})
+	if err != nil {
 		return nil, err
 	}
-	logger.Debug("Primary anime meta source unavailable; falling back",
-		"source", primary, "backup", backup, "kitsu_id", rid.kitsuID, "err", err)
-	meta, err = build(backup)
-	if err == nil {
-		s.applyAnimeArtwork(meta, profile, rid.kitsuID)
-	}
-	return meta, err
+	// Artwork is applied once, to whichever source ended up serving: the
+	// anime-lists crosswalk upgrades the background and logo independently of
+	// where the rest of the record came from.
+	s.applyAnimeArtwork(meta, profile, rid.kitsuID)
+	return meta, nil
 }
 
 // buildAnimeMetaFromTVDB uses the anime-lists crosswalk to fetch a complete
@@ -933,7 +932,6 @@ func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.Met
 	if tvdbRID.imdbID == "" {
 		tvdbRID.imdbID = mapping.IMDbID
 	}
-	tvdbRID.canonicalID = rid.canonicalID
 	meta, err := s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, &tvdbRID, false)
 	if err != nil {
 		return nil, err

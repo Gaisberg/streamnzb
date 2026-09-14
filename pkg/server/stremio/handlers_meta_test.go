@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -498,7 +500,7 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	}
 }
 
-// TestBuildSeriesMetaSourceOverride flips series_source to tmdb and expects
+// TestBuildSeriesMetaSourceOverride leads series_sources with tmdb and expects
 // the TMDB record even though TVDB could serve.
 func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
@@ -518,12 +520,12 @@ func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 	srv := metaTestServer(t, tmdbStub, nil, nil)
 	withTVDBStub(t, srv, tvdbStubHandler())
 
-	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSource: "tmdb"}, "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSources: []string{"tmdb", "tvdb"}}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
 	if meta.Name != "Game of Thrones (TMDB)" {
-		t.Fatalf("name = %q, want the TMDB record when series_source=tmdb", meta.Name)
+		t.Fatalf("name = %q, want the TMDB record when tmdb leads series_sources", meta.Name)
 	}
 }
 
@@ -603,7 +605,7 @@ func cinemetaMovieStub() http.HandlerFunc {
 }
 
 // TestBuildMovieMetaCinemetaOptInBackup pins the opt-in rule: a profile that
-// never sets movie_backup_source gets the plain TMDB error on failure (no
+// never adds a second movie source gets the plain TMDB error on failure (no
 // silent Cinemeta fallback), while one that explicitly opts in falls back.
 func TestBuildMovieMetaCinemetaOptInBackup(t *testing.T) {
 	tmdbNotFound := func(w http.ResponseWriter, r *http.Request) {
@@ -633,7 +635,7 @@ func TestBuildMovieMetaCinemetaOptInBackup(t *testing.T) {
 		withCinemetaStub(t, srv, cinemetaStub)
 		cinemetaCalls = 0
 
-		meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieBackupSource: "cinemeta"}, "movie", "tt0133093")
+		meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieSources: []string{"tmdb", "cinemeta"}}, "movie", "tt0133093")
 		if err != nil {
 			t.Fatalf("buildMeta: %v", err)
 		}
@@ -661,7 +663,7 @@ func TestBuildMovieMetaCinemetaAsPrimary(t *testing.T) {
 	srv := metaTestServer(t, emptyTMDBFindStub, nil, nil)
 	withCinemetaStub(t, srv, cinemetaMovieStub())
 
-	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieSource: "cinemeta"}, "movie", "tt0133093")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{MovieSources: []string{"cinemeta"}}, "movie", "tt0133093")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -698,7 +700,7 @@ func TestBuildMovieMetaCinemetaBlockedByCertificationCap(t *testing.T) {
 
 	// A backup is deliberately configured too, to prove the certification
 	// block takes precedence over falling through to it.
-	profile := &config.MetadataProfileConfig{MovieSource: "cinemeta", MovieBackupSource: "tmdb", MaxCertification: "13"}
+	profile := &config.MetadataProfileConfig{MovieSources: []string{"cinemeta", "tmdb"}, MaxCertification: "13"}
 	_, err := srv.buildMeta(context.Background(), profile, "movie", "tt0133093")
 	if err == nil {
 		t.Fatal("expected the certification gate to block an unrated Cinemeta title")
@@ -736,7 +738,7 @@ func TestBuildSeriesMetaCinemetaPrimaryAnchorsVideoIDs(t *testing.T) {
 		}}`))
 	})
 
-	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSource: "cinemeta"}, "series", "tt0944947")
+	meta, err := srv.buildMeta(context.Background(), &config.MetadataProfileConfig{SeriesSources: []string{"cinemeta"}}, "series", "tt0944947")
 	if err != nil {
 		t.Fatalf("buildMeta: %v", err)
 	}
@@ -1483,5 +1485,74 @@ func TestTVMazeOverlayDoesNotPassThroughTheNoonPlaceholder(t *testing.T) {
 	applyTVMazeOverlay(video, scheduled)
 	if want := "2011-04-18T01:00:00+00:00"; video.Released != want {
 		t.Fatalf("released = %q, want the TVMaze airstamp %q", video.Released, want)
+	}
+}
+
+// A source order is walked in full, not just two deep: with three sources
+// configured, the third serves when the first two cannot. The primary/backup
+// pair this replaced could only ever try two, so a three-entry order would
+// have silently ignored its last entry.
+func TestBuildMetaFromSourcesWalksTheWholeOrder(t *testing.T) {
+	var tried []string
+	meta, err := buildMetaFromSources([]string{"tvdb", "tmdb", "cinemeta"}, "series", nil,
+		func(source string) (*MetaObject, error) {
+			tried = append(tried, source)
+			if source != "cinemeta" {
+				return nil, fmt.Errorf("%s is down", source)
+			}
+			return &MetaObject{ID: "tt1", Name: "Served"}, nil
+		})
+	if err != nil {
+		t.Fatalf("buildMetaFromSources: %v", err)
+	}
+	if meta.Name != "Served" {
+		t.Fatalf("meta = %+v", meta)
+	}
+	if !slices.Equal(tried, []string{"tvdb", "tmdb", "cinemeta"}) {
+		t.Fatalf("tried = %v, want every source in order", tried)
+	}
+}
+
+// The order stops at the first source that serves — a later one is never
+// consulted, so a working primary costs no extra requests.
+func TestBuildMetaFromSourcesStopsAtTheFirstThatServes(t *testing.T) {
+	var tried []string
+	if _, err := buildMetaFromSources([]string{"tvdb", "tmdb"}, "series", nil,
+		func(source string) (*MetaObject, error) {
+			tried = append(tried, source)
+			return &MetaObject{ID: "tt1"}, nil
+		}); err != nil {
+		t.Fatalf("buildMetaFromSources: %v", err)
+	}
+	if !slices.Equal(tried, []string{"tvdb"}) {
+		t.Fatalf("tried = %v, want only the leading source", tried)
+	}
+}
+
+// When every source fails the caller gets the last one's error, so the message
+// describes the attempt that actually ended the chain.
+func TestBuildMetaFromSourcesReportsTheLastError(t *testing.T) {
+	_, err := buildMetaFromSources([]string{"tvdb", "cinemeta"}, "series", nil,
+		func(source string) (*MetaObject, error) { return nil, fmt.Errorf("%s failed", source) })
+	if err == nil || err.Error() != "cinemeta failed" {
+		t.Fatalf("err = %v, want the final source's error", err)
+	}
+}
+
+// A certification block is the profile's own rating limit answering, not a
+// source failing, so it ends the walk instead of handing the title to a
+// source with no rating data at all.
+func TestBuildMetaFromSourcesStopsOnCertificationBlock(t *testing.T) {
+	var tried []string
+	_, err := buildMetaFromSources([]string{"tmdb", "cinemeta"}, "movie", nil,
+		func(source string) (*MetaObject, error) {
+			tried = append(tried, source)
+			return nil, errCertificationBlocked
+		})
+	if !errors.Is(err, errCertificationBlocked) {
+		t.Fatalf("err = %v, want errCertificationBlocked", err)
+	}
+	if !slices.Equal(tried, []string{"tmdb"}) {
+		t.Fatalf("tried = %v, want the walk to stop at the block", tried)
 	}
 }

@@ -78,33 +78,15 @@ func NewProxyAuth(header string, proxies []string) (*ProxyAuth, error) {
 	return &ProxyAuth{header: header, nets: nets}, nil
 }
 
-// parseTrustedProxies turns the configured entries into networks. Every entry
-// must parse: a blank one, a typo, or a catch-all such as 0.0.0.0/0 is an
-// error, because each of those would leave a config that looks valid and
-// enforces something other than what it says.
+// parseTrustedProxies turns the configured entries into networks, reporting a
+// rejected one as a ProxyConfigError so the settings page can point at the
+// trusted_proxies field. The parsing rules — and why a blank entry or a
+// catch-all is an error rather than a silently wider gate — live with the
+// shared parser.
 func parseTrustedProxies(proxies []string) ([]*net.IPNet, error) {
-	var nets []*net.IPNet
-	for _, raw := range proxies {
-		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			return nil, proxiesErr("trusted_proxies has a blank entry")
-		}
-		if _, n, err := net.ParseCIDR(entry); err == nil {
-			if ones, _ := n.Mask.Size(); ones == 0 {
-				return nil, proxiesErr("trusted proxy %q would trust every address; list the proxy's network only", entry)
-			}
-			nets = append(nets, n)
-			continue
-		}
-		ip := net.ParseIP(entry)
-		if ip == nil {
-			return nil, proxiesErr("trusted proxy %q is neither a CIDR nor an IP address", entry)
-		}
-		bits := 32
-		if ip.To4() == nil {
-			bits = 128
-		}
-		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	nets, err := httpx.ParseNetworks(proxies, "trusted_proxies")
+	if err != nil {
+		return nil, proxiesErr("%s", err)
 	}
 	return nets, nil
 }

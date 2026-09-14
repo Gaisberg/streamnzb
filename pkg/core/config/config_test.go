@@ -839,6 +839,7 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
 		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
 		env.KeyTrustedProxyAuthHeader, env.KeyTrustedProxies,
+		env.KeyCatalogSourceNetworks,
 		env.KeyDatabaseDriver, env.KeyDatabaseURL, env.KeyMetadataEnabled,
 	}
 	for _, k := range all {

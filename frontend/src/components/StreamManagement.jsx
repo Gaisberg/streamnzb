@@ -30,15 +30,15 @@ import {
   preloadAttemptsLabel,
   streamsFromMap,
   tabHasError,
-  uniquePreserveOrder,
 } from '@/lib/streams'
+import { uniquePreserveOrder } from "@/lib/lists"
 import { isAvailNZBEnabled } from "@/lib/availnzb"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
-import { SortableList, SortableRow } from "@/components/SortableList"
+import { SelectionSection } from "@/components/ui/selection-section"
 import { apiFetch } from "@/api"
 import { copyToClipboard } from "@/lib/utils"
 import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X } from "lucide-react"
@@ -107,80 +107,6 @@ function CopyButton({ copied, onCopy, label }) {
       </TooltipTrigger>
       <TooltipContent>{copied ? 'Copied' : label}</TooltipContent>
     </Tooltip>
-  )
-}
-
-function SelectionSection({ title, values, selected, onToggle, onMove, error, helperText = '', membershipLocked = false, renderRowExtra = null, dimmedValues = [] }) {
-  const selectedValues = useMemo(
-    () => uniquePreserveOrder(selected).filter((value) => values.includes(value)),
-    [selected, values]
-  )
-  const availableValues = useMemo(
-    () => values.filter((value) => !selectedValues.includes(value)),
-    [values, selectedValues]
-  )
-
-  return (
-    <div className={`space-y-3 rounded-md border p-3 ${error ? 'border-destructive/60 bg-destructive/5' : 'border-border/60'}`}>
-      <div className="flex items-center justify-between gap-3">
-        <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</Label>
-        {!membershipLocked && (
-          <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="icon"
-                    className="h-8 w-8"
-                    disabled={availableValues.length === 0}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent>{availableValues.length === 0 ? 'No more entries to add' : `Add ${title.toLowerCase()}`}</TooltipContent>
-            </Tooltip>
-            <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
-              {availableValues.length === 0 ? (
-                <DropdownMenuItem disabled>No more entries available</DropdownMenuItem>
-              ) : (
-                availableValues.map((value) => (
-                  <DropdownMenuItem key={value} onClick={() => onToggle(value, true)}>
-                    {value}
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
-      {helperText ? <p className="text-sm text-muted-foreground">{helperText}</p> : null}
-
-      <div className="space-y-2">
-        {selectedValues.length === 0 ? (
-          <div className={`rounded-md border border-dashed px-3 py-3 text-sm ${error ? 'border-destructive/60 text-destructive' : 'border-border/70 text-muted-foreground'}`}>
-            No entries added yet.
-          </div>
-        ) : (
-          <SortableList ids={selectedValues} onMove={(from, to) => onMove?.(from, to)} disabled={!onMove}>
-            {selectedValues.map((value) => (
-              <SortableRow key={value} id={value} disabled={!onMove}>
-                <div className={`min-w-0 flex-1 text-sm font-medium ${dimmedValues.includes(value) ? 'text-muted-foreground line-through' : ''}`}>{value}</div>
-                {renderRowExtra?.(value)}
-                {!membershipLocked && (
-                  <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => onToggle(value, false)}>
-                    Remove
-                  </Button>
-                )}
-              </SortableRow>
-            ))}
-          </SortableList>
-        )}
-      </div>
-      {error && <div className="text-sm text-destructive">{error}</div>}
-    </div>
   )
 }
 

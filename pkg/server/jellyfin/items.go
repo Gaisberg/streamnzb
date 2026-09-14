@@ -44,15 +44,6 @@ func allCatalogs() []stremio.CatalogDef {
 	)
 }
 
-func catalogByID(id string) (stremio.CatalogDef, bool) {
-	for _, def := range allCatalogs() {
-		if def.ID == id {
-			return def, true
-		}
-	}
-	return stremio.CatalogDef{}, false
-}
-
 // videosOf is a series' episode list. A Kitsu movie has none, and is shown
 // as a one-episode series rather than switching type between the catalog
 // row and the detail page; its episode plays under the bare entry id.

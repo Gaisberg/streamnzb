@@ -14,11 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/search/query"
@@ -96,7 +96,7 @@ type ExternalManifestInspection struct {
 // InspectExternalManifest reads a public manifest and live-tests every
 // supported browse row. It is intentionally catalog-only: required-search
 // rows, custom content types, and all non-catalog resources are ignored.
-func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManifestInspection, error) {
+func InspectExternalManifest(ctx context.Context, rawURL string, allowPrivate []*net.IPNet) (*ExternalManifestInspection, error) {
 	manifestURL, err := validExternalManifestURL(rawURL)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 	if err != nil {
 		return nil, err
 	}
-	resp, err := externalHTTPClient().Do(req)
+	resp, err := externalHTTPClient(allowPrivate).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,8 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		if contentType == "tv" {
 			contentType = "series"
 		}
-		if cat.ID == "" || cat.Name == "" || (contentType != "movie" && contentType != "series" && contentType != "anime") {
+		name := strings.TrimSpace(cat.Name)
+		if cat.ID == "" || name == "" || (contentType != "movie" && contentType != "series" && contentType != "anime") {
 			continue
 		}
 		searchOnly, supportsSkip := false, false
@@ -161,7 +162,7 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 		}
 		candidates = append(candidates, candidate{
 			def:          CatalogDef{Type: contentType, Provider: "external", ExternalManifestURL: manifestURL.String(), ExternalRemoteType: cat.Type, ExternalRemoteID: cat.ID},
-			name:         strings.TrimSpace(cat.Name),
+			name:         name,
 			supportsSkip: supportsSkip,
 		})
 	}
@@ -181,7 +182,7 @@ func InspectExternalManifest(ctx context.Context, rawURL string) (*ExternalManif
 			defer workers.Done()
 			for i := range jobs {
 				candidate := candidates[i]
-				metas, err := externalManifestCatalog(ctx, candidate.def, catalogRequest{Type: candidate.def.Type})
+				metas, err := externalManifestCatalog(ctx, candidate.def, catalogRequest{Type: candidate.def.Type}, allowPrivate)
 				if err != nil {
 					results[i].err = err
 					continue
@@ -372,7 +373,7 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		if def.ExternalKind == "letterboxd" {
 			return s.letterboxdCatalog(ctx, def, req)
 		}
-		return externalManifestCatalog(ctx, def, req)
+		return externalManifestCatalog(ctx, def, req, s.catalogSourceNetworks())
 	}
 	return nil, fmt.Errorf("unknown catalog provider %q", def.Provider)
 }
@@ -405,6 +406,10 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 	needed := req.Skip + catalogPageSize
 	previews := make([]MetaPreview, 0, needed)
 	seen := make(map[string]struct{})
+	// fetched tracks every row the source has handed over, of either media
+	// type, so that "this page was new" can be told apart from "this page had
+	// nothing for *this* catalog".
+	fetched := make(map[string]struct{})
 	for page := firstPage; page < firstPage+externalListMaxPages && len(previews) < needed; page++ {
 		items, err := fetch(page)
 		if err != nil {
@@ -415,13 +420,21 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 			}
 			return nil, err
 		}
+		fresh := 0
 		for _, item := range items {
-			isMovie := item.Type == "movie"
-			name := cleanExternalPreviewName(item.Name)
-			if (def.Type == "movie") != isMovie || (item.ID <= 0 && strings.TrimSpace(item.IMDbID) == "") || name == "" {
+			imdbID := strings.TrimSpace(item.IMDbID)
+			raw := fmt.Sprintf("%s:%d:%s", item.Type, item.ID, imdbID)
+			if _, repeated := fetched[raw]; repeated {
 				continue
 			}
-			id := strings.TrimSpace(item.IMDbID)
+			fetched[raw] = struct{}{}
+			fresh++
+			isMovie := item.Type == "movie"
+			name := cleanExternalPreviewName(item.Name)
+			if (def.Type == "movie") != isMovie || (item.ID <= 0 && imdbID == "") || name == "" {
+				continue
+			}
+			id := imdbID
 			if id == "" {
 				id = fmt.Sprintf("tmdb:%d", item.ID)
 			}
@@ -431,10 +444,13 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 			seen[id] = struct{}{}
 			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name})
 		}
-		// An empty remote page is terminal. A mixed page, duplicate page, or a
-		// page containing only the other media type is not: later pages may
-		// still hold matching rows for this catalog.
-		if len(items) == 0 {
+		// An empty page is terminal, and so is one that repeats rows already
+		// fetched: not every source answers a page past the end with an empty
+		// document — MDBList's infinite-scroll endpoint re-serves the last one —
+		// and without this a request past the end of a list would walk all
+		// externalListMaxPages before giving up. A page holding only the other
+		// media type still counts as progress, so a mixed list keeps paging.
+		if len(items) == 0 || fresh == 0 {
 			break
 		}
 	}
@@ -456,18 +472,18 @@ var externalReleaseDateSuffix = regexp.MustCompile(`\s+\((?:18|19|20)\d{2}(?:-\d
 // from a public HTTPS manifest. It never forwards a search term or any caller
 // credentials, so an external addon cannot become part of StreamNZB search or
 // playback.
-func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogRequest, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
 	if req.Search != "" {
 		return nil, fmt.Errorf("external catalogs do not support search")
 	}
-	metas, err := externalManifestCatalogPage(ctx, def, req.Skip)
+	metas, err := externalManifestCatalogPage(ctx, def, req.Skip, allowPrivate)
 	if err != nil {
 		return nil, err
 	}
 	return limitCatalogPage(metas), nil
 }
 
-func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int) ([]MetaPreview, error) {
+func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
 	manifest, err := validExternalManifestURL(def.ExternalManifestURL)
 	if err != nil {
 		return nil, err
@@ -484,7 +500,7 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int) 
 		return nil, err
 	}
 	httpReq.Header.Set("Accept", "application/json")
-	resp, err := externalHTTPClient().Do(httpReq)
+	resp, err := externalHTTPClient(allowPrivate).Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -534,57 +550,21 @@ func validExternalManifestURL(rawURL string) (*url.URL, error) {
 	return manifest, nil
 }
 
-// rejectPrivateDialAddr is a net.Dialer.Control hook that rejects a
-// connection to a loopback, private, link-local, or otherwise non-public
-// address. Control runs after DNS resolution but before the connection is
-// used, on the actual resolved address — so unlike a pre-resolve check, a
-// DNS answer that changes between validation and dial (or a redirect
-// pointing straight at an internal host) cannot slip through.
-func rejectPrivateDialAddr(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("external catalog manifest: could not parse resolved address %q", host)
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
-		return fmt.Errorf("external catalog manifest may not target a private or local address")
-	}
-	return nil
+// catalogSourceNetworks is the operator's allowlist of non-public networks an
+// external catalog source may live on, read fresh so a config reload takes
+// effect without restarting.
+func (s *Server) catalogSourceNetworks() []*net.IPNet {
+	return s.currentConfig().CatalogSourceAllowedNetworks()
 }
 
-// externalManifestTransport is built once and reused by every
-// externalHTTPClient() call. InspectExternalManifest alone can probe up to
-// externalInspectionMaxCatalogs candidates per request; a fresh
-// *http.Transport per call would mean a fresh, un-pooled TCP+TLS handshake
-// for each one instead of reusing keep-alive connections, working against
-// the very request-cost bound that cap exists for. Cloning
-// http.DefaultTransport keeps its other defaults (proxy-from-environment,
-// HTTP/2, idle-connection and TLS-handshake timeouts) and only swaps in the
-// SSRF-guarded dialer.
-var externalManifestTransport = func() *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.DialContext = (&net.Dialer{Timeout: catalogRequestTimeout, Control: rejectPrivateDialAddr}).DialContext
-	return t
-}()
-
-// externalHTTPClient is used to fetch a user-pasted manifest URL and its
-// catalog pages — an admin-supplied destination, so every dial (including
-// ones a redirect points at) is guarded against reaching internal
-// infrastructure (SSRF).
-func externalHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout:   catalogRequestTimeout,
-		Transport: externalManifestTransport,
-		CheckRedirect: func(next *http.Request, _ []*http.Request) error {
-			if next.URL.Scheme != "https" || next.URL.Host == "" {
-				return fmt.Errorf("external catalog redirect is not HTTPS")
-			}
-			return nil
-		},
-	}
+// externalHTTPClient fetches a user-pasted manifest URL and its catalog pages.
+// The destination is admin-supplied, so every dial — including ones a redirect
+// points at — is guarded against reaching internal infrastructure (SSRF), and
+// redirects may not leave HTTPS. allowPrivate carries the operator's
+// CatalogSourceNetworks, which is what makes a self-hosted addon on their own
+// LAN reachable; httpx pools one transport per distinct allowlist.
+func externalHTTPClient(allowPrivate []*net.IPNet) *http.Client {
+	return httpx.GuardedClient(catalogRequestTimeout, allowPrivate)
 }
 
 func canonicalExternalCatalogID(id string) string {

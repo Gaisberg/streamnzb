@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/metadata/metacache"
@@ -30,6 +31,17 @@ const responseCacheTTL = 24 * time.Hour
 const volatileCacheTTL = 3 * time.Hour
 
 const publicListPageMaxBody = 4 << 20
+
+// publicListRequestTimeout bounds one public list-page fetch.
+const publicListRequestTimeout = 15 * time.Second
+
+// publicListHTTPClient fetches the public list pages an operator pasted. Those
+// hosts are checked before the request, but a redirect is not: without a guard
+// letterboxd.com could bounce the fetch onto an internal address, so this
+// client refuses any non-public destination and any non-HTTPS redirect. It is
+// a var because that guard deliberately refuses to dial a loopback test
+// server; tests swap it for a plain client.
+var publicListHTTPClient = httpx.GuardedClient(publicListRequestTimeout, nil)
 
 const publicListMaxPages = 100
 
@@ -353,6 +365,64 @@ func letterboxdTitle(body []byte) string {
 	return ""
 }
 
+// resolveLetterboxdFilms reads each public film page and pulls out the
+// canonical IMDb id it exposes, preserving list order.
+//
+// Film pages are the public canonical-ID boundary. Fetching them serially made
+// one 100-row Letterboxd page take long enough for Jellyfin clients to abandon
+// the catalog, so this uses a small, polite pool. A film page that 404s is a
+// title removed from Letterboxd — a row with no canonical id, exactly like one
+// whose page carries no IMDb link — and is skipped rather than failing the
+// page: returning it wrapped would hand ErrPublicListPageNotFound to the
+// catalog, which reads that sentinel as "the list ended here" and would
+// silently drop every later page of the list.
+//
+// Any other failure fails the whole page. Never silently change a page's
+// membership between requests: a caller can retry a failed page, but serving a
+// partial one causes duplicate and missing items once the client follows Skip
+// pagination.
+func resolveLetterboxdFilms(ctx context.Context, filmURLs []string) ([]PublicListItem, error) {
+	resolved := make([]PublicListItem, len(filmURLs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	for range min(12, len(filmURLs)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				film, err := fetchPublicHTML(ctx, filmURLs[i])
+				if err != nil {
+					if errors.Is(err, ErrPublicListPageNotFound) {
+						continue
+					}
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetch Letterboxd film %s: %w", filmURLs[i], err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
+				name := letterboxdTitle(film)
+				if len(id) == 2 && name != "" {
+					resolved[i] = PublicListItem{IMDbID: id[1], Type: "movie", Name: name}
+				}
+			}
+		}()
+	}
+	for i := range filmURLs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return resolved, nil
+}
+
 // FetchLetterboxdPage reads a public Letterboxd list page and resolves the
 // IMDb id exposed by each public film page. No account, API key or title guess
 // is used; rows without a canonical IMDb id are omitted.
@@ -365,7 +435,7 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 		u.Path = strings.TrimSuffix(u.Path, "/") + "/page/" + strconv.Itoa(pageNumber) + "/"
 	}
 	cacheKey := u.String()
-	if cached, ok := loadLetterboxdListPage(cacheKey); ok {
+	if cached, ok := loadPublicListPage(cacheKey); ok {
 		return cached, nil
 	}
 	body, err := fetchPublicHTML(ctx, u.String())
@@ -385,54 +455,16 @@ func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (Pu
 		filmURLs = append(filmURLs, filmURL)
 	}
 
-	// Film pages are the public canonical-ID boundary. Fetching them serially
-	// made one 100-row Letterboxd page take long enough for Jellyfin clients to
-	// abandon the catalog. Keep list order while using a small, polite pool.
-	items := make([]PublicListItem, len(filmURLs))
-	workers := min(12, len(filmURLs))
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	var firstErr error
-	var errMu sync.Mutex
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				film, err := fetchPublicHTML(ctx, filmURLs[i])
-				if err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("fetch Letterboxd film %s: %w", filmURLs[i], err)
-					}
-					errMu.Unlock()
-					continue
-				}
-				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
-				name := letterboxdTitle(film)
-				if len(id) == 2 && name != "" {
-					items[i] = PublicListItem{IMDbID: id[1], Type: "movie", Name: name}
-				}
-			}
-		}()
-	}
-	for i := range filmURLs {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
-	if firstErr != nil {
-		// Never silently change a page's membership between requests. A caller
-		// can retry a failed page; serving a partial page causes duplicate and
-		// missing items once the client follows Skip pagination.
-		return PublicListPage{}, firstErr
+	items, err := resolveLetterboxdFilms(ctx, filmURLs)
+	if err != nil {
+		return PublicListPage{}, err
 	}
 	for _, item := range items {
 		if item.IMDbID != "" {
 			out.Items = append(out.Items, item)
 		}
 	}
-	storeLetterboxdListPage(cacheKey, out)
+	storePublicListPage(cacheKey, out)
 	return out, nil
 }
 
@@ -473,7 +505,7 @@ func fetchPublicHTMLOnce(ctx context.Context, rawURL string) ([]byte, time.Durat
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := publicListHTTPClient.Do(req)
 	if err != nil {
 		return nil, 0, true, err
 	}
@@ -508,9 +540,13 @@ type PublicListPage struct {
 	Items []PublicListItem
 }
 
+// Public list pages are re-read constantly: one Stremio page at skip=380
+// walks every upstream page before it, and a Jellyfin client asks for ten
+// such windows to fill one view. Without this cache that is quadratic
+// outbound traffic for a list whose contents change on a human timescale.
 const (
-	letterboxdListCacheTTL = 15 * time.Minute
-	letterboxdListCacheMax = 128
+	publicListCacheTTL = 15 * time.Minute
+	publicListCacheMax = 512
 )
 
 type cachedPublicListPage struct {
@@ -518,36 +554,45 @@ type cachedPublicListPage struct {
 	expiresAt time.Time
 }
 
-var letterboxdListCache = struct {
+var publicListCache = struct {
 	sync.Mutex
 	pages map[string]cachedPublicListPage
 }{pages: make(map[string]cachedPublicListPage)}
 
-func loadLetterboxdListPage(key string) (PublicListPage, bool) {
-	letterboxdListCache.Lock()
-	defer letterboxdListCache.Unlock()
-	cached, ok := letterboxdListCache.pages[key]
+func loadPublicListPage(key string) (PublicListPage, bool) {
+	publicListCache.Lock()
+	defer publicListCache.Unlock()
+	cached, ok := publicListCache.pages[key]
 	if !ok || time.Now().After(cached.expiresAt) {
-		delete(letterboxdListCache.pages, key)
+		delete(publicListCache.pages, key)
 		return PublicListPage{}, false
 	}
 	return clonePublicListPage(cached.page), true
 }
 
-func storeLetterboxdListPage(key string, page PublicListPage) {
-	letterboxdListCache.Lock()
-	defer letterboxdListCache.Unlock()
-	if len(letterboxdListCache.pages) >= letterboxdListCacheMax {
+// storePublicListPage caches a page that actually parsed. A 200 carrying no
+// recognizable rows — an anti-bot interstitial, a loading shell, or markup
+// that has moved on — must never be cached: publicListCatalog reads an empty
+// page as the end of the list, so one bad scrape would truncate or empty the
+// catalog for the whole TTL, and the source tester would keep reporting that
+// same cached emptiness. Leaving it uncached costs one refetch and self-heals.
+func storePublicListPage(key string, page PublicListPage) {
+	if len(page.Items) == 0 {
+		return
+	}
+	publicListCache.Lock()
+	defer publicListCache.Unlock()
+	if len(publicListCache.pages) >= publicListCacheMax {
 		var oldestKey string
 		var oldestExpiry time.Time
-		for candidate, cached := range letterboxdListCache.pages {
+		for candidate, cached := range publicListCache.pages {
 			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
 				oldestKey, oldestExpiry = candidate, cached.expiresAt
 			}
 		}
-		delete(letterboxdListCache.pages, oldestKey)
+		delete(publicListCache.pages, oldestKey)
 	}
-	letterboxdListCache.pages[key] = cachedPublicListPage{page: clonePublicListPage(page), expiresAt: time.Now().Add(letterboxdListCacheTTL)}
+	publicListCache.pages[key] = cachedPublicListPage{page: clonePublicListPage(page), expiresAt: time.Now().Add(publicListCacheTTL)}
 }
 
 func clonePublicListPage(page PublicListPage) PublicListPage {
@@ -572,6 +617,10 @@ func FetchPublicListPage(ctx context.Context, rawURL string, page int) ([]Public
 	q.Set("page", strconv.Itoa(max(page, 1)))
 	q.Set("language", "en-US")
 	u.RawQuery = q.Encode()
+	cacheKey := u.String()
+	if cached, ok := loadPublicListPage(cacheKey); ok {
+		return cached.Items, nil
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -579,7 +628,7 @@ func FetchPublicListPage(ctx context.Context, rawURL string, page int) ([]Public
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := publicListHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -607,6 +656,7 @@ func FetchPublicListPage(ctx context.Context, rawURL string, page int) ([]Public
 		seen[key] = struct{}{}
 		items = append(items, PublicListItem{ID: id, Type: match[2], Name: name})
 	}
+	storePublicListPage(cacheKey, PublicListPage{Items: items})
 	return items, nil
 }
 
@@ -667,13 +717,17 @@ func FetchMDBListPage(ctx context.Context, rawURL string, pageNumber int) (Publi
 		query.Set("mediatype", "")
 		u.RawQuery = query.Encode()
 	}
+	cacheKey := u.String()
+	if cached, ok := loadPublicListPage(cacheKey); ok {
+		return cached, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return PublicListPage{}, err
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := publicListHTTPClient.Do(req)
 	if err != nil {
 		return PublicListPage{}, err
 	}
@@ -703,6 +757,7 @@ func FetchMDBListPage(ctx context.Context, rawURL string, pageNumber int) (Publi
 		seen[key] = struct{}{}
 		page.Items = append(page.Items, PublicListItem{ID: id, Type: match[1], Name: name})
 	}
+	storePublicListPage(cacheKey, page)
 	return page, nil
 }
 

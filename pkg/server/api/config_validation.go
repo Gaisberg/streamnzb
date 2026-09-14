@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/text/language"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/search/ranking"
@@ -55,12 +57,14 @@ type configValidationPlan struct {
 	validateDefineLibraries        bool
 	validateDatabase               bool
 	validateTrustedProxyAuth       bool
+	validateCatalogSourceNetworks  bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
 	return configValidationPlan{
 		validateKeepLogFiles:           true,
 		validateTrustedProxyAuth:       true,
+		validateCatalogSourceNetworks:  true,
 		validateNZBHistoryRetention:    true,
 		validatePlaybackStartupTimeout: true,
 		validateIndexerProxyURL:        true,
@@ -177,6 +181,9 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	_, patchedProxies := raw["trusted_proxies"]
 	if patchedHeader || patchedProxies {
 		plan.validateTrustedProxyAuth = true
+	}
+	if _, ok := raw["catalog_source_networks"]; ok {
+		plan.validateCatalogSourceNetworks = true
 	}
 	_, patchedDriver := raw["database_driver"]
 	_, patchedDatabaseURL := raw["database_url"]
@@ -437,6 +444,18 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			errors[field] = err.Error()
 		}
 	}
+	// Only when this list is itself being edited, for the same reason as the
+	// trusted-proxy pair above and more so: the field is redacted from
+	// /api/config and has no dashboard control, so a bad value that arrived
+	// from CATALOG_SOURCE_NETWORKS or a hand-edited file would otherwise
+	// reject every unrelated save with an error no page can display or clear.
+	// At runtime a bad list degrades to no exceptions at all
+	// (CatalogSourceAllowedNetworks fails closed).
+	if plan.validateCatalogSourceNetworks && len(cfg.CatalogSourceNetworks) > 0 {
+		if _, err := httpx.ParseNetworks(cfg.CatalogSourceNetworks, "catalog_source_networks"); err != nil {
+			errors["catalog_source_networks"] = err.Error()
+		}
+	}
 	if plan.validateDatabase {
 		if field, err := validateDatabaseSettings(cfg); err != nil {
 			errors[field] = err.Error()
@@ -651,44 +670,26 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.language", i)] = "Not a valid language tag"
 				}
 			}
-			switch mp.MovieSource {
-			case "", "tmdb", "cinemeta":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.movie_source", i)] = "Unknown movie source"
-			}
-			switch mp.MovieBackupSource {
-			case "", "tmdb", "cinemeta":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.movie_backup_source", i)] = "Unknown movie backup source"
-			}
-			if mp.MovieSource != "" && mp.MovieBackupSource != "" && mp.MovieSource == mp.MovieBackupSource {
-				errors[fmt.Sprintf("metadata_profiles.%d.movie_backup_source", i)] = "Movie backup must be different from the primary source"
-			}
-			switch mp.SeriesSource {
-			case "", "tvdb", "tmdb", "cinemeta":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
-			}
-			switch mp.SeriesBackupSource {
-			case "", "tvdb", "tmdb", "cinemeta":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.series_backup_source", i)] = "Unknown series backup source"
-			}
-			if mp.SeriesSource != "" && mp.SeriesBackupSource != "" && mp.SeriesSource == mp.SeriesBackupSource {
-				errors[fmt.Sprintf("metadata_profiles.%d.series_backup_source", i)] = "Series backup must be different from the primary source"
-			}
-			switch mp.AnimeSource {
-			case "", "kitsu", "tvdb":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.anime_source", i)] = "Unknown anime primary source"
-			}
-			switch mp.AnimeBackupSource {
-			case "", "kitsu", "tvdb":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Unknown anime backup source"
-			}
-			if mp.AnimeSource != "" && mp.AnimeBackupSource != "" && mp.AnimeSource == mp.AnimeBackupSource {
-				errors[fmt.Sprintf("metadata_profiles.%d.anime_backup_source", i)] = "Anime backup must be different from the primary source"
+			// Each list is an order, not a set of flags: an unknown entry is
+			// reported rather than dropped silently, because a typo would
+			// otherwise shorten the fallback chain invisibly. Repeats and an
+			// empty list are normalized on save, not rejected.
+			for _, sources := range []struct {
+				field   string
+				listed  []string
+				allowed []string
+			}{
+				{"movie_sources", mp.MovieSources, config.MovieMetaSourceOptions()},
+				{"series_sources", mp.SeriesSources, config.SeriesMetaSourceOptions()},
+				{"anime_sources", mp.AnimeSources, config.AnimeMetaSourceOptions()},
+			} {
+				for _, source := range sources.listed {
+					if !slices.Contains(sources.allowed, strings.ToLower(strings.TrimSpace(source))) {
+						errors[fmt.Sprintf("metadata_profiles.%d.%s", i, sources.field)] =
+							fmt.Sprintf("Unknown source %q; choose from %s", source, strings.Join(sources.allowed, ", "))
+						break
+					}
+				}
 			}
 			if pattern := strings.TrimSpace(mp.PosterURLPattern); pattern != "" {
 				if !strings.Contains(pattern, "{imdb_id}") {
@@ -731,8 +732,12 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 				if strings.TrimSpace(source.RemoteID) == "" {
 					errors[path+".remote_id"] = "Catalog id is required"
 				}
-				if strings.Contains(id, "/") {
-					errors[path+".id"] = "Catalog id cannot contain a slash"
+				// Both characters are structural in "/catalog/{type}/{id}/{extra}.json":
+				// a slash splits the path, and parseCatalogPath recognizes the
+				// optional extra by the "=" in its final segment, so an id
+				// containing either would be parsed as something else entirely.
+				if strings.ContainsAny(id, "/=") {
+					errors[path+".id"] = "Catalog id cannot contain a slash or an equals sign"
 				}
 				switch strings.ToLower(strings.TrimSpace(source.RemoteType)) {
 				case "movie", "series", "anime", "tv":

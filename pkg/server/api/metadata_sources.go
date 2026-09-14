@@ -58,7 +58,7 @@ func (s *Server) handleInspectMetadataSource(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, inspection)
 		return
 	}
-	inspection, err := stremio.InspectExternalManifest(ctx, body.ManifestURL)
+	inspection, err := stremio.InspectExternalManifest(ctx, body.ManifestURL, s.catalogSourceNetworks())
 	if err != nil {
 		http.Error(w, "Could not inspect catalog source: "+err.Error(), http.StatusBadGateway)
 		return

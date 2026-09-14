@@ -9,20 +9,8 @@ import {
   nextStreamName,
   streamsFromMap,
   tabHasError,
-  uniquePreserveOrder,
   variantAttemptsLabel,
 } from '@/lib/streams'
-
-describe('uniquePreserveOrder', () => {
-  it('drops duplicates and empties while keeping the order the user chose', () => {
-    expect(uniquePreserveOrder(['b', 'a', 'b', '', 'c', null])).toEqual(['b', 'a', 'c'])
-  })
-
-  it('tolerates anything that is not an array', () => {
-    expect(uniquePreserveOrder(undefined)).toEqual([])
-    expect(uniquePreserveOrder('nope')).toEqual([])
-  })
-})
 
 describe('activeProviderNames', () => {
   it('counts what the stream actually uses, not what is merely listed', () => {
