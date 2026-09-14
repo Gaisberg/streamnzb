@@ -926,7 +926,7 @@ func TestHandleCatalogServesTMDBTrending(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/trending/movie/week"):
 			_, _ = w.Write([]byte(`{"page": 1, "results": [
 				{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg", "backdrop_path": "/m-bg.jpg", "overview": "..." },
-				{"id": 604, "title": "Reloaded"}
+				{"id": 604, "title": "Reloaded", "poster_path": "/r.jpg"}
 			]}`))
 		case strings.Contains(r.URL.Path, "/movie/603/external_ids"):
 			_, _ = w.Write([]byte(`{"id": 603, "imdb_id": "tt0133093"}`))
@@ -1365,11 +1365,11 @@ func TestCatalogCrossDeduplication(t *testing.T) {
 	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/trending/movie/week"):
-			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 603, "title": "The Matrix"}]}`))
+			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg"}]}`))
 		case strings.Contains(r.URL.Path, "/movie/popular"):
 			_, _ = w.Write([]byte(`{"page": 1, "results": [
-				{"id": 603, "title": "The Matrix"},
-				{"id": 604, "title": "The Matrix Reloaded"}
+				{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg"},
+				{"id": 604, "title": "The Matrix Reloaded", "poster_path": "/r.jpg"}
 			]}`))
 		case strings.Contains(r.URL.Path, "/external_ids"):
 			_, _ = w.Write([]byte(`{}`))
@@ -1412,7 +1412,7 @@ func TestHandleCatalogSearchOnlyCarrier(t *testing.T) {
 	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/search/movie"):
-			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 603, "title": "The Matrix"}]}`))
+			_, _ = w.Write([]byte(`{"page": 1, "results": [{"id": 603, "title": "The Matrix", "poster_path": "/m.jpg"}]}`))
 		case strings.Contains(r.URL.Path, "/external_ids"):
 			_, _ = w.Write([]byte(`{}`))
 		default:

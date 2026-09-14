@@ -20,6 +20,12 @@ func TestLetterboxdTitleParsesPublicFilmAndListPages(t *testing.T) {
 		{"film", `<title>&lrm;The Departed (2006) directed by Martin Scorsese • Reviews, film + cast &bull; Letterboxd</title>`, "The Departed"},
 		{"list", `<meta property="og:title" content="Movies everyone should watch at least once during their lifetime"><title>&lrm;Movies everyone should watch at least once during their lifetime, a list of films by fcbarcelona &bull; Letterboxd</title>`, "Movies everyone should watch at least once during their lifetime"},
 		{"list og directional mark", `<meta property="og:title" content="&lrm;Movies everyone should watch">`, "Movies everyone should watch"},
+		// A real list page carries film years further down. The film pattern
+		// used to scan past </title> to the first of them and return ~80KB of
+		// page source as the list's name, which the catalog editor then
+		// rendered in full.
+		{"list with years later in the page", `<meta property="og:title" content="Films by fcbarcelona"><title>&lrm;Films by fcbarcelona &bull; Letterboxd</title><script>var conf = {}</script><span>Inception (2010)</span>`, "Films by fcbarcelona"},
+		{"list with no og title and years later in the page", `<title>&lrm;Films by fcbarcelona &bull; Letterboxd</title><span>Inception (2010)</span>`, "Films by fcbarcelona"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := letterboxdTitle([]byte(tc.html)); got != tc.want {

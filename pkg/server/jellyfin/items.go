@@ -35,13 +35,10 @@ const (
 // allCatalogs is every catalog an id may name: the browse registry plus the
 // search carriers.
 func allCatalogs() []stremio.CatalogDef {
-	// View ids are decoded before a request's stream/profile is known. Keep
-	// both possible anime search carriers here solely for that reverse lookup;
-	// the profile-aware SearchCatalogs call below decides which one can serve.
-	return append(stremio.CatalogRegistry(),
-		stremio.CatalogDef{ID: "kitsu.search.anime", Type: "anime"},
-		stremio.CatalogDef{ID: "tvdb.search.anime", Type: "anime"},
-	)
+	// View ids are decoded before a request's stream/profile is known, so
+	// every carrier any profile could select has to resolve here; the
+	// profile-aware SearchCatalogs call below decides which one can serve.
+	return append(stremio.CatalogRegistry(), stremio.AllSearchCatalogs()...)
 }
 
 // videosOf is a series' episode list. A Kitsu movie has none, and is shown

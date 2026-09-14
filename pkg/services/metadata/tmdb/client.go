@@ -132,6 +132,11 @@ type Result struct {
 	Overview         string `json:"overview"`
 	ReleaseDate      string `json:"release_date"`
 	FirstAirDate     string `json:"first_air_date"`
+	// Artwork and rating, for filling the gaps a thinner source left in a
+	// catalog row.
+	PosterPath   string  `json:"poster_path"`
+	BackdropPath string  `json:"backdrop_path"`
+	VoteAverage  float64 `json:"vote_average"`
 }
 
 type SearchMultiResponse struct {
@@ -338,11 +343,19 @@ type PublicListItem struct {
 // final page into a failed catalog response.
 var ErrPublicListPageNotFound = errors.New("public list page not found")
 
+// maxPublicListTitle bounds a scraped name. Letterboxd's longest real list
+// titles are well under this.
+const maxPublicListTitle = 300
+
 var (
-	letterboxdFilmPattern      = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
-	letterboxdOGTitlePattern   = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
-	letterboxdFilmTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*\(\d{4}\)`)
-	letterboxdPageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*(.*?)\s*(?:&bull;|•|\|)\s*Letterboxd`)
+	letterboxdFilmPattern    = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
+	letterboxdOGTitlePattern = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
+	// Both title patterns match inside the title element only ([^<] stops at
+	// the closing tag). With a dot they ran on past </title> to the first
+	// "(YYYY)" anywhere in the document, so a list page — whose title carries
+	// no year — captured tens of kilobytes of page source as its name.
+	letterboxdFilmTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*([^<]*?)\s*\(\d{4}\)`)
+	letterboxdPageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*([^<]*?)\s*(?:&bull;|•|\|)\s*Letterboxd`)
 	letterboxdIMDbPattern      = regexp.MustCompile(`imdb\.com/title/(tt\d{7,8})`)
 )
 
@@ -357,7 +370,9 @@ func letterboxdTitle(body []byte) string {
 			// html.UnescapeString has already turned &lrm; into U+200E, so
 			// strip the actual directional marks rather than the entity text.
 			title = strings.TrimSpace(strings.TrimLeft(title, "\u200e\u200f"))
-			if title != "" {
+			// A name is a name. Anything page-sized is a pattern that escaped
+			// its element, and belongs nowhere near the catalog editor.
+			if title != "" && len(title) <= maxPublicListTitle {
 				return title
 			}
 		}

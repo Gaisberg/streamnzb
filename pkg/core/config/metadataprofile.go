@@ -76,6 +76,42 @@ type MetadataProfileConfig struct {
 	// this is a parental control — the deliberate opposite of the fail-open
 	// doctrine release limits follow.
 	AllowUnrated *bool `json:"allow_unrated,omitempty"`
+
+	// HideIncompleteMetadata drops rows no source could describe well enough
+	// to render — in practice, the ones with no artwork at all. nil means
+	// enabled: an unrenderable row is noise in every client.
+	HideIncompleteMetadata *bool `json:"hide_incomplete_metadata,omitempty"`
+
+	// UnreleasedWindowDays is how far ahead of today a title may be scheduled
+	// and still appear in catalog rows and search results. nil means the
+	// default window; 0 shows only what has been released. A title whose
+	// source publishes no date at all is never hidden by this — the window
+	// filters announcements, not records with missing data.
+	UnreleasedWindowDays *int `json:"unreleased_window_days,omitempty"`
+}
+
+// DefaultUnreleasedWindowDays is the out-of-the-box horizon: a month of
+// upcoming titles, which covers what is about to air without filling a board
+// with announcements years out. MaxUnreleasedWindowDays is a year, the far
+// end of the editor's slider.
+const (
+	DefaultUnreleasedWindowDays = 30
+	MaxUnreleasedWindowDays     = 365
+)
+
+// EffectiveHideIncompleteMetadata reports whether rows without enough
+// metadata to render are dropped. Unset means on.
+func (p *MetadataProfileConfig) EffectiveHideIncompleteMetadata() bool {
+	return p == nil || p.HideIncompleteMetadata == nil || *p.HideIncompleteMetadata
+}
+
+// EffectiveUnreleasedWindowDays is the profile's horizon in days, never
+// negative.
+func (p *MetadataProfileConfig) EffectiveUnreleasedWindowDays() int {
+	if p == nil || p.UnreleasedWindowDays == nil {
+		return DefaultUnreleasedWindowDays
+	}
+	return min(max(*p.UnreleasedWindowDays, 0), MaxUnreleasedWindowDays)
 }
 
 // ExternalCatalogConfig records one chosen catalog row rather than an entire
@@ -116,7 +152,20 @@ var (
 
 // MovieMetaSourceOptions, SeriesMetaSourceOptions and AnimeMetaSourceOptions
 // are the sources each media type may list, for validation and for the editor.
-func MovieMetaSourceOptions() []string  { return append([]string(nil), movieMetaSources...) }
+func MovieMetaSourceOptions() []string { return append([]string(nil), movieMetaSources...) }
+
+// MetaSourceOptions is the same lists addressed by media type, for callers
+// that iterate every type.
+func MetaSourceOptions(mediaType string) []string {
+	switch mediaType {
+	case "movie":
+		return MovieMetaSourceOptions()
+	case "anime":
+		return AnimeMetaSourceOptions()
+	default:
+		return SeriesMetaSourceOptions()
+	}
+}
 func SeriesMetaSourceOptions() []string { return append([]string(nil), seriesMetaSources...) }
 func AnimeMetaSourceOptions() []string  { return append([]string(nil), animeMetaSources...) }
 

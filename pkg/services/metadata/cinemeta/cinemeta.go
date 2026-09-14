@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,6 +21,10 @@ import (
 
 // metaCacheTTL matches the other metadata clients' response cache lifetime.
 const metaCacheTTL = 24 * time.Hour
+
+// searchCacheTTL is short the way every other search response cache here is:
+// a query's answer changes as the catalog does.
+const searchCacheTTL = time.Hour
 
 type Client struct {
 	httpClient *http.Client
@@ -90,6 +95,9 @@ type Meta struct {
 }
 
 type rawMeta struct {
+	// ID is how a catalog row carries its IMDb id; a meta object spells the
+	// same thing imdb_id.
+	ID          string   `json:"id"`
 	IMDbID      string   `json:"imdb_id"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
@@ -161,6 +169,66 @@ func (c *Client) GetMeta(ctx context.Context, contentType, imdbID string) (*Meta
 		c.cache.Put(path, body, metaCacheTTL)
 	}
 	return mapMeta(env.Meta), nil
+}
+
+// SearchResult is one row of a Cinemeta catalog search. Cinemeta keys
+// everything by IMDb id, so a row is directly usable as a catalog preview.
+type SearchResult struct {
+	IMDbID      string
+	Name        string
+	Poster      string
+	Description string
+	ReleaseInfo string
+	IMDBRating  string
+}
+
+type catalogEnvelope struct {
+	Metas []rawMeta `json:"metas"`
+}
+
+// Search runs Cinemeta's catalog search for one media type. It is the search
+// counterpart of GetMeta: the same public catalog, queried rather than
+// addressed by id.
+func (c *Client) Search(ctx context.Context, contentType, query string) ([]SearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if contentType != "movie" {
+		contentType = "series"
+	}
+	path := fmt.Sprintf("/catalog/%s/top/search=%s.json", contentType, url.QueryEscape(query))
+
+	body, fromCache, err := c.fetchBody(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	var env catalogEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("cinemeta: decode search response: %w", err)
+	}
+	if !fromCache {
+		c.cache.Put(path, body, searchCacheTTL)
+	}
+	results := make([]SearchResult, 0, len(env.Metas))
+	for _, raw := range env.Metas {
+		id := strings.TrimSpace(raw.ID)
+		if id == "" {
+			id = strings.TrimSpace(raw.IMDbID)
+		}
+		if !strings.HasPrefix(id, "tt") || raw.Name == "" {
+			continue
+		}
+		results = append(results, SearchResult{
+			IMDbID:      id,
+			Name:        strings.TrimSpace(raw.Name),
+			Poster:      raw.Poster,
+			Description: strings.TrimSpace(raw.Description),
+			ReleaseInfo: normalizeReleaseInfoDash(raw.ReleaseInfo),
+			IMDBRating:  strings.TrimSpace(raw.IMDBRating),
+		})
+	}
+	return results, nil
 }
 
 // normalizeReleaseInfoDash rewrites Cinemeta's en dash ("2011–2019",

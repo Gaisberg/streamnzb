@@ -753,6 +753,9 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			if mp.MaxCertification != "" && !knownCertIDs[mp.MaxCertification] {
 				errors[fmt.Sprintf("metadata_profiles.%d.max_certification", i)] = "Unknown rating limit"
 			}
+			if mp.UnreleasedWindowDays != nil && (*mp.UnreleasedWindowDays < 0 || *mp.UnreleasedWindowDays > config.MaxUnreleasedWindowDays) {
+				errors[fmt.Sprintf("metadata_profiles.%d.unreleased_window_days", i)] = fmt.Sprintf("Must be between 0 and %d days", config.MaxUnreleasedWindowDays)
+			}
 		}
 	}
 

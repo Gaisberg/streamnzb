@@ -45,6 +45,10 @@ const (
 	tmdbLogoURL     = "https://image.tmdb.org/t/p/w500"
 )
 
+// tvdbArtworkURL is TheTVDB's artwork CDN, which its listing and search rows
+// sometimes reference by path alone.
+const tvdbArtworkURL = "https://artworks.thetvdb.com"
+
 // handleMeta serves /meta/{type}/{id}.json. For a stream with no metadata
 // profile bound the resource does not exist — 404, matching a manifest that
 // never declared it.
@@ -104,7 +108,7 @@ func (s *Server) buildMeta(ctx context.Context, profile *config.MetadataProfileC
 	}
 	// After the builders: they fill rid.imdbID best-effort from the source's
 	// external ids even when the request carried another id form.
-	if overlay := profile.PosterOverlayURL(rid.imdbID); overlay != "" {
+	if overlay := s.overlayPosterFor(ctx, profile, rid.imdbID); overlay != "" {
 		meta.Poster = overlay
 	}
 	return meta, nil

@@ -192,10 +192,75 @@ type SearchResult struct {
 	// giving up on the row entirely.
 	RawTitle string `json:"title"`
 	ImageURL string `json:"image_url"`
+	// Year is the first-air year, when the record publishes one at all — a
+	// search row carries no full date.
+	Year string `json:"year"`
 	// Translations is the search endpoint's own name-per-language map, keyed
 	// by ISO 639-3 ("eng", "jpn"). It is the only place a search row carries a
 	// readable name for a series whose record is not in the display language.
 	Translations map[string]string `json:"translations"`
+	Overview     string            `json:"overview"`
+	// Status is a plain string on a search row and an object on the full
+	// record. It is decoded tolerantly because it is only ever a hint here:
+	// one shape change upstream must not fail an entire search.
+	Status SearchStatus `json:"status"`
+	// RemoteIDs are the record's ids at other providers, which search already
+	// returns — an IMDb id costs no extra request.
+	RemoteIDs []struct {
+		ID         string `json:"id"`
+		SourceName string `json:"sourceName"`
+	} `json:"remote_ids"`
+}
+
+// IMDbID is the record's IMDb id from the ids search already returned, or ""
+// when TVDB knows none.
+func (r SearchResult) IMDbID() string {
+	for _, remote := range r.RemoteIDs {
+		if id := strings.TrimSpace(remote.ID); strings.HasPrefix(id, "tt") {
+			return id
+		}
+	}
+	return ""
+}
+
+// SearchStatus is a search row's status, from either spelling TVDB uses.
+type SearchStatus struct {
+	Name string
+}
+
+func (s *SearchStatus) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		s.Name = name
+		return nil
+	}
+	var object struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &object); err == nil {
+		s.Name = object.Name
+	}
+	return nil
+}
+
+// Unreleased reports that TVDB says the record has not aired yet. It is a
+// statement, unlike an absent date, which is only an absence.
+func (r SearchResult) Unreleased() bool {
+	return strings.EqualFold(strings.TrimSpace(r.Status.Name), "upcoming")
+}
+
+// TMDBID is the record's TMDB id from the same ids, or 0 when TVDB knows
+// none. It is what reaches TMDB for a record that has no IMDb id at all.
+func (r SearchResult) TMDBID() int {
+	for _, remote := range r.RemoteIDs {
+		if !strings.Contains(strings.ToLower(remote.SourceName), "themoviedb") {
+			continue
+		}
+		if id, err := strconv.Atoi(strings.TrimSpace(remote.ID)); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
 }
 
 type searchResponse struct {

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { PasswordInput } from "@/components/ui/password-input"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Slider } from "@/components/ui/slider"
 import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { ProfileManager } from "@/components/ProfileManager"
 import { SortableList, SortableRow } from "@/components/SortableList"
@@ -16,6 +17,11 @@ import { Check, ChevronRight, Clapperboard, Info, KeyRound, Link2, Loader2, Penc
 import { apiFetch } from "@/api"
 import { nameKey, usageByName } from "@/lib/usage"
 import { cn, selectClass } from "@/lib/utils"
+
+// Mirrors config.DefaultUnreleasedWindowDays / MaxUnreleasedWindowDays: the
+// server clamps to the same range, and an unset field means the default.
+const DEFAULT_UNRELEASED_WINDOW_DAYS = 30
+const MAX_UNRELEASED_WINDOW_DAYS = 365
 
 const PROVIDER_LABELS = {
   tmdb: "TMDB",
@@ -46,6 +52,13 @@ const EXTERNAL_SOURCE_LABELS = {
   tmdb_list: "TMDB",
   mdblist: "MDBList",
   letterboxd: "Letterboxd",
+}
+
+// isSourceURL decides whether what was typed into the catalog search is a
+// source to fetch rather than text to filter by. Anything http(s) is a source:
+// no catalog name contains a scheme.
+function isSourceURL(value) {
+  return /^https?:\/\/\S+$/i.test(String(value).trim())
 }
 
 function externalSourceLabel(source) {
@@ -185,9 +198,8 @@ function CatalogBadges({ def }) {
 function MetadataProfileEditor({ draft, onChange, registry, registryError, certOptions, simklCard }) {
   const [addOpen, setAddOpen] = useState(false)
   const [query, setQuery] = useState("")
-  const [sourceOpen, setSourceOpen] = useState(false)
-  const [sourceURL, setSourceURL] = useState("")
   const [sourcePreview, setSourcePreview] = useState(null)
+  const [knownSourceURLs, setKnownSourceURLs] = useState(() => new Set())
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState("")
   const [editingExternalID, setEditingExternalID] = useState(null)
@@ -228,6 +240,22 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   }, [available, query])
 
   const capped = Boolean(draft.max_certification)
+  const unreleasedWindow = Number.isInteger(draft.unreleased_window_days) ? draft.unreleased_window_days : DEFAULT_UNRELEASED_WINDOW_DAYS
+
+  // The search box doubles as the source field: anything that parses as an
+  // http(s) URL is a source to test rather than text to filter by.
+  const sourceURL = isSourceURL(query) ? query.trim() : ""
+  // Sources as of the last edit to the search box, not as of this render:
+  // adding a row from a freshly pasted source would otherwise make the
+  // profile contain it and the warning fire on the source being added.
+  const sourceAlreadyAdded = Boolean(sourceURL) && knownSourceURLs.has(sourceURL)
+
+  const setSearch = (value) => {
+    setQuery(value)
+    setSourcePreview(null)
+    setSourceError("")
+    setKnownSourceURLs(new Set(externalRows.map((row) => row.manifest_url)))
+  }
 
   const inspectSource = async () => {
     setSourceLoading(true)
@@ -247,14 +275,14 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
   }
 
   const addExternalCatalog = (catalog) => {
-    const sourceKey = sourceURL.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
+    const sourceKey = sourceURL.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-48)
     const remoteKey = String(catalog.remote_id || "catalog").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "catalog"
     const next = [...externalRows, {
       id: `external.${sourceKey}.${catalog.remote_type}.${remoteKey}`,
       name: catalog.name,
       kind: sourcePreview?.kind || "",
-      source_label: EXTERNAL_SOURCE_LABELS[sourcePreview?.kind] || sourcePreview?.name || externalSourceLabel({ kind: sourcePreview?.kind, manifest_url: sourceURL.trim() }),
-      manifest_url: sourceURL.trim(),
+      source_label: EXTERNAL_SOURCE_LABELS[sourcePreview?.kind] || sourcePreview?.name || externalSourceLabel({ kind: sourcePreview?.kind, manifest_url: sourceURL }),
+      manifest_url: sourceURL,
       remote_type: catalog.remote_type,
       remote_id: catalog.remote_id,
       supports_skip: catalog.supports_skip !== false,
@@ -291,7 +319,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                 content type, independent of these rows.
               </CardDescription>
             </div>
-            <Button size="sm" onClick={() => { setQuery(""); setAddOpen(true) }} disabled={available.length === 0}>
+            <Button size="sm" onClick={() => { setSearch(""); setAddOpen(true) }}>
               <Plus className="mr-2 h-4 w-4" /> Add catalog
             </Button>
           </div>
@@ -305,7 +333,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               <p className="mt-1 text-xs text-muted-foreground">
                 Streams on this profile still get posters, episode metadata and search, but no browse rows.
               </p>
-              <Button size="sm" className="mt-3" onClick={() => { setQuery(""); setAddOpen(true) }}>
+              <Button size="sm" className="mt-3" onClick={() => { setSearch(""); setAddOpen(true) }}>
                 <Plus className="mr-2 h-4 w-4" /> Add catalog
               </Button>
             </div>
@@ -366,6 +394,58 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
               </div>
             </SortableList>
           )}
+          <div className="mt-4 space-y-4 border-t border-border/60 pt-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <Label htmlFor="metadata-hide-incomplete" className="text-sm">Hide content with insufficient metadata</Label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Drop rows no source could describe — no artwork, nothing to render. These are the duplicate
+                  and placeholder records a provider has never filled in. Checked only after every source in
+                  the priority list has had its turn, and never applied to catalog sources you pasted yourself.
+                </p>
+              </div>
+              <Switch
+                id="metadata-hide-incomplete"
+                className="mt-0.5 shrink-0"
+                checked={draft.hide_incomplete_metadata !== false}
+                onCheckedChange={(value) => {
+                  const next = { ...draft }
+                  if (value) delete next.hide_incomplete_metadata
+                  else next.hide_incomplete_metadata = false
+                  onChange(next)
+                }}
+              />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                <Label htmlFor="metadata-unreleased-window" className="text-sm">Show unreleased content up to</Label>
+                <span className="text-sm tabular-nums text-muted-foreground">
+                  {unreleasedWindow === 0 ? "Released only" : unreleasedWindow === MAX_UNRELEASED_WINDOW_DAYS ? "Everything upcoming" : `${unreleasedWindow} days out`}
+                </span>
+              </div>
+              <Slider
+                id="metadata-unreleased-window"
+                className="mt-3"
+                min={0}
+                max={MAX_UNRELEASED_WINDOW_DAYS}
+                step={5}
+                value={[unreleasedWindow]}
+                onValueChange={([value]) => {
+                  const next = { ...draft }
+                  if (value === DEFAULT_UNRELEASED_WINDOW_DAYS) delete next.unreleased_window_days
+                  else next.unreleased_window_days = value
+                  onChange(next)
+                }}
+                aria-label="Show unreleased content up to"
+              />
+              <p className="mt-2 text-xs text-muted-foreground">
+                Applies to catalog rows and search results: a title scheduled further out than this is hidden,
+                and so is one a source calls upcoming without saying when. Titles whose source publishes no
+                date and no such status are always shown — that is missing data, not a distant release. At the
+                far end nothing upcoming is hidden.
+              </p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -532,81 +612,84 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
       {simklCard}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-w-lg p-4 sm:p-6">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[85vh] max-w-xl flex-col overflow-hidden p-4 sm:p-6">
+          <DialogHeader className="min-w-0">
             <DialogTitle>Add catalog</DialogTitle>
-            <DialogDescription>Catalogs already on the profile are hidden from the results.</DialogDescription>
+            <DialogDescription>
+              Search the built-in catalogs, or paste a public Stremio manifest, TMDB, MDBList or Letterboxd
+              list URL to add your own. Catalogs already on the profile are hidden. Browse rows only — never
+              external search, streams, subtitles or credentials.
+            </DialogDescription>
           </DialogHeader>
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               autoFocus
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name, provider or type…"
-              className="h-9 pl-8"
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && sourceURL && !sourceLoading) inspectSource() }}
+              placeholder="Search by name, provider or type — or paste a manifest or list URL…"
+              className={cn("h-9 pl-8", sourceURL && "font-mono text-xs")}
             />
           </div>
-          <Button type="button" variant="outline" size="sm" className="w-full" onClick={() => { setSourceURL(""); setSourcePreview(null); setSourceError(""); setSourceOpen(true); setAddOpen(false) }}>
-            <Link2 className="mr-2 h-4 w-4" /> Add source or public list URL
-          </Button>
-          <div className="max-h-72 space-y-1 overflow-y-auto">
-            {filtered.length === 0 ? (
-              <p className="px-1 py-4 text-center text-sm text-muted-foreground">
-                {available.length === 0 ? "Every catalog is already added." : "No catalogs match."}
-              </p>
-            ) : (
-              filtered.map((def) => (
-                <button
-                  key={def.id}
-                  type="button"
-                  className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40"
-                  onClick={() => setRows([...rows, def.id])}
-                >
-                  <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="truncate text-sm">{def.name}</span>
-                    <CatalogBadges def={def} />
-                  </span>
-                  <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </button>
-              ))
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={sourceOpen} onOpenChange={setSourceOpen}>
-        <DialogContent className="max-w-xl p-4 sm:p-6">
-          <DialogHeader>
-            <DialogTitle>Add catalog source</DialogTitle>
-            <DialogDescription>Paste a public Stremio manifest URL, public TMDB/MDBList/Letterboxd list URL. StreamNZB imports browse catalogs only — never external search, streams, subtitles or credentials.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1.5">
-            <Label htmlFor="catalog-source-url" className="text-sm">Source or list URL</Label>
-            <div className="flex gap-2">
-              <Input id="catalog-source-url" autoFocus value={sourceURL} onChange={(e) => setSourceURL(e.target.value)} placeholder="…/manifest.json, TMDB/MDBList URL, or letterboxd.com/…/list/…" className="h-9 font-mono text-xs" />
-              <Button type="button" size="sm" onClick={inspectSource} disabled={!sourceURL.trim() || sourceLoading}>
-                {sourceLoading ? <><Loader2 className="h-4 w-4 animate-spin" /> Checking…</> : "Check source"}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">Supported now: public Stremio manifests, TMDB lists, MDBList lists, and Letterboxd film lists. More list sites are added only after a real fetch test.</p>
-          </div>
-          {sourceError && <p className="text-sm text-destructive">{sourceError}</p>}
-          {sourcePreview && (
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
-              {sourcePreview.warnings?.length > 0 && (
-                <p className="text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
-              )}
-              <div className="max-h-72 space-y-1 overflow-y-auto">
-                {(sourcePreview.catalogs || []).map((catalog) => {
-                  const alreadyAdded = externalRows.some((row) => row.manifest_url === sourceURL.trim() && row.remote_type === catalog.remote_type && row.remote_id === catalog.remote_id)
-                  return <button key={`${catalog.remote_type}/${catalog.remote_id}`} type="button" disabled={alreadyAdded} onClick={() => addExternalCatalog(catalog)} className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50">
-                    <span className="min-w-0"><span className="block truncate text-sm">{catalog.name}</span><span className="text-xs text-muted-foreground">{catalog.type} · tested {catalog.row_count} rows</span></span>
-                    {alreadyAdded ? <Check className="h-4 w-4 text-muted-foreground" /> : <Plus className="h-4 w-4 text-muted-foreground" />}
-                  </button>
-                })}
+          {sourceURL ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" className="shrink-0" onClick={inspectSource} disabled={sourceLoading}>
+                  {sourceLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking…</> : <><Link2 className="mr-2 h-4 w-4" /> Check source</>}
+                </Button>
+                <p className="min-w-[12rem] flex-1 text-xs text-muted-foreground">
+                  Supported: public Stremio manifests, TMDB lists, MDBList lists, and Letterboxd film lists.
+                </p>
               </div>
+              {sourceAlreadyAdded && (
+                <p className="flex min-w-0 items-start gap-2 text-xs text-amber-500">
+                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  This source is already added to the profile. Checking it again lists its rows, with the ones
+                  you already have marked.
+                </p>
+              )}
+              {sourceError && <p className="text-sm text-destructive">{sourceError}</p>}
+              {sourcePreview && (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+                  <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
+                  {sourcePreview.warnings?.length > 0 && (
+                    <p className="max-h-24 overflow-y-auto break-words text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
+                  )}
+                  <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+                    {(sourcePreview.catalogs || []).map((catalog) => {
+                      const alreadyAdded = externalRows.some((row) => row.manifest_url === sourceURL && row.remote_type === catalog.remote_type && row.remote_id === catalog.remote_id)
+                      return <button key={`${catalog.remote_type}/${catalog.remote_id}`} type="button" disabled={alreadyAdded} onClick={() => addExternalCatalog(catalog)} className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50">
+                        <span className="min-w-0"><span className="block truncate text-sm">{catalog.name}</span><span className="text-xs text-muted-foreground">{catalog.type} · {catalog.row_count} rows on its first page</span></span>
+                        {alreadyAdded ? <Check className="h-4 w-4 text-muted-foreground" /> : <Plus className="h-4 w-4 text-muted-foreground" />}
+                      </button>
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="min-h-0 min-w-0 flex-1 space-y-1 overflow-y-auto">
+              {filtered.length === 0 ? (
+                <p className="px-1 py-4 text-center text-sm text-muted-foreground">
+                  {available.length === 0 ? "Every catalog is already added." : "No catalogs match. Paste a manifest or list URL to add a source of your own."}
+                </p>
+              ) : (
+                filtered.map((def) => (
+                  <button
+                    key={def.id}
+                    type="button"
+                    className="flex w-full items-center justify-between gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/40"
+                    onClick={() => setRows([...rows, def.id])}
+                  >
+                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="truncate text-sm">{def.name}</span>
+                      <CatalogBadges def={def} />
+                    </span>
+                    <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
+                ))
+              )}
             </div>
           )}
         </DialogContent>

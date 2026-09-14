@@ -101,34 +101,93 @@ var catalogRegistry = []CatalogDef{
 	{ID: "streamnzb.because-you-watched.series", Type: "series", Name: "Because You Watched", Provider: "local", Kind: "because-you-watched", SupportsSkip: true},
 }
 
-// searchCatalogs are the hidden per-type search carriers. The Stremio
-// protocol has no standalone search resource — search rides catalogs — so
-// these declare their search extra as REQUIRED, which tells clients to use
-// them for search but never render them as board rows. One per content type:
-// each declaring catalog adds a separate row on the client's search screen,
-// and search results come from the provider's general search endpoint, not
-// from any browse listing. Kept out of catalogRegistry so they never appear
-// in the Metadata page, profile toggles, or cross-catalog dedup.
+// searchCatalogs is the fallback set of hidden per-type search carriers: the
+// ones a request with no profile behind it resolves to. The Stremio protocol
+// has no standalone search resource — search rides catalogs — so these
+// declare their search extra as REQUIRED, which tells clients to use them for
+// search but never render them as board rows. Kept out of catalogRegistry so
+// they never appear in the Metadata page, profile toggles, or cross-catalog
+// dedup.
+//
+// Which source actually carries a type's search is the profile's business,
+// not this list's: see searchCatalogDefs.
 var searchCatalogs = []CatalogDef{
-	{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
-	{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
+	searchCarrier("movie", defaultMovieSearchProvider),
+	searchCarrier("series", defaultSeriesSearchProvider),
+	searchCarrier("anime", defaultAnimeSearchProvider),
 }
 
-// searchCatalogDefs gives anime exactly one discovery source: whichever source
-// the profile lists first. The rest of its order is intentionally not a second
-// result set; a lower-priority source is consulted only when the leading one
-// cannot return a viable match for a given query.
+// The provider each type falls back to when no profile is bound. They match
+// the head of each media type's default priority list.
+const (
+	defaultMovieSearchProvider  = "tmdb"
+	defaultSeriesSearchProvider = "tvdb"
+	defaultAnimeSearchProvider  = "kitsu"
+)
+
+// searchCarrier builds one type's hidden carrier. The id encodes the source,
+// so a profile that reorders its sources addresses a different carrier and
+// clients re-resolve it from the manifest rather than replaying a cached
+// row from the previous source.
+func searchCarrier(contentType, provider string) CatalogDef {
+	name := "Search Series"
+	switch contentType {
+	case "movie":
+		name = "Search Movies"
+	case "anime":
+		name = "Search Anime"
+	}
+	return CatalogDef{ID: provider + ".search." + contentType, Type: contentType, Name: name, Provider: provider, Kind: "search", SupportsSearch: true}
+}
+
+// searchCatalogDefs gives every media type exactly one discovery source:
+// whichever source the profile lists first for that type. The rest of the
+// order is not a second result set — a lower-ranked source is consulted only
+// when the leading one cannot return a viable match for a query (see
+// searchCatalog).
+//
+// This is what makes the Sources priority list mean the same thing in search
+// as it already means on title pages: rank TVDB above TMDB for series and a
+// series search is answered from TVDB, including the records TMDB has never
+// populated.
 func searchCatalogDefs(profile *config.MetadataProfileConfig) []CatalogDef {
-	defs := make([]CatalogDef, len(searchCatalogs), len(searchCatalogs)+1)
-	copy(defs, searchCatalogs)
-	primary := "kitsu"
-	if profile != nil {
-		primary = profile.EffectiveAnimeMetaSource()
+	if profile == nil {
+		defs := make([]CatalogDef, len(searchCatalogs))
+		copy(defs, searchCatalogs)
+		return defs
 	}
-	if primary == "tvdb" {
-		return append(defs, CatalogDef{ID: "tvdb.search.anime", Type: "anime", Name: "Search Anime", Provider: "tvdb", Kind: "search", SupportsSearch: true})
+	return []CatalogDef{
+		searchCarrier("movie", profile.EffectiveMovieMetaSources()[0]),
+		searchCarrier("series", profile.EffectiveSeriesMetaSources()[0]),
+		searchCarrier("anime", profile.EffectiveAnimeMetaSources()[0]),
 	}
-	return append(defs, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true})
+}
+
+// searchSources is a type's sources in priority order: the carrier's own
+// provider first, then the fallbacks a failed or empty search moves on to.
+func searchSources(profile *config.MetadataProfileConfig, contentType string) []string {
+	switch contentType {
+	case "movie":
+		return profile.EffectiveMovieMetaSources()
+	case "anime":
+		return profile.EffectiveAnimeMetaSources()
+	default:
+		return profile.EffectiveSeriesMetaSources()
+	}
+}
+
+// AllSearchCatalogs is every carrier any profile can resolve to. Callers that
+// decode a catalog id before the requesting profile is known (the Jellyfin
+// view ids) need the whole set; a request is still only served by the carrier
+// the profile actually selects.
+func AllSearchCatalogs() []CatalogDef {
+	var defs []CatalogDef
+	for _, contentType := range []string{"movie", "series", "anime"} {
+		for _, provider := range config.MetaSourceOptions(contentType) {
+			defs = append(defs, searchCarrier(contentType, provider))
+		}
+	}
+	return defs
 }
 
 func searchCatalogDefByID(profile *config.MetadataProfileConfig, id string) (CatalogDef, bool) {

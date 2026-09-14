@@ -27,8 +27,8 @@ func searchStubTMDB(t *testing.T) (*tmdb.Client, *int64) {
 		switch r.URL.Path {
 		case "/search/tv":
 			fmt.Fprint(w, `{"page":1,"total_pages":1,"total_results":2,"results":[
-				{"id":88046,"name":"Fire Force"},
-				{"id":900,"name":"The Making of Fire Force"}]}`)
+				{"id":88046,"name":"Fire Force","poster_path":"/ff.jpg"},
+				{"id":900,"name":"The Making of Fire Force","poster_path":"/mff.jpg"}]}`)
 		case "/tv/88046/external_ids":
 			fmt.Fprint(w, `{"imdb_id":"tt9307686"}`)
 		default:
@@ -48,8 +48,8 @@ func searchStubKitsu(t *testing.T) *kitsu.Client {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data":[
-			{"id":"49016","attributes":{"canonicalTitle":"Enen no Shouboutai: San no Shou Part 2","titles":{"en":"Fire Force Season 3 Part 2"}}},
-			{"id":"51000","attributes":{"canonicalTitle":"Enen no Shouboutai: Yon no Shou","titles":{"en":"Fire Force Season 4"}}}]}`)
+			{"id":"49016","attributes":{"canonicalTitle":"Enen no Shouboutai: San no Shou Part 2","titles":{"en":"Fire Force Season 3 Part 2"},"posterImage":{"medium":"https://kitsu/49016.jpg"}}},
+			{"id":"51000","attributes":{"canonicalTitle":"Enen no Shouboutai: Yon no Shou","titles":{"en":"Fire Force Season 4"},"posterImage":{"medium":"https://kitsu/51000.jpg"}}}]}`)
 	}))
 	t.Cleanup(ts.Close)
 	c := kitsu.NewClient(ts.Client())
@@ -75,7 +75,9 @@ func TestSeriesSearchDropsWhatTheAnimeCarrierAlreadyServes(t *testing.T) {
 	tmdbClient, _ := searchStubTMDB(t)
 	srv := &Server{tmdbClient: tmdbClient, kitsuClient: searchStubKitsu(t), animeLists: animeListsStore(t)}
 
-	profile := &config.MetadataProfileConfig{}
+	// TMDB leads series here, so the carrier under test is TMDB's; the anime
+	// carrier is Kitsu by default.
+	profile := &config.MetadataProfileConfig{SeriesSources: []string{"tmdb"}}
 	def, ok := searchCatalogDefByID(profile, "tmdb.search.series")
 	if !ok {
 		t.Fatal("tmdb.search.series missing from the search carriers")
@@ -116,12 +118,10 @@ func TestAnimeSearchKeepsEveryCourAndNeverFetchesTheSeriesCarrier(t *testing.T) 
 // Which carrier wins is the profile's metadata priority for the media type,
 // not a hardcoded provider.
 func TestSearchCarrierOutranksFollowsTheAnimePriorityList(t *testing.T) {
-	series, ok := searchCatalogDefByID(&config.MetadataProfileConfig{}, "tmdb.search.series")
-	if !ok {
-		t.Fatal("tmdb.search.series missing from the search carriers")
-	}
-	kitsuAnime := CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu"}
-	tvdbAnime := CatalogDef{ID: "tvdb.search.anime", Type: "anime", Provider: "tvdb"}
+	series := searchCarrier("series", "tmdb")
+	tvdbSeries := searchCarrier("series", "tvdb")
+	kitsuAnime := searchCarrier("anime", "kitsu")
+	tvdbAnime := searchCarrier("anime", "tvdb")
 
 	for _, tc := range []struct {
 		name    string
@@ -134,6 +134,11 @@ func TestSearchCarrierOutranksFollowsTheAnimePriorityList(t *testing.T) {
 		{"tvdb first beats the series carrier", &config.MetadataProfileConfig{AnimeSources: []string{"tvdb", "kitsu"}}, tvdbAnime, series, true},
 		{"the series carrier never beats an anime source", &config.MetadataProfileConfig{AnimeSources: []string{"kitsu", "tvdb"}}, series, kitsuAnime, false},
 		{"carriers of the same type never collide", &config.MetadataProfileConfig{}, kitsuAnime, tvdbAnime, false},
+		// One source leading both anime and series ranks equally against
+		// itself; without a tie-break the same show came back twice, once per
+		// carrier.
+		{"one source carrying both types gives anime to the anime carrier", &config.MetadataProfileConfig{AnimeSources: []string{"tvdb", "kitsu"}}, tvdbAnime, tvdbSeries, true},
+		{"...and never the other way round", &config.MetadataProfileConfig{AnimeSources: []string{"tvdb", "kitsu"}}, tvdbSeries, tvdbAnime, false},
 	} {
 		if got := searchCarrierOutranks(tc.profile, tc.def, tc.current); got != tc.want {
 			t.Errorf("%s: searchCarrierOutranks = %v, want %v", tc.name, got, tc.want)
@@ -203,10 +208,7 @@ func TestTMDBSearchRequestsTheProfileLanguage(t *testing.T) {
 	client.BaseURL = ts.URL
 	srv := &Server{tmdbClient: client}
 
-	def, ok := searchCatalogDefByID(&config.MetadataProfileConfig{}, "tmdb.search.series")
-	if !ok {
-		t.Fatal("tmdb.search.series missing from the search carriers")
-	}
+	def := searchCarrier("series", "tmdb")
 	for _, tc := range []struct{ language, want string }{
 		{"fi-FI", "fi-FI"},
 		// English resolves to no parameter at all, keeping the default
@@ -214,7 +216,7 @@ func TestTMDBSearchRequestsTheProfileLanguage(t *testing.T) {
 		{"en-US", ""},
 		{"", ""},
 	} {
-		profile := &config.MetadataProfileConfig{Language: tc.language}
+		profile := &config.MetadataProfileConfig{Language: tc.language, SeriesSources: []string{"tmdb"}}
 		if _, err := srv.tmdbCatalog(context.Background(), def, catalogRequest{Type: "series", ID: def.ID, Search: "solo leveling", Profile: profile}); err != nil {
 			t.Fatalf("language %q: %v", tc.language, err)
 		}

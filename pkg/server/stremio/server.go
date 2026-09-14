@@ -60,7 +60,10 @@ type Server struct {
 	animeLists           *animelists.Store
 	seadexClient         *seadex.Client
 	cinemetaClient       *cinemeta.Client
-	streamManager        *auth.StreamManager
+	// overlayCache remembers which titles the profile's poster overlay
+	// service actually has artwork for.
+	overlayCache  *metacache.Cache
+	streamManager *auth.StreamManager
 	// Caches and registries keyed by something other than a session. Anything
 	// that *is* per-session lives on the session itself (see once_keys.go):
 	// session IDs are reused slot paths, so a map out here needed a goroutine
@@ -170,6 +173,7 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		animeLists:           animelists.GetStore(opts.AttemptRecorder.AnimeMappingStore()),
 		seadexClient:         seadex.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "seadex")),
 		cinemetaClient:       cinemeta.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "cinemeta")),
+		overlayCache:         metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "posteroverlay"),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),

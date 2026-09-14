@@ -1,6 +1,8 @@
 package stremio
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -306,10 +308,27 @@ func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
 
 // Overlay services key on IMDb ids, so kitsu: rows resolve through the
 // series-level mapping; unmapped anime and non-tt fallbacks keep their art.
+// The service covers the popular catalogue and no more, so a title it has
+// never heard of has to keep the artwork its source gave it — substituting
+// an overlay URL that 404s is what rendered such a row as a blank tile.
 func TestApplyPosterOverlaysMapsKitsuRows(t *testing.T) {
+	overlays := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The overlay service knows Shawshank; it has never heard of the
+		// anime the kitsu row maps onto.
+		if strings.Contains(r.URL.Path, "tt0111161") {
+			w.Header().Set("Content-Type", "image/webp")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(overlays.Close)
+	previous := externalHTTPClient
+	externalHTTPClient = func([]*net.IPNet) *http.Client { return overlays.Client() }
+	t.Cleanup(func() { externalHTTPClient = previous })
+
 	srv := &Server{animeLists: animeListsStore(t)}
 	profile := &config.MetadataProfileConfig{
-		PosterURLPattern: "https://btttr.cc/poster/imdb/poster-default/{imdb_id}.jpg",
+		PosterURLPattern: overlays.URL + "/poster/imdb/poster-default/{imdb_id}.jpg",
 	}
 	metas := []MetaPreview{
 		{ID: "tt0111161", Poster: "https://image.tmdb.org/t/p/w500/orig.jpg"},
@@ -317,13 +336,15 @@ func TestApplyPosterOverlaysMapsKitsuRows(t *testing.T) {
 		{ID: "kitsu:999999", Poster: "https://kitsu.example/unmapped.jpg"},
 		{ID: "tmdb:278", Poster: "https://image.tmdb.org/t/p/w500/fallback.jpg"},
 	}
-	srv.applyPosterOverlays(profile, metas)
+	srv.applyPosterOverlays(context.Background(), profile, metas)
 
-	if want := "https://btttr.cc/poster/imdb/poster-default/tt0111161.jpg"; metas[0].Poster != want {
+	if want := overlays.URL + "/poster/imdb/poster-default/tt0111161.jpg"; metas[0].Poster != want {
 		t.Errorf("tt row poster = %q, want %q", metas[0].Poster, want)
 	}
-	if want := "https://btttr.cc/poster/imdb/poster-default/tt9307686.jpg"; metas[1].Poster != want {
-		t.Errorf("mapped kitsu row poster = %q, want %q", metas[1].Poster, want)
+	// The mapping resolves kitsu:49016 to tt9307686, which this service does
+	// not have: the row keeps Kitsu's own artwork instead of going blank.
+	if want := "https://kitsu.example/mapped.jpg"; metas[1].Poster != want {
+		t.Errorf("mapped kitsu row poster = %q, want the source artwork %q kept when the overlay has none", metas[1].Poster, want)
 	}
 	if want := "https://kitsu.example/unmapped.jpg"; metas[2].Poster != want {
 		t.Errorf("unmapped kitsu row poster = %q, want untouched %q", metas[2].Poster, want)
@@ -334,7 +355,7 @@ func TestApplyPosterOverlaysMapsKitsuRows(t *testing.T) {
 
 	// Without a pattern nothing is touched (and no lookups happen at all).
 	bare := []MetaPreview{{ID: "tt0111161", Poster: "https://image.tmdb.org/t/p/w500/orig.jpg"}}
-	srv.applyPosterOverlays(&config.MetadataProfileConfig{}, bare)
+	srv.applyPosterOverlays(context.Background(), &config.MetadataProfileConfig{}, bare)
 	if want := "https://image.tmdb.org/t/p/w500/orig.jpg"; bare[0].Poster != want {
 		t.Errorf("pattern-less profile changed poster to %q", bare[0].Poster)
 	}

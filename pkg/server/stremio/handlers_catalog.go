@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +124,13 @@ func InspectExternalManifest(ctx context.Context, rawURL string, allowPrivate []
 				Name       string `json:"name"`
 				IsRequired bool   `json:"isRequired"`
 			} `json:"extra"`
+			// ExtraSupported and ExtraRequired are the older spelling of the
+			// same contract. Plenty of addons still publish only these, and
+			// reading just "extra" made every one of their rows look
+			// unpaged — a saved row that then served its first 20 items and
+			// nothing else.
+			ExtraSupported []string `json:"extraSupported"`
+			ExtraRequired  []string `json:"extraRequired"`
 		} `json:"catalogs"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, externalCatalogMaxBody)).Decode(&manifest); err != nil {
@@ -153,6 +161,12 @@ func InspectExternalManifest(ctx context.Context, rawURL string, allowPrivate []
 				supportsSkip = true
 			}
 		}
+		if slices.Contains(cat.ExtraSupported, "skip") {
+			supportsSkip = true
+		}
+		if slices.Contains(cat.ExtraRequired, "search") {
+			searchOnly = true
+		}
 		if searchOnly {
 			continue
 		}
@@ -182,7 +196,10 @@ func InspectExternalManifest(ctx context.Context, rawURL string, allowPrivate []
 			defer workers.Done()
 			for i := range jobs {
 				candidate := candidates[i]
-				metas, err := externalManifestCatalog(ctx, candidate.def, catalogRequest{Type: candidate.def.Type}, allowPrivate)
+				// The untruncated first response: what the row is worth is how
+				// many rows the source really hands over, not the page size we
+				// serve it in.
+				metas, err := externalManifestCatalogPage(ctx, candidate.def, 0, allowPrivate)
 				if err != nil {
 					results[i].err = err
 					continue
@@ -335,19 +352,112 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 	case req.Search != "" && def.Kind == "search" && len(metas) > 0:
 		metas = filterHigherRankedDuplicates(metas, s.higherRankedSearchKeys(ctx, req.Profile, def, req.Search), s.canonicalKeysFor(def.Type))
 	}
-	s.applyPosterOverlays(req.Profile, metas)
+	if len(metas) > 0 {
+		metas = filterUnreleasedPreviews(metas, req.Profile.EffectiveUnreleasedWindowDays(), time.Now())
+	}
+	if len(metas) > 0 && hidesIncompleteRows(def) && req.Profile.EffectiveHideIncompleteMetadata() {
+		metas = filterIncompletePreviews(metas)
+	}
+	s.applyPosterOverlays(ctx, req.Profile, metas)
 	if metas == nil {
 		metas = []MetaPreview{}
 	}
 	return metas
 }
 
+// hidesIncompleteRows excludes the two kinds of row the filter must never
+// thin. An external row is a list the user chose: apart from making a saved
+// list incomplete, a shortened Stremio page makes Jellyfin clients believe
+// they reached the end of it. A local row is personal — Continue Watching is
+// a title already being played, and a provider hiccup that costs it its
+// poster must not also cost it its place in the row.
+func hidesIncompleteRows(def CatalogDef) bool {
+	return def.Provider != "external" && def.Provider != "local"
+}
+
+// filterIncompletePreviews drops rows that no source could describe. Artwork
+// is the test because it is what a client renders a row as: a row without it
+// is a blank tile in every grid, and the sources only ever leave one that
+// bare for a record nobody has filled in — a duplicate, a placeholder, an
+// announcement with nothing behind it yet. It runs after the search fallback
+// chain and its gap filling, so a row is only dropped once every source the
+// profile ranks has had its turn.
+func filterIncompletePreviews(metas []MetaPreview) []MetaPreview {
+	filtered := metas[:0]
+	for _, preview := range metas {
+		if strings.TrimSpace(preview.Poster) == "" {
+			continue
+		}
+		filtered = append(filtered, preview)
+	}
+	return filtered
+}
+
+// filterUnreleasedPreviews drops rows scheduled further out than the
+// profile's window. A row whose provider published no date is kept: the
+// window exists to keep announcements off the board, and a missing date is
+// missing data, not a release far in the future.
+func filterUnreleasedPreviews(metas []MetaPreview, windowDays int, now time.Time) []MetaPreview {
+	cutoff := now.AddDate(0, 0, windowDays)
+	filtered := metas[:0]
+	for _, preview := range metas {
+		released, known := previewReleaseTime(preview.released)
+		switch {
+		case known && released.After(cutoff):
+			continue
+		case !known && preview.unreleased && windowDays < config.MaxUnreleasedWindowDays:
+			// The source says this has not come out and publishes no date for
+			// it, so nothing can place it inside a window — as opposed to a
+			// row with no date and no such statement, which is missing data
+			// and stays. The far end of the slider means "everything
+			// upcoming" and keeps these too.
+			continue
+		}
+		filtered = append(filtered, preview)
+	}
+	return filtered
+}
+
+// previewReleaseTime reads the date a provider published for a row. Sources
+// give either a full date ("2026-01-07") or a bare year; a bare year is read
+// as its first day, so next year's entries fall outside any window under a
+// year while this year's stay inside it.
+func previewReleaseTime(released string) (time.Time, bool) {
+	released = strings.TrimSpace(released)
+	for _, layout := range []string{time.DateOnly, "2006"} {
+		if parsed, err := time.Parse(layout, released); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func catalogUsesCrossDedup(def CatalogDef) bool {
 	return def.Provider != "external"
 }
 
+// pagesLocally reports whether a catalog can answer a skip out of a response
+// it already knows how to fetch, rather than by asking the source for that
+// page. Manifest rows can: the remote hands over a whole list at once. The
+// list kinds are excluded because they walk their own pages already; the
+// split mirrors buildCatalog's dispatch, where everything else is a manifest
+// (a pasted manifest saves no kind at all).
+func pagesLocally(def CatalogDef) bool {
+	if def.Provider != "external" {
+		return false
+	}
+	switch def.ExternalKind {
+	case "tmdb_list", "mdblist", "letterboxd":
+		return false
+	}
+	return true
+}
+
 func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
-	if req.Skip > 0 && req.Search == "" && !def.SupportsSkip {
+	if def.Kind == "search" {
+		return s.searchCatalog(ctx, def, req)
+	}
+	if req.Skip > 0 && req.Search == "" && !def.SupportsSkip && !pagesLocally(def) {
 		// A catalog without paging has only its first page; answering a
 		// skip with the first page again would repeat it.
 		return nil, nil
@@ -379,6 +489,255 @@ func (s *Server) buildCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		return externalManifestCatalog(ctx, def, req, s.catalogSourceNetworks())
 	}
 	return nil, fmt.Errorf("unknown catalog provider %q", def.Provider)
+}
+
+// searchCatalog answers a search from the profile's priority list for that
+// media type. The leading source is the carrier's own; the rest are consulted
+// only when it cannot answer, which is what the list has always promised on
+// title pages and now means in search too — a series TMDB never populated is
+// served from TVDB when TVDB leads, rather than as a blank row.
+func (s *Server) searchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	sources := searchSources(req.Profile, def.Type)
+	var lastErr error
+	for i, source := range sources {
+		// Only the leading source is owed the request's full budget; a
+		// fallback runs on what is left of it.
+		if i > 0 && ctx.Err() != nil {
+			break
+		}
+		metas, err := s.searchFromSource(ctx, source, def, req)
+		if err != nil {
+			lastErr = err
+		}
+		if err == nil && len(metas) > 0 {
+			s.fillSearchPreviewGaps(ctx, metas, def.Type, sources[i+1:])
+			return metas, nil
+		}
+		if i < len(sources)-1 {
+			logger.Debug("Search source had no answer; trying the next one",
+				"type", def.Type, "source", source, "next", sources[i+1], "search", req.Search, "err", err)
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Server) searchFromSource(ctx context.Context, source string, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	switch source {
+	case "tmdb":
+		return s.tmdbCatalog(ctx, def, req)
+	case "tvdb":
+		if def.Type == "anime" {
+			return s.tvdbAnimeSearchCatalog(ctx, def, req)
+		}
+		return s.tvdbSeriesSearchCatalog(ctx, def, req)
+	case "kitsu":
+		return s.kitsuCatalog(ctx, def, req)
+	case "cinemeta":
+		return s.cinemetaSearchCatalog(ctx, def, req)
+	}
+	return nil, fmt.Errorf("source %q cannot serve a search", source)
+}
+
+// tvdbSeriesSearchCatalog searches TVDB for ordinary series. Unlike the anime
+// carrier it keeps the record's own identity — search already returns the
+// IMDb id, so the row is playable by any other addon the user has installed
+// without a lookup per result.
+func (s *Server) tvdbSeriesSearchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	rt := s.runtime()
+	if rt.tvdbClient == nil {
+		return nil, fmt.Errorf("TVDB client not configured")
+	}
+	// TVDB search answers one page and has no skip; a later page is empty,
+	// not the same twenty again.
+	if req.Skip > 0 {
+		return nil, nil
+	}
+	results, err := rt.tvdbClient.SearchSeries(req.Search)
+	if err != nil {
+		return nil, err
+	}
+	lang3 := tvdb.LanguageToISO3(req.Profile.EffectiveLanguage())
+	previews := make([]MetaPreview, 0, len(results))
+	seen := map[string]bool{}
+	for _, result := range results {
+		title := result.TitleIn(lang3)
+		id := result.IMDbID()
+		if id == "" {
+			if seriesID := result.SeriesID(); seriesID != "" {
+				id = "tvdb:" + seriesID
+			}
+		}
+		if title == "" || id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		preview := MetaPreview{ID: id, Type: def.Type, Name: title, Description: result.Overview, ReleaseInfo: result.Year, released: result.Year, unreleased: result.Unreleased(), tmdbID: result.TMDBID()}
+		if result.ImageURL != "" {
+			preview.Poster = result.ImageURL
+			if !strings.HasPrefix(preview.Poster, "http") {
+				preview.Poster = tvdbArtworkURL + preview.Poster
+			}
+		}
+		previews = append(previews, preview)
+		if len(previews) >= catalogPageSize {
+			break
+		}
+	}
+	if cap, capped := capForProfile(req.Profile); capped {
+		previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
+	}
+	return previews, nil
+}
+
+// cinemetaSearchCatalog searches the public Cinemeta catalog. Every row is
+// IMDb-keyed already, which is the id scheme the rest of the addon prefers.
+func (s *Server) cinemetaSearchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
+	if s.cinemetaClient == nil {
+		return nil, fmt.Errorf("cinemeta client not configured")
+	}
+	if req.Skip > 0 {
+		return nil, nil
+	}
+	results, err := s.cinemetaClient.Search(ctx, def.Type, req.Search)
+	if err != nil {
+		return nil, err
+	}
+	previews := make([]MetaPreview, 0, len(results))
+	for _, result := range results {
+		previews = append(previews, MetaPreview{
+			ID:          result.IMDbID,
+			Type:        def.Type,
+			Name:        result.Name,
+			Poster:      result.Poster,
+			Description: result.Description,
+			ReleaseInfo: result.ReleaseInfo,
+			IMDBRating:  result.IMDBRating,
+			released:    releaseInfoYear(result.ReleaseInfo),
+		})
+		if len(previews) >= catalogPageSize {
+			break
+		}
+	}
+	if cap, capped := capForProfile(req.Profile); capped {
+		previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
+	}
+	return previews, nil
+}
+
+// releaseInfoYear reads the first year out of a "2011-2019" / "2023-" range.
+func releaseInfoYear(releaseInfo string) string {
+	releaseInfo = strings.TrimSpace(releaseInfo)
+	if len(releaseInfo) < 4 {
+		return ""
+	}
+	year := releaseInfo[:4]
+	if _, err := strconv.Atoi(year); err != nil {
+		return ""
+	}
+	return year
+}
+
+// fillSearchPreviewGaps completes rows the winning source left thin, from a
+// source ranked behind it. TVDB search publishes no rating at all, so ranking
+// it first would otherwise cost every row the badge a TMDB row carries. The
+// fill is per-field and never replaces what the winner did publish: the point
+// of ranking a source first is that its answer is the one shown.
+func (s *Server) fillSearchPreviewGaps(ctx context.Context, metas []MetaPreview, contentType string, fallbacks []string) {
+	rt := s.runtime()
+	if rt.tmdbClient == nil || !slices.Contains(fallbacks, "tmdb") {
+		return
+	}
+	sem := make(chan struct{}, externalIDConcurrency)
+	var wg sync.WaitGroup
+	for i := range metas {
+		if metas[i].Poster != "" && metas[i].IMDBRating != "" && metas[i].Description != "" {
+			continue
+		}
+		if (!strings.HasPrefix(metas[i].ID, "tt") && metas[i].tmdbID <= 0) || ctx.Err() != nil {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fill, ok := s.tmdbPreviewFill(metas[i], contentType)
+			if !ok {
+				return
+			}
+			if metas[i].IMDBRating == "" && fill.vote > 0 {
+				metas[i].IMDBRating = fmt.Sprintf("%.1f", fill.vote)
+			}
+			if metas[i].Poster == "" && fill.posterPath != "" {
+				metas[i].Poster = tmdbPosterURL + fill.posterPath
+			}
+			if metas[i].Background == "" && fill.backdropPath != "" {
+				metas[i].Background = tmdbBackdropURL + fill.backdropPath
+			}
+			if metas[i].Description == "" {
+				metas[i].Description = fill.overview
+			}
+			if metas[i].released == "" && fill.date != "" {
+				metas[i].released = fill.date
+				if metas[i].ReleaseInfo == "" {
+					metas[i].ReleaseInfo = fill.date[:4]
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// previewFill is the subset of a TMDB record a thin row can borrow.
+type previewFill struct {
+	overview     string
+	posterPath   string
+	backdropPath string
+	date         string
+	vote         float64
+}
+
+// tmdbPreviewFill reaches TMDB by whichever id the row carries: its IMDb id
+// through find, or the TMDB id its source volunteered. A row identified only
+// as tvdb:N has no find route at all, which is exactly the row most likely to
+// be missing a rating.
+func (s *Server) tmdbPreviewFill(preview MetaPreview, contentType string) (previewFill, bool) {
+	rt := s.runtime()
+	if strings.HasPrefix(preview.ID, "tt") {
+		find, err := rt.tmdbClient.Find(preview.ID, "imdb_id")
+		if err != nil {
+			return previewFill{}, false
+		}
+		res, ok := pickFindResult(find, contentType)
+		if !ok {
+			return previewFill{}, false
+		}
+		return previewFill{overview: res.Overview, posterPath: res.PosterPath, backdropPath: res.BackdropPath, vote: res.VoteAverage, date: firstNonEmptyDate(res.ReleaseDate, res.FirstAirDate)}, true
+	}
+	if preview.tmdbID <= 0 {
+		return previewFill{}, false
+	}
+	if contentType == "movie" {
+		details, err := rt.tmdbClient.GetMovieDetails(preview.tmdbID)
+		if err != nil {
+			return previewFill{}, false
+		}
+		return previewFill{overview: details.Overview, posterPath: details.PosterPath, backdropPath: details.BackdropPath, vote: details.VoteAverage, date: firstNonEmptyDate(details.ReleaseDate)}, true
+	}
+	details, err := rt.tmdbClient.GetTVDetails(preview.tmdbID)
+	if err != nil {
+		return previewFill{}, false
+	}
+	return previewFill{overview: details.Overview, posterPath: details.PosterPath, backdropPath: details.BackdropPath, vote: details.VoteAverage, date: firstNonEmptyDate(details.FirstAirDate)}, true
+}
+
+func firstNonEmptyDate(dates ...string) string {
+	for _, date := range dates {
+		if len(date) >= 4 {
+			return date
+		}
+	}
+	return ""
 }
 
 func (s *Server) letterboxdCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -475,15 +834,28 @@ var externalReleaseDateSuffix = regexp.MustCompile(`\s+\((?:18|19|20)\d{2}(?:-\d
 // from a public HTTPS manifest. It never forwards a search term or any caller
 // credentials, so an external addon cannot become part of StreamNZB search or
 // playback.
+// externalManifestCatalog serves one page of a pasted manifest's row. A
+// remote that declares paging is asked for the skip directly; one that does
+// not is asked once and paged locally, because an addon that answers with its
+// whole list in a single response still has every row past the twentieth —
+// truncating there and refusing later skips was what made a saved source look
+// like a 20-item list.
 func externalManifestCatalog(ctx context.Context, def CatalogDef, req catalogRequest, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
 	if req.Search != "" {
 		return nil, fmt.Errorf("external catalogs do not support search")
 	}
-	metas, err := externalManifestCatalogPage(ctx, def, req.Skip, allowPrivate)
+	remoteSkip, localSkip := req.Skip, 0
+	if !def.SupportsSkip {
+		remoteSkip, localSkip = 0, req.Skip
+	}
+	metas, err := externalManifestCatalogPage(ctx, def, remoteSkip, allowPrivate)
 	if err != nil {
 		return nil, err
 	}
-	return limitCatalogPage(metas), nil
+	if localSkip >= len(metas) {
+		return nil, nil
+	}
+	return limitCatalogPage(metas[localSkip:]), nil
 }
 
 func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, allowPrivate []*net.IPNet) ([]MetaPreview, error) {
@@ -511,8 +883,14 @@ func externalManifestCatalogPage(ctx context.Context, def CatalogDef, skip int, 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("external catalog returned %s", resp.Status)
 	}
+	// Decode only the two fields a pasted row may contribute. Reusing
+	// MetaPreview here meant one addon spelling releaseInfo as a number
+	// (2024, not "2024") failed the whole catalog on a field we never read.
 	var remote struct {
-		Metas []MetaPreview `json:"metas"`
+		Metas []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"metas"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, externalCatalogMaxBody)).Decode(&remote); err != nil {
 		return nil, err
@@ -566,7 +944,10 @@ func (s *Server) catalogSourceNetworks() []*net.IPNet {
 // redirects may not leave HTTPS. allowPrivate carries the operator's
 // CatalogSourceNetworks, which is what makes a self-hosted addon on their own
 // LAN reachable; httpx pools one transport per distinct allowlist.
-func externalHTTPClient(allowPrivate []*net.IPNet) *http.Client {
+// externalHTTPClient is the guarded client every operator-supplied fetch
+// goes through. It is a var so a test can substitute a client that trusts a
+// local TLS stub — the guard itself is covered by its own tests.
+var externalHTTPClient = func(allowPrivate []*net.IPNet) *http.Client {
 	return httpx.GuardedClient(catalogRequestTimeout, allowPrivate)
 }
 
@@ -640,6 +1021,7 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 			if date == "" {
 				date = res.FirstAirDate
 			}
+			preview.released = date
 			if len(date) >= 4 {
 				preview.ReleaseInfo = date[:4]
 			}
@@ -748,11 +1130,11 @@ func (s *Server) tvdbCatalog(ctx context.Context, def CatalogDef, req catalogReq
 		if id == "" {
 			id = fmt.Sprintf("tvdb:%d", listing.ID)
 		}
-		preview := MetaPreview{ID: id, Type: def.Type, Name: listing.Name, Description: listing.Overview, Background: backgrounds[i]}
+		preview := MetaPreview{ID: id, Type: def.Type, Name: listing.Name, Description: listing.Overview, Background: backgrounds[i], released: listing.Year}
 		if listing.Image != "" {
 			preview.Poster = listing.Image
 			if !strings.HasPrefix(preview.Poster, "http") {
-				preview.Poster = "https://artworks.thetvdb.com" + preview.Poster
+				preview.Poster = tvdbArtworkURL + preview.Poster
 			}
 		}
 		previews = append(previews, preview)
@@ -765,15 +1147,18 @@ func (s *Server) tvdbCatalog(ctx context.Context, def CatalogDef, req catalogReq
 // to a playable Kitsu entry; unrelated shows and Kitsu's broad fuzzy matches
 // never leak into the result grid. If TVDB has no usable row, Kitsu is the
 // explicit backup.
+// tvdbAnimeSearchCatalog searches TVDB but answers in Kitsu ids: anime keeps
+// Kitsu's playback identity whichever source describes it. An entry the
+// anime-lists mapping cannot place is skipped, and a query that leaves
+// nothing falls through to the profile's next anime source in searchCatalog.
 func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
 	rt := s.runtime()
 	if rt.tvdbClient == nil {
-		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+		return nil, fmt.Errorf("TVDB client not configured")
 	}
 	results, err := rt.tvdbClient.SearchSeries(req.Search)
 	if err != nil {
-		logger.Debug("TVDB anime search failed; trying Kitsu backup", "search", req.Search, "err", err)
-		return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+		return nil, err
 	}
 	previews := make([]MetaPreview, 0, len(results))
 	seen := map[string]bool{}
@@ -792,18 +1177,15 @@ func (s *Server) tvdbAnimeSearchCatalog(ctx context.Context, def CatalogDef, req
 			continue
 		}
 		seen[id] = true
-		previews = append(previews, MetaPreview{ID: id, Type: "anime", Name: title, Poster: result.ImageURL})
+		previews = append(previews, MetaPreview{ID: id, Type: "anime", Name: title, Poster: result.ImageURL, released: result.Year, unreleased: result.Unreleased()})
 		if len(previews) >= catalogPageSize {
 			break
 		}
 	}
-	if len(previews) > 0 {
-		if cap, capped := capForProfile(req.Profile); capped {
-			previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
-		}
-		return previews, nil
+	if cap, capped := capForProfile(req.Profile); capped {
+		previews = s.filterPreviewsByCertification(ctx, cap, previews, def.Type)
 	}
-	return s.kitsuCatalog(ctx, CatalogDef{ID: "kitsu.search.anime", Type: "anime", Provider: "kitsu", Kind: "search"}, req)
+	return previews, nil
 }
 
 func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
@@ -843,6 +1225,7 @@ func (s *Server) kitsuCatalog(ctx context.Context, def CatalogDef, req catalogRe
 			Poster:      item.PosterImage,
 			Background:  item.CoverImage,
 			Description: item.Synopsis,
+			released:    item.StartDate,
 		})
 	}
 	return previews, nil
@@ -931,19 +1314,85 @@ func (s *Server) simklPreviewID(entry simkl.Entry, contentType string) string {
 // granularity overlay services key on, so every cour of a series shares one
 // overlay poster. tvdb:/tmdb: fallbacks and unmapped anime keep their source
 // artwork.
-func (s *Server) applyPosterOverlays(profile *config.MetadataProfileConfig, metas []MetaPreview) {
+func (s *Server) applyPosterOverlays(ctx context.Context, profile *config.MetadataProfileConfig, metas []MetaPreview) {
 	if profile == nil || strings.TrimSpace(profile.PosterURLPattern) == "" {
 		return
 	}
+	sem := make(chan struct{}, externalIDConcurrency)
+	var wg sync.WaitGroup
 	for i := range metas {
 		id := metas[i].ID
 		if kitsuID, ok := strings.CutPrefix(id, "kitsu:"); ok {
 			id = s.animeSeriesIMDbID(kitsuID)
 		}
-		if overlay := profile.PosterOverlayURL(id); overlay != "" {
-			metas[i].Poster = overlay
+		if profile.PosterOverlayURL(id) == "" {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if overlay := s.overlayPosterFor(ctx, profile, id); overlay != "" {
+				metas[i].Poster = overlay
+			}
+		}(i, id)
+	}
+	wg.Wait()
+}
+
+const (
+	// An overlay service's answer for a title barely changes, and a miss is
+	// worth re-checking sooner than a hit: a poster that does not exist yet
+	// is one somebody may add.
+	overlayHitTTL  = 24 * time.Hour
+	overlayMissTTL = 6 * time.Hour
+)
+
+// overlayPosterFor is the overlay URL for a title, or "" when the overlay
+// service has no artwork for it and the source's own poster should stand.
+// Overlay services cover the popular catalogue, not all of it; substituting
+// blindly turned every title they have never heard of into a blank tile in
+// the client. The answer is cached like any other metadata response, so this
+// costs one HEAD per title per day at most.
+func (s *Server) overlayPosterFor(ctx context.Context, profile *config.MetadataProfileConfig, imdbID string) string {
+	overlay := profile.PosterOverlayURL(imdbID)
+	if overlay == "" {
+		return ""
+	}
+	if s.overlayCache != nil {
+		if body, ok := s.overlayCache.Get(overlay); ok {
+			if string(body) == "1" {
+				return overlay
+			}
+			return ""
 		}
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, overlay, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := externalHTTPClient(s.catalogSourceNetworks()).Do(req)
+	if err != nil {
+		// A transient failure is not evidence the overlay is missing. Keep
+		// the profile's choice and re-check next time rather than caching a
+		// verdict drawn from a network hiccup.
+		logger.Debug("Poster overlay probe failed; using the overlay anyway", "url", overlay, "err", err)
+		return overlay
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		if s.overlayCache != nil {
+			s.overlayCache.Put(overlay, []byte("1"), overlayHitTTL)
+		}
+		return overlay
+	}
+	if s.overlayCache != nil {
+		s.overlayCache.Put(overlay, []byte("0"), overlayMissTTL)
+	}
+	logger.Debug("Poster overlay has no artwork for this title; keeping the source poster",
+		"url", overlay, "status", resp.Status)
+	return ""
 }
 
 // enrichExternalCatalogPreviews gives catalog-only imports the same artwork
@@ -1415,7 +1864,15 @@ func searchCarrierOutranks(profile *config.MetadataProfileConfig, def, current C
 		return false
 	}
 	order := profile.EffectiveAnimeMetaSources()
-	return metaSourceRank(order, def.Provider) < metaSourceRank(order, current.Provider)
+	defRank, currentRank := metaSourceRank(order, def.Provider), metaSourceRank(order, current.Provider)
+	if defRank != currentRank {
+		return defRank < currentRank
+	}
+	// One source carrying both carriers (TVDB leading anime *and* series)
+	// ranks equally against itself, so the media type settles it: an anime
+	// entry belongs to the anime carrier, which is the one keeping Kitsu's
+	// playback ids.
+	return def.Type == "anime"
 }
 
 // metaSourceRank is a provider's position in a priority list; one past the end
