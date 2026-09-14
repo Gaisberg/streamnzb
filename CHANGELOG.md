@@ -1,5 +1,31 @@
 # Changelog
 
+## [6.0.0](https://github.com/Gaisberg/streamnzb/compare/v5.18.0...v6.0.0) (2026-09-14)
+
+
+### Features
+
+* implement jellyfin api translation layer ([396a965](https://github.com/Gaisberg/streamnzb/commit/396a965d48f33a312b85848a3be63922a298e5aa))
+* **metadata:** multiple providers and priority, 3rd party catalog sources, some toggles and sliders etc. ([1b1235b](https://github.com/Gaisberg/streamnzb/commit/1b1235bd145b6e9a032c1f7cf58cdf96f0c7b99f))
+
+
+### Bug Fixes
+
+* **ffprobe:** consecutive ffprobing sometimes resulted in false negative probing results ([396a965](https://github.com/Gaisberg/streamnzb/commit/396a965d48f33a312b85848a3be63922a298e5aa))
+* jellyfin client compatibility, language rules and ffprobe frame counts ([53144c6](https://github.com/Gaisberg/streamnzb/commit/53144c663a9cc84c017f901845bdd5d54d784736))
+* **loader:** scope the segment size estimator to one release ([#285](https://github.com/Gaisberg/streamnzb/issues/285)) ([007e6b5](https://github.com/Gaisberg/streamnzb/commit/007e6b5cd6582edcc3cdbb3ce6b61603b6a66cbc))
+* **newznab:** request the extended attribute set on searches ([399e0d1](https://github.com/Gaisberg/streamnzb/commit/399e0d15de7efd05c580d34bebd72bcb653df3b6))
+* **search:** stop the attempt editor from deleting rows it was asked to edit ([#319](https://github.com/Gaisberg/streamnzb/issues/319)) ([4443b00](https://github.com/Gaisberg/streamnzb/commit/4443b00ca6f2e1d2c21fbe0e53fad8cf465127ce)), closes [#292](https://github.com/Gaisberg/streamnzb/issues/292)
+* **search:** treat season 0 as Specials and stop ignoring short sequel suffixes ([3c69f1e](https://github.com/Gaisberg/streamnzb/commit/3c69f1e846db46009361a123bfb0a2ea0fca8982)), closes [#275](https://github.com/Gaisberg/streamnzb/issues/275) [#276](https://github.com/Gaisberg/streamnzb/issues/276)
+* **stremio:** surface indexer-reported languages so AIOStreams can filter on them ([#286](https://github.com/Gaisberg/streamnzb/issues/286)) ([2b44e49](https://github.com/Gaisberg/streamnzb/commit/2b44e49cf12b3bd149b8128669d55b64138c2871))
+* **tvdb:** request English translations when the display language is English ([#299](https://github.com/Gaisberg/streamnzb/issues/299)) ([eadac32](https://github.com/Gaisberg/streamnzb/commit/eadac321d79f696a6304441ffb1c3b8cf26dc414))
+* various jellyfin api compatability changes  ([#318](https://github.com/Gaisberg/streamnzb/issues/318)) ([1b9c0a4](https://github.com/Gaisberg/streamnzb/commit/1b9c0a4f79f2ef83741635cf031ab9846d997572))
+
+
+### Miscellaneous Chores
+
+* cut 6.0.0 for the jellyfin and metadata work ([bef0e93](https://github.com/Gaisberg/streamnzb/commit/bef0e93536c650933527711661babe90ac017116))
+
 ## [5.18.0](https://github.com/Gaisberg/streamnzb/compare/v5.17.0...v5.18.0) (2026-09-07)
 
 
