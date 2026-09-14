@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"streamnzb/pkg/core/config/pttoptions"
+	"streamnzb/pkg/core/language"
 
 	"github.com/dreulavelle/jhin"
 	jhinparser "github.com/dreulavelle/jhin/parser"
@@ -14,7 +14,7 @@ import (
 // languageAliasPattern matches release-title alias words (e.g. "NORDIC") as whole words,
 // case-insensitively, across common release-name separators (space, dot, underscore, dash).
 var languageAliasPattern = func() *regexp.Regexp {
-	words := pttoptions.LanguageAliasWords()
+	words := language.LanguageAliasWords()
 	parts := make([]string, 0, len(words))
 	for _, w := range words {
 		parts = append(parts, regexp.QuoteMeta(w))
@@ -30,7 +30,7 @@ var languageAliasPattern = func() *regexp.Regexp {
 // language and that the release is subbed, but not that the two are related,
 // so a subtitle-only release reads to it exactly like a dub.
 var subtitleLanguagePattern = func() *regexp.Regexp {
-	words := pttoptions.LanguageNameWords()
+	words := language.LanguageNameWords()
 	parts := make([]string, 0, len(words))
 	for _, w := range words {
 		parts = append(parts, regexp.QuoteMeta(w))
@@ -63,7 +63,7 @@ func SubtitleLanguages(rawTitle string) []string {
 	if len(names) == 0 {
 		return nil
 	}
-	return pttoptions.NormalizeLanguageSlice(names)
+	return language.NormalizeLanguageSlice(names)
 }
 
 // ParsedRelease exposes jhin's full parse output through the embedded
@@ -118,7 +118,7 @@ func FromResult(title string, info *jhin.Result) *ParsedRelease {
 		info = &jhin.Result{}
 	}
 
-	codec := pttoptions.NormalizeCodec(info.Codec)
+	codec := normalizeCodec(info.Codec)
 	if codec == "" && info.Codec != "" {
 		codec = info.Codec
 	}
@@ -167,7 +167,7 @@ func expandLanguageAliases(rawTitle string, parsed *ParsedRelease) {
 			continue
 		}
 		alias := strings.ToLower(strings.TrimSpace(m[1]))
-		codes, ok := pttoptions.LanguageAliases[alias]
+		codes, ok := language.LanguageAliases[alias]
 		if !ok {
 			continue
 		}
@@ -386,4 +386,27 @@ func EffectiveEpisodeSize(size int64, episodic bool, parsed *jhin.Result) (int64
 		return 0, false
 	}
 	return size, true
+}
+
+// normalizeCodec folds the spellings jhin reports a codec under — x264, h264,
+// AVC — into one name per codec, and returns the input untouched when it is
+// none of the known ones.
+func normalizeCodec(codec string) string {
+	c := strings.ToLower(strings.TrimSpace(codec))
+	if c == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(c, "avc") || strings.Contains(c, "h264") || strings.Contains(c, "x264"):
+		return "AVC"
+	case strings.Contains(c, "hevc") || strings.Contains(c, "h265") || strings.Contains(c, "x265"):
+		return "HEVC"
+	case strings.Contains(c, "mpeg") || strings.Contains(c, "mpeg2"):
+		return "MPEG-2"
+	case strings.Contains(c, "divx"):
+		return "DivX"
+	case strings.Contains(c, "xvid"):
+		return "Xvid"
+	}
+	return codec
 }

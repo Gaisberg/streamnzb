@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"streamnzb/pkg/core/config"
-	"streamnzb/pkg/core/config/pttoptions"
+	"streamnzb/pkg/core/language"
 	"streamnzb/pkg/release"
 )
 
@@ -255,7 +255,7 @@ func (i *Item) languageAttribute(name string) []string {
 	if len(values) == 0 {
 		return nil
 	}
-	return pttoptions.NormalizeLanguageSlice(values)
+	return language.NormalizeLanguageSlice(values)
 }
 
 func (i *Item) ReleaseDetailsURL() string {

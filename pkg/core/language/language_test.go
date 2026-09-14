@@ -1,4 +1,4 @@
-package pttoptions
+package language
 
 import "testing"
 
@@ -15,6 +15,16 @@ func TestNormalizeLanguageToCodeAcceptsEveryForm(t *testing.T) {
 		"deu":     "de",
 		"zh-TW":   "zh-tw",
 		"Klingon": "Klingon", // unknown values pass through untouched
+		// Languages no filter offers still have to resolve, or the name an
+		// indexer wrote ends up in a stream's languages beside the codes.
+		"Icelandic": "is",
+		"ice":       "is",
+		"isl":       "is",
+		"IS":        "is",
+		"Faroese":   "fo",
+		"Catalan":   "ca",
+		"Filipino":  "tl",
+		"nob":       "no", // Bokmål is jhin's single Norwegian
 		// NZBgeek qualifies names with a region (AIOStreams issue #1152).
 		// The region survives only where the pipeline distinguishes it.
 		"Arabic (SA)":             "ar",

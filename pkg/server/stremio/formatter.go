@@ -431,6 +431,54 @@ func lastElem(v any) any {
 	return v
 }
 
+// templateStrings unwraps a list value for the set helpers; non-lists yield nil
+// so {{union .Languages .Group}} degrades to one side instead of erroring.
+func templateStrings(v any) []string {
+	switch t := v.(type) {
+	case stringList:
+		return t
+	case []string:
+		return t
+	}
+	return nil
+}
+
+// unionStrings concatenates the lists and drops repeats, keeping first-seen
+// order so {{union .Languages .Subtitles}} lists audio first, then only the
+// subtitle tracks that add something.
+func unionStrings(lists ...[]string) stringList {
+	seen := make(map[string]bool)
+	out := stringList{}
+	for _, list := range lists {
+		for _, s := range list {
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// withoutStrings returns the entries of list that are not in exclude, in
+// order and without repeats.
+func withoutStrings(exclude, list []string) stringList {
+	seen := make(map[string]bool, len(exclude))
+	for _, s := range exclude {
+		seen[s] = true
+	}
+	out := stringList{}
+	for _, s := range list {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 // smallcapsLetters maps a-z to their Unicode small-caps forms (q and x have no
 // dedicated small-caps codepoint; ǫ and x are the conventional stand-ins).
 var smallcapsLetters = []rune("ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ")
@@ -540,6 +588,21 @@ var formatTemplateFuncs = template.FuncMap{
 			return languageFlags(list)
 		}
 		return nil
+	},
+	// union merges lists without repeats and without merges the second list minus
+	// the first, so a language line can show subtitles only where they add a
+	// language: {{join (union .Languages .Subtitles) " · "}} or
+	// {{join (without .Languages .Subtitles) " · "}}. Both read as sets over the
+	// list entries, not the rendered text, like has.
+	"union": func(lists ...any) stringList {
+		parts := make([][]string, 0, len(lists))
+		for _, l := range lists {
+			parts = append(parts, templateStrings(l))
+		}
+		return unionStrings(parts...)
+	},
+	"without": func(exclude, v any) stringList {
+		return withoutStrings(templateStrings(exclude), templateStrings(v))
 	},
 	"hasPrefix": func(prefix string, v any) bool {
 		return strings.HasPrefix(templateText(v), prefix)

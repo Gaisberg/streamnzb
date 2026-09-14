@@ -3,7 +3,7 @@ package ranking
 import (
 	"github.com/dreulavelle/jhin/rank"
 
-	"streamnzb/pkg/core/config/pttoptions"
+	"streamnzb/pkg/core/language"
 )
 
 // languageJudge is the profile's Languages block, compiled the way jhin
@@ -139,7 +139,7 @@ func resultLanguages(r *Result) []string {
 	if r.Candidate.Release != nil {
 		reported = r.Candidate.Release.Languages
 	}
-	codes, _ := pttoptions.ResolveLanguages(r.Candidate.Verdict.Probed.AudioLanguageCodes(), reported, parsed)
+	codes, _ := language.ResolveLanguages(r.Candidate.Verdict.Probed.AudioLanguageCodes(), reported, parsed)
 	return codes
 }
 

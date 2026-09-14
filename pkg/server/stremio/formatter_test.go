@@ -124,6 +124,34 @@ func TestFormatTemplateExtendedHelpers(t *testing.T) {
 	}
 }
 
+// union and without are set operations over list entries so a language line
+// can add the subtitle tracks that bring a new language without repeating the
+// audio ones. Both keep first-seen order and never touch the context slices.
+func TestFormatTemplateSetHelpers(t *testing.T) {
+	ctx := FormatContext{
+		Languages: stringList{"en", "fi"},
+		Subtitles: stringList{"fi", "sv", "en", "sv"},
+		Group:     "FLUX",
+	}
+	cases := map[string]string{
+		`{{join (union .Languages .Subtitles) " · "}}`:                          "en · fi · sv",
+		`{{join (without .Languages .Subtitles) " · "}}`:                        "sv",
+		`{{join (without .Subtitles .Languages) " · "}}`:                        "",
+		`{{join (union .Subtitles) " · "}}`:                                     "fi · sv · en",
+		`{{join (union .Languages .Group) " · "}}`:                              "en · fi",
+		`{{if exists (without .Languages .Subtitles)}}extra{{end}}`:             "extra",
+		`{{if exists (without .Subtitles .Languages)}}extra{{else}}none{{end}}`: "none",
+	}
+	for text, want := range cases {
+		if got := renderFormat(t, text, ctx); got != want {
+			t.Errorf("%s = %q, want %q", text, got, want)
+		}
+	}
+	if got := ctx.Subtitles.String(); got != "fi, sv, en, sv" {
+		t.Errorf("set helper mutated context list: %q", got)
+	}
+}
+
 // Math helpers take the value last like the string helpers, so they chain:
 // subtraction and division read as "sub N from the value", "div the value by
 // N". All of them are total — a zero divisor yields 0 and junk coerces to 0 —

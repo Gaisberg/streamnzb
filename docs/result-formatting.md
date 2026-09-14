@@ -218,6 +218,8 @@ comma-separated text.
 | `length` | `{{if gt (length .Audio) 1}}…{{end}}` | list size / rune count |
 | `sortAsc` / `sortDesc` / `sort` | `{{join (sortAsc .Audio) " · "}}` | sorted copy |
 | `first` / `last` | `{{first .Audio}}` | list edge element |
+| `union` | `{{join (union .Languages .Subtitles) " · "}}` | both lists, repeats dropped, first-seen order |
+| `without` | `{{join (without .Languages .Subtitles) " · "}}` | subtitles not already in languages |
 | `contains` | `{{if contains "DV" .HDR}}…{{end}}` | substring test |
 | `hasPrefix` / `hasSuffix` | `{{if hasPrefix "2160" .Resolution}}…{{end}}` | prefix/suffix test |
 | `add` / `sub` / `mul` / `div` / `mod` | `{{div 100 .Score}}` | integer math on the value |

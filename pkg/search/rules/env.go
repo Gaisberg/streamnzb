@@ -37,7 +37,7 @@ import (
 	"github.com/dreulavelle/jhin/rank"
 	jhinrules "github.com/dreulavelle/jhin/rules"
 
-	"streamnzb/pkg/core/config/pttoptions"
+	"streamnzb/pkg/core/language"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/triage"
@@ -80,7 +80,7 @@ type Env struct {
 	// regularly tagged by only one of the three, and a rule asking for a
 	// language means the release rather than the spelling of its title. The
 	// union never shrinks, because none of the three can prove a language
-	// absent — see pttoptions.ResolveLanguages.
+	// absent — see language.ResolveLanguages.
 	Languages []string
 	// LanguageSource is the strongest account that contributed to Languages:
 	// "measured", "reported", "inferred", or "" for an empty list. It is the
@@ -659,7 +659,7 @@ func applyLanguages(env *Env, rel *release.Release, caps *release.MediaCaps) {
 	if rel != nil {
 		reported = rel.Languages
 	}
-	codes, source := pttoptions.ResolveLanguages(caps.AudioLanguageCodes(), reported, env.Parsed.Languages)
+	codes, source := language.ResolveLanguages(caps.AudioLanguageCodes(), reported, env.Parsed.Languages)
 	env.Languages = codes
 	env.LanguageSource = string(source)
 }
@@ -674,7 +674,7 @@ func applySubtitles(env *Env, rel *release.Release, caps *release.MediaCaps) {
 		reported = rel.Subtitles
 	}
 	inferred := parser.SubtitleLanguages(env.ReleaseName)
-	env.Subtitles = pttoptions.MergeLanguageCodes(inferred, reported, caps.SubtitleLanguageCodes())
+	env.Subtitles = language.MergeLanguageCodes(inferred, reported, caps.SubtitleLanguageCodes())
 }
 
 // applyMerged fills the bare attribute names: what the file measured when it

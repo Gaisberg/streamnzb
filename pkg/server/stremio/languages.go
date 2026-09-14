@@ -3,7 +3,7 @@ package stremio
 import (
 	"strings"
 
-	"streamnzb/pkg/core/config/pttoptions"
+	"streamnzb/pkg/core/language"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 )
@@ -42,7 +42,7 @@ func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease, caps
 	if meta != nil {
 		parsed = meta.Languages
 	}
-	codes, _ := pttoptions.ResolveLanguages(caps.AudioLanguageCodes(), reported, parsed)
+	codes, _ := language.ResolveLanguages(caps.AudioLanguageCodes(), reported, parsed)
 	return codes
 }
 
@@ -58,7 +58,7 @@ func releaseSubtitleCodes(rel *release.Release, meta *parser.ParsedRelease, prob
 	if rel != nil {
 		reported = rel.Subtitles
 	}
-	return pttoptions.MergeLanguageCodes(parsed, reported, probed.SubtitleLanguageCodes())
+	return language.MergeLanguageCodes(parsed, reported, probed.SubtitleLanguageCodes())
 }
 
 // streamMediaInfo is the AIOStreams parsedMediaInfo block for a release, or

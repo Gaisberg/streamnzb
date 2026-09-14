@@ -206,7 +206,7 @@ func TestParseReleaseTitleExpandsLanguageAliases(t *testing.T) {
 			wantAny: []string{"fr"},
 		},
 		{
-			name:  "no alias leaves languages from ptt only",
+			name:  "no alias leaves languages from jhin only",
 			title: "Some.Movie.2024.1080p.BluRay.FRENCH.x264-RG",
 			want:  []string{"fr"},
 		},
