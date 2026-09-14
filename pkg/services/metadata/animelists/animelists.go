@@ -318,6 +318,20 @@ func (s *Store) LookupMAL(malID string) (*Mapping, bool) {
 	return mappingFromRow(row), true
 }
 
+// LookupTVDB resolves a TVDB series id to its canonical Kitsu entry. It lets
+// TVDB drive discovery and metadata without losing Kitsu's episode-local
+// playback ids.
+func (s *Store) LookupTVDB(tvdbID string) (*Mapping, bool) {
+	if s == nil || s.mappings == nil {
+		return nil, false
+	}
+	row, ok := s.mappings.LookupTVDB(tvdbID)
+	if !ok {
+		return nil, false
+	}
+	return mappingFromRow(row), true
+}
+
 func mappingFromRow(row *persistence.AnimeMapping) *Mapping {
 	return &Mapping{
 		KitsuID:       row.KitsuID,

@@ -83,6 +83,22 @@ type MetaPreview struct {
 	// grids show both, and a row without them shows a blank badge.
 	ReleaseInfo string `json:"releaseInfo,omitempty"`
 	IMDBRating  string `json:"imdbRating,omitempty"`
+
+	// tmdbID is the TMDB id a source volunteered alongside its own, kept for
+	// the gap-filling step: a row identified only as tvdb:N has no other way
+	// back to TMDB's rating and artwork.
+	tmdbID int
+
+	// unreleased is a source's explicit statement that the title has not come
+	// out yet, which is not the same as publishing no date: one is a fact
+	// about the title, the other is a gap in the record.
+	unreleased bool
+
+	// released is the full release or first-air date a provider handed over
+	// ("2026-01-07", or a bare year), kept out of the payload because it
+	// exists only for the profile's unreleased-content window. Empty means
+	// the provider published none, which never hides a row.
+	released string
 }
 
 // CatalogResponse is the /catalog/{type}/{id}.json envelope.

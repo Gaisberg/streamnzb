@@ -105,6 +105,14 @@ func (f *fakeCatalog) EnabledCatalogs(*auth.Stream) ([]stremio.CatalogDef, error
 	return f.catalogs, nil
 }
 
+func (f *fakeCatalog) SearchCatalogs(*auth.Stream) []stremio.CatalogDef {
+	return []stremio.CatalogDef{
+		{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
+		{ID: "tmdb.search.series", Type: "series", Name: "Search Series", Provider: "tmdb", Kind: "search", SupportsSearch: true},
+		{ID: "kitsu.search.anime", Type: "anime", Name: "Search Anime", Provider: "kitsu", Kind: "search", SupportsSearch: true},
+	}
+}
+
 func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, search string, skip int) ([]stremio.MetaPreview, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -562,6 +570,61 @@ func TestViewsPageThroughCatalogs(t *testing.T) {
 	}
 }
 
+func TestProfileOwnedCatalogViewPages(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.profile.front-row", Type: "movie", Name: "Profile: Front Row", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 2)
+
+	view := viewID(def.ID)
+	var views queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserViews", ""), &views)
+	found := false
+	for _, item := range views.Items {
+		found = found || (item.ID == view && item.Name == def.Name)
+	}
+	if !found {
+		t.Fatalf("external profile view missing: %+v", views.Items)
+	}
+	var page queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&Limit=20", ""), &page)
+	if len(page.Items) != 2 || page.Items[0].ParentID != view {
+		t.Fatalf("external catalog page: %+v", page)
+	}
+}
+
+func TestExternalCatalogShortFinalPageClosesPaging(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.complete-list", Type: "movie", Name: "Complete List", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 45)
+
+	var result queryResult
+	view := viewID(def.ID)
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+view+"&StartIndex=40&Limit=20", ""), &result)
+	if len(result.Items) != 5 || result.Items[0].Name != "Title 41" {
+		t.Fatalf("external final rows: %+v", result.Items)
+	}
+	if result.TotalRecordCount != 45 {
+		t.Fatalf("external short page total = %d, want 45", result.TotalRecordCount)
+	}
+}
+
+func TestInfuseLatestReturnsFullExternalCatalog(t *testing.T) {
+	f := newFixture()
+	def := stremio.CatalogDef{ID: "external.infuse-list", Type: "movie", Name: "Infuse List", Provider: "external", SupportsSkip: true}
+	f.catalog.catalogs = append(f.catalog.catalogs, def)
+	f.catalog.rows[def.ID] = previews("movie", "tt", 45)
+
+	var latest []*baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/Latest?ParentId="+viewID(def.ID)+"&Limit=20", "",
+		"Authorization", `MediaBrowser Client="Infuse", Device="Apple TV", DeviceId="dev-1", Version="8.5.3", Token="`+testToken+`"`,
+		"User-Agent", "Infuse-Direct/8.5.3"), &latest)
+	if len(latest) != 45 || latest[44].Name != "Title 45" {
+		t.Fatalf("Infuse external latest = %d rows, want complete 45", len(latest))
+	}
+}
+
 func TestMovieDetail(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")
@@ -845,6 +908,20 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	if item.Type != "Series" || !item.IsFolder || item.Status != "Ended" || item.ChildCount == nil || *item.ChildCount != 3 {
 		t.Fatalf("series: %+v", item)
 	}
+	// Infuse reads a series' own MediaSourceCount to decide whether its
+	// quick-play button gets a version-picker chevron, even though that
+	// button plays a specific episode — this addon has no per-episode resume
+	// state, so the series item stands in with the first numbered episode's
+	// sources (S1E1 here, "Pilot"). Like a never-opened movie, a never-opened
+	// series gets one placeholder source and no MediaSourceCount yet (a lone
+	// stand-in must not advertise a version count — see
+	// TestResolveOnOpenAttachesFullPlaylist); the point of this fix is that
+	// MediaSources is no longer empty, and once that episode's real playlist
+	// is cached (resolve-on-open, or after a play), the count follows exactly
+	// as it does for a movie.
+	if len(item.MediaSources) == 0 {
+		t.Fatalf("series item carries no media sources for its quick-play button: %+v", item)
+	}
 	var seasons queryResult
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Seasons?UserId=u", ""), &seasons)
 	if len(seasons.Items) != 3 || seasons.Items[0].Name != "Season 1" || seasons.Items[2].Name != "Specials" || *seasons.Items[0].ChildCount != 2 {
@@ -908,6 +985,65 @@ func TestSeriesSeasonsAndEpisodes(t *testing.T) {
 	}
 	if id, _ := decodeItemID(episodes.Items[0].ID); id.playStremioID() != "kitsu:9" {
 		t.Fatalf("kitsu movie episode plays %q", id.playStremioID())
+	}
+}
+
+// TestSeriesItemGetsVersionPickerFromCachedPlaylist confirms the fix end to
+// end: once the series' first episode has a real cached playlist (however it
+// got there — resolve-on-open or a prior play), the series-level item itself
+// carries the multi-source signal Infuse's quick-play chevron reads, matching
+// a movie in the same state (TestResolveOnOpenAttachesFullPlaylist).
+func TestSeriesItemGetsVersionPickerFromCachedPlaylist(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.cached = &stremio.PlaylistView{Entries: entries}
+
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+series.encode(), ""), &item)
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 3 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("series version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
+	}
+	if len(item.MediaSources) != 3 || item.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("series media sources: %+v", item.MediaSources)
+	}
+}
+
+// TestSeriesResolveOnOpenAttachesFullPlaylist is the series counterpart of
+// TestResolveOnOpenAttachesFullPlaylist: with JellyfinResolveOnOpen on,
+// opening an unplayed series' item page must get the same eager, full
+// candidate list a movie gets, on its first view — not only once someone has
+// separately opened its first episode before. resolveOnOpen's own guard
+// rejects a kindSeries id directly, so this pins that itemByID's kindSeries
+// case calls it with the representative episode's id instead.
+func TestSeriesResolveOnOpenAttachesFullPlaylist(t *testing.T) {
+	f := newFixture()
+	series, _ := itemIDFor("series", "tt0903747")
+	entries := make([]stremio.PlaylistEntry, 3)
+	for i := range entries {
+		entries[i] = stremio.PlaylistEntry{Index: i, Title: fmt.Sprintf("Release.%02d.mkv", i)}
+	}
+	f.catalog.playlist = &stremio.PlaylistView{Entries: entries}
+
+	var item baseItem
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+series.encode(), ""), &item)
+	if len(item.MediaSources) != 1 || item.MediaSourceCount != nil {
+		t.Fatalf("resolve on open off: want 1 stand-in source and no count, got media=%d count=%v", len(item.MediaSources), item.MediaSourceCount)
+	}
+	if calls := f.catalog.playlistCalls; calls != 0 {
+		t.Fatalf("resolve on open off: Playlist called %d times, want 0", calls)
+	}
+
+	f.resolveOnOpen = true
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items/"+series.encode(), ""), &item)
+	if len(item.MediaSources) != 3 || item.MediaSources[0].Name != "Release.00.mkv" {
+		t.Fatalf("resolve on open: want 3 sources in order, got %+v", item.MediaSources)
+	}
+	if item.MediaSourceCount == nil || *item.MediaSourceCount != 3 || item.EnableMediaSourceDisplay == nil || !*item.EnableMediaSourceDisplay {
+		t.Fatalf("series version markers: count=%v display=%v", item.MediaSourceCount, item.EnableMediaSourceDisplay)
 	}
 }
 

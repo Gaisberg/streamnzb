@@ -37,6 +37,9 @@ func (s *Server) applyConfigPatch(patch []byte) (cacheSuffix string, fieldErrors
 		return "", nil, "Invalid config data"
 	}
 	newCfg.AvailNZBMode = config.NormalizeAvailNZBMode(newCfg.AvailNZBMode)
+	for i := range newCfg.MetadataProfiles {
+		newCfg.MetadataProfiles[i].NormalizeSources()
+	}
 
 	config.CopyEnvOverridesFrom(currentCfg, &newCfg)
 	newCfg.AdminPasswordHash = currentCfg.AdminPasswordHash

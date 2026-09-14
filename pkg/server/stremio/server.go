@@ -19,6 +19,7 @@ import (
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/animelists"
+	"streamnzb/pkg/services/metadata/cinemeta"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/metacache"
 	"streamnzb/pkg/services/metadata/seadex"
@@ -58,7 +59,11 @@ type Server struct {
 	tvmazeClient         *tvmaze.Client
 	animeLists           *animelists.Store
 	seadexClient         *seadex.Client
-	streamManager        *auth.StreamManager
+	cinemetaClient       *cinemeta.Client
+	// overlayCache remembers which titles the profile's poster overlay
+	// service actually has artwork for.
+	overlayCache  *metacache.Cache
+	streamManager *auth.StreamManager
 	// Caches and registries keyed by something other than a session. Anything
 	// that *is* per-session lives on the session itself (see once_keys.go):
 	// session IDs are reused slot paths, so a map out here needed a goroutine
@@ -167,6 +172,8 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		tvmazeClient:         tvmaze.NewClient(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "tvmaze")),
 		animeLists:           animelists.GetStore(opts.AttemptRecorder.AnimeMappingStore()),
 		seadexClient:         seadex.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "seadex")),
+		cinemetaClient:       cinemeta.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "cinemeta")),
+		overlayCache:         metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "posteroverlay"),
 		streamManager:        opts.StreamManager,
 		attemptRecorder:      opts.AttemptRecorder,
 		availIndexerStats:    make(map[string]AvailIndexerStats),

@@ -2,17 +2,23 @@ package tmdb
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/services/metadata/metacache"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +29,28 @@ const responseCacheTTL = 24 * time.Hour
 // volatileCacheTTL covers endpoints whose results are expected to change
 // between visits (trending, popular, search listings).
 const volatileCacheTTL = 3 * time.Hour
+
+const publicListPageMaxBody = 4 << 20
+
+// publicListRequestTimeout bounds one public list-page fetch.
+const publicListRequestTimeout = 15 * time.Second
+
+// publicListHTTPClient fetches the public list pages an operator pasted. Those
+// hosts are checked before the request, but a redirect is not: without a guard
+// letterboxd.com could bounce the fetch onto an internal address, so this
+// client refuses any non-public destination and any non-HTTPS redirect. It is
+// a var because that guard deliberately refuses to dial a loopback test
+// server; tests swap it for a plain client.
+var publicListHTTPClient = httpx.GuardedClient(publicListRequestTimeout, nil)
+
+const publicListMaxPages = 100
+
+var publicListItemPattern = regexp.MustCompile(`(?is)<a[^>]*\btitle="([^"]+)"[^>]*\bhref="/(movie|tv)/(\d+)[^"]*"`)
+
+var (
+	mdbListTitlePattern = regexp.MustCompile(`(?is)<title>\s*([^<]+?)\s*,?\s*(?:a list by .+?)?\s*-\s*mdblist\.com\s*</title>`)
+	mdbListItemPattern  = regexp.MustCompile(`(?is)<div\s+class="card"\s+data-media-id="[^"]+"\s+data-mediatype="(?:movie|show)"[^>]*>.*?https://www\.themoviedb\.org/(movie|tv)/(\d+).*?<div\s+class="header\s+movie-title"\s+title="([^"]+)"`)
+)
 
 // Client is shared by every stream; display language is a per-call parameter
 // on the meta-path methods (metadata profiles differ per stream), never
@@ -104,6 +132,11 @@ type Result struct {
 	Overview         string `json:"overview"`
 	ReleaseDate      string `json:"release_date"`
 	FirstAirDate     string `json:"first_air_date"`
+	// Artwork and rating, for filling the gaps a thinner source left in a
+	// catalog row.
+	PosterPath   string  `json:"poster_path"`
+	BackdropPath string  `json:"backdrop_path"`
+	VoteAverage  float64 `json:"vote_average"`
 }
 
 type SearchMultiResponse struct {
@@ -294,6 +327,490 @@ type ListingResponse struct {
 	TotalPages int                 `json:"total_pages"`
 }
 
+// PublicListItem is one title visible on TMDB's public list page. TMDB's
+// documented /list endpoint currently returns an empty results array for
+// public lists despite the page containing entries, so public-list sources
+// deliberately use the public page the user supplied as their source.
+type PublicListItem struct {
+	ID     int
+	IMDbID string
+	Type   string
+	Name   string
+}
+
+// ErrPublicListPageNotFound marks the natural end of a public HTML list.
+// Consumers use it to stop pagination rather than turn a request beyond the
+// final page into a failed catalog response.
+var ErrPublicListPageNotFound = errors.New("public list page not found")
+
+// maxPublicListTitle bounds a scraped name. Letterboxd's longest real list
+// titles are well under this.
+const maxPublicListTitle = 300
+
+var (
+	letterboxdFilmPattern    = regexp.MustCompile(`data-target-link="(/film/[^"]+/)"`)
+	letterboxdOGTitlePattern = regexp.MustCompile(`(?is)<meta[^>]+property="og:title"[^>]+content="([^"]+)"`)
+	// Both title patterns match inside the title element only ([^<] stops at
+	// the closing tag). With a dot they ran on past </title> to the first
+	// "(YYYY)" anywhere in the document, so a list page — whose title carries
+	// no year — captured tens of kilobytes of page source as its name.
+	letterboxdFilmTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*([^<]*?)\s*\(\d{4}\)`)
+	letterboxdPageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>\s*(?:&lrm;|&#x200e;)?\s*([^<]*?)\s*(?:&bull;|•|\|)\s*Letterboxd`)
+	letterboxdIMDbPattern      = regexp.MustCompile(`imdb\.com/title/(tt\d{7,8})`)
+)
+
+func letterboxdTitle(body []byte) string {
+	// Film pages' og:title often includes a tagline, while their document title
+	// holds the canonical year-qualified name. List titles do not match the
+	// film pattern and naturally fall through to og:title.
+	patterns := []*regexp.Regexp{letterboxdFilmTitlePattern, letterboxdOGTitlePattern, letterboxdPageTitlePattern}
+	for _, pattern := range patterns {
+		if m := pattern.FindStringSubmatch(string(body)); len(m) == 2 {
+			title := strings.TrimSpace(html.UnescapeString(m[1]))
+			// html.UnescapeString has already turned &lrm; into U+200E, so
+			// strip the actual directional marks rather than the entity text.
+			title = strings.TrimSpace(strings.TrimLeft(title, "\u200e\u200f"))
+			// A name is a name. Anything page-sized is a pattern that escaped
+			// its element, and belongs nowhere near the catalog editor.
+			if title != "" && len(title) <= maxPublicListTitle {
+				return title
+			}
+		}
+	}
+	return ""
+}
+
+// resolveLetterboxdFilms reads each public film page and pulls out the
+// canonical IMDb id it exposes, preserving list order.
+//
+// Film pages are the public canonical-ID boundary. Fetching them serially made
+// one 100-row Letterboxd page take long enough for Jellyfin clients to abandon
+// the catalog, so this uses a small, polite pool. A film page that 404s is a
+// title removed from Letterboxd — a row with no canonical id, exactly like one
+// whose page carries no IMDb link — and is skipped rather than failing the
+// page: returning it wrapped would hand ErrPublicListPageNotFound to the
+// catalog, which reads that sentinel as "the list ended here" and would
+// silently drop every later page of the list.
+//
+// Any other failure fails the whole page. Never silently change a page's
+// membership between requests: a caller can retry a failed page, but serving a
+// partial one causes duplicate and missing items once the client follows Skip
+// pagination.
+func resolveLetterboxdFilms(ctx context.Context, filmURLs []string) ([]PublicListItem, error) {
+	resolved := make([]PublicListItem, len(filmURLs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	for range min(12, len(filmURLs)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				film, err := fetchPublicHTML(ctx, filmURLs[i])
+				if err != nil {
+					if errors.Is(err, ErrPublicListPageNotFound) {
+						continue
+					}
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("fetch Letterboxd film %s: %w", filmURLs[i], err)
+					}
+					errMu.Unlock()
+					continue
+				}
+				id := letterboxdIMDbPattern.FindStringSubmatch(string(film))
+				name := letterboxdTitle(film)
+				if len(id) == 2 && name != "" {
+					resolved[i] = PublicListItem{IMDbID: id[1], Type: "movie", Name: name}
+				}
+			}
+		}()
+	}
+	for i := range filmURLs {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return resolved, nil
+}
+
+// FetchLetterboxdPage reads a public Letterboxd list page and resolves the
+// IMDb id exposed by each public film page. No account, API key or title guess
+// is used; rows without a canonical IMDb id are omitted.
+func FetchLetterboxdPage(ctx context.Context, rawURL string, pageNumber int) (PublicListPage, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "letterboxd.com" && u.Host != "www.letterboxd.com") || !strings.Contains(u.Path, "/list/") {
+		return PublicListPage{}, fmt.Errorf("invalid public Letterboxd list URL")
+	}
+	if pageNumber > 1 {
+		u.Path = strings.TrimSuffix(u.Path, "/") + "/page/" + strconv.Itoa(pageNumber) + "/"
+	}
+	cacheKey := u.String()
+	if cached, ok := loadPublicListPage(cacheKey); ok {
+		return cached, nil
+	}
+	body, err := fetchPublicHTML(ctx, u.String())
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	out := PublicListPage{Items: []PublicListItem{}}
+	out.Name = letterboxdTitle(body)
+	seen := map[string]bool{}
+	filmURLs := make([]string, 0)
+	for _, m := range letterboxdFilmPattern.FindAllStringSubmatch(string(body), -1) {
+		filmURL := "https://letterboxd.com" + m[1]
+		if seen[filmURL] {
+			continue
+		}
+		seen[filmURL] = true
+		filmURLs = append(filmURLs, filmURL)
+	}
+
+	items, err := resolveLetterboxdFilms(ctx, filmURLs)
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	for _, item := range items {
+		if item.IMDbID != "" {
+			out.Items = append(out.Items, item)
+		}
+	}
+	storePublicListPage(cacheKey, out)
+	return out, nil
+}
+
+const publicHTMLMaxAttempts = 3
+
+// fetchPublicHTML retries the throttling and transient server failures public
+// list sites commonly return. Letterboxd rows depend on every film page being
+// canonical, so a short bounded retry is safer than serving a partial page.
+func fetchPublicHTML(ctx context.Context, rawURL string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < publicHTMLMaxAttempts; attempt++ {
+		body, retryAfter, retry, err := fetchPublicHTMLOnce(ctx, rawURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !retry || attempt == publicHTMLMaxAttempts-1 {
+			break
+		}
+		if retryAfter <= 0 {
+			retryAfter = time.Duration(attempt+1) * 250 * time.Millisecond
+		}
+		timer := time.NewTimer(retryAfter)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func fetchPublicHTMLOnce(ctx context.Context, rawURL string) ([]byte, time.Duration, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := publicListHTTPClient.Do(req)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, 0, false, fmt.Errorf("%w: %s", ErrPublicListPageNotFound, resp.Status)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return nil, publicHTMLRetryAfter(resp.Header.Get("Retry-After")), true, fmt.Errorf("public list returned %s", resp.Status)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, false, fmt.Errorf("public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	return body, 0, false, err
+}
+
+func publicHTMLRetryAfter(raw string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	// A public site can ask for minutes. Keep the configuration request and a
+	// client catalog response bounded; later requests can retry from cache.
+	return min(time.Duration(seconds)*time.Second, 2*time.Second)
+}
+
+// PublicListPage is the title and canonical TMDB rows exposed by a public
+// list page. It contains no account identity, credentials, or playback data.
+type PublicListPage struct {
+	Name  string
+	Items []PublicListItem
+}
+
+// Public list pages are re-read constantly: one Stremio page at skip=380
+// walks every upstream page before it, and a Jellyfin client asks for ten
+// such windows to fill one view. Without this cache that is quadratic
+// outbound traffic for a list whose contents change on a human timescale.
+const (
+	publicListCacheTTL = 15 * time.Minute
+	publicListCacheMax = 512
+)
+
+type cachedPublicListPage struct {
+	page      PublicListPage
+	expiresAt time.Time
+}
+
+var publicListCache = struct {
+	sync.Mutex
+	pages map[string]cachedPublicListPage
+}{pages: make(map[string]cachedPublicListPage)}
+
+func loadPublicListPage(key string) (PublicListPage, bool) {
+	publicListCache.Lock()
+	defer publicListCache.Unlock()
+	cached, ok := publicListCache.pages[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(publicListCache.pages, key)
+		return PublicListPage{}, false
+	}
+	return clonePublicListPage(cached.page), true
+}
+
+// storePublicListPage caches a page that actually parsed. A 200 carrying no
+// recognizable rows — an anti-bot interstitial, a loading shell, or markup
+// that has moved on — must never be cached: publicListCatalog reads an empty
+// page as the end of the list, so one bad scrape would truncate or empty the
+// catalog for the whole TTL, and the source tester would keep reporting that
+// same cached emptiness. Leaving it uncached costs one refetch and self-heals.
+func storePublicListPage(key string, page PublicListPage) {
+	if len(page.Items) == 0 {
+		return
+	}
+	publicListCache.Lock()
+	defer publicListCache.Unlock()
+	if len(publicListCache.pages) >= publicListCacheMax {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for candidate, cached := range publicListCache.pages {
+			if oldestKey == "" || cached.expiresAt.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = candidate, cached.expiresAt
+			}
+		}
+		delete(publicListCache.pages, oldestKey)
+	}
+	publicListCache.pages[key] = cachedPublicListPage{page: clonePublicListPage(page), expiresAt: time.Now().Add(publicListCacheTTL)}
+}
+
+func clonePublicListPage(page PublicListPage) PublicListPage {
+	cloned := page
+	cloned.Items = append([]PublicListItem(nil), page.Items...)
+	return cloned
+}
+
+// FetchPublicListPage reads one page of a public TMDB list. It accepts only
+// TMDB list URLs, makes no authenticated request, and returns the media IDs
+// exposed by the page itself.
+func FetchPublicListPage(ctx context.Context, rawURL string, page int) ([]PublicListItem, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "www.themoviedb.org" && u.Host != "themoviedb.org") {
+		return nil, fmt.Errorf("invalid public TMDB list URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 || parts[0] != "list" {
+		return nil, fmt.Errorf("invalid public TMDB list URL")
+	}
+	q := u.Query()
+	q.Set("page", strconv.Itoa(max(page, 1)))
+	q.Set("language", "en-US")
+	u.RawQuery = q.Encode()
+	cacheKey := u.String()
+	if cached, ok := loadPublicListPage(cacheKey); ok {
+		return cached.Items, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := publicListHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TMDB public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	if err != nil {
+		return nil, err
+	}
+	matches := publicListItemPattern.FindAllStringSubmatch(string(body), -1)
+	items := make([]PublicListItem, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		id, err := strconv.Atoi(match[3])
+		name := strings.TrimSpace(html.UnescapeString(match[1]))
+		if err != nil || id <= 0 || name == "" {
+			continue
+		}
+		key := match[2] + ":" + strconv.Itoa(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, PublicListItem{ID: id, Type: match[2], Name: name})
+	}
+	storePublicListPage(cacheKey, PublicListPage{Items: items})
+	return items, nil
+}
+
+// FetchAllPublicListPages reads all reachable public TMDB list pages. This is
+// used by source inspection so the UI reports the full catalog size rather
+// than just the first website page.
+func FetchAllPublicListPages(ctx context.Context, rawURL string) ([]PublicListItem, error) {
+	items := make([]PublicListItem, 0)
+	seen := make(map[string]struct{})
+	for page := 1; page <= publicListMaxPages; page++ {
+		current, err := FetchPublicListPage(ctx, rawURL, page)
+		if err != nil {
+			return nil, err
+		}
+		if len(current) == 0 {
+			break
+		}
+		added := 0
+		for _, item := range current {
+			key := item.Type + ":" + strconv.Itoa(item.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			items = append(items, item)
+			added++
+		}
+		if added == 0 {
+			break
+		}
+	}
+	return items, nil
+}
+
+// FetchMDBListPage reads one public MDBList page. MDBList renders canonical
+// TMDB links into its public HTML, which makes it suitable for a catalog-only
+// import without requesting the administrator's MDBList API key or account.
+func FetchMDBListPage(ctx context.Context, rawURL string, pageNumber int) (PublicListPage, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || (u.Host != "mdblist.com" && u.Host != "www.mdblist.com") {
+		return PublicListPage{}, fmt.Errorf("invalid public MDBList URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 3 || parts[0] != "lists" {
+		return PublicListPage{}, fmt.Errorf("invalid public MDBList URL")
+	}
+	// MDBList's later infinite-scroll pages use the public list page with
+	// append enabled. Page zero stays the normal document so its list title is
+	// available to the selector.
+	if pageNumber > 0 {
+		query := u.Query()
+		query.Set("append", "yes")
+		query.Set("q_current_page", strconv.Itoa(pageNumber))
+		query.Set("filter", "")
+		query.Set("new_items", "false")
+		query.Set("show_hidden", "false")
+		query.Set("item_filter", "")
+		query.Set("mediatype", "")
+		u.RawQuery = query.Encode()
+	}
+	cacheKey := u.String()
+	if cached, ok := loadPublicListPage(cacheKey); ok {
+		return cached, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "StreamNZB catalog source checker")
+	resp, err := publicListHTTPClient.Do(req)
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return PublicListPage{}, fmt.Errorf("MDBList public list returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, publicListPageMaxBody))
+	if err != nil {
+		return PublicListPage{}, err
+	}
+	page := PublicListPage{Items: make([]PublicListItem, 0)}
+	if title := mdbListTitlePattern.FindStringSubmatch(string(body)); len(title) == 2 {
+		page.Name = strings.TrimSpace(html.UnescapeString(title[1]))
+	}
+	seen := make(map[string]struct{})
+	for _, match := range mdbListItemPattern.FindAllStringSubmatch(string(body), -1) {
+		id, err := strconv.Atoi(match[2])
+		name := strings.TrimSpace(html.UnescapeString(match[3]))
+		if err != nil || id <= 0 || name == "" {
+			continue
+		}
+		key := match[1] + ":" + strconv.Itoa(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		page.Items = append(page.Items, PublicListItem{ID: id, Type: match[1], Name: name})
+	}
+	storePublicListPage(cacheKey, page)
+	return page, nil
+}
+
+// FetchAllMDBListPages follows MDBList's public infinite-scroll pages until
+// the source is exhausted. It powers the source tester's total row count;
+// runtime catalog requests still fetch only as deep as their Stremio skip
+// requires.
+func FetchAllMDBListPages(ctx context.Context, rawURL string) (PublicListPage, error) {
+	all := PublicListPage{Items: make([]PublicListItem, 0)}
+	seen := make(map[string]struct{})
+	for pageNumber := 0; pageNumber < publicListMaxPages; pageNumber++ {
+		page, err := FetchMDBListPage(ctx, rawURL, pageNumber)
+		if err != nil {
+			return PublicListPage{}, err
+		}
+		if all.Name == "" {
+			all.Name = page.Name
+		}
+		added := 0
+		for _, item := range page.Items {
+			key := item.Type + ":" + strconv.Itoa(item.ID)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			all.Items = append(all.Items, item)
+			added++
+		}
+		if len(page.Items) == 0 || added == 0 {
+			break
+		}
+	}
+	if len(all.Items) == 0 {
+		return PublicListPage{}, fmt.Errorf("MDBList exposes no fetchable TMDB items on this public list")
+	}
+	return all, nil
+}
+
 // GetListing fetches one paged listing. mediaType is "movie" or "tv"; kind is
 // "trending" (the weekly window) or one of TMDB's list endpoints (popular,
 // top_rated, now_playing, upcoming, on_the_air). lang is the display language
@@ -364,10 +881,17 @@ func (c *Client) Discover(mediaType string, filters DiscoverFilters, page int, l
 
 // SearchByType searches one media type ("movie" or "tv") — unlike SearchMulti,
 // results are homogeneous, which is what a typed catalog needs.
-func (c *Client) SearchByType(mediaType, query string, page int) (*ListingResponse, error) {
+// SearchByType searches one media type. lang localizes the names and
+// overviews the same way the browse listings are localized; "" sends no
+// parameter at all, which is what an English profile resolves to and what
+// keeps its cache keys stable.
+func (c *Client) SearchByType(mediaType, query string, page int, lang string) (*ListingResponse, error) {
 	params := url.Values{}
 	params.Set("query", query)
 	params.Set("page", strconv.Itoa(max(page, 1)))
+	if lang != "" {
+		params.Set("language", lang)
+	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/search/%s", mediaType)
 	return getJSON[ListingResponse](c, endpoint, params, "search")
 }

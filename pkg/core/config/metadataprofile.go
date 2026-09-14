@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DefaultMetadataProfileName is the profile seeded by the one-shot migration
 // from the legacy global metadata section, and the admin token's fallback.
@@ -20,12 +23,34 @@ type MetadataProfileConfig struct {
 	// save. Unknown ids are ignored read-side.
 	Catalogs []CatalogToggle `json:"catalogs"`
 
-	// Per-media-type meta sources. Empty means the default; unknown values
-	// normalize to the default read-side. Today only series has a real choice
-	// (TVDB default, TMDB alternative).
-	MovieSource  string `json:"movie_source,omitempty"`
-	SeriesSource string `json:"series_source,omitempty"`
-	AnimeSource  string `json:"anime_source,omitempty"`
+	// ExternalCatalogs are selected browse rows from public Stremio manifests.
+	// They deliberately carry no credentials and do not import remote search,
+	// stream, subtitle, or configuration resources.
+	ExternalCatalogs []ExternalCatalogConfig `json:"external_catalogs,omitempty"`
+
+	// Per-media-type meta sources, in priority order: the first one that can
+	// serve a title is used, and the rest are fallbacks tried in order. Movies,
+	// series and anime are fully independent — choosing sources for one never
+	// affects the others. Empty means that media type's default order; unknown
+	// and duplicate entries are dropped read-side.
+	//
+	// Cinemeta is opt-in only: it appears in no default order, so a profile
+	// that never sets these fields behaves exactly as before Cinemeta support
+	// existed (TMDB-only movies, TVDB then TMDB series, Kitsu then TVDB anime).
+	MovieSources  []string `json:"movie_sources,omitempty"`
+	SeriesSources []string `json:"series_sources,omitempty"`
+	AnimeSources  []string `json:"anime_sources,omitempty"`
+
+	// Deprecated: the primary/backup pair these lists replaced, read once on
+	// load to migrate a profile saved by a pre-list build and never written
+	// back. Only ever written by unreleased builds, so this can be deleted
+	// after one release.
+	MovieSource        string `json:"movie_source,omitempty"`
+	MovieBackupSource  string `json:"movie_backup_source,omitempty"`
+	SeriesSource       string `json:"series_source,omitempty"`
+	SeriesBackupSource string `json:"series_backup_source,omitempty"`
+	AnimeSource        string `json:"anime_source,omitempty"`
+	AnimeBackupSource  string `json:"anime_backup_source,omitempty"`
 
 	// TVMazeAirDates lets TVMaze override episode air dates (and drive the
 	// unaired-episode gate). nil means enabled.
@@ -51,15 +76,244 @@ type MetadataProfileConfig struct {
 	// this is a parental control — the deliberate opposite of the fail-open
 	// doctrine release limits follow.
 	AllowUnrated *bool `json:"allow_unrated,omitempty"`
+
+	// HideIncompleteMetadata drops rows no source could describe well enough
+	// to render — in practice, the ones with no artwork at all. nil means
+	// enabled: an unrenderable row is noise in every client.
+	HideIncompleteMetadata *bool `json:"hide_incomplete_metadata,omitempty"`
+
+	// UnreleasedWindowDays is how far ahead of today a title may be scheduled
+	// and still appear in catalog rows and search results. nil means the
+	// default window; 0 shows only what has been released. A title whose
+	// source publishes no date at all is never hidden by this — the window
+	// filters announcements, not records with missing data.
+	UnreleasedWindowDays *int `json:"unreleased_window_days,omitempty"`
 }
 
-// EffectiveSeriesMetaSource returns the primary series meta source: "tvdb"
-// (default) or "tmdb". Whichever is not primary stays the fallback.
-func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
-	if p != nil && p.SeriesSource == "tmdb" {
-		return "tmdb"
+// DefaultUnreleasedWindowDays is the out-of-the-box horizon: a month of
+// upcoming titles, which covers what is about to air without filling a board
+// with announcements years out. MaxUnreleasedWindowDays is a year, the far
+// end of the editor's slider.
+const (
+	DefaultUnreleasedWindowDays = 30
+	MaxUnreleasedWindowDays     = 365
+)
+
+// EffectiveHideIncompleteMetadata reports whether rows without enough
+// metadata to render are dropped. Unset means on.
+func (p *MetadataProfileConfig) EffectiveHideIncompleteMetadata() bool {
+	return p == nil || p.HideIncompleteMetadata == nil || *p.HideIncompleteMetadata
+}
+
+// EffectiveUnreleasedWindowDays is the profile's horizon in days, never
+// negative.
+func (p *MetadataProfileConfig) EffectiveUnreleasedWindowDays() int {
+	if p == nil || p.UnreleasedWindowDays == nil {
+		return DefaultUnreleasedWindowDays
 	}
-	return "tvdb"
+	return min(max(*p.UnreleasedWindowDays, 0), MaxUnreleasedWindowDays)
+}
+
+// ExternalCatalogConfig records one chosen catalog row rather than an entire
+// addon. ID is a locally generated stable key; ManifestURL is always the
+// public manifest URL the administrator pasted; RemoteType and RemoteID are
+// the exact resource coordinates declared by that manifest.
+type ExternalCatalogConfig struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind,omitempty"`
+	// SourceLabel is the human-facing identity of the pasted source. Kind is
+	// only a dispatch detail and must not appear in the editor as "external".
+	SourceLabel string `json:"source_label,omitempty"`
+	ManifestURL string `json:"manifest_url"`
+	RemoteType  string `json:"remote_type"`
+	RemoteID    string `json:"remote_id"`
+	// SupportsSkip records the pasted manifest's explicit pagination contract.
+	// Nil is a legacy row saved before this field existed and retains the old
+	// behavior until it is re-added through the inspected-source flow.
+	SupportsSkip *bool `json:"supports_skip,omitempty"`
+}
+
+// Metadata source orders. Each list is the media type's sources in priority
+// order; the first that can serve a title wins and the rest are fallbacks.
+// The defaults reproduce the behavior that predates per-profile selection, and
+// deliberately contain no Cinemeta: it carries no age-rating data, so a title
+// served from it is hidden under a rating limit unless the profile allows
+// unrated content. Nothing may opt a profile into it but the profile itself.
+var (
+	movieMetaSources  = []string{"tmdb", "cinemeta"}
+	seriesMetaSources = []string{"tvdb", "tmdb", "cinemeta"}
+	animeMetaSources  = []string{"kitsu", "tvdb"}
+
+	defaultMovieMetaSources  = []string{"tmdb"}
+	defaultSeriesMetaSources = []string{"tvdb", "tmdb"}
+	defaultAnimeMetaSources  = []string{"kitsu", "tvdb"}
+)
+
+// MovieMetaSourceOptions, SeriesMetaSourceOptions and AnimeMetaSourceOptions
+// are the sources each media type may list, for validation and for the editor.
+func MovieMetaSourceOptions() []string { return append([]string(nil), movieMetaSources...) }
+
+// MetaSourceOptions is the same lists addressed by media type, for callers
+// that iterate every type.
+func MetaSourceOptions(mediaType string) []string {
+	switch mediaType {
+	case "movie":
+		return MovieMetaSourceOptions()
+	case "anime":
+		return AnimeMetaSourceOptions()
+	default:
+		return SeriesMetaSourceOptions()
+	}
+}
+func SeriesMetaSourceOptions() []string { return append([]string(nil), seriesMetaSources...) }
+func AnimeMetaSourceOptions() []string  { return append([]string(nil), animeMetaSources...) }
+
+// effectiveMetaSources filters a configured order down to the recognized
+// sources, dropping unknown entries and repeats while keeping the user's
+// order, and falls back to fallback when nothing usable is left. A profile
+// listing only sources this build does not know still serves metadata rather
+// than none.
+func effectiveMetaSources(configured, allowed, fallback []string) []string {
+	out := make([]string, 0, len(configured))
+	seen := make(map[string]bool, len(configured))
+	for _, raw := range configured {
+		source := strings.ToLower(strings.TrimSpace(raw))
+		if seen[source] || !slices.Contains(allowed, source) {
+			continue
+		}
+		seen[source] = true
+		out = append(out, source)
+	}
+	if len(out) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return out
+}
+
+// EffectiveMovieMetaSources returns the movie meta providers in priority
+// order, defaulting to TMDB alone.
+func (p *MetadataProfileConfig) EffectiveMovieMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultMovieMetaSources...)
+	}
+	return effectiveMetaSources(p.MovieSources, movieMetaSources, defaultMovieMetaSources)
+}
+
+// EffectiveSeriesMetaSources returns the series meta providers in priority
+// order, defaulting to TVDB then TMDB — the historical pair.
+func (p *MetadataProfileConfig) EffectiveSeriesMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultSeriesMetaSources...)
+	}
+	return effectiveMetaSources(p.SeriesSources, seriesMetaSources, defaultSeriesMetaSources)
+}
+
+// EffectiveAnimeMetaSources returns the anime meta providers in priority
+// order, defaulting to Kitsu then TVDB. Whichever serves the show's metadata,
+// Kitsu keeps the playback identity: episode ids stay kitsu:<id>:<ep>.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSources() []string {
+	if p == nil {
+		return append([]string(nil), defaultAnimeMetaSources...)
+	}
+	return effectiveMetaSources(p.AnimeSources, animeMetaSources, defaultAnimeMetaSources)
+}
+
+// EffectiveSeriesMetaSource returns just the series source that serves first,
+// for callers that only need to know which one leads.
+func (p *MetadataProfileConfig) EffectiveSeriesMetaSource() string {
+	return p.EffectiveSeriesMetaSources()[0]
+}
+
+// EffectiveAnimeMetaSource returns just the anime source that serves first.
+func (p *MetadataProfileConfig) EffectiveAnimeMetaSource() string {
+	return p.EffectiveAnimeMetaSources()[0]
+}
+
+// MigrateLegacySourcePairs converts the primary/backup fields that preceded
+// the priority lists into the order that replaced them, then clears them so
+// the next save writes only the list. A profile that already has lists keeps
+// them.
+//
+// The pair carried an implicit fallback the list has to spell out: a legacy
+// series_source of "tmdb" meant "TMDB, then TVDB", so migrating it to ["tmdb"]
+// alone would quietly delete a fallback the profile has always had. Each media
+// type below therefore reproduces the exact defaulting its old accessor did.
+func (p *MetadataProfileConfig) MigrateLegacySourcePairs() {
+	if p == nil {
+		return
+	}
+	if p.MovieSource == "" && p.MovieBackupSource == "" &&
+		p.SeriesSource == "" && p.SeriesBackupSource == "" &&
+		p.AnimeSource == "" && p.AnimeBackupSource == "" {
+		return
+	}
+
+	pick := func(value string, allowed []string, fallback string) string {
+		if value = strings.ToLower(strings.TrimSpace(value)); slices.Contains(allowed, value) {
+			return value
+		}
+		return fallback
+	}
+	order := func(primary, backup string) []string {
+		if backup == "" || backup == primary {
+			return []string{primary}
+		}
+		return []string{primary, backup}
+	}
+
+	if len(p.MovieSources) == 0 {
+		// Movies never had an implicit backup: Cinemeta only ever ran when the
+		// profile explicitly named it.
+		primary := pick(p.MovieSource, movieMetaSources, "tmdb")
+		p.MovieSources = order(primary, pick(p.MovieBackupSource, movieMetaSources, ""))
+	}
+	if len(p.SeriesSources) == 0 {
+		primary := pick(p.SeriesSource, seriesMetaSources, "tvdb")
+		// The implicit backup was whichever of the historical tvdb/tmdb pair
+		// was not primary.
+		implicit := "tmdb"
+		if primary == "tmdb" {
+			implicit = "tvdb"
+		}
+		p.SeriesSources = order(primary, pick(p.SeriesBackupSource, seriesMetaSources, implicit))
+	}
+	if len(p.AnimeSources) == 0 {
+		primary := pick(p.AnimeSource, animeMetaSources, "kitsu")
+		implicit := "tvdb"
+		if primary == "tvdb" {
+			implicit = "kitsu"
+		}
+		p.AnimeSources = order(primary, pick(p.AnimeBackupSource, animeMetaSources, implicit))
+	}
+	p.MovieSource, p.MovieBackupSource = "", ""
+	p.SeriesSource, p.SeriesBackupSource = "", ""
+	p.AnimeSource, p.AnimeBackupSource = "", ""
+}
+
+// NormalizeSources rewrites each order to exactly what the profile resolves
+// to, dropping unknown entries and repeats, and clears a list that matches its
+// media type's default.
+//
+// Storing "unset" rather than a materialized default is what makes the default
+// mean something: a profile nobody has customized follows whatever the default
+// order is in the build it runs on, instead of being frozen at the one that
+// happened to be current when it was last saved. It also keeps the editor and
+// the stored config agreeing on what an untouched profile looks like.
+func (p *MetadataProfileConfig) NormalizeSources() {
+	if p == nil {
+		return
+	}
+	p.MigrateLegacySourcePairs()
+	unsetIfDefault := func(effective, fallback []string) []string {
+		if slices.Equal(effective, fallback) {
+			return nil
+		}
+		return effective
+	}
+	p.MovieSources = unsetIfDefault(p.EffectiveMovieMetaSources(), defaultMovieMetaSources)
+	p.SeriesSources = unsetIfDefault(p.EffectiveSeriesMetaSources(), defaultSeriesMetaSources)
+	p.AnimeSources = unsetIfDefault(p.EffectiveAnimeMetaSources(), defaultAnimeMetaSources)
 }
 
 // EffectiveLanguage returns the profile's display language tag, or "" for the

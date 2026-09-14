@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/certification"
+	"streamnzb/pkg/services/metadata/cinemeta"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -42,6 +44,10 @@ const (
 	tmdbProfileURL  = "https://image.tmdb.org/t/p/w276_and_h350_face"
 	tmdbLogoURL     = "https://image.tmdb.org/t/p/w500"
 )
+
+// tvdbArtworkURL is TheTVDB's artwork CDN, which its listing and search rows
+// sometimes reference by path alone.
+const tvdbArtworkURL = "https://artworks.thetvdb.com"
 
 // handleMeta serves /meta/{type}/{id}.json. For a stream with no metadata
 // profile bound the resource does not exist — 404, matching a manifest that
@@ -102,7 +108,7 @@ func (s *Server) buildMeta(ctx context.Context, profile *config.MetadataProfileC
 	}
 	// After the builders: they fill rid.imdbID best-effort from the source's
 	// external ids even when the request carried another id form.
-	if overlay := profile.PosterOverlayURL(rid.imdbID); overlay != "" {
+	if overlay := s.overlayPosterFor(ctx, profile, rid.imdbID); overlay != "" {
 		meta.Poster = overlay
 	}
 	return meta, nil
@@ -211,7 +217,49 @@ func metaLogoLang(profile *config.MetadataProfileConfig) string {
 	return base
 }
 
+// buildMetaFromSources walks a profile's source order: the first source that
+// can serve the title wins, and each later one is tried only because the ones
+// before it could not (no resolvable id, provider down, no record). The error
+// returned is the last source's, so a total failure reports why the final
+// attempt failed rather than why the first did.
+//
+// A certification block is never a reason to try the next source. It is the
+// profile's own rating limit answering, not a source failing, and retrying
+// would hand the same title to a provider with no rating data at all.
+func buildMetaFromSources(sources []string, what string, logAttrs []any, build func(source string) (*MetaObject, error)) (*MetaObject, error) {
+	var lastErr error
+	for i, source := range sources {
+		meta, err := build(source)
+		if err == nil {
+			return meta, nil
+		}
+		if errors.Is(err, errCertificationBlocked) {
+			return nil, err
+		}
+		lastErr = err
+		if i < len(sources)-1 {
+			logger.Debug("Meta source could not serve; trying the next one",
+				append(append([]any{}, logAttrs...), "what", what, "source", source, "next", sources[i+1], "err", err)...)
+		}
+	}
+	return nil, lastErr
+}
+
+// buildMovieMeta serves movie metadata from the profile's source order. A
+// profile that never picks any behaves exactly as before Cinemeta support
+// existed: TMDB only, no fallback.
 func (s *Server) buildMovieMeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	return buildMetaFromSources(profile.EffectiveMovieMetaSources(), "movie",
+		[]any{"tmdb_id", rid.tmdbID, "imdb_id", rid.imdbID},
+		func(source string) (*MetaObject, error) {
+			if source == "cinemeta" {
+				return s.buildMovieMetaFromCinemeta(ctx, profile, rid)
+			}
+			return s.buildMovieMetaFromTMDB(ctx, profile, rid)
+		})
+}
+
+func (s *Server) buildMovieMetaFromTMDB(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
 	rt := s.runtime()
 	if rid.tmdbID <= 0 {
 		return nil, fmt.Errorf("no TMDB id resolved")
@@ -337,23 +385,22 @@ func (s *Server) currentConfig() *config.Config {
 	return s.config
 }
 
-// buildSeriesMeta applies the profile's source policy: series metadata comes
-// from the primary source (TVDB by default), and the other source steps in
-// only when the primary cannot serve (no resolvable id, provider down) —
-// a fallback episode list beats none. Air dates are TVMaze's in both paths.
+// buildSeriesMeta serves series metadata from the profile's source order —
+// a fallback episode list beats none. Cinemeta only ever appears here when a
+// profile explicitly lists it. Air dates are TVMaze's on the TVDB/TMDB paths.
 func (s *Server) buildSeriesMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
-	primary, fallback := s.buildSeriesMetaFromTVDB, s.buildSeriesMetaFromTMDB
-	if profile.EffectiveSeriesMetaSource() == "tmdb" {
-		primary, fallback = fallback, primary
-	}
-	meta, err := primary(ctx, profile, contentType, rid)
-	if err == nil {
-		return meta, nil
-	}
-	logger.Debug("Primary series meta source unavailable; falling back",
-		"source", profile.EffectiveSeriesMetaSource(),
-		"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID, "err", err)
-	return fallback(ctx, profile, contentType, rid)
+	return buildMetaFromSources(profile.EffectiveSeriesMetaSources(), "series",
+		[]any{"tvdb_id", rid.tvdbID, "imdb_id", rid.imdbID, "tmdb_id", rid.tmdbID},
+		func(source string) (*MetaObject, error) {
+			switch source {
+			case "tmdb":
+				return s.buildSeriesMetaFromTMDB(ctx, profile, contentType, rid)
+			case "cinemeta":
+				return s.buildSeriesMetaFromCinemeta(ctx, profile, contentType, rid)
+			default:
+				return s.buildSeriesMetaFromTVDB(ctx, profile, contentType, rid)
+			}
+		})
 }
 
 // resolveTVDBIDForMeta fills rid.tvdbID from whichever id the request carried.
@@ -377,7 +424,148 @@ func (s *Server) resolveTVDBIDForMeta(rid *resolvedMetaID) string {
 	return ""
 }
 
+// resolveIMDbIDForMeta fills rid.imdbID from whichever id the request
+// carried, resolving through TMDB's external ids when only a TMDB id is
+// known. Cinemeta keys everything by IMDb id and has no other identity
+// scheme, so this is the one lookup its meta path needs before it can serve.
+// mediaType is TMDB's own vocabulary ("movie" or "tv").
+func (s *Server) resolveIMDbIDForMeta(rid *resolvedMetaID, mediaType string) string {
+	if rid.imdbID != "" {
+		return rid.imdbID
+	}
+	rt := s.runtime()
+	if rid.tmdbID > 0 && rt.tmdbClient != nil {
+		if ext, err := rt.tmdbClient.GetExternalIDs(rid.tmdbID, mediaType); err == nil && ext.IMDbID != "" {
+			return ext.IMDbID
+		}
+	}
+	return ""
+}
+
+// buildMovieMetaFromCinemeta serves movie meta from the public Cinemeta
+// addon API (opt-in by listing it in movie_sources). Cinemeta only
+// resolves by IMDb id, so a request that arrived as a bare TMDB id needs one
+// more lookup first.
+func (s *Server) buildMovieMetaFromCinemeta(ctx context.Context, profile *config.MetadataProfileConfig, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.cinemetaClient == nil {
+		return nil, fmt.Errorf("cinemeta client unavailable")
+	}
+	// Cinemeta carries no certification data; a capped profile requires an
+	// explicit "allow unrated" to admit it, same fail-closed rule as any
+	// other title with an unknown rating. The verdict never depends on
+	// Cinemeta's response, so a capped profile without allow_unrated is
+	// rejected before spending a network request on a title it will never
+	// serve.
+	if err := certGateMeta(profile, 0, false); err != nil {
+		return nil, err
+	}
+	imdbID := s.resolveIMDbIDForMeta(rid, "movie")
+	if imdbID == "" {
+		return nil, fmt.Errorf("no IMDb id resolved for Cinemeta")
+	}
+	cm, err := s.cinemetaClient.GetMeta(ctx, "movie", imdbID)
+	if err != nil {
+		return nil, err
+	}
+	if rid.imdbID == "" {
+		rid.imdbID = imdbID
+		rid.canonicalID = imdbID
+	}
+	return cinemetaToMetaObject(cm, rid, "movie"), nil
+}
+
+// buildSeriesMetaFromCinemeta mirrors buildMovieMetaFromCinemeta for series.
+func (s *Server) buildSeriesMetaFromCinemeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.cinemetaClient == nil {
+		return nil, fmt.Errorf("cinemeta client unavailable")
+	}
+	if err := certGateMeta(profile, 0, false); err != nil {
+		return nil, err
+	}
+	imdbID := s.resolveIMDbIDForMeta(rid, "tv")
+	if imdbID == "" {
+		return nil, fmt.Errorf("no IMDb id resolved for Cinemeta")
+	}
+	cm, err := s.cinemetaClient.GetMeta(ctx, "series", imdbID)
+	if err != nil {
+		return nil, err
+	}
+	if rid.imdbID == "" {
+		rid.imdbID = imdbID
+		rid.canonicalID = imdbID
+	}
+	return cinemetaToMetaObject(cm, rid, seriesMetaType(contentType)), nil
+}
+
+// cinemetaToMetaObject maps a Cinemeta meta object onto our own MetaObject.
+// Cinemeta's shape already follows the Stremio addon spec our own MetaObject
+// is modeled on, so most fields carry straight across. Video ids are always
+// rebuilt from rid.canonicalID rather than trusted from Cinemeta's own
+// payload — clients match a stream request back to the video id the meta
+// resource handed them, so it must be anchored to the id the request
+// actually resolved to, exactly like the TVDB and TMDB series paths.
+func cinemetaToMetaObject(cm *cinemeta.Meta, rid *resolvedMetaID, metaType string) *MetaObject {
+	meta := &MetaObject{
+		ID:          rid.canonicalID,
+		Type:        metaType,
+		Name:        cm.Name,
+		Description: cm.Description,
+		Poster:      cm.Poster,
+		Background:  cm.Background,
+		Logo:        cm.Logo,
+		ReleaseInfo: cm.ReleaseInfo,
+		Released:    cm.Released,
+		IMDBRating:  cm.IMDBRating,
+		Runtime:     cm.Runtime,
+		Genres:      cm.Genres,
+		Cast:        cm.Cast,
+		Director:    cm.Director,
+		Writer:      cm.Writer,
+	}
+	// Cinemeta's cast has names only — no character or photo, unlike TMDB's
+	// credits payload — but app_extras.cast still needs an entry per name so
+	// clients that read cast avatars from there see the same list.
+	for _, name := range cm.Cast {
+		if name == "" {
+			continue
+		}
+		appendCastMember(meta, MetaCastMember{Name: name})
+	}
+	for _, t := range cm.Trailers {
+		if t.Source == "" {
+			continue
+		}
+		meta.Trailers = append(meta.Trailers, MetaTrailer{Source: t.Source, Type: t.Type})
+		if len(meta.Trailers) >= 3 {
+			break
+		}
+	}
+	for _, v := range cm.Videos {
+		if v.Season < 0 || v.Episode < 1 {
+			continue
+		}
+		meta.Videos = append(meta.Videos, MetaVideo{
+			ID:        fmt.Sprintf("%s:%d:%d", rid.canonicalID, v.Season, v.Episode),
+			Title:     v.Title,
+			Season:    v.Season,
+			Episode:   v.Episode,
+			Released:  v.Released,
+			Overview:  v.Overview,
+			Thumbnail: v.Thumbnail,
+		})
+	}
+	specialsLast(meta.Videos)
+	return meta
+}
+
 func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	return s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, rid, true)
+}
+
+// buildSeriesMetaFromTVDBWithVideos fetches the common TVDB record and, for
+// ordinary series, its episode list. Anime keeps Kitsu episode identities, so
+// its TVDB metadata path deliberately skips TVDB/TVMaze episode work.
+func (s *Server) buildSeriesMetaFromTVDBWithVideos(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID, includeVideos bool) (*MetaObject, error) {
 	rt := s.runtime()
 	tvdbID := s.resolveTVDBIDForMeta(rid)
 	if tvdbID == "" {
@@ -450,6 +638,9 @@ func (s *Server) buildSeriesMetaFromTVDB(ctx context.Context, profile *config.Me
 				break
 			}
 		}
+	}
+	if !includeVideos {
+		return meta, nil
 	}
 
 	episodes, err := rt.tvdbClient.GetSeriesEpisodesTranslated(tvdbID, lang3)
@@ -708,6 +899,59 @@ func (s *Server) applyAnimeArtwork(meta *MetaObject, profile *config.MetadataPro
 }
 
 func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	meta, err := buildMetaFromSources(profile.EffectiveAnimeMetaSources(), "anime",
+		[]any{"kitsu_id", rid.kitsuID},
+		func(source string) (*MetaObject, error) {
+			switch source {
+			case "tvdb":
+				return s.buildAnimeMetaFromTVDB(ctx, profile, contentType, rid)
+			default:
+				return s.buildAnimeMetaFromKitsu(ctx, profile, contentType, rid)
+			}
+		})
+	if err != nil {
+		return nil, err
+	}
+	// Artwork is applied once, to whichever source ended up serving: the
+	// anime-lists crosswalk upgrades the background and logo independently of
+	// where the rest of the record came from.
+	s.applyAnimeArtwork(meta, profile, rid.kitsuID)
+	return meta, nil
+}
+
+// buildAnimeMetaFromTVDB uses the anime-lists crosswalk to fetch a complete
+// TVDB record while retaining Kitsu as the public/playback identity. TVDB's
+// season rows cannot safely replace entry-local Kitsu episode ids, so videos
+// are rebuilt from Kitsu after the selected provider supplies show metadata.
+func (s *Server) buildAnimeMetaFromTVDB(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
+	if s.animeLists == nil {
+		return nil, fmt.Errorf("anime id mapping unavailable")
+	}
+	mapping, ok := s.animeLists.LookupKitsu(rid.kitsuID)
+	if !ok || mapping.TVDBID == "" {
+		return nil, fmt.Errorf("no TVDB id mapped for kitsu:%s", rid.kitsuID)
+	}
+	tvdbRID := *rid
+	tvdbRID.tvdbID = mapping.TVDBID
+	if tvdbRID.imdbID == "" {
+		tvdbRID.imdbID = mapping.IMDbID
+	}
+	meta, err := s.buildSeriesMetaFromTVDBWithVideos(ctx, profile, contentType, &tvdbRID, false)
+	if err != nil {
+		return nil, err
+	}
+	meta.ID = rid.canonicalID
+	meta.Type = seriesMetaType(contentType)
+	// The request's own contentType can say "anime" for a mapped anime movie
+	// (the mapping's Type is the authority on that, independent of TVDBID) —
+	// appending an episode list would be wrong for a movie either way.
+	if contentType != "movie" && !strings.EqualFold(mapping.Type, "movie") {
+		s.appendKitsuAnimeVideos(ctx, meta, rid.kitsuID)
+	}
+	return meta, nil
+}
+
+func (s *Server) buildAnimeMetaFromKitsu(ctx context.Context, profile *config.MetadataProfileConfig, contentType string, rid *resolvedMetaID) (*MetaObject, error) {
 	animeMeta, err := s.kitsuClient.GetAnimeMeta(ctx, rid.kitsuID)
 	if err != nil {
 		return nil, err
@@ -732,39 +976,70 @@ func (s *Server) buildAnimeMeta(ctx context.Context, profile *config.MetadataPro
 	if rating, err := strconv.ParseFloat(animeMeta.AverageRating, 64); err == nil && rating > 0 {
 		meta.IMDBRating = fmt.Sprintf("%.1f", rating/10)
 	}
-	s.applyAnimeArtwork(meta, profile, rid.kitsuID)
-
 	// Movies get no episode list; everything else does. Kitsu numbering is
 	// entry-relative, which is exactly what kitsu:<id>:<ep> stream ids carry.
 	if contentType != "movie" && !strings.EqualFold(animeMeta.ShowType, "movie") {
-		episodes, err := s.kitsuClient.GetAnimeEpisodes(ctx, rid.kitsuID)
-		if err != nil {
-			logger.Debug("Kitsu episodes fetch failed; serving meta without videos",
-				"kitsu_id", rid.kitsuID, "err", err)
-		}
-		for _, ep := range episodes {
-			if ep.Number <= 0 {
-				continue
-			}
-			title := kitsu.DisplayTitle(profile.EffectiveLanguage(), ep.EnglishTitle, ep.CanonicalTitle)
-			if title == "" {
-				title = fmt.Sprintf("Episode %d", ep.Number)
-			}
-			video := MetaVideo{
-				ID:        fmt.Sprintf("kitsu:%s:%d", rid.kitsuID, ep.Number),
-				Title:     title,
-				Season:    1,
-				Episode:   ep.Number,
-				Overview:  ep.Synopsis,
-				Thumbnail: ep.Thumbnail,
-			}
-			if ep.Airdate != "" {
-				video.Released = ep.Airdate + "T00:00:00.000Z"
-			}
-			meta.Videos = append(meta.Videos, video)
-		}
+		s.appendKitsuAnimeVideosWithTitles(ctx, meta, profile, rid.kitsuID)
 	}
 	return meta, nil
+}
+
+// appendKitsuAnimeVideosWithTitles is the Kitsu-sourced video builder: it
+// prefers each episode's English title via kitsu.DisplayTitle, matching the
+// series-name preference above.
+func (s *Server) appendKitsuAnimeVideosWithTitles(ctx context.Context, meta *MetaObject, profile *config.MetadataProfileConfig, kitsuID string) {
+	episodes, err := s.kitsuClient.GetAnimeEpisodes(ctx, kitsuID)
+	if err != nil {
+		logger.Debug("Kitsu episodes fetch failed; serving meta without videos",
+			"kitsu_id", kitsuID, "err", err)
+		return
+	}
+	for _, ep := range episodes {
+		if ep.Number <= 0 {
+			continue
+		}
+		title := kitsu.DisplayTitle(profile.EffectiveLanguage(), ep.EnglishTitle, ep.CanonicalTitle)
+		if title == "" {
+			title = fmt.Sprintf("Episode %d", ep.Number)
+		}
+		video := MetaVideo{
+			ID:        fmt.Sprintf("kitsu:%s:%d", kitsuID, ep.Number),
+			Title:     title,
+			Season:    1,
+			Episode:   ep.Number,
+			Overview:  ep.Synopsis,
+			Thumbnail: ep.Thumbnail,
+		}
+		if ep.Airdate != "" {
+			video.Released = ep.Airdate + "T00:00:00.000Z"
+		}
+		meta.Videos = append(meta.Videos, video)
+	}
+}
+
+// appendKitsuAnimeVideos is the TVDB-path video builder: it keeps Kitsu
+// episode identities (kitsu:<id>:<ep>) but has no per-profile language
+// preference to apply, since the show itself came from TVDB.
+func (s *Server) appendKitsuAnimeVideos(ctx context.Context, meta *MetaObject, kitsuID string) {
+	episodes, err := s.kitsuClient.GetAnimeEpisodes(ctx, kitsuID)
+	if err != nil {
+		logger.Debug("Kitsu episodes fetch failed; serving meta without videos", "kitsu_id", kitsuID, "err", err)
+		return
+	}
+	for _, ep := range episodes {
+		if ep.Number <= 0 {
+			continue
+		}
+		title := ep.CanonicalTitle
+		if title == "" {
+			title = fmt.Sprintf("Episode %d", ep.Number)
+		}
+		video := MetaVideo{ID: fmt.Sprintf("kitsu:%s:%d", kitsuID, ep.Number), Title: title, Season: 1, Episode: ep.Number, Overview: ep.Synopsis, Thumbnail: ep.Thumbnail}
+		if ep.Airdate != "" {
+			video.Released = ep.Airdate + "T00:00:00.000Z"
+		}
+		meta.Videos = append(meta.Videos, video)
+	}
 }
 
 // applyTVMazeOverlay makes TVMaze the air-date authority: its airstamp carries

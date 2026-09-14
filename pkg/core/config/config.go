@@ -18,9 +18,27 @@ import (
 	"github.com/dreulavelle/jhin/rank"
 
 	"streamnzb/pkg/core/env"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/paths"
 )
+
+// CatalogSourceAllowedNetworks parses CatalogSourceNetworks into the networks
+// an external catalog fetch may reach despite the private-address guard.
+//
+// A malformed list is rejected when the config is saved; here it degrades to
+// "no exceptions at all" rather than to a partial list, so a hand-edited or
+// half-valid entry can never widen the guard by being invalid.
+func (c *Config) CatalogSourceAllowedNetworks() []*net.IPNet {
+	if c == nil || len(c.CatalogSourceNetworks) == 0 {
+		return nil
+	}
+	nets, err := httpx.ParseNetworks(c.CatalogSourceNetworks, "catalog_source_networks")
+	if err != nil {
+		return nil
+	}
+	return nets
+}
 
 const (
 	// The initial "admin" password, in the legacy unsalted SHA-256 format.
@@ -838,6 +856,19 @@ type Config struct {
 	// filter profile through matched("Name") — see DefineLibraryConfig.
 	DefineLibraries []DefineLibraryConfig `json:"define_libraries,omitempty"`
 
+	// CatalogSourceNetworks lists the non-public networks a metadata profile's
+	// external catalog source may resolve to. Fetching an operator-supplied URL
+	// otherwise refuses to connect to any private, loopback or link-local
+	// address, so that a pasted manifest cannot be turned into a probe of the
+	// infrastructure this server runs on (SSRF).
+	//
+	// Listing a network here is how a self-hosted Stremio addon on the LAN
+	// becomes reachable — "192.168.1.0/24", or the single host it runs on.
+	// Entries are CIDRs or bare addresses, exactly like TrustedProxies, and a
+	// catch-all such as 0.0.0.0/0 is rejected rather than silently disabling
+	// the check. See docs/metadata.md, "Self-hosted catalog sources".
+	CatalogSourceNetworks []string `json:"catalog_source_networks,omitempty"`
+
 	// MemoryLimitMB sets a soft limit on total Go heap (runtime/debug.SetMemoryLimit). 0 = no limit.
 	// When set, segment cache is automatically 80% of this limit.
 	// Use this to stop memory climbing; the runtime will GC more aggressively to stay under the limit.
@@ -1375,6 +1406,16 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	if migratedMetadataProfiles {
 		needSave = true
 	}
+	// Fold any primary/backup source pair an unreleased build wrote into the
+	// priority list that replaced it, before anything reads the sources.
+	for i := range cfg.MetadataProfiles {
+		if cfg.MetadataProfiles[i].MovieSource != "" || cfg.MetadataProfiles[i].MovieBackupSource != "" ||
+			cfg.MetadataProfiles[i].SeriesSource != "" || cfg.MetadataProfiles[i].SeriesBackupSource != "" ||
+			cfg.MetadataProfiles[i].AnimeSource != "" || cfg.MetadataProfiles[i].AnimeBackupSource != "" {
+			cfg.MetadataProfiles[i].MigrateLegacySourcePairs()
+			needSave = true
+		}
+	}
 
 	overrides, keys := env.ReadConfigOverrides()
 	ApplyEnvOverrides(cfg, overrides, keys)
@@ -1749,11 +1790,14 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyAdminMustChangePwd:         func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyTrustedProxyAuthHeader:     func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
 	env.KeyTrustedProxies:             func(d, s *Config) { d.TrustedProxies = append([]string(nil), s.TrustedProxies...) },
-	env.KeyProviders:                  func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
-	env.KeyIndexers:                   func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
-	env.KeyDatabaseDriver:             func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
-	env.KeyDatabaseURL:                func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
-	env.KeyMetadataEnabled:            func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
+	env.KeyCatalogSourceNetworks: func(d, s *Config) {
+		d.CatalogSourceNetworks = append([]string(nil), s.CatalogSourceNetworks...)
+	},
+	env.KeyProviders:       func(d, s *Config) { d.Providers = cloneProviders(s.Providers) },
+	env.KeyIndexers:        func(d, s *Config) { d.Indexers = cloneIndexers(s.Indexers) },
+	env.KeyDatabaseDriver:  func(d, s *Config) { d.DatabaseDriver = s.DatabaseDriver },
+	env.KeyDatabaseURL:     func(d, s *Config) { d.DatabaseURL = s.DatabaseURL },
+	env.KeyMetadataEnabled: func(d, s *Config) { d.Metadata.Enabled = s.Metadata.Enabled },
 }
 
 // cloneProviders deep-copies the pointer fields so the two configs never share
@@ -1832,6 +1876,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		AdminMustChangePassword:    o.AdminMustChangePwd,
 		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,
 		TrustedProxies:             append([]string(nil), o.TrustedProxies...),
+		CatalogSourceNetworks:      append([]string(nil), o.CatalogSourceNetworks...),
 		DatabaseDriver:             o.DatabaseDriver,
 		DatabaseURL:                o.DatabaseURL,
 		Metadata:                   MetadataConfig{Enabled: &o.MetadataEnabled},
@@ -1918,6 +1963,9 @@ func (c *Config) RedactForAPI() Config {
 	out.AdminToken = ""
 	out.TrustedProxyAuthHeader = ""
 	out.TrustedProxies = nil
+	// Like TrustedProxies: an infrastructure allowlist, kept out of the
+	// dashboard so a compromised session cannot widen the SSRF guard.
+	out.CatalogSourceNetworks = nil
 	out.NewznabAPIKey = ""
 	out.ProxyAuthUser = ""
 	out.ProxyAuthPass = ""

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/paths"
 	"streamnzb/pkg/core/persistence"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/text/language"
 
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/indexer/easynews"
 	"streamnzb/pkg/indexer/newznab"
 	"streamnzb/pkg/search/ranking"
@@ -55,12 +57,14 @@ type configValidationPlan struct {
 	validateDefineLibraries        bool
 	validateDatabase               bool
 	validateTrustedProxyAuth       bool
+	validateCatalogSourceNetworks  bool
 }
 
 func fullConfigValidationPlan() configValidationPlan {
 	return configValidationPlan{
 		validateKeepLogFiles:           true,
 		validateTrustedProxyAuth:       true,
+		validateCatalogSourceNetworks:  true,
 		validateNZBHistoryRetention:    true,
 		validatePlaybackStartupTimeout: true,
 		validateIndexerProxyURL:        true,
@@ -177,6 +181,9 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 	_, patchedProxies := raw["trusted_proxies"]
 	if patchedHeader || patchedProxies {
 		plan.validateTrustedProxyAuth = true
+	}
+	if _, ok := raw["catalog_source_networks"]; ok {
+		plan.validateCatalogSourceNetworks = true
 	}
 	_, patchedDriver := raw["database_driver"]
 	_, patchedDatabaseURL := raw["database_url"]
@@ -437,6 +444,18 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 			errors[field] = err.Error()
 		}
 	}
+	// Only when this list is itself being edited, for the same reason as the
+	// trusted-proxy pair above and more so: the field is redacted from
+	// /api/config and has no dashboard control, so a bad value that arrived
+	// from CATALOG_SOURCE_NETWORKS or a hand-edited file would otherwise
+	// reject every unrelated save with an error no page can display or clear.
+	// At runtime a bad list degrades to no exceptions at all
+	// (CatalogSourceAllowedNetworks fails closed).
+	if plan.validateCatalogSourceNetworks && len(cfg.CatalogSourceNetworks) > 0 {
+		if _, err := httpx.ParseNetworks(cfg.CatalogSourceNetworks, "catalog_source_networks"); err != nil {
+			errors["catalog_source_networks"] = err.Error()
+		}
+	}
 	if plan.validateDatabase {
 		if field, err := validateDatabaseSettings(cfg); err != nil {
 			errors[field] = err.Error()
@@ -651,10 +670,26 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.language", i)] = "Not a valid language tag"
 				}
 			}
-			switch mp.SeriesSource {
-			case "", "tvdb", "tmdb":
-			default:
-				errors[fmt.Sprintf("metadata_profiles.%d.series_source", i)] = "Unknown series source"
+			// Each list is an order, not a set of flags: an unknown entry is
+			// reported rather than dropped silently, because a typo would
+			// otherwise shorten the fallback chain invisibly. Repeats and an
+			// empty list are normalized on save, not rejected.
+			for _, sources := range []struct {
+				field   string
+				listed  []string
+				allowed []string
+			}{
+				{"movie_sources", mp.MovieSources, config.MovieMetaSourceOptions()},
+				{"series_sources", mp.SeriesSources, config.SeriesMetaSourceOptions()},
+				{"anime_sources", mp.AnimeSources, config.AnimeMetaSourceOptions()},
+			} {
+				for _, source := range sources.listed {
+					if !slices.Contains(sources.allowed, strings.ToLower(strings.TrimSpace(source))) {
+						errors[fmt.Sprintf("metadata_profiles.%d.%s", i, sources.field)] =
+							fmt.Sprintf("Unknown source %q; choose from %s", source, strings.Join(sources.allowed, ", "))
+						break
+					}
+				}
 			}
 			if pattern := strings.TrimSpace(mp.PosterURLPattern); pattern != "" {
 				if !strings.Contains(pattern, "{imdb_id}") {
@@ -663,13 +698,63 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 					errors[fmt.Sprintf("metadata_profiles.%d.poster_url_pattern", i)] = "Not a valid http(s) URL"
 				}
 			}
+			externalIDs := make(map[string]bool, len(mp.ExternalCatalogs))
+			for j, source := range mp.ExternalCatalogs {
+				path := fmt.Sprintf("metadata_profiles.%d.external_catalogs.%d", i, j)
+				id := strings.TrimSpace(source.ID)
+				if id == "" {
+					errors[path+".id"] = "ID is required"
+				} else if externalIDs[id] || knownCatalogIDs[id] {
+					errors[path+".id"] = "ID must be unique"
+				}
+				externalIDs[id] = true
+				if strings.TrimSpace(source.Name) == "" {
+					errors[path+".name"] = "Name is required"
+				}
+				u, err := url.Parse(strings.TrimSpace(source.ManifestURL))
+				validSourceURL := err == nil && u != nil && u.Scheme == "https" && u.Host != ""
+				host, sourcePath := "", ""
+				if u != nil {
+					host, sourcePath = strings.ToLower(u.Host), u.Path
+				}
+				if source.Kind == "tmdb_list" {
+					validSourceURL = validSourceURL && (host == "themoviedb.org" || host == "www.themoviedb.org") && strings.HasPrefix(sourcePath, "/list/")
+				} else if source.Kind == "mdblist" {
+					validSourceURL = validSourceURL && (host == "mdblist.com" || host == "www.mdblist.com") && strings.HasPrefix(sourcePath, "/lists/")
+				} else if source.Kind == "letterboxd" {
+					validSourceURL = validSourceURL && (host == "letterboxd.com" || host == "www.letterboxd.com") && strings.Contains(sourcePath, "/list/")
+				} else {
+					validSourceURL = validSourceURL && strings.HasSuffix(sourcePath, "/manifest.json")
+				}
+				if !validSourceURL {
+					errors[path+".manifest_url"] = "Must be a public HTTPS manifest URL, TMDB list URL, MDBList URL, or Letterboxd list URL"
+				}
+				if strings.TrimSpace(source.RemoteID) == "" {
+					errors[path+".remote_id"] = "Catalog id is required"
+				}
+				// Both characters are structural in "/catalog/{type}/{id}/{extra}.json":
+				// a slash splits the path, and parseCatalogPath recognizes the
+				// optional extra by the "=" in its final segment, so an id
+				// containing either would be parsed as something else entirely.
+				if strings.ContainsAny(id, "/=") {
+					errors[path+".id"] = "Catalog id cannot contain a slash or an equals sign"
+				}
+				switch strings.ToLower(strings.TrimSpace(source.RemoteType)) {
+				case "movie", "series", "anime", "tv":
+				default:
+					errors[path+".remote_type"] = "Only movie, series, anime, or tv browse catalogs are supported"
+				}
+			}
 			for j, toggle := range mp.Catalogs {
-				if !knownCatalogIDs[toggle.ID] {
+				if !knownCatalogIDs[toggle.ID] && !externalIDs[toggle.ID] {
 					errors[fmt.Sprintf("metadata_profiles.%d.catalogs.%d", i, j)] = "Unknown catalog id"
 				}
 			}
 			if mp.MaxCertification != "" && !knownCertIDs[mp.MaxCertification] {
 				errors[fmt.Sprintf("metadata_profiles.%d.max_certification", i)] = "Unknown rating limit"
+			}
+			if mp.UnreleasedWindowDays != nil && (*mp.UnreleasedWindowDays < 0 || *mp.UnreleasedWindowDays > config.MaxUnreleasedWindowDays) {
+				errors[fmt.Sprintf("metadata_profiles.%d.unreleased_window_days", i)] = fmt.Sprintf("Must be between 0 and %d days", config.MaxUnreleasedWindowDays)
 			}
 		}
 	}

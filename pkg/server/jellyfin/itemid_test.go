@@ -108,7 +108,12 @@ func TestViewIDResolvesCatalog(t *testing.T) {
 	if err != nil || id.Kind != kindView || id.CatalogID != "tmdb.trending.movie" {
 		t.Fatalf("view id did not resolve: %+v %v", id, err)
 	}
-	if _, err := decodeItemID(viewID("no.such.catalog")); err == nil {
-		t.Fatalf("unknown catalog view decoded")
+	// A profile-owned external catalog is not in the static registry. Its
+	// opaque view id is validated against the requesting stream's enabled
+	// catalog definitions by the route layer before it can be opened.
+	unknown := viewID("external.profile.catalog")
+	id, err = decodeItemID(unknown)
+	if err != nil || id.Kind != kindView || id.CatalogID != unknown {
+		t.Fatalf("external view candidate did not survive decoding: %+v %v", id, err)
 	}
 }

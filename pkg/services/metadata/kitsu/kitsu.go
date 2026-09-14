@@ -373,6 +373,9 @@ type AnimeListing struct {
 	CoverImage     string
 	AgeRating      string // Kitsu enum: G / PG / R / R18
 	Nsfw           bool
+	// StartDate is the entry's first air date ("2024-01-07"), empty when
+	// Kitsu has none — an announced entry with no date yet.
+	StartDate string
 }
 
 type listingAPIResponse struct {
@@ -380,6 +383,7 @@ type listingAPIResponse struct {
 		ID         string `json:"id"`
 		Attributes struct {
 			CanonicalTitle string `json:"canonicalTitle"`
+			StartDate      string `json:"startDate"`
 			Titles         struct {
 				EN string `json:"en"`
 			} `json:"titles"`
@@ -458,6 +462,7 @@ func (c *Client) getListing(ctx context.Context, path string) ([]AnimeListing, e
 			CoverImage:     item.Attributes.CoverImage.Original,
 			AgeRating:      strings.TrimSpace(item.Attributes.AgeRating),
 			Nsfw:           item.Attributes.Nsfw,
+			StartDate:      strings.TrimSpace(item.Attributes.StartDate),
 		})
 	}
 	return listings, nil

@@ -6,6 +6,7 @@
 // 1,600-line component. Nothing here touches React, the DOM, or the network.
 
 import { CONTENT_KINDS } from '@/lib/profiles'
+import { uniquePreserveOrder } from '@/lib/lists'
 
 export function mapStreamsByUsername(streams) {
   return (Array.isArray(streams) ? streams : []).reduce((acc, stream) => {
@@ -17,17 +18,6 @@ export function mapStreamsByUsername(streams) {
 
 export function streamsFromMap(streamsByName) {
   return Object.values(streamsByName || {}).filter(Boolean)
-}
-
-export function uniquePreserveOrder(values) {
-  const seen = new Set()
-  const next = []
-  ;(Array.isArray(values) ? values : []).forEach((value) => {
-    if (!value || seen.has(value)) return
-    seen.add(value)
-    next.push(value)
-  })
-  return next
 }
 
 // sortedByKey rebuilds a map in key order. The dirty check compares serialized

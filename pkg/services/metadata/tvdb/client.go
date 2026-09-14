@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"streamnzb/pkg/core/logger"
@@ -175,6 +176,132 @@ type searchRemoteIDResponse struct {
 			ID int `json:"id"`
 		} `json:"series"`
 	} `json:"data"`
+}
+
+// SearchResult is the series-shaped portion of TVDB's unified search
+// response. The API has changed field casing over time, so decoding keeps the
+// documented tvdb_id alongside the older id/objectID alternatives.
+type SearchResult struct {
+	TVDBID         string `json:"tvdb_id"`
+	ID             string `json:"id"`
+	ObjectID       string `json:"objectID"`
+	Name           string `json:"name"`
+	NameTranslated string `json:"name_translated"`
+	// RawTitle is TVDB search's own "title" field. Some result shapes carry a
+	// title but no name/name_translated, so Title() falls back to it before
+	// giving up on the row entirely.
+	RawTitle string `json:"title"`
+	ImageURL string `json:"image_url"`
+	// Year is the first-air year, when the record publishes one at all — a
+	// search row carries no full date.
+	Year string `json:"year"`
+	// Translations is the search endpoint's own name-per-language map, keyed
+	// by ISO 639-3 ("eng", "jpn"). It is the only place a search row carries a
+	// readable name for a series whose record is not in the display language.
+	Translations map[string]string `json:"translations"`
+	Overview     string            `json:"overview"`
+	// Status is a plain string on a search row and an object on the full
+	// record. It is decoded tolerantly because it is only ever a hint here:
+	// one shape change upstream must not fail an entire search.
+	Status SearchStatus `json:"status"`
+	// RemoteIDs are the record's ids at other providers, which search already
+	// returns — an IMDb id costs no extra request.
+	RemoteIDs []struct {
+		ID         string `json:"id"`
+		SourceName string `json:"sourceName"`
+	} `json:"remote_ids"`
+}
+
+// IMDbID is the record's IMDb id from the ids search already returned, or ""
+// when TVDB knows none.
+func (r SearchResult) IMDbID() string {
+	for _, remote := range r.RemoteIDs {
+		if id := strings.TrimSpace(remote.ID); strings.HasPrefix(id, "tt") {
+			return id
+		}
+	}
+	return ""
+}
+
+// SearchStatus is a search row's status, from either spelling TVDB uses.
+type SearchStatus struct {
+	Name string
+}
+
+func (s *SearchStatus) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		s.Name = name
+		return nil
+	}
+	var object struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &object); err == nil {
+		s.Name = object.Name
+	}
+	return nil
+}
+
+// Unreleased reports that TVDB says the record has not aired yet. It is a
+// statement, unlike an absent date, which is only an absence.
+func (r SearchResult) Unreleased() bool {
+	return strings.EqualFold(strings.TrimSpace(r.Status.Name), "upcoming")
+}
+
+// TMDBID is the record's TMDB id from the same ids, or 0 when TVDB knows
+// none. It is what reaches TMDB for a record that has no IMDb id at all.
+func (r SearchResult) TMDBID() int {
+	for _, remote := range r.RemoteIDs {
+		if !strings.Contains(strings.ToLower(remote.SourceName), "themoviedb") {
+			continue
+		}
+		if id, err := strconv.Atoi(strings.TrimSpace(remote.ID)); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+type searchResponse struct {
+	Status string         `json:"status"`
+	Data   []SearchResult `json:"data"`
+}
+
+// SeriesID returns the numeric TVDB id regardless of which response spelling
+// the upstream currently uses ("123", "series-123", or tvdb_id).
+func (r SearchResult) SeriesID() string {
+	for _, raw := range []string{r.TVDBID, r.ID, r.ObjectID} {
+		id := strings.TrimPrefix(strings.TrimSpace(raw), "series-")
+		if _, err := strconv.Atoi(id); err == nil && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (r SearchResult) Title() string {
+	if title := strings.TrimSpace(r.NameTranslated); title != "" {
+		return title
+	}
+	if title := strings.TrimSpace(r.RawTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(r.Name)
+}
+
+// TitleIn is the result's name in lang3, then English, then whatever the
+// record itself is named. Search rows need this for the same reason series
+// records do: TVDB's default name is the show's original language, so a
+// search for Solo Leveling answers with 俺だけレベルアップな件 unless the
+// translation the row already carries is used.
+func (r SearchResult) TitleIn(lang3 string) string {
+	for _, code := range []string{lang3, EnglishISO3} {
+		if title := strings.TrimSpace(r.Translations[code]); title != "" {
+			return title
+		}
+	}
+	return r.Title()
 }
 
 type tokenState struct {
@@ -373,6 +500,32 @@ func (c *Client) ResolveTVDBID(remoteID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no TVDB series ID found for remote ID: %s", remoteID)
+}
+
+// SearchSeries returns TVDB's own series results for a title. Keeping this in
+// the TVDB client is important: callers must not substitute a broad Kitsu
+// search when TVDB is the user-selected primary source.
+func (c *Client) SearchSeries(query string) ([]SearchResult, error) {
+	if c == nil || c.apiKey == "" {
+		return nil, fmt.Errorf("TVDB API key not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	path := "/search?query=" + url.QueryEscape(query) + "&type=series&limit=20"
+	body, err := c.getBodyCached(path, listingCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	var out searchResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("failed to decode TVDB series search: %w", err)
+	}
+	if out.Status != successVal {
+		return nil, fmt.Errorf("TVDB series search failed: status=%s", out.Status)
+	}
+	return out.Data, nil
 }
 
 // episodesCacheTTL bounds the episode-list cache: air dates and late episode

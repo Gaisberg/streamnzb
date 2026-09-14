@@ -1,7 +1,10 @@
 // Package httpx holds the small request-inspection helpers that both server
-// packages need. They live down here rather than in pkg/server because
+// packages need, plus the guarded client used to fetch an operator-supplied
+// URL (see outbound.go). They live down here rather than in pkg/server because
 // pkg/server/api and pkg/server/stremio are siblings and cannot import each
-// other, and pkg/auth — which builds the session cookie — sits below both.
+// other, pkg/auth — which builds the session cookie — sits below both, and
+// pkg/services/metadata fetches operator-supplied list pages from further down
+// still.
 package httpx
 
 import (

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 
 	"streamnzb/pkg/auth"
@@ -56,6 +57,15 @@ func (s *Server) adminToken() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.config.AdminToken
+}
+
+// catalogSourceNetworks reads the non-public networks an external catalog
+// source may resolve to, under the same read lock and for the same reason as
+// adminUsername.
+func (s *Server) catalogSourceNetworks() []*net.IPNet {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.CatalogSourceAllowedNetworks()
 }
 
 // adminMustChangePassword reports whether the admin is still on the credential

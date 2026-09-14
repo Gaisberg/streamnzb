@@ -86,6 +86,7 @@ const (
 	KeyAdminMustChangePwd         = "admin_must_change_password"
 	KeyTrustedProxyAuthHeader     = "trusted_proxy_auth_header"
 	KeyTrustedProxies             = "trusted_proxies"
+	KeyCatalogSourceNetworks      = "catalog_source_networks"
 	KeyDatabaseDriver             = "database_driver"
 	KeyDatabaseURL                = "database_url"
 )
@@ -94,6 +95,7 @@ const AdminUsernameEnv = "ADMIN_USERNAME"
 const AdminForcePasswordResetEnv = "ADMIN_FORCE_PASSWORD_RESET"
 const TrustedProxyAuthHeaderEnv = "TRUSTED_PROXY_AUTH_HEADER"
 const TrustedProxiesEnv = "TRUSTED_PROXIES"
+const CatalogSourceNetworksEnv = "CATALOG_SOURCE_NETWORKS"
 
 var DefaultIndexerUserAgent = "StreamNZB/dev"
 var runtimeHeadersMu sync.RWMutex
@@ -425,6 +427,7 @@ type ConfigOverrides struct {
 	AdminMustChangePwd         bool
 	TrustedProxyAuthHeader     string
 	TrustedProxies             []string
+	CatalogSourceNetworks      []string
 	DatabaseDriver             string
 	DatabaseURL                string
 	MetadataEnabled            bool
@@ -450,6 +453,23 @@ func (r *envReader) str(dst *string, key string, envVars ...string) {
 			return
 		}
 	}
+}
+
+// strList assigns a comma-separated env var to dst as trimmed, non-empty
+// entries. A value of only separators and spaces records no override at all,
+// rather than an empty list that would read as "the operator cleared this".
+func (r *envReader) strList(dst *[]string, key, envVar string) {
+	var out []string
+	for _, part := range strings.Split(os.Getenv(envVar), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return
+	}
+	*dst = append(*dst, out...)
+	r.keys = append(r.keys, key)
 }
 
 // intVal assigns an int-valued env var to dst when it parses and passes valid.
@@ -511,14 +531,8 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		r.keys = append(r.keys, KeyAdminMustChangePwd)
 	}
 	r.str(&o.TrustedProxyAuthHeader, KeyTrustedProxyAuthHeader, TrustedProxyAuthHeaderEnv)
-	if v := os.Getenv(TrustedProxiesEnv); v != "" {
-		for _, part := range strings.Split(v, ",") {
-			if part = strings.TrimSpace(part); part != "" {
-				o.TrustedProxies = append(o.TrustedProxies, part)
-			}
-		}
-		r.keys = append(r.keys, KeyTrustedProxies)
-	}
+	r.strList(&o.TrustedProxies, KeyTrustedProxies, TrustedProxiesEnv)
+	r.strList(&o.CatalogSourceNetworks, KeyCatalogSourceNetworks, CatalogSourceNetworksEnv)
 	if o.Providers = readProvidersFromEnv(); len(o.Providers) > 0 {
 		r.keys = append(r.keys, KeyProviders)
 	}
