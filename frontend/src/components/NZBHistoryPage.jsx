@@ -404,8 +404,78 @@ function FunnelChip({ label, value, title }) {
   )
 }
 
+// The badges on a pre-profile drop: which stage turned it away, and what the
+// check expected against what the name said. The stage is the highlighted one
+// because it decides where to look next — validation means the query or the
+// metadata title, "known bad" means playback retired the release.
+const DROP_STAGE_LABELS = {
+  validation: 'validation',
+  bad: 'known bad',
+}
+
+function droppedBadges(drop) {
+  const badges = [{
+    key: 'stage',
+    label: DROP_STAGE_LABELS[drop.stage] || drop.stage || 'dropped',
+    highlight: true,
+  }]
+  if (drop.reason) badges.push({ key: 'reason', label: drop.reason })
+  if (drop.detail) badges.push({ key: 'detail', label: drop.detail })
+  if (drop.request) badges.push({ key: 'request', label: drop.request, title: 'The search request this result was answering' })
+  return badges
+}
+
+// One release the funnel turned away: its name, where it came from, and badges
+// for what did it. Shared by the profile's rejections and the drops that
+// happen before the profile, because they are the same event at different
+// stages and reading them differently would suggest they are not.
+function TurnedAwayRelease({ title, indexer, badges }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+      <div className="break-words text-xs [overflow-wrap:anywhere]">{title || '—'}</div>
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        {indexer && <span className="text-[10px] text-muted-foreground">{indexer}</span>}
+        {badges.map((badge) => (
+          <Badge
+            key={badge.key}
+            variant="outline"
+            className={cn('px-1.5 py-0 text-[10px] font-normal', badge.highlight ? 'border-primary/40 text-primary' : 'text-muted-foreground')}
+            title={badge.title}
+          >
+            {badge.label}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// A collapsed list of turned-away releases. Collapsed by default: a search
+// that dropped two hundred wrong results should not bury the funnel it is
+// explaining.
+function TurnedAwayList({ label, note, children }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        {label}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {children}
+          {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SearchDiagnosticsPanel({ diagnostic }) {
-  const [showRejected, setShowRejected] = useState(false)
   const snap = useMemo(() => parseDiagnosticPayload(diagnostic), [diagnostic])
   if (!snap) return null
 
@@ -413,6 +483,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
   const validation = Array.isArray(snap.validation) ? snap.validation : []
   const calls = Array.isArray(snap.indexer_calls) ? snap.indexer_calls : []
   const rejected = Array.isArray(snap.rejected) ? snap.rejected : []
+  const dropped = Array.isArray(snap.dropped) ? snap.dropped : []
   const rawTotal = validation.reduce((sum, v) => sum + (v.raw || 0), 0)
   const validatedTotal = validation.reduce((sum, v) => sum + (v.kept || 0), 0)
   const droppedTitle = validation.reduce((sum, v) => sum + (v.dropped_title || 0), 0)
@@ -501,43 +572,43 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         </div>
       )}
 
+      {/* Before the profile: the releases title/year validation and the
+          known-bad filter turned away. The funnel chips above say how many;
+          this says which, which is the only form that answers "where did my
+          release go". */}
+      {dropped.length > 0 && (
+        <TurnedAwayList
+          label={`Dropped before the profile (${dropped.length}${snap.dropped_omitted > 0 ? ` of ${dropped.length + snap.dropped_omitted}` : ''})`}
+          note={snap.dropped_omitted > 0
+            ? `${snap.dropped_omitted} more were dropped but not recorded — the per-request cap keeps a search answered with a thousand wrong results from being stored whole.`
+            : ''}
+        >
+          {dropped.map((d, index) => (
+            <TurnedAwayRelease
+              key={`${d.title}-${index}`}
+              title={d.title}
+              indexer={d.indexer}
+              badges={droppedBadges(d)}
+            />
+          ))}
+        </TurnedAwayList>
+      )}
+
       {rejected.length > 0 && (
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={() => setShowRejected((current) => !current)}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            {showRejected ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            Rejected by profile ({rejected.length})
-          </button>
-          {showRejected && (
-            <div className="mt-2 space-y-1.5">
-              {rejected.map((r, index) => (
-                <div key={`${r.title}-${index}`} className="rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
-                  <div className="break-words text-xs [overflow-wrap:anywhere]">{r.title || '—'}</div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    {r.indexer && <span className="text-[10px] text-muted-foreground">{r.indexer}</span>}
-                    {(r.reasons || []).map((reason) => (
-                      <Badge
-                        key={reason}
-                        variant="outline"
-                        className={cn(
-                          'px-1.5 py-0 text-[10px] font-normal',
-                          reason.startsWith('rule: ')
-                            ? 'border-primary/40 text-primary'
-                            : 'text-muted-foreground',
-                        )}
-                      >
-                        {reason}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <TurnedAwayList label={`Rejected by profile (${rejected.length})`}>
+          {rejected.map((r, index) => (
+            <TurnedAwayRelease
+              key={`${r.title}-${index}`}
+              title={r.title}
+              indexer={r.indexer}
+              badges={(r.reasons || []).map((reason) => ({
+                key: reason,
+                label: reason,
+                highlight: reason.startsWith('rule: '),
+              }))}
+            />
+          ))}
+        </TurnedAwayList>
       )}
     </div>
   )

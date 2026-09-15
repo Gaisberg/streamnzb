@@ -56,19 +56,27 @@ type FormatContext struct {
 	Age             string // humanized age from pub date, e.g. "2y", "37d"
 	Duration        string // humanized runtime, e.g. "1h 52m" (indexer-reported, e.g. Easynews)
 	// Languages are the release's languages as ISO 639-1 codes: what the name
-	// says, merged with the language the indexer tagged the release with.
+	// says, the language the indexer tagged the release with, and the audio
+	// tracks a probe read out of the file, merged. .LanguageSource says which
+	// of the three answered.
 	Languages stringList
 	// LanguageFlags are the same languages as flag emojis. Languages that no
 	// one flag identifies are skipped — Turkish, Persian and the Indian
 	// languages other than Hindi have no flag here, so this list is shorter
 	// than .Languages more often than not.
 	LanguageFlags stringList
-	// Subtitles are the release's subtitle languages as ISO 639-1 codes: the
-	// indexer's tag, merged with the tracks ffprobe found when the file has
-	// been opened. A release name never lists them, so this is empty for
-	// anything the indexer left untagged.
+	// Subtitles are the release's subtitle languages as ISO 639-1 codes: what
+	// the name spells out ("Arabic.Subs"), the indexer's tag, and the tracks
+	// ffprobe found when the file has been opened, merged.
 	Subtitles stringList
-	Caps      string // ffprobe-verified caps summary (library releases only)
+	// LanguageSource names which account of .Languages answered —
+	// "measured" (the file's audio tracks were read), "reported" (the
+	// indexer's tag contributed), "inferred" (the release name alone), or ""
+	// when nothing said anything. It speaks for the audio languages only: a
+	// probe that read no tracks still measures the video, which is why
+	// .Verified can be true while this says "inferred".
+	LanguageSource string
+	Caps           string // ffprobe-verified caps summary (library releases only)
 
 	// Kind is the content kind the request was ranked as: "movie", "series",
 	// "anime_movie" or "anime_show". IsAnime is the anime half of that
@@ -122,6 +130,22 @@ type FormatContext struct {
 	Audio       stringList
 	Channels    stringList
 	HDR         stringList
+	// Extras are the extra-content tokens in the name ("sample",
+	// "featurette", "bonus"), which is how a release that is not the feature
+	// itself announces itself.
+	Extras stringList
+	// ParsedLanguages and ParsedSubtitles are the release name's own account
+	// of the two lists .Languages and .Subtitles merge, as ISO 639-1 codes.
+	// They exist for the question the merged lists cannot answer: whether the
+	// name itself claimed a language, or whether it came from the indexer's
+	// tag or the file's tracks. Pair them with .Probed.AudioLanguages and
+	// .Probed.SubtitleLanguages to badge a claim the file disagrees with.
+	ParsedLanguages stringList
+	ParsedSubtitles stringList
+	// ParsedSize is the size token the name spells out ("1.4GB"), which is
+	// the group's claim rather than the posting's measured size — use .Size
+	// for that. Empty for the many names that carry no such token.
+	ParsedSize  string
 	Proper      bool
 	Repack      bool
 	Remastered  bool
@@ -132,12 +156,21 @@ type FormatContext struct {
 	Hardcoded   bool
 	Dubbed      bool
 	Subbed      bool
+	DualAudio   bool
 	Commentary  bool
 	Complete    bool
 	Documentary bool
 	Unrated     bool
 	Uncensored  bool
 	PPV         bool
+	Adult       bool
+	// Convert marks a release re-encoded from another format, and Trash one
+	// the parser reads as junk (a cam, a telesync, a re-upload of a re-upload).
+	Convert bool
+	Trash   bool
+	// Torrent marks a name shaped like a torrent release. It says something
+	// about where the name came from, not about the posting.
+	Torrent     bool
 	Season      int
 	Episode     int
 	Seasons     intList
@@ -825,6 +858,10 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 		ctx.Audio = meta.Audio
 		ctx.Channels = meta.Channels
 		ctx.HDR = meta.HDR
+		ctx.Extras = meta.Extras
+		ctx.ParsedSize = meta.Size
+		ctx.ParsedLanguages = parsedLanguageCodes(meta)
+		ctx.ParsedSubtitles = meta.Subtitles
 		ctx.Proper = meta.Proper
 		ctx.Repack = meta.Repack
 		ctx.Remastered = meta.Remastered
@@ -835,12 +872,17 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 		ctx.Hardcoded = meta.Hardcoded
 		ctx.Dubbed = meta.Dubbed
 		ctx.Subbed = meta.Subbed
+		ctx.DualAudio = meta.DualAudio
 		ctx.Commentary = meta.Commentary
 		ctx.Complete = meta.Complete
 		ctx.Documentary = meta.Documentary
 		ctx.Unrated = meta.Unrated
 		ctx.Uncensored = meta.Uncensored
 		ctx.PPV = meta.PPV
+		ctx.Adult = meta.Adult
+		ctx.Convert = meta.Convert
+		ctx.Trash = meta.Trash
+		ctx.Torrent = meta.Torrent
 		ctx.Season = meta.Season
 		ctx.Episode = meta.Episode
 		ctx.Seasons = meta.Seasons
@@ -851,7 +893,9 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 	// Neither source is complete: the name carries the tokens the group chose
 	// to put in it, and the indexer's tag is regularly the only place a dub's
 	// language appears at all.
-	ctx.Languages = releaseLanguageCodes(rel, meta, cand.Verdict.Probed)
+	codes, source := releaseLanguagesWithSource(rel, meta, cand.Verdict.Probed)
+	ctx.Languages = codes
+	ctx.LanguageSource = string(source)
 	ctx.LanguageFlags = languageFlags(ctx.Languages)
 	ctx.Subtitles = releaseSubtitleCodes(rel, meta, cand.Verdict.Probed)
 	if probed := cand.Verdict.Probed; probed != nil && probed.DurationSeconds > 0 {

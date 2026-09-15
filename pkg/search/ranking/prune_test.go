@@ -144,10 +144,10 @@ func TestExplainCoversThePrunePass(t *testing.T) {
 		},
 	)
 
-	explanations, aggregates := p.Explain([]string{
+	explanations, aggregates := p.Explain(ranking.TitleFixtures(
 		"Movie 2020 1080p WEB-DL H264-AAA",
 		"Movie 2020 1080p WEB-DL H264-BADGRP1",
-	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 
 	foundAgg := false
 	for _, agg := range aggregates {
@@ -226,10 +226,10 @@ func TestExplainReportsRelativeAggregatesPerRelease(t *testing.T) {
 		},
 	)
 
-	_, aggregates := p.Explain([]string{
+	_, aggregates := p.Explain(ranking.TitleFixtures(
 		"Movie 2020 1080p WEB-DL H264-AAA",
 		"Movie 2020 1080p WEB-DL H264-BBB",
-	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 
 	perRelease := map[string]int{}
 	shared := 0

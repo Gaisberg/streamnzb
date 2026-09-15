@@ -80,6 +80,29 @@ Search results are cached per stream and title. A search that found **nothing** 
 
 If it is still empty after that, the air-date gate may be holding it: an episode that has not aired answers with no results without asking any indexer, and **History** shows it as **Not aired yet** with the air date it read instead of a bare "No results". The gate opens as soon as that date begins anywhere on Earth (midnight at UTC+14), so it cannot hide a release that already exists — nothing airs before its own air date starts. The server's timezone does not enter into it; only its clock being badly wrong would. If the show's air dates simply run ahead of when its releases land, turn **Skip unaired episodes** off in that stream's **Indexers** tab (Streams → pick the stream → Indexers).
 
+## A release exists on the indexer but never shows up
+
+Expand the request on **History**. Its search panel walks the funnel from what
+each indexer returned to what the client got, and the two collapsed lists below
+it name the releases each stage turned away:
+
+- **Dropped before the profile** — title, year, season or episode validation,
+  or a release playback has already retired as unplayable. Each entry names the
+  check, what it expected against what the release name said, and the search
+  request it was answering. `expected "lioness", got "Special Ops Lioness"` is
+  the answer to most of these: scene names keep prefixes the metadata title
+  drops, and the validation query comes from metadata.
+- **Rejected by profile** — the filter profile's traits, limits, languages and
+  named rules. A `rule:` badge means one of your own rules did it, which is a
+  different place to look than a blocked quality.
+
+A search answered with hundreds of wrong results records only the first 50 per
+request by name; the panel says how many more there were. The counts above the
+lists are always complete.
+
+If the release is in neither list and no indexer reported it, the query itself
+is the thing to look at — see [Search requests](search-queries.md).
+
 ## Locked out after repeated failed logins
 
 The admin login backs off after repeated wrong passwords from the same address. The first four failures cost nothing; after that each further failure doubles the wait before the next attempt is accepted, starting at 2 seconds and stopping at 15 minutes. Attempts made during a wait are answered with `429 Too Many Requests` and a `Retry-After` header rather than being checked.

@@ -137,6 +137,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Filters & ranking](docs/filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
 - [Rules](docs/rules.md) — named conditions over everything known about a release
 - [Custom result formats](docs/result-formatting.md) — per-stream result templates, helper reference, and the AIOStreams formatter import
+- [Profile & template API](docs/profile-api.md) — the machine-readable vocabulary and evaluation endpoints, for profile tooling
 - [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](docs/obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [Integrations](docs/integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client

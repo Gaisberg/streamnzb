@@ -441,3 +441,87 @@ func TestSingleLineLabel(t *testing.T) {
 		t.Errorf("label not capped at %d runes: got %d", maxSourceLabelRunes, len(runes))
 	}
 }
+
+// Every normalized field jhin's parser sets has to be reachable from a
+// template. The six flags below were missing, and a template author's only
+// sign of that is a field that silently renders empty — {{.DualAudio}} on a
+// dual-audio release read the same as on a release without it.
+func TestFormatContextExposesParserFlags(t *testing.T) {
+	cand := triage.Candidate{Release: &release.Release{
+		Title: "[Group] Show - 01 (1080p) [Dual Audio] [Eng Subs] [Sample]",
+	}}
+	ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Show", "", false, 0)
+
+	if got := renderFormat(t, "{{.DualAudio}}", ctx); got != "true" {
+		t.Errorf("{{.DualAudio}} = %q, want %q", got, "true")
+	}
+	if got := renderFormat(t, "{{.Extras}}", ctx); got != "Sample" {
+		t.Errorf("{{.Extras}} = %q, want %q", got, "Sample")
+	}
+
+	trash := newFormatContext(
+		triage.Candidate{Release: &release.Release{Title: "Movie.2020.1080p.CAM.x264-TRASH"}},
+		1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	if got := renderFormat(t, "{{.Trash}}", trash); got != "true" {
+		t.Errorf("{{.Trash}} on a CAM = %q, want %q", got, "true")
+	}
+
+	// The remaining three have no fixture that sets them, so assert they
+	// render as a readable false rather than failing to resolve — a template
+	// naming a field that does not exist is an execute error, not a blank.
+	for _, field := range []string{"{{.Adult}}", "{{.Convert}}", "{{.Torrent}}"} {
+		if got := renderFormat(t, field, ctx); got != "false" {
+			t.Errorf("%s = %q, want %q", field, got, "false")
+		}
+	}
+	if got := renderFormat(t, "{{.ParsedSize}}", ctx); got != "" {
+		t.Errorf("{{.ParsedSize}} with no size token = %q, want empty", got)
+	}
+}
+
+// Subtitle-language identity: the name's claim, the file's tracks and the
+// merge of everything are three different answers, and a template could only
+// reach the last two. Telling "the name says Arabic subs" from "the file has
+// Arabic subs" is what a badge about trusting the name needs.
+func TestFormatContextSeparatesParsedLanguagesFromTheMerge(t *testing.T) {
+	rel := &release.Release{
+		Title: "Movie.2020.1080p.BluRay.x264.German.English.Arabic.Subs-GRP",
+		// The indexer tags a subtitle language the name never mentions.
+		Subtitles: []string{"fr"},
+	}
+	cand := triage.Candidate{Release: rel}
+	cand.Verdict.Probed = &release.MediaCaps{
+		TracksProbed:      true,
+		SubtitleLanguages: []string{"es"},
+		AudioLanguages:    []string{"de"},
+	}
+	ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+
+	// The name spells out Arabic subs, and jhin folds them into the languages
+	// as well — so the two parsed lists are what tells them apart.
+	if got := renderFormat(t, "{{.ParsedSubtitles}}", ctx); got != "ar" {
+		t.Errorf("{{.ParsedSubtitles}} = %q, want %q", got, "ar")
+	}
+	if got := renderFormat(t, `{{join (without .ParsedSubtitles .ParsedLanguages) ","}}`, ctx); got != "en,de" {
+		t.Errorf("languages the name claims as spoken = %q, want %q", got, "en,de")
+	}
+
+	// The merged list still carries every source, which existing templates
+	// depend on.
+	for _, want := range []string{"ar", "fr", "es"} {
+		if got := renderFormat(t, "{{.Subtitles}}", ctx); !strings.Contains(got, want) {
+			t.Errorf("{{.Subtitles}} = %q, want it to include %q", got, want)
+		}
+	}
+
+	// A probe that read the audio tracks is what makes the languages
+	// measured; the name alone leaves them inferred.
+	if got := renderFormat(t, "{{.LanguageSource}}", ctx); got != "measured" {
+		t.Errorf("{{.LanguageSource}} with probed tracks = %q, want %q", got, "measured")
+	}
+	named := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title}},
+		1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	if got := renderFormat(t, "{{.LanguageSource}}", named); got != "inferred" {
+		t.Errorf("{{.LanguageSource}} from the name alone = %q, want %q", got, "inferred")
+	}
+}
