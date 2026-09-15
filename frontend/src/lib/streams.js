@@ -160,32 +160,13 @@ export function buildStreamStateFromDraft(username, token, draft, existingOverri
     result_name_template: draft.result_name_template || '',
     result_description_template: draft.result_description_template || '',
     addon_name: draft.addon_name || '',
+    simkl_scrobble: draft.simkl_scrobble === true,
+    mdblist_scrobble: draft.mdblist_scrobble === true,
   }
 }
 
 export function generalCompactValues(stream) {
   return [stream?.filter_sorting_mode === 'aiostreams' ? 'AIOStreams' : 'Custom']
-}
-
-export function generalDetailValues(stream) {
-  return [
-    `Failover ${stream?.enable_failover !== false ? 'On' : 'Off'}`,
-    `Variants ${variantAttemptsLabel(stream?.variant_attempts)}`,
-    `Indexers ${(stream?.indexer_mode || 'combine') === 'failover' ? 'Failover' : 'Combine'}`,
-    `Results ${stream?.results_mode === 'display_all' ? 'All' : 'Combine'}`,
-    `Auto providers ${stream?.auto_add_providers === true ? 'On' : 'Off'}`,
-    `Auto indexers ${stream?.auto_add_indexers === true ? 'On' : 'Off'}`,
-  ]
-}
-
-export function filterSortingSummaryValues(stream) {
-  if (stream?.filter_sorting_mode === 'aiostreams') {
-    return ['AIOStreams']
-  }
-  if (stream?.filter_profile_name) {
-    return [stream.filter_profile_name]
-  }
-  return ['None']
 }
 
 export function filterSortingLabel(draft) {
@@ -200,12 +181,6 @@ export function filterSortingLabel(draft) {
 
 export function metadataSummaryValues(stream) {
   return [stream?.metadata_profile_name || 'Off']
-}
-
-export function formattingSummaryValues(stream) {
-  if (stream?.format_profile_name) return [stream.format_profile_name]
-  // Legacy inline templates survive until the migration has run.
-  return [stream?.result_name_template || stream?.result_description_template ? 'Custom' : 'Default']
 }
 
 export function indexerModeLabel(value) {

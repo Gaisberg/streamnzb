@@ -7,17 +7,13 @@ import { Switch } from "@/components/ui/switch"
 import { CONTENT_KINDS } from "@/lib/profiles"
 import {
   MAX_ADDON_NAME_LENGTH,
-  activeProviderNames,
   applyFilterSortingMode,
   buildIndexerOverrides,
   buildStreamDraft,
   buildStreamStateFromDraft,
   defaultAddonName,
   filterSortingLabel,
-  filterSortingSummaryValues,
-  formattingSummaryValues,
   generalCompactValues,
-  generalDetailValues,
   getInitialStreamDraft,
   indexerModeLabel,
   mapStreamsByUsername,
@@ -33,42 +29,21 @@ import {
 } from '@/lib/streams'
 import { uniquePreserveOrder } from "@/lib/lists"
 import { isAvailNZBEnabled } from "@/lib/availnzb"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, focusDialogCloseButton } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { ManagerShell } from "@/components/ManagerShell"
+import { useStreamDraft } from "@/hooks/useStreamDraft"
 import { MDBListCard, SimklCard } from "@/components/WatchTrackingCards"
 import { SelectionSection } from "@/components/ui/selection-section"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { apiFetch } from "@/api"
 import { copyToClipboard } from "@/lib/utils"
-import { ArrowUpDown, Check, ChevronDown, ChevronUp, Clapperboard, Clipboard, Copy, Globe, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X } from "lucide-react"
+import { Check, ChevronDown, Clipboard, Copy, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X, Zap } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
-function SummaryRow({ label, values, icon: Icon }) {
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {Icon && <Icon className="h-3.5 w-3.5" />}
-        <span>{label}</span>
-      </div>
-      {values.length === 0 ? (
-        <div className="text-sm text-muted-foreground">None</div>
-      ) : (
-        <div className="flex flex-col items-start gap-2">
-          {values.map((value) => (
-            <span key={value} className="inline-flex w-fit items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{value}</span>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// EndpointPanel groups what a client needs to connect to a stream: one panel
-// per client kind (Stremio gets a manifest URL, Jellyfin a server URL and a
-// login), each row being a label, a value and its actions.
 function EndpointPanel({ title, icon: Icon, hint, children }) {
   return (
     <div className="min-w-0 space-y-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2.5">
@@ -121,12 +96,87 @@ const STREAM_DIALOG_TABS = [
 
 // tabFieldErrorKeys maps a dialog tab to the field errors it hosts, so the
 // tab strip can flag where a failed save needs attention.
-function StreamDialog({
-  open,
-  onOpenChange,
-  initialStream,
-  mode = 'edit',
-  existingNames = [],
+// StreamNameDialog is the one place a stream name is typed. Creating and
+// renaming share it because they ask the same question and refuse the same
+// answers — a blank name, or one already taken.
+function StreamNameDialog({ open, onOpenChange, title, description, value, onValueChange, taken, confirmLabel, saving, onConfirm }) {
+  const trimmed = (value || '').trim()
+  const clash = taken.some((name) => name.toLowerCase() === trimmed.toLowerCase())
+  const problem = !trimmed ? 'Stream name is required' : clash ? 'A stream with that name already exists.' : ''
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <Input
+          autoFocus
+          value={value || ''}
+          onChange={(event) => onValueChange(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter' && !problem && !saving) onConfirm(trimmed) }}
+          placeholder="Stream01"
+          className={problem && trimmed ? 'border-destructive focus-visible:ring-destructive' : ''}
+        />
+        {problem && trimmed && <p className="text-xs text-destructive">{problem}</p>}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" disabled={Boolean(problem) || saving} onClick={() => onConfirm(trimmed)}>
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// AddStreamDialog asks only for the name. Everything else is edited inline
+// once the stream exists, which is also how the profile pages create.
+function AddStreamDialog({ open, onOpenChange, draft, existingNames, saving, onCreate }) {
+  const [name, setName] = useState('')
+  useEffect(() => { if (open) setName(draft?.username || '') }, [open, draft])
+  return (
+    <StreamNameDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add stream"
+      description="Pick a name. It is the Jellyfin login for this stream, and it labels its addon."
+      value={name}
+      onValueChange={setName}
+      taken={existingNames}
+      confirmLabel="Create"
+      saving={saving}
+      onConfirm={(trimmed) => onCreate({ ...(draft || {}), username: trimmed })}
+    />
+  )
+}
+
+function RenameStreamDialog({ target, onChange, existingNames, saving, onRename }) {
+  return (
+    <StreamNameDialog
+      open={Boolean(target)}
+      onOpenChange={(nextOpen) => { if (!nextOpen) onChange(null) }}
+      title="Rename stream"
+      description="The token is untouched, so an installed addon URL keeps working. The stream's history moves with it."
+      value={target?.to ?? ''}
+      onValueChange={(next) => onChange({ ...target, to: next })}
+      taken={existingNames.filter((name) => name !== target?.from)}
+      confirmLabel="Rename"
+      saving={saving}
+      onConfirm={(trimmed) => onRename(target.from, trimmed)}
+    />
+  )
+}
+
+// StreamEditor is the detail pane of the streams master/detail: every setting
+// a stream carries, under tabs. The draft is owned by the page (useStreamDraft)
+// so edits auto-save as they are made, and the stream's name is not here at
+// all — it is a login identity, renamed deliberately from the header.
+function StreamEditor({
+  draft,
+  setDraft,
+  fieldErrors = {},
   providerNames,
   providerConnectionTotals,
   enabledProviderNames,
@@ -139,43 +189,9 @@ function StreamDialog({
   formatProfiles = [],
   globalConfig,
   onAccountsChange,
-  onSave,
-  saving,
 }) {
-  const isEditing = mode === 'edit'
   const availNZBEnabled = isAvailNZBEnabled(globalConfig?.availnzb_mode)
-  const [draft, setDraft] = useState(() => getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
-  const [saveError, setSaveError] = useState('')
-  const [fieldErrors, setFieldErrors] = useState({})
   const [activeTab, setActiveTab] = useState('general')
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
-  const [wasOpen, setWasOpen] = useState(open)
-  const dialogIdentity = `${mode}:${initialStream?.username || ''}`
-  const [lastDialogIdentity, setLastDialogIdentity] = useState(dialogIdentity)
-
-  useEffect(() => {
-    if (open && (!wasOpen || dialogIdentity !== lastDialogIdentity)) {
-      setDraft(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
-      setSaveError('')
-      setFieldErrors({})
-      setActiveTab('general')
-      setLastDialogIdentity(dialogIdentity)
-    }
-    setWasOpen(open)
-  }, [open, initialStream, isEditing, wasOpen, dialogIdentity, lastDialogIdentity, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames])
-
-  const normalizedInitial = JSON.stringify(getInitialStreamDraft(initialStream, isEditing, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames))
-  const normalizedCurrent = JSON.stringify(normalizeStreamDraft(draft))
-  const isDirty = normalizedInitial !== normalizedCurrent
-  const aiostreamsMode = draft.filter_sorting_mode === 'aiostreams'
-
-  const requestClose = () => {
-    if (isDirty) {
-      setShowDiscardConfirm(true)
-      return
-    }
-    onOpenChange(false)
-  }
 
   const toggleListValue = (field, value, checked) => {
     setDraft((current) => {
@@ -224,97 +240,25 @@ function StreamDialog({
     })
   }
 
-  const handleSave = () => {
-    const next = normalizeStreamDraft(draft)
-    const nextFieldErrors = {}
-    if (!next.username) {
-      nextFieldErrors.username = 'Stream name is required'
-    } else if (existingNames.some((name) => name.toLowerCase() === next.username.toLowerCase() && name !== initialStream?.username)) {
-      nextFieldErrors.username = 'A stream with that name already exists.'
-    }
-    if (next.providers.length === 0) {
-      nextFieldErrors.providers = 'Add at least one provider.'
-    } else if (next.disabled_providers.length === next.providers.length) {
-      nextFieldErrors.providers = 'Keep at least one provider enabled.'
-    }
-    if (next.indexers.length === 0) {
-      nextFieldErrors.indexers = 'Add at least one indexer.'
-    }
-    if (next.movie_search_queries.length === 0) {
-      nextFieldErrors.movie_search_queries = 'Add at least one movie search request.'
-    }
-    if (next.series_search_queries.length === 0) {
-      nextFieldErrors.series_search_queries = 'Add at least one TV search request.'
-    }
-    if (Object.keys(nextFieldErrors).length > 0) {
-      setFieldErrors(nextFieldErrors)
-      setSaveError(
-        nextFieldErrors.username ||
-          nextFieldErrors.providers ||
-          nextFieldErrors.indexers ||
-          nextFieldErrors.movie_search_queries ||
-          nextFieldErrors.series_search_queries ||
-          'Please review the highlighted fields.'
-      )
-      return
-    }
-    setFieldErrors({})
-    setSaveError('')
-    onSave(next)
-  }
+  const aiostreamsMode = draft.filter_sorting_mode === 'aiostreams'
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
-      if (nextOpen) {
-        onOpenChange(true)
-        return
-      }
-      requestClose()
-    }}>
-      <DialogContent className="flex h-[85vh] max-h-[85vh] max-w-3xl flex-col overflow-visible" onOpenAutoFocus={focusDialogCloseButton}>
-        <DialogHeader>
-          <DialogTitle>{isEditing ? 'Change Stream' : 'Add Stream'}</DialogTitle>
-          <DialogDescription>Create a stream or manage its provider, indexer, and search request assignments.</DialogDescription>
-        </DialogHeader>
-
-        <div className="flex-1 space-y-4 overflow-y-auto px-1">
-          <div className="space-y-2">
-            <Label>Name</Label>
-            <Input
-              className={fieldErrors.username ? "border-destructive focus-visible:ring-destructive" : ""}
-              value={draft.username || ''}
-              onChange={(event) => setDraft((current) => ({ ...current, username: event.target.value }))}
-              placeholder="Stream01"
-            />
-            {isEditing && (
-              <p className="text-xs text-muted-foreground">
-                Renaming keeps the token, so an installed addon URL keeps working. The stream's history moves with it.
-              </p>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1 overflow-x-auto border-b border-border">
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-4">
+          <TabsList className="w-full justify-start overflow-x-auto">
             {STREAM_DIALOG_TABS.map((tab) => (
-              <button
+              <TabsTrigger
                 key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`relative whitespace-nowrap px-3 py-2 text-sm font-medium transition-colors ${
-                  activeTab === tab.id
-                    ? tabHasError(tab.id, fieldErrors)
-                      ? 'text-destructive after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-destructive'
-                      : 'text-foreground after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-primary'
-                    : tabHasError(tab.id, fieldErrors)
-                      ? 'text-destructive hover:text-destructive'
-                      : 'text-muted-foreground hover:text-foreground'
-                }`}
+                value={tab.id}
+                // A refused save marks the tab holding the field at fault, so
+                // the complaint in the header has somewhere to point.
+                className={tabHasError(tab.id, fieldErrors) ? 'text-destructive data-[state=active]:text-destructive' : ''}
               >
                 {tab.label}
-              </button>
+              </TabsTrigger>
             ))}
-          </div>
+          </TabsList>
 
-          {activeTab === 'general' && (
+          <TabsContent value="general">
             <div className="space-y-6">
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex flex-col gap-3 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between">
@@ -442,8 +386,7 @@ function StreamDialog({
                 </p>
               </div>
 
-              {isEditing && (
-                <>
+              <>
                   <SimklCard
                     stream={draft.username}
                     onAccountChange={onAccountsChange}
@@ -455,8 +398,7 @@ function StreamDialog({
                     scrobble={draft.mdblist_scrobble}
                     onScrobbleChange={(checked) => setDraft((current) => ({ ...current, mdblist_scrobble: checked }))}
                   />
-                </>
-              )}
+              </>
 
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
@@ -514,9 +456,9 @@ function StreamDialog({
                 </p>
               </div>
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === 'providers' && (
+          <TabsContent value="providers">
             <div className="space-y-4">
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
@@ -581,9 +523,9 @@ function StreamDialog({
                 }}
               />
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === 'indexers' && (
+          <TabsContent value="indexers">
             <div className="space-y-4">
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
@@ -656,9 +598,9 @@ function StreamDialog({
                 membershipLocked={draft.auto_add_indexers === true}
               />
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === 'search' && (
+          <TabsContent value="search">
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 Every selected request runs and the results are combined. Each request decides on its own
@@ -681,9 +623,9 @@ function StreamDialog({
                 error={fieldErrors.series_search_queries}
               />
             </div>
-          )}
+          </TabsContent>
 
-          {activeTab === 'advanced' && (
+          <TabsContent value="advanced">
             <div className="space-y-4">
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
@@ -778,39 +720,110 @@ function StreamDialog({
                 </p>
               </div>
             </div>
-          )}
+          </TabsContent>
+    </Tabs>
+  )
+}
 
-        </div>
+// StreamEndpoints is how a client reaches this stream: the Stremio manifest
+// URL its token addresses, and the Jellyfin login the same stream answers to.
+// It sits above the settings because it is what a freshly created stream is
+// for — the thing you copy into a client before configuring anything.
+function StreamEndpoints({
+  stream,
+  manifestUrl,
+  jellyfinUrl,
+  copiedKey,
+  onCopy,
+  busy,
+  onRegenerate,
+  passwordDraft,
+  onPasswordDraftChange,
+  onSetPassword,
+  actionLoading,
+}) {
+  return (
+      <div className="grid gap-3 lg:grid-cols-2">
+        <EndpointPanel title="Stremio" icon={Puzzle}>
+          <EndpointRow label="Manifest" value={manifestUrl}>
+            <CopyButton
+              copied={copiedKey === `manifest-${stream.username}`}
+              onCopy={() => onCopy(`manifest-${stream.username}`, manifestUrl)}
+              label="Copy manifest URL"
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button type="button" variant="outline" size="icon" onClick={() => onRegenerate()} disabled={busy} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
+                  {actionLoading === `regenerate-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Regenerate token</TooltipContent>
+            </Tooltip>
+          </EndpointRow>
+        </EndpointPanel>
 
-        <DialogFooter className="flex items-center justify-between gap-3">
-          <div className="min-h-9 flex-1">
-            {saveError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {saveError}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-row items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
-            <Button type="button" variant="destructive" onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-      <ConfirmDialog
-        open={showDiscardConfirm}
-        onOpenChange={setShowDiscardConfirm}
-        title="Discard changes?"
-        description="Your unsaved stream changes will be lost."
-        confirmLabel="Discard"
-        onConfirm={() => {
-          setShowDiscardConfirm(false)
-          onOpenChange(false)
-        }}
-      />
-    </Dialog>
+        <EndpointPanel title="Jellyfin" icon={Tv} hint="Sign in from Swiftfin, Infuse or Findroid with these. The stream token works as the password too.">
+          <EndpointRow label="Server" value={jellyfinUrl}>
+            <CopyButton
+              copied={copiedKey === `jellyfin-url-${stream.username}`}
+              onCopy={() => onCopy(`jellyfin-url-${stream.username}`, jellyfinUrl)}
+              label="Copy server URL"
+            />
+          </EndpointRow>
+          <EndpointRow label="Username" value={stream.username}>
+            <CopyButton
+              copied={copiedKey === `jellyfin-user-${stream.username}`}
+              onCopy={() => onCopy(`jellyfin-user-${stream.username}`, stream.username)}
+              label="Copy username"
+            />
+          </EndpointRow>
+          <EndpointRow label="Password" htmlFor={`jellyfin-password-${stream.username}`}>
+            <PasswordInput
+              id={`jellyfin-password-${stream.username}`}
+              className="h-8 text-[11px]"
+              placeholder={stream.has_password ? 'Password set — type to replace' : 'Not set — type to set one'}
+              autoComplete="new-password"
+              value={passwordDraft || ''}
+              onChange={(e) => onPasswordDraftChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (passwordDraft || '').trim()) onSetPassword(false) }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  disabled={busy || !(passwordDraft || '').trim()}
+                  onClick={() => onSetPassword(false)}
+                  aria-label={`Save Jellyfin password for ${stream.username}`}
+                >
+                  {actionLoading === `password-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Save password</TooltipContent>
+            </Tooltip>
+            {stream.has_password ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    disabled={busy}
+                    onClick={() => onSetPassword(true)}
+                    aria-label={`Remove Jellyfin password for ${stream.username}`}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Remove password (token still works)</TooltipContent>
+              </Tooltip>
+            ) : null}
+          </EndpointRow>
+        </EndpointPanel>
+      </div>
   )
 }
 
@@ -820,12 +833,17 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   const initialFetchStartedRef = useRef(false)
   const lastAppliedInitialSignatureRef = useRef(initialStreamsSignature)
   const [streams, setStreams] = useState(() => initialStreams)
+  // A ref mirror so the auto-save callback can read the current list without
+  // being rebuilt on every refresh, which would restart the debounce.
+  const streamsRef = useRef(streams)
+  useEffect(() => { streamsRef.current = streams }, [streams])
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(null)
-  const [dialogSaving, setDialogSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [addDialogDraft, setAddDialogDraft] = useState(null)
-  const [editingStream, setEditingStream] = useState(null)
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [renameTarget, setRenameTarget] = useState(null)
   const [copiedKey, setCopiedKey] = useState('')
   const [visibleFooterStatus, setVisibleFooterStatus] = useState(null)
   const [footerStatusVisible, setFooterStatusVisible] = useState(false)
@@ -834,7 +852,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   // Draft Jellyfin passwords, per stream. Held here rather than in the stream
   // list because the server only ever returns whether one is set, never a value.
   const [passwordDrafts, setPasswordDrafts] = useState({})
-  const [expandedStreams, setExpandedStreams] = useState({})
 
   const indexerNames = useMemo(
     () => (globalConfig?.indexers || []).map((indexer) => indexer.name).filter(Boolean),
@@ -993,14 +1010,15 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
 
   const refreshStreamsAfterMutation = async () => {
     try {
-      await fetchStreams(false, { silent: true })
+      return await fetchStreams(false, { silent: true })
     } catch {
       // Preserve the successful mutation state when only the refresh fails.
+      return null
     }
   }
 
   const handleCreateStream = async (draft) => {
-    setDialogSaving(true)
+    setCreating(true)
     showStatus(null)
     let created = false
     let createdStream = null
@@ -1035,10 +1053,12 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
       showStatus(status)
       showFooterStatus(status)
     } finally {
-      setDialogSaving(false)
+      setCreating(false)
     }
     if (created) {
-      await refreshStreamsAfterMutation()
+      const next = await refreshStreamsAfterMutation()
+      const index = (next || []).findIndex((stream) => stream.username === draft.username)
+      if (index >= 0) setSelectedIndex(index)
     }
   }
 
@@ -1054,59 +1074,61 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     setShowAddDialog(true)
   }
 
-  const handleSaveStream = async (draft) => {
-    if (!editingStream) return
-    setDialogSaving(true)
+  // Settings auto-save through useStreamDraft; the API validates the payload,
+  // so a refusal comes back with per-field errors the editor marks tabs from.
+  const saveStreamSettings = useCallback(async (username, draft) => {
+    const existing = streamsRef.current.find((stream) => stream.username === username)
+    await saveStreamAssignments(username, normalizeStreamDraft(draft), existing)
+    setStreams((prev) => {
+      const next = prev.map((stream) =>
+        stream.username === username
+          // Merged onto the stream rather than replacing it: the builder only
+          // knows the fields the editor owns, and facts like has_password
+          // belong to the stream alone. Auto-save does not refetch, so a
+          // field dropped here stays dropped.
+          ? { ...stream, ...buildStreamStateFromDraft(username, stream.token, draft, existing?.indexer_overrides) }
+          : stream
+      )
+      onStreamsChange?.(mapStreamsByUsername(next))
+      return next
+    })
+    showFooterStatus({ type: 'success', message: `Stream "${username}" saved.${CACHE_CLEARED_SUFFIX}` })
+  }, [onStreamsChange, showFooterStatus])
+
+  // Renaming is its own request because the name is the credential clients
+  // authenticate with: it is never something the settings debounce does on the
+  // way past, and the token survives so an installed addon URL keeps working.
+  const handleRenameStream = async (previousName, nextName) => {
+    const trimmed = (nextName || '').trim()
+    if (!trimmed || trimmed === previousName) return
+    setActionLoading(`rename-${previousName}`)
     showStatus(null)
-    let saved = false
-    const previousName = editingStream.username
-    const nextName = (draft.username || '').trim()
     try {
-      // The rename has to land first: the config save is keyed by stream name,
-      // so sending it under the old name would write to a stream that is about
-      // to move, and under the new one to a stream that does not exist yet.
-      if (nextName && nextName !== previousName) {
-        await apiFetch(`/api/streams/${encodeURIComponent(previousName)}/rename`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: nextName }),
-        })
-      }
-      const savedName = nextName || previousName
-      await saveStreamAssignments(savedName, draft, editingStream)
-      saved = true
-      setStreams((prev) => {
-        const next = prev.map((stream) =>
-          stream.username === previousName
-            ? buildStreamStateFromDraft(savedName, stream.token, draft, editingStream.indexer_overrides)
-            : stream
-        )
-        onStreamsChange?.(mapStreamsByUsername(next))
-        return next
+      await apiFetch(`/api/streams/${encodeURIComponent(previousName)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: trimmed }),
       })
-      // The draft follows the rename: it was typed for this stream, and
-      // leaving it under the old name would strand it there for whatever
-      // stream takes that name next.
-      if (savedName !== previousName) {
-        setPasswordDrafts((prev) => {
-          if (!(previousName in prev)) return prev
-          const { [previousName]: moved, ...rest } = prev
-          return moved ? { ...rest, [savedName]: moved } : rest
-        })
-      }
-      const status = { type: 'success', message: `Stream "${savedName}" saved successfully.${CACHE_CLEARED_SUFFIX}` }
+      setPasswordDrafts((prev) => {
+        if (!(previousName in prev)) return prev
+        const { [previousName]: moved, ...rest } = prev
+        return moved ? { ...rest, [trimmed]: moved } : rest
+      })
+      setRenameTarget(null)
+      const status = { type: 'success', message: `Stream renamed to "${trimmed}".${CACHE_CLEARED_SUFFIX}` }
       showStatus(status)
       showFooterStatus(status)
-      setEditingStream(null)
+      const next = await refreshStreamsAfterMutation()
+      // Follow the stream that was just renamed rather than whatever now sits
+      // at the old index.
+      const moved = (next || []).findIndex((stream) => stream.username === trimmed)
+      if (moved >= 0) setSelectedIndex(moved)
     } catch (err) {
-      const status = { type: 'error', message: err.message || 'Failed to save stream' }
+      const status = { type: 'error', message: err.message || 'Failed to rename stream' }
       showStatus(status)
       showFooterStatus(status)
     } finally {
-      setDialogSaving(false)
-    }
-    if (saved) {
-      await refreshStreamsAfterMutation()
+      setActionLoading(null)
     }
   }
 
@@ -1200,349 +1222,195 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
     }
   }
 
-  const toggleExpandedStream = (username) => {
-    setExpandedStreams((current) => ({
-      ...current,
-      [username]: !current[username],
-    }))
+  const selectedStream = streams[selectedIndex] || null
+  const buildDraft = useCallback(
+    (stream, isExisting = true) =>
+      getInitialStreamDraft(stream, isExisting, enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames),
+    [enabledProviderNames, enabledIndexerNames, movieQueryNames, seriesQueryNames],
+  )
+  const { draft, setDraft, dirty, saving, error: draftError, fieldErrors } = useStreamDraft({
+    stream: selectedStream,
+    buildDraft,
+    onSave: saveStreamSettings,
+  })
+
+  // A delete or an external removal can leave the selection past the end.
+  useEffect(() => {
+    if (selectedIndex > 0 && selectedIndex >= streams.length) {
+      setSelectedIndex(Math.max(0, streams.length - 1))
+    }
+  }, [streams.length, selectedIndex])
+
+  const openAddDialog = () => {
+    setAddDialogDraft(buildDraft({ username: nextStreamName(streams) }, false))
+    setShowAddDialog(true)
   }
 
   return (
     <TooltipProvider delayDuration={100}>
-      <Card>
-        <CardHeader>
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-            <div className="min-w-0 space-y-0.5">
-              <CardTitle>Streams</CardTitle>
-              <CardDescription className="break-words">Configure stream-specific manifests and their provider, indexer and search order.</CardDescription>
-            </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
+      <div className="space-y-6">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-medium text-foreground">
+            <Zap className="h-4 w-4" /> Streams
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Each stream is one person&apos;s addon: its own manifest URL, its own providers, indexers and
+            search order, and its own watch-tracking accounts. Settings save as you change them.
+          </p>
+        </div>
+
+        {loading && streams.length === 0 ? (
+          <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin" /></div>
+        ) : (
+          <ManagerShell
+            items={streams.map((stream) => ({
+              key: stream.username,
+              name: stream.username,
+              summary: generalCompactValues(stream).join(' · '),
+              usageLabels: metadataSummaryValues(stream),
+              emptyUsageText: 'No metadata profile',
+            }))}
+            selectedIndex={selectedIndex}
+            onSelect={setSelectedIndex}
+            emptyText="No streams yet. Create one to get an addon URL."
+            emptyActions={
+              <Button size="sm" onClick={openAddDialog}>
+                <Plus className="mr-2 h-4 w-4" /> Create one
+              </Button>
+            }
+            listActions={
+              <Button size="sm" className="flex-1" onClick={openAddDialog}>
+                <Plus className="mr-2 h-4 w-4" /> New stream
+              </Button>
+            }
+            title={selectedStream && (
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm font-medium">{selectedStream.username}</span>
                 <Button
-                  type="button"
-                  variant="destructive"
-                  size="icon"
-                  className="h-9 w-9 shrink-0"
-                  onClick={() => {
-                    setAddDialogDraft({ username: nextStreamName(streams) })
-                    setShowAddDialog(true)
-                  }}
-                  aria-label="Add stream"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setRenameTarget({ from: selectedStream.username, to: selectedStream.username })}
                 >
-                  <Plus className="h-4 w-4 shrink-0" />
+                  <Type className="mr-2 h-3.5 w-3.5" /> Rename
                 </Button>
-              </TooltipTrigger>
-              <TooltipContent>Add Stream</TooltipContent>
-            </Tooltip>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {loading && streams.length > 0 ? (
-            <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin" /></div>
-          ) : streams.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground">No streams found. Create your first stream to get started.</div>
-          ) : (
-            <div className="space-y-4">
-              {streams.map((stream) => (
-                <Card key={stream.username}>
-                  <CardContent className="pt-6">
-                    <div className="space-y-4">
-                      <div className="space-y-3">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-2 self-end sm:order-2">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button type="button" variant="outline" size="icon" onClick={() => setEditingStream(stream)} className="h-9 w-9" aria-label={`Edit ${stream.username} stream`}>
-                                  <Settings className="h-4 w-4" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Edit stream</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="icon"
-                                  onClick={() => handleCloneStream(stream)}
-                                  disabled={actionLoading !== null || loading}
-                                  className="h-9 w-9"
-                                  aria-label={`Copy ${stream.username} stream`}
-                                >
-                                  {actionLoading === `copy-${stream.username}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Copy stream</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button type="button" variant="destructive" size="icon" onClick={() => setDeleteTarget(stream.username)} disabled={actionLoading !== null || loading} className="h-9 w-9" aria-label={`Delete ${stream.username} stream`}>
-                                  {actionLoading === `delete-${stream.username}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Delete stream</TooltipContent>
-                            </Tooltip>
-                          </div>
-                          <div className="min-w-0 font-semibold sm:order-1">{stream.username}</div>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 lg:grid-cols-2">
-                        <EndpointPanel title="Stremio" icon={Puzzle}>
-                          <EndpointRow label="Manifest" value={getManifestUrl(stream.token)}>
-                            <CopyButton
-                              copied={copiedKey === `manifest-${stream.username}`}
-                              onCopy={() => copyValue(`manifest-${stream.username}`, getManifestUrl(stream.token))}
-                              label="Copy manifest URL"
-                            />
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button type="button" variant="outline" size="icon" onClick={() => setRegenerateTarget(stream.username)} disabled={actionLoading !== null || loading} className="h-8 w-8 shrink-0" aria-label={`Regenerate token for ${stream.username}`}>
-                                  {actionLoading === `regenerate-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Regenerate token</TooltipContent>
-                            </Tooltip>
-                          </EndpointRow>
-                        </EndpointPanel>
-
-                        <EndpointPanel title="Jellyfin" icon={Tv} hint="Sign in from Swiftfin, Infuse or Findroid with these. The stream token works as the password too.">
-                          <EndpointRow label="Server" value={jellyfinUrl}>
-                            <CopyButton
-                              copied={copiedKey === `jellyfin-url-${stream.username}`}
-                              onCopy={() => copyValue(`jellyfin-url-${stream.username}`, jellyfinUrl)}
-                              label="Copy server URL"
-                            />
-                          </EndpointRow>
-                          <EndpointRow label="Username" value={stream.username}>
-                            <CopyButton
-                              copied={copiedKey === `jellyfin-user-${stream.username}`}
-                              onCopy={() => copyValue(`jellyfin-user-${stream.username}`, stream.username)}
-                              label="Copy username"
-                            />
-                          </EndpointRow>
-                          <EndpointRow label="Password" htmlFor={`jellyfin-password-${stream.username}`}>
-                            <PasswordInput
-                              id={`jellyfin-password-${stream.username}`}
-                              className="h-8 text-[11px]"
-                              placeholder={stream.has_password ? 'Password set — type to replace' : 'Not set — type to set one'}
-                              autoComplete="new-password"
-                              value={passwordDrafts[stream.username] || ''}
-                              onChange={(e) => setPasswordDrafts((prev) => ({ ...prev, [stream.username]: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === 'Enter' && (passwordDrafts[stream.username] || '').trim()) void handleSetPassword(stream.username) }}
-                            />
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="icon"
-                                  className="h-8 w-8 shrink-0"
-                                  disabled={actionLoading !== null || loading || !(passwordDrafts[stream.username] || '').trim()}
-                                  onClick={() => void handleSetPassword(stream.username)}
-                                  aria-label={`Save Jellyfin password for ${stream.username}`}
-                                >
-                                  {actionLoading === `password-${stream.username}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Save password</TooltipContent>
-                            </Tooltip>
-                            {stream.has_password ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 shrink-0"
-                                    disabled={actionLoading !== null || loading}
-                                    onClick={() => void handleSetPassword(stream.username, true)}
-                                    aria-label={`Remove Jellyfin password for ${stream.username}`}
-                                  >
-                                    <X className="h-3.5 w-3.5" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Remove password (token still works)</TooltipContent>
-                              </Tooltip>
-                            ) : null}
-                          </EndpointRow>
-                        </EndpointPanel>
-                      </div>
-
-                      <div className="relative rounded-md border border-border/70 bg-muted/10 px-3 py-3 pb-6">
-                        {expandedStreams[stream.username] ? (
-                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                            <SummaryRow label="General" icon={Settings} values={generalDetailValues(stream)} />
-                            <SummaryRow label="Providers" icon={Globe} values={activeProviderNames(stream)} />
-                            <SummaryRow label="Indexers" icon={Server} values={stream.indexer_selections || Object.keys(stream.indexer_overrides || {})} />
-                            <SummaryRow label="Movie" icon={Search} values={stream.movie_search_queries || []} />
-                            <SummaryRow label="TV" icon={Search} values={stream.series_search_queries || []} />
-                            <SummaryRow label="Filter/Sorting" icon={ArrowUpDown} values={filterSortingSummaryValues(stream)} />
-                            <SummaryRow label="Metadata" icon={Clapperboard} values={metadataSummaryValues(stream)} />
-                            <SummaryRow label="Formatting" icon={Type} values={formattingSummaryValues(stream)} />
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-4 gap-3 md:grid-cols-4 xl:grid-cols-8">
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Settings className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">General</span>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-                                {generalCompactValues(stream).map((value) => (
-                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
-                                    {value}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Globe className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Providers</span>
-                              </div>
-                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{activeProviderNames(stream).length}</div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Server className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Indexers</span>
-                              </div>
-                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.indexer_selections || Object.keys(stream.indexer_overrides || {})).length}</div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Search className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Movie</span>
-                              </div>
-                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.movie_search_queries || []).length}</div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Search className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">TV</span>
-                              </div>
-                              <div className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">{(stream.series_search_queries || []).length}</div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <ArrowUpDown className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Filter/Sorting</span>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-                                {filterSortingSummaryValues(stream).map((value) => (
-                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
-                                    {value}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Clapperboard className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Metadata</span>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-                                {metadataSummaryValues(stream).map((value) => (
-                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
-                                    {value}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="space-y-1 text-center sm:text-left">
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground sm:justify-start">
-                                <Type className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Formatting</span>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-                                {formattingSummaryValues(stream).map((value) => (
-                                  <div key={value} className="inline-flex items-center justify-center rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
-                                    {value}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="absolute inset-x-0 -bottom-4 flex justify-center">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => toggleExpandedStream(stream.username)}
-                                className="h-7 w-9 rounded-md border-dashed border-border/80 bg-muted text-muted-foreground shadow-sm hover:bg-muted/90"
-                                aria-label={expandedStreams[stream.username] ? `Hide details for ${stream.username}` : `Show details for ${stream.username}`}
-                              >
-                                {expandedStreams[stream.username] ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>{expandedStreams[stream.username] ? 'Hide details' : 'Show details'}</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-
-          <StreamDialog
-            open={showAddDialog}
-            onOpenChange={(nextOpen) => {
-              setShowAddDialog(nextOpen)
-              if (!nextOpen) setAddDialogDraft(null)
-            }}
-            initialStream={addDialogDraft}
-            mode="add"
-            existingNames={streams.map((stream) => stream.username).filter(Boolean)}
-            providerNames={providerNames}
-            providerConnectionTotals={providerConnectionTotals}
-            enabledProviderNames={enabledProviderNames}
-            indexerNames={indexerNames}
-            enabledIndexerNames={enabledIndexerNames}
-            movieQueryNames={movieQueryNames}
-            seriesQueryNames={seriesQueryNames}
-            filterProfiles={globalConfig?.filter_profiles || []}
-            metadataProfiles={globalConfig?.metadata_profiles || []}
-            formatProfiles={globalConfig?.format_profiles || []}
-            globalConfig={globalConfig}
-            onAccountsChange={refreshStreamsAfterMutation}
-            onSave={handleCreateStream}
-            saving={dialogSaving}
-          />
-
-          <StreamDialog
-            open={Boolean(editingStream)}
-            onOpenChange={(nextOpen) => {
-              if (!nextOpen) setEditingStream(null)
-            }}
-            initialStream={editingStream}
-            mode="edit"
-            existingNames={streams.map((stream) => stream.username).filter(Boolean)}
-            providerNames={providerNames}
-            providerConnectionTotals={providerConnectionTotals}
-            enabledProviderNames={enabledProviderNames}
-            indexerNames={indexerNames}
-            enabledIndexerNames={enabledIndexerNames}
-            movieQueryNames={movieQueryNames}
-            seriesQueryNames={seriesQueryNames}
-            filterProfiles={globalConfig?.filter_profiles || []}
-            metadataProfiles={globalConfig?.metadata_profiles || []}
-            formatProfiles={globalConfig?.format_profiles || []}
-            globalConfig={globalConfig}
-            onAccountsChange={refreshStreamsAfterMutation}
-            onSave={handleSaveStream}
-            saving={dialogSaving}
-          />
-        </CardContent>
-      </Card>
+              </div>
+            )}
+            status={
+              saving ? (
+                <span className="flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</span>
+              ) : dirty ? (
+                // The debounce is still counting down — no request exists
+                // yet, so no spinner pretends one does.
+                'Unsaved changes'
+              ) : (
+                <span className="text-muted-foreground/60">Saves automatically</span>
+              )
+            }
+            actions={selectedStream && (
+              <>
+                <Button variant="ghost" size="sm" className="h-8" onClick={() => handleCloneStream(selectedStream)}>
+                  <Copy className="mr-2 h-3.5 w-3.5" /> Duplicate
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-destructive hover:text-destructive"
+                  onClick={() => setDeleteTarget(selectedStream.username)}
+                >
+                  <Trash2 className="mr-2 h-3.5 w-3.5" /> Delete
+                </Button>
+              </>
+            )}
+            error={draftError}
+            footer={
+              <>
+                <AddStreamDialog
+                  open={showAddDialog}
+                  onOpenChange={(nextOpen) => {
+                    setShowAddDialog(nextOpen)
+                    if (!nextOpen) setAddDialogDraft(null)
+                  }}
+                  draft={addDialogDraft}
+                  existingNames={streams.map((stream) => stream.username).filter(Boolean)}
+                  saving={creating}
+                  onCreate={handleCreateStream}
+                />
+                <RenameStreamDialog
+                  target={renameTarget}
+                  onChange={setRenameTarget}
+                  existingNames={streams.map((stream) => stream.username).filter(Boolean)}
+                  saving={actionLoading === `rename-${renameTarget?.from}`}
+                  onRename={handleRenameStream}
+                />
+                <ConfirmDialog
+                  open={Boolean(deleteTarget)}
+                  onOpenChange={(nextOpen) => { if (!nextOpen) setDeleteTarget('') }}
+                  title="Delete stream?"
+                  description={deleteTarget ? `Are you sure you want to delete stream "${deleteTarget}"?` : ''}
+                  confirmLabel="Delete"
+                  onConfirm={() => {
+                    const username = deleteTarget
+                    setDeleteTarget('')
+                    if (username) void handleDeleteStream(username)
+                  }}
+                />
+                <ConfirmDialog
+                  open={Boolean(regenerateTarget)}
+                  onOpenChange={(nextOpen) => { if (!nextOpen) setRegenerateTarget('') }}
+                  title="Regenerate token?"
+                  description={regenerateTarget ? `Are you sure you want to regenerate the manifest token for stream "${regenerateTarget}"? Existing links using the old token will stop working.` : ''}
+                  confirmLabel="Regenerate"
+                  onConfirm={() => {
+                    const username = regenerateTarget
+                    setRegenerateTarget('')
+                    if (username) void handleRegenerateToken(username)
+                  }}
+                />
+              </>
+            }
+          >
+            {selectedStream && draft && (
+              <>
+                <StreamEndpoints
+                  stream={selectedStream}
+                  manifestUrl={getManifestUrl(selectedStream.token)}
+                  jellyfinUrl={jellyfinUrl}
+                  copiedKey={copiedKey}
+                  onCopy={copyValue}
+                  busy={actionLoading !== null || loading}
+                  actionLoading={actionLoading}
+                  onRegenerate={() => setRegenerateTarget(selectedStream.username)}
+                  passwordDraft={passwordDrafts[selectedStream.username]}
+                  onPasswordDraftChange={(value) =>
+                    setPasswordDrafts((prev) => ({ ...prev, [selectedStream.username]: value }))}
+                  onSetPassword={(clear) => void handleSetPassword(selectedStream.username, clear)}
+                />
+                <StreamEditor
+                  draft={draft}
+                  setDraft={setDraft}
+                  fieldErrors={fieldErrors}
+                  providerNames={providerNames}
+                  providerConnectionTotals={providerConnectionTotals}
+                  enabledProviderNames={enabledProviderNames}
+                  indexerNames={indexerNames}
+                  enabledIndexerNames={enabledIndexerNames}
+                  movieQueryNames={movieQueryNames}
+                  seriesQueryNames={seriesQueryNames}
+                  filterProfiles={globalConfig?.filter_profiles || []}
+                  metadataProfiles={globalConfig?.metadata_profiles || []}
+                  formatProfiles={globalConfig?.format_profiles || []}
+                  globalConfig={globalConfig}
+                  onAccountsChange={refreshStreamsAfterMutation}
+                />
+              </>
+            )}
+        </ManagerShell>
+      )}
+      </div>
       {visibleFooterStatus?.message && (
         <div
-          className={`fixed bottom-4 left-4 right-4 z-40 rounded-lg border px-4 py-3 text-sm shadow-lg transition-all duration-200 ease-out md:left-[calc(var(--sidebar-width)+1rem)] ${
+          className={`pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md border px-4 py-2 text-sm shadow-lg transition-all duration-300 ${
             footerStatusVisible ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
           } ${
             visibleFooterStatus.type === 'error'
@@ -1555,38 +1423,6 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
           {visibleFooterStatus.message}
         </div>
       )}
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setDeleteTarget('')
-        }}
-        title="Delete stream?"
-        description={deleteTarget ? `Are you sure you want to delete stream "${deleteTarget}"?` : ''}
-        confirmLabel="Delete"
-        onConfirm={() => {
-          const username = deleteTarget
-          setDeleteTarget('')
-          if (username) {
-            void handleDeleteStream(username)
-          }
-        }}
-      />
-      <ConfirmDialog
-        open={Boolean(regenerateTarget)}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setRegenerateTarget('')
-        }}
-        title="Regenerate token?"
-        description={regenerateTarget ? `Are you sure you want to regenerate the manifest token for stream "${regenerateTarget}"? Existing links using the old token will stop working.` : ''}
-        confirmLabel="Regenerate"
-        onConfirm={() => {
-          const username = regenerateTarget
-          setRegenerateTarget('')
-          if (username) {
-            void handleRegenerateToken(username)
-          }
-        }}
-      />
     </TooltipProvider>
   )
 }

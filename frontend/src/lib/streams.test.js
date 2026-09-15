@@ -3,6 +3,7 @@ import {
   activeProviderNames,
   applyFilterSortingMode,
   buildIndexerOverrides,
+  buildStreamStateFromDraft,
   defaultAddonName,
   getInitialStreamDraft,
   mapStreamsByUsername,
@@ -130,5 +131,25 @@ describe('getInitialStreamDraft', () => {
     const draft = getInitialStreamDraft({ username: 'Stream01' }, true, ['P1'], ['I1'], ['DefaultMovie'], ['DefaultTV'])
     expect(draft.movie_search_queries).toEqual([])
     expect(draft.series_search_queries).toEqual([])
+  })
+})
+
+// The editor writes a draft, the page mirrors it back onto the stream list,
+// and useStreamDraft reseeds from that mirror. A field the mirror drops is a
+// setting that silently reverts a moment after it is changed, so the round
+// trip has to be lossless for every field the editor owns.
+describe('draft round-trips through the stream state', () => {
+  it('keeps every editable field', () => {
+    const draft = {
+      ...getInitialStreamDraft({ username: 'alice' }, true, ['p1'], ['i1'], ['m1'], ['s1']),
+      simkl_scrobble: true,
+      mdblist_scrobble: true,
+      results_mode: 'display_all',
+      metadata_profile_name: 'Kids',
+      addon_name: 'Alice',
+    }
+    const mirrored = buildStreamStateFromDraft('alice', 'tok', draft, {})
+    const reseeded = getInitialStreamDraft(mirrored, true, ['p1'], ['i1'], ['m1'], ['s1'])
+    expect(reseeded).toEqual(draft)
   })
 })

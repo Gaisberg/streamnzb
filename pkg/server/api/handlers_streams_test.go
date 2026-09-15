@@ -261,3 +261,73 @@ func TestHandleStreamConfigsUnairedSearchGateRoundTrip(t *testing.T) {
 		t.Fatalf("list response gate = %v, want false", got)
 	}
 }
+
+// The scrobble switches are per stream, so they have to survive the same round
+// trip as the profile bindings: into the stream manager, into the config entry
+// the stremio server reads when deciding whether to report a play, and back out
+// through GET so the editor does not reseed them away.
+func TestHandleStreamConfigsScrobbleRoundTrip(t *testing.T) {
+	srv := newStreamsTestServer(t)
+
+	payload := map[string]map[string]interface{}{
+		"stream1": {
+			"filter_sorting_mode":   "none",
+			"indexer_mode":          "combine",
+			"provider_selections":   []string{"ProviderA"},
+			"indexer_selections":    []string{"IndexerA"},
+			"movie_search_queries":  []string{"MovieQueryA"},
+			"series_search_queries": []string{"SeriesQueryA"},
+			"simkl_scrobble":        true,
+			"mdblist_scrobble":      true,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	req := adminStreamRequest(http.MethodPut, "/api/streams/configs", body)
+	rr := httptest.NewRecorder()
+	srv.handlePutStreamConfigs(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	stream, err := srv.streamManager.GetStream("stream1", "admin")
+	if err != nil {
+		t.Fatalf("GetStream failed: %v", err)
+	}
+	if !stream.SimklScrobble || !stream.MDBListScrobble {
+		t.Fatalf("stream manager = simkl:%v mdblist:%v, want both on", stream.SimklScrobble, stream.MDBListScrobble)
+	}
+	entry := srv.config.Streams["stream1"]
+	if !entry.SimklScrobble || !entry.MDBListScrobble {
+		t.Fatalf("config entry = simkl:%v mdblist:%v, want both on", entry.SimklScrobble, entry.MDBListScrobble)
+	}
+
+	listReq := adminStreamRequest(http.MethodGet, "/api/streams", nil)
+	listRR := httptest.NewRecorder()
+	srv.handleStreamsList(listRR, listReq)
+	var list []map[string]interface{}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list json.Unmarshal failed: %v", err)
+	}
+	if list[0]["simkl_scrobble"] != true || list[0]["mdblist_scrobble"] != true {
+		t.Fatalf("list response = %v, want both on", list[0])
+	}
+
+	// Turning one off has to land too: an omitted false would leave the switch
+	// stuck on for good.
+	payload["stream1"]["simkl_scrobble"] = false
+	body, _ = json.Marshal(payload)
+	rr = httptest.NewRecorder()
+	srv.handlePutStreamConfigs(rr, adminStreamRequest(http.MethodPut, "/api/streams/configs", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second PUT status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if srv.config.Streams["stream1"].SimklScrobble {
+		t.Fatal("turning Simkl scrobbling off did not persist")
+	}
+	if !srv.config.Streams["stream1"].MDBListScrobble {
+		t.Fatal("turning Simkl off also turned MDBList off")
+	}
+}

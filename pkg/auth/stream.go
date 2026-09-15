@@ -830,6 +830,8 @@ func (dm *StreamManager) UpdateStreamConfig(username string, streamConfig *Strea
 	stream.ResultDescriptionTemplate = strings.TrimSpace(streamConfig.ResultDescriptionTemplate)
 	stream.AddonName = strings.TrimSpace(streamConfig.AddonName)
 	stream.PreloadAttempts = streamConfig.PreloadAttempts
+	stream.SimklScrobble = streamConfig.SimklScrobble
+	stream.MDBListScrobble = streamConfig.MDBListScrobble
 
 	if err := dm.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save stream config: %w", err)
