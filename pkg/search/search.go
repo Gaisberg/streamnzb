@@ -12,6 +12,13 @@ import (
 	"streamnzb/pkg/search/diag"
 )
 
+// maxRecordedValidationDrops bounds how many turned-away releases one search
+// request records by name. A search runs several requests, so the snapshot
+// holds a multiple of this at worst — generous next to the handful a real
+// "why is my release missing" question involves, and small next to an indexer
+// answering a query with a thousand wrong results.
+const maxRecordedValidationDrops = 50
+
 func validationQueriesForRequest(req indexer.SearchRequest) []string {
 	profiles := validationProfilesForRequest(req)
 	if len(profiles) == 0 {
@@ -178,6 +185,12 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 	// search into a title search shows up as a request that is nearly all
 	// mismatch. Season/episode and year validation are unaffected.
 	var valStats ValidationStats
+	// Per-release drops are recorded only when the request is being
+	// diagnosed, so an ordinary search pays nothing for a list nobody reads.
+	recordDropped := 0
+	if diag.From(ctx) != nil {
+		recordDropped = maxRecordedValidationDrops
+	}
 	releases, valStats = ValidateSearchResultsWithOptions(releases, contentType, validationQueries, ValidationOptions{
 		Season:          req.Season,
 		Episode:         req.Episode,
@@ -185,6 +198,7 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 		EnforceTitle:    !runIDSearch,
 		EnforceYear:     req.EnableYearValidation,
 		AcceptPacks:     req.AcceptPacks,
+		RecordDropped:   recordDropped,
 	})
 	diag.From(ctx).AddValidation(diag.ValidationStat{
 		Request:           req.RequestLabel,
@@ -195,6 +209,13 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 		DroppedYear:       valStats.DroppedYear,
 		TitleMismatchKept: valStats.TitleMismatchKept,
 	})
+	// The query label travels on each drop rather than on the list: a search
+	// runs several requests, and "which query was this release answering"
+	// is most of the explanation for a title mismatch.
+	for i := range valStats.Dropped {
+		valStats.Dropped[i].Request = req.RequestLabel
+	}
+	diag.From(ctx).AddDropped(valStats.Dropped, valStats.DroppedOmitted)
 	// The per-profile pass re-validates ALL raw releases once per profile (a
 	// full title parse each) purely to produce per-profile debug stats — skip
 	// the whole sweep unless debug logging is actually on.
