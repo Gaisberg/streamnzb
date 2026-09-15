@@ -7,6 +7,11 @@ import (
 	"streamnzb/pkg/core/logger"
 )
 
+// extractEmbeddedBinary is the indirection FindFFprobeBinary goes through so a
+// test can stand in for a build that really embeds a binary: the embedffprobe
+// tag and its bin/ payload are not available to an ordinary `go test` run.
+var extractEmbeddedBinary = ExtractEmbeddedBinary
+
 // ExtractEmbeddedBinary writes the embedded ffprobe binary (if this build was
 // compiled with the `embedffprobe` build tag and a matching binary was present
 // in bin/) to disk next to the executable and returns its path.

@@ -2,6 +2,11 @@ package ffprobe
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -67,6 +72,28 @@ func TestFFprobeDownloadURLForAllTargets(t *testing.T) {
 	}
 	if _, _, err := FFprobeDownloadURLFor("plan9", "amd64"); err == nil {
 		t.Fatal("expected error for unsupported OS")
+	}
+}
+
+// TestFFprobeDownloadVersionSupportsSideData guards the reason the pin exists.
+// FFmpeg 4.x rejects -show_entries stream_side_data during option parsing, so a
+// bundled 4.x silently loses the DOVI configuration record and every profile 8
+// Dolby Vision release probes as plain HDR10.
+func TestFFprobeDownloadVersionSupportsSideData(t *testing.T) {
+	url, _, err := FFprobeDownloadURLFor("linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := regexp.MustCompile(`/download/v(\d+)(?:\.\d+)*/`).FindStringSubmatch(url)
+	if m == nil {
+		t.Fatalf("could not read the pinned version out of %q", url)
+	}
+	major, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("parse major version %q: %v", m[1], err)
+	}
+	if major < 5 {
+		t.Fatalf("pinned ffprobe major version %d predates stream_side_data support; must be 5 or newer", major)
 	}
 }
 
@@ -299,4 +326,70 @@ func TestParseIntOK(t *testing.T) {
 	if n, ok := parseIntOK("120"); !ok || n != 120 {
 		t.Errorf("parseIntOK(120) = %d,%v", n, ok)
 	}
+}
+
+// TestFindFFprobeBinaryPrefersEmbeddedOverStaleCopy pins the upgrade path. The
+// extractor and the auto-downloader both write <execDir>/ffprobe, so a copy
+// sitting there is this app's own from an earlier version. Preferring it would
+// leave every existing install on the ffprobe it first obtained -- which for a
+// 4.x means no stream_side_data and no profile 8 Dolby Vision, permanently.
+func TestFindFFprobeBinaryPrefersEmbeddedOverStaleCopy(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	stale := filepath.Join(dir, "ffprobe")
+	if runtime.GOOS == "windows" {
+		stale = filepath.Join(dir, "ffprobe.exe")
+	}
+	if err := os.WriteFile(stale, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write stale ffprobe: %v", err)
+	}
+
+	embedded := filepath.Join(dir, "embedded-ffprobe")
+	withEmbedded(t, func() (string, bool) { return embedded, true })
+
+	got, ok := FindFFprobeBinary("")
+	if !ok {
+		t.Fatal("expected the embedded binary to be found")
+	}
+	if got != embedded {
+		t.Fatalf("FindFFprobeBinary = %q, want the embedded %q", got, embedded)
+	}
+
+	// An explicitly configured ffprobe_path is the supported override and still
+	// outranks the embedded copy.
+	if got, ok := FindFFprobeBinary(stale); !ok || got != stale {
+		t.Fatalf("custom path: got %q (%v), want %q", got, ok, stale)
+	}
+}
+
+// TestFindFFprobeBinaryFallsBackWithoutEmbed covers the build without the
+// embedffprobe tag: the local copy is still what gets used.
+func TestFindFFprobeBinaryFallsBackWithoutEmbed(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	name := "ffprobe"
+	if runtime.GOOS == "windows" {
+		name = "ffprobe.exe"
+	}
+	local := filepath.Join(dir, name)
+	if err := os.WriteFile(local, []byte("local"), 0o755); err != nil {
+		t.Fatalf("write local ffprobe: %v", err)
+	}
+
+	withEmbedded(t, func() (string, bool) { return "", false })
+
+	got, ok := FindFFprobeBinary("")
+	if !ok {
+		t.Fatal("expected the local ffprobe to be found")
+	}
+	if got != local {
+		t.Fatalf("FindFFprobeBinary = %q, want %q", got, local)
+	}
+}
+
+func withEmbedded(t *testing.T, fn func() (string, bool)) {
+	t.Helper()
+	prev := extractEmbeddedBinary
+	extractEmbeddedBinary = fn
+	t.Cleanup(func() { extractEmbeddedBinary = prev })
 }

@@ -18,21 +18,28 @@ import (
 // FFprobeDownloadURLFor returns the prebuilt ffprobe zip URL and the binary name
 // inside the archive for the given GOOS/GOARCH.
 //
-// Note: ffbinaries v4.4.1 does not publish a native macOS arm64 build, so
-// darwin/arm64 maps to the x86_64 build (runs via Rosetta 2 on Apple Silicon).
+// The version is pinned deliberately. It must stay at 5.0 or newer: 4.x rejects
+// the -show_entries stream_side_data section outright, which costs the DOVI
+// configuration record and with it every profile 8 Dolby Vision detection (see
+// isDolbyVision). The legacy fallback query in ProbeStreamWithOptions still
+// covers an older ffprobe found on PATH.
+//
+// Note: ffbinaries does not publish a native macOS arm64 build at any version,
+// so darwin/arm64 maps to the x86_64 build (runs via Rosetta 2 on Apple Silicon).
 func FFprobeDownloadURLFor(goos, goarch string) (url string, targetName string, err error) {
-	const base = "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/"
+	const base = "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/"
 	switch goos {
 	case "windows":
-		return base + "ffprobe-4.4.1-win-64.zip", "ffprobe.exe", nil
+		return base + "ffprobe-6.1-win-64.zip", "ffprobe.exe", nil
 	case "linux":
 		if goarch == "arm64" {
 			// ffbinaries names the 64-bit ARM build "linux-arm-64" (not "linux-arm64").
-			return base + "ffprobe-4.4.1-linux-arm-64.zip", "ffprobe", nil
+			return base + "ffprobe-6.1-linux-arm-64.zip", "ffprobe", nil
 		}
-		return base + "ffprobe-4.4.1-linux-64.zip", "ffprobe", nil
+		return base + "ffprobe-6.1-linux-64.zip", "ffprobe", nil
 	case "darwin":
-		return base + "ffprobe-4.4.1-osx-64.zip", "ffprobe", nil
+		// 6.1 renamed the macOS asset from "osx-64" to "macos-64".
+		return base + "ffprobe-6.1-macos-64.zip", "ffprobe", nil
 	default:
 		return "", "", fmt.Errorf("unsupported operating system: %s", goos)
 	}

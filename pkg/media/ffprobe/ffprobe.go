@@ -144,6 +144,21 @@ func FindFFprobeBinary(customPath string) (string, bool) {
 		}
 	}
 
+	// The embedded binary outranks whatever is already next to the executable.
+	// Both the extractor and the auto-downloader write to that exact path, so a
+	// copy found there is almost always this app's own from an earlier version
+	// -- and preferring it would pin every existing install to the ffprobe
+	// version it first downloaded, which is how a bundled 4.x (no
+	// stream_side_data, so no profile 8 Dolby Vision) would survive an upgrade
+	// forever. ExtractEmbeddedBinary rewrites only when the size differs, so
+	// the steady state is one os.Stat. Without the embedffprobe build tag this
+	// is the no-op stub and the search continues below unchanged. An ffprobe
+	// chosen on purpose belongs in the ffprobe_path setting, which is checked
+	// above and always wins.
+	if path, ok := extractEmbeddedBinary(); ok {
+		return path, true
+	}
+
 	execDir := ""
 	if ex, err := os.Executable(); err == nil {
 		execDir = filepath.Dir(ex)
@@ -166,10 +181,6 @@ func FindFFprobeBinary(customPath string) (string, bool) {
 	}
 
 	if path, err := exec.LookPath("ffprobe"); err == nil {
-		return path, true
-	}
-
-	if path, ok := ExtractEmbeddedBinary(); ok {
 		return path, true
 	}
 

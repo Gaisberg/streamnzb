@@ -58,6 +58,16 @@ It has to be, because the size of a single article is a poster's choice and vari
 
 Nothing is configurable here and nothing needs to be. If you see that pattern with modest article sizes, the bottleneck is the link or the providers rather than the window — check the connection speeds on the dashboard and the **Buffering behind Cloudflare Tunnel** note above.
 
+## A Dolby Vision release is reported as plain HDR10
+
+Dolby Vision hides in a different place per profile. Profile 5 announces itself in the codec tag (`dvhe`/`dvh1`), but profile 8 — what a "DV HDR" WEB-DL almost always is — rides on an ordinary HEVC stream with an HDR10 base layer, and the only evidence is the Dolby Vision configuration record in the stream's side data. Reading it requires **ffprobe 5.0 or newer**: 4.x rejects the side-data query outright, before it reads a byte of the file, so a release named DV reaches a player that asked for no DV.
+
+**The bundled ffprobe is already new enough.** Release builds and the Docker image embed ffprobe 6.1, and the runtime auto-downloader fetches the same version. The bundled copy takes priority over any ffprobe left next to the executable by an earlier version, so updating StreamNZB is all it takes — the stale one is replaced on the next start.
+
+**Two ways to still end up on an old one.** An `ffprobe_path` in `config.json` pointing at a system ffprobe 4.x uses that binary, because an explicitly configured path always wins. And a build from source does not embed anything, so it takes whatever ffprobe is on `PATH` or was auto-downloaded next to the binary earlier — delete that copy to have the current version fetched again.
+
+Either way the fallback is a degraded answer, not a failure: the probe is retried without the side-data section and everything else about the stream is still reported. The log names the binary at DEBUG, as `FFprobe lacks stream_side_data support; retrying compatibility query`.
+
 ## A provider reports "too many connections"
 
 A provider that answers login with `502` *and* words to the effect of "too many connections" means the account already has as many connections open as the plan allows, and the dashboard shows the provider as degraded with that reason. The code alone is not what decides this: `502` is also how many providers reject a login outright — Eweka answers `502 "Authentication Failed"` for a lapsed subscription — and that reads as **Credentials rejected**, not as a connection limit. Whichever way it went, the server's own line is quoted under the notice. StreamNZB enforces the configured connection count per **account** rather than per activity: playback, the NNTP proxy, speed tests, connection tests, settings validation, health probes and a settings save that re-points a provider all draw on one allowance for that account, so the total StreamNZB holds never exceeds the count on the provider card — two provider entries with the same host and username share one allowance, and changing a provider's settings re-uses its existing connections instead of opening a second set beside them.
