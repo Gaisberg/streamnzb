@@ -34,17 +34,31 @@ release's parsed data.
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` `.Seadex.DualAudio` |
-| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Languages` `.LanguageFlags` `.Subtitles` |
+| Parsed | `.ParsedTitle` `.Year` `.Date` `.Resolution` `.Quality` `.Codec` `.BitDepth` `.Bitrate` `.Container` `.Extension` `.Group` `.Edition` `.Network` `.Site` `.Country` `.Region` `.Audio` `.Channels` `.HDR` `.Extras` `.ParsedSize` `.Languages` `.LanguageFlags` `.Subtitles` `.LanguageSource` `.ParsedLanguages` `.ParsedSubtitles` |
 | Episode | `.Season` `.Episode` `.Seasons` `.Episodes` `.EpisodeCode` `.Volumes` |
-| Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` |
+| Flags | `.Proper` `.Repack` `.Remastered` `.Upscaled` `.ThreeD` `.Scene` `.Retail` `.Hardcoded` `.Dubbed` `.Subbed` `.DualAudio` `.Commentary` `.Complete` `.Documentary` `.Unrated` `.Uncensored` `.PPV` `.Adult` `.Convert` `.Trash` `.Torrent` |
 
-List fields (`.HDR`, `.Audio`, `.Channels`, `.Languages`, `.LanguageFlags`, `.Subtitles`, `.Seasons`,
+List fields (`.HDR`, `.Audio`, `.Channels`, `.Extras`, `.Languages`, `.LanguageFlags`, `.Subtitles`, `.ParsedLanguages`, `.ParsedSubtitles`, `.Seasons`,
 `.Episodes`, `.Volumes`) render comma-separated by default and work with
 `range`, `index`, and the list helpers below. `.Caps` is the ffprobe-verified
 media summary, present on library releases only. `.Duration` is the humanized
 runtime (`1h 52m`), filled when the indexer reports one (e.g. Easynews — newznab
 NZBs don't carry a runtime) or, for probed library releases, from the ffprobe
 measurement of the file itself.
+
+The **Flags** group is the release name's own claims about itself, each a
+plain yes/no. Four are worth calling out because what they mean is not obvious
+from the name: `.DualAudio` marks a release carrying two audio languages,
+`.Convert` one re-encoded from another format, `.Trash` one the parser reads as
+junk (a cam, a telesync, a re-upload of a re-upload), and `.Torrent` a name
+shaped like a torrent release — which says where the name came from, not
+anything about the posting. `.Extras` is the extra-content tokens in the name
+(`Sample`, `Featurette`), which is how a release that is not the feature
+itself announces it.
+
+`.ParsedSize` is the size token the name spells out (`1.4GB`) — the group's
+claim, not a measurement. Use `.Size` for the posting's actual size; most
+names carry no such token and leave this empty.
 
 `.Bitrate` is the release's average bitrate as text (`21.5 Mbps`). Titles
 almost never spell one out, so it is derived instead. For a probed library
@@ -85,11 +99,11 @@ guess from the release name. `.Kind` is the full content kind: `movie`,
 
 `.OriginalLanguage` is the requested title's original language from metadata
 as an ISO 639-1 code, empty when it did not say. `.Languages` holds the same
-codes for the release: what the name says, merged with the language the indexer
-tagged it with, whichever spelling the indexer used (`Arabic`, `ara` and `ar`
-all arrive as `ar`). The indexer's tag is regularly the only place a dub's
-language appears at all, so the two sources are a union rather than one
-falling back to the other. Use `has`, which is membership on the list;
+codes for the release: what the name says, the language the indexer tagged it
+with, and — for a probed library release — the audio tracks ffprobe read,
+whichever spelling the source used (`Arabic`, `ara` and `ar` all arrive as
+`ar`). The indexer's tag is regularly the only place a dub's language appears
+at all, so the sources are a union rather than one falling back to the other. Use `has`, which is membership on the list;
 `contains` is a substring test over the list's text and would light up `en`
 inside `French`. A badge for original-audio releases needs no per-language
 line:
@@ -118,6 +132,37 @@ any list of codes the way `.LanguageFlags` renders `.Languages`:
 
 ```
 {{if .Subtitles}}📝 {{join (flags .Subtitles) " "}}{{end}}
+```
+
+#### Which source said so
+
+`.Languages` and `.Subtitles` are merges, so neither can answer "did the
+*name* claim this, or did it come from the indexer's tag or the file's
+tracks?" Three fields separate the sources:
+
+| Field | Answers |
+|---|---|
+| `.LanguageSource` | which account of `.Languages` answered: `measured` (the file's audio tracks were read), `reported` (the indexer's tag contributed), `inferred` (the name alone), or empty when nothing said anything |
+| `.ParsedLanguages` `.ParsedSubtitles` | the release name's own two lists, as the same codes |
+| `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` | what ffprobe actually read, for a probed library release |
+
+`.LanguageSource` speaks for the audio languages only. A probe that read no
+tracks still measures the video, so `.Verified` can be true while this says
+`inferred`.
+
+The parsed lists are what let a badge mark a claim the file does not back:
+
+```
+{{if and .Verified .ParsedSubtitles}}{{if not (has (first .ParsedSubtitles) .Probed.SubtitleLanguages)}}⚠ subs claimed, not found{{end}}{{end}}
+```
+
+jhin folds the subtitle languages a name spells out into its languages as
+well, which is correct — a subtitle track is still one way to watch a release
+in that language — but it means `.ParsedLanguages` alone cannot say which of
+them is spoken. `without` gives the spoken ones:
+
+```
+{{join (without .ParsedSubtitles .ParsedLanguages) " · "}}
 ```
 
 ### Matched rules
@@ -220,6 +265,7 @@ comma-separated text.
 | `first` / `last` | `{{first .Audio}}` | list edge element |
 | `union` | `{{join (union .Languages .Subtitles) " · "}}` | both lists, repeats dropped, first-seen order |
 | `without` | `{{join (without .Languages .Subtitles) " · "}}` | subtitles not already in languages |
+| `without` | `{{join (without .ParsedSubtitles .ParsedLanguages) " · "}}` | the languages the name claims as spoken, not subtitled |
 | `contains` | `{{if contains "DV" .HDR}}…{{end}}` | substring test |
 | `hasPrefix` / `hasSuffix` | `{{if hasPrefix "2160" .Resolution}}…{{end}}` | prefix/suffix test |
 | `add` / `sub` / `mul` / `div` / `mod` | `{{div 100 .Score}}` | integer math on the value |
