@@ -20,11 +20,21 @@ import (
 
 const maxExplainTitles = 100
 
-// explainRequest asks how a profile would judge some titles. Profile carries
+// explainRequest asks how a profile would judge some releases. Profile carries
 // the definition being edited rather than a saved name, so the Filters UI can
 // preview a change before it is saved; ProfileName falls back to a saved one.
 type explainRequest struct {
-	Titles      []string                    `json:"titles"`
+	// Titles are release names judged against the request-level Sample, which
+	// is the form the Filters preview posts: one set of simulated-release
+	// controls over every title in the box.
+	Titles []string `json:"titles"`
+	// Candidates are releases carrying their own simulated release, for a
+	// caller that needs them to differ. A fixture file is this form: a cap on
+	// releases over 20 GB or a prune rule comparing scores can only be
+	// exercised by a set that is not uniform, and Titles alone cannot express
+	// one. The two lists may be combined; a candidate without a sample falls
+	// back to the request-level one.
+	Candidates  []explainCandidate          `json:"candidates,omitempty"`
 	Profile     *config.FilterProfileConfig `json:"profile,omitempty"`
 	ProfileName string                      `json:"profile_name,omitempty"`
 	TargetTitle string                      `json:"target_title,omitempty"`
@@ -37,6 +47,12 @@ type explainRequest struct {
 	OriginalLanguage string `json:"original_language,omitempty"`
 	// Sample is what to pretend about the releases being judged, for the parts
 	// a release name cannot carry. Absent leaves those rules unjudged.
+	Sample *explainSample `json:"sample,omitempty"`
+}
+
+// explainCandidate is one release to judge with its own simulated release.
+type explainCandidate struct {
+	Title  string         `json:"title"`
 	Sample *explainSample `json:"sample,omitempty"`
 }
 
@@ -216,18 +232,10 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	titles := make([]string, 0, len(req.Titles))
-	for _, t := range req.Titles {
-		if t = strings.TrimSpace(t); t != "" {
-			titles = append(titles, t)
-		}
-	}
-	if len(titles) == 0 {
-		writeExplainError(w, http.StatusBadRequest, "at least one title is required")
+	fixtures, err := explainFixtures(req)
+	if err != nil {
+		writeExplainError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if len(titles) > maxExplainTitles {
-		titles = titles[:maxExplainTitles]
 	}
 
 	profile, err := s.explainProfile(req)
@@ -246,9 +254,44 @@ func (s *Server) handleRankingExplain(w http.ResponseWriter, r *http.Request) {
 		Seadex:           req.Sample.toSeadex(),
 		Sample:           req.Sample.toSample(),
 	}
-	results, aggregates := profile.Explain(titles, explainReq, opts)
+	results, aggregates := profile.Explain(fixtures, explainReq, opts)
 
 	writeJSON(w, http.StatusOK, explainResponse{Profile: profile.Name, Results: results, Aggregates: aggregates})
+}
+
+// explainFixtures turns both input forms into the one the profile evaluates:
+// bare titles, which take the request-level sample, followed by candidates,
+// which may bring their own. Blank names are dropped rather than judged — an
+// empty line in the preview's text box is not a release.
+func explainFixtures(req explainRequest) ([]ranking.Fixture, error) {
+	fixtures := make([]ranking.Fixture, 0, len(req.Titles)+len(req.Candidates))
+	for _, t := range req.Titles {
+		if t = strings.TrimSpace(t); t != "" {
+			fixtures = append(fixtures, ranking.Fixture{Title: t})
+		}
+	}
+	for _, c := range req.Candidates {
+		title := strings.TrimSpace(c.Title)
+		if title == "" {
+			continue
+		}
+		// SeaDex is resolved once per request, not per release: the lookup
+		// answers for the requested title and each release is judged by
+		// matching its group against that answer. Accepting it per candidate
+		// would let a fixture set claim two different answers for one title,
+		// so it is refused rather than silently ignored.
+		if c.Sample != nil && c.Sample.Seadex != nil {
+			return nil, errCandidateSeadex
+		}
+		fixtures = append(fixtures, ranking.Fixture{Title: title, Sample: c.Sample.toSample()})
+	}
+	if len(fixtures) == 0 {
+		return nil, errNoTitles
+	}
+	if len(fixtures) > maxExplainTitles {
+		fixtures = fixtures[:maxExplainTitles]
+	}
+	return fixtures, nil
 }
 
 func writeExplainError(w http.ResponseWriter, status int, msg string) {
@@ -308,6 +351,8 @@ type explainError string
 func (e explainError) Error() string { return string(e) }
 
 const (
-	errNoProfile      = explainError("a profile definition or profile_name is required")
-	errUnknownProfile = explainError("unknown filter profile")
+	errNoProfile       = explainError("a profile definition or profile_name is required")
+	errUnknownProfile  = explainError("unknown filter profile")
+	errNoTitles        = explainError("at least one title or candidate is required")
+	errCandidateSeadex = explainError("seadex is resolved once per request: set it on the top-level sample, not on a candidate")
 )

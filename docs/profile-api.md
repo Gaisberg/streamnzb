@@ -6,9 +6,11 @@ project: a field like `probed.subtitleLanguages` or a function like
 generates or validates profiles therefore cannot decide what is supported from
 the version number alone — it has to ask.
 
-This page documents the endpoints that answer. They are aimed at tooling
-(template generators, third-party editors, CI checks); everything they report
-is also visible in the Filters and Result format editors.
+This page documents the two endpoints that answer: one reporting what this
+build understands, one evaluating a profile against releases you supply. They
+are aimed at tooling (template generators, third-party editors, CI checks);
+everything they report is also visible in the Filters and Result format
+editors.
 
 All endpoints are **admin-only** and take the same authentication as the rest
 of the API — the session cookie, or `Authorization: Bearer <admin token>`.
@@ -113,6 +115,135 @@ its element's fields under a `[]` segment (`.MatchedRules`,
 `helpers[].args` is how many arguments the helper takes, or `-1` when it is
 variadic. See [Custom result formats](result-formatting.md) for what each one
 does.
+
+## `POST /api/ranking/explain`
+
+Runs release names through a filter profile and reports what it did to each —
+the same call the live pipeline makes, not an approximation. It is the
+deterministic test runner: fixtures and a profile in, structured evaluation
+out, with no indexer and no network.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d @fixtures.json http://localhost:8080/api/ranking/explain
+```
+
+### Request
+
+| Field | Meaning |
+|---|---|
+| `titles` | release names to judge, each against the request-level `sample` |
+| `candidates` | releases carrying their own `sample`, for a set that must not be uniform |
+| `profile` | a full profile definition to evaluate, unsaved — what the Filters preview posts |
+| `profile_name` | a saved profile to evaluate instead; one of the two is required |
+| `kind` | the content kind to judge as: `movie`, `series`, `anime_movie`, `anime_show`. Empty exercises only the rules that apply everywhere |
+| `target_title` | the requested title, for title-similarity scoring |
+| `original_language` | what to pretend the requested title was made in (ISO 639-1), for rules reading `originalLanguage` |
+| `sample` | what to pretend about every release in `titles`, for the parts a name cannot carry |
+
+`titles` and `candidates` may be combined and are judged as one set. At most
+100 releases per call.
+
+A bare name carries no NZB, no probe and no availability record, so rules
+reading those tiers are reported as **skipped** rather than judged against
+zeros — the same fail-open behaviour they have in a real search, made visible.
+`sample` is how you answer them:
+
+```json
+{
+  "profile_name": "Default",
+  "kind": "anime_show",
+  "candidates": [
+    {
+      "title": "[GoodGroup] Show - 01 (1080p) [Dual Audio]",
+      "sample": {
+        "indexer_data": true, "size_gb": 4.2, "age_days": 30, "grabs": 120,
+        "probed": { "height": 1080, "video_codec": "hevc", "audio_languages": ["ja", "en"], "subtitle_languages": ["en"] },
+        "avail_status": "available"
+      }
+    },
+    { "title": "[OtherGroup] Show - 01 (1080p)", "sample": { "indexer_data": true, "size_gb": 22 } }
+  ],
+  "sample": { "seadex": { "best_groups": ["GoodGroup"] } }
+}
+```
+
+Two things about samples are worth knowing:
+
+- **`indexer_data` vouches for the zeros.** Size, age and grab count are all
+  absent on a bare name, so a rule reading `grabs == 0` is skipped rather than
+  paid. Setting `indexer_data` says the zeros are real — a release nobody has
+  grabbed yet has a known grab count of nought. It applies per fixture.
+- **`seadex` belongs on the request-level `sample` only.** One lookup answers
+  for the requested title and each release is judged by matching its group
+  against that answer, so a per-candidate `seadex` is refused rather than
+  silently ignored. Each fixture is still judged individually: name a group in
+  `best_groups` and only releases parsed as that group come out best.
+
+### Response
+
+```json
+{
+  "profile": "Default",
+  "results": [
+    {
+      "title": "[GoodGroup] Show - 01 (1080p) [Dual Audio]",
+      "rank": 12450,
+      "fetch": true,
+      "resolution": "1080p",
+      "contributions": [
+        { "source": "resolution:1080p", "rank": 4000 },
+        { "source": "rule:SeaDex best", "rank": 5000 }
+      ],
+      "matched": [{ "name": "SeaDex best", "score": 5000 }],
+      "limited": [{ "name": "Cap per group", "group": "goodgroup" }],
+      "skipped_rules": ["Needs a probe: needs a probed file, which this release is not"],
+      "parsed": { "…": "the full jhin parse" }
+    },
+    {
+      "title": "[OtherGroup] Show - 01 (1080p)",
+      "rank": 0,
+      "fetch": false,
+      "rejections": ["rule: Oversized"]
+    }
+  ],
+  "aggregates": [
+    { "source": "exists(\"remux\" in traits)", "count": 0, "matched": [] }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rank` | the final score, every stage included |
+| `fetch` | whether the release survived; `false` releases are still explained, which is the question the endpoint exists to answer |
+| `contributions` | the score broken down per clause — the native attribute scores plus one `rule:<name>` entry per rule that paid. `detail` carries a rule's score expression when the points were computed rather than fixed |
+| `matched` | the named rules that paid out, with the points each was worth |
+| `rejections` | why the release was turned away; a rule's own rejection is prefixed `rule: ` |
+| `limited` | the caps this release counts against and the bucket it counts in, whether or not it survived them |
+| `skipped_rules` | rules that could not be judged, each with the reason — a rule reading `probed.*` against a bare name reports here rather than failing |
+| `parsed` | the full parse of the release name |
+| `aggregates` | the set-wide conditions (`exists`, `count`, `none`), what each counted and which releases it counted; they belong to no single release's breakdown. `known: false` means nothing in the set carried the tiers the condition reads, which skips every rule depending on it |
+
+Rejected releases are returned after the surviving ones, so the order of
+`results` is not the order of the request. Match on `title`.
+
+### Using it as a CI check
+
+The endpoint is deterministic: the same fixtures and profile give the same
+scores, with no indexer involved. A check that a profile still ranks a known
+set the way it should is a POST and an assertion on `rank` order:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d @fixtures.json http://localhost:8080/api/ranking/explain \
+  | jq -r '.results | sort_by(-.rank) | .[] | select(.fetch) | .title' \
+  | diff - expected-order.txt
+```
+
+`skipped_rules` is worth asserting on too: a rule that quietly stops being
+judgeable — because the fixture lost the sample that answered it — reads as a
+rule that no longer fires.
 
 ## Notes for tool authors
 

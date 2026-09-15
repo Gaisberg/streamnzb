@@ -130,7 +130,7 @@ func TestLanguagesPreferredBonusSeesIndexerTag(t *testing.T) {
 		t.Fatalf("release tagged Finnish earned %d over an untagged one, want 777", got)
 	}
 
-	explanations, _ := p.Explain([]string{"Movie 2020 1080p BluRay FINNISH x264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	explanations, _ := p.Explain(ranking.TitleFixtures("Movie 2020 1080p BluRay FINNISH x264-GRP"), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(explanations) != 1 {
 		t.Fatalf("got %d explanations, want 1", len(explanations))
 	}
