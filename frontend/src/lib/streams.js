@@ -88,6 +88,8 @@ export function normalizeStreamDraft(draft) {
     result_name_template: draft?.result_name_template || '',
     result_description_template: draft?.result_description_template || '',
     addon_name: (draft?.addon_name || '').trim(),
+    simkl_scrobble: draft?.simkl_scrobble === true,
+    mdblist_scrobble: draft?.mdblist_scrobble === true,
   }
 }
 
@@ -118,6 +120,8 @@ export function buildStreamDraft(stream) {
     result_name_template: stream?.result_name_template || '',
     result_description_template: stream?.result_description_template || '',
     addon_name: stream?.addon_name || '',
+    simkl_scrobble: stream?.simkl_scrobble,
+    mdblist_scrobble: stream?.mdblist_scrobble,
   })
 }
 

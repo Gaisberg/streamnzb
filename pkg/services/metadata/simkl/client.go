@@ -1,8 +1,12 @@
 // Package simkl talks to the Simkl watch-tracking service. Unlike the other
 // metadata clients it is authenticated per account, not per API key: the user
 // links their Simkl account through the PIN device flow, and the resulting
-// access token (which Simkl never expires) is persisted alongside the TVDB
-// token in the state store.
+// access token (which Simkl never expires) is persisted in the state store.
+//
+// An account belongs to a stream, not to the server. A Simkl account is one
+// person's — their watchlists, their watched history — so a household where
+// everyone has their own stream needs a link each. Registry hands out one
+// Client per stream; each carries its own token and its own watchlist cache.
 //
 // Simkl's API terms forbid hammering /sync/all-items — clients that fetch the
 // full list repeatedly get their client id suspended. The whole watchlist is
@@ -14,26 +18,25 @@ package simkl
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/persistence"
+	"streamnzb/pkg/services/metadata/scrobble"
 )
 
 const (
-	stateKey = "simkl_token"
+	// stateKey holds every stream's token; legacyStateKey is the single
+	// server-wide token written before accounts were per stream.
+	stateKey       = "simkl_tokens"
+	legacyStateKey = "simkl_token"
 
 	// activitiesCheckInterval throttles the change probe. Within the window
 	// every catalog request serves from the cached list; after it, one
@@ -51,18 +54,6 @@ func PosterURL(poster string) string {
 	return "https://simkl.in/posters/" + poster + "_m.webp"
 }
 
-// credentialFingerprint pins a stored token to the client id it was authorized
-// for, without persisting the id itself. Tokens are minted per Simkl app, so a
-// token from a replaced client id cannot speak for the one in use now.
-func credentialFingerprint(clientID string) string {
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(clientID))
-	return hex.EncodeToString(sum[:])
-}
-
 type tokenState struct {
 	Token     string `json:"token"`
 	CreatedAt string `json:"created_at"`
@@ -75,7 +66,8 @@ type tokenState struct {
 
 type Client struct {
 	clientID string
-	dataDir  string
+	stream   string
+	store    *scrobble.Store[tokenState]
 	client   *http.Client
 	BaseURL  string
 
@@ -94,14 +86,22 @@ type Client struct {
 	lastActivityCheck time.Time
 }
 
-func NewClient(clientID, dataDir string) *Client {
+// NewClient builds the client for one stream's account. Prefer a Registry:
+// two clients for the same stream would each cache that account's watchlist,
+// and Simkl's terms punish refetching an unchanged list.
+func NewClient(clientID, dataDir, stream string) *Client {
+	return newClient(clientID, stream, scrobble.NewStore[tokenState](dataDir, stateKey))
+}
+
+func newClient(clientID, stream string, store *scrobble.Store[tokenState]) *Client {
 	baseURL := "https://api.simkl.com"
 	if envURL := os.Getenv("STREAMNZB_SIMKL_BASE_URL"); envURL != "" {
 		baseURL = envURL
 	}
 	return &Client{
 		clientID: strings.TrimSpace(clientID),
-		dataDir:  dataDir,
+		stream:   strings.TrimSpace(stream),
+		store:    store,
 		// A large completed list is megabytes of JSON, so the timeout is
 		// looser than the other metadata clients'.
 		client:  &http.Client{Timeout: 30 * time.Second},
@@ -144,7 +144,7 @@ func (c *Client) UserName() string {
 // the state store on first use. A token minted under a different client id is
 // ignored — the account has to be re-linked.
 func (c *Client) token() (string, string) {
-	if c == nil || c.clientID == "" {
+	if c == nil || c.clientID == "" || c.stream == "" {
 		return "", ""
 	}
 	c.tokenMu.Lock()
@@ -153,17 +153,13 @@ func (c *Client) token() (string, string) {
 		return c.tokenCache, c.userName
 	}
 	c.tokenLoaded = true
-	manager, err := persistence.GetManager(c.dataDir)
-	if err != nil {
-		return "", ""
-	}
-	var stored tokenState
-	if found, _ := manager.Get(stateKey, &stored); found && stored.Token != "" {
-		if stored.Fingerprint == credentialFingerprint(c.clientID) {
+	if stored, ok := c.store.Get(c.stream); ok && stored.Token != "" {
+		if stored.Fingerprint == scrobble.CredentialFingerprint(c.clientID) {
 			c.tokenCache = stored.Token
 			c.userName = stored.UserName
 		} else {
-			logger.Debug("Simkl token was authorized for a different client id; account needs re-linking")
+			logger.Debug("Simkl token was authorized for a different client id; account needs re-linking",
+				"stream", c.stream)
 		}
 	}
 	return c.tokenCache, c.userName
@@ -173,14 +169,10 @@ func (c *Client) setToken(token, userName string) {
 	state := tokenState{
 		Token:       token,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		Fingerprint: credentialFingerprint(c.clientID),
+		Fingerprint: scrobble.CredentialFingerprint(c.clientID),
 		UserName:    userName,
 	}
-	if manager, err := persistence.GetManager(c.dataDir); err == nil {
-		if err := manager.Set(stateKey, state); err != nil {
-			logger.Warn("Failed to save Simkl token to state", "err", err)
-		}
-	}
+	c.store.Set(c.stream, state)
 	c.tokenMu.Lock()
 	c.tokenLoaded = true
 	c.tokenCache = token
@@ -202,9 +194,7 @@ func (c *Client) Disconnect() {
 // dropToken clears the persisted and in-memory token without touching the list
 // cache — the 401 path already holds listMu and clears the list itself.
 func (c *Client) dropToken() {
-	if manager, err := persistence.GetManager(c.dataDir); err == nil {
-		_ = manager.Set(stateKey, tokenState{})
-	}
+	c.store.Delete(c.stream)
 	c.tokenMu.Lock()
 	c.tokenLoaded = true
 	c.tokenCache = ""
@@ -217,7 +207,7 @@ func (c *Client) dropToken() {
 // that silently serve nothing. Only that definitive rejection lands here;
 // transient failures keep the token.
 func (c *Client) invalidateToken() {
-	logger.Warn("Simkl rejected the access token; the account needs re-linking")
+	logger.Warn("Simkl rejected the access token; the account needs re-linking", "stream", c.stream)
 	c.dropToken()
 }
 
@@ -290,7 +280,7 @@ func (c *Client) CheckPIN(ctx context.Context, userCode string) (bool, error) {
 		logger.Debug("Simkl user settings lookup failed after linking", "err", err)
 	}
 	c.setToken(out.AccessToken, name)
-	logger.Info("Simkl account linked", "user", name)
+	logger.Info("Simkl account linked", "stream", c.stream, "user", name)
 	return true, nil
 }
 
@@ -505,42 +495,16 @@ func (c *Client) fetchActivityStamp(ctx context.Context, token string) (string, 
 	return out.All, nil
 }
 
-// ScrobbleItem addresses one played title for the scrobble endpoints. Exactly
-// one addressing shape is sent: movies by imdb/tmdb id, series by show ids
-// plus aired season/episode, anime by MAL id plus the entry-local episode
-// number (MAL and Kitsu entries share per-entry numbering).
-type ScrobbleItem struct {
-	ContentType string // "movie" | "series" | "anime"
-	Title       string
-	IMDbID      string
-	TMDBID      string
-	TVDBID      string
-	MALID       string
-	Season      int
-	Episode     int
-}
+// Name labels the target in scrobble logs.
+func (c *Client) Name() string { return "Simkl" }
 
-// scrobbleIDValue renders one id for the payload: Simkl's examples send
-// numeric ids as numbers, so parseable ones go out that way.
-func scrobbleIDValue(id string) interface{} {
-	if n, err := strconv.Atoi(id); err == nil {
-		return n
-	}
-	return id
-}
-
-// Scrobble reports playback state for one item: verb "start" marks it
-// watching-now, verb "stop" ends the session — Simkl itself marks the item
-// watched at ≥80% progress and saves a resumable playback below that. A 409
-// (duplicate within Simkl's protection window) counts as success.
-func (c *Client) Scrobble(ctx context.Context, verb string, item ScrobbleItem, progress float64) error {
-	token, _ := c.token()
-	if token == "" {
-		return fmt.Errorf("no Simkl account is linked")
-	}
-	progress = math.Round(math.Min(100, math.Max(0, progress))*100) / 100
-
-	body := map[string]interface{}{"progress": progress}
+// scrobblePayload renders the request body for one item, or reports why Simkl
+// cannot place it. Exactly one addressing shape goes out: movies by imdb/tmdb
+// id, series by show ids plus aired season/episode, anime by MAL id plus the
+// entry-local episode number (MAL and Kitsu entries share per-entry
+// numbering).
+func scrobblePayload(item scrobble.Item, progress float64) (map[string]interface{}, error) {
+	body := map[string]interface{}{"progress": scrobble.ClampProgress(progress)}
 	ids := map[string]interface{}{}
 	switch item.ContentType {
 	case "movie":
@@ -548,10 +512,10 @@ func (c *Client) Scrobble(ctx context.Context, verb string, item ScrobbleItem, p
 			ids["imdb"] = item.IMDbID
 		}
 		if item.TMDBID != "" {
-			ids["tmdb"] = scrobbleIDValue(item.TMDBID)
+			ids["tmdb"] = scrobble.IDValue(item.TMDBID)
 		}
 		if len(ids) == 0 {
-			return fmt.Errorf("movie scrobble needs an imdb or tmdb id")
+			return nil, fmt.Errorf("movie scrobble needs an imdb or tmdb id")
 		}
 		movie := map[string]interface{}{"ids": ids}
 		if item.Title != "" {
@@ -560,11 +524,11 @@ func (c *Client) Scrobble(ctx context.Context, verb string, item ScrobbleItem, p
 		body["movie"] = movie
 	case "anime":
 		if item.MALID == "" {
-			return fmt.Errorf("anime scrobble needs a MAL id")
+			return nil, fmt.Errorf("anime scrobble needs a MAL id")
 		}
-		ids["mal"] = scrobbleIDValue(item.MALID)
+		ids["mal"] = scrobble.IDValue(item.MALID)
 		body["anime"] = map[string]interface{}{"ids": ids}
-		episode := item.Episode
+		episode := item.MALEpisode
 		if episode < 1 {
 			// Anime movies and specials have a single episode on Simkl.
 			episode = 1
@@ -575,18 +539,39 @@ func (c *Client) Scrobble(ctx context.Context, verb string, item ScrobbleItem, p
 			ids["imdb"] = item.IMDbID
 		}
 		if item.TMDBID != "" {
-			ids["tmdb"] = scrobbleIDValue(item.TMDBID)
+			ids["tmdb"] = scrobble.IDValue(item.TMDBID)
 		}
 		if item.TVDBID != "" {
-			ids["tvdb"] = scrobbleIDValue(item.TVDBID)
+			ids["tvdb"] = scrobble.IDValue(item.TVDBID)
 		}
 		if len(ids) == 0 || item.Season < 1 || item.Episode < 1 {
-			return fmt.Errorf("series scrobble needs a show id and season/episode")
+			return nil, fmt.Errorf("series scrobble needs a show id and season/episode")
 		}
 		body["show"] = map[string]interface{}{"ids": ids}
 		body["episode"] = map[string]int{"season": item.Season, "number": item.Episode}
 	}
+	return body, nil
+}
 
+// Supports reports whether the item can be addressed on Simkl at all.
+func (c *Client) Supports(item scrobble.Item) bool {
+	_, err := scrobblePayload(item, 0)
+	return err == nil
+}
+
+// Scrobble reports playback state for one item: verb "start" marks it
+// watching-now, verb "stop" ends the session — Simkl itself marks the item
+// watched at ≥80% progress and saves a resumable playback below that. A 409
+// (duplicate within Simkl's protection window) counts as success.
+func (c *Client) Scrobble(ctx context.Context, verb string, item scrobble.Item, progress float64) error {
+	token, _ := c.token()
+	if token == "" {
+		return fmt.Errorf("no Simkl account is linked")
+	}
+	body, err := scrobblePayload(item, progress)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err

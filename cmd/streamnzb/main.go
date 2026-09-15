@@ -40,6 +40,8 @@ var (
 
 	SimklKey = ""
 
+	MDBListKey = ""
+
 	Version = "dev"
 )
 
@@ -122,6 +124,7 @@ func main() {
 	userTMDBKey := firstNonEmpty(os.Getenv(env.TMDBAPIKey), strings.TrimSpace(cfg.TMDBAPIKey))
 	userTVDBKey := firstNonEmpty(os.Getenv(env.TVDBAPIKey), strings.TrimSpace(cfg.TVDBAPIKey))
 	userSimklID := firstNonEmpty(os.Getenv(env.SimklClientID), strings.TrimSpace(cfg.SimklClientID))
+	userMDBListID := firstNonEmpty(os.Getenv(env.MDBListClientID), strings.TrimSpace(cfg.MDBListClientID))
 	effectiveTMDBKey := firstNonEmpty(strings.TrimSpace(userTMDBKey), strings.TrimSpace(TMDBKey))
 	effectiveTVDBKey := firstNonEmpty(userTVDBKey, TVDBKey)
 	if effectiveTMDBKey == "" && cfg.EffectiveMetadataEnabled() {
@@ -231,16 +234,18 @@ func main() {
 
 	application := app.New()
 	comp, err := application.Build(cfg, app.BuildOpts{
-		AvailNZBURL:           availNZBUrl,
-		AvailNZBAPIKey:        availNZBAPIKey,
-		TMDBAPIKey:            userTMDBKey,
-		TVDBAPIKey:            userTVDBKey,
-		SimklClientID:         userSimklID,
-		FallbackTMDBAPIKey:    TMDBKey,
-		FallbackTVDBAPIKey:    TVDBKey,
-		FallbackSimklClientID: SimklKey,
-		DataDir:               dataDir,
-		SessionTTL:            30 * time.Minute,
+		AvailNZBURL:             availNZBUrl,
+		AvailNZBAPIKey:          availNZBAPIKey,
+		TMDBAPIKey:              userTMDBKey,
+		TVDBAPIKey:              userTVDBKey,
+		SimklClientID:           userSimklID,
+		MDBListClientID:         userMDBListID,
+		FallbackTMDBAPIKey:      TMDBKey,
+		FallbackTVDBAPIKey:      TVDBKey,
+		FallbackSimklClientID:   SimklKey,
+		FallbackMDBListClientID: MDBListKey,
+		DataDir:                 dataDir,
+		SessionTTL:              30 * time.Minute,
 	})
 	if err != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("failed to build components: %w", err))
@@ -270,7 +275,8 @@ func main() {
 		AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 		TMDBClient:           comp.TMDBClient,
 		TVDBClient:           comp.TVDBClient,
-		SimklClient:          comp.SimklClient,
+		SimklClients:         comp.SimklClients,
+		MDBListClients:       comp.MDBListClients,
 		StreamManager:        streamManager,
 		Version:              Version,
 		AttemptRecorder:      stateMgr,

@@ -38,6 +38,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { MDBListCard, SimklCard } from "@/components/WatchTrackingCards"
 import { SelectionSection } from "@/components/ui/selection-section"
 import { apiFetch } from "@/api"
 import { copyToClipboard } from "@/lib/utils"
@@ -137,6 +138,7 @@ function StreamDialog({
   metadataProfiles = [],
   formatProfiles = [],
   globalConfig,
+  onAccountsChange,
   onSave,
   saving,
 }) {
@@ -439,6 +441,22 @@ function StreamDialog({
                   None keeps the classic stream-only addon — no catalogs, no title pages, no rating cap.
                 </p>
               </div>
+
+              {isEditing && (
+                <>
+                  <SimklCard
+                    stream={draft.username}
+                    onAccountChange={onAccountsChange}
+                    scrobble={draft.simkl_scrobble}
+                    onScrobbleChange={(checked) => setDraft((current) => ({ ...current, simkl_scrobble: checked }))}
+                  />
+                  <MDBListCard
+                    stream={draft.username}
+                    scrobble={draft.mdblist_scrobble}
+                    onScrobbleChange={(checked) => setDraft((current) => ({ ...current, mdblist_scrobble: checked }))}
+                  />
+                </>
+              )}
 
               <div className="rounded-md border border-border/60 p-3">
                 <div className="flex items-center justify-between gap-4">
@@ -963,6 +981,8 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
         result_name_template: draft.result_name_template || '',
         result_description_template: draft.result_description_template || '',
         addon_name: draft.addon_name || '',
+        simkl_scrobble: draft.simkl_scrobble === true,
+        mdblist_scrobble: draft.mdblist_scrobble === true,
       },
     }
     await apiFetch('/api/streams/configs', {
@@ -1490,6 +1510,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             metadataProfiles={globalConfig?.metadata_profiles || []}
             formatProfiles={globalConfig?.format_profiles || []}
             globalConfig={globalConfig}
+            onAccountsChange={refreshStreamsAfterMutation}
             onSave={handleCreateStream}
             saving={dialogSaving}
           />
@@ -1513,6 +1534,7 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
             metadataProfiles={globalConfig?.metadata_profiles || []}
             formatProfiles={globalConfig?.format_profiles || []}
             globalConfig={globalConfig}
+            onAccountsChange={refreshStreamsAfterMutation}
             onSave={handleSaveStream}
             saving={dialogSaving}
           />

@@ -20,6 +20,7 @@ const (
 	TMDBAPIKey                         = "TMDB_API_KEY"
 	TVDBAPIKey                         = "TVDB_API_KEY"
 	SimklClientID                      = "SIMKL_CLIENT_ID"
+	MDBListClientID                    = "MDBLIST_CLIENT_ID"
 	MetadataEnabledEnv                 = "METADATA_ENABLED"
 	NNTPProxyPort                      = "NNTP_PROXY_PORT"
 	NNTPProxyHost                      = "NNTP_PROXY_HOST"
@@ -78,6 +79,7 @@ const (
 	KeyTMDBAPIKey                 = "tmdb_api_key"
 	KeyTVDBAPIKey                 = "tvdb_api_key"
 	KeySimklClientID              = "simkl_client_id"
+	KeyMDBListClientID            = "mdblist_client_id"
 	KeyMetadataEnabled            = "metadata_enabled"
 	KeyIndexerQueryHeader         = "indexer_query_header"
 	KeyIndexerGrabHeader          = "indexer_grab_header"
@@ -411,6 +413,7 @@ type ConfigOverrides struct {
 	TMDBAPIKey                 string
 	TVDBAPIKey                 string
 	SimklClientID              string
+	MDBListClientID            string
 	IndexerQueryHeader         string
 	IndexerGrabHeader          string
 	ProviderHeader             string
@@ -498,6 +501,7 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 	r.str(&o.TMDBAPIKey, KeyTMDBAPIKey, TMDBAPIKey)
 	r.str(&o.TVDBAPIKey, KeyTVDBAPIKey, TVDBAPIKey)
 	r.str(&o.SimklClientID, KeySimklClientID, SimklClientID)
+	r.str(&o.MDBListClientID, KeyMDBListClientID, MDBListClientID)
 	if v, ok := os.LookupEnv(MetadataEnabledEnv); ok && v != "" {
 		o.MetadataEnabled = getEnvBool(MetadataEnabledEnv, false)
 		r.keys = append(r.keys, KeyMetadataEnabled)

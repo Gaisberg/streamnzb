@@ -2045,7 +2045,7 @@ func (s *Server) logBelowGoodThresholdOnce(sess *session.Session, sessionID stri
 // commitGoodAttemptIfQualified records a successful attempt once the play has
 // run long enough and far enough to count. It reports whether the session has
 // committed, including when an earlier call already did it.
-func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID string, serveStartedAt time.Time) bool {
+func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session.Session, sessionID string, serveStartedAt time.Time) bool {
 	rt := s.runtime()
 	if sess == nil {
 		return false
@@ -2072,10 +2072,10 @@ func (s *Server) commitGoodAttemptIfQualified(sess *session.Session, sessionID s
 	}
 	s.recordAttempt(sess, true, "", availOutcome)
 	sess.ResetOnce(onceThresholdLogged)
-	// Playback is proven real at this point — the moment to tell Simkl the
-	// title is being watched (once per session; the stop with final progress
-	// comes from the serve teardown).
-	s.scrobbleSimklStart(sess)
+	// Playback is proven real at this point — the moment to tell the
+	// watch-tracking targets the title is being watched (once per session; the
+	// stop with final progress comes from the serve teardown).
+	s.scrobbleStart(stream, sess)
 	// Populate the library from a real successful play, not just preload
 	// pre-probe, so the cache reflects actual usage even when pre-probing is
 	// limited or disabled. Skip sessions already sourced from the library.

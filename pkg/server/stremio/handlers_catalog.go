@@ -1395,17 +1395,19 @@ func simklTypeForCatalog(contentType string) string {
 	return "shows"
 }
 
-// simklCatalog serves one of the linked Simkl account's watchlists (def.Kind
+// simklCatalog serves one of the requesting stream's Simkl watchlists (def.Kind
 // is the Simkl status). Entries arrive with their cross-service ids plus
 // Simkl's own title and poster, so no per-item metadata fan-out is needed.
-// Without a linked account the build fails, which the handler degrades to an
-// empty page.
+//
+// The account is the stream's own, so a profile shared by several streams
+// serves each of them their own watchlist from the same row. A stream that has
+// linked nothing fails the build, which the handler degrades to an empty page.
 func (s *Server) simklCatalog(ctx context.Context, def CatalogDef, req catalogRequest) ([]MetaPreview, error) {
-	rt := s.runtime()
-	if rt.simklClient == nil {
+	client := s.runtime().simklClients.For(req.StreamName)
+	if client == nil {
 		return nil, fmt.Errorf("simkl is not configured")
 	}
-	entries, err := rt.simklClient.Watchlist(ctx, simklTypeForCatalog(def.Type), def.Kind)
+	entries, err := client.Watchlist(ctx, simklTypeForCatalog(def.Type), def.Kind)
 	if err != nil {
 		return nil, err
 	}

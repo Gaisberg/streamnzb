@@ -15,7 +15,9 @@ import (
 	"streamnzb/pkg/initialization"
 	"streamnzb/pkg/search/triage"
 	"streamnzb/pkg/services/availnzb"
+	"streamnzb/pkg/services/metadata/mdblist"
 	"streamnzb/pkg/services/metadata/metacache"
+	"streamnzb/pkg/services/metadata/scrobble"
 	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/services/metadata/tmdb"
 	"streamnzb/pkg/services/metadata/tvdb"
@@ -25,16 +27,18 @@ import (
 )
 
 type BuildOpts struct {
-	AvailNZBURL           string
-	AvailNZBAPIKey        string
-	TMDBAPIKey            string
-	TVDBAPIKey            string
-	SimklClientID         string
-	FallbackTMDBAPIKey    string
-	FallbackTVDBAPIKey    string
-	FallbackSimklClientID string
-	DataDir               string
-	SessionTTL            time.Duration
+	AvailNZBURL             string
+	AvailNZBAPIKey          string
+	TMDBAPIKey              string
+	TVDBAPIKey              string
+	SimklClientID           string
+	MDBListClientID         string
+	FallbackTMDBAPIKey      string
+	FallbackTVDBAPIKey      string
+	FallbackSimklClientID   string
+	FallbackMDBListClientID string
+	DataDir                 string
+	SessionTTL              time.Duration
 }
 
 type Components struct {
@@ -52,7 +56,8 @@ type Components struct {
 	AvailClient          *availnzb.Client
 	TMDBClient           *tmdb.Client
 	TVDBClient           *tvdb.Client
-	SimklClient          *simkl.Client
+	SimklClients         *simkl.Registry
+	MDBListClients       *mdblist.Registry
 	SegmentCacheBudget   *pool.SegmentCacheBudget
 }
 
@@ -170,7 +175,12 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 	// from each stream's metadata profile — never client state.
 	tmdbClient := tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	tvdbClient := tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
-	simklClient := a.simklClientFor(nil, dataDir)
+	// Accounts moved from one server-wide link to one per stream. Drop the old
+	// links once, before any registry reads them, so nobody inherits an
+	// account that was never theirs.
+	scrobble.ResetLegacyLinks(dataDir, append(simkl.StateKeys(), mdblist.StateKeys()...)...)
+	simklClients := a.simklRegistryFor(nil, dataDir)
+	mdblistClients := a.mdblistRegistryFor(nil, dataDir)
 
 	return &Components{
 		Config:               base.Config,
@@ -187,22 +197,41 @@ func (a *App) buildFull(cfg *config.Config, opts BuildOpts) (*Components, error)
 		AvailClient:          availClient,
 		TMDBClient:           tmdbClient,
 		TVDBClient:           tvdbClient,
-		SimklClient:          simklClient,
+		SimklClients:         simklClients,
+		MDBListClients:       mdblistClients,
 		SegmentCacheBudget:   base.SegmentCacheBudget,
 	}, nil
 }
 
-// simklClientFor keeps the existing Simkl client across reloads whenever the
-// effective client id is unchanged: the instance carries the linked account's
-// token mirror and the cached watchlist, and Simkl's API terms punish clients
-// that refetch the full list gratuitously — every debounced settings save must
-// not cost one.
-func (a *App) simklClientFor(prev *simkl.Client, dataDir string) *simkl.Client {
+// simklRegistryFor keeps the existing Simkl registry across reloads whenever
+// the effective client id is unchanged: it carries every stream's token mirror
+// and cached watchlist, and Simkl's API terms punish clients that refetch an
+// unchanged list — a debounced settings save must not cost one per stream.
+func (a *App) simklRegistryFor(prev *simkl.Registry, dataDir string) *simkl.Registry {
 	clientID := a.effectiveSimklClientID()
 	if prev != nil && prev.ClientID() == clientID {
 		return prev
 	}
-	return simkl.NewClient(clientID, dataDir)
+	return simkl.NewRegistry(clientID, dataDir)
+}
+
+func (a *App) effectiveMDBListClientID() string {
+	if id := strings.TrimSpace(a.opts.MDBListClientID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(a.opts.FallbackMDBListClientID)
+}
+
+// mdblistRegistryFor keeps the existing MDBList registry across reloads
+// whenever the effective client id is unchanged: it carries every stream's
+// token mirror, and a rebuild mid-refresh would drop a renewed token the state
+// store has not been told about yet.
+func (a *App) mdblistRegistryFor(prev *mdblist.Registry, dataDir string) *mdblist.Registry {
+	clientID := a.effectiveMDBListClientID()
+	if prev != nil && prev.ClientID() == clientID {
+		return prev
+	}
+	return mdblist.NewRegistry(clientID, dataDir)
 }
 
 // ReloadScope describes which runtime subsystems a config change invalidates.
@@ -274,7 +303,8 @@ func (a *App) refreshLightComponents(comp *Components, newCfg *config.Config) {
 	dataDir := resolveDataDir(a.opts.DataDir, newCfg.LoadedPath)
 	comp.TMDBClient = tmdb.NewClientWithCache(a.effectiveTMDBKey(), metadataResponseCache(dataDir, "tmdb"))
 	comp.TVDBClient = tvdb.NewClientWithCache(a.effectiveTVDBKey(), dataDir, metadataResponseCache(dataDir, "tvdb"))
-	comp.SimklClient = a.simklClientFor(comp.SimklClient, dataDir)
+	comp.SimklClients = a.simklRegistryFor(comp.SimklClients, dataDir)
+	comp.MDBListClients = a.mdblistRegistryFor(comp.MDBListClients, dataDir)
 }
 
 func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
@@ -284,6 +314,7 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	a.opts.TMDBAPIKey = strings.TrimSpace(newCfg.TMDBAPIKey)
 	a.opts.TVDBAPIKey = strings.TrimSpace(newCfg.TVDBAPIKey)
 	a.opts.SimklClientID = strings.TrimSpace(newCfg.SimklClientID)
+	a.opts.MDBListClientID = strings.TrimSpace(newCfg.MDBListClientID)
 	env.SetRuntimeHeaders(newCfg.IndexerQueryHeader, newCfg.IndexerGrabHeader, newCfg.ProviderHeader)
 
 	old := a.components

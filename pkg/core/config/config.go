@@ -823,10 +823,17 @@ type Config struct {
 	// against. Empty means the key baked in at build time; the account's
 	// access token itself lives in the state store, not here.
 	SimklClientID string `json:"simkl_client_id,omitempty"`
-	// SimklScrobble reports playback to the linked Simkl account: watching-now
-	// on sustained playback, and watched progress when a play ends. Off by
-	// default — the account is server-wide, so reporting is opt-in.
+	// SimklScrobble was the server-wide scrobble switch.
+	// Deprecated: superseded by StreamEntry.SimklScrobble, because the account
+	// is one per stream and a server-wide switch filed every household
+	// member's viewing into whoever linked it. Kept so old configs unmarshal
+	// and are cleared on load (clearLegacyScrobbleSwitch).
 	SimklScrobble bool `json:"simkl_scrobble,omitempty"`
+
+	// MDBListClientID is the MDBList app the device-code account link
+	// authorizes against. Empty means the id baked in at build time; the
+	// account's tokens themselves live in the state store, not here.
+	MDBListClientID string `json:"mdblist_client_id,omitempty"`
 
 	// DatabaseDriver selects the persistence backend: "sqlite" (default,
 	// <data dir>/streamnzb.db) or "postgres". DatabaseURL is the Postgres
@@ -1093,6 +1100,12 @@ type StreamEntry struct {
 	// default (EffectiveSpeculativePreProbingMaxAttempts, historically a
 	// global setting); 0 disables preloading for this stream.
 	PreloadAttempts *int `json:"preload_attempts,omitempty"`
+	// SimklScrobble and MDBListScrobble report this stream's playback to the
+	// account this stream has linked for that service. Off by default, and
+	// independent of the link: a stream may link Simkl for its watchlist rows
+	// without reporting anything back to it.
+	SimklScrobble   bool `json:"simkl_scrobble,omitempty"`
+	MDBListScrobble bool `json:"mdblist_scrobble,omitempty"`
 }
 
 // DefaultLibraryScoreBonus is the ranking bonus added to cached library
@@ -1440,6 +1453,9 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	if cfg.migrateFormatProfiles() {
 		needSave = true
 	}
+	if cfg.clearLegacyScrobbleSwitch() {
+		needSave = true
+	}
 
 	if cfg.AdminToken == "" {
 		if token, err := NewAPIKey(); err == nil {
@@ -1774,6 +1790,7 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyTMDBAPIKey:                 func(d, s *Config) { d.TMDBAPIKey = s.TMDBAPIKey },
 	env.KeyTVDBAPIKey:                 func(d, s *Config) { d.TVDBAPIKey = s.TVDBAPIKey },
 	env.KeySimklClientID:              func(d, s *Config) { d.SimklClientID = s.SimklClientID },
+	env.KeyMDBListClientID:            func(d, s *Config) { d.MDBListClientID = s.MDBListClientID },
 	env.KeyIndexerQueryHeader:         func(d, s *Config) { d.IndexerQueryHeader = s.IndexerQueryHeader },
 	env.KeyIndexerGrabHeader:          func(d, s *Config) { d.IndexerGrabHeader = s.IndexerGrabHeader },
 	env.KeyProviderHeader:             func(d, s *Config) { d.ProviderHeader = s.ProviderHeader },
@@ -1860,6 +1877,7 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		TMDBAPIKey:                 o.TMDBAPIKey,
 		TVDBAPIKey:                 o.TVDBAPIKey,
 		SimklClientID:              o.SimklClientID,
+		MDBListClientID:            o.MDBListClientID,
 		IndexerQueryHeader:         o.IndexerQueryHeader,
 		IndexerGrabHeader:          o.IndexerGrabHeader,
 		ProviderHeader:             o.ProviderHeader,
@@ -1953,6 +1971,25 @@ func NewJellyfinServerID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// clearLegacyScrobbleSwitch retires the server-wide Simkl scrobble switch.
+//
+// Scrobbling is per stream now, and so is the account it reports into. The
+// switch cannot be carried onto a stream because the links it depended on are
+// cleared on the same upgrade (see scrobble.ResetLegacyLinks) — a stream left
+// switched on with nothing linked would report nowhere while claiming to. So
+// it is simply dropped, and the log says where to turn it back on.
+//
+// Runs after applyStreamModelUpgradeDefaults so every stream exists.
+func (c *Config) clearLegacyScrobbleSwitch() bool {
+	if !c.SimklScrobble {
+		return false
+	}
+	c.SimklScrobble = false
+	logger.Info("Scrobbling is now set per stream. Re-link the account on the stream that should " +
+		"report, then turn its Scrobble playback switch back on (Streams → edit).")
+	return true
+}
+
 // RedactForAPI blanks every credential for the non-admin view of the config.
 // The admin view keeps the ones the settings page has to display — the Newznab
 // API key among them, since it is what gets pasted into the client — so those are
@@ -1977,6 +2014,7 @@ func (c *Config) RedactForAPI() Config {
 	out.TMDBAPIKey = ""
 	out.TVDBAPIKey = ""
 	out.SimklClientID = ""
+	out.MDBListClientID = ""
 	out.DatabaseURL = RedactDatabaseURLForAPI(c.DatabaseURL)
 	out.Providers = make([]Provider, len(c.Providers))
 	for i, provider := range c.Providers {

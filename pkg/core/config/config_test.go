@@ -467,10 +467,10 @@ func TestRedactForAPIStripsDatabasePassword(t *testing.T) {
 
 // Provider API keys must never reach a non-admin viewer.
 func TestRedactForAPIStripsMetadataKeys(t *testing.T) {
-	cfg := &Config{TMDBAPIKey: "tmdb-token", TVDBAPIKey: "tvdb-key", SimklClientID: "simkl-id"}
+	cfg := &Config{TMDBAPIKey: "tmdb-token", TVDBAPIKey: "tvdb-key", SimklClientID: "simkl-id", MDBListClientID: "mdblist-id"}
 	out := cfg.RedactForAPI()
-	if out.TMDBAPIKey != "" || out.TVDBAPIKey != "" || out.SimklClientID != "" {
-		t.Fatalf("RedactForAPI leaked metadata keys: tmdb=%q tvdb=%q simkl=%q", out.TMDBAPIKey, out.TVDBAPIKey, out.SimklClientID)
+	if out.TMDBAPIKey != "" || out.TVDBAPIKey != "" || out.SimklClientID != "" || out.MDBListClientID != "" {
+		t.Fatalf("RedactForAPI leaked metadata keys: tmdb=%q tvdb=%q simkl=%q mdblist=%q", out.TMDBAPIKey, out.TVDBAPIKey, out.SimklClientID, out.MDBListClientID)
 	}
 }
 
@@ -836,6 +836,7 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyJellyfinMaxPlaybackSources, env.KeyJellyfinResolveOnOpen,
 		env.KeyProviders, env.KeyIndexers, env.KeyAvailNZBURL,
 		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey, env.KeySimklClientID,
+		env.KeyMDBListClientID,
 		env.KeyIndexerQueryHeader, env.KeyIndexerGrabHeader, env.KeyProviderHeader,
 		env.KeyAdminUsername, env.KeyAdminMustChangePwd,
 		env.KeyTrustedProxyAuthHeader, env.KeyTrustedProxies,
@@ -1193,5 +1194,34 @@ func TestEffectiveJellyfinResolveOnOpen(t *testing.T) {
 	}
 	if reloaded.EffectiveJellyfinResolveOnOpen() {
 		t.Fatal("an explicit false did not survive a save and reload")
+	}
+}
+
+// The server-wide Simkl switch predates per-stream scrobbling. It cannot be
+// carried onto a stream, because the account it reported into is cleared on
+// the same upgrade — a stream switched on with nothing linked would claim to
+// report and do nothing.
+func TestClearLegacyScrobbleSwitch(t *testing.T) {
+	cfg := &Config{
+		SimklScrobble: true,
+		Streams: map[string]*StreamEntry{
+			"alice": {Username: "alice"},
+			"bob":   {Username: "bob"},
+		},
+	}
+	if !cfg.clearLegacyScrobbleSwitch() {
+		t.Fatal("migration reported no change")
+	}
+	if cfg.SimklScrobble {
+		t.Fatal("the retired server-wide switch survived the migration")
+	}
+	for name, entry := range cfg.Streams {
+		if entry.SimklScrobble || entry.MDBListScrobble {
+			t.Fatalf("%s was switched on by the migration", name)
+		}
+	}
+	// Re-running is a no-op rather than a second migration.
+	if cfg.clearLegacyScrobbleSwitch() {
+		t.Fatal("migration ran twice")
 	}
 }

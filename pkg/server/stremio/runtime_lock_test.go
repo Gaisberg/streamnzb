@@ -16,10 +16,10 @@ import (
 var reloadSwappedFields = []string{
 	"config", "baseURL", "indexer", "queryCache", "validator", "triageService",
 	"availClient", "availReporter", "availNZBIndexerHosts", "tmdbClient",
-	"tvdbClient", "simklClient", "streamManager",
+	"tvdbClient", "simklClients", "mdblistClients", "streamManager",
 }
 
-// Reload swaps twelve fields under the write lock every time the config is
+// Reload swaps fourteen fields under the write lock every time the config is
 // saved. Reading any of them off the receiver without the lock is a data race,
 // and reading two of them separately is worse than that: a request can end up
 // built from half of one configuration and half of the next — a new indexer
@@ -27,7 +27,7 @@ var reloadSwappedFields = []string{
 // the nil client that says "off".
 //
 // This walk found 131 such reads across 50 functions when it was written. They
-// now go through s.runtime(), which returns all twelve together under one read
+// now go through s.runtime(), which returns all fourteen together under one read
 // lock. The rule is the same coarse one the API server's equivalent test uses
 // (see pkg/server/api/config_lock_test.go): a function that mentions s.mu is
 // assumed to know what it is doing, because anything sharper needs flow

@@ -71,7 +71,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	s.sessionManager.StartPlayback(sessionID, clientIP)
 	// Registered before the EndPlayback defer so it runs after it (LIFO) —
 	// the stop must see the decremented play count and the folded progress.
-	defer s.scrobbleSimklStopIfIdle(sess)
+	defer s.scrobbleStopIfIdle(streamConfig, sess)
 	var endPlaybackOnce sync.Once
 	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
@@ -159,7 +159,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 
 	serveStartedAt := time.Now()
 	monitoredStream.onProgress = func() {
-		s.commitGoodAttemptIfQualified(sess, sessionID, serveStartedAt)
+		s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
 	}
 	monitoredStream.onServeWindow = serveWindowLogger(sessionID, monitoredStream, bufW, serveStartedAt)
 
@@ -231,7 +231,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}()
 
 	defer func() {
-		s.finishServeBookkeeping(r, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded)
+		s.finishServeBookkeeping(r, streamConfig, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded)
 	}()
 
 	http.ServeContent(bufW, r, resolved.name, time.Time{}, monitoredStream)
@@ -415,6 +415,7 @@ func serveWindowLogger(sessionID string, monitored *StreamMonitor, bufW *buffere
 // nothing here may flip it back to OK.
 func (s *Server) finishServeBookkeeping(
 	r *http.Request,
+	streamConfig *auth.Stream,
 	resolved *resolvedPlayback,
 	bufW *bufferedResponseWriter,
 	monitored *StreamMonitor,
@@ -447,7 +448,7 @@ func (s *Server) finishServeBookkeeping(
 		return
 	}
 
-	if s.commitGoodAttemptIfQualified(sess, sessionID, serveStartedAt) {
+	if s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt) {
 		return
 	}
 
@@ -472,5 +473,5 @@ func (s *Server) finishServeBookkeeping(
 	}
 	// Safety fallback: this path should normally already have returned via
 	// commitGoodAttemptIfQualified above.
-	s.commitGoodAttemptIfQualified(sess, sessionID, serveStartedAt)
+	s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
 }

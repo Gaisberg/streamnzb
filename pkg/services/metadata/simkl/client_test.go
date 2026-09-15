@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/services/metadata/scrobble"
 )
 
 const testAllItems = `{
@@ -76,7 +77,7 @@ const testAllItems = `{
 // process-wide persistence singleton (never closed here — same pattern as the
 // TVDB client tests). activityStamp is what /sync/activities reports; the
 // counters see every list-related request.
-func newStubClient(t *testing.T, activityStamp *atomic.Value, activityCalls, listCalls *atomic.Int64) *Client {
+func newStubRegistry(t *testing.T, activityStamp *atomic.Value, activityCalls, listCalls *atomic.Int64) (*Registry, string, string) {
 	t.Helper()
 	logger.Init("ERROR")
 	mux := http.NewServeMux()
@@ -118,8 +119,21 @@ func newStubClient(t *testing.T, activityStamp *atomic.Value, activityCalls, lis
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	client := NewClient("test-client", dir)
-	client.BaseURL = server.URL
+	return NewRegistry("test-client", dir), dir, server.URL
+}
+
+// newStubClient is the single-stream shorthand: most tests only care about one
+// account, and every client from the same registry shares the stub server.
+func newStubClient(t *testing.T, activityStamp *atomic.Value, activityCalls, listCalls *atomic.Int64) *Client {
+	t.Helper()
+	reg, _, baseURL := newStubRegistry(t, activityStamp, activityCalls, listCalls)
+	return streamClient(reg, "alice", baseURL)
+}
+
+// streamClient builds one stream's client against the stub server.
+func streamClient(reg *Registry, stream, baseURL string) *Client {
+	client := reg.For(stream)
+	client.BaseURL = baseURL
 	return client
 }
 
@@ -135,7 +149,8 @@ func TestPINFlowLinksAccount(t *testing.T) {
 	var stamp atomic.Value
 	stamp.Store("2024-01-01T00:00:00Z")
 	var activityCalls, listCalls atomic.Int64
-	client := newStubClient(t, &stamp, &activityCalls, &listCalls)
+	reg, dir, baseURL := newStubRegistry(t, &stamp, &activityCalls, &listCalls)
+	client := streamClient(reg, "alice", baseURL)
 
 	pin, err := client.StartPIN(context.Background())
 	if err != nil || pin.UserCode != "ABC12" || pin.Interval != 5 {
@@ -152,18 +167,57 @@ func TestPINFlowLinksAccount(t *testing.T) {
 		t.Fatalf("after link: connected=%v user=%q", client.Connected(), client.UserName())
 	}
 
-	// The token survives a client rebuild via the state store.
-	fresh := NewClient("test-client", client.dataDir)
-	fresh.BaseURL = client.BaseURL
+	// The token survives a rebuild via the state store.
+	fresh := streamClient(NewRegistry("test-client", dir), "alice", baseURL)
 	if !fresh.Connected() || fresh.UserName() != "Test User" {
 		t.Fatalf("rebuilt client: connected=%v user=%q", fresh.Connected(), fresh.UserName())
 	}
 
 	// A different client id must not reuse the token.
-	other := NewClient("other-client", client.dataDir)
-	other.BaseURL = client.BaseURL
+	other := streamClient(NewRegistry("other-client", dir), "alice", baseURL)
 	if other.Connected() {
 		t.Fatal("token minted for test-client accepted by other-client")
+	}
+}
+
+// Accounts are per stream: linking one stream must not sign in another, or
+// every household member's viewing would land in the first one's history.
+func TestAccountsArePerStream(t *testing.T) {
+	var stamp atomic.Value
+	stamp.Store("2024-01-01T00:00:00Z")
+	var activityCalls, listCalls atomic.Int64
+	reg, dir, baseURL := newStubRegistry(t, &stamp, &activityCalls, &listCalls)
+
+	alice := streamClient(reg, "alice", baseURL)
+	bob := streamClient(reg, "bob", baseURL)
+	link(t, alice)
+	if !alice.Connected() {
+		t.Fatal("alice did not link")
+	}
+	if bob.Connected() {
+		t.Fatal("linking alice signed bob in too")
+	}
+	if got := reg.LinkedStreams(); len(got) != 1 || got[0] != "alice" {
+		t.Fatalf("LinkedStreams = %v, want [alice]", got)
+	}
+
+	link(t, bob)
+	if got := reg.LinkedStreams(); len(got) != 2 || got[0] != "alice" || got[1] != "bob" {
+		t.Fatalf("LinkedStreams = %v, want [alice bob]", got)
+	}
+
+	// Unlinking one leaves the other alone.
+	alice.Disconnect()
+	if alice.Connected() || !bob.Connected() {
+		t.Fatalf("after alice disconnect: alice=%v bob=%v", alice.Connected(), bob.Connected())
+	}
+	// ...and it survives a rebuild, so the unlink really was persisted.
+	rebuilt := NewRegistry("test-client", dir)
+	if streamClient(rebuilt, "alice", baseURL).Connected() {
+		t.Fatal("alice came back after a rebuild")
+	}
+	if !streamClient(rebuilt, "bob", baseURL).Connected() {
+		t.Fatal("bob was lost by alice unlinking")
 	}
 }
 
@@ -263,13 +317,13 @@ func TestScrobblePayloads(t *testing.T) {
 		t.Fatalf("temp dir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	client := NewClient("test-client", dir)
+	client := NewRegistry("test-client", dir).For("alice")
 	client.BaseURL = server.URL
 	link(t, client)
 
 	// Movie stop: ids go out numeric where parseable, progress clamps to 100.
 	err = client.Scrobble(context.Background(), "stop",
-		ScrobbleItem{ContentType: "movie", Title: "Inception", IMDbID: "tt1375666", TMDBID: "27205"}, 123)
+		scrobble.Item{ContentType: "movie", Title: "Inception", IMDbID: "tt1375666", TMDBID: "27205"}, 123)
 	if err != nil || lastPath != "/scrobble/stop" {
 		t.Fatalf("movie scrobble: %v, path %q", err, lastPath)
 	}
@@ -281,7 +335,7 @@ func TestScrobblePayloads(t *testing.T) {
 
 	// Series carry show ids plus season/episode.
 	err = client.Scrobble(context.Background(), "start",
-		ScrobbleItem{ContentType: "series", IMDbID: "tt4574334", Season: 1, Episode: 3}, 42.014)
+		scrobble.Item{ContentType: "series", IMDbID: "tt4574334", Season: 1, Episode: 3}, 42.014)
 	if err != nil {
 		t.Fatalf("series scrobble: %v", err)
 	}
@@ -292,7 +346,7 @@ func TestScrobblePayloads(t *testing.T) {
 
 	// Anime address by MAL id with the entry-local episode number.
 	err = client.Scrobble(context.Background(), "stop",
-		ScrobbleItem{ContentType: "anime", MALID: "999", Episode: 5}, 90)
+		scrobble.Item{ContentType: "anime", MALID: "999", MALEpisode: 5}, 90)
 	if err != nil {
 		t.Fatalf("anime scrobble: %v", err)
 	}
@@ -304,13 +358,13 @@ func TestScrobblePayloads(t *testing.T) {
 	// Simkl's duplicate protection (409) is success, not an error.
 	status = http.StatusConflict
 	if err := client.Scrobble(context.Background(), "stop",
-		ScrobbleItem{ContentType: "movie", IMDbID: "tt1375666"}, 90); err != nil {
+		scrobble.Item{ContentType: "movie", IMDbID: "tt1375666"}, 90); err != nil {
 		t.Fatalf("409 must not error: %v", err)
 	}
 
 	// Unaddressable items are refused before any request goes out.
 	lastPath = ""
-	if err := client.Scrobble(context.Background(), "stop", ScrobbleItem{ContentType: "series", IMDbID: "tt1"}, 50); err == nil || lastPath != "" {
+	if err := client.Scrobble(context.Background(), "stop", scrobble.Item{ContentType: "series", IMDbID: "tt1"}, 50); err == nil || lastPath != "" {
 		t.Fatalf("season-less series scrobble: err=%v path=%q", err, lastPath)
 	}
 }
@@ -319,7 +373,8 @@ func TestDisconnectDropsTokenAndList(t *testing.T) {
 	var stamp atomic.Value
 	stamp.Store("2024-01-01T00:00:00Z")
 	var activityCalls, listCalls atomic.Int64
-	client := newStubClient(t, &stamp, &activityCalls, &listCalls)
+	reg, dir, baseURL := newStubRegistry(t, &stamp, &activityCalls, &listCalls)
+	client := streamClient(reg, "alice", baseURL)
 	link(t, client)
 	if _, err := client.Watchlist(context.Background(), "shows", "watching"); err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -333,8 +388,7 @@ func TestDisconnectDropsTokenAndList(t *testing.T) {
 		t.Fatal("Watchlist served without a linked account")
 	}
 	// The persisted token is gone too.
-	fresh := NewClient("test-client", client.dataDir)
-	fresh.BaseURL = client.BaseURL
+	fresh := streamClient(NewRegistry("test-client", dir), "alice", baseURL)
 	if fresh.Connected() {
 		t.Fatal("rebuilt client still connected after Disconnect")
 	}

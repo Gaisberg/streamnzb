@@ -98,6 +98,11 @@ type Stream struct {
 	// disables preloading. See config.StreamEntry; the two structs are
 	// converted into each other, so their fields must stay in step.
 	PreloadAttempts *int `json:"preload_attempts,omitempty"`
+	// SimklScrobble and MDBListScrobble report this stream's playback to that
+	// service's linked account. See config.StreamEntry; the two structs are
+	// converted into each other, so their fields must stay in step.
+	SimklScrobble   bool `json:"simkl_scrobble,omitempty"`
+	MDBListScrobble bool `json:"mdblist_scrobble,omitempty"`
 }
 
 // ActiveProviderSelections lists the providers this stream actually uses, in

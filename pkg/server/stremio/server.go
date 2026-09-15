@@ -21,6 +21,7 @@ import (
 	"streamnzb/pkg/services/metadata/animelists"
 	"streamnzb/pkg/services/metadata/cinemeta"
 	"streamnzb/pkg/services/metadata/kitsu"
+	"streamnzb/pkg/services/metadata/mdblist"
 	"streamnzb/pkg/services/metadata/metacache"
 	"streamnzb/pkg/services/metadata/seadex"
 	"streamnzb/pkg/services/metadata/simkl"
@@ -54,7 +55,8 @@ type Server struct {
 	availNZBIndexerHosts map[string]string
 	tmdbClient           *tmdb.Client
 	tvdbClient           *tvdb.Client
-	simklClient          *simkl.Client
+	simklClients         *simkl.Registry
+	mdblistClients       *mdblist.Registry
 	kitsuClient          *kitsu.Client
 	tvmazeClient         *tvmaze.Client
 	animeLists           *animelists.Store
@@ -125,7 +127,8 @@ type ServerOptions struct {
 	AvailNZBIndexerHosts map[string]string
 	TMDBClient           *tmdb.Client
 	TVDBClient           *tvdb.Client
-	SimklClient          *simkl.Client
+	SimklClients         *simkl.Registry
+	MDBListClients       *mdblist.Registry
 	StreamManager        *auth.StreamManager
 	Version              string
 	AttemptRecorder      *persistence.StateManager
@@ -167,7 +170,8 @@ func NewServer(opts *ServerOptions) (*Server, error) {
 		availNZBIndexerHosts: opts.AvailNZBIndexerHosts,
 		tmdbClient:           opts.TMDBClient,
 		tvdbClient:           opts.TVDBClient,
-		simklClient:          opts.SimklClient,
+		simklClients:         opts.SimklClients,
+		mdblistClients:       opts.MDBListClients,
 		kitsuClient:          kitsu.NewClientWithCache(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "kitsu")),
 		tvmazeClient:         tvmaze.NewClient(nil, metacache.New(opts.AttemptRecorder.MetadataCacheStore(), "tvmaze")),
 		animeLists:           animelists.GetStore(opts.AttemptRecorder.AnimeMappingStore()),
@@ -451,7 +455,8 @@ func (s *Server) Reload(opts *ServerOptions) {
 	s.availNZBIndexerHosts = opts.AvailNZBIndexerHosts
 	s.tmdbClient = opts.TMDBClient
 	s.tvdbClient = opts.TVDBClient
-	s.simklClient = opts.SimklClient
+	s.simklClients = opts.SimklClients
+	s.mdblistClients = opts.MDBListClients
 	s.streamManager = opts.StreamManager
 }
 

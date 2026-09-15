@@ -120,7 +120,7 @@ type Session struct {
 	bytesRead atomic.Int64 // bytes read during playback; used for AvailNZB good-report threshold
 	playback  *playbackStreamState
 
-	// Watched-progress bookkeeping for the layers above (Simkl scrobbling):
+	// Watched-progress bookkeeping for the layers above (scrobbling):
 	// the highest byte offset a real (non-probe) serve delivered, the size of
 	// the file it indexes into, and the last progress percentage reported
 	// externally (stored in hundredths so it fits an atomic).

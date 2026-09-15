@@ -5,9 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/services/metadata/animelists"
+	"streamnzb/pkg/services/metadata/mdblist"
+	"streamnzb/pkg/services/metadata/scrobble"
 	"streamnzb/pkg/session"
 )
 
@@ -45,7 +49,7 @@ func TestScrobbleItemForSession(t *testing.T) {
 		t.Fatal("series without an episode mapped")
 	}
 
-	// Anime without a MAL mapping available is skipped rather than misfiled.
+	// Anime with neither a MAL mapping nor aired ids can be placed nowhere.
 	anime := &session.Session{
 		ContentType: "anime",
 		ContentID:   "kitsu:486:5",
@@ -53,6 +57,17 @@ func TestScrobbleItemForSession(t *testing.T) {
 	}
 	if _, ok := srv.scrobbleItemForSession(anime); ok {
 		t.Fatal("anime mapped with no anime-lists store")
+	}
+
+	// The same anime with the aired ids resolved is addressable even without a
+	// MAL mapping — that is the addressing MDBList uses.
+	anime.ContentIDs.TvdbID = "305288"
+	item, ok = srv.scrobbleItemForSession(anime)
+	if !ok || item.MALID != "" || item.TVDBID != "305288" || item.Season != 3 || item.Episode != 17 {
+		t.Fatalf("aired-only anime item = %+v, ok=%v", item, ok)
+	}
+	if !(&mdblist.Client{}).Supports(item) {
+		t.Fatal("MDBList cannot place an anime episode with aired ids")
 	}
 
 	// Direct plays carry no request context at all.
@@ -89,8 +104,62 @@ func TestScrobbleItemForSessionAnimeUsesEntryEpisode(t *testing.T) {
 		ContentIDs: &session.AvailReportMeta{KitsuID: "486", Season: 3, Episode: 17},
 	}
 	item, ok := srv.scrobbleItemForSession(anime)
-	if !ok || item.ContentType != "anime" || item.MALID != "999" || item.Episode != 5 {
-		t.Fatalf("anime item = %+v, ok=%v; want MAL 999 episode 5", item, ok)
+	if !ok || item.ContentType != "anime" || item.MALID != "999" || item.MALEpisode != 5 {
+		t.Fatalf("anime item = %+v, ok=%v; want MAL 999 entry episode 5", item, ok)
+	}
+	// The aired numbering rides along untouched for the targets that address
+	// anime as its aired series.
+	if item.Season != 3 || item.Episode != 17 {
+		t.Fatalf("anime item lost the aired numbering: %+v", item)
+	}
+}
+
+// Scrobbling is opt-in per stream and per service, and a service with no
+// linked account is not a target at all — nothing goes out until both halves
+// are in place.
+func TestScrobbleTargets(t *testing.T) {
+	rt := serverRuntime{config: &config.Config{}}
+	// No stream at all: an unauthenticated play reports nowhere.
+	if targets := scrobbleTargets(rt, nil); len(targets) != 0 {
+		t.Fatalf("no stream, but %d targets", len(targets))
+	}
+	// A stream that has not opted in reports nowhere either.
+	if targets := scrobbleTargets(rt, &auth.Stream{Username: "alice"}); len(targets) != 0 {
+		t.Fatalf("stream with scrobbling off, but %d targets", len(targets))
+	}
+	// Opted in, but nothing is linked yet.
+	opted := &auth.Stream{Username: "alice", SimklScrobble: true, MDBListScrobble: true}
+	if targets := scrobbleTargets(rt, opted); len(targets) != 0 {
+		t.Fatalf("toggles on with no accounts, but %d targets", len(targets))
+	}
+	// A client id on its own is not an account: only a linked one is a target,
+	// and the account has to be this stream's own.
+	rt.mdblistClients = mdblist.NewRegistry("client-id", t.TempDir())
+	if targets := scrobbleTargets(rt, opted); len(targets) != 0 {
+		t.Fatalf("client id but no linked account, yet %d targets", len(targets))
+	}
+}
+
+// Item.Addressable is what decides whether a session is worth reporting at
+// all; each target then narrows that to what it can actually place.
+func TestItemAddressable(t *testing.T) {
+	cases := []struct {
+		name string
+		item scrobble.Item
+		want bool
+	}{
+		{"movie with an id", scrobble.Item{ContentType: "movie", IMDbID: "tt1"}, true},
+		{"movie without ids", scrobble.Item{ContentType: "movie"}, false},
+		{"series with episode", scrobble.Item{ContentType: "series", TVDBID: "1", Season: 1, Episode: 2}, true},
+		{"series without episode", scrobble.Item{ContentType: "series", TVDBID: "1", Season: 1}, false},
+		{"anime by MAL only", scrobble.Item{ContentType: "anime", MALID: "9"}, true},
+		{"anime film by imdb", scrobble.Item{ContentType: "anime", AnimeMovie: true, IMDbID: "tt1"}, true},
+		{"anime with neither", scrobble.Item{ContentType: "anime", Season: 1, Episode: 2}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.item.Addressable(); got != tc.want {
+			t.Errorf("%s: Addressable() = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

@@ -440,7 +440,8 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 			AvailNZBIndexerHosts: comp.AvailNZBIndexerHosts,
 			TMDBClient:           comp.TMDBClient,
 			TVDBClient:           comp.TVDBClient,
-			SimklClient:          comp.SimklClient,
+			SimklClients:         comp.SimklClients,
+			MDBListClients:       comp.MDBListClients,
 			StreamManager:        s.streamManager,
 		})
 	}
@@ -523,6 +524,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/simkl/pin", authMiddleware(http.HandlerFunc(s.handleSimklPin)))
 	mux.Handle("/api/simkl/pin/check", authMiddleware(http.HandlerFunc(s.handleSimklPinCheck)))
 	mux.Handle("/api/simkl/disconnect", authMiddleware(http.HandlerFunc(s.handleSimklDisconnect)))
+	mux.Handle("/api/mdblist/status", authMiddleware(http.HandlerFunc(s.handleMDBListStatus)))
+	mux.Handle("/api/mdblist/device", authMiddleware(http.HandlerFunc(s.handleMDBListDevice)))
+	mux.Handle("/api/mdblist/device/check", authMiddleware(http.HandlerFunc(s.handleMDBListDeviceCheck)))
+	mux.Handle("/api/mdblist/disconnect", authMiddleware(http.HandlerFunc(s.handleMDBListDisconnect)))
 	mux.Handle("/api/search/streams", authMiddleware(http.HandlerFunc(s.handleStreams)))
 	mux.Handle("/api/search/releases", authMiddleware(http.HandlerFunc(s.handleSearchReleases)))
 	mux.Handle("/api/play/nzb", authMiddleware(http.HandlerFunc(s.handleDirectPlayNZB)))

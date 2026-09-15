@@ -210,10 +210,16 @@ func CatalogRegistry() []CatalogDef {
 
 // unavailableCatalogProviders lists the catalog providers that currently
 // cannot serve at all. Only Simkl qualifies today: its rows are personal, so
-// without a linked account they would render as permanently empty board rows.
+// with no account linked anywhere they would render as permanently empty board
+// rows.
+//
+// The question is asked of the server rather than of one stream because it
+// gates what the admin may put in a metadata profile, and a profile is shared
+// by however many streams bind it. One linked stream is therefore enough to
+// make the rows worth offering; a stream that has linked nothing serves them
+// empty, which is the same thing an unwatched watchlist does.
 func (s *Server) unavailableCatalogProviders() []string {
-	rt := s.runtime()
-	if rt.simklClient == nil || !rt.simklClient.Connected() {
+	if !s.runtime().simklClients.AnyLinked() {
 		return []string{"simkl"}
 	}
 	return nil

@@ -14,7 +14,7 @@ import (
 
 // newLinkedSimklClient builds a Simkl client against a stub API with an
 // account already linked, serving one small watchlist.
-func newLinkedSimklClient(t *testing.T) *simkl.Client {
+func newLinkedSimklRegistry(t *testing.T) *simkl.Registry {
 	t.Helper()
 	logger.Init("ERROR")
 	mux := http.NewServeMux()
@@ -59,24 +59,29 @@ func newLinkedSimklClient(t *testing.T) *simkl.Client {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	client := simkl.NewClient("test-client", dir)
+	registry := simkl.NewRegistry("test-client", dir)
+	client := registry.For(catalogTestStream)
 	client.BaseURL = server.URL
 	if connected, err := client.CheckPIN(context.Background(), "ABC12"); err != nil || !connected {
 		t.Fatalf("link: %v, %v", connected, err)
 	}
-	return client
+	return registry
 }
+
+// catalogTestStream is the stream whose Simkl account the catalog is served
+// from: rows are per stream now, so a request has to name one.
+const catalogTestStream = "alice"
 
 // TestSimklCatalog covers the id preference order (tt → tmdb: → tvdb:), the
 // no-usable-id drop, and status filtering, through the real buildCatalog
 // dispatch on a bare server.
 func TestSimklCatalog(t *testing.T) {
-	srv := &Server{simklClient: newLinkedSimklClient(t)}
+	srv := &Server{simklClients: newLinkedSimklRegistry(t)}
 	def, ok := catalogDefByID("simkl.watching.series")
 	if !ok {
 		t.Fatal("simkl.watching.series missing from the registry")
 	}
-	metas, err := srv.buildCatalog(context.Background(), def, catalogRequest{Type: "series", ID: def.ID})
+	metas, err := srv.buildCatalog(context.Background(), def, catalogRequest{Type: "series", ID: def.ID, StreamName: catalogTestStream})
 	if err != nil {
 		t.Fatalf("buildCatalog: %v", err)
 	}
@@ -96,7 +101,7 @@ func TestSimklCatalog(t *testing.T) {
 	// Anime with no MAL→Kitsu mapping available (nil store): tt survives as
 	// the fallback, MAL-only entries drop.
 	animeDef, _ := catalogDefByID("simkl.watching.anime")
-	anime, err := srv.buildCatalog(context.Background(), animeDef, catalogRequest{Type: "anime", ID: animeDef.ID})
+	anime, err := srv.buildCatalog(context.Background(), animeDef, catalogRequest{Type: "anime", ID: animeDef.ID, StreamName: catalogTestStream})
 	if err != nil {
 		t.Fatalf("anime buildCatalog: %v", err)
 	}
@@ -105,7 +110,7 @@ func TestSimklCatalog(t *testing.T) {
 	}
 
 	// Paging: a skip past the end is an empty page, not an error.
-	if metas, err := srv.buildCatalog(context.Background(), def, catalogRequest{Type: "series", ID: def.ID, Skip: 50}); err != nil || len(metas) != 0 {
+	if metas, err := srv.buildCatalog(context.Background(), def, catalogRequest{Type: "series", ID: def.ID, StreamName: catalogTestStream, Skip: 50}); err != nil || len(metas) != 0 {
 		t.Fatalf("deep skip = %+v, %v", metas, err)
 	}
 }

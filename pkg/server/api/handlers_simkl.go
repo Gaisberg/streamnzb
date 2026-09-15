@@ -8,9 +8,10 @@ import (
 	"streamnzb/pkg/services/metadata/simkl"
 )
 
-// simklClient reaches the shared Simkl client through the app components; nil
-// when the server was built without an app (tests) or Simkl has no client id.
-func (s *Server) simklClient() *simkl.Client {
+// simklClientFor reaches one stream's Simkl client through the app components;
+// nil when the server was built without an app (tests), Simkl has no client
+// id, or no stream was named.
+func (s *Server) simklClientFor(stream string) *simkl.Client {
 	if s.app == nil {
 		return nil
 	}
@@ -18,7 +19,23 @@ func (s *Server) simklClient() *simkl.Client {
 	if comp == nil {
 		return nil
 	}
-	return comp.SimklClient
+	return comp.SimklClients.For(stream)
+}
+
+func (s *Server) simklEnabled() bool {
+	if s.app == nil {
+		return false
+	}
+	comp := s.app.Components()
+	return comp != nil && comp.SimklClients.Enabled()
+}
+
+// accountStreamParam is the stream whose account a link request is about.
+// Accounts are per stream, so every one of these endpoints needs to know which
+// stream it is acting for; a request without one is a bug in the caller, not a
+// default worth guessing.
+func accountStreamParam(r *http.Request) string {
+	return strings.TrimSpace(r.URL.Query().Get("stream"))
 }
 
 type simklStatus struct {
@@ -29,9 +46,9 @@ type simklStatus struct {
 	UserName  string `json:"user_name,omitempty"`
 }
 
-func (s *Server) currentSimklStatus() simklStatus {
-	client := s.simklClient()
-	status := simklStatus{Enabled: client.Enabled()}
+func (s *Server) currentSimklStatus(stream string) simklStatus {
+	status := simklStatus{Enabled: s.simklEnabled()}
+	client := s.simklClientFor(stream)
 	if status.Enabled && client.Connected() {
 		status.Connected = true
 		status.UserName = client.UserName()
@@ -39,24 +56,27 @@ func (s *Server) currentSimklStatus() simklStatus {
 	return status
 }
 
-// handleSimklStatus reports whether a Simkl account is linked, for the
-// Metadata page's account card.
+// handleSimklStatus reports whether this stream has a Simkl account linked.
 func (s *Server) handleSimklStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "Only admin can view Simkl status", http.MethodGet) {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.currentSimklStatus())
+	writeJSON(w, http.StatusOK, s.currentSimklStatus(accountStreamParam(r)))
 }
 
-// handleSimklPin starts the PIN device flow and returns the code to display
-// plus the polling contract for handleSimklPinCheck.
+// handleSimklPin starts the PIN device flow for one stream and returns the
+// code to display plus the polling contract for handleSimklPinCheck.
 func (s *Server) handleSimklPin(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "Only admin can link a Simkl account", http.MethodPost) {
 		return
 	}
-	client := s.simklClient()
-	if !client.Enabled() {
+	client := s.simklClientFor(accountStreamParam(r))
+	if !s.simklEnabled() {
 		writeJSONError(w, http.StatusServiceUnavailable, "No Simkl client id is configured")
+		return
+	}
+	if client == nil {
+		writeJSONError(w, http.StatusBadRequest, "A stream is required to link a Simkl account")
 		return
 	}
 	pin, err := client.StartPIN(r.Context())
@@ -81,8 +101,9 @@ func (s *Server) handleSimklPinCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "user_code is required")
 		return
 	}
-	client := s.simklClient()
-	if !client.Enabled() {
+	stream := accountStreamParam(r)
+	client := s.simklClientFor(stream)
+	if !s.simklEnabled() || client == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "No Simkl client id is configured")
 		return
 	}
@@ -93,15 +114,17 @@ func (s *Server) handleSimklPinCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"connected": connected,
-		"status":    s.currentSimklStatus(),
+		"status":    s.currentSimklStatus(stream),
 	})
 }
 
-// handleSimklDisconnect unlinks the account.
+// handleSimklDisconnect unlinks this stream's account, leaving every other
+// stream's alone.
 func (s *Server) handleSimklDisconnect(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r, "Only admin can unlink a Simkl account", http.MethodPost) {
 		return
 	}
-	s.simklClient().Disconnect()
-	writeJSON(w, http.StatusOK, s.currentSimklStatus())
+	stream := accountStreamParam(r)
+	s.simklClientFor(stream).Disconnect()
+	writeJSON(w, http.StatusOK, s.currentSimklStatus(stream))
 }
