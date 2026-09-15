@@ -20,6 +20,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Filters & ranking](filters.md) — filter profiles: what gets rejected, how the rest is scored and ordered
 - [Rules](rules.md) — named conditions over everything known about a release, including what ffprobe measured and what AvailNZB reports
 - [Custom result formats](result-formatting.md) — reusable format profiles, helper reference, and the AIOStreams formatter import
+- [Profile & template API](profile-api.md) — the machine-readable vocabulary and evaluation endpoints, for tools that generate or validate profiles
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [Integrations](integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client

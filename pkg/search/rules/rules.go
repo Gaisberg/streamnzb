@@ -28,6 +28,21 @@ const (
 	tierTracks = "tracks"
 )
 
+// tiers are the confidence groups and what each one's absence means, phrased
+// to complete "needs …" in a skip reason. The descriptions are user-facing.
+//
+// They live in a slice rather than inline at the registration below because
+// jhin keeps the description it is given but offers no way to read one back,
+// and the capability report has to name the same meanings a skip reason does.
+// One declaration, registered from and reported from.
+var tiers = []TierInfo{
+	{Name: tierMeasured, Description: "a probed file, which this release is not"},
+	{Name: tierAvail, Description: "an availability record, which this release has none of"},
+	{Name: tierSeadex, Description: "a SeaDex lookup, which this request did not run"},
+	{Name: tierIndexer, Description: "size, age or grabs, which a release name does not carry"},
+	{Name: tierTracks, Description: "a probed file with its tracks read, which this release is not"},
+}
+
 // registry declares StreamNZB's rule vocabulary: jhin's core release-name
 // attributes plus every fact source the application adds. The descriptions
 // are user-facing — they become the "skipped: needs …" reasons.
@@ -38,11 +53,9 @@ var registry = buildRegistry()
 
 func buildRegistry() *jhinrules.Registry {
 	reg := jhinrules.Core()
-	reg.Tier(tierMeasured, "a probed file, which this release is not")
-	reg.Tier(tierAvail, "an availability record, which this release has none of")
-	reg.Tier(tierSeadex, "a SeaDex lookup, which this request did not run")
-	reg.Tier(tierIndexer, "size, age or grabs, which a release name does not carry")
-	reg.Tier(tierTracks, "a probed file with its tracks read, which this release is not")
+	for _, tier := range tiers {
+		reg.Tier(tier.Name, tier.Description)
+	}
 
 	// Verified reports whether the merged bare attributes (resolution, codec,
 	// hdr, bitDepth) came from the file rather than from its name. It is
