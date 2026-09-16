@@ -68,6 +68,13 @@ var corruptPhrases = []string{
 	`without finding "=yend" trailer`,
 	"without finding '=yend' trailer",
 	"=yend",
+	// A failed integrity check is damage by definition, whoever phrases it.
+	// Listed in its own right rather than relying on the "rapidyenc" prefix
+	// that currently happens to accompany it: the prefix is branding, the
+	// checksum is the finding.
+	"crc32 mismatch",
+	"crc mismatch",
+	"crc32 hash",
 }
 
 // classify turns a decoder error into one of this package's, leaving anything
