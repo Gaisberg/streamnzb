@@ -47,6 +47,14 @@ Targeted commands are fine while developing — they never replace the build scr
 - Single Go test: `go test ./pkg/path/to/pkg -run TestName -v`
 - Single frontend test: `npx vitest run src/lib/streams.test.js` (in `frontend/`); `npx vitest` watches
 - Frontend hot reload: `npm run dev` (in `frontend/`)
+- **RAR corpus check**: before changing anything in `third_party/rardecode` or the scanner that reads it, record what the current reader says about real archives and diff afterwards. The reader's failure mode is not a crash — a wrong part offset streams the wrong bytes and looks like a damaged post, which no unit test over hand-built structures will catch.
+  ```bash
+  # once, before the change — writes <corpus>/rar-golden.json
+  STREAMNZB_RAR_CORPUS=/path/to/archives go test ./pkg/media/unpack/ -run TestRARCorpus
+  # after the change — any difference is a regression to explain
+  STREAMNZB_RAR_CORPUS=/path/to/archives go test ./pkg/media/unpack/ -run TestRARCorpus
+  ```
+  The corpus is whatever archives you have; the golden lives beside them rather than in the repo, because it names your files. `STREAMNZB_RAR_CORPUS_PASSWORD` covers encrypted sets, `STREAMNZB_RAR_CORPUS_UPDATE=1` re-records deliberately. The test skips when the variable is unset, so CI is unaffected.
 - **Race detector**: `-race` needs cgo. On a machine without a C toolchain, design concurrent code with mutex/atomic discipline and rely on CI; to reproduce a CI race failure locally, run it in a container:
   ```bash
   docker run --rm -v "$PWD:/src" -w /src golang:1.26 sh -c 'rm -f /.dockerenv && mkdir -p pkg/server/web/static && touch pkg/server/web/static/.gitkeep && go test -race ./...'
