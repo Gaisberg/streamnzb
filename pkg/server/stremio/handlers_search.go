@@ -773,7 +773,9 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 				libraryReleases = append(libraryReleases, rel)
 			}
 		}
-		libraryReleases = s.filterBadReleases(streamLabel, libraryReleases)
+		var libraryBad []diag.DroppedRelease
+		libraryReleases, libraryBad = s.filterBadReleases(streamLabel, libraryReleases)
+		diag.From(ctx).AddDropped(libraryBad, 0)
 		if len(libraryReleases) > 0 {
 			logger.Info("SQLite library hit: retrieved cached releases",
 				"stream", streamLabel,
@@ -821,8 +823,10 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 	}
 	diag.From(ctx).SetDedup(dedupInput, len(indexerReleases), variantsKept)
 	beforeBad := len(indexerReleases)
-	indexerReleases = s.filterBadReleases(streamLabel, indexerReleases)
+	var badDropped []diag.DroppedRelease
+	indexerReleases, badDropped = s.filterBadReleases(streamLabel, indexerReleases)
 	diag.From(ctx).SetBadFiltered(beforeBad - len(indexerReleases))
+	diag.From(ctx).AddDropped(badDropped, 0)
 	// Credited here rather than at merge time so a release nobody can play
 	// does not earn its indexer a hit.
 	s.addUniqueIndexerHits(markUniqueIndexerHits(indexerReleases))
@@ -847,13 +851,17 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 // filterBadReleases drops releases with an unexpired persistent bad verdict
 // (article hole / corruption recorded by purgeFailedRelease). One batched SQLite
 // lookup; keeps known-broken releases from being re-offered after a restart.
-func (s *Server) filterBadReleases(streamLabel string, releases []*release.Release) []*release.Release {
+// filterBadReleases drops releases every copy of which playback has already
+// proven unplayable, and names the ones it dropped whole. The names are
+// returned rather than logged only: "it worked yesterday" is answered by the
+// release having been retired, which no count can say.
+func (s *Server) filterBadReleases(streamLabel string, releases []*release.Release) ([]*release.Release, []diag.DroppedRelease) {
 	if s == nil || s.attemptRecorder == nil || len(releases) == 0 {
-		return releases
+		return releases, nil
 	}
 	badStore := s.attemptRecorder.BadReleaseStore()
 	if badStore == nil {
-		return releases
+		return releases, nil
 	}
 	urls := make([]string, 0, len(releases))
 	for _, r := range releases {
@@ -865,13 +873,14 @@ func (s *Server) filterBadReleases(streamLabel string, releases []*release.Relea
 	}
 	bad := badStore.BadSet(urls)
 	if len(bad) == 0 {
-		return releases
+		return releases, nil
 	}
 	badURLs := make(map[string]bool, len(bad))
 	for url := range bad {
 		badURLs[url] = true
 	}
 	kept := releases[:0]
+	var droppedReleases []diag.DroppedRelease
 	droppedCopies := 0
 	dropped := 0
 	for _, r := range releases {
@@ -888,6 +897,12 @@ func (s *Server) filterBadReleases(streamLabel string, releases []*release.Relea
 		}
 		if next == nil {
 			dropped++
+			droppedReleases = append(droppedReleases, diag.DroppedRelease{
+				Title:   r.Title,
+				Indexer: r.Indexer,
+				Stage:   diag.DropStageBad,
+				Detail:  "every copy of it has failed playback before",
+			})
 			continue
 		}
 		kept = append(kept, next)
@@ -895,7 +910,7 @@ func (s *Server) filterBadReleases(streamLabel string, releases []*release.Relea
 	if droppedCopies > 0 {
 		logger.Info("Filtered known-bad releases from search results", "stream", streamLabel, "dropped", dropped, "dropped_copies", droppedCopies, "remaining", len(kept))
 	}
-	return kept
+	return kept, droppedReleases
 }
 
 // libraryIndexerName renders the display name a library-backed release carries,

@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { History, Loader2, ExternalLink, RefreshCw, Copy, Check, ChevronDown, ChevronRight, Info, Search as SearchIcon, SlidersHorizontal, Eraser } from 'lucide-react'
 import { apiFetch } from '@/api'
 import { cn } from '@/lib/utils'
+import { parseDiagnosticPayload, turnedAwayReleases } from '@/lib/searchDiagnostics'
 
 function formatSize(bytes) {
   if (bytes <= 0) return '—'
@@ -386,15 +387,6 @@ function buildHistoryTimeline(attemptGroups, diagnostics, includeSearchOnly) {
   return groups.sort((a, b) => new Date(b.requestTime || 0) - new Date(a.requestTime || 0))
 }
 
-function parseDiagnosticPayload(diagnostic) {
-  if (!diagnostic?.payload) return null
-  try {
-    return JSON.parse(diagnostic.payload)
-  } catch {
-    return null
-  }
-}
-
 function FunnelChip({ label, value, title }) {
   return (
     <div title={title} className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/95 px-2 py-1 text-xs">
@@ -404,15 +396,108 @@ function FunnelChip({ label, value, title }) {
   )
 }
 
+// One turned-away release: its name, and a dropdown holding what turned it
+// away.
+//
+// The dropdown belongs to the release rather than to the search. A single list
+// under the requested title answered "what did this search reject" — a
+// question nobody asks — and left the reader scanning someone else's answer
+// for their release. Collapsed, a release is one line and the list stays
+// skimmable; open, it is that release's whole account.
+function TurnedAwayRelease({ release }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-start gap-1 text-left text-muted-foreground hover:text-foreground"
+      >
+        {open
+          ? <ChevronDown className="mt-0.5 size-3.5 shrink-0" />
+          : <ChevronRight className="mt-0.5 size-3.5 shrink-0" />}
+        <span className="break-words text-xs [overflow-wrap:anywhere]">{release.title || '—'}</span>
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-[1.125rem]">
+          {release.meta.map((entry) => (
+            <span key={entry} className="text-[10px] text-muted-foreground">{entry}</span>
+          ))}
+          {release.badges.map((badge) => (
+            <Badge
+              key={badge.key}
+              variant="outline"
+              className={cn(
+                'px-1.5 py-0 text-[10px] font-normal',
+                badge.highlight ? 'border-primary/40 text-primary' : 'text-muted-foreground',
+              )}
+              title={badge.title}
+            >
+              {badge.label}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// How many turned-away rows to show before asking. A search that rejects two
+// hundred results must not bury the handful that were actually played, and the
+// answer to "where did my release go" is usually in the first few.
+const TURNED_AWAY_PREVIEW = 8
+
+function TurnedAwayRows({ diagnostic }) {
+  const [showAll, setShowAll] = useState(false)
+  const { releases, omitted } = useMemo(() => turnedAwayReleases(diagnostic), [diagnostic])
+  if (releases.length === 0) return null
+
+  const visible = showAll ? releases : releases.slice(0, TURNED_AWAY_PREVIEW)
+  const hidden = releases.length - visible.length
+  return (
+    <>
+      {/* Labelled once, because a collapsed release says its name and nothing
+          else — without this the list reads as more play attempts. */}
+      <div className="px-1 pt-1 text-xs text-muted-foreground">
+        Turned away before playback ({releases.length + omitted})
+      </div>
+      <div className="space-y-1.5">
+        {visible.map((release) => (
+          <TurnedAwayRelease key={release.key} release={release} />
+        ))}
+      </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="inline-flex items-center gap-1 px-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <ChevronDown className="size-3.5" />
+          Show {hidden} more turned away
+        </button>
+      )}
+      {showAll && omitted > 0 && (
+        <p className="px-1 text-[10px] text-muted-foreground">
+          {omitted} more were dropped but not recorded — the per-request cap keeps a search answered with a thousand
+          wrong results from being stored whole.
+        </p>
+      )}
+    </>
+  )
+}
+
+// The funnel for one search: how many results each stage saw and what each
+// indexer answered. The releases the stages turned away are not here — they
+// render as rows beside the play attempts, so a release the profile rejected
+// sits at the same level as one that failed playback rather than a level down.
 function SearchDiagnosticsPanel({ diagnostic }) {
-  const [showRejected, setShowRejected] = useState(false)
   const snap = useMemo(() => parseDiagnosticPayload(diagnostic), [diagnostic])
   if (!snap) return null
 
   const shortCircuit = searchShortCircuit(snap)
   const validation = Array.isArray(snap.validation) ? snap.validation : []
   const calls = Array.isArray(snap.indexer_calls) ? snap.indexer_calls : []
-  const rejected = Array.isArray(snap.rejected) ? snap.rejected : []
   const rawTotal = validation.reduce((sum, v) => sum + (v.raw || 0), 0)
   const validatedTotal = validation.reduce((sum, v) => sum + (v.kept || 0), 0)
   const droppedTitle = validation.reduce((sum, v) => sum + (v.dropped_title || 0), 0)
@@ -501,44 +586,6 @@ function SearchDiagnosticsPanel({ diagnostic }) {
         </div>
       )}
 
-      {rejected.length > 0 && (
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={() => setShowRejected((current) => !current)}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            {showRejected ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            Rejected by profile ({rejected.length})
-          </button>
-          {showRejected && (
-            <div className="mt-2 space-y-1.5">
-              {rejected.map((r, index) => (
-                <div key={`${r.title}-${index}`} className="rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
-                  <div className="break-words text-xs [overflow-wrap:anywhere]">{r.title || '—'}</div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    {r.indexer && <span className="text-[10px] text-muted-foreground">{r.indexer}</span>}
-                    {(r.reasons || []).map((reason) => (
-                      <Badge
-                        key={reason}
-                        variant="outline"
-                        className={cn(
-                          'px-1.5 py-0 text-[10px] font-normal',
-                          reason.startsWith('rule: ')
-                            ? 'border-primary/40 text-primary'
-                            : 'text-muted-foreground',
-                        )}
-                      >
-                        {reason}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -1082,6 +1129,12 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                         </div>
                                       )
                                     })}
+                                    {/* The rest of what the search saw. They
+                                        come after the attempts because the
+                                        attempts have times and these do not:
+                                        the played releases stay a timeline,
+                                        and the turned-away ones follow it. */}
+                                    <TurnedAwayRows diagnostic={group.diagnostic} />
                                   </div>
                                 </div>
                               )}

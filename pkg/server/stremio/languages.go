@@ -35,6 +35,14 @@ var languageFlagByCode = map[string]string{
 // in a description, the languages AIOStreams filters on and `"de" in
 // languages` are one answer or they are a bug report.
 func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease, caps *release.MediaCaps) []string {
+	codes, _ := releaseLanguagesWithSource(rel, meta, caps)
+	return codes
+}
+
+// releaseLanguagesWithSource is releaseLanguageCodes plus which of the three
+// accounts answered, for the template field that reports it. One resolve, so
+// the codes and the source they came from cannot disagree.
+func releaseLanguagesWithSource(rel *release.Release, meta *parser.ParsedRelease, caps *release.MediaCaps) ([]string, language.LanguageSource) {
 	var reported, parsed []string
 	if rel != nil {
 		reported = rel.Languages
@@ -42,7 +50,19 @@ func releaseLanguageCodes(rel *release.Release, meta *parser.ParsedRelease, caps
 	if meta != nil {
 		parsed = meta.Languages
 	}
-	codes, _ := language.ResolveLanguages(caps.AudioLanguageCodes(), reported, parsed)
+	return language.ResolveLanguages(caps.AudioLanguageCodes(), reported, parsed)
+}
+
+// parsedLanguageCodes is the release name's own account of the audio
+// languages, as ISO 639-1 codes — the "inferred" third of what
+// releaseLanguageCodes merges, on its own. It goes through the same resolver
+// so a template comparing it against .Languages compares like with like
+// rather than codes against jhin's spelled-out names.
+func parsedLanguageCodes(meta *parser.ParsedRelease) []string {
+	if meta == nil {
+		return nil
+	}
+	codes, _ := language.ResolveLanguages(nil, nil, meta.Languages)
 	return codes
 }
 

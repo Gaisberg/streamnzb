@@ -522,12 +522,6 @@ type Context struct {
 	// Episodic marks a request for episodic content, which is what decides
 	// whether a size is judged whole or per episode.
 	Episodic bool
-	// IndexerDataKnown vouches for the release's size, age and grab count even
-	// when they are zero. A live search never needs it — an indexer result
-	// always has a size — but the preview builds its releases itself, and a
-	// simulated release with nothing grabbed yet is still a release whose grab
-	// count is known to be nought.
-	IndexerDataKnown bool
 	// Seadex is the resolved SeaDex recommendation for the requested title,
 	// nil when no lookup ran.
 	Seadex *SeadexContext
@@ -598,9 +592,10 @@ func BuildEnv(cand triage.Candidate, parsed *jhinparser.Result, ctx Context) Env
 	if rel := cand.Release; rel != nil {
 		env.ReleaseName = rel.Title
 		// A release the indexer actually returned has at least a size. A
-		// preview sample is a bare title and has none of the three.
-		env.HasIndexerData = ctx.IndexerDataKnown ||
-			rel.Size > 0 || rel.Grabs > 0 || rel.PubDate != "" || rel.IsLibraryResult()
+		// preview sample is a bare title and has none of the four — a preview
+		// vouching for indexer data says so by carrying a publication date,
+		// which is why a claimed age of zero still counts.
+		env.HasIndexerData = rel.Size > 0 || rel.Grabs > 0 || rel.PubDate != "" || rel.IsLibraryResult()
 		env.SizeGB = float64(rel.Size) / 1e9
 		if per, ok := parser.EffectiveEpisodeSize(rel.Size, ctx.Episodic, parsed); ok {
 			env.SizePerEpisodeGB = float64(per) / 1e9

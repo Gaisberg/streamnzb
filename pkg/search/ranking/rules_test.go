@@ -142,7 +142,7 @@ func TestExplainNamesTheReferringRule(t *testing.T) {
 		config.RuleConfig{Name: "Trusted and 4K", When: `matched("Trusted group") and resolution == "2160p"`, Points: 900},
 	)
 
-	out, _ := p.Explain([]string{"Movie 2020 2160p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	out, _ := p.Explain(ranking.TitleFixtures("Movie 2020 2160p WEB-DL H264-GRP"), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(out) != 1 {
 		t.Fatalf("Explain returned %d results, want 1", len(out))
 	}
@@ -163,7 +163,7 @@ func TestExplainReportsRulesAndSkips(t *testing.T) {
 		config.RuleConfig{Name: "Measured 10-bit", When: "probed.bitDepth >= 10", Points: 400},
 	)
 
-	out, _ := p.Explain([]string{"Movie 2020 IMAX 1080p WEB-DL H264-GRP"}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	out, _ := p.Explain(ranking.TitleFixtures("Movie 2020 IMAX 1080p WEB-DL H264-GRP"), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(out) != 1 {
 		t.Fatalf("Explain returned %d results, want 1", len(out))
 	}
@@ -446,11 +446,11 @@ func TestExplainReflectsLimitRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _ := p.Explain([]string{
+	out, _ := p.Explain(ranking.TitleFixtures(
 		"Movie 2020 2160p BluRay REMUX HEVC-GRP",
 		"Movie 2020 2160p WEB-DL H265-GRP",
 		"Movie 2020 1080p WEB-DL H264-GRP",
-	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 
 	if len(out) != 3 {
 		t.Fatalf("Explain returned %d results, want 3", len(out))
@@ -491,7 +491,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 	title := "Movie 2020 2160p WEB-DL HEVC-GRP"
 
 	// With nothing supplied both rules are unjudgeable and neither fires.
-	bare, _ := p.Explain([]string{title}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+	bare, _ := p.Explain(ranking.TitleFixtures(title), ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
 	if len(bare) != 1 {
 		t.Fatalf("got %d results, want 1", len(bare))
 	}
@@ -503,7 +503,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 	}
 
 	// Supplying a grab count makes the grabs rule answerable, and it rejects.
-	sampled, _ := p.Explain([]string{title}, ranking.Request{
+	sampled, _ := p.Explain(ranking.TitleFixtures(title), ranking.Request{
 		Kind:   ranking.KindMovie,
 		Sample: &ranking.Sample{IndexerData: true, SizeBytes: 20e9, Grabs: 2},
 	}, rank.RankOptions{})
@@ -513,7 +513,7 @@ func TestExplainJudgesAgainstASample(t *testing.T) {
 
 	// A grab count above the bar leaves it alone, and a probed file answers
 	// the other rule.
-	good, _ := p.Explain([]string{title}, ranking.Request{
+	good, _ := p.Explain(ranking.TitleFixtures(title), ranking.Request{
 		Kind: ranking.KindMovie,
 		Sample: &ranking.Sample{
 			IndexerData: true, SizeBytes: 20e9, Grabs: 500,
@@ -549,7 +549,7 @@ func TestSampleVouchesForZeroes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _ := p.Explain([]string{"Movie 2020 2160p WEB-DL HEVC-GRP"}, ranking.Request{
+	out, _ := p.Explain(ranking.TitleFixtures("Movie 2020 2160p WEB-DL HEVC-GRP"), ranking.Request{
 		Kind:   ranking.KindMovie,
 		Sample: &ranking.Sample{IndexerData: true},
 	}, rank.RankOptions{})
@@ -620,7 +620,7 @@ func TestExplainReportsAggregates(t *testing.T) {
 	)
 
 	out, aggregates := p.Explain(
-		[]string{"Movie 2020 1080p WEB-DL H264-GRP", "Movie 2020 2160p BluRay REMUX HEVC-GRP"},
+		ranking.TitleFixtures("Movie 2020 1080p WEB-DL H264-GRP", "Movie 2020 2160p BluRay REMUX HEVC-GRP"),
 		ranking.Request{Kind: ranking.KindMovie},
 		rank.RankOptions{},
 	)
@@ -649,5 +649,97 @@ func TestExplainReportsAggregates(t *testing.T) {
 	}
 	if probe := aggregates[1]; probe.Known || len(probe.Matched) != 0 {
 		t.Errorf("probe report = %+v, want unknown on an unprobed preview", probe)
+	}
+}
+
+// A cap is a statement about a set, so a preview whose releases are all the
+// same invented size cannot exercise one: the condition holds for every
+// release or for none. Per-candidate fixtures are what make the set uneven.
+func TestExplainAppliesPerCandidateSamples(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{
+			Name:   "Oversized",
+			When:   `sizeGB > 20`,
+			Action: config.RuleActionReject,
+		},
+	)
+
+	big := &ranking.Sample{IndexerData: true, SizeBytes: 30_000_000_000}
+	small := &ranking.Sample{IndexerData: true, SizeBytes: 5_000_000_000}
+	out, _ := p.Explain([]ranking.Fixture{
+		{Title: "Movie 2020 2160p BluRay REMUX HEVC-BIG", Sample: big},
+		{Title: "Movie 2020 1080p WEB-DL H264-SMALL", Sample: small},
+	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+
+	byTitle := map[string]*ranking.Explanation{}
+	for _, e := range out {
+		byTitle[e.Title] = e
+	}
+	oversized := byTitle["Movie 2020 2160p BluRay REMUX HEVC-BIG"]
+	fine := byTitle["Movie 2020 1080p WEB-DL H264-SMALL"]
+	if oversized == nil || fine == nil {
+		t.Fatalf("expected both releases explained, got %d results", len(out))
+	}
+	if oversized.Fetch {
+		t.Errorf("the 30 GB release should be rejected: %v", oversized.Rejections)
+	}
+	if !fine.Fetch {
+		t.Errorf("the 5 GB release should survive: %v", fine.Rejections)
+	}
+	if len(fine.SkippedRules) != 0 {
+		t.Errorf("a fixture vouching for indexer data leaves nothing skipped, got %v", fine.SkippedRules)
+	}
+}
+
+// A fixture without its own sample keeps taking the request's, which is the
+// form the Filters preview posts — one set of controls over every title.
+func TestExplainFallsBackToTheRequestSample(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "Oversized", When: `sizeGB > 20`, Action: config.RuleActionReject},
+	)
+
+	out, _ := p.Explain([]ranking.Fixture{
+		{Title: "Movie 2020 2160p BluRay REMUX HEVC-GRP"},
+	}, ranking.Request{
+		Kind:   ranking.KindMovie,
+		Sample: &ranking.Sample{IndexerData: true, SizeBytes: 30_000_000_000},
+	}, rank.RankOptions{})
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(out))
+	}
+	if out[0].Fetch {
+		t.Errorf("the request sample should have rejected it: %v", out[0].Rejections)
+	}
+}
+
+// Vouching for indexer data means the zeros are real: a release nobody has
+// grabbed yet has a known grab count of nought, and a rule about it must be
+// judged rather than skipped. The vouch rides on the release itself, so it
+// holds per fixture.
+func TestExplainIndexerDataVouchIsPerFixture(t *testing.T) {
+	p := rulesProfile(t,
+		config.RuleConfig{Name: "Ungrabbed", When: `grabs == 0`, Points: 50},
+	)
+
+	out, _ := p.Explain([]ranking.Fixture{
+		{Title: "Movie 2020 1080p WEB-DL H264-VOUCHED", Sample: &ranking.Sample{IndexerData: true}},
+		{Title: "Movie 2020 1080p WEB-DL H264-BARE"},
+	}, ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+
+	for _, e := range out {
+		matched := false
+		for _, m := range e.Matched {
+			if m.Name == "Ungrabbed" {
+				matched = true
+			}
+		}
+		vouched := strings.Contains(e.Title, "VOUCHED")
+		if vouched && !matched {
+			t.Errorf("a fixture vouching for indexer data should be judged on grabs, skipped: %v", e.SkippedRules)
+		}
+		if !vouched && matched {
+			t.Error("a bare title has no grab count, so the rule must be skipped rather than paid")
+		}
 	}
 }

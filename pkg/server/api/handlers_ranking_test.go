@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"streamnzb/pkg/auth"
@@ -171,5 +172,114 @@ func TestHandleRankingExplainIsAdminOnly(t *testing.T) {
 				t.Errorf("status = %d, want 403", rec.Code)
 			}
 		})
+	}
+}
+
+// A fixture set is the point of the candidates form: releases that differ in
+// the parts a name cannot carry, so a cap or a size rule can be exercised
+// against an uneven set rather than a uniform one.
+func TestHandleRankingExplainAcceptsPerCandidateSamples(t *testing.T) {
+	s := &Server{config: adminConfig()}
+	rec := postExplain(t, s, explainRequest{
+		Candidates: []explainCandidate{
+			{
+				Title:  "Movie 2020 2160p BluRay REMUX HEVC-BIG",
+				Sample: &explainSample{IndexerData: true, SizeGB: 30},
+			},
+			{
+				Title:  "Movie 2020 1080p WEB-DL H264-SMALL",
+				Sample: &explainSample{IndexerData: true, SizeGB: 5},
+			},
+		},
+		Profile: &config.FilterProfileConfig{
+			Name:  "Sizes",
+			Rules: []config.RuleConfig{{Name: "Oversized", When: "sizeGB > 20", Action: config.RuleActionReject}},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got explainResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got.Results))
+	}
+	for _, r := range got.Results {
+		big := strings.Contains(r.Title, "BIG")
+		if big && r.Fetch {
+			t.Errorf("the 30 GB candidate should be rejected: %v", r.Rejections)
+		}
+		if !big && !r.Fetch {
+			t.Errorf("the 5 GB candidate should survive: %v", r.Rejections)
+		}
+	}
+}
+
+// Titles and candidates are two ways to say the same thing, so a caller
+// migrating from one to the other can mix them — a title takes the
+// request-level sample, a candidate its own.
+func TestHandleRankingExplainCombinesTitlesAndCandidates(t *testing.T) {
+	s := &Server{config: adminConfig()}
+	rec := postExplain(t, s, explainRequest{
+		Titles:     []string{"Movie 2020 1080p WEB-DL H264-SHARED"},
+		Candidates: []explainCandidate{{Title: "Movie 2020 1080p WEB-DL H264-OWN", Sample: &explainSample{IndexerData: true, SizeGB: 5}}},
+		Sample:     &explainSample{IndexerData: true, SizeGB: 30},
+		Profile: &config.FilterProfileConfig{
+			Name:  "Sizes",
+			Rules: []config.RuleConfig{{Name: "Oversized", When: "sizeGB > 20", Action: config.RuleActionReject}},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got explainResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got.Results))
+	}
+	for _, r := range got.Results {
+		if strings.Contains(r.Title, "SHARED") && r.Fetch {
+			t.Errorf("the bare title takes the request sample and should be rejected: %v", r.Rejections)
+		}
+		if strings.Contains(r.Title, "OWN") && !r.Fetch {
+			t.Errorf("the candidate's own sample should win: %v", r.Rejections)
+		}
+	}
+}
+
+// SeaDex is one lookup per request, so a per-candidate answer is refused
+// rather than silently ignored: a fixture set claiming two answers for one
+// title would report a state no live search can reach.
+func TestHandleRankingExplainRejectsPerCandidateSeadex(t *testing.T) {
+	s := &Server{config: adminConfig()}
+	rec := postExplain(t, s, explainRequest{
+		Candidates: []explainCandidate{{
+			Title:  "[Group] Show - 01 (1080p)",
+			Sample: &explainSample{Seadex: &explainSeadex{BestGroups: []string{"Group"}}},
+		}},
+		Profile: &config.FilterProfileConfig{Name: "Anime"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "per request") {
+		t.Errorf("error should explain that seadex is per request, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleRankingExplainRequiresSomethingToJudge(t *testing.T) {
+	s := &Server{config: adminConfig()}
+	rec := postExplain(t, s, explainRequest{
+		Titles:  []string{"  ", ""},
+		Profile: &config.FilterProfileConfig{Name: "Empty"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

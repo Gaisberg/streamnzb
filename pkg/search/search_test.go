@@ -10,6 +10,7 @@ import (
 
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/diag"
 )
 
 type recordingIndexer struct {
@@ -639,5 +640,93 @@ func TestValidationProfilesForRequestPreferExplicitProfiles(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("validationProfilesForRequest() = %#v, want %#v", got, want)
+	}
+}
+
+// The counters say a release was dropped; they never say which one. Issue #175
+// is that question — "no results for tt0113957, why?" — and a count cannot
+// answer it.
+func TestValidateSearchResultsRecordsWhichReleasesWereDropped(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "The.Patriot.2000.1080p.BluRay.x264-GROUP", Indexer: "NZBGeek"},
+		{Title: "The.Patriot.2004.1080p.BluRay.x264-GROUP", Indexer: "NZBGeek"},
+		{Title: "Der.Patriot.2000.1080p.BluRay.x264-GROUP", Indexer: "DrunkenSlug"},
+	}
+
+	filtered, stats := ValidateSearchResultsWithOptions(releases, "movie", []string{"The Patriot 2000"}, ValidationOptions{
+		EnforceTitle:  true,
+		EnforceYear:   true,
+		RecordDropped: 10,
+	})
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 accepted result, got %d", len(filtered))
+	}
+	if len(stats.Dropped) != 2 {
+		t.Fatalf("expected both drops recorded, got %+v", stats.Dropped)
+	}
+	if stats.DroppedOmitted != 0 {
+		t.Errorf("nothing should be omitted under a cap of 10, got %d", stats.DroppedOmitted)
+	}
+
+	byTitle := map[string]diag.DroppedRelease{}
+	for _, d := range stats.Dropped {
+		byTitle[d.Title] = d
+	}
+	year := byTitle["The.Patriot.2004.1080p.BluRay.x264-GROUP"]
+	if year.Reason != diag.DropReasonYear || year.Stage != diag.DropStageValidation {
+		t.Errorf("the 2004 release should be a year drop, got %+v", year)
+	}
+	// The detail is the whole point: "expected 2000, got 2004" is the answer,
+	// where "dropped_year: 1" is only the symptom.
+	if !strings.Contains(year.Detail, "2000") || !strings.Contains(year.Detail, "2004") {
+		t.Errorf("year detail should name both years, got %q", year.Detail)
+	}
+	title := byTitle["Der.Patriot.2000.1080p.BluRay.x264-GROUP"]
+	if title.Reason != diag.DropReasonTitle {
+		t.Errorf("the German title should be a title drop, got %+v", title)
+	}
+	if title.Indexer != "DrunkenSlug" {
+		t.Errorf("the drop should name its indexer, got %q", title.Indexer)
+	}
+}
+
+// An indexer answering a query with hundreds of wrong results must not put
+// hundreds of names into a record that is persisted per search. The cap keeps
+// the list bounded, and the tally keeps the truncation visible — a list
+// quietly cut short reads as a complete one.
+func TestValidateSearchResultsCapsRecordedDrops(t *testing.T) {
+	releases := make([]*release.Release, 0, 20)
+	for i := 0; i < 20; i++ {
+		releases = append(releases, &release.Release{Title: fmt.Sprintf("Wrong.Movie.%d.1080p.BluRay.x264-GROUP", 1980+i)})
+	}
+
+	_, stats := ValidateSearchResultsWithOptions(releases, "movie", []string{"The Patriot 2000"}, ValidationOptions{
+		EnforceTitle:  true,
+		RecordDropped: 3,
+	})
+	if len(stats.Dropped) != 3 {
+		t.Fatalf("expected the cap to hold at 3, got %d", len(stats.Dropped))
+	}
+	if want := stats.DroppedTitle - 3; stats.DroppedOmitted != want {
+		t.Errorf("DroppedOmitted = %d, want %d", stats.DroppedOmitted, want)
+	}
+	if stats.DroppedTitle != 20 {
+		t.Errorf("the counter must stay complete regardless of the cap, got %d", stats.DroppedTitle)
+	}
+}
+
+// Recording is opt-in so the per-profile debug sweep, which re-validates every
+// raw release purely for counts, does not build a list nothing reads.
+func TestValidateSearchResultsRecordsNothingByDefault(t *testing.T) {
+	releases := []*release.Release{{Title: "Der.Patriot.2000.1080p.BluRay.x264-GROUP"}}
+
+	_, stats := ValidateSearchResultsWithOptions(releases, "movie", []string{"The Patriot 2000"}, ValidationOptions{
+		EnforceTitle: true,
+	})
+	if stats.DroppedTitle != 1 {
+		t.Fatalf("expected the drop to be counted, got %+v", stats)
+	}
+	if len(stats.Dropped) != 0 || stats.DroppedOmitted != 0 {
+		t.Errorf("nothing should be recorded without RecordDropped, got %+v (%d omitted)", stats.Dropped, stats.DroppedOmitted)
 	}
 }
