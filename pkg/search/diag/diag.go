@@ -58,6 +58,42 @@ type RejectedRelease struct {
 	Reasons []string `json:"reasons"`
 }
 
+// Drop stages and reasons. They are constants because both the capture sites
+// and the history panel name them, and a typo on either side is a filter that
+// silently matches nothing.
+const (
+	DropStageValidation = "validation"
+	DropStageBad        = "bad"
+
+	DropReasonTitle    = "title"
+	DropReasonYear     = "year"
+	DropReasonSeason   = "season"
+	DropReasonEpisode  = "episode"
+	DropReasonUnparsed = "unparsed"
+)
+
+// DroppedRelease is one release a stage before the profile turned away:
+// title/year validation, or the known-bad filter. It is RejectedRelease one
+// stage earlier, and exists for the same reason — the counts answer "how
+// many" but never "was mine one of them", which is the question someone
+// whose release did not appear is actually asking.
+type DroppedRelease struct {
+	Title   string `json:"title"`
+	Indexer string `json:"indexer,omitempty"`
+	// Stage is "validation" for a title/year/episode mismatch, or "bad" for a
+	// release playback has already proven unplayable.
+	Stage string `json:"stage"`
+	// Reason is the check that turned it away — "title", "year", "season",
+	// "episode" or "unparsed" — empty for a stage with only one way to fail.
+	Reason string `json:"reason,omitempty"`
+	// Detail is what was expected set against what the name said, phrased for
+	// a reader: `expected "lioness", got "Special Ops Lioness"`.
+	Detail string `json:"detail,omitempty"`
+	// Request is the query label the release arrived under, empty for a stage
+	// that runs once over the merged set rather than per request.
+	Request string `json:"request,omitempty"`
+}
+
 // Snapshot is the complete diagnostics record for one playlist build. Zero
 // values mean "stage did not run": a build served from the raw-search cache
 // has no IndexerCalls, only the profile stages.
@@ -86,6 +122,16 @@ type Snapshot struct {
 	// that empties a result list reads very differently depending on which,
 	// and the reason strings alone make that a counting exercise.
 	RulesRejected int `json:"rules_rejected,omitempty"`
+
+	// Dropped are the releases the stages before the profile turned away, each
+	// naming the check that did it. The validation counts above say how many;
+	// this says which.
+	Dropped []DroppedRelease `json:"dropped,omitempty"`
+	// DroppedOmitted is how many drops were not recorded because the per-stage
+	// cap was reached. A search answered by an indexer with a thousand wrong
+	// results must not persist a thousand of them, and a list silently cut
+	// short reads as a complete one.
+	DroppedOmitted int `json:"dropped_omitted,omitempty"`
 
 	// UnairedAirsAt (RFC 3339) is set when the search was short-circuited
 	// because the episode has not aired yet — the reason there are no
@@ -189,6 +235,18 @@ func (c *Collector) SetBadFiltered(count int) {
 	c.mu.Unlock()
 }
 
+// AddDropped records releases a pre-profile stage turned away, and how many
+// more it turned away without recording.
+func (c *Collector) AddDropped(dropped []DroppedRelease, omitted int) {
+	if c == nil || (len(dropped) == 0 && omitted == 0) {
+		return
+	}
+	c.mu.Lock()
+	c.snap.Dropped = append(c.snap.Dropped, dropped...)
+	c.snap.DroppedOmitted += omitted
+	c.mu.Unlock()
+}
+
 func (c *Collector) SetProfile(name string, input, kept int, rejected []RejectedRelease) {
 	if c == nil {
 		return
@@ -231,5 +289,6 @@ func (c *Collector) Snapshot() Snapshot {
 	snap.IndexerCalls = append([]IndexerCall(nil), c.snap.IndexerCalls...)
 	snap.Validation = append([]ValidationStat(nil), c.snap.Validation...)
 	snap.Rejected = append([]RejectedRelease(nil), c.snap.Rejected...)
+	snap.Dropped = append([]DroppedRelease(nil), c.snap.Dropped...)
 	return snap
 }

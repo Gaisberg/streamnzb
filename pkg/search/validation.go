@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/diag"
 	"streamnzb/pkg/search/parser"
 )
 
@@ -233,6 +235,32 @@ type ValidationStats struct {
 	// the only trace an ID request leaves of an indexer answering with
 	// something it was not asked for, so it is reported rather than dropped.
 	TitleMismatchKept int
+
+	// Dropped names the releases turned away, up to the caller's
+	// RecordDropped, and DroppedOmitted counts the ones past it. The counters
+	// above answer "how many"; these answer "was mine one of them", which is
+	// the question someone whose release did not show up is asking.
+	Dropped        []diag.DroppedRelease
+	DroppedOmitted int
+}
+
+// recordDrop notes one turned-away release, up to the cap the caller asked
+// for. Past it only the tally grows: a search answered with a thousand wrong
+// results should not build, ship and persist a thousand of them.
+func (s *ValidationStats) recordDrop(limit int, rel *release.Release, reason, detail string) {
+	if limit <= 0 {
+		return
+	}
+	if len(s.Dropped) >= limit {
+		s.DroppedOmitted++
+		return
+	}
+	drop := diag.DroppedRelease{Stage: diag.DropStageValidation, Reason: reason, Detail: detail}
+	if rel != nil {
+		drop.Title = rel.Title
+		drop.Indexer = rel.Indexer
+	}
+	s.Dropped = append(s.Dropped, drop)
 }
 
 type validationExpectation struct {
@@ -391,6 +419,13 @@ type ValidationOptions struct {
 	// AcceptPacks accepts a season or complete-series pack that contains the
 	// requested episode. Off keeps only releases that name the episode.
 	AcceptPacks bool
+	// RecordDropped is how many turned-away releases to record in
+	// Stats.Dropped, naming the check that did it. Zero records none, which is
+	// the default and what the per-profile debug sweep wants: it re-validates
+	// every raw release purely for counts and would otherwise build a list
+	// nothing reads. The rest are counted in Stats.DroppedOmitted, because a
+	// list quietly cut short reads as a complete one.
+	RecordDropped int
 }
 
 // ValidateSearchResultsWithOptions filters releases against the expected
@@ -442,6 +477,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		parsed := parser.ParseReleaseTitle(rel.Title)
 		if parsed == nil {
 			stats.DroppedTitle++
+			stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonUnparsed, "the release name did not parse")
 			logger.Trace("ValidateSearchResults dropped: unparsed_title",
 				"release", rel.Title,
 			)
@@ -451,6 +487,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		if checkTitle && !titleMatchesAnyExpectation(expectations, parsed.Title, allowLeadingTitleWords) {
 			if stats.TitleValidationApplied {
 				stats.DroppedTitle++
+				stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonTitle,
+					fmt.Sprintf("expected %q, got %q", stats.ExpectedTitle, parsed.Title))
 				logger.Trace("ValidateSearchResults dropped: title",
 					"expect_title", stats.ExpectedTitle,
 					"got_title", parsed.Title,
@@ -472,6 +510,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				episodeRank = parsed.TargetMatchRank(target)
 				if episodeRank == 0 {
 					stats.DroppedEpisodeRequest++
+					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode,
+						fmt.Sprintf("expected S%02dE%02d, got seasons %v episodes %v", expectSeason, expectEpisode, parsed.Seasons, parsed.Episodes))
 					logger.Trace("ValidateSearchResults dropped: episode_request",
 						"expect_season", expectSeason,
 						"expect_episode", expectEpisode,
@@ -485,6 +525,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				}
 			} else if !seasonless && !parsed.HasSeason(expectSeason) {
 				stats.DroppedSeason++
+				stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
+					fmt.Sprintf("expected season %d, got %v", expectSeason, parsed.Seasons))
 				logger.Trace("ValidateSearchResults dropped: season",
 					"expect_season", expectSeason,
 					"got_seasons", parsed.Seasons,
@@ -496,6 +538,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 
 		if stats.YearValidationApplied && !yearMatchesAnyExpectation(expectations, parsed.Year) {
 			stats.DroppedYear++
+			stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonYear,
+				fmt.Sprintf("expected %d, got %d", stats.ExpectedYear, parsed.Year))
 			logger.Trace("ValidateSearchResults dropped: year",
 				"expect_year", stats.ExpectedYear,
 				"got_year", parsed.Year,
@@ -512,6 +556,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				// does not accept packs wants neither.
 				if !opts.AcceptPacks && episodeRank > 0 && episodeRank < 3 {
 					stats.DroppedEpisodeRequest++
+					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode,
+						"a pack containing the episode, which this request does not accept")
 					logger.Trace("ValidateSearchResults dropped: pack not accepted",
 						"expect_season", expectSeason,
 						"expect_episode", expectEpisode,
@@ -532,6 +578,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 			case !seasonless:
 				if !opts.AcceptPacks && (parsed.IsShowPack() || parsed.IsSeasonPack(expectSeason)) {
 					stats.DroppedSeason++
+					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
+						"a pack, which this request does not accept")
 					continue
 				}
 				switch {

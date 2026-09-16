@@ -251,9 +251,9 @@ type Request struct {
 	// Seadex is the SeaDex recommendation resolved for the requested anime,
 	// nil when no lookup ran (not anime, no mapping, or SeaDex unreachable).
 	Seadex *rules.SeadexContext
-	// Sample stands in for the parts of a release a bare title cannot carry.
-	// It is set only by the preview: a live search has real releases and never
-	// needs to invent one.
+	// Sample stands in for the parts of a release a bare title cannot carry,
+	// for every fixture that does not bring its own. It is set only by the
+	// preview: a live search has real releases and never needs to invent one.
 	Sample *Sample
 	// AggregateTrace, when non-nil, receives one report per result-set
 	// condition once they are computed: what each counted and which releases
@@ -469,7 +469,6 @@ func (r Request) ruleContext() rules.Context {
 		Title:            r.Title,
 		OriginalLanguage: r.OriginalLanguage,
 		Episodic:         r.Kind == KindSeries || r.Kind == KindAnimeShow,
-		IndexerDataKnown: r.Sample != nil && r.Sample.IndexerData,
 		Seadex:           r.Seadex,
 	}
 }
@@ -684,9 +683,34 @@ type LimitedRule struct {
 	Group string `json:"group,omitempty"`
 }
 
-// Explain runs a set of release names through the whole profile and reports
-// what it did to each — the same call the live pipeline makes, not an
-// approximation of it.
+// Fixture is one release the preview judges: its name, and what to pretend
+// about the parts a name cannot carry.
+//
+// The sample is per release rather than per request because the rules worth
+// testing hardest are the ones that compare releases against each other. A cap
+// on releases over 20 GB, or a prune rule that keeps the tail only while
+// something better survives, cannot be exercised by a set in which every
+// release is the same invented size — it either fires on all of them or none.
+// A nil Sample falls back to the request's, which is what a preview driven by
+// one set of controls sends.
+type Fixture struct {
+	Title  string
+	Sample *Sample
+}
+
+// TitleFixtures is the fixtures for a set of bare names, for a caller with
+// nothing to pretend about any of them.
+func TitleFixtures(titles ...string) []Fixture {
+	out := make([]Fixture, 0, len(titles))
+	for _, title := range titles {
+		out = append(out, Fixture{Title: title})
+	}
+	return out
+}
+
+// Explain runs a set of fixtures through the whole profile and reports what it
+// did to each — the same call the live pipeline makes, not an approximation of
+// it.
 //
 // It judges the set rather than each name alone because parts of a profile only
 // mean anything against a set: a limit rule caps the tail, and "the tail"
@@ -702,14 +726,18 @@ type LimitedRule struct {
 // conditions — what each counted and which releases it counted — because those
 // are computed once for the whole set and belong to no single release's
 // breakdown.
-func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) ([]*Explanation, []rules.AggregateReport) {
-	if p == nil || p.Ranker == nil || len(titles) == 0 {
+func (p *Profile) Explain(fixtures []Fixture, req Request, opts rank.RankOptions) ([]*Explanation, []rules.AggregateReport) {
+	if p == nil || p.Ranker == nil || len(fixtures) == 0 {
 		return nil, nil
 	}
 
-	candidates := make([]triage.Candidate, 0, len(titles))
-	for _, title := range titles {
-		candidates = append(candidates, req.sampleCandidate(title))
+	candidates := make([]triage.Candidate, 0, len(fixtures))
+	for _, f := range fixtures {
+		sample := f.Sample
+		if sample == nil {
+			sample = req.Sample
+		}
+		candidates = append(candidates, sampleCandidate(f.Title, sample))
 	}
 
 	var aggregates []rules.AggregateReport
@@ -730,22 +758,29 @@ func (p *Profile) Explain(titles []string, req Request, opts rank.RankOptions) (
 // sampleCandidate builds the release the preview judges: the title, plus
 // whatever the caller chose to pretend about it. Each title gets its own
 // Release so nothing is shared between them.
-func (r Request) sampleCandidate(title string) triage.Candidate {
+//
+// A sample that vouches for indexer data always gets a publication date, even
+// when the age it claims is zero, because that is what the vouch means: a
+// release posted today has a known age of nought, and a release nobody
+// reported an age for has none. Writing it onto the release rather than
+// carrying a flag beside the request is what lets each fixture vouch for
+// itself — which a set sharing one flag could not do.
+func sampleCandidate(title string, sample *Sample) triage.Candidate {
 	rel := &release.Release{Title: title}
 	cand := triage.Candidate{Release: rel}
-	if r.Sample == nil {
+	if sample == nil {
 		return cand
 	}
-	rel.Size = r.Sample.SizeBytes
-	rel.Grabs = r.Sample.Grabs
-	rel.Password = r.Sample.Passworded
-	rel.Indexer = r.Sample.Indexer
-	rel.IsLibrary = r.Sample.Library
-	if r.Sample.AgeDays > 0 {
-		rel.PubDate = time.Now().AddDate(0, 0, -r.Sample.AgeDays).Format(time.RFC1123Z)
+	rel.Size = sample.SizeBytes
+	rel.Grabs = sample.Grabs
+	rel.Password = sample.Passworded
+	rel.Indexer = sample.Indexer
+	rel.IsLibrary = sample.Library
+	if sample.AgeDays > 0 || sample.IndexerData {
+		rel.PubDate = time.Now().AddDate(0, 0, -sample.AgeDays).Format(time.RFC1123Z)
 	}
-	cand.Verdict.Probed = r.Sample.Probed
-	cand.Verdict.Avail = r.Sample.Avail
+	cand.Verdict.Probed = sample.Probed
+	cand.Verdict.Avail = sample.Avail
 	return cand
 }
 
