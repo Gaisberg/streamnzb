@@ -21,10 +21,6 @@ var (
 	defaultFS = osFS{}
 )
 
-const (
-	DefaultMaxDictionarySize = 4 << 30
-)
-
 type osFS struct{}
 
 func (fs osFS) Open(name string) (fs.File, error) {
@@ -33,7 +29,6 @@ func (fs osFS) Open(name string) (fs.File, error) {
 
 type options struct {
 	bsize                int
-	maxDictSize          int64
 	fs                   fs.FS
 	pass                 *string
 	skipCheck            bool
@@ -50,10 +45,6 @@ type Option func(*options)
 
 func BufferSize(size int) Option {
 	return func(o *options) { o.bsize = size }
-}
-
-func MaxDictionarySize(size int64) Option {
-	return func(o *options) { o.maxDictSize = size }
 }
 
 func FileSystem(fs fs.FS) Option {
@@ -100,8 +91,7 @@ func MaxConcurrentVolumes(n int) Option {
 
 func getOptions(opts []Option) *options {
 	opt := &options{
-		fs:          defaultFS,
-		maxDictSize: DefaultMaxDictionarySize,
+		fs: defaultFS,
 	}
 	for _, f := range opts {
 		f(opt)

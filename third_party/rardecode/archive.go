@@ -17,10 +17,14 @@ const (
 )
 
 var (
-	ErrCorruptBlockHeader    = errors.New("rardecode: corrupt block header")
-	ErrCorruptFileHeader     = errors.New("rardecode: corrupt file header")
-	ErrBadHeaderCRC          = errors.New("rardecode: bad header crc")
-	ErrUnknownDecoder        = errors.New("rardecode: unknown decoder version")
+	ErrCorruptBlockHeader = errors.New("rardecode: corrupt block header")
+	ErrCorruptFileHeader  = errors.New("rardecode: corrupt file header")
+	ErrBadHeaderCRC       = errors.New("rardecode: bad header crc")
+	ErrUnknownDecoder     = errors.New("rardecode: unknown decoder version")
+	// ErrCompressedData is returned when a file's data is compressed rather
+	// than stored. This reader only reads stored data — see the comment at the
+	// refusal in reader.go.
+	ErrCompressedData        = errors.New("rardecode: file is compressed, only stored data can be read")
 	ErrDecoderOutOfData      = errors.New("rardecode: decoder expected more data than is in packed file")
 	ErrArchiveEncrypted      = errors.New("rardecode: archive encrypted, password required")
 	ErrArchivedFileEncrypted = errors.New("rardecode: archived files encrypted, password required")

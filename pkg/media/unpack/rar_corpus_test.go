@@ -103,6 +103,8 @@ func TestRARCorpus(t *testing.T) {
 		got[filepath.ToSlash(key)] = readArchiveSet(root, vol, os.Getenv(corpusPasswordEnv))
 	}
 
+	assertCompressedStillReadsItsHeader(t, firstVolumes, os.Getenv(corpusPasswordEnv))
+
 	goldenPath := filepath.Join(root, corpusGoldenName)
 	if os.Getenv(corpusUpdateEnv) != "" {
 		writeGolden(t, goldenPath, got)
@@ -287,4 +289,49 @@ func describeFileDiff(want, got corpusFile) string {
 		}
 	}
 	return strings.Join(diffs, "; ")
+}
+
+// assertCompressedStillReadsItsHeader pins the contract the reader keeps with
+// compressed archives now that it cannot decompress them.
+//
+// A compressed release is healthy — its articles are fine, it simply cannot be
+// streamed, because streaming maps a byte range onto packed bytes. Callers
+// tell that apart from an unreadable archive by reading the header and finding
+// Stored false, and they report it as unstreamable rather than reporting the
+// release bad to a community database. So refusing at Next() rather than at
+// Read() would turn "this release cannot be streamed" into "this release is
+// broken", which is a wrong answer sent to other people.
+func assertCompressedStillReadsItsHeader(t *testing.T, firstVolumes []string, password string) {
+	t.Helper()
+	checked := 0
+	for _, vol := range firstVolumes {
+		f, err := os.Open(vol)
+		if err != nil {
+			continue
+		}
+		var opts []rardecode.Option
+		if password != "" {
+			opts = append(opts, rardecode.Password(password))
+		}
+		r, err := rardecode.NewReader(f, opts...)
+		if err != nil {
+			f.Close()
+			continue
+		}
+		hdr, err := r.Next()
+		if err != nil || hdr == nil || hdr.Stored {
+			f.Close()
+			continue // not a compressed set, or not openable on its own
+		}
+		checked++
+		if _, err := r.Read(make([]byte, 64)); err == nil {
+			t.Errorf("%s: reading compressed data should fail, it succeeded", filepath.Base(vol))
+		}
+		f.Close()
+	}
+	if checked == 0 {
+		t.Log("no compressed archive in the corpus — the refusal path went unexercised")
+		return
+	}
+	t.Logf("compressed archives still reporting their headers: %d", checked)
 }

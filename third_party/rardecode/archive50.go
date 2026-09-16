@@ -58,16 +58,12 @@ const (
 	maxPbkdf2Salt = 64
 	pwCheckSize   = 8
 	maxKdfCount   = 24
-
-	maxDictSize = 0x1000000000
 )
 
 var (
 	ErrBadPassword          = errors.New("rardecode: incorrect password")
 	ErrCorruptEncryptData   = errors.New("rardecode: corrupt encryption data")
 	ErrUnknownEncryptMethod = errors.New("rardecode: unknown encryption method")
-	ErrPlatformIntSize      = errors.New("rardecode: platform integer size too small")
-	ErrDictionaryTooLarge   = errors.New("rardecode: decode dictionary too large")
 	ErrBadVolumeNumber      = errors.New("rardecode: bad volume number")
 	ErrNoArchiveBlock       = errors.New("rardecode: missing archive block")
 )

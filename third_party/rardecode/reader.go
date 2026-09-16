@@ -5,10 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"io/fs"
-	"math"
 	"sync"
 	"time"
 )
@@ -197,7 +197,6 @@ func newFileBlockList(blocks ...*fileBlockHeader) *fileBlockList {
 type packedFileReader struct {
 	v          volume
 	h          *fileBlockHeader
-	dr         *decodeReader
 	offset     int64
 	blocks     *fileBlockList
 	opt        *options
@@ -432,25 +431,26 @@ func (pr *packedFileReader) newArchiveFileFrom(r archiveFile, blocks *fileBlockL
 		}
 	}
 
+	// Compressed data is refused rather than decompressed. StreamNZB maps a
+	// player's byte range straight onto the packed bytes in the archive, which
+	// only works when packed and unpacked are the same bytes — so a compressed
+	// release cannot be streamed however well it decompresses, and the
+	// pipeline turns one away on the header alone long before reaching here.
+	// Carrying the LZSS, PPMd and VM-filter decoders for a case that is
+	// rejected upstream meant maintaining several thousand lines that nothing
+	// could reach.
+	//
+	// The header still records which compression a file uses (decVer, set in
+	// archive15.go and archive50.go) because that is how it is recognised and
+	// reported; only the machinery for undoing it is gone.
 	if h.decVer > 0 {
-		if pr.dr == nil {
-			pr.dr = new(decodeReader)
-		}
-
-		if !h.UnKnownSize && h.winSize > h.UnPackedSize {
-			h.winSize = h.UnPackedSize
-		}
-		if h.winSize > maxDictSize || h.winSize > pr.opt.maxDictSize {
-			return nil, ErrDictionaryTooLarge
-		}
-		if h.winSize > math.MaxInt {
-			return nil, ErrPlatformIntSize
-		}
-		err := pr.dr.init(r, h.decVer, int(h.winSize), !h.Solid, h.arcSolid, h.UnPackedSize)
-		if err != nil {
-			return nil, err
-		}
-		r = pr.dr
+		// Deferred to the first Read rather than raised here, the same way an
+		// encrypted file with no key is. Next() must still hand back a header
+		// saying Stored is false: that is how callers recognise a compressed
+		// release and report it as unstreamable-but-healthy instead of
+		// unavailable, and failing the header read would turn that into an
+		// unreadable archive.
+		return &errorFile{archiveFile: r, err: fmt.Errorf("%w: %s", ErrCompressedData, h.Name)}, nil
 	}
 	if h.UnPackedSize >= 0 && !h.UnKnownSize {
 
