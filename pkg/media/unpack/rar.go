@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/media/decode"
 
 	"streamnzb/pkg/media/rar"
 )
@@ -507,10 +508,10 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 					diag.unexpectedEOF++
 					scanHasEvidence = true
 				}
-				if strings.Contains(msg, "data corruption detected") ||
-					strings.Contains(msg, "without finding \"=yend\" trailer") ||
-					strings.Contains(msg, "without finding '=yend' trailer") ||
-					strings.Contains(msg, "rapidyenc") {
+				// A scan reads through the decoder, so a damaged article
+				// surfaces here as a failed scan. Whether that is evidence of
+				// real damage is the decoder's judgment, not this package's.
+				if decode.IsCorrupt(err) {
 					diag.decodeCorruption++
 					scanHasEvidence = true
 				}

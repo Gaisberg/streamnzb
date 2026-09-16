@@ -3,13 +3,9 @@ package decode
 import (
 	"errors"
 	"io"
-	"regexp"
-	"strconv"
 
 	"github.com/javi11/rapidyenc"
 )
-
-var sizeMismatchRE = regexp.MustCompile(`expected size (\d+) but got (\d+)`)
 
 type Frame struct {
 	Data     []byte
@@ -84,11 +80,10 @@ func DecodeToBytesSized(r io.Reader, sizeHint int64) (*Frame, error) {
 	if errors.Is(err, io.EOF) {
 		return frameWithMeta(dec, buf, n), nil
 	}
-	if sub := sizeMismatchRE.FindStringSubmatch(err.Error()); len(sub) == 3 {
-		expected, _ := strconv.ParseInt(sub[1], 10, 64)
-		got, _ := strconv.ParseInt(sub[2], 10, 64)
-		shortfall := expected - got
-		if shortfall > 0 && shortfall <= maxDecodeSizeTolerance && int64(n) == got {
+	err = classify(err)
+	var mismatch *SizeMismatchError
+	if errors.As(err, &mismatch) {
+		if shortfall := mismatch.Shortfall(); shortfall > 0 && shortfall <= maxDecodeSizeTolerance && int64(n) == mismatch.Got {
 			// Keep the actually-decoded bytes. The =yend "size" is frequently a
 			// nominal/rounded value the poster wrote (e.g. 768000) while the real
 			// payload is a few bytes smaller; the decoded bytes are the true file

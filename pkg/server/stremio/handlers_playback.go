@@ -21,6 +21,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/media/decode"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/playback"
 	"streamnzb/pkg/release"
@@ -1150,14 +1151,12 @@ func isSegmentUnavailableErr(err error) bool {
 // isDataCorruptErr returns true for yEnc decode failures that indicate a segment is corrupt
 // across all providers (i.e. the article data itself is damaged on Usenet). These should
 // trigger slot failover and AvailNZB bad reporting just like missing articles.
+//
+// The decoder classifies its own failures, so this asks it rather than matching
+// its wording — the answer decides whether a release is reported bad to a
+// community database, which is not a decision to hang on a substring.
 func isDataCorruptErr(err error) bool {
-	for e := err; e != nil; e = errors.Unwrap(e) {
-		s := e.Error()
-		if strings.Contains(s, "rapidyenc") || strings.Contains(s, "data corruption") || strings.Contains(s, "yend") {
-			return true
-		}
-	}
-	return false
+	return decode.IsCorrupt(err)
 }
 
 // isFatalStreamErr reports whether a playback read error means this release
