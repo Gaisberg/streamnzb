@@ -1,5 +1,25 @@
 # Changelog
 
+## [6.2.0](https://github.com/Gaisberg/streamnzb/compare/v6.1.0...v6.2.0) (2026-09-16)
+
+
+### Features
+
+* expose what the engine understands and why it dropped each release ([#326](https://github.com/Gaisberg/streamnzb/issues/326)) ([41e015b](https://github.com/Gaisberg/streamnzb/commit/41e015b0c7ab99f284d3991e6780c80893c9688a)), closes [#175](https://github.com/Gaisberg/streamnzb/issues/175)
+* **formatter:** add union and without list helpers ([53802eb](https://github.com/Gaisberg/streamnzb/commit/53802eb26c1c2f14ef688b8af2883da220c013de))
+* **rules:** add matchesExcept for lookaround-equivalent matching ([#324](https://github.com/Gaisberg/streamnzb/issues/324)) ([d2df02e](https://github.com/Gaisberg/streamnzb/commit/d2df02e8bff1b065833ec487d1686864d9d0b0ce)), closes [#281](https://github.com/Gaisberg/streamnzb/issues/281)
+* **rules:** take jhin 0.8.0, where a rule is skipped only if the gap mattered ([9fae48a](https://github.com/Gaisberg/streamnzb/commit/9fae48af833a39be924095b04674433cffd7ffd3))
+* **scrobble:** add MDBList scrobbling and link accounts per stream ([10f6218](https://github.com/Gaisberg/streamnzb/commit/10f6218ccf67f3ce37f05720082207c5013711d2))
+
+
+### Bug Fixes
+
+* **ffprobe:** bundle ffprobe 6.1 so profile 8 Dolby Vision is detected ([9876143](https://github.com/Gaisberg/streamnzb/commit/987614374f1ff020c43325f18838fcfe0f772c61))
+* **indexer:** only reject releases whose password status asserts a password ([a9296a2](https://github.com/Gaisberg/streamnzb/commit/a9296a2b73665877c8c59e391e7d80b5dbf79c6f)), closes [#331](https://github.com/Gaisberg/streamnzb/issues/331)
+* **language:** resolve every ISO 639-1 language, not just the filterable ones ([53802eb](https://github.com/Gaisberg/streamnzb/commit/53802eb26c1c2f14ef688b8af2883da220c013de))
+* **ui:** reseed the rules text box when the profile changes ([5259767](https://github.com/Gaisberg/streamnzb/commit/52597672fdf5222e57ec0ec93d13048ecbe23762))
+* **ui:** show linked format template updates as a line diff instead of two full copies ([a337f20](https://github.com/Gaisberg/streamnzb/commit/a337f202cbe639fbc902836237c5751f957413de))
+
 ## [6.1.0](https://github.com/Gaisberg/streamnzb/compare/v6.0.0...v6.1.0) (2026-09-14)
 
 
