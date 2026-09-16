@@ -280,12 +280,12 @@ export const CONFIDENCE = {
   community: {
     label: "community",
     short: "reported to AvailNZB",
-    hint: "From the availability database, per backbone. Partial coverage and a record can be months old. Rules reading it skip releases nobody has reported.",
+    hint: "From the availability database, per backbone. Partial coverage and a record can be months old. A rule whose answer turns on it skips releases nobody has reported.",
   },
   measured: {
     label: "measured",
     short: "measured by ffprobe",
-    hint: "Measured by ffprobe in the file itself. Only library releases have ever been opened, so rules reading it skip everything else.",
+    hint: "Measured by ffprobe in the file itself. Only library releases have ever been opened, so a rule whose answer turns on it skips everything else.",
   },
 }
 
@@ -359,7 +359,7 @@ export const RULE_ATTRIBUTES = [
   {
     tier: "community",
     title: "From AvailNZB",
-    note: "A rule reading any of these skips releases nobody has reported, so turning one on never empties a result list.",
+    note: "A rule whose answer turns on one of these skips releases nobody has reported, so turning one on never empties a result list. Paired with an answerable condition by or, the rule still fires when that side settles it.",
     items: [
       { name: "avail.status", type: "text", example: '"available", "unavailable" or "unknown"' },
       { name: "avail.known", type: "yes/no" },
@@ -371,7 +371,7 @@ export const RULE_ATTRIBUTES = [
   {
     tier: "community",
     title: "From SeaDex",
-    note: "SeaDex (releases.moe) recommends releases per anime title, matched here by release group. Only Kitsu-addressed anime requests are looked up, so rules reading these skip everything else.",
+    note: "SeaDex (releases.moe) recommends releases per anime title, matched here by release group. Only Kitsu-addressed anime requests are looked up, so a rule whose answer turns on these skips everything else — but `seadex.best or \"remux\" in traits` still pays out on a non-anime request, because the other side settles it.",
     items: [
       { name: "seadex.known", type: "yes/no", example: "SeaDex has an entry for this title" },
       { name: "seadex.best", type: "yes/no", example: "this group made a release marked best for this title" },
@@ -382,7 +382,7 @@ export const RULE_ATTRIBUTES = [
   {
     tier: "measured",
     title: "From ffprobe",
-    note: "Library releases only — a fresh indexer hit has never been opened. Rules reading these skip everything unprobed.",
+    note: "Library releases only — a fresh indexer hit has never been opened. A rule whose answer turns on these skips everything unprobed.",
     items: [
       { name: "probed.height", type: "number" },
       { name: "probed.width", type: "number" },
@@ -399,7 +399,7 @@ export const RULE_ATTRIBUTES = [
   {
     tier: "measured",
     title: "From ffprobe — tracks",
-    note: "The file's audio and subtitle tracks, read by probes newer than the codec and HDR fields. A library item probed before then has those but nothing about its tracks, so rules reading these skip it as well as everything unprobed.",
+    note: "The file's audio and subtitle tracks, read by probes newer than the codec and HDR fields. A library item probed before then has those but nothing about its tracks, so a rule whose answer turns on these skips it as well as everything unprobed.",
     items: [
       { name: "probed.audioLanguages", type: "list", example: '"ja" in probed.audioLanguages — ISO 639-1; the bare languages list reads these too, this one skips unprobed releases' },
       { name: "probed.subtitleLanguages", type: "list", example: '"ar" in probed.subtitleLanguages' },

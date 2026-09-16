@@ -2,6 +2,7 @@ package rules
 
 import (
 	"sort"
+	"strings"
 
 	jhinrules "github.com/dreulavelle/jhin/rules"
 
@@ -62,6 +63,9 @@ type FuncInfo struct {
 	// can be more than one: count is overloaded across collection and
 	// aggregate, so it appears once per kind.
 	Kind string `json:"kind"`
+	// Tier is set for a call that depends on a confidence group the way
+	// naming one of its fields would, and empty for one always answerable.
+	Tier string `json:"tier,omitempty"`
 }
 
 // Vocabulary is everything a profile's rules may name in this build.
@@ -80,8 +84,8 @@ type Vocabulary struct {
 func Describe() Vocabulary {
 	return Vocabulary{
 		Fields:    describeFields(),
-		Tiers:     append([]TierInfo(nil), tiers...),
-		Functions: append([]FuncInfo(nil), functions...),
+		Tiers:     describeTiers(),
+		Functions: describeFunctions(),
 		Actions: []string{
 			config.RuleActionScore, config.RuleActionReject, config.RuleActionLimit,
 			config.RuleActionPrune, config.RuleActionDefine,
@@ -115,6 +119,21 @@ func describeFields() []FieldInfo {
 	return out
 }
 
+// describeTiers reports the confidence groups from the registry rather than
+// from the slice they were declared in, so the report states what the engine
+// was actually given.
+func describeTiers() []TierInfo {
+	reported := postRegistry.TierDetails()
+	out := make([]TierInfo, 0, len(reported))
+	for _, t := range reported {
+		if t.Name == "" {
+			continue // the always-present tier, which needs no description
+		}
+		out = append(out, TierInfo{Name: t.Name, Description: t.Description})
+	}
+	return out
+}
+
 // describeScopes is "all" followed by the ranking content kinds, taken from
 // the per-kind limit list so the two cannot name different kinds.
 func describeScopes() []string {
@@ -129,68 +148,99 @@ func describeScopes() []string {
 	return out
 }
 
-// functions is the call vocabulary: jhin's builtins, its result-set and
-// collection forms, and the one function StreamNZB registers. jhin holds the
-// first three in unexported maps, so they are written out here and verified
-// by compiling each one.
-var functions = []FuncInfo{
-	{Name: "len", Signature: "len(list | string) -> num", Kind: "function",
-		Description: "how many elements a list has, or characters a string has"},
-	{Name: "lower", Signature: "lower(string) -> string", Kind: "function",
-		Description: "the text in lower case"},
-	{Name: "upper", Signature: "upper(string) -> string", Kind: "function",
-		Description: "the text in upper case"},
-	{Name: "trim", Signature: "trim(string) -> string", Kind: "function",
-		Description: "the text without leading or trailing whitespace"},
-	{Name: "abs", Signature: "abs(num) -> num", Kind: "function",
-		Description: "the number without its sign"},
-	{Name: "floor", Signature: "floor(num) -> num", Kind: "function",
-		Description: "the number rounded down"},
-	{Name: "ceil", Signature: "ceil(num) -> num", Kind: "function",
-		Description: "the number rounded up"},
-	{Name: "round", Signature: "round(num) -> num", Kind: "function",
-		Description: "the number rounded to the nearest whole"},
-	{Name: "min", Signature: "min(num, ...) -> num", Kind: "function",
-		Description: "the smallest of its arguments"},
-	{Name: "max", Signature: "max(num, ...) -> num", Kind: "function",
-		Description: "the largest of its arguments"},
-	{Name: "string", Signature: "string(any) -> string", Kind: "function",
-		Description: "any value as text"},
-	{Name: "num", Signature: "num(string) -> num", Kind: "function",
-		Description: "text as a number, zero when it does not parse"},
-	{Name: matchesExceptName, Signature: matchesExceptName + "(string, string, string) -> bool", Kind: "function",
-		Description: "the first pattern matches somewhere the second does not cover — the positional form of " +
-			"\"A but not the A inside B\", which RE2 cannot express"},
+// funcDescriptions is the human half of the call vocabulary, keyed by name and
+// form. The set of calls is read from the registry — it cannot drift from what
+// compiles — so only the prose lives here, and TestDescribeFunctions fails if
+// the registry reports a call this map has no words for.
+var funcDescriptions = map[string]string{
+	"function/len":    "how many elements a list has, or characters a string has",
+	"function/lower":  "the text in lower case",
+	"function/upper":  "the text in upper case",
+	"function/trim":   "the text without leading or trailing whitespace",
+	"function/abs":    "the number without its sign",
+	"function/floor":  "the number rounded down",
+	"function/ceil":   "the number rounded up",
+	"function/round":  "the number rounded to the nearest whole",
+	"function/min":    "the smallest of its arguments",
+	"function/max":    "the largest of its arguments",
+	"function/string": "any value as text",
+	"function/num":    "text as a number, zero when it does not parse",
+	"function/" + matchesExceptName: "the first pattern matches somewhere the second does not cover — the positional form of " +
+		"\"A but not the A inside B\", which RE2 cannot express",
 
-	{Name: "count", Signature: "count(list, cond) -> num", Kind: "collection",
-		Description: "how many elements satisfy the condition, with # standing for the element"},
-	{Name: "any", Signature: "any(list, cond) -> bool", Kind: "collection",
-		Description: "at least one element satisfies the condition"},
-	{Name: "all", Signature: "all(list, cond) -> bool", Kind: "collection",
-		Description: "every element satisfies the condition"},
-	{Name: "none", Signature: "none(list, cond) -> bool", Kind: "collection",
-		Description: "no element satisfies the condition"},
+	"collection/count": "how many elements satisfy the condition, with # standing for the element",
+	"collection/any":   "at least one element satisfies the condition",
+	"collection/all":   "every element satisfies the condition",
+	"collection/none":  "no element satisfies the condition",
 
-	{Name: "count", Signature: "count(cond) -> num", Kind: "aggregate",
-		Description: "how many releases in the result set satisfy the condition"},
-	{Name: "exists", Signature: "exists(cond) -> bool", Kind: "aggregate",
-		Description: "some release in the result set satisfies the condition"},
-	{Name: "any", Signature: "any(cond) -> bool", Kind: "aggregate",
-		Description: "some release in the result set satisfies the condition"},
-	{Name: "none", Signature: "none(cond) -> bool", Kind: "aggregate",
-		Description: "no release in the result set satisfies the condition"},
-	// matched is neither a call nor a question about the set: it is resolved
-	// by inlining the named rule's condition before the checker runs, which
-	// is why a define rule costs nothing at evaluation time.
-	{Name: "matched", Signature: "matched(\"rule name\") -> bool", Kind: "reference",
-		Description: "another rule's condition holds for this release, so a shared definition has one home"},
+	"aggregate/count":  "how many releases in the result set satisfy the condition",
+	"aggregate/exists": "some release in the result set satisfies the condition",
+	"aggregate/any":    "some release in the result set satisfies the condition",
+	"aggregate/none":   "no release in the result set satisfies the condition",
+
+	"reference/matched": "another rule's condition holds for this release, so a shared definition has one home",
 }
 
-// compileProbe compiles one condition against the prune vocabulary, which is
-// the superset. It backs the test that keeps functions honest.
-func compileProbe(when string) error {
-	_, err := jhinrules.Compile(postRegistry, []jhinrules.Rule{
-		{Name: "probe", When: when, Action: jhinrules.ActionReject},
-	})
-	return err
+// matchedReference is the one call the registry does not report, because it is
+// not a call: matched() names a rule and is resolved by inlining that rule's
+// condition before the checker ever runs, which is why a define rule costs
+// nothing at evaluation time.
+var matchedReference = FuncInfo{
+	Name:      "matched",
+	Signature: `matched("rule name") -> bool`,
+	Kind:      "reference",
+}
+
+// describeFunctions reads the call vocabulary from the prune registry, which
+// is the superset, and dresses it with the prose above.
+func describeFunctions() []FuncInfo {
+	reported := postRegistry.Funcs()
+	out := make([]FuncInfo, 0, len(reported)+1)
+	for _, fn := range reported {
+		info := FuncInfo{
+			Name:      fn.Name,
+			Signature: renderSignature(fn),
+			Kind:      fn.Form,
+			Tier:      fn.Tier,
+		}
+		info.Description = funcDescriptions[info.Kind+"/"+info.Name]
+		out = append(out, info)
+	}
+	ref := matchedReference
+	ref.Description = funcDescriptions["reference/matched"]
+	return append(out, ref)
+}
+
+// renderSignature writes a call out the way a rule author types it. A
+// collection form is shown with its placeholder rather than as a bare list and
+// bool, because `any(hdr, # == "DV")` is the thing being described and
+// `any(list, bool)` is not recognisable as it.
+func renderSignature(fn jhinrules.FuncInfo) string {
+	if fn.Form == jhinrules.FormCollection {
+		return fn.Name + "(list, cond) -> " + fn.Result.String()
+	}
+	if fn.Form == jhinrules.FormAggregate {
+		return fn.Name + "(cond) -> " + fn.Result.String()
+	}
+	params := make([]string, 0, len(fn.Params))
+	for _, p := range fn.Params {
+		params = append(params, paramName(p))
+	}
+	if fn.Variadic {
+		params = append(params, "...")
+	}
+	return fn.Name + "(" + strings.Join(params, ", ") + ") -> " + fn.Result.String()
+}
+
+// paramName renders one parameter type. jhin marks "takes anything" with an
+// invalid kind, which prints as "invalid" and would read as a defect.
+func paramName(t jhinrules.Type) string {
+	switch {
+	case t.K == jhinrules.KInvalid:
+		return "any"
+	case t.K == jhinrules.KList && t.Elem == jhinrules.KInvalid:
+		return "list"
+	default:
+		return t.String()
+	}
 }

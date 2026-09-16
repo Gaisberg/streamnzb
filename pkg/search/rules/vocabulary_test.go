@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	jhinrules "github.com/dreulavelle/jhin/rules"
+
 	"streamnzb/pkg/core/config"
 )
 
@@ -103,72 +105,71 @@ func TestDescribeTiers(t *testing.T) {
 	}
 }
 
-// TestVocabularyFunctions compiles a call to every reported function, which
-// is what keeps a hand-written list honest: jhin holds its builtins in an
-// unexported map, so a rename upstream would otherwise leave the report
-// advertising a call no rule can make.
-func TestVocabularyFunctions(t *testing.T) {
-	// One condition per reported name and kind, exercising the signature the
-	// report advertises.
-	calls := map[string]string{
-		"function/len":                  `len(audio) > 0`,
-		"function/lower":                `lower(group) == "cake"`,
-		"function/upper":                `upper(group) == "CAKE"`,
-		"function/trim":                 `trim(group) == "cake"`,
-		"function/abs":                  `abs(sizeGB - 4) < 1`,
-		"function/floor":                `floor(sizeGB) == 4`,
-		"function/ceil":                 `ceil(sizeGB) == 4`,
-		"function/round":                `round(sizeGB) == 4`,
-		"function/min":                  `min(sizeGB, 4, 9) == 4`,
-		"function/max":                  `max(sizeGB, 4, 9) == 9`,
-		"function/string":               `string(year) == "2019"`,
-		"function/num":                  `num(bitrate) > 5`,
-		"function/" + matchesExceptName: matchesExceptName + `(releaseName, "(?i)\\bMA\\b", "(?i)DTS-HD.MA")`,
-
-		"collection/count": `count(languages, # == "ja") > 1`,
-		"collection/any":   `any(languages, # == "ja")`,
-		"collection/all":   `all(languages, # != "ja")`,
-		"collection/none":  `none(languages, # == "ja")`,
-
-		"aggregate/count":  `count(resolution == "2160p") > 2`,
-		"aggregate/exists": `exists(resolution == "2160p")`,
-		"aggregate/any":    `any(resolution == "2160p")`,
-		"aggregate/none":   `none(resolution == "2160p")`,
+// The call vocabulary is read from the registry now, so the set cannot drift
+// from what compiles and there is nothing left to verify about it. What can
+// still drift is the prose: a call jhin adds arrives in the report with no
+// description at all unless someone writes one.
+func TestDescribeFunctions(t *testing.T) {
+	vocab := Describe()
+	if len(vocab.Functions) == 0 {
+		t.Fatal("no functions reported")
 	}
 
-	seen := make(map[string]bool, len(functions))
-	for _, fn := range functions {
+	seen := map[string]bool{}
+	for _, fn := range vocab.Functions {
 		key := fn.Kind + "/" + fn.Name
 		if seen[key] {
 			t.Errorf("%s reported twice", key)
 		}
 		seen[key] = true
 
-		if fn.Signature == "" || fn.Description == "" {
-			t.Errorf("%s reported without a signature or description", key)
+		if fn.Description == "" {
+			t.Errorf("%s has no description — add one to funcDescriptions", key)
 		}
-		if !strings.HasPrefix(fn.Signature, fn.Name+"(") {
+		if fn.Signature == "" || !strings.HasPrefix(fn.Signature, fn.Name+"(") {
 			t.Errorf("%s: signature %q does not start with the name", key, fn.Signature)
 		}
-
-		// matched() is resolved by inlining a rule that exists, so it cannot
-		// be compiled from a condition on its own.
-		if fn.Kind == "reference" {
-			continue
-		}
-		when, ok := calls[key]
-		if !ok {
-			t.Errorf("%s is reported but this test does not compile it — add a call", key)
-			continue
-		}
-		if err := compileProbe(when); err != nil {
-			t.Errorf("%s: reported but %q does not compile: %v", key, when, err)
+		// "invalid" is what jhin's zero Type prints as; a parameter that takes
+		// anything has to read as "any", not as a defect.
+		if strings.Contains(fn.Signature, "invalid") {
+			t.Errorf("%s: signature %q leaks an unrendered type", key, fn.Signature)
 		}
 	}
 
-	for key := range calls {
+	// The function StreamNZB registers has to arrive through the same report
+	// as jhin's own, or a client cannot discover it.
+	if !seen["function/"+matchesExceptName] {
+		t.Errorf("%s is registered but not reported", matchesExceptName)
+	}
+	// matched() is not a call and jhin does not report it, so it is ours to
+	// add; a client that never hears about it cannot use define libraries.
+	if !seen["reference/matched"] {
+		t.Error("matched() missing from the report")
+	}
+	// The overloaded names must appear once per form.
+	for _, key := range []string{"collection/count", "aggregate/count", "collection/any", "aggregate/any"} {
 		if !seen[key] {
-			t.Errorf("this test compiles %s but the report does not list it", key)
+			t.Errorf("%s missing — count/any are overloaded across both forms", key)
+		}
+	}
+}
+
+// A reported signature has to describe a call that really compiles. The set
+// comes from the registry, but the rendering is ours and could misstate it.
+func TestReportedSignaturesCompile(t *testing.T) {
+	for _, when := range []string{
+		`len(audio) > 0`,
+		`min(sizeGB, 4, 9) == 4`,
+		`num(bitrate) > 5`,
+		matchesExceptName + `(releaseName, "(?i)\\bMA\\b", "(?i)DTS-HD.MA")`,
+		`any(languages, # == "ja")`,
+		`count(resolution == "2160p") > 2`,
+		`exists(resolution == "2160p")`,
+	} {
+		if _, err := jhinrules.Compile(postRegistry, []jhinrules.Rule{
+			{Name: "probe", When: when, Action: jhinrules.ActionReject},
+		}); err != nil {
+			t.Errorf("%q does not compile: %v", when, err)
 		}
 	}
 }

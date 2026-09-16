@@ -40,6 +40,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/capabilities
     ],
     "functions": [
       { "name": "min", "signature": "min(num, ...) -> num", "kind": "function", "description": "…" },
+      { "name": "matchesExcept", "signature": "matchesExcept(string, string, string) -> bool", "kind": "function", "description": "…" },
       { "name": "count", "signature": "count(cond) -> num", "kind": "aggregate", "description": "…" }
     ],
     "actions": ["score", "reject", "limit", "prune", "define"],
@@ -83,11 +84,15 @@ looking in the wrong place.
 | `values` | the complete set the field can hold, when it is closed; absent means open |
 | `prune_only` | the field only exists after scoring, so only a `prune` rule may read it |
 
-`tier` is the part worth reading carefully. A rule naming a field whose tier is
-absent on a release is **skipped**, not judged against zero — see
-[Rules](rules.md#confidence-what-a-rule-can-read-and-how-much-to-trust-it). Each tier's `description` completes
-"needs …" in the reason a skipped rule reports, so a tool can explain a skip
-without hardcoding the wording.
+`tier` is the part worth reading carefully. A rule whose **outcome turns on** a
+field in an absent tier is skipped rather than judged against zero. That is
+narrower than naming one: `and` and `or` settle the rule wherever the
+answerable side is enough by itself, so `resolution == "1080p" or
+seadex.best` holds for a 1080p release with no SeaDex lookup. See
+[Rules](rules.md#only-when-it-would-have-changed-the-answer).
+
+Each tier's `description` completes "needs …" in the reason a skipped rule
+reports, so a tool can explain a skip without hardcoding the wording.
 
 ### Functions
 
@@ -144,9 +149,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 `titles` and `candidates` may be combined and are judged as one set. At most
 100 releases per call.
 
-A bare name carries no NZB, no probe and no availability record, so rules
-reading those tiers are reported as **skipped** rather than judged against
-zeros — the same fail-open behaviour they have in a real search, made visible.
+A bare name carries no NZB, no probe and no availability record, so a rule
+whose outcome turns on those tiers is reported as **skipped** rather than
+judged against zeros — the same fail-open behaviour it has in a real search,
+made visible. A rule that another part of its condition already settles is not
+skipped, and appears in `matched` or in nothing at all like any other.
 `sample` is how you answer them:
 
 ```json

@@ -647,10 +647,10 @@ formats and the refresh contract.
 
 ## Fail-open
 
-**A rule that reads `probed.*`, `avail.*` or `seadex.*` does not run on a
-release that has nothing in that tier.** It is skipped, not failed. For
-`seadex.*` the tier is per request rather than per release: the rules run when
-the lookup ran — an anime SeaDex has not cataloged is then an honest
+**A rule whose outcome turns on `probed.*`, `avail.*` or `seadex.*` does not
+run on a release that has nothing in that tier.** It is skipped, not failed.
+For `seadex.*` the tier is per request rather than per release: the rules run
+when the lookup ran — an anime SeaDex has not cataloged is then an honest
 `seadex.known == false` — and are skipped when it could not (not a Kitsu
 request, no AniList mapping, SeaDex unreachable).
 
@@ -663,6 +663,35 @@ affected rules and the preview lists what it skipped and why.
 
 Practical consequence: a probe rule can only ever *reward* or *remove* library
 releases. It cannot be used to demote everything else by omission.
+
+### Only when it would have changed the answer
+
+"Turns on" is the operative part, and it is narrower than "mentions". A rule is
+skipped when the missing fact could have changed what it did — not merely
+because its condition names an unanswerable attribute. `and` and `or` settle
+the question wherever the answerable side is enough on its own:
+
+| Condition, on a release with no probe | Outcome |
+|---|---|
+| `resolution == "1080p" or probed.bitDepth == 10` | **holds** for a 1080p release — the left side already decided it |
+| `resolution == "2160p" or probed.bitDepth == 10` | skipped on a 1080p release — the probe would have decided it |
+| `not library and probed.height < 1080` | **does not hold** for a library release — the left side already decided it |
+| `resolution == "1080p" and probed.height < 1080` | skipped on a 1080p release — the probe would have decided it |
+
+This is what makes "reward this, or that as a fallback" writable as one rule:
+
+```
+Worth it: score 500 if seadex.best or "remux" in traits
+```
+
+On a non-anime request, where no SeaDex lookup runs, that still pays out for a
+remux. Before, naming `seadex.best` anywhere in the condition was enough to
+skip the whole rule, and the only way to express it was one rule per branch —
+which lost the shared name, so the score breakdown and any `matched()`
+reference fragmented along with it.
+
+Nothing became *more* likely to be rejected by this. A release that fails the
+answerable half of an `and` is one the rule was never going to act on.
 
 ### Testing rules the preview cannot answer on its own
 

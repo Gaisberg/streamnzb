@@ -743,3 +743,52 @@ func TestExplainIndexerDataVouchIsPerFixture(t *testing.T) {
 		}
 	}
 }
+
+// A rule is skipped only when the missing fact could have changed what it did,
+// which is narrower than naming an unanswerable attribute. This is the shape a
+// profile actually wants — "reward this, or that as a fallback" — and before
+// jhin 0.8.0 naming seadex.* anywhere in the condition skipped the whole rule,
+// so it had to be split into one rule per branch and lost its shared name.
+func TestRuleFiresWhenTheAnswerableSideSettlesIt(t *testing.T) {
+	p := rulesProfile(t, config.RuleConfig{
+		Name:   "Worth it",
+		When:   `seadex.best or "remux" in traits`,
+		Action: config.RuleActionScore,
+		Points: 500,
+	})
+
+	// A movie request runs no SeaDex lookup, so seadex.best is unanswerable.
+	out, _ := p.Explain(
+		ranking.TitleFixtures(
+			"Movie 2020 2160p BluRay REMUX HEVC-GRP",
+			"Movie 2020 1080p WEB-DL H264-GRP",
+		),
+		ranking.Request{Kind: ranking.KindMovie}, rank.RankOptions{})
+
+	byTitle := map[string]*ranking.Explanation{}
+	for _, e := range out {
+		byTitle[e.Title] = e
+	}
+	remux := byTitle["Movie 2020 2160p BluRay REMUX HEVC-GRP"]
+	web := byTitle["Movie 2020 1080p WEB-DL H264-GRP"]
+	if remux == nil || web == nil {
+		t.Fatalf("expected both releases explained, got %d", len(out))
+	}
+
+	paid := false
+	for _, m := range remux.Matched {
+		if m.Name == "Worth it" {
+			paid = true
+		}
+	}
+	if !paid {
+		t.Errorf("the remux satisfies the answerable half, so the rule should pay out; skipped: %v", remux.SkippedRules)
+	}
+
+	// The release that does not satisfy it is a different case: there the
+	// missing lookup really could have changed the answer, so the rule is
+	// skipped rather than silently deciding against it.
+	if len(web.SkippedRules) == 0 {
+		t.Errorf("the non-remux cannot be settled without SeaDex, so the rule should report as skipped; matched: %v", web.Matched)
+	}
+}
