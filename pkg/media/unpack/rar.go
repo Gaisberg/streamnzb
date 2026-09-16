@@ -498,13 +498,17 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 				diag.failedScans++
 				diag.lastErr = err
 				diag.lastVolName = cleanName
-				msg := strings.ToLower(err.Error())
+				// What a failed scan is evidence of comes from the errors
+				// themselves. The reader is ours and says which failure it
+				// hit; the decoder classifies its own. Neither is asked to be
+				// recognised by the words it chose, because these counts
+				// decide whether a release gets told to run PAR2 repair.
 				scanHasEvidence := false
-				if strings.Contains(msg, "invalid file block") {
+				if errors.Is(err, rar.ErrInvalidFileBlock) {
 					diag.invalidBlocks++
 					scanHasEvidence = true
 				}
-				if strings.Contains(msg, "unexpected eof") {
+				if errors.Is(err, io.ErrUnexpectedEOF) {
 					diag.unexpectedEOF++
 					scanHasEvidence = true
 				}

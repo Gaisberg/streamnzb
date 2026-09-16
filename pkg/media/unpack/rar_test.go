@@ -659,3 +659,38 @@ func TestStreamFromBlueprintCompressedIsDefinitive(t *testing.T) {
 		t.Fatalf("expected the offending file name in %q", err.Error())
 	}
 }
+
+// The scan's evidence counters decide whether a release is told to run PAR2
+// repair, so what they count has to be the failure the reader actually hit
+// rather than the words it chose to describe it. These assert the typed
+// errors survive the call the scanner makes — a wrapping that flattened them
+// would silently stop all evidence being counted, and a damaged release would
+// read as one with nothing wrong.
+func TestScanFailuresCarryTypedErrors(t *testing.T) {
+	name := "invalid_release.part01.rar"
+	fsys := NewNZBFSFromMapCtx(context.Background(), map[string]UnpackableFile{
+		name: &memoryUnpackableFile{name: name, data: []byte("not a real rar archive header")},
+	})
+
+	_, err := rar.ListArchiveInfo(name,
+		rar.FileSystem(fsys), rar.ParallelRead(false), rar.SkipVolumeCheck,
+		rar.ListTolerant, rar.ListFromAnyVolume)
+	if err == nil {
+		t.Fatal("expected garbage data to fail the listing")
+	}
+	// Whatever the reader concluded, it has to be reachable as a value. A bare
+	// error carrying only a message is the case this test exists to catch.
+	if !errors.Is(err, rar.ErrInvalidFileBlock) &&
+		!errors.Is(err, io.ErrUnexpectedEOF) &&
+		!errors.Is(err, rar.ErrNoSig) {
+		t.Errorf("listing failure is not classifiable by value: %v", err)
+	}
+}
+
+// ErrInvalidFileBlock specifically, since it is the counter that carries the
+// most weight in the corruption verdict.
+func TestInvalidFileBlockIsReachableByValue(t *testing.T) {
+	if !errors.Is(fmt.Errorf("scanning volume: %w", rar.ErrInvalidFileBlock), rar.ErrInvalidFileBlock) {
+		t.Error("ErrInvalidFileBlock should survive wrapping")
+	}
+}
