@@ -201,12 +201,7 @@ func (i *Item) ToRelease() *release.Release {
 			pubDate = usenetDate
 		}
 	}
-	// Newznab reports password as 0 (none), 1 (passworded) or 2 (passworded
-	// inner archive); anything but an explicit 0 counts as protected.
-	password := false
-	if s := strings.TrimSpace(i.GetAttribute("password")); s != "" && s != "0" {
-		password = true
-	}
+	password := passwordProtected(i.GetAttribute("password"))
 	return &release.Release{
 		Title:         i.Title,
 		Link:          i.Link,
@@ -228,6 +223,35 @@ func (i *Item) ToRelease() *release.Release {
 		Poster:     strings.TrimSpace(i.GetAttribute("poster")),
 		UsenetDate: usenetDate,
 		Duration:   i.Duration,
+	}
+}
+
+// passwordProtected reads the newznab password attribute as an assertion that
+// the release is passworded.
+//
+// The spec names three values — 0 (none), 1 (rar password) and 2 (passworded
+// inner archive) — but indexers running nZEDb and nntmux publish their raw
+// passwordstatus column, which also carries 10 ("definitely passworded") and
+// negative values meaning the release has not been post-processed yet. Reading
+// anything but an explicit 0 as protected therefore condemned whole catalogues
+// the moment StreamNZB started asking for the extended attribute set: Treasure
+// Maps answers -1 for every release it returns, and the default-on block
+// rejected all of them (#331).
+//
+// So only the values that assert a password count. An absent, unparseable,
+// negative or unrecognized status is inconclusive and fails open, on the same
+// grounds as every other bound in limitRejections: a release the indexer cannot
+// speak to is not judged by that bound.
+func passwordProtected(attr string) bool {
+	status, err := strconv.Atoi(strings.TrimSpace(attr))
+	if err != nil {
+		return false
+	}
+	switch status {
+	case 1, 2, 10:
+		return true
+	default:
+		return false
 	}
 }
 

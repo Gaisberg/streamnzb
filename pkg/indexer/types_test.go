@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// ToRelease reads the newznab attributes the limits filter on: password (0
-// means none, anything else protected) and usenetdate (preferred over pubDate
-// when it parses, since retention runs from the usenet post date).
+// ToRelease reads the newznab attributes the limits filter on: password (only
+// a value that asserts a password counts) and usenetdate (preferred over
+// pubDate when it parses, since retention runs from the usenet post date).
 func TestToReleasePasswordAndUsenetDate(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -19,6 +19,16 @@ func TestToReleasePasswordAndUsenetDate(t *testing.T) {
 		{"password zero", []Attribute{{Name: "password", Value: "0"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
 		{"password set", []Attribute{{Name: "password", Value: "1"}}, true, "Sun, 01 Jun 2025 10:00:00 +0000"},
 		{"password inner archive", []Attribute{{Name: "password", Value: "2"}}, true, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"nzedb definitely passworded", []Attribute{{Name: "password", Value: "10"}}, true, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		// A release the indexer has not post-processed yet carries a negative
+		// passwordstatus. Treasure Maps answers -1 for all 100 results of a
+		// search, every one of which we read as passworded (#331).
+		{"not post-processed yet", []Attribute{{Name: "password", Value: "-1"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"post-processing retries exhausted", []Attribute{{Name: "password", Value: "-6"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"unrecognized status", []Attribute{{Name: "password", Value: "7"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"unparseable status", []Attribute{{Name: "password", Value: "yes"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"blank status", []Attribute{{Name: "password", Value: ""}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
+		{"padded status", []Attribute{{Name: "password", Value: " 1 "}}, true, "Sun, 01 Jun 2025 10:00:00 +0000"},
 		{"usenetdate preferred", []Attribute{{Name: "usenetdate", Value: "Sat, 31 May 2025 08:00:00 +0000"}}, false, "Sat, 31 May 2025 08:00:00 +0000"},
 		{"unparseable usenetdate ignored", []Attribute{{Name: "usenetdate", Value: "not a date"}}, false, "Sun, 01 Jun 2025 10:00:00 +0000"},
 	}
