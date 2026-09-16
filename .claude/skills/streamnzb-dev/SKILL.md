@@ -47,7 +47,7 @@ Targeted commands are fine while developing — they never replace the build scr
 - Single Go test: `go test ./pkg/path/to/pkg -run TestName -v`
 - Single frontend test: `npx vitest run src/lib/streams.test.js` (in `frontend/`); `npx vitest` watches
 - Frontend hot reload: `npm run dev` (in `frontend/`)
-- **RAR corpus check**: before changing anything in `third_party/rardecode` or the scanner that reads it, record what the current reader says about real archives and diff afterwards. The reader's failure mode is not a crash — a wrong part offset streams the wrong bytes and looks like a damaged post, which no unit test over hand-built structures will catch.
+- **RAR corpus check**: before changing anything in `pkg/media/rar` or the scanner that reads it, record what the current reader says about real archives and diff afterwards. The reader's failure mode is not a crash — a wrong part offset streams the wrong bytes and looks like a damaged post, which no unit test over hand-built structures will catch.
   ```bash
   # once, before the change — writes <corpus>/rar-golden.json
   STREAMNZB_RAR_CORPUS=/path/to/archives go test ./pkg/media/unpack/ -run TestRARCorpus
@@ -83,7 +83,7 @@ pkg/server/{stremio,api,jellyfin,newznab,web}   HTTP only — parse request, cal
   ↓
 pkg/playback  pkg/search  pkg/search/query  pkg/session  pkg/auth       orchestration + domain logic
   ↓
-pkg/media/{unpack,loader,nzb,seek,ffprobe}   pkg/indexer/*   pkg/services/*
+pkg/media/{unpack,loader,nzb,seek,ffprobe,rar}   pkg/indexer/*   pkg/services/*
   ↓
 pkg/usenet/{pool,nntp,speedtest,validation}     pkg/core/{config,persistence,logger,paths,env,metrics}     pkg/release
 ```
@@ -99,6 +99,7 @@ pkg/usenet/{pool,nntp,speedtest,validation}     pkg/core/{config,persistence,log
 | Talking to an indexer | `pkg/indexer/<backend>`, on top of `indexer.ClientCore` |
 | Talking to a metadata provider | `pkg/services/metadata/<provider>` |
 | Archive plans, stream mapping | `pkg/media/unpack` |
+| Reading RAR headers, volumes and stored data | `pkg/media/rar` (ours, BSD from nwaples — it does not decompress, and must not learn to) |
 | Segment fetching, read-ahead, zero-fill policy | `pkg/media/loader` |
 | Benchmarking a provider (latency, throughput ramp) | `pkg/usenet/speedtest` |
 | HTTP request parsing, auth, response shaping | `pkg/server/*` |

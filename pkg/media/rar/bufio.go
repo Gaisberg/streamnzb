@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"bytes"
@@ -19,8 +19,8 @@ const (
 )
 
 var (
-	ErrNoSig        = errors.New("rardecode: RAR signature not found")
-	ErrNegativeRead = errors.New("rardecode: negative read from Reader")
+	ErrNoSig        = errors.New("rar: RAR signature not found")
+	ErrNegativeRead = errors.New("rar: negative read from Reader")
 )
 
 type bufVolumeReader struct {

@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"bytes"
@@ -61,11 +61,11 @@ const (
 )
 
 var (
-	ErrBadPassword          = errors.New("rardecode: incorrect password")
-	ErrCorruptEncryptData   = errors.New("rardecode: corrupt encryption data")
-	ErrUnknownEncryptMethod = errors.New("rardecode: unknown encryption method")
-	ErrBadVolumeNumber      = errors.New("rardecode: bad volume number")
-	ErrNoArchiveBlock       = errors.New("rardecode: missing archive block")
+	ErrBadPassword          = errors.New("rar: incorrect password")
+	ErrCorruptEncryptData   = errors.New("rar: corrupt encryption data")
+	ErrUnknownEncryptMethod = errors.New("rar: unknown encryption method")
+	ErrBadVolumeNumber      = errors.New("rar: bad volume number")
+	ErrNoArchiveBlock       = errors.New("rar: missing archive block")
 )
 
 type extra struct {

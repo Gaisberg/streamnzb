@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"errors"
@@ -13,10 +13,10 @@ import (
 )
 
 var (
-	ErrVerMismatch      = errors.New("rardecode: volume version mistmatch")
-	ErrArchiveNameEmpty = errors.New("rardecode: archive name empty")
-	ErrFileNameRequired = errors.New("rardecode: filename required for multi volume archive")
-	ErrInvalidHeaderOff = errors.New("rardecode: invalid filed header offset")
+	ErrVerMismatch      = errors.New("rar: volume version mistmatch")
+	ErrArchiveNameEmpty = errors.New("rar: archive name empty")
+	ErrFileNameRequired = errors.New("rar: filename required for multi volume archive")
+	ErrInvalidHeaderOff = errors.New("rar: invalid filed header offset")
 
 	defaultFS = osFS{}
 )

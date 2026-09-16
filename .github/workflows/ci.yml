@@ -86,7 +86,7 @@ jobs:
 
           go=false
           frontend=false
-          if echo "${changed}" | grep -qE '^(cmd|pkg|tools|third_party)/'; then
+          if echo "${changed}" | grep -qE '^(cmd|pkg|tools)/'; then
             go=true
           fi
           if echo "${changed}" | grep -qE '^frontend/'; then

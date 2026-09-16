@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"errors"
@@ -17,19 +17,19 @@ const (
 )
 
 var (
-	ErrCorruptBlockHeader = errors.New("rardecode: corrupt block header")
-	ErrCorruptFileHeader  = errors.New("rardecode: corrupt file header")
-	ErrBadHeaderCRC       = errors.New("rardecode: bad header crc")
-	ErrUnknownDecoder     = errors.New("rardecode: unknown decoder version")
+	ErrCorruptBlockHeader = errors.New("rar: corrupt block header")
+	ErrCorruptFileHeader  = errors.New("rar: corrupt file header")
+	ErrBadHeaderCRC       = errors.New("rar: bad header crc")
+	ErrUnknownDecoder     = errors.New("rar: unknown decoder version")
 	// ErrCompressedData is returned when a file's data is compressed rather
 	// than stored. This reader only reads stored data — see the comment at the
 	// refusal in reader.go.
-	ErrCompressedData        = errors.New("rardecode: file is compressed, only stored data can be read")
-	ErrDecoderOutOfData      = errors.New("rardecode: decoder expected more data than is in packed file")
-	ErrArchiveEncrypted      = errors.New("rardecode: archive encrypted, password required")
-	ErrArchivedFileEncrypted = errors.New("rardecode: archived files encrypted, password required")
-	ErrMultiVolume           = errors.New("rardecode: multi-volume archive continues in next file")
-	errVolumeOrArchiveEnd    = errors.New("rardecode: archive or volume end")
+	ErrCompressedData        = errors.New("rar: file is compressed, only stored data can be read")
+	ErrDecoderOutOfData      = errors.New("rar: decoder expected more data than is in packed file")
+	ErrArchiveEncrypted      = errors.New("rar: archive encrypted, password required")
+	ErrArchivedFileEncrypted = errors.New("rar: archived files encrypted, password required")
+	ErrMultiVolume           = errors.New("rar: multi-volume archive continues in next file")
+	errVolumeOrArchiveEnd    = errors.New("rar: archive or volume end")
 )
 
 type readBuf []byte

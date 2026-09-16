@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	ctx "context"
@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	ErrParallelReadFailed = errors.New("rardecode: parallel read failed")
+	ErrParallelReadFailed = errors.New("rar: parallel read failed")
 )
 
 type parallelVolumeReader struct {
@@ -104,7 +104,7 @@ func (pvr *parallelVolumeReader) readVolumeHeaders(c ctx.Context, volnum int) ([
 func (pvr *parallelVolumeReader) safeReadVolumeHeaders(c ctx.Context, volnum int) (headers []*fileBlockHeader, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("rardecode: panic reading volume %d: %v", volnum, r)
+			err = fmt.Errorf("rar: panic reading volume %d: %v", volnum, r)
 		}
 	}()
 	return pvr.readVolumeHeaders(c, volnum)

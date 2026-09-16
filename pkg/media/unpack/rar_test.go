@@ -13,7 +13,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 
-	"github.com/javi11/rardecode/v2"
+	"streamnzb/pkg/media/rar"
 )
 
 // The logger is silenced once for the whole test binary rather than per test.
@@ -53,7 +53,7 @@ func (f *trackingUnpackableFile) EnsureSegmentMap() error {
 func (f *trackingUnpackableFile) calls() int64 { return f.ensureCalls.Load() }
 
 func TestNormalizeContinuationProbeFallsBackToFirstPartPackedSize(t *testing.T) {
-	probe := normalizeContinuationProbe([]rardecode.FilePartInfo{
+	probe := normalizeContinuationProbe([]rar.FilePartInfo{
 		{DataOffset: 100, PackedSize: 49_999_328},
 		{DataOffset: 24, PackedSize: 0},
 	})
@@ -468,7 +468,7 @@ func TestBuildBlueprintCiphertextBlockAlignmentForEncryptedRAR(t *testing.T) {
 }
 
 func TestScanArchiveReturnsVolumeScanErrorInsteadOfEmptyArchive(t *testing.T) {
-	// Memory file containing garbage data that will cause rardecode.ListArchiveInfo to fail
+	// Memory file containing garbage data that will cause rar.ListArchiveInfo to fail
 	files := []UnpackableFile{
 		&memoryUnpackableFile{name: "invalid_release.part01.rar", data: []byte("not a real rar archive header")},
 	}

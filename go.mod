@@ -8,7 +8,6 @@ require (
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/javi11/rapidyenc v0.0.0-20260215144528-f0dac5a39d34
-	github.com/javi11/rardecode/v2 v2.1.2-0.20260213142800-2b1c601a8d62
 	github.com/joho/godotenv v1.5.1
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
@@ -45,5 +44,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
-
-replace github.com/javi11/rardecode/v2 => ./third_party/rardecode

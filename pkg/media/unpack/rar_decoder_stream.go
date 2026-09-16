@@ -8,7 +8,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 
-	"github.com/javi11/rardecode/v2"
+	"streamnzb/pkg/media/rar"
 )
 
 type decoderReadSeekCloser struct {
@@ -109,21 +109,21 @@ func streamRARFromDecoder(ctx context.Context, bp *ArchiveBlueprint, password st
 
 	playCtx := playbackSegmentMapCtx(ctx)
 	fsys := NewNZBFSFromMapCtx(playCtx, volFiles)
-	opts := []rardecode.Option{
-		rardecode.FileSystem(fsys),
-		rardecode.BufferSize(scanVolumeBufferSize),
-		rardecode.ParallelRead(false),
-		rardecode.SkipVolumeCheck,
-		rardecode.ListTolerant,
+	opts := []rar.Option{
+		rar.FileSystem(fsys),
+		rar.BufferSize(scanVolumeBufferSize),
+		rar.ParallelRead(false),
+		rar.SkipVolumeCheck,
+		rar.ListTolerant,
 		// Hashed STORE blocks are wrapped in checksumReader when skipCheck is off;
 		// that wrapper is read-only and openArchiveFile then returns a non-seeker.
-		rardecode.SkipCheck,
+		rar.SkipCheck,
 	}
 	if password != "" {
-		opts = append(opts, rardecode.Password(password))
+		opts = append(opts, rar.Password(password))
 	}
 
-	files, err := rardecode.List(firstVol, opts...)
+	files, err := rar.List(firstVol, opts...)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("rardecode list: %w", err)
 	}

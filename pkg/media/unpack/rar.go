@@ -12,7 +12,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 
-	"github.com/javi11/rardecode/v2"
+	"streamnzb/pkg/media/rar"
 )
 
 var ErrPAR2RepairRequired = errors.New("likely PAR2 repair required")
@@ -481,11 +481,11 @@ func scanVolumesParallel(ctx context.Context, files []UnpackableFile, password s
 			// ListFromAnyVolume: every volume but the first opens on a continuation
 			// block, so without it each of those scans fails outright and the set
 			// looks like it holds only whatever the first volume happened to name.
-			listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.BufferSize(scanVolumeBufferSize), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant, rardecode.ListFromAnyVolume}
+			listOpts := []rar.Option{rar.FileSystem(fsys), rar.BufferSize(scanVolumeBufferSize), rar.ParallelRead(false), rar.SkipVolumeCheck, rar.ListTolerant, rar.ListFromAnyVolume}
 			if password != "" {
-				listOpts = append(listOpts, rardecode.Password(password))
+				listOpts = append(listOpts, rar.Password(password))
 			}
-			infos, err := rardecode.ListArchiveInfo(cleanName, listOpts...)
+			infos, err := rar.ListArchiveInfo(cleanName, listOpts...)
 			if err != nil {
 				if ctxErr := contextErr(ctx); ctxErr != nil {
 					setFirstErr(ctxErr)
@@ -1144,11 +1144,11 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 	// ListTolerant lets the split file resolve across the two mounted volumes and
 	// return both parts even though the archive continues into volumes not mounted
 	// here; we only need Parts[1] (the per-continuation-volume packed size).
-	listOpts := []rardecode.Option{rardecode.FileSystem(fsys), rardecode.BufferSize(scanVolumeBufferSize), rardecode.ParallelRead(false), rardecode.SkipVolumeCheck, rardecode.ListTolerant}
+	listOpts := []rar.Option{rar.FileSystem(fsys), rar.BufferSize(scanVolumeBufferSize), rar.ParallelRead(false), rar.SkipVolumeCheck, rar.ListTolerant}
 	if password != "" {
-		listOpts = append(listOpts, rardecode.Password(password))
+		listOpts = append(listOpts, rar.Password(password))
 	}
-	infos, err := rardecode.ListArchiveInfo(firstName, listOpts...)
+	infos, err := rar.ListArchiveInfo(firstName, listOpts...)
 	if err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			return continuationProbe{}, ctxErr
@@ -1164,7 +1164,7 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 	// single-part entries for the same name. Both layouts mean the same thing:
 	// the second part overall is the per-continuation-volume data block we want.
 	lowerTarget := strings.ToLower(targetName)
-	var targetParts []rardecode.FilePartInfo
+	var targetParts []rar.FilePartInfo
 	for _, info := range infos {
 		if err := contextErr(ctx); err != nil {
 			return continuationProbe{}, err
@@ -1198,7 +1198,7 @@ func probeContinuation(ctx context.Context, allRarFiles []UnpackableFile, startI
 	return continuationProbe{}, nil
 }
 
-func normalizeContinuationProbe(parts []rardecode.FilePartInfo) continuationProbe {
+func normalizeContinuationProbe(parts []rar.FilePartInfo) continuationProbe {
 	if len(parts) < 2 {
 		return continuationProbe{}
 	}
@@ -1484,7 +1484,7 @@ func setHasFirstVolume(parts []filePart, setName string) bool {
 	return false
 }
 
-func isMediaFile(info rardecode.ArchiveFileInfo) bool {
+func isMediaFile(info rar.ArchiveFileInfo) bool {
 	name := info.Name
 	lower := strings.ToLower(name)
 	// .iso is not playable; do not treat as media so we don't select it as main file.

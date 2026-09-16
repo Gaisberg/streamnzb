@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"bytes"
@@ -28,12 +28,12 @@ const (
 )
 
 var (
-	ErrShortFile        = errors.New("rardecode: decoded file too short")
-	ErrInvalidFileBlock = errors.New("rardecode: invalid file block")
-	ErrUnexpectedArcEnd = errors.New("rardecode: unexpected end of archive")
-	ErrBadFileChecksum  = errors.New("rardecode: bad file checksum")
-	ErrSolidOpen        = errors.New("rardecode: solid files don't support Open")
-	ErrUnknownVersion   = errors.New("rardecode: unknown archive version")
+	ErrShortFile        = errors.New("rar: decoded file too short")
+	ErrInvalidFileBlock = errors.New("rar: invalid file block")
+	ErrUnexpectedArcEnd = errors.New("rar: unexpected end of archive")
+	ErrBadFileChecksum  = errors.New("rar: bad file checksum")
+	ErrSolidOpen        = errors.New("rar: solid files don't support Open")
+	ErrUnknownVersion   = errors.New("rar: unknown archive version")
 )
 
 type FileHeader struct {

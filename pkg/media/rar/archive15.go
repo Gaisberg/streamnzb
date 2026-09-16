@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"bytes"
@@ -47,7 +47,7 @@ const (
 )
 
 var (
-	ErrUnsupportedDecoder = errors.New("rardecode: unsupported decoder version")
+	ErrUnsupportedDecoder = errors.New("rar: unsupported decoder version")
 )
 
 type blockHeader15 struct {

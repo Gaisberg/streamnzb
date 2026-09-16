@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javi11/rardecode/v2"
+	"streamnzb/pkg/media/rar"
 )
 
 // A characterization test over real archives, for changing the RAR reader
@@ -131,16 +131,16 @@ func TestRARCorpus(t *testing.T) {
 // so the fingerprint reflects how the product reads an archive rather than how
 // the library can be made to read one.
 func readArchiveSet(root, firstVolume, password string) corpusEntry {
-	opts := []rardecode.Option{
-		rardecode.ParallelRead(false),
-		rardecode.SkipVolumeCheck,
-		rardecode.ListTolerant,
-		rardecode.ListFromAnyVolume,
+	opts := []rar.Option{
+		rar.ParallelRead(false),
+		rar.SkipVolumeCheck,
+		rar.ListTolerant,
+		rar.ListFromAnyVolume,
 	}
 	if password != "" {
-		opts = append(opts, rardecode.Password(password))
+		opts = append(opts, rar.Password(password))
 	}
-	infos, err := rardecode.ListArchiveInfo(firstVolume, opts...)
+	infos, err := rar.ListArchiveInfo(firstVolume, opts...)
 	if err != nil {
 		return corpusEntry{Err: err.Error()}
 	}
@@ -152,7 +152,7 @@ func readArchiveSet(root, firstVolume, password string) corpusEntry {
 	return corpusEntry{Files: files}
 }
 
-func normalizeArchiveFile(root string, info rardecode.ArchiveFileInfo) corpusFile {
+func normalizeArchiveFile(root string, info rar.ArchiveFileInfo) corpusFile {
 	out := corpusFile{
 		Name:              info.Name,
 		TotalPackedSize:   info.TotalPackedSize,
@@ -309,11 +309,11 @@ func assertCompressedStillReadsItsHeader(t *testing.T, firstVolumes []string, pa
 		if err != nil {
 			continue
 		}
-		var opts []rardecode.Option
+		var opts []rar.Option
 		if password != "" {
-			opts = append(opts, rardecode.Password(password))
+			opts = append(opts, rar.Password(password))
 		}
-		r, err := rardecode.NewReader(f, opts...)
+		r, err := rar.NewReader(f, opts...)
 		if err != nil {
 			f.Close()
 			continue

@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import (
 	"fmt"
@@ -299,7 +299,7 @@ func OpenFS(name string, opts ...Option) (*RarFS, error) {
 		h := blocks.firstBlock()
 		fname := strings.TrimPrefix(path.Clean(h.Name), "/")
 		if !fs.ValidPath(fname) {
-			return nil, fmt.Errorf("rardecode: archived file has invalid path: %s", fname)
+			return nil, fmt.Errorf("rar: archived file has invalid path: %s", fname)
 		}
 		node := rfs.ftree[fname]
 		if node != nil {

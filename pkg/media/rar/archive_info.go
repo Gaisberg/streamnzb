@@ -1,4 +1,4 @@
-package rardecode
+package rar
 
 import "io"
 

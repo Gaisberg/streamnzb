@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"reflect"
 	"sync"
 	"time"
 
@@ -15,8 +14,8 @@ import (
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
 
-	"github.com/javi11/rardecode/v2"
 	"github.com/javi11/sevenzip"
+	"streamnzb/pkg/media/rar"
 )
 
 type Checker struct {
@@ -464,11 +463,11 @@ func (c *Checker) getSampleArticlesForEpisode(nzbData *nzb.NZB, season, episode 
 func verifyArchiveHeader(ct string, firstSeg, lastSeg []byte, info *nzb.FileInfo, password string) error {
 	switch ct {
 	case "rar":
-		opts := []rardecode.Option{}
+		opts := []rar.Option{}
 		if password != "" {
-			opts = append(opts, rardecode.Password(password))
+			opts = append(opts, rar.Password(password))
 		}
-		r, err := rardecode.NewReader(bytes.NewReader(firstSeg), opts...)
+		r, err := rar.NewReader(bytes.NewReader(firstSeg), opts...)
 		if err != nil {
 			return fmt.Errorf("invalid RAR archive: %w", err)
 		}
@@ -476,7 +475,9 @@ func verifyArchiveHeader(ct string, firstSeg, lastSeg []byte, info *nzb.FileInfo
 		if err != nil {
 			return fmt.Errorf("cannot read RAR file entry: %w", err)
 		}
-		if stored, known := rarHeaderStored(hdr); known && !stored {
+		// Stored is false for anything the reader would have to decompress,
+		// which streaming cannot do: a byte range maps onto the packed bytes.
+		if hdr != nil && !hdr.Stored {
 			return fmt.Errorf("RAR archive uses compression (STORE mode required for streaming)")
 		}
 	case "7z":
@@ -485,21 +486,6 @@ func verifyArchiveHeader(ct string, firstSeg, lastSeg []byte, info *nzb.FileInfo
 		}
 	}
 	return nil
-}
-
-func rarHeaderStored(hdr *rardecode.FileHeader) (bool, bool) {
-	if hdr == nil {
-		return false, false
-	}
-	v := reflect.ValueOf(hdr)
-	if v.Kind() != reflect.Pointer || v.IsNil() {
-		return false, false
-	}
-	field := v.Elem().FieldByName("Stored")
-	if !field.IsValid() || field.Kind() != reflect.Bool {
-		return false, false
-	}
-	return field.Bool(), true
 }
 
 func verify7zHeader(headData, tailData []byte, info *nzb.FileInfo, password string) error {
