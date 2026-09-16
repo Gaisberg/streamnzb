@@ -230,6 +230,9 @@ When implementing features or bug fixes:
 - **Conventional Commits** are mandatory — release-please derives versions and changelogs from them. Pull requests are squash-merged and the PR title becomes the commit subject, so the title must be a valid Conventional Commit too.
   - Types in use: `feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `ci:`, `chore:`; optional scope like `feat(stremio):`, `fix(loader):`; `!` after the type/scope for a breaking change.
   - Describe the behavior change, not the code change: `fix(loader): scope the segment size estimator to one release`, not `fix: update loader.go`.
+- **Reference issues with `Refs #N`, never `Closes`/`Fixes`.** A closing keyword in a commit body, PR title or PR body closes the issue the moment it lands on `main`, which tells the reporter it is fixed while every published binary still has the bug.
+  - release-please renders every reference with the literal word "closes" whatever keyword was used, so the CHANGELOG line and the release PR body come out identical either way — and merging the release PR is what closes the issue. (#264 used `Refs`, stayed open through its fix merge, and closed one second after the 6.1.0 release PR merged.)
+  - Release notes hand-edited in the PR body lose the auto-close along with the `closes [#N]` line; check it survived the edit, or close the issue by hand.
 - **One change per pull request.** A small enabling refactor may ride along if mentioned; an unrelated fix may not.
 - **Never add attribution trailers** (`Co-Authored-By`, `Generated-by`, etc.) to commit messages.
 - **Never commit build artifacts**: `streamnzb`, `streamnzb.exe`, `pkg/media/ffprobe/bin/*` binaries, `/ffprobe`, `*.log`, `streamnzb.db*`, `config.json`, `frontend/dist/`, `pkg/server/web/static` (all gitignored — verify staged lists stay clean on large commits).

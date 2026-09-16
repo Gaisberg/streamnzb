@@ -70,22 +70,28 @@ A pull request is ready for review when all of these hold:
    after the type/scope. The title should describe the behavior change, not
    the code change (`fix(loader): stop zero-filling past the last segment`,
    not `fix: update loader.go`).
-3. **One change per pull request.** A refactor that enables a fix is fine in
+3. **Link issues with `Refs #N`**, not `Closes`/`Fixes`, in the title, body and
+   commit message alike. A closing keyword makes GitHub close the issue the
+   moment the PR merges, which tells the reporter it is fixed while every
+   released build still has the bug. `Refs` reads the same in the changelog —
+   release-please renders every reference as `closes [#N]` — and the issue
+   closes when the release PR merges instead.
+4. **One change per pull request.** A refactor that enables a fix is fine in
    the same PR if it is small and mentioned; a second unrelated fix is not.
    Drive-by formatting of files you didn't otherwise touch makes review harder.
-4. **New behavior has a test.** Bug fixes should include a test that failed
+5. **New behavior has a test.** Bug fixes should include a test that failed
    before the fix. Go tests sit next to the code (`foo_test.go`); frontend
    tests sit next to the module (`foo.test.js` / `foo.test.jsx`).
-5. **User-facing changes update `docs/`.** A new setting, env var, feature, or
+6. **User-facing changes update `docs/`.** A new setting, env var, feature, or
    troubleshooting scenario is documented on the matching page under `docs/`
    in the same PR. A new page must also be linked from both `docs/README.md`
    and the README's Documentation list. Don't add reference material to the
    README itself; it is the landing page only.
-6. **No build artifacts.** `streamnzb`, `streamnzb.exe`, `*.log`,
+7. **No build artifacts.** `streamnzb`, `streamnzb.exe`, `*.log`,
    `streamnzb.db*`, `frontend/dist/`, `pkg/server/web/static/`, `config.json`
    and the ffprobe binaries are all gitignored. Check `git status` before
    committing a large change.
-7. **Reuse before writing.** Search for an existing helper, component, or hook
+8. **Reuse before writing.** Search for an existing helper, component, or hook
    before adding one, and extend it rather than adding a parallel copy. The
    skill has a table of the helpers most often re-implemented by accident.
 

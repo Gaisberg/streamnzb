@@ -8,7 +8,7 @@ See CONTRIBUTING.md for the full requirements.
 
 ## What changed and why
 
-<!-- What was broken or missing, and what this does about it. Link the issue if there is one. -->
+<!-- What was broken or missing, and what this does about it. Link the issue as `Refs #123` — not `Fixes`/`Closes`, which would close it before the fix is released. -->
 
 ## How it was verified
 
@@ -18,6 +18,7 @@ See CONTRIBUTING.md for the full requirements.
 
 - [ ] `bash build.sh` (or `build.bat`) finishes with `Build Complete!`
 - [ ] Title is a Conventional Commit (`type(scope): behavior change`)
+- [ ] Issues referenced with `Refs #N`, not `Closes`/`Fixes`
 - [ ] One change per PR; no unrelated formatting or drive-by edits
 - [ ] New behavior has a test; a bug fix has a test that failed before the fix
 - [ ] User-facing changes are documented under `docs/` (and a new page is linked from `docs/README.md` and the README)
