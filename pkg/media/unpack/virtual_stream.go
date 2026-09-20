@@ -342,14 +342,13 @@ type EncryptedVirtualStream struct {
 	block    cipher.Block
 	blockErr error
 
-	// nextIV is the last ciphertext block of the previous read: the CBC IV for
-	// a read starting at nextIVEnd. Sequential playback always does, so the
-	// steady state never seeks backwards for an IV — that backward seek reset
-	// the underlying SegmentReader's read-ahead on every single Read, which
-	// held encrypted releases to roughly a serial fetch.
-	nextIV     [aesBlockSize]byte
-	haveNextIV bool
-	nextIVEnd  int64
+	// tail is the trailing ciphertext of the previous read, carried forward so
+	// the next one neither fetches its IV nor re-fetches the block it overlaps
+	// by. Sequential playback then reads straight on from where the source was
+	// left, and never seeks backwards — that backward seek reset the underlying
+	// SegmentReader's read-ahead on every single Read, which held encrypted
+	// releases to roughly a serial fetch.
+	tail cipherTail
 }
 
 const aesBlockSize = 16
@@ -374,6 +373,45 @@ func NewEncryptedVirtualStream(
 	}
 	s.block, s.blockErr = aes.NewCipher(aesKey)
 	return s
+}
+
+// cipherTail is the last blocks ciphertext blocks of a read, ending at end.
+//
+// It holds two blocks rather than one because an unaligned read overlaps its
+// predecessor. A read of n bytes from plaintext offset off covers
+// [align_down(off), align_up(off+n)), so the next read starts one block inside
+// the tail instead of at its end: its IV is the second-to-last block, and its
+// first block is the last one. A single block only ever matched the aligned
+// case, which a player opening "bytes=7570-" never produces — 78 of the 84
+// ranges in the log that found this were unaligned, and between them they
+// seeked backwards 11,028 times for bytes already in hand.
+type cipherTail struct {
+	buf    [2 * aesBlockSize]byte
+	blocks int
+	end    int64
+}
+
+func (t cipherTail) start() int64 { return t.end - int64(t.blocks)*aesBlockSize }
+
+// iv returns the CBC IV for a read starting at alignedStart — the ciphertext
+// block immediately before it — or nil when the tail does not reach it.
+func (t cipherTail) iv(alignedStart int64) []byte {
+	ivStart := alignedStart - aesBlockSize
+	if t.blocks == 0 || ivStart < t.start() || ivStart+aesBlockSize > t.end {
+		return nil
+	}
+	iv := make([]byte, aesBlockSize)
+	copy(iv, t.buf[ivStart-t.start():])
+	return iv
+}
+
+// copyInto fills the front of dst, which holds ciphertext from alignedStart
+// onwards, with what the tail already has, and reports how many bytes it wrote.
+func (t cipherTail) copyInto(dst []byte, alignedStart int64) int64 {
+	if t.blocks == 0 || alignedStart < t.start() || alignedStart >= t.end {
+		return 0
+	}
+	return int64(copy(dst, t.buf[alignedStart-t.start():t.end-t.start()]))
 }
 
 func (s *EncryptedVirtualStream) Read(p []byte) (int, error) {
@@ -413,12 +451,12 @@ func (s *EncryptedVirtualStream) Read(p []byte) (int, error) {
 	}
 
 	block, blockErr := s.block, s.blockErr
+	tail := s.tail
 	var iv []byte
-	switch {
-	case alignedStart == 0:
+	if alignedStart == 0 {
 		iv = append(iv, s.aesIV...)
-	case s.haveNextIV && s.nextIVEnd == alignedStart:
-		iv = append(iv, s.nextIV[:]...)
+	} else {
+		iv = tail.iv(alignedStart)
 	}
 
 	expectedOffset := s.offset
@@ -446,19 +484,27 @@ func (s *EncryptedVirtualStream) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	ciphertext := make([]byte, cipherLen)
-	if _, err := s.source.Seek(alignedStart, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("seek to ciphertext offset %d: %w", alignedStart, err)
-	}
-	if _, err := io.ReadFull(s.source, ciphertext); err != nil {
-		return 0, fmt.Errorf("read ciphertext at offset %d: %w", alignedStart, err)
+	fetchFrom := alignedStart + tail.copyInto(ciphertext, alignedStart)
+	if fetchFrom < alignedEnd {
+		if _, err := s.source.Seek(fetchFrom, io.SeekStart); err != nil {
+			return 0, fmt.Errorf("seek to ciphertext offset %d: %w", fetchFrom, err)
+		}
+		if _, err := io.ReadFull(s.source, ciphertext[fetchFrom-alignedStart:]); err != nil {
+			return 0, fmt.Errorf("read ciphertext at offset %d: %w", fetchFrom, err)
+		}
 	}
 
 	// 3. Decrypt ciphertext (no lock held), saving the final ciphertext block
 	// first — CryptBlocks decrypts in place, and that block is the next read's IV.
 	decryptLen := (cipherLen / aesBlockSize) * aesBlockSize
-	var lastCipherBlock [aesBlockSize]byte
+	var newTail cipherTail
 	if decryptLen > 0 {
-		copy(lastCipherBlock[:], ciphertext[decryptLen-aesBlockSize:decryptLen])
+		newTail.blocks = 2
+		if decryptLen < 2*aesBlockSize {
+			newTail.blocks = 1
+		}
+		newTail.end = alignedStart + decryptLen
+		copy(newTail.buf[:], ciphertext[decryptLen-int64(newTail.blocks)*aesBlockSize:decryptLen])
 		mode := cipher.NewCBCDecrypter(block, iv)
 		mode.CryptBlocks(ciphertext[:decryptLen], ciphertext[:decryptLen])
 	}
@@ -473,10 +519,8 @@ func (s *EncryptedVirtualStream) Read(p []byte) (int, error) {
 		return 0, fmt.Errorf("encrypted virtual stream: concurrent seek or read detected")
 	}
 
-	if decryptLen > 0 {
-		s.nextIV = lastCipherBlock
-		s.nextIVEnd = alignedStart + decryptLen
-		s.haveNextIV = true
+	if newTail.blocks > 0 {
+		s.tail = newTail
 	}
 
 	// 4. Copy to user buffer

@@ -387,3 +387,105 @@ func TestVirtualStreamKeepsVolumeReaderAcrossServeContentSeeks(t *testing.T) {
 		}
 	}
 }
+
+// ivSeekCountingFile counts backward seeks on the volume reader it hands out.
+type ivSeekCountingFile struct {
+	*seekableMemoryUnpackableFile
+	backwardSeeks int
+}
+
+func (f *ivSeekCountingFile) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
+	r, err := f.seekableMemoryUnpackableFile.OpenReaderAt(ctx, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &ivSeekCountingReader{ReadSeekCloser: r.(io.ReadSeekCloser), file: f}, nil
+}
+
+type ivSeekCountingReader struct {
+	io.ReadSeekCloser
+	file *ivSeekCountingFile
+}
+
+func (r *ivSeekCountingReader) Seek(offset int64, whence int) (int64, error) {
+	at, err := r.ReadSeekCloser.Seek(0, io.SeekCurrent)
+	if err == nil && whence == io.SeekStart && offset < at {
+		r.file.backwardSeeks++
+	}
+	return r.ReadSeekCloser.Seek(offset, whence)
+}
+
+// The CBC IV for a read is the ciphertext block before it, and an unaligned
+// read also overlaps its predecessor by a block. Both are bytes the previous
+// read already had, so both are carried forward — otherwise every single Read
+// seeks backwards over the network for them, and across a volume boundary that
+// backward seek lands in the previous volume and resets its read-ahead. The
+// carry only ever worked while the plaintext offset stayed block-aligned, and
+// a player opening "bytes=7570-" never produces one.
+func TestEncryptedVirtualStreamCarriesIVAcrossUnalignedReads(t *testing.T) {
+	plaintext := make([]byte, 64<<10)
+	for i := range plaintext {
+		plaintext[i] = byte(i * 7)
+	}
+	key := []byte("0123456789abcdef0123456789abcdef")
+	iv := []byte("fedcba9876543210")
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	ciphertext := make([]byte, len(plaintext))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, plaintext)
+
+	// Three volumes, so the reads cross boundaries the way playback does.
+	bounds := []int64{0, 21 << 10, 43 << 10, int64(len(ciphertext))}
+	vols := make([]*ivSeekCountingFile, len(bounds)-1)
+	parts := make([]virtualPart, len(vols))
+	for i := range vols {
+		vols[i] = &ivSeekCountingFile{seekableMemoryUnpackableFile: &seekableMemoryUnpackableFile{
+			name: "vol" + string(rune('1'+i)),
+			data: ciphertext[bounds[i]:bounds[i+1]],
+		}}
+		parts[i] = virtualPart{
+			VirtualStart: bounds[i],
+			VirtualEnd:   bounds[i+1],
+			VolFile:      vols[i],
+			AesKey:       key,
+			AesIV:        iv,
+		}
+	}
+
+	stream := NewEncryptedVirtualStream(context.Background(), parts,
+		int64(len(plaintext)), int64(len(ciphertext)), key, iv, 0)
+	defer stream.Close()
+
+	// An unaligned start read in an unaligned size, so no read ever lands on a
+	// block boundary — the case the single-block carry always missed.
+	const start = 7570
+	if _, err := stream.Seek(start, io.SeekStart); err != nil {
+		t.Fatalf("Seek to %d: %v", start, err)
+	}
+	got := make([]byte, 0, len(plaintext)-start)
+	buf := make([]byte, 100)
+	for len(got) < len(plaintext)-start {
+		n, err := stream.Read(buf)
+		got = append(got, buf[:n]...)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read at %d: %v", start+len(got), err)
+		}
+	}
+	if !bytes.Equal(got, plaintext[start:]) {
+		t.Fatalf("decrypted output mismatch reading from unaligned offset %d", start)
+	}
+
+	// The first read of each volume has no carried tail reaching into it, so it
+	// may look back once; every read after it is served from the carry.
+	for i, v := range vols {
+		if v.backwardSeeks > 1 {
+			t.Errorf("volume %d reader saw %d backward seeks, want at most 1 — the ciphertext tail is not being carried across unaligned reads", i, v.backwardSeeks)
+		}
+	}
+}
