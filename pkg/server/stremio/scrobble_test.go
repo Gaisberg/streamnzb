@@ -168,17 +168,37 @@ func TestServedProgressBookkeeping(t *testing.T) {
 	if pct := sess.ServedProgressPercent(); pct != 0 {
 		t.Fatalf("fresh session progress = %v", pct)
 	}
-	sess.NoteServedWindow(440, 1000)
-	sess.NoteServedWindow(200, 1000) // an earlier offset never lowers the mark
+	// A player resuming at a range start is credited that position outright;
+	// how far past it the serve buffered is bounded by how long it ran.
+	sess.NoteServedWindow(session.ServeWindow{StartOffset: 440, MaxOffset: 900, TotalSize: 1000})
+	sess.NoteServedWindow(session.ServeWindow{StartOffset: 200, MaxOffset: 300, TotalSize: 1000}) // an earlier offset never lowers the mark
 	if pct := sess.ServedProgressPercent(); pct != 44 {
 		t.Fatalf("progress = %v, want 44", pct)
 	}
-	sess.NoteServedWindow(2000, 1000) // clamped
+	sess.NoteServedWindow(session.ServeWindow{StartOffset: 2000, MaxOffset: 2000, TotalSize: 1000}) // clamped
 	if pct := sess.ServedProgressPercent(); pct != 100 {
 		t.Fatalf("clamped progress = %v, want 100", pct)
 	}
 	sess.SetLastReportedProgress(44.5)
 	if got := sess.LastReportedProgress(); got != 44.5 {
 		t.Fatalf("reported progress = %v, want 44.5", got)
+	}
+}
+
+// A client that opens "bytes=0-" and buffers the whole file in milliseconds
+// reached the end of the transfer, not the end of the film: crediting the
+// furthest byte delivered used to report it as 100% watched (#341).
+func TestServedProgressIgnoresFastBufferedTransfer(t *testing.T) {
+	const size = 8 << 20
+	sess := &session.Session{}
+	sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: size, TotalSize: size, Elapsed: 5 * time.Millisecond})
+	if pct := sess.ServedProgressPercent(); pct >= 1 {
+		t.Fatalf("progress after a 5ms full-file transfer = %v, want under 1", pct)
+	}
+
+	// The same bytes with the wall clock a real viewing would take do count.
+	sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: size, TotalSize: size, Elapsed: 90 * time.Minute})
+	if pct := sess.ServedProgressPercent(); pct != 100 {
+		t.Fatalf("progress after a 90m full-file serve = %v, want 100", pct)
 	}
 }

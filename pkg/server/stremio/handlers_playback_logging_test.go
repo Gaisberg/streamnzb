@@ -287,7 +287,10 @@ func TestClassifyProbeLikeServeDetectsSmallTailEOFProbe(t *testing.T) {
 	}
 }
 
-func TestClassifyProbeLikeServeDoesNotClassifySmallTailReadWithoutEOF(t *testing.T) {
+// http.ServeContent copies an exact byte count, so the read finishing a
+// tail-to-EOF range need not return io.EOF — a probe the classifier used to
+// let through as playback, and credit as watched to the end (#341).
+func TestClassifyProbeLikeServeDetectsSmallTailReadWithoutEOF(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/play/test", nil)
 
 	probeLike, reason := classifyProbeLikeServe(
@@ -299,7 +302,29 @@ func TestClassifyProbeLikeServeDoesNotClassifySmallTailReadWithoutEOF(t *testing
 		"",
 	)
 
+	if !probeLike {
+		t.Fatal("expected small near-EOF request to be classified as probe-like without an observed EOF")
+	}
+	if reason != "tail_small_eof_probe" {
+		t.Fatalf("expected tail_small_eof_probe reason, got %q", reason)
+	}
+}
+
+// A near-EOF range is only a probe while it stays small: a player that reopens
+// close to the end and keeps reading past the probe window is playing.
+func TestClassifyProbeLikeServeDoesNotClassifyLargeTailRead(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/play/test", nil)
+
+	probeLike, reason := classifyProbeLikeServe(
+		req,
+		12554040792,
+		"bytes=12553119192-",
+		bufferedResponseSnapshot{BytesWritten: 900 << 10},
+		streamMonitorSnapshot{BytesRead: 900 << 10},
+		"",
+	)
+
 	if probeLike {
-		t.Fatalf("expected small near-EOF request without EOF to remain playback, got reason %q", reason)
+		t.Fatalf("expected a large near-EOF read to remain playback, got reason %q", reason)
 	}
 }

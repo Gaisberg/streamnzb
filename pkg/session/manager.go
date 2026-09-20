@@ -525,22 +525,109 @@ func (s *Session) AddBytesRead(n int64) {
 	}
 }
 
-// NoteServedWindow folds one finished serve into the watched high-water mark:
-// the furthest byte offset actually delivered to the client, and the size of
-// the file those offsets index into. Callers only report real playback serves
-// — probe-like requests (players sampling the file tail for the moov atom)
-// would otherwise read as "watched to the end".
-func (s *Session) NoteServedWindow(maxOffset, totalSize int64) {
-	if s == nil || maxOffset <= 0 || totalSize <= 0 {
+// ServeWindow describes one finished playback serve to the watched-progress
+// bookkeeping below.
+type ServeWindow struct {
+	// StartOffset is the first byte the client asked for, which is where its
+	// player resumed playing from. 0 when the request carried no usable range.
+	StartOffset int64
+	// MaxOffset is the furthest byte the serve delivered, which is where the
+	// client's buffer reached — not necessarily where it played to.
+	MaxOffset int64
+	// TotalSize is the size of the file both offsets index into.
+	TotalSize int64
+	// Elapsed is how long the serve stayed open.
+	Elapsed time.Duration
+}
+
+// maxPlaybackBytesPerSecond bounds how fast content can plausibly be played
+// when its runtime is unknown. Nothing streamed here is a 100 Mbit/s video, so
+// a serve open for t seconds cannot have played more than this many bytes.
+const maxPlaybackBytesPerSecond = 100_000_000 / 8
+
+// playbackRateSlack is the headroom the byte-per-second bound gets for
+// variable bitrate: a high-bitrate stretch advances through the file faster
+// than the title's average rate, and crediting only the average would leave
+// the resume position drifting behind where the player actually is.
+const playbackRateSlack = 1.25
+
+// creditedServeOffset is the furthest byte position a serve proves playback
+// reached. What the serve actually proves is that the player resumed at the
+// range start and then held the request open for so long, so the position is
+// the range start plus what could have been played in that time — never past
+// the bytes the serve delivered. durationSec is the title's runtime, 0 when
+// unknown, in which case the ceiling above stands in for its bitrate.
+func creditedServeOffset(w ServeWindow, durationSec float64) int64 {
+	bytesPerSecond := float64(maxPlaybackBytesPerSecond)
+	if durationSec > 0 {
+		if rate := float64(w.TotalSize) / durationSec; rate < bytesPerSecond {
+			bytesPerSecond = rate
+		}
+	}
+	credited := float64(w.StartOffset)
+	if w.Elapsed > 0 {
+		credited += w.Elapsed.Seconds() * bytesPerSecond * playbackRateSlack
+	}
+	if credited >= float64(w.MaxOffset) {
+		return w.MaxOffset
+	}
+	if credited < 0 {
+		return 0
+	}
+	return int64(credited)
+}
+
+// NoteServedWindow folds one finished serve into the watched high-water mark.
+//
+// The mark is a playback position, which is not the same thing as the furthest
+// byte delivered: a player handed an open-ended range fills its buffer as fast
+// as the connection allows, so a few milliseconds of transfer can reach the end
+// of the file without a frame having been watched. The serve is therefore
+// credited only as far as its elapsed time could have carried playback from its
+// range start (see creditedServeOffset).
+//
+// Callers only report real playback serves — probe-like requests (players
+// sampling the file tail for the moov atom) would otherwise read as "watched to
+// the end".
+func (s *Session) NoteServedWindow(w ServeWindow) {
+	if s == nil || w.MaxOffset <= 0 || w.TotalSize <= 0 {
 		return
 	}
-	s.servedTotal.Store(totalSize)
+	s.servedTotal.Store(w.TotalSize)
+	credited := creditedServeOffset(w, s.MediaDurationSeconds())
+	if credited <= 0 {
+		return
+	}
 	for {
 		current := s.servedHighWater.Load()
-		if maxOffset <= current || s.servedHighWater.CompareAndSwap(current, maxOffset) {
+		if credited <= current || s.servedHighWater.CompareAndSwap(current, credited) {
 			return
 		}
 	}
+}
+
+// MediaDurationSeconds reports the runtime of the file being played: the
+// ffprobe measurement when the release was probed, the duration the container
+// header declared otherwise, and 0 when neither saw one.
+func (s *Session) MediaDurationSeconds() float64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	caps := s.mediaCaps
+	var startupInfo seek.StreamStartInfo
+	if s.playback != nil {
+		startupInfo = s.playback.startupInfo
+	}
+	s.mu.Unlock()
+
+	if caps != nil && caps.DurationSeconds > 0 {
+		return caps.DurationSeconds
+	}
+	if startupInfo.DurationKnown && startupInfo.DurationSec > 0 {
+		return startupInfo.DurationSec
+	}
+	return 0
 }
 
 // ServedProgressPercent reports the watched high-water mark as 0–100, or 0

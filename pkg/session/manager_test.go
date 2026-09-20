@@ -1295,3 +1295,86 @@ func TestSessionsDoNotShareASegmentSizeEstimator(t *testing.T) {
 		t.Fatalf("second session inherited %d for a class it never measured", decoded)
 	}
 }
+
+// A serve is credited from where the player resumed, plus what its runtime
+// says could have been played while the request was open — never the whole
+// buffered transfer (#341).
+func TestCreditedServeOffsetBoundsBufferedBytesByTime(t *testing.T) {
+	const size = 8 << 30 // 8 GiB
+	const runtime = 7200 // a two-hour film
+
+	// What a second of playback advances through the file, plus the VBR slack.
+	perSecond := float64(size) / runtime * playbackRateSlack
+
+	cases := []struct {
+		name        string
+		window      ServeWindow
+		durationSec float64
+		want        int64
+	}{
+		{
+			name:        "an instant full-file transfer credits almost nothing",
+			window:      ServeWindow{MaxOffset: size, TotalSize: size, Elapsed: 5 * time.Millisecond},
+			durationSec: runtime,
+			want:        int64(0.005 * perSecond),
+		},
+		{
+			name:        "an hour of a two-hour film credits about half",
+			window:      ServeWindow{MaxOffset: size, TotalSize: size, Elapsed: time.Hour},
+			durationSec: runtime,
+			want:        int64(3600 * perSecond),
+		},
+		{
+			name:        "a seek is credited its range start outright",
+			window:      ServeWindow{StartOffset: size / 2, MaxOffset: size, TotalSize: size},
+			durationSec: runtime,
+			want:        size / 2,
+		},
+		{
+			name:        "credit never runs past the bytes delivered",
+			window:      ServeWindow{MaxOffset: size / 4, TotalSize: size, Elapsed: time.Hour},
+			durationSec: runtime,
+			want:        size / 4,
+		},
+		{
+			name:   "an unknown runtime falls back to the bitrate ceiling",
+			window: ServeWindow{MaxOffset: size, TotalSize: size, Elapsed: time.Second},
+			want:   int64(maxPlaybackBytesPerSecond * playbackRateSlack),
+		},
+		{
+			name:        "an implausibly short runtime cannot beat the ceiling",
+			window:      ServeWindow{MaxOffset: size, TotalSize: size, Elapsed: time.Second},
+			durationSec: 1,
+			want:        int64(maxPlaybackBytesPerSecond * playbackRateSlack),
+		},
+	}
+
+	for _, tc := range cases {
+		if got := creditedServeOffset(tc.window, tc.durationSec); got != tc.want {
+			t.Errorf("%s: creditedServeOffset = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The runtime comes from the ffprobe capture when there is one and the
+// container header's own duration otherwise.
+func TestMediaDurationSecondsPrefersProbeOverHeader(t *testing.T) {
+	s := &Session{}
+	if got := s.MediaDurationSeconds(); got != 0 {
+		t.Fatalf("unprobed session duration = %v, want 0", got)
+	}
+
+	s.CachePlaybackStreamSnapshot(
+		PlaybackStreamSpec{Key: "k", Name: "f.mkv", Size: 100},
+		seek.StreamStartInfo{HeaderValid: true, DurationSec: 120, DurationKnown: true},
+		true,
+	)
+	if got := s.MediaDurationSeconds(); got != 120 {
+		t.Fatalf("header duration = %v, want 120", got)
+	}
+
+	s.SetMediaCapabilities(&MediaCapabilities{DurationSeconds: 130})
+	if got := s.MediaDurationSeconds(); got != 130 {
+		t.Fatalf("probed duration = %v, want 130", got)
+	}
+}

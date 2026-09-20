@@ -275,8 +275,13 @@ func classifyProbeLikeServe(r *http.Request, size int64, effectiveRange string, 
 	if r.Method == http.MethodHead {
 		return true, "head_request"
 	}
-	isNearEOFEofRequest := streamStats.SawEOF && isNearEOFRange(effectiveRange, size)
-	if isNearEOFEofRequest {
+	// A request starting within the last megabyte of the file is a player
+	// sampling the container tail, not playback — at most a few seconds of
+	// video sits in that window. The classification cannot wait for the reader
+	// to report io.EOF: http.ServeContent copies an exact byte count, so the
+	// read that finishes the request need not return one, and gating on it let
+	// real tail probes fold into watched progress.
+	if isNearEOFRange(effectiveRange, size) {
 		if responseStats.BytesWritten == 0 && streamStats.BytesRead == 0 {
 			return true, "tail_eof_probe"
 		}
@@ -286,9 +291,6 @@ func classifyProbeLikeServe(r *http.Request, size int64, effectiveRange string, 
 	}
 	if responseStats.BytesWritten != 0 || streamStats.BytesRead != 0 {
 		return false, ""
-	}
-	if isNearEOFEofRequest {
-		return true, "tail_eof_probe"
 	}
 	if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded) || closeReason == "playback canceled" {
 		return true, "empty_canceled_request"

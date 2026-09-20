@@ -191,10 +191,18 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 		probeLikeServe, probeLikeServeReason := classifyProbeLikeServe(r, resolved.size, effectiveRange, responseStats, streamStats, closeReasonText)
 		if !probeLikeServe {
 			// Watched-progress signal for scrobbling: how far into the file
-			// this serve actually delivered. Probe-like serves are excluded —
-			// a player sampling the tail for the moov atom would otherwise
-			// read as "watched to the end".
-			sess.NoteServedWindow(streamStats.MaxPos, resolved.size)
+			// this serve proves playback reached. Probe-like serves are
+			// excluded — a player sampling the tail for the moov atom would
+			// otherwise read as "watched to the end" — and what is left is
+			// bounded by the time the serve was open, because a buffering
+			// client transfers bytes far faster than it plays them.
+			rangeStart, _ := parseRangeStart(effectiveRange)
+			sess.NoteServedWindow(session.ServeWindow{
+				StartOffset: rangeStart,
+				MaxOffset:   streamStats.MaxPos,
+				TotalSize:   resolved.size,
+				Elapsed:     time.Since(serveStartedAt),
+			})
 		}
 
 		logger.Debug("Finished serving media",
