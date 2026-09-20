@@ -1,5 +1,14 @@
 # Changelog
 
+## [6.2.1](https://github.com/Gaisberg/streamnzb/compare/v6.2.0...v6.2.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **stremio:** credit watched progress by playback time, not bytes served ([db548b7](https://github.com/Gaisberg/streamnzb/commit/db548b7e1fd318bbfed4e6dc1463f235986c74f0)), closes [#341](https://github.com/Gaisberg/streamnzb/issues/341)
+* **unpack:** carry the ciphertext tail across unaligned encrypted reads ([242a9c5](https://github.com/Gaisberg/streamnzb/commit/242a9c5dd5a411ab8bec76418b0b52e1a0ca07f4))
+* **unpack:** keep the volume reader across a range request's seek probes ([aea97dc](https://github.com/Gaisberg/streamnzb/commit/aea97dc676d790a57b77cba14904c2fb9d9c6ed0)), closes [#340](https://github.com/Gaisberg/streamnzb/issues/340)
+
 ## [6.2.0](https://github.com/Gaisberg/streamnzb/compare/v6.1.0...v6.2.0) (2026-09-16)
 
 
