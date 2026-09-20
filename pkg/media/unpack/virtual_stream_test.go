@@ -309,3 +309,81 @@ func TestVirtualStreamAbsoluteSeekInsideSamePart(t *testing.T) {
 		t.Fatalf("expected cdefg, got %s", string(buf))
 	}
 }
+
+// countingVolumeFile records how many times a volume reader is opened.
+type countingVolumeFile struct {
+	*seekableMemoryUnpackableFile
+	opens int
+}
+
+func (f *countingVolumeFile) OpenReaderAt(ctx context.Context, offset int64) (io.ReadCloser, error) {
+	f.opens++
+	return f.seekableMemoryUnpackableFile.OpenReaderAt(ctx, offset)
+}
+
+// Every range request reaches the stream as the same seek dance: the handler
+// primes the first byte of the range, rewinds, and then ServeContent measures
+// the content by seeking to EOF and back before seeking to the range start.
+// Across volumes those detours all land in the first part, so closing the
+// volume reader on a seek re-opened the one the prime read had just warmed and
+// cancelled the read-ahead it had in flight — the whole cost of a reconnect,
+// paid twice.
+func TestVirtualStreamKeepsVolumeReaderAcrossServeContentSeeks(t *testing.T) {
+	data := []byte("abcdefghijklmnopqrstuvwxyzABCD")
+	vols := make([]*countingVolumeFile, 3)
+	parts := make([]virtualPart, len(vols))
+	for i := range vols {
+		start := int64(i * 10)
+		vols[i] = &countingVolumeFile{seekableMemoryUnpackableFile: &seekableMemoryUnpackableFile{
+			name: "part" + string(rune('1'+i)),
+			data: data[start : start+10],
+		}}
+		parts[i] = virtualPart{VirtualStart: start, VirtualEnd: start + 10, VolFile: vols[i]}
+	}
+	stream := NewVirtualStream(context.Background(), parts, int64(len(data)), 0)
+	defer stream.Close()
+
+	const rangeStart = 22
+
+	// primeRangeStart: first byte of the range, then rewind.
+	if _, err := stream.Seek(rangeStart, io.SeekStart); err != nil {
+		t.Fatalf("seek to range start: %v", err)
+	}
+	var probe [1]byte
+	if _, err := stream.Read(probe[:]); err != nil {
+		t.Fatalf("prime read: %v", err)
+	}
+	if probe[0] != data[rangeStart] {
+		t.Fatalf("prime read = %q, want %q", probe[0], data[rangeStart])
+	}
+	if _, err := stream.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind after prime: %v", err)
+	}
+
+	// http.ServeContent: size the content, rewind, then serve the range.
+	for _, seek := range []struct {
+		offset int64
+		whence int
+	}{{0, io.SeekEnd}, {0, io.SeekStart}, {rangeStart, io.SeekStart}} {
+		if _, err := stream.Seek(seek.offset, seek.whence); err != nil {
+			t.Fatalf("ServeContent seek(%d, %d): %v", seek.offset, seek.whence, err)
+		}
+	}
+
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(got) != string(data[rangeStart:]) {
+		t.Fatalf("served %q, want %q", got, data[rangeStart:])
+	}
+
+	if vols[2].opens != 1 {
+		t.Errorf("volume holding the range start opened %d times, want 1", vols[2].opens)
+	}
+	for i, v := range vols[:2] {
+		if v.opens != 0 {
+			t.Errorf("volume %d opened %d times, want 0 — no seek detour reads from it", i, v.opens)
+		}
+	}
+}

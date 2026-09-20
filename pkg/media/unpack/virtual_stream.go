@@ -32,6 +32,10 @@ type VirtualStream struct {
 	currentReader io.ReadCloser
 	currentPart   int
 	closed        bool
+	// readerOffset is the virtual offset currentReader is positioned at, which
+	// is only the same as offset until a Seek moves the read pointer without
+	// touching the reader. ensureReader closes the gap on the next Read.
+	readerOffset int64
 	// prefetchedPart is the last part index handed to prefetchPart, so the
 	// approach to a boundary warms the next volume exactly once instead of on
 	// every Read inside the margin.
@@ -132,6 +136,7 @@ func (s *VirtualStream) Read(p []byte) (int, error) {
 		}
 
 		s.offset += int64(n)
+		s.readerOffset = s.offset
 
 		if err == io.EOF {
 			if s.currentReader == reader {
@@ -196,25 +201,16 @@ func (s *VirtualStream) Seek(offset int64, whence int) (int64, error) {
 
 	logger.Debug("VirtualStream Seek", "offset", offset, "whence", whence, "target", target, "currentOffset", s.offset)
 
-	if target == s.offset {
-		return target, nil
-	}
-
-	part, partIdx := s.findPart(target)
-	if part != nil && s.currentReader != nil && s.currentPart == partIdx {
-		localOff := target - part.VirtualStart
-		volOff := part.VolOffset + localOff
-
-		if seeker, ok := s.currentReader.(io.Seeker); ok {
-			_, err := seeker.Seek(volOff, io.SeekStart)
-			if err == nil {
-				s.offset = target
-				return target, nil
-			}
-		}
-	}
-
-	s.closeReader()
+	// Moving the read pointer is all a seek does. The reader is left exactly as
+	// it is, and ensureReader repositions or replaces it on the next Read.
+	//
+	// Tearing it down here instead threw away a warm-up nobody had used yet:
+	// every range request arrives as prime the first byte, then ServeContent
+	// seeks to EOF, back to 0, and finally to the range start, so a reader
+	// opened for the prime read was closed and re-opened at the same offset
+	// with its in-flight read-ahead cancelled in between. On a multi-volume RAR
+	// that is the whole cost of a reconnect, paid twice over, and SegmentReader
+	// already declines to cancel on a seek for the same reason.
 	s.offset = target
 	return target, nil
 }
@@ -252,7 +248,20 @@ func (s *VirtualStream) findPart(offset int64) (*virtualPart, int) {
 
 func (s *VirtualStream) ensureReader(part *virtualPart, partIdx int) error {
 	if s.currentReader != nil && s.currentPart == partIdx {
-		return nil
+		if s.readerOffset == s.offset {
+			return nil
+		}
+		// A seek moved the pointer inside the part this reader already covers.
+		// Repositioning beats re-opening: a SegmentReader that lands back in
+		// its current segment keeps the decoded bytes and the read-ahead window
+		// it has in flight, which a fresh reader would have to fetch again.
+		if seeker, ok := s.currentReader.(io.Seeker); ok {
+			volOff := part.VolOffset + (s.offset - part.VirtualStart)
+			if _, err := seeker.Seek(volOff, io.SeekStart); err == nil {
+				s.readerOffset = s.offset
+				return nil
+			}
+		}
 	}
 
 	logger.Debug("VirtualStream ensureReader: entering", "partIdx", partIdx, "volName", part.VolFile.Name(), "offset", s.offset)
@@ -288,6 +297,7 @@ func (s *VirtualStream) ensureReader(part *virtualPart, partIdx int) error {
 
 	s.currentReader = r
 	s.currentPart = partIdx
+	s.readerOffset = s.offset
 	return nil
 }
 
