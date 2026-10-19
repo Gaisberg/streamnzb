@@ -267,7 +267,7 @@ func ConfigChanged(old, new_ *config.Config) ReloadScope {
 		// when an indexer sets no proxy of its own). Diffing only the indexer
 		// list would leave the running clients on their old transports until
 		// a restart, so changing it counts as an indexer change.
-		Indexers: !reflect.DeepEqual(old.Indexers, new_.Indexers) ||
+		Indexers: !reflect.DeepEqual(config.RuntimeIndexers(old.Indexers), config.RuntimeIndexers(new_.Indexers)) ||
 			old.IndexerProxyURL != new_.IndexerProxyURL,
 		Providers: !reflect.DeepEqual(old.Providers, new_.Providers),
 		Proxy: old.ProxyHost != new_.ProxyHost ||

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/dreulavelle/jhin/rank"
@@ -688,6 +689,73 @@ func TestValidateConfigWithPlanIndexerProxyChecksIndexerConnection(t *testing.T)
 	}
 	if got := errs["indexers.0.proxy_url"]; got != "" {
 		t.Fatalf("expected no standalone proxy reachability error, got %q", got)
+	}
+}
+
+func TestValidateConfigRejectsMalformedIndexerSubscriptionExpiry(t *testing.T) {
+	disabled := false
+	s := &Server{}
+	cfg := &config.Config{
+		Indexers: []config.IndexerConfig{
+			{Enabled: &disabled, Name: "Bad", URL: "https://a.example", SubscriptionExpiresAt: "15/03/2027"},
+			{Enabled: &disabled, Name: "Good", URL: "https://b.example", SubscriptionExpiresAt: "2027-03-15"},
+			{Enabled: &disabled, Name: "None", URL: "https://c.example"},
+		},
+	}
+
+	errs := s.validateConfigWithPlan(cfg, configValidationPlan{validateIndexers: true})
+	if got := errs["indexers.0.subscription_expires_at"]; got == "" {
+		t.Fatalf("expected a malformed expiry to be rejected even on a disabled indexer, got %#v", errs)
+	}
+	if got := errs["indexers.1.subscription_expires_at"]; got != "" {
+		t.Fatalf("expected a valid expiry to pass, got %q", got)
+	}
+	if got := errs["indexers.2.subscription_expires_at"]; got != "" {
+		t.Fatalf("expected an absent expiry to pass, got %q", got)
+	}
+}
+
+// The expiry is a note for the UI. Editing only it must not spend an API hit
+// on a ping, nor fail the save because the indexer is down right now — but a
+// malformed date is still refused.
+func TestValidateConfigSubscriptionExpiryEditDoesNotPingIndexer(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	enabled := true
+	s := &Server{}
+	indexer := func(expiry string) config.IndexerConfig {
+		return config.IndexerConfig{Enabled: &enabled, Name: "Paid", URL: server.URL, APIKey: "k", SubscriptionExpiresAt: expiry}
+	}
+	current := &config.Config{Indexers: []config.IndexerConfig{indexer("2027-03-15")}}
+
+	for _, tc := range []struct {
+		expiry  string
+		wantErr bool
+	}{
+		{"2028-03-15", false},
+		{"", false},
+		{"15/03/2028", true},
+	} {
+		next := &config.Config{Indexers: []config.IndexerConfig{indexer(tc.expiry)}}
+		body, err := json.Marshal(map[string]interface{}{"indexers": next.Indexers})
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		errs := s.validateConfigWithPlan(next, validationPlanFromPatch(body, current, next))
+		if got := errs["indexers.0.subscription_expires_at"]; (got != "") != tc.wantErr {
+			t.Fatalf("expiry %q: error = %q, want error %v", tc.expiry, got, tc.wantErr)
+		}
+		if len(errs) > 1 || (len(errs) == 1 && !tc.wantErr) {
+			t.Fatalf("expiry %q: unexpected errors %#v", tc.expiry, errs)
+		}
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("indexer was pinged %d times for expiry-only edits", got)
 	}
 }
 

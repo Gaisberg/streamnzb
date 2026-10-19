@@ -211,7 +211,7 @@ func validationPlanFromPatch(body []byte, currentCfg, nextCfg *config.Config) co
 		if len(nextCfg.Indexers) < len(currentCfg.Indexers) {
 			plan.indexerDeletionOnly = true
 		} else {
-			plan.changedIndexerIndexes = changedIndexes(currentCfg.Indexers, nextCfg.Indexers)
+			plan.changedIndexerIndexes = changedIndexes(config.RuntimeIndexers(currentCfg.Indexers), config.RuntimeIndexers(nextCfg.Indexers))
 		}
 	}
 	if _, ok := raw["tmdb_api_key"]; ok {
@@ -863,6 +863,11 @@ func (s *Server) validateConfigWithPlan(cfg *config.Config, plan configValidatio
 
 	if plan.validateIndexers && !plan.indexerDeletionOnly {
 		for i, idx := range cfg.Indexers {
+			// The expiry is checked on every entry: it costs no request, and an
+			// edit to it alone does not mark the indexer changed below.
+			if err := config.ValidateSubscriptionExpiresAt(idx.SubscriptionExpiresAt); err != nil {
+				setErr(fmt.Sprintf("indexers.%d.subscription_expires_at", i), err.Error())
+			}
 			// Same nil-vs-empty distinction as the providers above — every ping
 			// here spends a real API hit at the indexer, so an unchanged entry
 			// must not be probed just because the patch carried the array.

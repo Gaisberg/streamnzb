@@ -343,6 +343,38 @@ type IndexerConfig struct {
 	// GrabHeader overrides the global indexer_grab_header for NZB download requests to this indexer.
 	// Some indexers (e.g. SceneNZBs) return different NZBs depending on the downloader UA; leave empty to use the global setting.
 	GrabHeader string `json:"grab_header,omitempty"`
+
+	// SubscriptionExpiresAt is the date (YYYY-MM-DD) a paid subscription runs
+	// out. Informational only: the UI shows it, nothing here acts on it.
+	SubscriptionExpiresAt string `json:"subscription_expires_at,omitempty"`
+}
+
+// RuntimeIndexers returns a copy of list with the fields that only inform the
+// UI cleared, so comparing two lists sees only what reaches an indexer
+// client. Editing a subscription date must not ping the indexer on save or
+// rebuild the running clients.
+func RuntimeIndexers(list []IndexerConfig) []IndexerConfig {
+	out := make([]IndexerConfig, len(list))
+	for i, idx := range list {
+		idx.SubscriptionExpiresAt = ""
+		out[i] = idx
+	}
+	return out
+}
+
+// SubscriptionDateLayout is the date-only format of IndexerConfig.SubscriptionExpiresAt.
+const SubscriptionDateLayout = "2006-01-02"
+
+// ValidateSubscriptionExpiresAt returns nil if raw is empty or a YYYY-MM-DD date.
+func ValidateSubscriptionExpiresAt(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if _, err := time.Parse(SubscriptionDateLayout, s); err != nil {
+		return fmt.Errorf("subscription expiry must be a date in YYYY-MM-DD format")
+	}
+	return nil
 }
 
 // ValidateIndexerProxyURL returns nil if raw is empty or a valid http(s) proxy URL.

@@ -18,6 +18,7 @@ import { UsageChips } from "@/components/UsageChips"
 import { apiFetch } from "@/api"
 import { assignedStreams } from "@/lib/usage"
 import { mapStreamsByUsername } from "@/lib/streams"
+import { subscriptionExpiryStatus } from "@/lib/subscription"
 import { AlertTriangle, Download, Plus, Settings, Trash2 } from "lucide-react"
 
 function normalizeName(value) {
@@ -87,7 +88,15 @@ function normalizeIndexerDraft(draft) {
     query_header: value.type === 'easynews' ? '' : (value.query_header || '').trim(),
     grab_header: (value.grab_header || '').trim(),
     content_scope: normalizeContentScope(value.content_scope),
+    subscription_expires_at: (value.subscription_expires_at || '').trim(),
   }
+}
+
+const SUBSCRIPTION_TONE_CLASS = {
+  ok: 'border-border',
+  warning: 'border-amber-500/50 text-amber-500',
+  urgent: 'border-destructive/50 text-destructive',
+  expired: 'border-destructive/50 text-destructive',
 }
 
 function emptyIndexerDraft() {
@@ -216,6 +225,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
         else if (path.includes('.rate_limit_rps')) nextErrors.rate_limit_rps = message
         else if (path.includes('.proxy_url')) nextErrors.proxy_url = message
         else if (path.includes('.search_results_cache_time')) nextErrors.search_results_cache_time = message
+        else if (path.includes('.subscription_expires_at')) nextErrors.subscription_expires_at = message
       })
       return nextErrors
     },
@@ -387,6 +397,23 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                     <option value="anime">Anime only</option>
                     <option value="non_anime">Everything except anime</option>
                   </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/60 p-3">
+              <div className={rowClass}>
+                <div className={labelClass}>
+                  <Label className="text-sm font-medium">Subscription expires</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">Optional reminder. Nothing is disabled when the date passes.</p>
+                </div>
+                <div className={controlWideClass}>
+                  <Input
+                    className={`h-9 ${fieldClass('subscription_expires_at')}`}
+                    type="date"
+                    value={draft.subscription_expires_at}
+                    onChange={(event) => update('subscription_expires_at', event.target.value)}
+                  />
                 </div>
               </div>
             </div>
@@ -627,6 +654,7 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
               indexers.map((indexer, index) => {
                 const normalized = normalizeIndexerDraft(indexer)
                 const summary = summarizeIndexer(normalized, defaultProxyURL)
+                const subscription = subscriptionExpiryStatus(normalized.subscription_expires_at)
                 const nameKey = (normalized.name || '').trim()
                 const healthRecord = healthFor(healthByName, 'indexer', nameKey)
                 // The dot shows exactly two synchronous facts: the switch next
@@ -697,6 +725,14 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
                               <span className={`inline-block h-2 w-2 rounded-full ${dotClass}`} />
                             </span>
                             <ComponentHealthBadge record={healthRecord} />
+                            {subscription && (
+                              <span
+                                className={`rounded-full border px-2 py-1 ${SUBSCRIPTION_TONE_CLASS[subscription.tone]}`}
+                                title={`Subscription expires ${normalized.subscription_expires_at}`}
+                              >
+                                {subscription.label}
+                              </span>
+                            )}
                             {summary.map((part) => (
                               <span key={part} className="rounded-full border border-border px-2 py-1">{part}</span>
                             ))}
