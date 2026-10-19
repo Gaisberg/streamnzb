@@ -193,14 +193,34 @@ func TestNormalizeAttemptReasonEOF(t *testing.T) {
 	}
 }
 
+// The skip reason is also what the library and the bad-release log show next
+// to a durable verdict, so it must say what was found and must not read as
+// "this proves nothing" (#350).
 func TestAvailOutcomeForFailureSegmentUnavailable(t *testing.T) {
-	got := availOutcomeForFailure(errors.New("segment unavailable: fetch segment msgid: 430 No Such Article"))
-	if got.Status != "skipped" {
-		t.Fatalf("Status = %q, want skipped", got.Status)
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "430 on every provider",
+			err:  errors.New("segment unavailable: fetch segment msgid: 430 No Such Article"),
+			want: "Articles are missing on every provider you use (430 No Such Article). Not reported to AvailNZB because providers on other backbones may still carry them.",
+		},
+		{
+			name: "article missing from the NZB",
+			err:  errors.New("segment unavailable: article missing from NZB (segment 7)"),
+			want: "This NZB has no article for part of the release. Not reported to AvailNZB because another NZB of the same release may be complete.",
+		},
 	}
-	want := "Not reported to AvailNZB because this segment fetch failure does not reliably prove the release is bad."
-	if got.Reason != want {
-		t.Fatalf("Reason = %q, want %q", got.Reason, want)
+	for _, tc := range cases {
+		got := availOutcomeForFailure(tc.err)
+		if got.Status != "skipped" {
+			t.Fatalf("%s: Status = %q, want skipped", tc.name, got.Status)
+		}
+		if got.Reason != tc.want {
+			t.Fatalf("%s: Reason = %q, want %q", tc.name, got.Reason, tc.want)
+		}
 	}
 }
 

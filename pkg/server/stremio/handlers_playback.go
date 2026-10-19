@@ -1748,8 +1748,14 @@ func availOutcomeForFailure(err error) availnzb.ReportOutcome {
 		return availnzb.SkippedOutcome("Not reported to AvailNZB because this startup timeout may be temporary and does not prove the release is bad.")
 	case isIndexerLimitErr(err):
 		return availnzb.SkippedOutcome("Not reported to AvailNZB because the failure was caused by an indexer or provider limit.")
+	// The two segment cases below are also the reason the library and the
+	// bad-release log show, so they say what was found rather than only why
+	// AvailNZB was not told: the release is unplayable here, and the local
+	// verdict stands.
+	case nntp.IsArticleNotFound(err):
+		return availnzb.SkippedOutcome("Articles are missing on every provider you use (430 No Such Article). Not reported to AvailNZB because providers on other backbones may still carry them.")
 	case isSegmentUnavailableErr(err):
-		return availnzb.SkippedOutcome("Not reported to AvailNZB because this segment fetch failure does not reliably prove the release is bad.")
+		return availnzb.SkippedOutcome("This NZB has no article for part of the release. Not reported to AvailNZB because another NZB of the same release may be complete.")
 	default:
 		return availnzb.ReportOutcome{}
 	}
