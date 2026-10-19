@@ -38,7 +38,7 @@ const INDEXER_PRESETS = [
   { name: 'abNZB', url: 'https://abnzb.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'altHUB', url: 'https://api.althub.co.za', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'aniNZB', url: 'https://aninzb.moe', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, optional_api_key: true, content_scope: 'anime' },
-  { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.org', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, content_scope: 'anime' },
+  { name: 'AnimeTosho (Usenet)', url: 'https://feed.animetosho.net', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50, optional_api_key: true, content_scope: 'anime' },
   { name: 'DOGnzb', url: 'https://api.dognzb.cr', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'DrunkenSlug', url: 'https://drunkenslug.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
   { name: 'GingaDADDY', url: 'https://www.gingadaddy.com', api_path: '/api', type: 'newznab', api_hits_day: 100, downloads_day: 50 },
