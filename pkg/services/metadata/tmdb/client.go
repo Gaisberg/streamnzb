@@ -327,6 +327,20 @@ type ListingResponse struct {
 	TotalPages int                 `json:"total_pages"`
 }
 
+// MaxListingPage is the last page TMDB serves of any paged listing: it caps
+// every listing at 10,000 results and answers a later page with 400.
+const MaxListingPage = 500
+
+// getListing fetches one page of a paged listing. A page past TMDB's cap is
+// the end of the listing, not an error, so it comes back empty without a
+// request: clients that page until a catalog runs dry reach it routinely.
+func getListing(c *Client, endpoint string, params url.Values, page int, label string) (*ListingResponse, error) {
+	if page > MaxListingPage {
+		return &ListingResponse{Page: page, Results: []SearchMultiResult{}, TotalPages: MaxListingPage}, nil
+	}
+	return getJSON[ListingResponse](c, endpoint, params, label)
+}
+
 // PublicListItem is one title visible on TMDB's public list page. TMDB's
 // documented /list endpoint currently returns an empty results array for
 // public lists despite the page containing entries, so public-list sources
@@ -830,7 +844,7 @@ func (c *Client) GetListing(mediaType, kind string, page int, lang string) (*Lis
 	default:
 		return nil, fmt.Errorf("unknown TMDB listing kind %q", kind)
 	}
-	return getJSON[ListingResponse](c, endpoint, params, "listing "+kind)
+	return getListing(c, endpoint, params, page, "listing "+kind)
 }
 
 // GetRecommendations fetches TMDB's recommendations for one title — the seed
@@ -843,7 +857,7 @@ func (c *Client) GetRecommendations(mediaType string, tmdbID, page int, lang str
 		params.Set("language", lang)
 	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/%s/%d/recommendations", mediaType, tmdbID)
-	return getJSON[ListingResponse](c, endpoint, params, "recommendations")
+	return getListing(c, endpoint, params, page, "recommendations")
 }
 
 // DiscoverFilters are the server-side filters a discover listing applies —
@@ -876,7 +890,7 @@ func (c *Client) Discover(mediaType string, filters DiscoverFilters, page int, l
 		params.Set("certification.lte", filters.MaxCert)
 	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/discover/%s", mediaType)
-	return getJSON[ListingResponse](c, endpoint, params, "discover")
+	return getListing(c, endpoint, params, page, "discover")
 }
 
 // SearchByType searches one media type ("movie" or "tv") — unlike SearchMulti,
@@ -893,7 +907,7 @@ func (c *Client) SearchByType(mediaType, query string, page int, lang string) (*
 		params.Set("language", lang)
 	}
 	endpoint := fmt.Sprintf(c.BaseURL+"/search/%s", mediaType)
-	return getJSON[ListingResponse](c, endpoint, params, "search")
+	return getListing(c, endpoint, params, page, "search")
 }
 
 func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsResponse, error) {
