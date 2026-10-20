@@ -51,6 +51,12 @@ func TestConfigChangedScopesAreIndependent(t *testing.T) {
 		t.Fatalf("indexer edit scope = %+v, want indexers only", scope)
 	}
 
+	expiryChanged := base()
+	expiryChanged.Indexers[0].SubscriptionExpiresAt = "2027-03-15"
+	if scope := ConfigChanged(base(), expiryChanged); scope.Any() {
+		t.Fatalf("subscription expiry edit scope = %+v, want empty", scope)
+	}
+
 	providerChanged := base()
 	providerChanged.Providers[0].Connections = 50
 	if scope := ConfigChanged(base(), providerChanged); !scope.Providers || scope.Indexers || scope.Proxy {

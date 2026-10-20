@@ -379,6 +379,43 @@ func TestIndexerConfigEffectiveTimeoutHonorsExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestValidateSubscriptionExpiresAt(t *testing.T) {
+	for _, ok := range []string{"", "  ", "2027-03-15", " 2027-03-15 ", "2028-02-29"} {
+		if err := ValidateSubscriptionExpiresAt(ok); err != nil {
+			t.Fatalf("expected %q to be accepted, got %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"15/03/2027", "2027-3-15", "2027-02-30", "2027-03-15T10:00:00Z", "soon"} {
+		if err := ValidateSubscriptionExpiresAt(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
+		}
+	}
+}
+
+func TestIndexerConfigSubscriptionExpiresAtIsOptionalInJSON(t *testing.T) {
+	var legacy IndexerConfig
+	if err := json.Unmarshal([]byte(`{"name":"a","url":"https://a.example"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy indexer: %v", err)
+	}
+	if legacy.SubscriptionExpiresAt != "" {
+		t.Fatalf("expected empty expiry for a config without the field, got %q", legacy.SubscriptionExpiresAt)
+	}
+	out, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "subscription_expires_at") {
+		t.Fatalf("expected an unset expiry to be omitted, got %s", out)
+	}
+	out, err = json.Marshal(IndexerConfig{Name: "a", SubscriptionExpiresAt: "2027-03-15"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"subscription_expires_at":"2027-03-15"`) {
+		t.Fatalf("expected the expiry to round-trip, got %s", out)
+	}
+}
+
 func TestValidateIndexerProxyURL(t *testing.T) {
 	if err := ValidateIndexerProxyURL(""); err != nil {
 		t.Fatal(err)

@@ -53,6 +53,12 @@ The **Check again** button on the card runs the probe from step 2 immediately, f
 
 Deleting an indexer or provider drops its health with it, and the state survives restarts — a password that changed yesterday is not rediscovered by hammering the provider on every boot.
 
+## Subscription expiry reminder
+
+Health only notices a lapsed subscription after the indexer starts refusing you. To hear about it beforehand, an indexer can carry an optional **Subscription expires** date (indexer settings, `subscription_expires_at` in the config, formatted `YYYY-MM-DD`). The indexer card then shows a chip such as *Expires in 45 days*, which turns amber at 30 days or less, red at 7 days or less, and stays red as *Expired 3 days ago* once the date has passed.
+
+It is a reminder and nothing else. Reaching the date never disables the indexer or changes how it is searched, so a subscription you renewed without updating the date keeps working. Changing only the date saves without re-checking the indexer, so it costs no API hit and works while the indexer is down. Clear the field to remove it.
+
 ## API
 
 All three endpoints are admin-only; health names which credentials are failing, which no device token should be able to read.
