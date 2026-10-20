@@ -286,15 +286,5 @@ func (s *Server) broadcastSpeedTestProgress(payload map[string]interface{}) {
 	if err != nil {
 		return
 	}
-	msg := WSMessage{Type: "speedtest_progress", Payload: encoded}
-	admin := s.adminUsername()
-
-	s.clientsMu.Lock()
-	defer s.clientsMu.Unlock()
-	for client := range s.clients {
-		if client.stream == nil || client.stream.Username != admin {
-			continue
-		}
-		trySendWS(client, msg)
-	}
+	s.broadcastAdmin(WSMessage{Type: "speedtest_progress", Payload: encoded})
 }

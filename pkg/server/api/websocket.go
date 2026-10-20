@@ -75,10 +75,17 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		// The collector's latest snapshot, not a fresh one: collecting here would
 		// advance the speed meters out of turn.
-		if payload := s.snapshotStats(); payload != nil {
-			trySendWS(client, WSMessage{Type: "stats", Payload: payload})
+		// The same per-client scoping as broadcastStats: only the admin gets
+		// the full snapshot or the log history.
+		admin := s.adminUsername()
+		if snap, payload := s.snapshotStatsPair(); snap != nil && payload != nil {
+			if scoped := statsPayloadFor(client, admin, snap, payload, nil); scoped != nil {
+				trySendWS(client, WSMessage{Type: "stats", Payload: scoped})
+			}
 		}
-		s.sendLogHistory(client)
+		if clientIsAdmin(client, admin) {
+			s.sendLogHistory(client)
+		}
 		var mustChangePassword bool
 		if client.stream != nil && client.stream.Username == s.adminUsername() {
 			mustChangePassword = s.adminMustChangePassword()

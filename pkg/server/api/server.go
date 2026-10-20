@@ -56,6 +56,7 @@ type Server struct {
 	// speed meters are stateful, so an extra collection would steal part of the
 	// window from the tick and leave the numbers in it disagreeing.
 	latestStats     json.RawMessage
+	latestSnapshot  *SystemStats
 	latestStatsMu   sync.RWMutex
 	logCh           chan string
 	attemptLister   *persistence.StateManager
@@ -163,15 +164,17 @@ func (s *Server) collectStatsLoop() {
 }
 
 func (s *Server) publishStats() {
-	payload, err := json.Marshal(s.collectStats())
+	stats := s.collectStats()
+	payload, err := json.Marshal(stats)
 	if err != nil {
 		logger.Error("Failed to encode stats", "err", err)
 		return
 	}
 	s.latestStatsMu.Lock()
 	s.latestStats = payload
+	s.latestSnapshot = &stats
 	s.latestStatsMu.Unlock()
-	s.broadcast(WSMessage{Type: "stats", Payload: payload})
+	s.broadcastStats(&stats, payload)
 }
 
 // snapshotStats returns the last published snapshot, nil before the first tick.
@@ -179,6 +182,15 @@ func (s *Server) snapshotStats() json.RawMessage {
 	s.latestStatsMu.RLock()
 	defer s.latestStatsMu.RUnlock()
 	return s.latestStats
+}
+
+// snapshotStatsPair returns the last snapshot and its encoding, read together
+// so both come from the same tick. The snapshot is shared with every caller
+// and must not be modified.
+func (s *Server) snapshotStatsPair() (*SystemStats, json.RawMessage) {
+	s.latestStatsMu.RLock()
+	defer s.latestStatsMu.RUnlock()
+	return s.latestSnapshot, s.latestStats
 }
 
 // broadcast queues msg to every connected client, dropping it for any client
@@ -198,7 +210,7 @@ func (s *Server) broadcastLogs() {
 		case <-s.stopCh:
 			return
 		case msgStr := <-s.logCh:
-			s.broadcast(WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))})
+			s.broadcastAdmin(WSMessage{Type: "log_entry", Payload: json.RawMessage(fmt.Sprintf("%q", msgStr))})
 		}
 	}
 }
