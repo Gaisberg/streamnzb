@@ -2163,7 +2163,11 @@ type ActiveSessionInfo struct {
 	Title      string   `json:"title"`
 	Clients    []string `json:"clients"`
 	StartTime  string   `json:"start_time"`
-	BytesRead  int64    `json:"bytes_read"`
+	// StartedAt is the same instant as StartTime in full, for consumers that
+	// need a date to compute with rather than a clock face to show. Proxy
+	// entries have no start, so it is left out for them.
+	StartedAt time.Time `json:"started_at,omitzero"`
+	BytesRead int64     `json:"bytes_read"`
 }
 
 func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
@@ -2212,6 +2216,7 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 				Title:      title,
 				Clients:    clients,
 				StartTime:  s.CreatedAt.Format(time.Kitchen),
+				StartedAt:  s.CreatedAt,
 				BytesRead:  s.BytesRead(),
 			})
 			createdAt[s.ID] = s.CreatedAt

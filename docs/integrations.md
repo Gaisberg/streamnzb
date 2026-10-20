@@ -67,6 +67,10 @@ Keep that hop on your LAN or VPN. It is not HTTP, so an HTTP reverse proxy canno
 
 Full reference, including failover behaviour and the performance notes that matter for a remote downloader: [NNTP proxy](nntp-proxy.md).
 
+## Home Assistant
+
+The other direction: StreamNZB reporting out. `GET /api/stats/current` returns the active streams, what each one is playing, who is watching and the current speed. An admin token sees everything; a stream's token sees only that stream. Home Assistant reads it with a plain RESTful sensor, and any script can do the same. Ready-to-paste sensors and a "now streaming" card: [Home Assistant & live stats](home-assistant.md).
+
 ## AIOStreams
 
 If you already run [AIOStreams](https://github.com/Viren070/AIOStreams), StreamNZB can be added to it as a preset while continuing to serve everything above. See [Using with AIOStreams](aiostreams.md).
