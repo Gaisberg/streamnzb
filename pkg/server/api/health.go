@@ -202,7 +202,7 @@ func (s *Server) broadcastComponentHealth(record health.Record) {
 		logger.Error("Failed to encode component health", "err", err)
 		return
 	}
-	s.broadcast(WSMessage{Type: "component_health", Payload: payload})
+	s.broadcastAdmin(WSMessage{Type: "component_health", Payload: payload})
 }
 
 // syncComponentHealth reconciles stored verdicts with a config the user just
