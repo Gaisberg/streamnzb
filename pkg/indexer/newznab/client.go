@@ -294,7 +294,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	params := url.Values{}
 	params.Set("t", "search")
 	params.Set("limit", "1")
-	params.Set("apikey", c.apiKey)
+	c.setAPIKey(params)
 	apiURL := c.buildAPIURL(params)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
@@ -335,9 +335,7 @@ func (c *Client) GetCaps() (*indexer.Caps, error) {
 	}
 	params := url.Values{}
 	params.Set("t", "caps")
-	if c.apiKey != "" {
-		params.Set("apikey", c.apiKey)
-	}
+	c.setAPIKey(params)
 	apiURL := c.buildAPIURL(params)
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
@@ -542,7 +540,7 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	}
 
 	params := url.Values{}
-	params.Set("apikey", c.apiKey)
+	c.setAPIKey(params)
 	params.Set("o", "xml")
 	params.Set("limit", fmt.Sprintf("%d", limit))
 	params.Set("offset", "0")
@@ -756,7 +754,7 @@ func (c *Client) passthroughParams(req indexer.SearchRequest, limit int) url.Val
 		params[key] = append([]string(nil), values...)
 	}
 	params.Set("t", req.Passthrough.Function)
-	params.Set("apikey", c.apiKey)
+	c.setAPIKey(params)
 	params.Set("o", "xml")
 	params.Set("limit", strconv.Itoa(limit))
 	if params.Get("offset") == "" {
@@ -1022,6 +1020,17 @@ func hostsMatch(a, b string) bool {
 		return false
 	}
 	return a == b || strings.TrimPrefix(a, "api.") == b || strings.TrimPrefix(b, "api.") == a
+}
+
+// setAPIKey puts the configured key on a request, or leaves the parameter
+// off entirely for an indexer that needs none: an empty apikey= is a wrong
+// key to some servers, and a passthrough must not carry the caller's own.
+func (c *Client) setAPIKey(params url.Values) {
+	if c.apiKey == "" {
+		params.Del("apikey")
+		return
+	}
+	params.Set("apikey", c.apiKey)
 }
 
 func queryHasAPIKey(q url.Values) bool {

@@ -684,6 +684,47 @@ func TestPassthroughKeepsCallerExtendedValue(t *testing.T) {
 	}
 }
 
+// A public indexer (AnimeTosho) is configured without a key, and every
+// request leaves the parameter off rather than sending apikey= — including a
+// passthrough whose caller sent a key of its own.
+func TestKeylessIndexerOmitsAPIKey(t *testing.T) {
+	var queries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel></channel></rss>`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.IndexerConfig{Name: "MockIndexer", URL: server.URL}, nil)
+	client.caps = &indexer.Caps{Searching: indexer.CapsSearching{Search: true}}
+
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping() error = %v", err)
+	}
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{Cat: "5000", Query: "Frieren"}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if _, err := client.Search(context.Background(), indexer.SearchRequest{
+		Cat: "5000",
+		Passthrough: &indexer.PassthroughQuery{
+			Function: "search",
+			Params:   url.Values{"q": {"Frieren"}, "apikey": {"callers-own-key"}},
+		},
+	}); err != nil {
+		t.Fatalf("passthrough Search() error = %v", err)
+	}
+
+	if len(queries) != 3 {
+		t.Fatalf("got %d requests, want 3", len(queries))
+	}
+	for i, q := range queries {
+		if _, ok := q["apikey"]; ok {
+			t.Fatalf("request %d sent apikey=%q, want no apikey parameter", i, q.Get("apikey"))
+		}
+	}
+}
+
 func TestSearchTVIDModeKeepsTVSearchParams(t *testing.T) {
 	var gotQuery url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
