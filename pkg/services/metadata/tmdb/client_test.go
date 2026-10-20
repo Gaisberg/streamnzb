@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -207,6 +208,51 @@ func TestDisplayLanguageParams(t *testing.T) {
 	q = gotQuery.Load().(url.Values)
 	if q.Get("language") != "" || q.Get("include_image_language") != "en,null" {
 		t.Fatalf("default params = %v", q)
+	}
+}
+
+// TMDB answers a page past 500 with 400. A client paging a catalog until it
+// runs dry (UHF asks for skip=10000) must get an empty last page, not an
+// error, and TMDB must not be asked at all.
+func TestListingPastLastPageIsEmpty(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if page, _ := strconv.Atoi(r.URL.Query().Get("page")); page > MaxListingPage {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"page": 500, "results": [{"id": 603, "title": "Matrix"}], "total_pages": 500}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+
+	last, err := client.GetListing("movie", "trending", MaxListingPage, "")
+	if err != nil || len(last.Results) != 1 {
+		t.Fatalf("page %d = %+v, %v; want one row", MaxListingPage, last, err)
+	}
+	fetches := []func() (*ListingResponse, error){
+		func() (*ListingResponse, error) { return client.GetListing("movie", "trending", MaxListingPage+1, "") },
+		func() (*ListingResponse, error) {
+			return client.Discover("tv", DiscoverFilters{}, MaxListingPage+1, "")
+		},
+		func() (*ListingResponse, error) { return client.SearchByType("movie", "matrix", MaxListingPage+1, "") },
+		func() (*ListingResponse, error) { return client.GetRecommendations("movie", 603, MaxListingPage+1, "") },
+	}
+	for i, fetch := range fetches {
+		resp, err := fetch()
+		if err != nil {
+			t.Fatalf("fetch %d past the last page: %v", i, err)
+		}
+		if resp == nil || len(resp.Results) != 0 {
+			t.Fatalf("fetch %d past the last page = %+v, want no rows", i, resp)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("TMDB saw %d requests, want only the in-range one", got)
 	}
 }
 
