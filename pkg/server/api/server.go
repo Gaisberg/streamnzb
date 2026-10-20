@@ -184,6 +184,13 @@ func (s *Server) snapshotStats() json.RawMessage {
 	return s.latestStats
 }
 
+// snapshotSystemStats is snapshotStats undecoded, for handlers that reshape
+// it. The value is shared with every caller and must not be modified.
+func (s *Server) snapshotSystemStats() *SystemStats {
+	snap, _ := s.snapshotStatsPair()
+	return snap
+}
+
 // snapshotStatsPair returns the last snapshot and its encoding, read together
 // so both come from the same tick. The snapshot is shared with every caller
 // and must not be modified.
@@ -522,6 +529,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/useragents/latest", authMiddleware(http.HandlerFunc(s.handleLatestUserAgents)))
 	mux.Handle("/api/stats/persisted", authMiddleware(http.HandlerFunc(s.handlePersistedStats)))
 	mux.Handle("/api/stats/history", authMiddleware(http.HandlerFunc(s.handleStatsHistory)))
+	mux.Handle("/api/stats/current", authMiddleware(http.HandlerFunc(s.handleCurrentStats)))
 	mux.Handle("/api/stats/performance", authMiddleware(http.HandlerFunc(s.handlePerformanceStats)))
 	mux.Handle("/api/availnzb/status", authMiddleware(http.HandlerFunc(s.handleAvailNZBStatus)))
 	mux.Handle("/api/sessions/close", authMiddleware(http.HandlerFunc(s.handleCloseSession)))
