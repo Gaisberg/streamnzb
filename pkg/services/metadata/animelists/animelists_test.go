@@ -136,6 +136,43 @@ func TestLoadProjectsEntries(t *testing.T) {
 	}
 }
 
+// The Apothecary Diaries' third entry is TVDB season 3 from episode 1 and
+// TMDB season 1 from episode 49; only TMDB publishes an offset. The TVDB
+// season must not pick up the TMDB offset and resolve episode 1 as S03E49.
+func TestLoadPairsOffsetWithSeasonProvider(t *testing.T) {
+	s := NewStore(mappingStore(t))
+	list := `[
+		{"type": "TV", "kitsu_id": 50021, "tvdb_id": 431162, "themoviedb_id": {"tv": 220542},
+		 "season": {"tvdb": 3, "tmdb": 1}, "episode_offset": {"tmdb": 48}},
+		{"type": "TV", "kitsu_id": 50022, "themoviedb_id": {"tv": 220542},
+		 "season": {"tmdb": 1}, "episode_offset": {"tvdb": 7, "tmdb": 48}}
+	]`
+	if err := s.Load(strings.NewReader(list)); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	cases := []struct {
+		kitsu       string
+		wantSeason  int
+		wantEpisode int
+	}{
+		{"50021", 3, 1},
+		// With no TVDB season the TMDB pair is used whole.
+		{"50022", 1, 49},
+	}
+	for _, tc := range cases {
+		m, ok := s.LookupKitsu(tc.kitsu)
+		if !ok {
+			t.Fatalf("expected kitsu %s to resolve", tc.kitsu)
+		}
+		season, episode, ok := m.ResolveEpisode(1)
+		if !ok || season != tc.wantSeason || episode != tc.wantEpisode {
+			t.Fatalf("kitsu %s episode 1 = S%02dE%02d (ok=%v), want S%02dE%02d",
+				tc.kitsu, season, episode, ok, tc.wantSeason, tc.wantEpisode)
+		}
+	}
+}
+
 func TestLookupKitsuRejectsBadInput(t *testing.T) {
 	s := loadedStore(t)
 	for _, id := range []string{"", "  ", "abc", "0", "-5", "99999999"} {

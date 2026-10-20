@@ -135,19 +135,21 @@ func (r *rawEntry) toMapping() *persistence.AnimeMapping {
 		}
 	}
 	// TVDB numbering is what release names follow; TMDB is the fallback only
-	// because the two agree in almost every entry that publishes both.
+	// because the two agree in almost every entry that publishes both. The
+	// offset comes from the same provider as the season: an entry can be TVDB
+	// season 3 from episode 1 and TMDB season 1 from episode 49, and mixing
+	// the two names an episode neither provider has.
 	if r.Season != nil {
 		if r.Season.TVDB != nil {
 			m.Season, m.HasSeason = *r.Season.TVDB, true
+			if r.EpisodeOffset != nil && r.EpisodeOffset.TVDB != nil {
+				m.EpisodeOffset = *r.EpisodeOffset.TVDB
+			}
 		} else if r.Season.TMDB != nil {
 			m.Season, m.HasSeason = *r.Season.TMDB, true
-		}
-	}
-	if r.EpisodeOffset != nil {
-		if r.EpisodeOffset.TVDB != nil {
-			m.EpisodeOffset = *r.EpisodeOffset.TVDB
-		} else if r.EpisodeOffset.TMDB != nil {
-			m.EpisodeOffset = *r.EpisodeOffset.TMDB
+			if r.EpisodeOffset != nil && r.EpisodeOffset.TMDB != nil {
+				m.EpisodeOffset = *r.EpisodeOffset.TMDB
+			}
 		}
 	}
 	return m
