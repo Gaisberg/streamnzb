@@ -532,6 +532,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/metadata/catalogs", authMiddleware(http.HandlerFunc(s.handleMetadataCatalogs)))
 	mux.Handle("/api/metadata/certifications", authMiddleware(http.HandlerFunc(s.handleMetadataCertifications)))
 	mux.Handle("/api/metadata/sources/inspect", authMiddleware(http.HandlerFunc(s.handleInspectMetadataSource)))
+	mux.Handle("/api/share/fetch", authMiddleware(http.HandlerFunc(s.handleShareFetch)))
 	mux.Handle("/api/simkl/status", authMiddleware(http.HandlerFunc(s.handleSimklStatus)))
 	mux.Handle("/api/simkl/pin", authMiddleware(http.HandlerFunc(s.handleSimklPin)))
 	mux.Handle("/api/simkl/pin/check", authMiddleware(http.HandlerFunc(s.handleSimklPinCheck)))
