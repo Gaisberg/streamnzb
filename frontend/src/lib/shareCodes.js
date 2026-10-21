@@ -10,9 +10,13 @@
 // The trust model for remote sources, in one place because everything below
 // leans on it: the URL the user typed is the only source ever consulted —
 // nothing fetched, and nothing inside a share code, can point a later refresh
-// anywhere else. The fetch runs in the browser with no credentials, so the
-// server never requests an address on the user's behalf, and nothing is
-// applied without the user confirming a visible diff.
+// anywhere else. The fetch runs in the browser with no credentials; only when
+// the browser cannot reach the URL (no CORS headers, a proxy policy) does the
+// server relay it, through the same SSRF-guarded client catalog sources use,
+// and the text it returns is decoded here exactly as a direct fetch would be.
+// Nothing is applied without the user confirming a visible diff.
+
+import { apiFetch } from "@/api"
 
 // maxDecodedBytes bounds what a code may inflate to. The largest real profile
 // is a few hundred kilobytes of JSON; a payload past this is a decompression
@@ -194,6 +198,12 @@ export function validateSourceUrl(raw) {
 // "the host is down" never reads as "the file is not a profile". The body is
 // never echoed into an error: whatever an arbitrary URL returned does not
 // belong in the UI.
+//
+// The browser goes first, so a source that already works (a LAN host with
+// CORS headers, say) keeps working without the server reaching for it. When
+// it fails, the browser folds a CORS refusal and a network failure into one
+// opaque error, so there is nothing to tell the user; the server relay is
+// tried instead, and its error names the actual reason.
 export async function fetchShareCodeText(url) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), fetchTimeoutMs)
@@ -205,9 +215,7 @@ export async function fetchShareCodeText(url) {
       signal: controller.signal,
     })
   } catch {
-    // The browser folds CORS refusals and network failures into one opaque
-    // error, so the message has to name both.
-    throw new Error("Could not fetch that URL. The host may be unreachable, or it does not allow browser access (CORS). Raw file hosts like raw.githubusercontent.com work.")
+    return await relayShareCodeText(url)
   } finally {
     clearTimeout(timer)
   }
@@ -229,6 +237,30 @@ export async function fetchShareCodeText(url) {
     chunks.push(value)
   }
   return await new Blob(chunks).text()
+}
+
+// relayShareCodeText asks the server to fetch the URL the browser could not.
+// The server enforces the same https-only rule and size cap, and answers with
+// the body as text, or with an error that says why the fetch failed.
+async function relayShareCodeText(url) {
+  let data
+  try {
+    data = await apiFetch("/api/share/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    })
+  } catch (err) {
+    // A 502 carries the server's own fetch error, which names the reason. Any
+    // other failure is the relay itself being unavailable, which says nothing
+    // about the URL, so the browser's message stands.
+    if (err?.status === 502 && err.message) throw new Error(err.message)
+    throw new Error("Could not fetch that URL. The host may be unreachable, or it does not allow browser access (CORS). Raw file hosts like raw.githubusercontent.com work.")
+  }
+  if (typeof data?.text !== "string") {
+    throw new Error("Could not fetch that URL.")
+  }
+  return data.text
 }
 
 // resolveFetched decodes what a URL served, wrapping the decoder's message so
