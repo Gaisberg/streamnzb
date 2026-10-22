@@ -108,11 +108,32 @@ func TestRateLimitRetriesOnce(t *testing.T) {
 	}
 }
 
-func TestErrorsAreNotCached(t *testing.T) {
+func TestLookupMissIsCached(t *testing.T) {
 	var hits atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClient(nil, nil)
+	client.BaseURL = server.URL
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.LookupByIMDB(context.Background(), "tt404"); err == nil {
+			t.Fatalf("call %d: expected error", i+1)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("hits = %d, want 1 (a show TVMaze does not list is remembered)", got)
+	}
+}
+
+func TestErrorsAreNotCached(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 

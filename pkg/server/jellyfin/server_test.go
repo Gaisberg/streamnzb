@@ -518,6 +518,37 @@ func TestShortBucketDoesNotEndCatalog(t *testing.T) {
 	}
 }
 
+// A client that syncs a library pages until the total says stop. TMDB's
+// listings run to 10,000 rows, so the library has to end well before the
+// catalog does.
+func TestLibraryEndsAtMaxLibraryRows(t *testing.T) {
+	f := newFixture()
+	f.catalog.rows["tmdb.trending.movie"] = previews("movie", "tt", maxLibraryRows+100)
+	view := viewID("tmdb.trending.movie")
+	var result queryResult
+	decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Items?ParentId=%s&StartIndex=%d&Limit=100", view, maxLibraryRows-100), ""), &result)
+	if len(result.Items) != 100 || result.TotalRecordCount != maxLibraryRows {
+		t.Fatalf("last page: %d items, total %d, want 100/%d", len(result.Items), result.TotalRecordCount, maxLibraryRows)
+	}
+	// A window that straddles the cap is cut at it, and nothing past the cap
+	// is fetched — not even the probe for whether the catalog goes on.
+	f.catalog.catalogCalls = nil
+	decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Items?ParentId=%s&StartIndex=%d&Limit=100", view, maxLibraryRows-40), ""), &result)
+	if len(result.Items) != 40 || result.TotalRecordCount != maxLibraryRows {
+		t.Fatalf("straddling page: %d items, total %d, want 40/%d", len(result.Items), result.TotalRecordCount, maxLibraryRows)
+	}
+	for _, skip := range f.catalog.catalogCalls {
+		if skip >= maxLibraryRows {
+			t.Fatalf("fetched skip=%d past the cap", skip)
+		}
+	}
+	f.catalog.catalogCalls = nil
+	decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Items?ParentId=%s&StartIndex=%d&Limit=100", view, maxLibraryRows), ""), &result)
+	if len(result.Items) != 0 || len(f.catalog.catalogCalls) != 0 {
+		t.Fatalf("past the cap: %d items, %d catalog calls", len(result.Items), len(f.catalog.catalogCalls))
+	}
+}
+
 func TestViewsPageThroughCatalogs(t *testing.T) {
 	f := newFixture()
 	view := viewID("tmdb.trending.movie")
