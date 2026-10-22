@@ -5,6 +5,7 @@
 package tvmaze
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,11 @@ const (
 	// episodesCacheTTL covers episode lists: air dates of running shows change
 	// (scheduling shifts, new episodes announced).
 	episodesCacheTTL = 6 * time.Hour
+	// lookupMissTTL covers a lookup TVMaze answered 404: the show is not
+	// listed there. Without it every catalog page and meta build asks again
+	// for the same absent show. Shorter than lookupCacheTTL because TVMaze
+	// does add new shows.
+	lookupMissTTL = 24 * time.Hour
 	// rateLimitRetryDelay is the single-retry backoff for a 429. TVMaze allows
 	// ~20 requests per 10 seconds; with caching we make at most two calls per
 	// series, so one short retry is enough.
@@ -101,7 +107,7 @@ func (c *Client) LookupByIMDB(ctx context.Context, imdbID string) (*Show, error)
 	if imdbID == "" {
 		return nil, fmt.Errorf("empty imdb id")
 	}
-	return c.getShow(ctx, "/lookup/shows?imdb="+url.QueryEscape(imdbID), lookupCacheTTL)
+	return c.getShow(ctx, "/lookup/shows?imdb="+url.QueryEscape(imdbID), lookupCacheTTL, lookupMissTTL)
 }
 
 // LookupByTVDB resolves a TVDB id to a TVMaze show.
@@ -110,7 +116,7 @@ func (c *Client) LookupByTVDB(ctx context.Context, tvdbID string) (*Show, error)
 	if tvdbID == "" {
 		return nil, fmt.Errorf("empty tvdb id")
 	}
-	return c.getShow(ctx, "/lookup/shows?thetvdb="+url.QueryEscape(tvdbID), lookupCacheTTL)
+	return c.getShow(ctx, "/lookup/shows?thetvdb="+url.QueryEscape(tvdbID), lookupCacheTTL, lookupMissTTL)
 }
 
 // GetShowWithEpisodes fetches a show with its full episode list embedded.
@@ -118,11 +124,11 @@ func (c *Client) GetShowWithEpisodes(ctx context.Context, showID int) (*Show, er
 	if showID <= 0 {
 		return nil, fmt.Errorf("invalid tvmaze show id %d", showID)
 	}
-	return c.getShow(ctx, fmt.Sprintf("/shows/%d?embed=episodes", showID), episodesCacheTTL)
+	return c.getShow(ctx, fmt.Sprintf("/shows/%d?embed=episodes", showID), episodesCacheTTL, 0)
 }
 
-func (c *Client) getShow(ctx context.Context, path string, ttl time.Duration) (*Show, error) {
-	body, err := c.getBody(ctx, path, ttl)
+func (c *Client) getShow(ctx context.Context, path string, ttl, missTTL time.Duration) (*Show, error) {
+	body, err := c.getBody(ctx, path, ttl, missTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -133,10 +139,19 @@ func (c *Client) getShow(ctx context.Context, path string, ttl time.Duration) (*
 	return &show, nil
 }
 
+// notFoundSentinel marks a cached 404, so a show TVMaze does not list is
+// answered from the cache rather than asked for again.
+var notFoundSentinel = []byte(`{"status":"notfound"}`)
+
 // getBody GETs path (relative to BaseURL, cache key) through the response
-// cache, retrying once after a rate-limit response. Only 200 bodies are cached.
-func (c *Client) getBody(ctx context.Context, path string, ttl time.Duration) ([]byte, error) {
+// cache, retrying once after a rate-limit response. 200 bodies are cached for
+// ttl; a 404 is cached for missTTL when it is positive. Other errors are never
+// cached.
+func (c *Client) getBody(ctx context.Context, path string, ttl, missTTL time.Duration) ([]byte, error) {
 	if body, ok := c.cache.Get(path); ok {
+		if bytes.Equal(body, notFoundSentinel) {
+			return nil, fmt.Errorf("tvmaze API returned status %d", http.StatusNotFound)
+		}
 		return body, nil
 	}
 
@@ -151,6 +166,9 @@ func (c *Client) getBody(ctx context.Context, path string, ttl time.Duration) ([
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tvmaze API request failed: %w", err)
+	}
+	if status == http.StatusNotFound && missTTL > 0 {
+		c.cache.Put(path, notFoundSentinel, missTTL)
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("tvmaze API returned status %d", status)

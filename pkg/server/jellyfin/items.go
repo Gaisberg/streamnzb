@@ -30,6 +30,12 @@ const (
 	// follows the normal paged Items route. Keep its external-source response
 	// bounded, but large enough to render the complete common public lists.
 	infuseExternalLatestLimit = maxLimit
+	// maxLibraryRows is where a library ends. A catalog has no end a client
+	// can afford to reach — TMDB's listings run to 10,000 rows — and clients
+	// that sync a library (UHF) page until the total says stop, building
+	// every catalog page and every series' metadata on the way. Browsing
+	// clients never scroll this far, so the cap costs them nothing.
+	maxLibraryRows = 500
 )
 
 // allCatalogs is every catalog an id may name: the browse registry plus the
@@ -289,14 +295,17 @@ func page(items []*baseItem, start, limit int, open bool) queryResult {
 // page may carry fewer rows than asked while the catalog goes on. Only an
 // empty bucket ends the catalog. When the last bucket in range is short the
 // next one is probed for that answer, so a true last page still reports an
-// exact total.
+// exact total. A window that reaches maxLibraryRows is the last page
+// whatever the catalog holds past it.
 func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit int) queryResult {
 	result := emptyResult()
 	result.StartIndex = start
-	if start > 0 && !def.SupportsSkip {
+	if (start > 0 && !def.SupportsSkip) || start >= maxLibraryRows {
 		result.TotalRecordCount = start
 		return result
 	}
+	capped := start+limit >= maxLibraryRows
+	limit = min(limit, maxLibraryRows-start)
 	bucket := stremio.CatalogPageSize
 	firstPage, lastPage := start/bucket, (start+limit-1)/bucket
 	parent := viewID(def.ID)
@@ -327,10 +336,11 @@ func (s *Server) catalogPage(rq *request, def stremio.CatalogDef, start, limit i
 			ended = true
 			break
 		}
-		if p == lastPage && len(metas) < bucket {
+		if p == lastPage && len(metas) < bucket && !capped {
 			ended = s.catalogEndsAt(rq, def, (p+1)*bucket)
 		}
 	}
+	ended = ended || capped
 	result.TotalRecordCount = start + len(result.Items)
 	if !ended {
 		// Open-ended, as page() reports it: past the window the client
