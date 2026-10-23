@@ -1,5 +1,28 @@
 # Changelog
 
+## [6.3.0](https://github.com/Gaisberg/streamnzb/compare/v6.2.0...v6.3.0) (2026-10-23)
+
+
+### Features
+
+* **indexer:** show when an indexer subscription expires ([#363](https://github.com/Gaisberg/streamnzb/issues/363)) ([3e7f824](https://github.com/Gaisberg/streamnzb/commit/3e7f8240124470d311d940bb9671da52c265433c)), closes [#332](https://github.com/Gaisberg/streamnzb/issues/332)
+* **jellyfin:** genres for TMDB libraries, and log request queries ([#372](https://github.com/Gaisberg/streamnzb/issues/372)) ([9a6f620](https://github.com/Gaisberg/streamnzb/commit/9a6f62023da8210fd228b607d81e1f06d3943c1b)), closes [#352](https://github.com/Gaisberg/streamnzb/issues/352)
+
+
+### Bug Fixes
+
+* **anime:** take a Kitsu entry's episode offset from the same provider as its season ([#360](https://github.com/Gaisberg/streamnzb/issues/360)) ([06dec6c](https://github.com/Gaisberg/streamnzb/commit/06dec6cf3c210b3e127eb33d3814fd457708a9c5)), closes [#351](https://github.com/Gaisberg/streamnzb/issues/351)
+* **api:** stop sending logs and other streams' sessions to stream-token sockets ([#366](https://github.com/Gaisberg/streamnzb/issues/366)) ([a20b4ca](https://github.com/Gaisberg/streamnzb/commit/a20b4ca614852b0d3e96a05c19c61a3a42b5ea3d))
+* **indexer:** support AnimeTosho's keyless public API ([#361](https://github.com/Gaisberg/streamnzb/issues/361)) ([0261337](https://github.com/Gaisberg/streamnzb/commit/0261337a16b320c8c5c20966dc5319cdda507943)), closes [#349](https://github.com/Gaisberg/streamnzb/issues/349)
+* **jellyfin:** end a library at 500 rows so syncing clients finish ([#370](https://github.com/Gaisberg/streamnzb/issues/370)) ([da7a676](https://github.com/Gaisberg/streamnzb/commit/da7a676b335cbc8d6bb5651c71b25fea12360dcb)), closes [#352](https://github.com/Gaisberg/streamnzb/issues/352)
+* **jellyfin:** list libraries at the root and in VirtualFolders ([#371](https://github.com/Gaisberg/streamnzb/issues/371)) ([ea2d7bb](https://github.com/Gaisberg/streamnzb/commit/ea2d7bb43dee2ac0f66efae11119a9058e57b403)), closes [#352](https://github.com/Gaisberg/streamnzb/issues/352)
+* **sharing:** relay share-code URLs the browser cannot fetch ([#369](https://github.com/Gaisberg/streamnzb/issues/369)) ([c561962](https://github.com/Gaisberg/streamnzb/commit/c5619620ff572ec4afc2b8c8669d8609f391ab40)), closes [#368](https://github.com/Gaisberg/streamnzb/issues/368)
+* **stremio:** credit watched progress by playback time, not bytes served ([db548b7](https://github.com/Gaisberg/streamnzb/commit/db548b7e1fd318bbfed4e6dc1463f235986c74f0)), closes [#341](https://github.com/Gaisberg/streamnzb/issues/341)
+* **stremio:** say what was found when a missing-article release is marked bad ([#364](https://github.com/Gaisberg/streamnzb/issues/364)) ([e38371f](https://github.com/Gaisberg/streamnzb/commit/e38371f8741a62d08b4724d4b126122054f65530)), closes [#350](https://github.com/Gaisberg/streamnzb/issues/350)
+* **tmdb:** end a catalog at TMDB's last page instead of failing it ([#362](https://github.com/Gaisberg/streamnzb/issues/362)) ([5febce6](https://github.com/Gaisberg/streamnzb/commit/5febce663786df741c1c78e5965669776cd3e7d7)), closes [#352](https://github.com/Gaisberg/streamnzb/issues/352)
+* **unpack:** carry the ciphertext tail across unaligned encrypted reads ([242a9c5](https://github.com/Gaisberg/streamnzb/commit/242a9c5dd5a411ab8bec76418b0b52e1a0ca07f4))
+* **unpack:** keep the volume reader across a range request's seek probes ([aea97dc](https://github.com/Gaisberg/streamnzb/commit/aea97dc676d790a57b77cba14904c2fb9d9c6ed0)), closes [#340](https://github.com/Gaisberg/streamnzb/issues/340)
+
 ## [6.2.0](https://github.com/Gaisberg/streamnzb/compare/v6.1.0...v6.2.0) (2026-09-16)
 
 
