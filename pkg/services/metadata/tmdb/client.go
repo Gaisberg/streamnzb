@@ -159,6 +159,8 @@ type SearchMultiResult struct {
 	BackdropPath  string  `json:"backdrop_path"`
 	Overview      string  `json:"overview"`
 	VoteAverage   float64 `json:"vote_average"`
+	// GenreIDs name the row's genres by id; GenreList turns them into names.
+	GenreIDs []int `json:"genre_ids"`
 }
 
 type ExternalIDsResponse struct {
@@ -915,10 +917,27 @@ func (c *Client) GetExternalIDs(tmdbID int, mediaType string) (*ExternalIDsRespo
 	return getJSON[ExternalIDsResponse](c, endpoint, url.Values{}, "external_ids")
 }
 
-// Genre is a TMDB genre. Only the name is used.
+// Genre is a TMDB genre.
 type Genre struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
+}
+
+// GenreList is TMDB's genre list for mediaType ("movie" or "tv") in lang;
+// "" is TMDB's default language. It changes rarely, so it is cached like any
+// other details response.
+func (c *Client) GenreList(mediaType, lang string) ([]Genre, error) {
+	params := url.Values{}
+	if lang != "" {
+		params.Set("language", lang)
+	}
+	resp, err := getJSON[struct {
+		Genres []Genre `json:"genres"`
+	}](c, c.BaseURL+"/genre/"+mediaType+"/list", params, "genre list")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Genres, nil
 }
 
 type MovieDetails struct {

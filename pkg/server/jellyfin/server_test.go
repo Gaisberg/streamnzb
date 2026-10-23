@@ -105,6 +105,18 @@ func (f *fakeCatalog) EnabledCatalogs(*auth.Stream) ([]stremio.CatalogDef, error
 	return f.catalogs, nil
 }
 
+// Genres is TMDB's list for the type; the movie and series lists share
+// Comedy and Drama under different ids, as TMDB's do.
+func (f *fakeCatalog) Genres(_ *auth.Stream, contentType string) ([]stremio.Genre, error) {
+	if f.disabled {
+		return nil, stremio.ErrMetadataDisabled
+	}
+	if contentType == "movie" {
+		return []stremio.Genre{{ID: 28, Name: "Action"}, {ID: 35, Name: "Comedy"}, {ID: 18, Name: "Drama"}}, nil
+	}
+	return []stremio.Genre{{ID: 10759, Name: "Action & Adventure"}, {ID: 35, Name: "Comedy"}, {ID: 18, Name: "Drama"}}, nil
+}
+
 func (f *fakeCatalog) SearchCatalogs(*auth.Stream) []stremio.CatalogDef {
 	return []stremio.CatalogDef{
 		{ID: "tmdb.search.movie", Type: "movie", Name: "Search Movies", Provider: "tmdb", Kind: "search", SupportsSearch: true},
