@@ -14,10 +14,12 @@ package jellyfin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
@@ -278,8 +280,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	rq := parseRequest(r)
 	// Every request is logged while the layer is young: a client that cannot
 	// connect is otherwise indistinguishable from one that never called, and
-	// only the failures used to say anything at all.
-	logger.Debug("Jellyfin request", "method", r.Method, "path", r.URL.Path, "agent", r.UserAgent(), "remote", r.RemoteAddr)
+	// only the failures used to say anything at all. The query and the answer
+	// are logged too: a client that gets a well-formed but useless answer
+	// (no libraries, an empty folder) is only told apart by what it asked.
+	if logger.DebugEnabled() {
+		logger.Debug("Jellyfin request", "method", r.Method, "path", r.URL.Path, "query", redactedQuery(r.URL.Query()), "agent", r.UserAgent(), "remote", r.RemoteAddr)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		started := time.Now()
+		defer func() {
+			logger.Debug("Jellyfin response", "method", r.Method, "path", r.URL.Path, "status", rec.status, "bytes", rec.bytes, "ms", time.Since(started).Milliseconds())
+		}()
+		w = rec
+	}
 	if s.servePublic(w, rq) {
 		return
 	}
@@ -317,6 +329,69 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Debug("Jellyfin route not handled", "method", r.Method, "path", r.URL.Path, "agent", r.UserAgent())
 	http.NotFound(w, r)
+}
+
+// redactedQuery renders a query for the log with its credentials masked:
+// api_key and apikey, the stream token a media source carries as tag, and
+// any parameter a client names after a token.
+func redactedQuery(q url.Values) string {
+	if len(q) == 0 {
+		return ""
+	}
+	out := make(url.Values, len(q))
+	for key, values := range q {
+		lower := strings.ToLower(key)
+		if lower == "api_key" || lower == "apikey" || lower == "tag" || strings.Contains(lower, "token") {
+			values = []string{"REDACTED"}
+		}
+		out[key] = values
+	}
+	return out.Encode()
+}
+
+// statusRecorder notes the status and size of a response for the log. It
+// passes Flush, ReadFrom and Unwrap through, so streaming a video through it
+// flushes, sends and takes deadlines as it would without it.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	if !r.wroteHeader {
+		r.status, r.wroteHeader = status, true
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	r.wroteHeader = true
+	n, err := r.ResponseWriter.Write(p)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.wroteHeader = true
+	var n int64
+	var err error
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		n, err = rf.ReadFrom(src)
+	} else {
+		n, err = io.Copy(r.ResponseWriter, src)
+	}
+	r.bytes += n
+	return n, err
+}
+
+func (r *statusRecorder) Flush() {
+	_ = http.NewResponseController(r.ResponseWriter).Flush()
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func writeJSON(w http.ResponseWriter, status int, doc any) {
