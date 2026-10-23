@@ -31,7 +31,9 @@ import (
 //	[15]     checksum
 //
 // A view (a library folder) has no numeric identity: [1..14] hold a hash of
-// the catalog id, resolved by scanning the registry.
+// the catalog id, resolved by scanning the registry. A genre keeps its
+// content type in [1] and a hash of its lower-cased name in [2..14],
+// resolved against the genre names the stream's metadata knows.
 
 type itemKind byte
 
@@ -44,6 +46,7 @@ const (
 	// kindSource is a media source: one playable candidate of a movie or
 	// episode. It carries the movie's or episode's id plus the slot index.
 	kindSource
+	kindGenre
 )
 
 type idScheme byte
@@ -73,6 +76,10 @@ type itemID struct {
 	Episode     int
 	// CatalogID is set for views only.
 	CatalogID string
+	// GenreName is set when encoding a genre. A decoded genre has only its
+	// hash, kept in GenreKey (the id itself) for genreNameOf to resolve.
+	GenreName string
+	GenreKey  string
 }
 
 // checksum keeps a random GUID — a client probing, or an id from a real
@@ -88,10 +95,15 @@ func checksum(b []byte) byte {
 func (id itemID) encode() string {
 	var b [16]byte
 	b[0] = byte(id.Kind)
-	if id.Kind == kindView {
+	switch id.Kind {
+	case kindView:
 		h := sha1.Sum([]byte(id.CatalogID))
 		copy(b[1:15], h[:14])
-	} else {
+	case kindGenre:
+		b[1] = contentTypeCodes[id.ContentType]
+		h := sha1.Sum([]byte(strings.ToLower(id.GenreName)))
+		copy(b[2:15], h[:13])
+	default:
 		b[1] = contentTypeCodes[id.ContentType]
 		b[2] = byte(id.Scheme)
 		var n [8]byte
@@ -128,6 +140,14 @@ func decodeItemID(s string) (itemID, error) {
 		id.CatalogID = hex.EncodeToString(b)
 		return id, nil
 	}
+	if id.Kind == kindGenre {
+		id.ContentType = contentTypeNames[b[1]]
+		if id.ContentType == "" {
+			return itemID{}, errBadItemID
+		}
+		id.GenreKey = hex.EncodeToString(b)
+		return id, nil
+	}
 	if id.Kind < kindMovie || id.Kind > kindSource {
 		return itemID{}, errBadItemID
 	}
@@ -143,6 +163,11 @@ func decodeItemID(s string) (itemID, error) {
 	id.Season = int(binary.BigEndian.Uint16(b[11:13]))
 	id.Episode = int(binary.BigEndian.Uint16(b[13:15]))
 	return id, nil
+}
+
+// genreID is the id of a genre of a content type.
+func genreID(contentType, name string) string {
+	return itemID{Kind: kindGenre, ContentType: contentType, GenreName: name}.encode()
 }
 
 // viewID is the id of the library folder for a catalog.

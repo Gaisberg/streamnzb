@@ -109,6 +109,41 @@ func (s *Server) Catalog(ctx context.Context, stream *auth.Stream, catalogID, co
 	return s.serveCatalog(ctx, def, req), nil
 }
 
+// Genre is a TMDB genre in the stream's metadata language.
+type Genre struct {
+	ID   int
+	Name string
+}
+
+// Genres lists the TMDB genres of a content type ("movie" or a series type),
+// in the stream's metadata language. These are the names MetaPreview.GenreIDs
+// refer to. A server without TMDB has none.
+func (s *Server) Genres(stream *auth.Stream, contentType string) ([]Genre, error) {
+	profile := s.metadataProfileFor(stream)
+	if profile == nil {
+		return nil, ErrMetadataDisabled
+	}
+	rt := s.runtime()
+	if rt.tmdbClient == nil {
+		return nil, nil
+	}
+	mediaType := "tv"
+	if contentType == "movie" {
+		mediaType = "movie"
+	}
+	list, err := rt.tmdbClient.GenreList(mediaType, profile.EffectiveLanguage())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Genre, 0, len(list))
+	for _, g := range list {
+		if g.Name != "" {
+			out = append(out, Genre{ID: g.ID, Name: g.Name})
+		}
+	}
+	return out, nil
+}
+
 // ErrCatalogNotFound is returned by Catalog for an id the stream's profile
 // cannot read: unknown, disabled, or a search carrier asked without a query.
 var ErrCatalogNotFound = errors.New("stremio: catalog not found")

@@ -367,3 +367,44 @@ func TestDoRequestDoesNotCacheErrors(t *testing.T) {
 		t.Fatalf("upstream hits = %d, want 2 (errors must not be cached)", got)
 	}
 }
+
+func TestGenreListAndListingGenreIDs(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		switch r.URL.Path {
+		case "/genre/movie/list":
+			if got := r.URL.Query().Get("language"); got != "de-DE" {
+				t.Errorf("language = %q", got)
+			}
+			_, _ = w.Write([]byte(`{"genres":[{"id":28,"name":"Action"},{"id":35,"name":"Komödie"}]}`))
+		case "/trending/movie/week":
+			_, _ = w.Write([]byte(`{"page":1,"total_pages":1,"results":[{"id":1,"title":"A","genre_ids":[28,35]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+
+	for i := 0; i < 2; i++ {
+		genres, err := client.GenreList("movie", "de-DE")
+		if err != nil {
+			t.Fatalf("GenreList: %v", err)
+		}
+		if len(genres) != 2 || genres[1].ID != 35 || genres[1].Name != "Komödie" {
+			t.Fatalf("genres = %+v", genres)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("hits = %d, want 1 (the genre list is cached)", got)
+	}
+	resp, err := client.GetListing("movie", "trending", 1, "")
+	if err != nil {
+		t.Fatalf("GetListing: %v", err)
+	}
+	if len(resp.Results) != 1 || len(resp.Results[0].GenreIDs) != 2 || resp.Results[0].GenreIDs[0] != 28 {
+		t.Fatalf("listing rows must carry genre_ids: %+v", resp.Results)
+	}
+}

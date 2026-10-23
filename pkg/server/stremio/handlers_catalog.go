@@ -1169,7 +1169,7 @@ func (s *Server) tmdbCatalog(_ context.Context, def CatalogDef, req catalogReque
 		if id == "" {
 			id = fmt.Sprintf("tmdb:%d", res.ID)
 		}
-		preview := MetaPreview{ID: id, Type: def.Type, Name: name, Description: res.Overview}
+		preview := MetaPreview{ID: id, Type: def.Type, Name: name, Description: res.Overview, GenreIDs: res.GenreIDs}
 		if date := res.ReleaseDate; date != "" || res.FirstAirDate != "" {
 			if date == "" {
 				date = res.FirstAirDate

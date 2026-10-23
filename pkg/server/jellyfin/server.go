@@ -60,6 +60,7 @@ type Streams interface {
 type Catalog interface {
 	EnabledCatalogs(stream *auth.Stream) ([]stremio.CatalogDef, error)
 	SearchCatalogs(stream *auth.Stream) []stremio.CatalogDef
+	Genres(stream *auth.Stream, contentType string) ([]stremio.Genre, error)
 	Catalog(ctx context.Context, stream *auth.Stream, catalogID, contentType, search string, skip int) ([]stremio.MetaPreview, error)
 	Meta(ctx context.Context, stream *auth.Stream, contentType, id string) (*stremio.MetaObject, error)
 	Playlist(ctx context.Context, stream *auth.Stream, contentType, id string) (*stremio.PlaylistView, error)
@@ -168,6 +169,8 @@ type request struct {
 	segs   []string
 	query  map[string]string
 	stream *auth.Stream
+	// genres memoizes the genre lists by content type for this request.
+	genres map[string][]stremio.Genre
 }
 
 func parseRequest(r *http.Request) *request {

@@ -195,7 +195,7 @@ func (s *Server) itemImageURL(rawID, kind string) (string, bool) {
 // the map no longer holds (restart, eviction, another instance).
 func (s *Server) resolveImage(rq *request, rawID, kind string) string {
 	id, err := decodeItemID(rawID)
-	if err != nil || id.Kind == kindView {
+	if err != nil || id.Kind == kindView || id.Kind == kindGenre {
 		return ""
 	}
 	// Resolving reads metadata, which is per-stream. An image request that

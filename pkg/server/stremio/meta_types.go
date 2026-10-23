@@ -83,6 +83,10 @@ type MetaPreview struct {
 	// grids show both, and a row without them shows a blank badge.
 	ReleaseInfo string `json:"releaseInfo,omitempty"`
 	IMDBRating  string `json:"imdbRating,omitempty"`
+	// GenreIDs are the TMDB genres of a TMDB row, named by Genres. Other
+	// sources leave it empty. The Jellyfin layer filters libraries by genre
+	// with it; Stremio clients never see it.
+	GenreIDs []int `json:"-"`
 
 	// tmdbID is the TMDB id a source volunteered alongside its own, kept for
 	// the gap-filling step: a row identified only as tvdb:N has no other way

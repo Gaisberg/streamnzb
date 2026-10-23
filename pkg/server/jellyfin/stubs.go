@@ -130,7 +130,7 @@ func (s *Server) serveStubs(w http.ResponseWriter, rq *request) bool {
 		writeJSON(w, http.StatusOK, []any{})
 	case join == "livetv/info":
 		writeJSON(w, http.StatusOK, map[string]any{"Services": []any{}, "IsEnabled": false, "EnabledUsers": []any{}})
-	case join == "genres" || join == "studios" || join == "persons" || join == "years" ||
+	case join == "studios" || join == "persons" || join == "years" ||
 		join == "musicgenres" || join == "artists" || join == "artists/albumartists" ||
 		join == "channels/features" || join == "livetv/channels/items":
 		writeJSON(w, http.StatusOK, emptyResult())

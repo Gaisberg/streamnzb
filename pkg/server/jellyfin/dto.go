@@ -336,6 +336,10 @@ func (s *Server) previewItem(rq *request, preview stremio.MetaPreview, parentID 
 	item := s.newItem(id, preview.Name)
 	item.ParentID = parentID
 	item.Overview = preview.Description
+	item.Genres = s.rowGenres(rq, preview)
+	for _, g := range item.Genres {
+		item.GenreItems = append(item.GenreItems, nameGUID{Name: g, ID: genreID(id.ContentType, g)})
+	}
 	item.ProductionYear = productionYear(preview.ReleaseInfo)
 	item.CommunityRating = communityRating(preview.IMDBRating)
 	s.setImages(item, id, preview.Poster, preview.Background, "")
@@ -372,7 +376,7 @@ func (s *Server) metaItem(id itemID, meta *stremio.MetaObject) *baseItem {
 	item.Overview = meta.Description
 	item.Genres = meta.Genres
 	for _, g := range meta.Genres {
-		item.GenreItems = append(item.GenreItems, nameGUID{Name: g, ID: userID("genre:" + g)})
+		item.GenreItems = append(item.GenreItems, nameGUID{Name: g, ID: genreID(id.ContentType, g)})
 	}
 	item.CommunityRating = communityRating(meta.IMDBRating)
 	item.ProductionYear = productionYear(meta.ReleaseInfo)

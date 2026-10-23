@@ -127,7 +127,11 @@ func (s *Server) serveItems(w http.ResponseWriter, rq *request) bool {
 	case join == "items/resume" || join == "useritems/resume":
 		writeJSON(w, http.StatusOK, s.resumeResult(rq))
 	case join == "items/filters" || join == "items/filters2":
-		writeJSON(w, http.StatusOK, map[string]any{"Genres": []any{}, "Tags": []any{}, "OfficialRatings": []any{}, "Years": []any{}})
+		s.handleFilters(w, rq, join == "items/filters2")
+	case join == "genres":
+		s.handleGenres(w, rq)
+	case len(segs) == 2 && segs[0] == "genres":
+		s.handleGenre(w, rq, segs[1])
 	case join == "items/suggestions":
 		// The home screen's suggestion row. What Jellyfin suggests from watch
 		// history is already served here as its own "Because You Watched"
@@ -274,6 +278,10 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 			writeJSON(w, http.StatusOK, s.resumeResult(rq))
 			return
 		}
+	}
+	if names, asked := s.requestedGenres(rq); asked {
+		writeJSON(w, http.StatusOK, s.genreListing(rq, names, include, start, limit))
+		return
 	}
 
 	parent := rq.param("parentId")
@@ -695,6 +703,12 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 		return s.viewItem(def), nil
 	case kindSource:
 		return s.itemByID(rq, id.playable())
+	case kindGenre:
+		name, ok := s.genreNameOf(rq, id)
+		if !ok {
+			return nil, nil
+		}
+		return s.genreItem(id.ContentType, name), nil
 	}
 	meta, err := s.meta(rq.Context(), rq, id)
 	if err != nil {
