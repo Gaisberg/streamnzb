@@ -549,6 +549,39 @@ func TestLibraryEndsAtMaxLibraryRows(t *testing.T) {
 	}
 }
 
+// Items with no folder and no recursion is the root folder, whose children
+// are the libraries. UHF finds its libraries this way.
+func TestRootItemsListsLibraries(t *testing.T) {
+	f := newFixture()
+	var views, root queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserViews", ""), &views)
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items", ""), &root)
+	if len(root.Items) == 0 || len(root.Items) != len(views.Items) || root.TotalRecordCount != len(views.Items) {
+		t.Fatalf("root items: %d (total %d), want the %d libraries", len(root.Items), root.TotalRecordCount, len(views.Items))
+	}
+	for i, item := range root.Items {
+		if item.Type != "CollectionFolder" || item.ID != views.Items[i].ID {
+			t.Fatalf("root item %d: %s %q, want library %q", i, item.Type, item.ID, views.Items[i].ID)
+		}
+	}
+	// The configuration listing names the same libraries.
+	var folders []virtualFolder
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Library/VirtualFolders", ""), &folders)
+	if len(folders) != len(views.Items) {
+		t.Fatalf("virtual folders: %d, want %d", len(folders), len(views.Items))
+	}
+	for i, folder := range folders {
+		if folder.ItemID != views.Items[i].ID || folder.Name != views.Items[i].Name || folder.CollectionType == "" || len(folder.Locations) != 1 {
+			t.Fatalf("virtual folder %d: %+v", i, folder)
+		}
+	}
+	// Recursive is still everything across the libraries.
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Users/u/Items?Recursive=true&IncludeItemTypes=Movie", ""), &root)
+	if len(root.Items) == 0 || root.Items[0].Type != "Movie" {
+		t.Fatalf("recursive root items: %+v", root.Items)
+	}
+}
+
 func TestViewsPageThroughCatalogs(t *testing.T) {
 	f := newFixture()
 	view := viewID("tmdb.trending.movie")

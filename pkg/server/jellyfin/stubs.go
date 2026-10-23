@@ -124,7 +124,7 @@ func (s *Server) serveStubs(w http.ResponseWriter, rq *request) bool {
 	case len(rq.segs) >= 1 && rq.segs[0] == "localization":
 		writeJSON(w, http.StatusOK, []any{})
 	case join == "plugins" || join == "scheduledtasks" || join == "packages" || join == "repositories" ||
-		join == "library/virtualfolders" || join == "devices" || join == "system/activitylog/entries" ||
+		join == "devices" || join == "system/activitylog/entries" ||
 		join == "notifications/types" || join == "channels" || join == "livetv/channels" || join == "livetv/programs" ||
 		join == "livetv/recordings" || join == "livetv/timers" || join == "livetv/seriestimers":
 		writeJSON(w, http.StatusOK, []any{})

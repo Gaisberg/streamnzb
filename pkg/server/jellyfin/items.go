@@ -116,6 +116,8 @@ func (s *Server) serveItems(w http.ResponseWriter, rq *request) bool {
 	switch {
 	case join == "userviews" || join == "views" || join == "library/mediafolders":
 		s.handleViews(w, rq)
+	case join == "library/virtualfolders":
+		s.handleVirtualFolders(w, rq)
 	case join == "userviews/groupingoptions" || join == "groupingoptions":
 		writeJSON(w, http.StatusOK, []any{})
 	case join == "items":
@@ -205,6 +207,42 @@ func (s *Server) handleViews(w http.ResponseWriter, rq *request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// virtualFolder is Jellyfin's VirtualFolderInfo: a library as the server
+// configuration describes it.
+type virtualFolder struct {
+	Name               string         `json:"Name"`
+	Locations          []string       `json:"Locations"`
+	CollectionType     string         `json:"CollectionType"`
+	LibraryOptions     map[string]any `json:"LibraryOptions"`
+	ItemID             string         `json:"ItemId"`
+	PrimaryImageItemID string         `json:"PrimaryImageItemId"`
+	RefreshStatus      string         `json:"RefreshStatus"`
+}
+
+// handleVirtualFolders lists the libraries in the configuration shape.
+// Clients that sync a server (UHF) enumerate libraries here rather than
+// through UserViews, so an empty answer leaves them with no library at all.
+func (s *Server) handleVirtualFolders(w http.ResponseWriter, rq *request) {
+	defs, err := s.views(rq)
+	if err != nil {
+		logger.Warn("Jellyfin virtual folders failed", "stream", rq.streamName(), "err", err)
+	}
+	folders := []virtualFolder{}
+	for _, def := range defs {
+		view := s.viewItem(def)
+		folders = append(folders, virtualFolder{
+			Name:               view.Name,
+			Locations:          []string{view.Path},
+			CollectionType:     view.CollectionType,
+			LibraryOptions:     map[string]any{"Enabled": true, "EnableRealtimeMonitor": false, "PathInfos": []any{}},
+			ItemID:             view.ID,
+			PrimaryImageItemID: view.ID,
+			RefreshStatus:      "Idle",
+		})
+	}
+	writeJSON(w, http.StatusOK, folders)
+}
+
 // handleItems serves the listing route: a catalog's rows, a series' seasons
 // or episodes, a search, a lookup by ids, or the resumable set.
 func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
@@ -239,6 +277,14 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	}
 
 	parent := rq.param("parentId")
+	if parent == "" && !rq.boolParam("recursive") {
+		// No folder and no recursion is the user's root folder, whose
+		// children are the libraries, as on a real Jellyfin server. Clients
+		// that discover libraries this way (UHF) otherwise get catalog rows
+		// where they expect folders, and no library ever loads.
+		s.handleViews(w, rq)
+		return
+	}
 	if parent == "" {
 		items := s.allItems(rq, include)
 		writeJSON(w, http.StatusOK, page(items, start, limit, true))
@@ -362,7 +408,7 @@ func (s *Server) catalogEndsAt(rq *request, def stremio.CatalogDef, skip int) bo
 	return len(metas) == 0
 }
 
-// allItems is the listing without a folder — "everything of this type",
+// allItems is the recursive listing without a folder — "everything of this type",
 // which a catalog server has no way to enumerate. It is the first page of
 // every matching catalog, deduplicated, so the view is populated rather than
 // empty.
