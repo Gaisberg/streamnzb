@@ -2,13 +2,19 @@ package stremio
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
+
+	"github.com/dreulavelle/jhin/rank"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/release"
+	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/search/ranking"
 	"streamnzb/pkg/search/triage"
@@ -180,7 +186,7 @@ func TestFormatContextExposesVerdict(t *testing.T) {
 		},
 	}
 
-	ctx := newFormatContext(cand, 1, 1, 0, "StreamNZB", "Standalone", "Movie", "", true, 0)
+	ctx := newFormatContext(cand, 1, 1, 0, 0, "StreamNZB", "Standalone", "Movie", "", true, 0)
 
 	if ctx.Kind != ranking.KindMovie {
 		t.Errorf("Kind = %q, want %q", ctx.Kind, ranking.KindMovie)
@@ -209,7 +215,7 @@ func TestFormatContextExposesVerdict(t *testing.T) {
 // rather than zero values that read as real ones.
 func TestFormatContextUnprobedRelease(t *testing.T) {
 	cand := triage.Candidate{Release: &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP"}}
-	ctx := newFormatContext(cand, 1, 1, 0, "StreamNZB", "Standalone", "Movie", "", false, 0)
+	ctx := newFormatContext(cand, 1, 1, 0, 0, "StreamNZB", "Standalone", "Movie", "", false, 0)
 
 	if ctx.Verified {
 		t.Error("Verified = true for a release that was never probed")
@@ -219,5 +225,155 @@ func TestFormatContextUnprobedRelease(t *testing.T) {
 	}
 	if ctx.Availability.CheckedDaysAgo != -1 {
 		t.Errorf("Availability.CheckedDaysAgo = %d, want -1 for a record with no timestamp", ctx.Availability.CheckedDaysAgo)
+	}
+}
+
+// ladderProfile keeps every resolution the tests below rank, SD included, and
+// turns the score floor off so a negative score survives to be formatted.
+func ladderProfile(name string, rules []config.RuleConfig, bonus *int) config.FilterProfileConfig {
+	spec := rank.Default()
+	spec.Resolutions[rank.Res480p] = true
+	spec.Resolutions[rank.Res360p] = true
+	spec.Options.MinRank = math.MinInt
+	return config.FilterProfileConfig{Name: name, Ranking: &spec, Rules: rules, LibraryScoreBonus: bonus}
+}
+
+// renderDescriptions runs a ranked list through the live stream path with one
+// description template, so the values come from the same top-score pass a
+// client sees.
+func renderDescriptions(t *testing.T, cands []triage.Candidate, text string) []string {
+	t.Helper()
+	tpl, err := template.New("desc").Funcs(formatTemplateFuncs).Parse(text)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	key := StreamSlotKey{StreamID: "Standalone", ContentType: "movie", ID: "tt1"}
+	streams := buildStreamsFromPlaylist(&playlistResult{Candidates: cands}, key, "Standalone", DefaultServiceName, "http://host", true, &resultFormat{description: tpl})
+	out := make([]string, len(streams))
+	for i, s := range streams {
+		out[i] = s.Description
+	}
+	return out
+}
+
+// .ScoreWithoutResolution takes back exactly what the built-in ladder paid —
+// negative for SD — and nothing else: a rule that scores resolution, the
+// library bonus and the baseline's own points all stay. .Score, .TopScore and
+// the order are the ranking's, untouched. The best adjusted score is found
+// across the list on its own, since the top result is still chosen with the
+// ladder in.
+func TestScoreWithoutResolutionRemovesOnlyTheLadder(t *testing.T) {
+	bonus := 4242
+	s, stream := rankingServerFor(t, ladderProfile("Ladder", []config.RuleConfig{
+		{Name: "Prefer 1080p", When: `resolution == "1080p"`, Action: config.RuleActionScore, Points: 5000},
+	}, &bonus))
+
+	ladder := map[string]int{
+		"Movie 2020 2160p WEB-DL H264-GRP": 3 * ranking.ResolutionTierPoints,
+		"Movie 2020 1080p WEB-DL H264-GRP": ranking.ResolutionTierPoints,
+		"Movie 2020 720p WEB-DL H264-GRP":  0,
+		"Movie 2020 WEB-DL H264-GRP":       0, // unknown ranks with 720p
+		"Movie 2020 480p WEB-DL H264-GRP":  -ranking.ResolutionTierPoints,
+		"Movie 2020 360p WEB-DL H264-GRP":  -2 * ranking.ResolutionTierPoints,
+	}
+	var rels []*release.Release
+	for title := range ladder {
+		rels = append(rels, &release.Release{Title: title})
+	}
+	// Same resolution as a fresh copy above, plus the library bonus.
+	rels = append(rels, &release.Release{Title: "Movie 2020 1080p WEB-DL H264-GRP", IsLibrary: true})
+	out := s.applyRanking(context.Background(), releasesToCandidates(rels), movieSource(), true, "profile", stream)
+	if len(out) != len(rels) {
+		t.Fatalf("got %d results, want %d", len(out), len(rels))
+	}
+
+	base := 0 // what a plain release here scores with no ladder points
+	topScore, topWithout, topWithoutTitle := 0, 0, ""
+	for _, cand := range out {
+		if cand.Release.Title == "Movie 2020 720p WEB-DL H264-GRP" {
+			base = cand.Score
+		}
+	}
+	for i, cand := range out {
+		if i > 0 && cand.Score > out[i-1].Score {
+			t.Fatalf("result %d scored %d above result %d's %d: the order is no longer the score's", i, cand.Score, i-1, out[i-1].Score)
+		}
+		ctx := newFormatContext(cand, i+1, len(out), 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+		if ctx.Score != cand.Score {
+			t.Errorf("%q: .Score = %d, want the ranked %d", cand.Release.Title, ctx.Score, cand.Score)
+		}
+		if got, want := cand.Score-ctx.ScoreWithoutResolution, ladder[cand.Release.Title]; got != want {
+			t.Errorf("%q: removed %d points, want the ladder's %d", cand.Release.Title, got, want)
+		}
+		want := base
+		if strings.Contains(cand.Release.Title, "1080p") {
+			want += 5000
+		}
+		if cand.Release.IsLibraryResult() {
+			want += bonus
+		}
+		if ctx.ScoreWithoutResolution != want {
+			t.Errorf("%q: .ScoreWithoutResolution = %d, want %d", cand.Release.Title, ctx.ScoreWithoutResolution, want)
+		}
+		topScore = max(topScore, cand.Score)
+		if ctx.ScoreWithoutResolution > topWithout {
+			topWithout, topWithoutTitle = ctx.ScoreWithoutResolution, cand.Release.Title
+		}
+	}
+	if !strings.Contains(out[0].Release.Title, "2160p") {
+		t.Fatalf("first result is %q, want the 2160p release the ladder puts first", out[0].Release.Title)
+	}
+	if !strings.Contains(topWithoutTitle, "1080p") {
+		t.Fatalf("best adjusted score is %q's, want a 1080p release's: the test no longer separates the two tops", topWithoutTitle)
+	}
+
+	got := renderDescriptions(t, out, `{{.TopScore}} {{.TopScoreWithoutResolution}}`)
+	for i, line := range got {
+		if want := fmt.Sprintf("%d %d", topScore, topWithout); line != want {
+			t.Errorf("result %d renders %q, want %q", i, line, want)
+		}
+	}
+	stars := renderDescriptions(t, out, `{{stars 5 .TopScoreWithoutResolution .ScoreWithoutResolution}}`)
+	for i, cand := range out {
+		full := stars[i] == "★★★★★"
+		if isBest := strings.Contains(cand.Release.Title, "1080p") && cand.Release.IsLibraryResult(); full != isBest {
+			t.Errorf("%q rates %q against the best adjusted score", cand.Release.Title, stars[i])
+		}
+	}
+}
+
+// When every adjusted score is negative the best of them floors at zero, as
+// .TopScore does.
+func TestTopScoreWithoutResolutionFloorsAtZero(t *testing.T) {
+	s, stream := rankingServerFor(t, ladderProfile("Negative", []config.RuleConfig{
+		{Name: "Penalty", When: `true`, Action: config.RuleActionScore, Points: -100000},
+	}, nil))
+
+	out := rankTitles(t, s, stream, movieSource(),
+		"Movie 2020 2160p WEB-DL H264-GRP",
+		"Movie 2020 480p WEB-DL H264-GRP",
+	)
+	if len(out) != 2 {
+		t.Fatalf("got %d results, want 2", len(out))
+	}
+	for _, cand := range out {
+		if got := scoreWithoutResolution(cand); got >= 0 {
+			t.Fatalf("%q scores %d without the ladder, want a negative pool", cand.Release.Title, got)
+		}
+	}
+	for i, line := range renderDescriptions(t, out, `{{.TopScore}} {{.TopScoreWithoutResolution}}`) {
+		if line != "0 0" {
+			t.Errorf("result %d renders %q, want %q", i, line, "0 0")
+		}
+	}
+}
+
+// With no profile bound the ladder never paid anything, so there is nothing
+// to take out.
+func TestScoreWithoutResolutionUnrankedIsScore(t *testing.T) {
+	rel := &release.Release{Title: "Movie 2020 2160p WEB-DL H264-GRP"}
+	cand := triage.Candidate{Release: rel, Score: 4200, Metadata: parser.ParseReleaseTitle(rel.Title)}
+	if got := scoreWithoutResolution(cand); got != cand.Score {
+		t.Errorf("unranked candidate scores %d without the ladder, want its score %d", got, cand.Score)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/dreulavelle/jhin"
+	"github.com/dreulavelle/jhin/rank"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
@@ -44,6 +45,15 @@ type FormatContext struct {
 	Library  bool   // served from the local release library
 	Size     int64  // bytes
 	Indexer  string // indexer display name
+	// ScoreWithoutResolution is Score with StreamNZB's built-in resolution
+	// ladder taken back out — rules that score resolution still count — and
+	// TopScoreWithoutResolution is the highest of those in the list, so
+	// {{stars 5 .TopScoreWithoutResolution .ScoreWithoutResolution}} rates a
+	// release on everything but its pixels. The order still follows Score,
+	// so the top result need not hold the top adjusted score.
+	// TopScoreWithoutResolution is zero-floored like TopScore.
+	ScoreWithoutResolution    int
+	TopScoreWithoutResolution int
 	// Variants is how many interchangeable copies of this release the merge
 	// kept, counting the one that plays first. 1 means no duplicate was
 	// found; anything higher is how many indexers' NZBs playback can fall
@@ -767,10 +777,23 @@ func humanAge(pubDate string) string {
 	}
 }
 
+// scoreWithoutResolution is a candidate's final score less the points the
+// built-in resolution ladder paid it. The ladder only pays when a profile
+// ranked the list, which is also when Verdict.Kind is set; an unranked
+// candidate's score has nothing to take out.
+func scoreWithoutResolution(cand triage.Candidate) int {
+	if cand.Verdict.Kind == "" || cand.Metadata == nil {
+		return cand.Score
+	}
+	// Metadata holds the ranker's own parse, so jhin's Resolution() buckets it
+	// exactly as the ladder did.
+	return cand.Score - ranking.ResolutionScore((&rank.Torrent{Data: cand.Metadata.Result}).Resolution())
+}
+
 // contentRuntime is the requested title's metadata runtime in seconds (one
 // episode's for episodic content), used to estimate a bitrate when neither the
 // release title nor the indexer supplies one. Zero means unknown.
-func newFormatContext(cand triage.Candidate, index, count, topScore int, service, streamID, contentTitle, caps string, avail bool, contentRuntime float64) FormatContext {
+func newFormatContext(cand triage.Candidate, index, count, topScore, topScoreWithoutResolution int, service, streamID, contentTitle, caps string, avail bool, contentRuntime float64) FormatContext {
 	if service == "" {
 		service = DefaultServiceName
 	}
@@ -796,6 +819,8 @@ func newFormatContext(cand triage.Candidate, index, count, topScore int, service
 			Alternative: cand.Verdict.Seadex.Alternative,
 			DualAudio:   cand.Verdict.Seadex.DualAudio,
 		},
+		ScoreWithoutResolution:    scoreWithoutResolution(cand),
+		TopScoreWithoutResolution: topScoreWithoutResolution,
 	}
 	if probed := cand.Verdict.Probed; probed != nil {
 		ctx.Verified = true
@@ -1261,7 +1286,10 @@ func RenderFormatPreview(nameText, descText string) *FormatPreviewResult {
 		cand.Verdict.Kind = fx.kind
 		cand.Verdict.IsAnime = fx.isAnime
 		cand.Verdict.OriginalLanguage = fx.originalLanguage
-		ctx := newFormatContext(cand, i+1, len(fixtures), topScore, DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
+		// Fixture scores were never paid the resolution ladder, so there is
+		// nothing to take out of them.
+		ctx := newFormatContext(cand, i+1, len(fixtures), topScore, topScore, DefaultServiceName, "Standalone", fx.content, fx.caps, fx.avail, fx.runtime)
+		ctx.ScoreWithoutResolution = fx.score
 
 		builtinName := "StreamNZB\nStandalone"
 		if fx.avail {
