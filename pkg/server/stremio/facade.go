@@ -262,10 +262,11 @@ func (s *Server) playlistViewOf(list *playlistResult, key StreamSlotKey, stream 
 	if f := s.resultFormatForStream(stream); f != nil && f.name != nil {
 		format = f
 	}
-	topScore := 0
+	topScore, topScoreWithoutResolution := 0, 0
 	if format != nil {
 		for _, cand := range list.Candidates {
 			topScore = max(topScore, cand.Score)
+			topScoreWithoutResolution = max(topScoreWithoutResolution, scoreWithoutResolution(cand))
 		}
 	}
 	service := ServiceName(stream)
@@ -284,7 +285,7 @@ func (s *Server) playlistViewOf(list *playlistResult, key StreamSlotKey, stream 
 			entry.Caps = libraryCapsForRelease(rel)
 		}
 		if format != nil {
-			ctx := newFormatContext(cand, i+1, len(list.Candidates), topScore, service, key.StreamID,
+			ctx := newFormatContext(cand, i+1, len(list.Candidates), topScore, topScoreWithoutResolution, service, key.StreamID,
 				view.ContentTitle, capsSummaryLine(cand.Release), entry.Available, view.RuntimeSeconds)
 			// An empty fallback keeps a failed or blank render out of the
 			// label, so the caller falls back to the release title.

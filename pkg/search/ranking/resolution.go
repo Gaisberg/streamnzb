@@ -41,12 +41,19 @@ var resolutionRungs = map[rank.Resolution]int{
 	rank.ResUnknown: 0,
 }
 
+// ResolutionScore is the points the ladder pays a release of this resolution.
+// It is the one place that price is computed, so anything that wants a score
+// with the ladder taken back out subtracts exactly what ranking added.
+func ResolutionScore(res rank.Resolution) int {
+	return resolutionRungs[res] * ResolutionTierPoints
+}
+
 // applyResolutionScore pays each release for the resolution it is. It runs
 // before the floor and the sort, like every other source of points, and over
 // rejected results too, so a release a limit turned away still reports the
 // score it would have had.
 func (p *Profile) applyResolutionScore(results []Result) {
 	for i := range results {
-		results[i].Torrent.Rank += resolutionRungs[results[i].Torrent.Resolution()] * ResolutionTierPoints
+		results[i].Torrent.Rank += ResolutionScore(results[i].Torrent.Resolution())
 	}
 }

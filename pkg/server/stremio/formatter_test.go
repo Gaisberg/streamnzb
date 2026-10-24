@@ -239,6 +239,21 @@ func TestBuildStreamsExposesTopScore(t *testing.T) {
 	}
 }
 
+// The preview's canned scores were never paid the resolution ladder, so the
+// resolution-free rating previews exactly like the plain one.
+func TestRenderFormatPreviewScoreWithoutResolution(t *testing.T) {
+	plain := RenderFormatPreview("", `{{stars 5 .TopScore .Score}}`)
+	adjusted := RenderFormatPreview("", `{{stars 5 .TopScoreWithoutResolution .ScoreWithoutResolution}}`)
+	if adjusted.DescriptionError != "" {
+		t.Fatalf("preview failed: %s", adjusted.DescriptionError)
+	}
+	for i, sample := range adjusted.Samples {
+		if sample.Description != plain.Samples[i].Description {
+			t.Errorf("%s previews %q, want %q", sample.Label, sample.Description, plain.Samples[i].Description)
+		}
+	}
+}
+
 func TestRenderResultTemplateDropsBlankLines(t *testing.T) {
 	// Conditionals on their own lines (issue #187): a false conditional must
 	// not leave an empty line behind, and trailing spaces from end-of-line
@@ -369,7 +384,7 @@ func TestFormatContextEstimatesBitrate(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		ctx := newFormatContext(c.cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, c.runtime)
+		ctx := newFormatContext(c.cand, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, c.runtime)
 		if ctx.Bitrate != c.want {
 			t.Errorf("%s: Bitrate = %q, want %q", c.name, ctx.Bitrate, c.want)
 		}
@@ -384,12 +399,12 @@ func TestFormatContextProbedDurationFillsDuration(t *testing.T) {
 		Release: &release.Release{Title: "Movie 2160p", Size: 9_000_000_000, IsLibrary: true},
 		Verdict: probed,
 	}
-	if ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "1h 55m" {
+	if ctx := newFormatContext(cand, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "1h 55m" {
 		t.Errorf("Duration = %q, want %q", ctx.Duration, "1h 55m")
 	}
 
 	cand.Release.Duration = 7200
-	if ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "2h 0m" {
+	if ctx := newFormatContext(cand, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0); ctx.Duration != "2h 0m" {
 		t.Errorf("Duration with an indexer-reported runtime = %q, want %q", ctx.Duration, "2h 0m")
 	}
 }
@@ -403,7 +418,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 			{Title: "Movie.2160p.Remux-GRP", DetailsURL: "https://slug.invalid/2", Indexer: "DrunkenSlug"},
 		},
 	}
-	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	ctx := newFormatContext(triage.Candidate{Release: rel}, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 
 	if got := renderFormat(t, "{{.Variants}}", ctx); got != "2" {
 		t.Errorf("{{.Variants}} = %q, want %q", got, "2")
@@ -413,7 +428,7 @@ func TestFormatContextExposesMergedCopies(t *testing.T) {
 	}
 	// A lone release still reads as one copy, so {{if gt .Variants 1}} is the
 	// natural guard rather than a zero check.
-	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	lone := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title, Indexer: "NZBGeek"}}, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 	if got := renderFormat(t, "{{.Variants}}", lone); got != "1" {
 		t.Errorf("{{.Variants}} for a single copy = %q, want %q", got, "1")
 	}
@@ -450,7 +465,7 @@ func TestFormatContextExposesParserFlags(t *testing.T) {
 	cand := triage.Candidate{Release: &release.Release{
 		Title: "[Group] Show - 01 (1080p) [Dual Audio] [Eng Subs] [Sample]",
 	}}
-	ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Show", "", false, 0)
+	ctx := newFormatContext(cand, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Show", "", false, 0)
 
 	if got := renderFormat(t, "{{.DualAudio}}", ctx); got != "true" {
 		t.Errorf("{{.DualAudio}} = %q, want %q", got, "true")
@@ -461,7 +476,7 @@ func TestFormatContextExposesParserFlags(t *testing.T) {
 
 	trash := newFormatContext(
 		triage.Candidate{Release: &release.Release{Title: "Movie.2020.1080p.CAM.x264-TRASH"}},
-		1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+		1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 	if got := renderFormat(t, "{{.Trash}}", trash); got != "true" {
 		t.Errorf("{{.Trash}} on a CAM = %q, want %q", got, "true")
 	}
@@ -495,7 +510,7 @@ func TestFormatContextSeparatesParsedLanguagesFromTheMerge(t *testing.T) {
 		SubtitleLanguages: []string{"es"},
 		AudioLanguages:    []string{"de"},
 	}
-	ctx := newFormatContext(cand, 1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+	ctx := newFormatContext(cand, 1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 
 	// The name spells out Arabic subs, and jhin folds them into the languages
 	// as well — so the two parsed lists are what tells them apart.
@@ -520,7 +535,7 @@ func TestFormatContextSeparatesParsedLanguagesFromTheMerge(t *testing.T) {
 		t.Errorf("{{.LanguageSource}} with probed tracks = %q, want %q", got, "measured")
 	}
 	named := newFormatContext(triage.Candidate{Release: &release.Release{Title: rel.Title}},
-		1, 1, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
+		1, 1, 0, 0, DefaultServiceName, "Standalone", "Movie", "", false, 0)
 	if got := renderFormat(t, "{{.LanguageSource}}", named); got != "inferred" {
 		t.Errorf("{{.LanguageSource}} from the name alone = %q, want %q", got, "inferred")
 	}
