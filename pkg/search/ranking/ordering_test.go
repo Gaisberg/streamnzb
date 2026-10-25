@@ -1,6 +1,7 @@
 package ranking_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/dreulavelle/jhin/rank"
@@ -113,6 +114,50 @@ func TestResolutionIsWorthOneTierStep(t *testing.T) {
 	// still does not buy a tier.
 	if remux := rankOfTitle("Movie 2020 1080p BluRay REMUX AVC-GRP"); remux >= uhd {
 		t.Errorf("a 1080p remux scored %d against a 2160p WEB-DL's %d — the tier step is too narrow to hold", remux, uhd)
+	}
+}
+
+// ResolutionScore is the price the ranking path pays, rung for rung, so a
+// score with it subtracted is the same for releases that differ only in
+// resolution — including the SD rungs, which pay negative points.
+func TestResolutionScoreIsWhatRankingPays(t *testing.T) {
+	spec := rank.Default()
+	spec.Resolutions[rank.Res480p] = true
+	spec.Resolutions[rank.Res360p] = true
+	spec.Options.MinRank = math.MinInt
+	p := orderingProfile(t, "ladder", spec, nil)
+
+	cases := []struct {
+		title string
+		res   rank.Resolution
+		want  int
+	}{
+		{"Movie 2020 2160p WEB-DL H264-GRP", rank.Res2160p, 3 * ranking.ResolutionTierPoints},
+		{"Movie 2020 1080p WEB-DL H264-GRP", rank.Res1080p, ranking.ResolutionTierPoints},
+		{"Movie 2020 720p WEB-DL H264-GRP", rank.Res720p, 0},
+		{"Movie 2020 WEB-DL H264-GRP", rank.ResUnknown, 0},
+		{"Movie 2020 480p WEB-DL H264-GRP", rank.Res480p, -ranking.ResolutionTierPoints},
+		{"Movie 2020 360p WEB-DL H264-GRP", rank.Res360p, -2 * ranking.ResolutionTierPoints},
+	}
+	base := 0
+	for i, c := range cases {
+		if got := ranking.ResolutionScore(c.res); got != c.want {
+			t.Errorf("ResolutionScore(%s) = %d, want %d", c.res, got, c.want)
+		}
+		kept, _ := p.ApplyWithRejected(ranking.Request{Kind: ranking.KindMovie},
+			[]triage.Candidate{{Release: &release.Release{Title: c.title}}}, rank.RankOptions{})
+		if len(kept) != 1 {
+			t.Fatalf("%q was not kept", c.title)
+		}
+		if got := kept[0].Torrent.Resolution(); got != c.res {
+			t.Fatalf("%q parsed as %s, want %s", c.title, got, c.res)
+		}
+		without := kept[0].Torrent.Rank - ranking.ResolutionScore(c.res)
+		if i == 0 {
+			base = without
+		} else if without != base {
+			t.Errorf("%s scored %d without its resolution points, want %d like the others", c.res, without, base)
+		}
 	}
 }
 

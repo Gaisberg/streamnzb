@@ -22,8 +22,8 @@ const EXAMPLE_DESCRIPTION_TEMPLATE = `{{.ReleaseTitle}}
 // it. Entries in a `raw` group are printed verbatim; every other entry is
 // wrapped in {{ }}.
 const FORMAT_FIELDS = [
-  { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count', '.TopScore'] },
-  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Variants', '.VariantIndexers', '.Grabs', '.Age', '.Duration', '.Score', '.Avail', '.Library', '.Caps'] },
+  { group: 'Request', fields: ['.Service', '.Stream', '.Content', '.Index', '.Count', '.TopScore', '.TopScoreWithoutResolution'] },
+  { group: 'Release', fields: ['.ReleaseTitle', '.Size', '.Indexer', '.Variants', '.VariantIndexers', '.Grabs', '.Age', '.Duration', '.Score', '.ScoreWithoutResolution', '.Avail', '.Library', '.Caps'] },
   {
     group: 'Rules',
     raw: true,
@@ -41,7 +41,7 @@ const FORMAT_FIELDS = [
   { group: 'SeaDex', fields: ['.Seadex.Checked', '.Seadex.Known', '.Seadex.Best', '.Seadex.Alternative', '.Seadex.DualAudio'] },
   { group: 'Helpers', fields: ['size .Size', 'score .Score', 'join .HDR "|"', 'upper .Codec', 'lower', 'trim', 'replace .Resolution "1080p" "HD"', 'default "?" .Group', 'title .ParsedTitle', 'truncate 24 .ParsedTitle', 'remove "DD" .Audio', 'translate "0123456789" "₀₁₂₃₄₅₆₇₈₉" .Score', 'smallcaps .Network', '.ParsedTitle | title | truncate 24'] },
   { group: 'Lists', fields: ['sortAsc .Audio', 'sortDesc .Channels', 'first .Audio', 'last .Audio', 'length .HDR', 'join (sortAsc .Audio) " · "', 'join (flags .Subtitles) " "', 'join (union .Languages .Subtitles) " · "', 'join (without .Languages .Subtitles) " · "', 'join (without .ParsedSubtitles .ParsedLanguages) " · "'] },
-  { group: 'Math', fields: ['add 100 .Score', 'sub 100 .Score', 'mul 2 .Season', 'div 1000 .Score', 'mod 10 .Score', 'min 50 .Score', 'max 0 .Score', 'stars 5 .TopScore .Score', 'repeat "▰" 3', '.Score | div 1000 | repeat "▰"'] },
+  { group: 'Math', fields: ['add 100 .Score', 'sub 100 .Score', 'mul 2 .Season', 'div 1000 .Score', 'mod 10 .Score', 'min 50 .Score', 'max 0 .Score', 'stars 5 .TopScore .Score', 'stars 5 .TopScoreWithoutResolution .ScoreWithoutResolution', 'repeat "▰" 3', '.Score | div 1000 | repeat "▰"'] },
   {
     group: 'Checks',
     raw: true,

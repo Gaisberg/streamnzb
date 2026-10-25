@@ -29,8 +29,8 @@ release's parsed data.
 
 | Group | Fields |
 |---|---|
-| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.Kind` `.IsAnime` `.OriginalLanguage` |
-| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.Avail` `.Library` `.Caps` `.MatchedRules` |
+| Request | `.Service` `.Stream` `.Content` `.Index` `.Count` `.TopScore` `.TopScoreWithoutResolution` `.Kind` `.IsAnime` `.OriginalLanguage` |
+| Release | `.ReleaseTitle` `.Size` `.Indexer` `.Variants` `.VariantIndexers` `.Grabs` `.Age` `.Duration` `.Score` `.ScoreWithoutResolution` `.Avail` `.Library` `.Caps` `.MatchedRules` |
 | Measured | `.Verified` `.Probed.VideoCodec` `.Probed.AudioCodec` `.Probed.Width` `.Probed.Height` `.Probed.Profile` `.Probed.BitDepth` `.Probed.HDR` `.Probed.DolbyVision` `.Probed.HasHDRFallback` `.Probed.DynamicRange` `.Probed.TracksProbed` `.Probed.AudioLanguages` `.Probed.SubtitleLanguages` `.Probed.AudioStreams` `.Probed.SubtitleStreams` |
 | Availability | `.Availability.Status` `.Availability.Known` `.Availability.OnMyBackbone` `.Availability.CheckedDaysAgo` `.Availability.Compression` |
 | SeaDex | `.Seadex.Checked` `.Seadex.Known` `.Seadex.Best` `.Seadex.Alternative` `.Seadex.DualAudio` |
@@ -301,6 +301,29 @@ thing from math plus `repeat`:
 {{stars 5 .TopScore .Score}}
 {{.Score | min 5000 | max 0 | div 1000 | repeat "▰"}}
 ```
+
+`.Score` includes the points StreamNZB's built-in resolution ladder pays
+(20000 points per tier above 720p, with 720p and unparsed resolutions at 0
+and SD tiers negative), so a 4K release outrates most 1080p ones before
+anything else is counted. `.ScoreWithoutResolution` is the same final score
+with only that built-in ladder taken back out: every rule you wrote stays in
+it, including rules that score resolution, as do the profile's quality and
+attribute points, the library bonus and the preferred-language bonus.
+`.TopScoreWithoutResolution` is the highest of those in the current result
+list, and like `.TopScore` it is 0 when none is above zero. Together they
+rate a release on everything but its pixels — roughly its relative final
+score with the built-in resolution ladder factored out:
+
+```
+{{stars 5 .TopScoreWithoutResolution .ScoreWithoutResolution}}
+```
+
+These two fields are for display only. Ranking, filtering and ordering still
+use `.Score`, and `.Score` and `.TopScore` still include the ladder, so the
+top result is not necessarily the one with the highest
+`.ScoreWithoutResolution`, and its rating need not be full. On a stream with
+no ranking profile nothing pays the ladder, and `.ScoreWithoutResolution`
+equals `.Score`.
 
 ## Conditionals and composition
 
