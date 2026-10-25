@@ -10,6 +10,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/core/persistence"
 )
 
 func newStreamsTestServer(t *testing.T) *Server {
@@ -329,5 +330,131 @@ func TestHandleStreamConfigsScrobbleRoundTrip(t *testing.T) {
 	}
 	if !srv.config.Streams["stream1"].MDBListScrobble {
 		t.Fatal("turning Simkl off also turned MDBList off")
+	}
+}
+
+// newStreamsTestServerWithPlaystate adds a database to the streams server, so
+// deleting a stream has Jellyfin play state to purge.
+func newStreamsTestServerWithPlaystate(t *testing.T) (*Server, *persistence.JellyfinPlaystateStore) {
+	t.Helper()
+	srv := newStreamsTestServer(t)
+	mgr := newStatsTestStateManager(t)
+	// The manager is a process-wide singleton; closing it lets the next test
+	// open its own instead of inheriting these rows.
+	t.Cleanup(func() { _ = mgr.Close() })
+	srv.attemptLister = mgr
+	return srv, mgr.JellyfinPlaystateStore()
+}
+
+func deleteStream(srv *Server, username string) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	srv.handleStreamByUsername(rr, adminStreamRequest(http.MethodDelete, "/api/streams/"+username, nil))
+	return rr
+}
+
+// TestDeleteStreamPurgesJellyfinPlaystate covers the stream's progress going
+// with it, so a stream later created under the same name starts clean, while
+// no other name's rows are touched by a delete that succeeds or one that fails.
+func TestDeleteStreamPurgesJellyfinPlaystate(t *testing.T) {
+	srv, store := newStreamsTestServerWithPlaystate(t)
+	for _, row := range []persistence.JellyfinPlaystate{
+		{StreamName: "stream1", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 5},
+		{StreamName: "stream1", ItemID: "b", ContentType: "movie", ContentID: "ttb", Played: true},
+		{StreamName: "other", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 9},
+		{StreamName: "ghost", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 3},
+	} {
+		if err := store.Upsert(row); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	// A stream that does not exist fails to delete and purges nothing.
+	if rr := deleteStream(srv, "ghost"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("delete missing stream: status %d, want 400", rr.Code)
+	}
+	if _, ok := store.Get("ghost", "a"); !ok {
+		t.Fatal("failed delete purged the name's play state")
+	}
+
+	if rr := deleteStream(srv, "stream1"); rr.Code != http.StatusOK {
+		t.Fatalf("delete: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rows := store.ListForStream("stream1"); len(rows) != 0 {
+		t.Fatalf("deleted stream kept play state: %+v", rows)
+	}
+	if st, ok := store.Get("other", "a"); !ok || st.PositionTicks != 9 {
+		t.Fatalf("another stream's play state changed: %+v (ok=%v)", st, ok)
+	}
+
+	// Deleting it again fails the same way as any missing stream.
+	if rr := deleteStream(srv, "stream1"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("repeat delete: status %d, want 400", rr.Code)
+	}
+	if _, ok := store.Get("other", "a"); !ok {
+		t.Fatal("repeat delete touched another stream's play state")
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "stream1"})
+	rr := httptest.NewRecorder()
+	srv.handleStreamsCreate(rr, adminStreamRequest(http.MethodPost, "/api/streams", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("recreate: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rows := store.ListForStream("stream1"); len(rows) != 0 {
+		t.Fatalf("recreated stream inherited play state: %+v", rows)
+	}
+}
+
+// TestDeleteStreamKeepsPlaystateSharedByTrimmedName covers two streams whose
+// names differ only by surrounding space: the API accepts both, and play state
+// is stored under the trimmed name, so the rows are theirs jointly. Deleting
+// one must not wipe the other's progress; deleting the last of them purges.
+func TestDeleteStreamKeepsPlaystateSharedByTrimmedName(t *testing.T) {
+	srv, store := newStreamsTestServerWithPlaystate(t)
+	body, _ := json.Marshal(map[string]string{"username": "stream1 "})
+	rr := httptest.NewRecorder()
+	srv.handleStreamsCreate(rr, adminStreamRequest(http.MethodPost, "/api/streams", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create padded name: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if err := store.Upsert(persistence.JellyfinPlaystate{StreamName: "stream1", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 5}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if rr := deleteStream(srv, "stream1%20"); rr.Code != http.StatusOK {
+		t.Fatalf("delete padded name: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := srv.streamManager.GetStream("stream1 ", "admin"); err == nil {
+		t.Fatal("padded stream survived the delete")
+	}
+	if _, ok := store.Get("stream1", "a"); !ok {
+		t.Fatal("deleting the padded name wiped the remaining stream's play state")
+	}
+
+	if rr := deleteStream(srv, "stream1"); rr.Code != http.StatusOK {
+		t.Fatalf("delete: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rows := store.ListForStream("stream1"); len(rows) != 0 {
+		t.Fatalf("last stream of the name kept play state: %+v", rows)
+	}
+}
+
+// TestDeleteStreamSurvivesPlaystatePurgeFailure covers the purge failing after
+// the stream is gone: the delete still reports success, as rename does, since
+// the stream cannot be deleted a second time to retry.
+func TestDeleteStreamSurvivesPlaystatePurgeFailure(t *testing.T) {
+	srv, _ := newStreamsTestServerWithPlaystate(t)
+	if err := srv.attemptLister.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := srv.attemptLister.JellyfinPlaystateStore().DeleteForStream("stream1"); err == nil {
+		t.Fatal("purge on a closed database succeeded; the failure path is not exercised")
+	}
+
+	if rr := deleteStream(srv, "stream1"); rr.Code != http.StatusOK {
+		t.Fatalf("delete: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := srv.streamManager.GetStream("stream1", "admin"); err == nil {
+		t.Fatal("stream survived the delete")
 	}
 }

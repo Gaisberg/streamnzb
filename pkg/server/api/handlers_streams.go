@@ -23,6 +23,19 @@ func trimStreamAPIPath(path string) string {
 	return strings.Trim(path, "/")
 }
 
+// streamNameTaken reports whether a remaining stream shares name once trimmed.
+// Play state is stored under the trimmed name, so "alice" and "alice " share
+// rows, and purging for one would wipe the other's progress.
+func streamNameTaken(streams []auth.Stream, name string) bool {
+	name = strings.TrimSpace(name)
+	for _, st := range streams {
+		if strings.TrimSpace(st.Username) == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleManagedStreams(w http.ResponseWriter, r *http.Request) {
 	path := trimStreamAPIPath(r.URL.Path)
 	if path == "configs" {
@@ -153,6 +166,19 @@ func (s *Server) handleStreamByUsername(w http.ResponseWriter, r *http.Request) 
 		if err := s.streamManager.DeleteStream(username); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		// Purged only once the stream is gone: a stream that failed to delete
+		// keeps its progress. Left behind, the rows would be inherited by the
+		// next stream created under this name.
+		s.mu.RLock()
+		mgr := s.attemptLister
+		s.mu.RUnlock()
+		if mgr != nil && !streamNameTaken(s.streamManager.GetAllStreams(), username) {
+			if err := mgr.JellyfinPlaystateStore().DeleteForStream(username); err != nil {
+				// As with rename, the stream itself is deleted; a failed purge is
+				// worth a log, not a failed request the admin cannot retry.
+				logger.Error("Deleting stream Jellyfin play state failed", "stream", username, "err", err)
+			}
 		}
 		if s.strmServer != nil {
 			s.strmServer.ClearSearchCaches()
