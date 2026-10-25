@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,7 +201,10 @@ func (p *fakePlaystate) Upsert(state persistence.JellyfinPlaystate) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.saves++
-	p.rows[state.StreamName+"|"+state.ItemID] = state
+	// Like the store, an upsert never writes the favourite flag.
+	key := state.StreamName + "|" + state.ItemID
+	state.IsFavorite = p.rows[key].IsFavorite
+	p.rows[key] = state
 	return nil
 }
 
@@ -241,6 +245,35 @@ func (p *fakePlaystate) SetPlayed(streamName, itemID, contentType, contentID str
 	st.Played = played
 	st.PositionTicks = 0
 	return p.Upsert(st)
+}
+
+// SetFavorite follows the store: marking writes the flag alone, creating a
+// row if there is none; clearing only updates an existing row.
+func (p *fakePlaystate) SetFavorite(streamName, itemID, contentType, contentID string, favorite bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := streamName + "|" + itemID
+	st, ok := p.rows[key]
+	if !ok {
+		if !favorite {
+			return nil
+		}
+		st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: itemID, ContentType: contentType, ContentID: contentID}
+	}
+	st.IsFavorite = favorite
+	p.rows[key] = st
+	return nil
+}
+
+func (p *fakePlaystate) ListFavorites(streamName string) []persistence.JellyfinPlaystate {
+	var out []persistence.JellyfinPlaystate
+	for _, st := range p.ListForStream(streamName) {
+		if st.IsFavorite {
+			out = append(out, st)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
+	return out
 }
 
 func previews(contentType, prefix string, n int) []stremio.MetaPreview {
@@ -1639,6 +1672,262 @@ func TestProgressResumeAndPlayed(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/UserItems/Resume", "", "X-Emby-Token", testOtherToken), &result)
 	if len(result.Items) != 0 {
 		t.Fatalf("another stream saw this one's progress")
+	}
+}
+
+// TestFavorites covers what clients confirm a favourite by — the UserData
+// answered and the item read back — on every route form and favourite kind,
+// and the IsFavorite listing built from them.
+func TestFavorites(t *testing.T) {
+	f := newFixture()
+	f.resolveOnOpen = true
+	movie, _ := itemIDFor("movie", "tt0111161")
+	series, _ := itemIDFor("series", "tt0903747")
+	season, episode := series.season(1), series.episode(1, 1)
+
+	mark := func(method, path, body string, want bool, headers ...string) {
+		t.Helper()
+		var ud userData
+		decodeInto(t, f.do(method, "/jellyfin"+path, body, headers...), &ud)
+		if ud.IsFavorite != want {
+			t.Fatalf("%s %s: IsFavorite %v, want %v", method, path, ud.IsFavorite, want)
+		}
+	}
+	readBack := func(id itemID) bool {
+		t.Helper()
+		var item baseItem
+		decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items/"+id.encode(), ""), &item)
+		return item.UserData != nil && item.UserData.IsFavorite
+	}
+	list := func(query string, headers ...string) queryResult {
+		t.Helper()
+		var result queryResult
+		decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?Recursive=true&"+query, "", headers...), &result)
+		return result
+	}
+
+	if got := list("Filters=IsFavorite"); got.TotalRecordCount != 0 || got.Items == nil || len(got.Items) != 0 {
+		t.Fatalf("no favourites yet: %+v", got)
+	}
+
+	// Both route forms, each idempotent, and the newer UserData body.
+	mark(http.MethodPost, "/UserFavoriteItems/"+movie.encode(), "", true)
+	mark(http.MethodPost, "/UserFavoriteItems/"+movie.encode(), "", true)
+	mark(http.MethodPost, "/Users/u/FavoriteItems/"+series.encode(), "", true)
+	mark(http.MethodPost, "/UserFavoriteItems/"+season.encode(), "", true)
+	mark(http.MethodPost, "/UserItems/"+episode.encode()+"/UserData", `{"IsFavorite":true}`, true)
+	for _, id := range []itemID{movie, series, season, episode} {
+		if !readBack(id) {
+			t.Fatalf("item %v does not read back as a favourite", id.Kind)
+		}
+	}
+	var seasons, episodes queryResult
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Seasons", ""), &seasons)
+	for _, item := range seasons.Items {
+		if want := item.ID == season.encode(); item.UserData.IsFavorite != want {
+			t.Fatalf("season listing: %s IsFavorite %v", item.Name, item.UserData.IsFavorite)
+		}
+	}
+	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Shows/"+series.encode()+"/Episodes?Season=1", ""), &episodes)
+	if !episodes.Items[0].UserData.IsFavorite || episodes.Items[1].UserData.IsFavorite {
+		t.Fatalf("episode listing: %+v %+v", episodes.Items[0].UserData, episodes.Items[1].UserData)
+	}
+
+	// Playback rewrites the row, and must leave the favourite alone.
+	progress := fmt.Sprintf(`{"ItemId":"%s","PositionTicks":%d}`, movie.encode(), 20*60*ticksPerSecond)
+	f.do(http.MethodPost, "/jellyfin/Sessions/Playing/Stopped", progress)
+	mark(http.MethodPost, "/UserPlayedItems/"+episode.encode(), "", true)
+	if st, _ := f.play.Get("living-room", movie.encode()); !st.IsFavorite || st.PositionTicks != 20*60*ticksPerSecond {
+		t.Fatalf("progress report lost the favourite: %+v", st)
+	}
+
+	// A listing renders from metadata and the cache, never searching, even
+	// with resolve-on-open on and a series among the favourites.
+	searches := f.catalog.playlistCalls
+	all := list("Filters=IsFavorite")
+	if f.catalog.playlistCalls != searches {
+		t.Fatalf("favourites listing searched %d times", f.catalog.playlistCalls-searches)
+	}
+	if all.TotalRecordCount != 4 || len(all.Items) != 4 {
+		t.Fatalf("all favourites: total %d, %d items", all.TotalRecordCount, len(all.Items))
+	}
+	for _, item := range all.Items {
+		if item.UserData == nil || !item.UserData.IsFavorite {
+			t.Fatalf("listed %s without its favourite flag", item.Name)
+		}
+	}
+	for query, want := range map[string]int{
+		"Filters=IsFavoriteOrLikes":                                    4,
+		"isFavorite=true":                                              4,
+		"Filters=IsFavorite&IncludeItemTypes=Movie":                    1,
+		"isFavorite=true&IncludeItemTypes=Series,Season":               2,
+		"Filters=IsFavorite&ParentId=" + viewID("tmdb.trending.movie"): 1,
+	} {
+		if got := list(query); got.TotalRecordCount != want || len(got.Items) != want {
+			t.Fatalf("%s: total %d, %d items, want %d", query, got.TotalRecordCount, len(got.Items), want)
+		}
+	}
+	paged := list("Filters=IsFavorite&StartIndex=1&Limit=2")
+	if paged.TotalRecordCount != 4 || paged.StartIndex != 1 || len(paged.Items) != 2 || paged.Items[0].ID != all.Items[1].ID {
+		t.Fatalf("paged: %+v", paged)
+	}
+	if past := list("Filters=IsFavorite&StartIndex=10"); past.TotalRecordCount != 4 || len(past.Items) != 0 {
+		t.Fatalf("past the end: %+v", past)
+	}
+
+	// Per stream: another stream sees none of these, and its own changes on
+	// the same item leave this stream's favourite in place.
+	if other := list("Filters=IsFavorite", "X-Emby-Token", testOtherToken); other.TotalRecordCount != 0 {
+		t.Fatalf("another stream sees %d favourites", other.TotalRecordCount)
+	}
+	mark(http.MethodPost, "/UserFavoriteItems/"+movie.encode(), "", true, "X-Emby-Token", testOtherToken)
+	mark(http.MethodDelete, "/UserFavoriteItems/"+movie.encode(), "", false, "X-Emby-Token", testOtherToken)
+	if !readBack(movie) {
+		t.Fatal("another stream's unfavourite cleared this stream's")
+	}
+
+	// Clearing, by item or by one of its media sources, and idempotently.
+	mark(http.MethodDelete, "/UserFavoriteItems/"+movie.source(0).encode(), "", false)
+	mark(http.MethodDelete, "/Users/u/FavoriteItems/"+movie.encode(), "", false)
+	mark(http.MethodPost, "/UserItems/"+series.encode()+"/UserData", `{"IsFavorite":false}`, false)
+	if readBack(movie) || readBack(series) {
+		t.Fatal("cleared favourite still reads back")
+	}
+	if got := list("Filters=IsFavorite"); got.TotalRecordCount != 2 {
+		t.Fatalf("after clearing: total %d, want 2", got.TotalRecordCount)
+	}
+	if st, ok := f.play.Get("living-room", movie.encode()); !ok || st.PositionTicks != 20*60*ticksPerSecond {
+		t.Fatalf("clearing the favourite dropped the progress: %+v (ok=%v)", st, ok)
+	}
+
+	// A library is not a favourite, and a series still has no played state
+	// of its own to set.
+	if rec := f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+viewID("tmdb.trending.movie"), ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("favouriting a library: status %d", rec.Code)
+	}
+	if rec := f.do(http.MethodPost, "/jellyfin/UserItems/"+series.encode()+"/UserData", `{"Played":true}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("marking a series played: status %d", rec.Code)
+	}
+}
+
+// TestFavoritesPagingSkipsUnresolvable covers favourites that no longer
+// resolve — a title with no metadata, an episode the series does not have —
+// sitting between ones that do. They are out of the count as well as the
+// page, so a client paging by StartIndex, at any page size and however it
+// advances, sees each favourite exactly once and the total it was promised.
+func TestFavoritesPagingSkipsUnresolvable(t *testing.T) {
+	f := newFixture()
+	f.resolveOnOpen = true
+	movie, _ := itemIDFor("movie", "tt0111161")
+	gone, _ := itemIDFor("movie", "tt0000001")
+	series, _ := itemIDFor("series", "tt0903747")
+	anime, _ := itemIDFor("anime", "kitsu:9")
+	for _, id := range []itemID{movie, gone, series, series.episode(1, 99), anime} {
+		var ud userData
+		decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+id.encode(), ""), &ud)
+	}
+	want := map[string]bool{movie.encode(): true, series.encode(): true, anime.encode(): true}
+
+	searches := f.catalog.playlistCalls
+	for _, limit := range []int{1, 2, 3, 5} {
+		for _, byReceived := range []bool{false, true} {
+			seen := map[string]int{}
+			for start := 0; start < 10; {
+				var got queryResult
+				decodeInto(t, f.do(http.MethodGet, fmt.Sprintf("/jellyfin/Items?Recursive=true&Filters=IsFavorite&StartIndex=%d&Limit=%d", start, limit), ""), &got)
+				if got.TotalRecordCount != len(want) || got.StartIndex != start {
+					t.Fatalf("limit %d start %d: total %d, start %d", limit, start, got.TotalRecordCount, got.StartIndex)
+				}
+				if len(got.Items) == 0 {
+					break
+				}
+				for _, item := range got.Items {
+					seen[item.ID]++
+				}
+				if byReceived {
+					start += len(got.Items)
+				} else {
+					start += limit
+				}
+			}
+			if len(seen) != len(want) {
+				t.Fatalf("limit %d (by received %v): saw %v, want %v", limit, byReceived, seen, want)
+			}
+			for id, n := range seen {
+				if !want[id] || n != 1 {
+					t.Fatalf("limit %d (by received %v): %s seen %d times", limit, byReceived, id, n)
+				}
+			}
+		}
+	}
+	if f.catalog.playlistCalls != searches {
+		t.Fatalf("favourites paging searched %d times", f.catalog.playlistCalls-searches)
+	}
+
+	// The per-user route form, an anime library, and a library that does not
+	// exist for this stream.
+	for path, total := range map[string]int{
+		"/jellyfin/Users/u/Items?Recursive=true&Filters=IsFavorite":                                    3,
+		"/jellyfin/Items?Recursive=true&Filters=IsFavorite&ParentId=" + viewID("kitsu.trending.anime"): 1,
+		"/jellyfin/Items?Recursive=true&Filters=IsFavorite&ParentId=" + viewID("not.a.catalog"):        0,
+	} {
+		var got queryResult
+		decodeInto(t, f.do(http.MethodGet, path, ""), &got)
+		if got.TotalRecordCount != total || len(got.Items) != total || got.Items == nil {
+			t.Fatalf("%s: total %d, %d items, want %d", path, got.TotalRecordCount, len(got.Items), total)
+		}
+	}
+}
+
+// TestUserDataUpdateMixesFavoriteWithWatchedState covers a UserData body
+// carrying a favourite and watched state together. A movie or episode takes
+// both. A series or season has no watched state of its own (#345), so a body
+// that marks one played or sets its position is refused whole, as it was
+// before favourites — rather than keeping the favourite and dropping the
+// rest behind a 200.
+func TestUserDataUpdateMixesFavoriteWithWatchedState(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	series, _ := itemIDFor("series", "tt0903747")
+	episode := series.episode(1, 1)
+	post := func(id itemID, body string) *httptest.ResponseRecorder {
+		return f.do(http.MethodPost, "/jellyfin/UserItems/"+id.encode()+"/UserData", body)
+	}
+
+	var ud userData
+	decodeInto(t, post(movie, `{"IsFavorite":true,"Played":true}`), &ud)
+	if !ud.IsFavorite || !ud.Played {
+		t.Fatalf("movie favourite and played: %+v", ud)
+	}
+	decodeInto(t, post(episode, `{"PlaybackPositionTicks":600000000}`), &ud)
+	if ud.PlaybackPositionTicks != 60*ticksPerSecond || ud.IsFavorite {
+		t.Fatalf("episode position: %+v", ud)
+	}
+	decodeInto(t, post(episode, `{"Played":true,"IsFavorite":false}`), &ud)
+	if !ud.Played || ud.IsFavorite {
+		t.Fatalf("episode played: %+v", ud)
+	}
+
+	for _, body := range []string{
+		`{"Played":true}`,
+		`{"IsFavorite":true,"Played":true}`,
+		`{"IsFavorite":true,"PlaybackPositionTicks":600000000}`,
+		`{}`,
+	} {
+		for _, id := range []itemID{series, series.season(1)} {
+			if rec := post(id, body); rec.Code != http.StatusNotFound {
+				t.Fatalf("%v %s: status %d, want 404", id.Kind, body, rec.Code)
+			}
+			if st, ok := f.play.Get("living-room", id.encode()); ok {
+				t.Fatalf("%v %s: refused request still wrote %+v", id.Kind, body, st)
+			}
+		}
+	}
+	// What a client sends when it posts the whole UserData back: unplayed,
+	// at the start, now a favourite.
+	decodeInto(t, post(series, `{"IsFavorite":true,"Played":false,"PlaybackPositionTicks":0}`), &ud)
+	if !ud.IsFavorite || ud.Played {
+		t.Fatalf("series favourite with its unchanged state: %+v", ud)
 	}
 }
 

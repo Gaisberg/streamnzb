@@ -274,10 +274,20 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 		return
 	}
 	for _, f := range rq.listParam("filters") {
-		if f == "isresumable" {
+		switch f {
+		case "isresumable":
 			writeJSON(w, http.StatusOK, s.resumeResult(rq))
 			return
+		case "isfavorite", "isfavoriteorlikes":
+			// There are no likes here, so the web client's combined filter
+			// is the favourites alone.
+			writeJSON(w, http.StatusOK, s.favoritesResult(rq, include, start, limit))
+			return
 		}
+	}
+	if rq.boolParam("isFavorite") {
+		writeJSON(w, http.StatusOK, s.favoritesResult(rq, include, start, limit))
+		return
 	}
 	if names, asked := s.requestedGenres(rq); asked {
 		writeJSON(w, http.StatusOK, s.genreListing(rq, names, include, start, limit))
@@ -615,6 +625,73 @@ func (s *Server) resumeResult(rq *request) queryResult {
 	return result
 }
 
+// favoriteKinds names each kind that can be a favourite the way
+// IncludeItemTypes spells it.
+var favoriteKinds = map[itemKind]string{kindMovie: "movie", kindSeries: "series", kindSeason: "season", kindEpisode: "episode"}
+
+// favoritesResult lists the stream's favourites, filtered by IncludeItemTypes
+// and, under a library ParentId, by that library's content type.
+//
+// Every favourite is rendered before the page is cut. One that no longer
+// resolves (its metadata gone, an episode the series dropped) is then out of
+// the total as well as the page, so offsets stay contiguous and a client
+// paging by the rows it has received never sees one twice. The cost is a
+// metadata lookup per favourite rather than per row on the page, which the
+// metadata cache answers for all but new titles.
+func (s *Server) favoritesResult(rq *request, include []string, start, limit int) queryResult {
+	if s.opts.Playstate == nil {
+		return page(nil, start, limit, false)
+	}
+	contentType := ""
+	if id, err := decodeItemID(rq.param("parentId")); err == nil && id.Kind == kindView {
+		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
+		if !ok {
+			return page(nil, start, limit, false)
+		}
+		contentType = def.Type
+	}
+	var items []*baseItem
+	for _, st := range s.opts.Playstate.ListFavorites(rq.streamName()) {
+		id, err := decodeItemID(st.ItemID)
+		if err != nil || favoriteKinds[id.Kind] == "" || (contentType != "" && id.ContentType != contentType) {
+			continue
+		}
+		admitted := len(include) == 0
+		for _, t := range include {
+			admitted = admitted || t == favoriteKinds[id.Kind]
+		}
+		if !admitted {
+			continue
+		}
+		if item := s.favoriteRow(rq, id); item != nil {
+			// The listed row already holds the state to render.
+			item.UserData = userDataFor(item.ID, st, true)
+			items = append(items, item)
+		}
+	}
+	return page(items, start, limit, false)
+}
+
+// favoriteRow renders one favourite as a list row. Movies and series are
+// built the way catalog rows are, from metadata alone: itemByID would run
+// resolveOnOpen's search for every favourite series on the page.
+func (s *Server) favoriteRow(rq *request, id itemID) *baseItem {
+	if id.Kind == kindSeason || id.Kind == kindEpisode {
+		item, err := s.itemByID(rq, id)
+		if err != nil {
+			return nil
+		}
+		return item
+	}
+	meta, err := s.meta(rq.Context(), rq, id)
+	if err != nil {
+		return nil
+	}
+	item := s.metaItem(id, meta)
+	s.attachListSources(rq, id, item)
+	return item
+}
+
 func (s *Server) handleItem(w http.ResponseWriter, rq *request, raw string) {
 	id, err := decodeItemID(raw)
 	if err != nil {
@@ -722,7 +799,7 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 		return item, nil
 	case kindSeries:
 		item := s.metaItem(id, meta)
-		item.UserData = &userData{Key: item.ID, ItemID: item.ID}
+		item.UserData = s.userData(rq, id)
 		// Infuse (and other clients) read a series' own MediaSourceCount to
 		// decide whether its quick-play button gets a version-picker chevron,
 		// even though the button actually plays a specific episode. This addon
@@ -750,7 +827,7 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 		for _, season := range seasonsOf(meta) {
 			if season.Number == id.Season {
 				item := s.seasonItem(id.series(), meta, season.Number, season.Episodes)
-				item.UserData = &userData{Key: item.ID, ItemID: item.ID}
+				item.UserData = s.userData(rq, id)
 				return item, nil
 			}
 		}
@@ -784,20 +861,21 @@ func (s *Server) childrenOf(rq *request, id itemID, include []string, recursive 
 	}
 	series := id.series()
 	var items []*baseItem
-	if !wantEpisodes {
-		for _, season := range seasonsOf(meta) {
-			item := s.seasonItem(series, meta, season.Number, season.Episodes)
-			item.UserData = &userData{Key: item.ID, ItemID: item.ID}
-			items = append(items, item)
-		}
-		return items, nil
-	}
-	// One query for the whole listing rather than one per episode.
+	// One query for the whole listing rather than one per row.
 	states := map[string]persistence.JellyfinPlaystate{}
 	if s.opts.Playstate != nil {
 		for _, st := range s.opts.Playstate.ListForStream(rq.streamName()) {
 			states[st.ItemID] = st
 		}
+	}
+	if !wantEpisodes {
+		for _, season := range seasonsOf(meta) {
+			item := s.seasonItem(series, meta, season.Number, season.Episodes)
+			st, ok := states[item.ID]
+			item.UserData = userDataFor(item.ID, st, ok)
+			items = append(items, item)
+		}
+		return items, nil
 	}
 	for _, v := range videosOf(meta) {
 		if id.Kind == kindSeason && v.Season != id.Season {

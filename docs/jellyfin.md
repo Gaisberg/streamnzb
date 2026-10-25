@@ -89,6 +89,30 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Favourites** — the heart (or watchlist) button on a movie, series, season
+  or episode is kept per stream, server-side, alongside the play state, so
+  each stream signed in has its own. Favourites follow the stream through a
+  rename or a database switch, and are deleted with it. Stream names are
+  compared with surrounding spaces trimmed, so a stream named `alice` and one
+  named `alice` with a trailing space share one set, play state included.
+  Clearing a favourite keeps the item's progress. Both route forms
+  (`/UserFavoriteItems/{id}` and `/Users/{id}/FavoriteItems/{id}`) and the
+  `IsFavorite` field of `/UserItems/{id}/UserData` are honoured, and the
+  item's `UserData` reports `IsFavorite` on its own page and in season and
+  episode lists.
+  A Favourites row (`Filters=IsFavorite`, `Filters=IsFavoriteOrLikes` or
+  `isFavorite=true`) lists only favourites, filtered by `IncludeItemTypes` and
+  paged with `StartIndex`/`Limit`. Under a library's `ParentId` it lists the
+  favourites of that library's content type — movie, series or anime — since
+  a favourite does not remember which catalog it was found in; an unknown or
+  disabled library lists nothing, and any other `ParentId` is ignored. A
+  favourite whose title no longer resolves is left out of both the row and its
+  count, which means every favourite's title is looked up (from the metadata
+  cache, for all but new titles) each time the row is listed. The row is in a
+  stable order rather than sorted by name, and building it never runs a
+  search. Catalog grid tiles do not carry a favourite flag, so a client that
+  marks favourites on its grids shows them only on the title page and in the
+  Favourites row.
 
 ## What it deliberately does not do
 

@@ -147,3 +147,29 @@ func (s *Server) setPlayed(rq *request, id itemID, played bool) {
 		logger.Warn("Jellyfin played mark failed", "stream", rq.streamName(), "item", encoded, "err", err)
 	}
 }
+
+func (s *Server) setFavorite(rq *request, id itemID, favorite bool) {
+	if s.opts.Playstate == nil {
+		return
+	}
+	encoded := id.encode()
+	if err := s.opts.Playstate.SetFavorite(rq.streamName(), encoded, id.ContentType, id.playStremioID(), favorite); err != nil {
+		logger.Warn("Jellyfin favourite mark failed", "stream", rq.streamName(), "item", encoded, "err", err)
+	}
+}
+
+// favoriteID resolves an id a client may favourite: a movie, series, season
+// or episode, with a media source standing for the item it plays. Libraries
+// and genres are not favourited.
+func favoriteID(raw string) (itemID, bool) {
+	id, err := decodeItemID(raw)
+	if err != nil {
+		return itemID{}, false
+	}
+	id = id.playable()
+	switch id.Kind {
+	case kindMovie, kindSeries, kindSeason, kindEpisode:
+		return id, true
+	}
+	return itemID{}, false
+}

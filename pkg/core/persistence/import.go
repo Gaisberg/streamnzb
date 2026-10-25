@@ -129,7 +129,7 @@ var importTables = []importTable{
 		columns: cols(
 			txt("stream_name"), txt("item_id"), txt("content_type"), txt("content_id"),
 			num("position_ticks"), num("runtime_ticks"), num("played"), num("play_count"),
-			num("last_played_at"),
+			num("last_played_at"), num("is_favorite"),
 		),
 	},
 	{
