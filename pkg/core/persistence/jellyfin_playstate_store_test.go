@@ -104,6 +104,38 @@ func TestJellyfinPlaystateRenameAndDelete(t *testing.T) {
 	}
 }
 
+// TestJellyfinPlaystateDeleteForStreamIsScoped covers the purge a stream
+// delete runs: only that stream's rows go, and running it again is harmless.
+func TestJellyfinPlaystateDeleteForStreamIsScoped(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+
+	for _, row := range []JellyfinPlaystate{
+		{StreamName: "alice", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 5},
+		{StreamName: "alice", ItemID: "b", ContentType: "series", ContentID: "ttb:1:1", Played: true},
+		{StreamName: "alice-2", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 7},
+		{StreamName: "bob", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 9},
+	} {
+		if err := store.Upsert(row); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.DeleteForStream("alice"); err != nil {
+			t.Fatalf("delete pass %d: %v", i+1, err)
+		}
+	}
+	if rows := store.ListForStream("alice"); len(rows) != 0 {
+		t.Fatalf("alice kept rows: %+v", rows)
+	}
+	if got, ok := store.Get("alice-2", "a"); !ok || got.PositionTicks != 7 {
+		t.Fatalf("a name sharing the prefix lost its row: %+v (ok=%v)", got, ok)
+	}
+	if got, ok := store.Get("bob", "a"); !ok || got.PositionTicks != 9 {
+		t.Fatalf("bob's row changed: %+v (ok=%v)", got, ok)
+	}
+}
+
 // TestJellyfinPlaystateRenameOverStaleRows covers renaming onto a name that
 // still has play state of its own. The table is keyed (stream_name, item_id),
 // so rows left behind by a deleted stream collide with the ones being moved;
