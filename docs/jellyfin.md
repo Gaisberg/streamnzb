@@ -112,7 +112,10 @@ stream never sees another's.
   without it, the seasons, or the episodes with `Recursive=true`. Under a
   season's it lists its favourite episodes. A genre (`GenreIds`, `Genres`, or
   a genre's `ParentId`) keeps the movies and series of that genre, and a
-  genre's `ParentId` only those of its content type. Any other `ParentId`
+  genre's `ParentId` only those of its content type. Genres are matched by
+  their TMDB ids, as a library's genre listing matches them, even when a
+  title's metadata comes from TVDB; only a title whose metadata was built
+  without TMDB (Cinemeta) is matched by its own genre names. Any other `ParentId`
   lists nothing. The same filters narrow an `Ids` lookup, a `searchTerm` search or
   `Filters=IsResumable` to the favourites among its results that the
   `ParentId` admits, by the same rules; a search only finds movies and series,

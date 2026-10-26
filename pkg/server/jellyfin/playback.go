@@ -742,11 +742,16 @@ func (s *Server) handleFavorite(w http.ResponseWriter, rq *request, raw string) 
 		http.NotFound(w, rq.Request)
 		return
 	}
+	var err error
 	switch {
 	case rq.is(http.MethodPost):
-		s.setFavorite(rq, id, true)
+		err = s.setFavorite(rq, id, true)
 	case rq.is(http.MethodDelete):
-		s.setFavorite(rq, id, false)
+		err = s.setFavorite(rq, id, false)
+	}
+	if err != nil {
+		writeFavoriteError(w)
+		return
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))
 }
@@ -788,7 +793,10 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 			http.NotFound(w, rq.Request)
 			return
 		}
-		s.setFavorite(rq, id, *body.IsFavorite)
+		if err := s.setFavorite(rq, id, *body.IsFavorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
 		writeJSON(w, http.StatusOK, s.userData(rq, id))
 		return
 	}
@@ -800,8 +808,13 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	if s.opts.Playstate != nil {
 		prev, _ = s.opts.Playstate.Get(rq.streamName(), id.encode())
 	}
+	// The favourite goes first, so a failed one stops the request before any
+	// played mark or position is written.
 	if body.IsFavorite != nil && *body.IsFavorite != prev.IsFavorite {
-		s.setFavorite(rq, id, *body.IsFavorite)
+		if err := s.setFavorite(rq, id, *body.IsFavorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
 	}
 	marked := body.Played != nil && *body.Played != prev.Played
 	if marked {

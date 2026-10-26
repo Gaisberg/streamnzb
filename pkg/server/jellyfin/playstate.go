@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
@@ -148,14 +149,22 @@ func (s *Server) setPlayed(rq *request, id itemID, played bool) {
 	}
 }
 
-func (s *Server) setFavorite(rq *request, id itemID, favorite bool) {
+// setFavorite returns the store's error so the handler can refuse the
+// request: a client that gets UserData back treats the favourite as saved.
+func (s *Server) setFavorite(rq *request, id itemID, favorite bool) error {
 	if s.opts.Playstate == nil {
-		return
+		return nil
 	}
 	encoded := id.encode()
-	if err := s.opts.Playstate.SetFavorite(rq.streamName(), encoded, id.ContentType, id.playStremioID(), favorite); err != nil {
+	err := s.opts.Playstate.SetFavorite(rq.streamName(), encoded, id.ContentType, id.playStremioID(), favorite)
+	if err != nil {
 		logger.Warn("Jellyfin favourite mark failed", "stream", rq.streamName(), "item", encoded, "err", err)
 	}
+	return err
+}
+
+func writeFavoriteError(w http.ResponseWriter) {
+	http.Error(w, "Favourite update failed", http.StatusInternalServerError)
 }
 
 // favoriteID resolves an id a client may favourite: a movie, series, season

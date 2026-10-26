@@ -733,18 +733,31 @@ func (s *Server) favoritesResult(rq *request, include []string, start, limit int
 		ids[i] = fav.id
 	}
 	metas := s.prefetchMetas(rq, ids)
-	// A genre filter matches as genreListing does, on the rendered row's
-	// genres, so seasons and episodes, which carry none, never match.
 	genres, byGenre := s.requestedGenres(rq)
 	var items []*baseItem
 	for _, fav := range favs {
-		if item := s.favoriteRow(rq, fav.id, metas); item != nil && (!byGenre || hasAnyGenre(item, genres)) {
+		if item := s.favoriteRow(rq, fav.id, metas); item != nil && (!byGenre || s.favoriteInGenres(rq, fav.id, metas[metaKey(fav.id)], genres)) {
 			// The listed row already holds the state to render.
 			item.UserData = userDataFor(item.ID, fav.state, true)
 			items = append(items, item)
 		}
 	}
 	return page(items, start, limit, false)
+}
+
+// favoriteInGenres matches a favourite as genreListing matches a row: on its
+// TMDB genre ids, named from the stream's genre list. The metadata's own
+// names may come from TVDB or Cinemeta, in another vocabulary or language,
+// so they count only when the build read no TMDB details. Seasons and
+// episodes carry no genres, so never match.
+func (s *Server) favoriteInGenres(rq *request, id itemID, meta *stremio.MetaObject, names []string) bool {
+	if meta == nil || (id.Kind != kindMovie && id.Kind != kindSeries) {
+		return false
+	}
+	if len(meta.GenreIDs) > 0 {
+		return hasAnyGenre(s.genreNamesOf(rq, id.ContentType, meta.GenreIDs), names)
+	}
+	return hasAnyGenre(meta.Genres, names)
 }
 
 // metaFetchLimit bounds the metadata lookups one listing runs at once.

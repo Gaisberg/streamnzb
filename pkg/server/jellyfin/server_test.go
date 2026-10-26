@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -83,6 +84,9 @@ type fakeCatalog struct {
 	metaDelay time.Duration
 	inflight  int
 	peakMeta  int
+	// genreLists replaces Genres' English lists, keyed by content type, as
+	// a stream with another metadata language sees TMDB's.
+	genreLists map[string][]stremio.Genre
 }
 
 // releaseCaps is what ffprobe measured on the candidate that played: a
@@ -117,6 +121,9 @@ func (f *fakeCatalog) EnabledCatalogs(*auth.Stream) ([]stremio.CatalogDef, error
 func (f *fakeCatalog) Genres(_ *auth.Stream, contentType string) ([]stremio.Genre, error) {
 	if f.disabled {
 		return nil, stremio.ErrMetadataDisabled
+	}
+	if list, ok := f.genreLists[contentType]; ok {
+		return list, nil
 	}
 	if contentType == "movie" {
 		return []stremio.Genre{{ID: 28, Name: "Action"}, {ID: 35, Name: "Comedy"}, {ID: 18, Name: "Drama"}}, nil
@@ -205,6 +212,10 @@ type fakePlaystate struct {
 	rows  map[string]persistence.JellyfinPlaystate
 	saves int
 	gets  int
+	// favErr fails every SetFavorite, as a database error would, after
+	// counting it in favWrites.
+	favErr    error
+	favWrites int
 }
 
 func newFakePlaystate() *fakePlaystate {
@@ -269,6 +280,10 @@ func (p *fakePlaystate) SetPlayed(streamName, itemID, contentType, contentID str
 func (p *fakePlaystate) SetFavorite(streamName, itemID, contentType, contentID string, favorite bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.favWrites++
+	if p.favErr != nil {
+		return p.favErr
+	}
 	key := streamName + "|" + itemID
 	st, ok := p.rows[key]
 	if !ok {
@@ -2787,5 +2802,71 @@ func TestPrefetchMetasStopsWhenClientGoes(t *testing.T) {
 	metas := f.server.prefetchMetas(rq, []itemID{movie, bb.episode(1, 1), bb.season(1)})
 	if f.catalog.metaCalls != 0 || len(metas) != 2 || metas[metaKey(movie)] != nil || metas[metaKey(bb)] != nil {
 		t.Fatalf("cancelled prefetch: %d lookups, %v", f.catalog.metaCalls, metas)
+	}
+}
+
+// TestFavoriteWriteFailureIsAnError covers a favourite the store fails to
+// write. Every route answers 500 rather than UserData, which a client would
+// take as saved, and a UserData body stops there: no played mark or position
+// is written after the failed favourite. Once the store recovers, the same
+// requests answer as before.
+func TestFavoriteWriteFailureIsAnError(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	series, _ := itemIDFor("series", "tt0903747")
+	episode := series.episode(1, 1)
+	// A half-watched favourite, so clearing it is a write rather than a no-op.
+	f.play.rows["living-room|"+movie.encode()] = persistence.JellyfinPlaystate{
+		StreamName: "living-room", ItemID: movie.encode(), ContentType: "movie", ContentID: "tt0111161",
+		PositionTicks: 60 * ticksPerSecond, PlayCount: 1, IsFavorite: true,
+	}
+	f.play.favErr = errors.New("database is locked")
+	before := maps.Clone(f.play.rows)
+
+	type call struct{ method, path, body string }
+	calls := []call{
+		{http.MethodPost, "/UserFavoriteItems/" + episode.encode(), ""},
+		{http.MethodDelete, "/UserFavoriteItems/" + movie.encode(), ""},
+		{http.MethodPost, "/Users/u/FavoriteItems/" + series.encode(), ""},
+		{http.MethodDelete, "/Users/u/FavoriteItems/" + movie.encode(), ""},
+		{http.MethodPost, "/UserItems/" + episode.encode() + "/UserData", `{"IsFavorite":true,"Played":true}`},
+		{http.MethodPost, "/UserItems/" + episode.encode() + "/UserData", `{"IsFavorite":true,"PlaybackPositionTicks":900000000}`},
+		{http.MethodPost, "/UserItems/" + movie.encode() + "/UserData", `{"IsFavorite":false,"Played":true}`},
+		{http.MethodPost, "/UserItems/" + movie.encode() + "/UserData", `{"IsFavorite":false,"PlaybackPositionTicks":1200000000}`},
+		{http.MethodPost, "/UserItems/" + series.season(1).encode() + "/UserData", `{"IsFavorite":true}`},
+	}
+	for _, c := range calls {
+		writes, saves := f.play.favWrites, f.play.saves
+		rec := f.do(c.method, "/jellyfin"+c.path, c.body)
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "Favourite update failed\n" {
+			t.Fatalf("%s %s %s: %d %q, want 500 and no UserData", c.method, c.path, c.body, rec.Code, rec.Body.String())
+		}
+		if n := f.play.favWrites - writes; n != 1 {
+			t.Fatalf("%s %s %s: %d favourite writes, want 1", c.method, c.path, c.body, n)
+		}
+		if f.play.saves != saves {
+			t.Fatalf("%s %s %s: playback written after the favourite failed", c.method, c.path, c.body)
+		}
+	}
+	if !maps.Equal(f.play.rows, before) {
+		t.Fatalf("failed writes changed play state: %+v, was %+v", f.play.rows, before)
+	}
+
+	f.play.favErr = nil
+	for _, c := range []struct {
+		call
+		favorite, played bool
+	}{
+		{calls[0], true, false},
+		{calls[1], false, false},
+		{calls[2], true, false},
+		{calls[4], true, true},
+		{call{http.MethodPost, calls[6].path, `{"IsFavorite":true}`}, true, false},
+	} {
+		var ud userData
+		decodeInto(t, f.do(c.method, "/jellyfin"+c.path, c.body), &ud)
+		if ud.IsFavorite != c.favorite || ud.Played != c.played {
+			t.Fatalf("%s %s %s after recovery: %+v", c.method, c.path, c.body, ud)
+		}
 	}
 }

@@ -43,12 +43,18 @@ func (s *Server) genreList(rq *request, contentType string) []stremio.Genre {
 
 // rowGenres names a catalog row's genres.
 func (s *Server) rowGenres(rq *request, preview stremio.MetaPreview) []string {
-	if len(preview.GenreIDs) == 0 {
+	return s.genreNamesOf(rq, preview.Type, preview.GenreIDs)
+}
+
+// genreNamesOf names TMDB genre ids from the stream's genre list, the names
+// a genre filter matches.
+func (s *Server) genreNamesOf(rq *request, contentType string, ids []int) []string {
+	if len(ids) == 0 {
 		return nil
 	}
-	list := s.genreList(rq, preview.Type)
+	list := s.genreList(rq, contentType)
 	var names []string
-	for _, id := range preview.GenreIDs {
+	for _, id := range ids {
 		for _, g := range list {
 			if g.ID == id {
 				names = append(names, g.Name)
@@ -199,8 +205,8 @@ func (s *Server) requestedGenres(rq *request) (names []string, asked bool) {
 	return names, asked
 }
 
-func hasAnyGenre(item *baseItem, names []string) bool {
-	for _, have := range item.Genres {
+func hasAnyGenre(genres, names []string) bool {
+	for _, have := range genres {
 		for _, want := range names {
 			if strings.EqualFold(have, want) {
 				return true
@@ -228,7 +234,7 @@ func (s *Server) genreListing(rq *request, names []string, include []string, sta
 	if view == nil {
 		var items []*baseItem
 		for _, item := range s.allItems(rq, include) {
-			if hasAnyGenre(item, names) {
+			if hasAnyGenre(item.Genres, names) {
 				items = append(items, item)
 			}
 		}
@@ -269,7 +275,7 @@ func (s *Server) genreCatalogPage(rq *request, def stremio.CatalogDef, names []s
 		}
 		for _, preview := range metas {
 			item, ok := s.previewItem(rq, preview, parent)
-			if !ok || !hasAnyGenre(item, names) {
+			if !ok || !hasAnyGenre(item.Genres, names) {
 				continue
 			}
 			if matched >= start && matched < start+limit {

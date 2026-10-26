@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -101,7 +102,7 @@ func TestItemsFilterByGenre(t *testing.T) {
 		t.Fatalf("a full filtered page must leave room for more: total %d", result.TotalRecordCount)
 	}
 	for _, item := range result.Items {
-		if !hasAnyGenre(item, []string{"Comedy"}) || len(item.GenreItems) != 1 || item.GenreItems[0].ID != comedy {
+		if !hasAnyGenre(item.Genres, []string{"Comedy"}) || len(item.GenreItems) != 1 || item.GenreItems[0].ID != comedy {
 			t.Fatalf("row %q genres %v / %+v", item.Name, item.Genres, item.GenreItems)
 		}
 	}
@@ -181,5 +182,106 @@ func TestFavoritesNarrowedByGenre(t *testing.T) {
 	}
 	if f.catalog.playlistCalls != searches {
 		t.Fatalf("genre-filtered favourites searched %d times", f.catalog.playlistCalls-searches)
+	}
+}
+
+// TestFavoritesGenreMatchesTheGenreListing covers favourites whose metadata
+// names its genres otherwise than the stream's TMDB genre list: TVDB's
+// "Action" and "Adventure" for TMDB's "Action & Adventure", and English names
+// under a German list. The genre listing reads a row's TMDB ids, so the
+// favourites do too, and a favourite is in a genre exactly when its row is.
+func TestFavoritesGenreMatchesTheGenreListing(t *testing.T) {
+	f := genreFixture()
+	f.catalog.genreLists = map[string][]stremio.Genre{
+		"movie":  {{ID: 28, Name: "Action"}, {ID: 35, Name: "Komödie"}, {ID: 18, Name: "Drama"}},
+		"series": {{ID: 10759, Name: "Action & Abenteuer"}, {ID: 35, Name: "Komödie"}, {ID: 18, Name: "Drama"}},
+	}
+	// genreFixture already makes movie row 1 a comedy and row 2 a drama.
+	rows := f.catalog.rows["tmdb.trending.series"]
+	rows[0].GenreIDs, rows[1].GenreIDs, rows[2].GenreIDs = []int{10759}, []int{35}, []int{18}
+	pilot := []stremio.MetaVideo{{ID: "tt0000001:1:1", Season: 1, Episode: 1}}
+	for key, meta := range map[string]*stremio.MetaObject{
+		"movie/tt0000001":  {ID: "tt0000001", Type: "movie", Name: "Title 1", Genres: []string{"Comedy"}, GenreIDs: []int{35}},
+		"movie/tt0000002":  {ID: "tt0000002", Type: "movie", Name: "Title 2", Genres: []string{"Drama"}, GenreIDs: []int{18}},
+		"series/tt0000001": {ID: "tt0000001", Type: "series", Name: "Title 1", Genres: []string{"Action", "Adventure"}, GenreIDs: []int{10759}, Videos: pilot},
+		"series/tt0000002": {ID: "tt0000002", Type: "series", Name: "Title 2", Genres: []string{"Comedy"}, GenreIDs: []int{35}},
+		// Built without TMDB details (Cinemeta): its own names are all there is.
+		"series/tt0000003": {ID: "tt0000003", Type: "series", Name: "Title 3", Genres: []string{"Drama"}},
+	} {
+		f.catalog.metas[key] = meta
+	}
+	m1, _ := itemIDFor("movie", "tt0000001")
+	m2, _ := itemIDFor("movie", "tt0000002")
+	s1, _ := itemIDFor("series", "tt0000001")
+	s2, _ := itemIDFor("series", "tt0000002")
+	s3, _ := itemIDFor("series", "tt0000003")
+	favorited := map[string]bool{}
+	for _, id := range []itemID{m1, m2, s1, s2, s3, s1.season(1)} {
+		var ud userData
+		decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+id.encode(), ""), &ud)
+		favorited[id.encode()] = true
+	}
+	searches, playlists := len(f.catalog.searchSet()), f.catalog.playlistCalls
+
+	movies := "Recursive=true&ParentId=" + viewID("tmdb.trending.movie")
+	tv := "Recursive=true&ParentId=" + viewID("tmdb.trending.series")
+	adventure := genreID("series", "Action & Abenteuer")
+	for _, c := range []struct {
+		query   string
+		want    []itemID
+		library bool // also compared with the ordinary genre listing
+	}{
+		{tv + "&GenreIds=" + adventure, []itemID{s1}, true},
+		{tv + "&Genres=" + url.QueryEscape("Action & Abenteuer|Komödie"), []itemID{s1, s2}, true},
+		{tv + "&Genres=Action", nil, true}, // TVDB's name, not a TMDB genre
+		{tv + "&Genres=Drama", []itemID{s3}, true},
+		{tv + "&GenreIds=not-an-id", nil, true},
+		{movies + "&GenreIds=" + genreID("movie", "Komödie"), []itemID{m1}, true},
+		{movies + "&Genres=Comedy", nil, true}, // the metadata's English name, not the list's
+		{"Recursive=true&ParentId=" + adventure, []itemID{s1}, false},
+		{"Recursive=true&ParentId=" + genreID("movie", "Komödie"), []itemID{m1}, false},
+		{"Recursive=true&Genres=" + url.QueryEscape("Komödie"), []itemID{m1, s2}, false},
+	} {
+		var want []string
+		for _, id := range c.want {
+			want = append(want, id.encode())
+		}
+		want = slices.Sorted(slices.Values(want))
+		total, got := favoriteIDs(t, f, c.query+"&Filters=IsFavorite")
+		if got = slices.Sorted(slices.Values(got)); total != len(want) || !slices.Equal(got, want) {
+			t.Fatalf("%s: total %d, %v, want %v", c.query, total, got, want)
+		}
+		if !c.library {
+			continue
+		}
+		_, listed := favoriteIDs(t, f, c.query)
+		var both []string
+		for _, id := range listed {
+			if favorited[id] {
+				both = append(both, id)
+			}
+		}
+		if both = slices.Sorted(slices.Values(both)); !slices.Equal(both, want) {
+			t.Fatalf("%s: genre listing holds favourites %v, favourites listing %v", c.query, both, got)
+		}
+	}
+
+	// Paged after the genre narrows, with an exact total, from one metadata
+	// lookup per title (the favourite season shares its series') and no
+	// catalog walk.
+	query := tv + "&Filters=IsFavorite&Genres=" + url.QueryEscape("Action & Abenteuer|Komödie|Drama")
+	_, full := favoriteIDs(t, f, query)
+	metas, walks := f.catalog.metaCalls, len(f.catalog.catalogCalls)
+	if total, ids := favoriteIDs(t, f, query+"&StartIndex=1&Limit=1"); total != 3 || len(full) != 3 || !slices.Equal(ids, full[1:2]) {
+		t.Fatalf("paged: total %d, %v, want %v", total, ids, full[1:2])
+	}
+	if n := f.catalog.metaCalls - metas; n != 3 {
+		t.Fatalf("favourites looked up metadata %d times, want 3", n)
+	}
+	if n := len(f.catalog.catalogCalls) - walks; n != 0 {
+		t.Fatalf("favourites walked the catalog %d times", n)
+	}
+	if len(f.catalog.searchSet()) != searches || f.catalog.playlistCalls != playlists {
+		t.Fatalf("genre-filtered favourites searched")
 	}
 }
