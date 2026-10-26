@@ -803,10 +803,13 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	if body.IsFavorite != nil && *body.IsFavorite != prev.IsFavorite {
 		s.setFavorite(rq, id, *body.IsFavorite)
 	}
-	if body.Played != nil && *body.Played != prev.Played {
+	marked := body.Played != nil && *body.Played != prev.Played
+	if marked {
 		s.setPlayed(rq, id, *body.Played)
 	}
-	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks {
+	// A played mark resets the position, so a zero sent with it is already
+	// stored.
+	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks && (*body.PlaybackPositionTicks != 0 || !marked) {
 		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))

@@ -108,14 +108,17 @@ stream never sees another's.
   favourites of that library's content type — movie, series or anime — since
   a favourite does not remember which catalog it was found in; an unknown or
   disabled library lists nothing. Under a series' `ParentId` it lists that
-  series' favourite seasons, or its episodes with `Recursive=true` or
-  `IncludeItemTypes=Episode`, and under a season's its favourite episodes —
-  the same children the series and season list. Any other `ParentId` lists
-  nothing. The same filters narrow an `Ids` lookup or a `searchTerm` search to
-  the favourites among its results that the `ParentId` admits, by the same
-  rules; a search only finds movies and series, so under a series or season it
-  finds no favourites. Without a favourites filter, `Ids` and `searchTerm`
-  ignore `ParentId` as before. A favourite whose title no longer
+  series' favourite seasons and/or episodes as `IncludeItemTypes` names them;
+  without it, the seasons, or the episodes with `Recursive=true`. Under a
+  season's it lists its favourite episodes. Any other `ParentId` lists
+  nothing. The same filters narrow an `Ids` lookup, a `searchTerm` search or
+  `Filters=IsResumable` to the favourites among its results that the
+  `ParentId` admits, by the same rules; a search only finds movies and series,
+  so under a series or season it finds no favourites. An `Ids` lookup with a
+  favourites filter returns the Favourites row's own rows, so it never runs
+  the search `JELLYFIN_RESOLVE_ON_OPEN` would for a title page. Without a
+  favourites filter, `Ids`, `searchTerm` and `IsResumable` ignore `ParentId`
+  as before. A favourite whose title no longer
   resolves is left out of both the row and its count, which means every
   favourite's title is looked up (from the metadata cache, for all but new
   titles, and once per series however many of its seasons and episodes are
