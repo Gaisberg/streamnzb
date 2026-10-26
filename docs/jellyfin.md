@@ -110,8 +110,10 @@ stream never sees another's.
   disabled library lists nothing. Under a series' `ParentId` it lists that
   series' favourite seasons and/or episodes as `IncludeItemTypes` names them;
   without it, the seasons, or the episodes with `Recursive=true`. Under a
-  season's it lists its favourite episodes. Any other `ParentId` lists
-  nothing. The same filters narrow an `Ids` lookup, a `searchTerm` search or
+  season's it lists its favourite episodes. A genre (`GenreIds`, `Genres`, or
+  a genre's `ParentId`) keeps the movies and series of that genre, and a
+  genre's `ParentId` only those of its content type. Any other `ParentId`
+  lists nothing. The same filters narrow an `Ids` lookup, a `searchTerm` search or
   `Filters=IsResumable` to the favourites among its results that the
   `ParentId` admits, by the same rules; a search only finds movies and series,
   so under a series or season it finds no favourites. An `Ids` lookup with a

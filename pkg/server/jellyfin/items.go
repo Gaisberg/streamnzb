@@ -733,9 +733,12 @@ func (s *Server) favoritesResult(rq *request, include []string, start, limit int
 		ids[i] = fav.id
 	}
 	metas := s.prefetchMetas(rq, ids)
+	// A genre filter matches as genreListing does, on the rendered row's
+	// genres, so seasons and episodes, which carry none, never match.
+	genres, byGenre := s.requestedGenres(rq)
 	var items []*baseItem
 	for _, fav := range favs {
-		if item := s.favoriteRow(rq, fav.id, metas); item != nil {
+		if item := s.favoriteRow(rq, fav.id, metas); item != nil && (!byGenre || hasAnyGenre(item, genres)) {
 			// The listed row already holds the state to render.
 			item.UserData = userDataFor(item.ID, fav.state, true)
 			items = append(items, item)
@@ -802,6 +805,10 @@ func (s *Server) favoriteScope(rq *request, include []string) (func(itemID) bool
 			return nil, false
 		}
 		return func(id itemID) bool { return id.ContentType == def.Type }, true
+	case kindGenre:
+		// The genre's own content type; its name is matched once the row
+		// is rendered (requestedGenres).
+		return func(id itemID) bool { return id.ContentType == parent.ContentType }, true
 	case kindSeries:
 		// The seasons or episodes IncludeItemTypes names; without it,
 		// seasons, or episodes when the client recurses.

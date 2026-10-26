@@ -3,7 +3,10 @@ package jellyfin
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
+
+	"streamnzb/pkg/server/stremio"
 )
 
 // genreFixture marks the TMDB libraries as TMDB and gives the movie rows
@@ -126,5 +129,57 @@ func TestItemsFilterByGenre(t *testing.T) {
 	decodeInto(t, f.do(http.MethodGet, "/jellyfin/Items?ParentId="+genreID("movie", "Action")+"&Recursive=true", ""), &result)
 	if got := fmt.Sprint(genreNames(result.Items)); got != "[Title 10 Title 20]" {
 		t.Fatalf("genre parent: %s", got)
+	}
+}
+
+// TestFavoritesNarrowedByGenre covers a genre filter on the favourites row:
+// GenreIds, Genres and a genre folder ParentId each keep only the favourites
+// of that genre and of the genre's content type, counted before paging, from
+// the metadata the row already fetches.
+func TestFavoritesNarrowedByGenre(t *testing.T) {
+	f := genreFixture()
+	f.resolveOnOpen = true
+	f.catalog.metas["movie/tt0000003"] = &stremio.MetaObject{ID: "tt0000003", Type: "movie", Name: "A Comedy", Genres: []string{"Comedy"}}
+	f.catalog.metas["series/tt0000004"] = &stremio.MetaObject{ID: "tt0000004", Type: "series", Name: "A Sitcom", Genres: []string{"Comedy"}}
+	drama, _ := itemIDFor("movie", "tt0111161") // Drama
+	comedy, _ := itemIDFor("movie", "tt0000003")
+	sitcom, _ := itemIDFor("series", "tt0000004")
+	bb, _ := itemIDFor("series", "tt0903747") // no genres
+	for _, id := range []itemID{drama, comedy, sitcom, bb.episode(1, 1)} {
+		var ud userData
+		decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+id.encode(), ""), &ud)
+	}
+	movies := "Recursive=true&Filters=IsFavorite&ParentId=" + viewID("tmdb.trending.movie")
+
+	for query, want := range map[string][]string{
+		movies + "&GenreIds=" + genreID("movie", "Comedy"):                          {comedy.encode()},
+		movies + "&Genres=Comedy":                                                   {comedy.encode()},
+		movies + "&Genres=comedy|Drama":                                             {comedy.encode(), drama.encode()},
+		movies + "&GenreIds=" + genreID("movie", "Western"):                         {},
+		movies + "&GenreIds=not-an-id":                                              {},
+		"Recursive=true&Filters=IsFavorite&ParentId=" + genreID("movie", "Comedy"):  {comedy.encode()},
+		"Recursive=true&Filters=IsFavorite&ParentId=" + genreID("series", "Comedy"): {sitcom.encode()},
+		"Recursive=true&Filters=IsFavorite&Genres=Comedy":                           {comedy.encode(), sitcom.encode()},
+		"Recursive=true&Filters=IsFavorite&Genres=Comedy&IncludeItemTypes=Series":   {sitcom.encode()},
+		"Recursive=true&Filters=IsFavorite":                                         {drama.encode(), comedy.encode(), sitcom.encode(), bb.episode(1, 1).encode()},
+	} {
+		total, ids := favoriteIDs(t, f, query)
+		if want := slices.Sorted(slices.Values(want)); total != len(want) || !slices.Equal(slices.Sorted(slices.Values(ids)), want) {
+			t.Fatalf("%s: total %d, %v, want %v", query, total, ids, want)
+		}
+	}
+
+	// Paged after the genre narrows, at no metadata cost beyond the row's own.
+	query := movies + "&Genres=Comedy|Drama"
+	_, full := favoriteIDs(t, f, query)
+	metas, searches := f.catalog.metaCalls, f.catalog.playlistCalls
+	if total, ids := favoriteIDs(t, f, query+"&StartIndex=1&Limit=1"); total != 2 || !slices.Equal(ids, full[1:]) {
+		t.Fatalf("paged: total %d, %v, want %v", total, ids, full[1:])
+	}
+	if n := f.catalog.metaCalls - metas; n != 2 {
+		t.Fatalf("genre-filtered favourites looked up metadata %d times, want 2", n)
+	}
+	if f.catalog.playlistCalls != searches {
+		t.Fatalf("genre-filtered favourites searched %d times", f.catalog.playlistCalls-searches)
 	}
 }
