@@ -14,6 +14,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/server/stremio"
@@ -791,13 +792,21 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 		writeJSON(w, http.StatusOK, s.userData(rq, id))
 		return
 	}
-	if body.IsFavorite != nil {
+	// Clients post their whole UserData with any one change, so only what
+	// differs from the stored state is applied. Rewriting an unchanged played
+	// flag or position stamps LastPlayedAt, which moves a half-watched item
+	// to the front of Continue Watching and dates one never played.
+	var prev persistence.JellyfinPlaystate
+	if s.opts.Playstate != nil {
+		prev, _ = s.opts.Playstate.Get(rq.streamName(), id.encode())
+	}
+	if body.IsFavorite != nil && *body.IsFavorite != prev.IsFavorite {
 		s.setFavorite(rq, id, *body.IsFavorite)
 	}
-	if body.Played != nil {
+	if body.Played != nil && *body.Played != prev.Played {
 		s.setPlayed(rq, id, *body.Played)
 	}
-	if body.PlaybackPositionTicks != nil {
+	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks {
 		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))

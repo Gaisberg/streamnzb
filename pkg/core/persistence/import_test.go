@@ -119,11 +119,11 @@ func TestMigrateDataCarriesEveryTable(t *testing.T) {
 	}
 }
 
-// TestImportFromLegacyPlaystateWithoutFavorites covers a file written before
-// favourites existed: its play-state rows import with their progress, as not
-// favourites, rather than failing the table over the missing column.
-func TestImportFromLegacyPlaystateWithoutFavorites(t *testing.T) {
-	dir := t.TempDir()
+// seedLegacyPlaystateFile writes a streamnzb.db into dir from before
+// favourites existed: its jellyfin_playstate has no is_favorite column, and
+// one half-watched row, ('tv', 'a').
+func seedLegacyPlaystateFile(t *testing.T, dir string) {
+	t.Helper()
 	src, closeSrc, err := openSQLiteFile(filepath.Join(dir, dbFilename))
 	if err != nil {
 		t.Fatalf("open legacy file: %v", err)
@@ -143,6 +143,14 @@ func TestImportFromLegacyPlaystateWithoutFavorites(t *testing.T) {
 		}
 	}
 	closeSrc()
+}
+
+// TestImportFromLegacyPlaystateWithoutFavorites covers a file written before
+// favourites existed: its play-state rows import with their progress, as not
+// favourites, rather than failing the table over the missing column.
+func TestImportFromLegacyPlaystateWithoutFavorites(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyPlaystateFile(t, dir)
 
 	target := openTestManager(t)
 	if err := importFromSQLite(target.wdb, dir); err != nil {
@@ -151,6 +159,34 @@ func TestImportFromLegacyPlaystateWithoutFavorites(t *testing.T) {
 	got, ok := target.JellyfinPlaystateStore().Get("tv", "a")
 	if !ok || got.PositionTicks != 50 || got.PlayCount != 1 || got.IsFavorite {
 		t.Fatalf("legacy row: %+v (ok=%v)", got, ok)
+	}
+}
+
+// TestImportFromLegacyPlaystateKeepsExistingFavorites covers a legacy file
+// meeting a row the database in use already holds, favourited. The file's 0
+// for the column it lacks is a fallback, not a value: the first-boot import
+// leaves existing rows alone, so neither the favourite nor the progress
+// recorded since is overwritten. The source-wins copy (a backend switch)
+// never reads a legacy file — its source is the live database, which carries
+// every column.
+func TestImportFromLegacyPlaystateKeepsExistingFavorites(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyPlaystateFile(t, dir)
+
+	target := openTestManager(t)
+	store := target.JellyfinPlaystateStore()
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "tv", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 80, RuntimeTicks: 100, PlayCount: 2}); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	if err := store.SetFavorite("tv", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("seed destination favourite: %v", err)
+	}
+	if err := importFromSQLite(target.wdb, dir); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, ok := store.Get("tv", "a")
+	if !ok || !got.IsFavorite || got.PositionTicks != 80 || got.PlayCount != 2 {
+		t.Fatalf("destination row after a legacy import: %+v (ok=%v)", got, ok)
 	}
 }
 

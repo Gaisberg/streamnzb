@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -256,10 +257,24 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 		limit = min(max(limit, defaultLimit), maxLimit)
 	}
 	include := rq.listParam("includeItemTypes")
+	filters := rq.listParam("filters")
+	// There are no likes here, so the web client's combined filter is the
+	// favourites alone. It narrows every selector below, not just a listing.
+	wantFavorites := rq.boolParam("isFavorite") || slices.Contains(filters, "isfavorite") || slices.Contains(filters, "isfavoriteorlikes")
 
 	if ids := rq.listParam("ids"); len(ids) > 0 {
+		var favorites map[string]persistence.JellyfinPlaystate
+		if wantFavorites {
+			favorites = s.favoriteStates(rq)
+		}
 		result := emptyResult()
 		for _, raw := range ids {
+			if wantFavorites {
+				// Checked before rendering, so a non-favourite costs nothing.
+				if id, ok := favoriteID(raw); !ok || !favorites[id.encode()].IsFavorite {
+					continue
+				}
+			}
 			if item := s.itemByRawID(rq, raw); item != nil {
 				result.Items = append(result.Items, item)
 			}
@@ -270,22 +285,28 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	}
 	if term := rq.param("searchTerm"); term != "" {
 		items := s.search(rq, term, include)
+		if wantFavorites {
+			// The favourites among the matches are all of them, so the
+			// count is exact rather than open-ended.
+			favorites := s.favoriteStates(rq)
+			kept := items[:0]
+			for _, item := range items {
+				if st, ok := favorites[item.ID]; ok {
+					item.UserData = userDataFor(item.ID, st, true)
+					kept = append(kept, item)
+				}
+			}
+			writeJSON(w, http.StatusOK, page(kept, start, limit, false))
+			return
+		}
 		writeJSON(w, http.StatusOK, page(items, start, limit, true))
 		return
 	}
-	for _, f := range rq.listParam("filters") {
-		switch f {
-		case "isresumable":
-			writeJSON(w, http.StatusOK, s.resumeResult(rq))
-			return
-		case "isfavorite", "isfavoriteorlikes":
-			// There are no likes here, so the web client's combined filter
-			// is the favourites alone.
-			writeJSON(w, http.StatusOK, s.favoritesResult(rq, include, start, limit))
-			return
-		}
+	if slices.Contains(filters, "isresumable") {
+		writeJSON(w, http.StatusOK, s.resumeResult(rq))
+		return
 	}
-	if rq.boolParam("isFavorite") {
+	if wantFavorites {
 		writeJSON(w, http.StatusOK, s.favoritesResult(rq, include, start, limit))
 		return
 	}
@@ -629,41 +650,48 @@ func (s *Server) resumeResult(rq *request) queryResult {
 // IncludeItemTypes spells it.
 var favoriteKinds = map[itemKind]string{kindMovie: "movie", kindSeries: "series", kindSeason: "season", kindEpisode: "episode"}
 
+// favoriteStates is the stream's favourites keyed by item id, for checking
+// whether one item is among them.
+func (s *Server) favoriteStates(rq *request) map[string]persistence.JellyfinPlaystate {
+	out := map[string]persistence.JellyfinPlaystate{}
+	if s.opts.Playstate == nil {
+		return out
+	}
+	for _, st := range s.opts.Playstate.ListFavorites(rq.streamName()) {
+		out[st.ItemID] = st
+	}
+	return out
+}
+
 // favoritesResult lists the stream's favourites, filtered by IncludeItemTypes
-// and, under a library ParentId, by that library's content type.
+// and by ParentId: a library admits its content type, and a series or season
+// admits what its own children listing shows (childrenOf).
 //
-// Every favourite is rendered before the page is cut. One that no longer
-// resolves (its metadata gone, an episode the series dropped) is then out of
-// the total as well as the page, so offsets stay contiguous and a client
-// paging by the rows it has received never sees one twice. The cost is a
-// metadata lookup per favourite rather than per row on the page, which the
-// metadata cache answers for all but new titles.
+// Every admitted favourite is rendered before the page is cut. One that no
+// longer resolves (its metadata gone, an episode the series dropped) is then
+// out of the total as well as the page, so offsets stay contiguous and a
+// client paging by the rows it has received never sees one twice. Rendering
+// costs one metadata lookup per title, not per favourite: a series' favourite
+// seasons and episodes share it.
 func (s *Server) favoritesResult(rq *request, include []string, start, limit int) queryResult {
 	if s.opts.Playstate == nil {
 		return page(nil, start, limit, false)
 	}
-	contentType := ""
-	if id, err := decodeItemID(rq.param("parentId")); err == nil && id.Kind == kindView {
-		def, ok := s.enabledCatalogByID(rq, id.CatalogID)
-		if !ok {
-			return page(nil, start, limit, false)
-		}
-		contentType = def.Type
+	admit, ok := s.favoriteScope(rq, include)
+	if !ok {
+		return page(nil, start, limit, false)
 	}
+	metas := map[string]*stremio.MetaObject{}
 	var items []*baseItem
 	for _, st := range s.opts.Playstate.ListFavorites(rq.streamName()) {
 		id, err := decodeItemID(st.ItemID)
-		if err != nil || favoriteKinds[id.Kind] == "" || (contentType != "" && id.ContentType != contentType) {
+		if err != nil || favoriteKinds[id.Kind] == "" || !admit(id) {
 			continue
 		}
-		admitted := len(include) == 0
-		for _, t := range include {
-			admitted = admitted || t == favoriteKinds[id.Kind]
-		}
-		if !admitted {
+		if len(include) > 0 && !slices.Contains(include, favoriteKinds[id.Kind]) {
 			continue
 		}
-		if item := s.favoriteRow(rq, id); item != nil {
+		if item := s.favoriteRow(rq, id, metas); item != nil {
 			// The listed row already holds the state to render.
 			item.UserData = userDataFor(item.ID, st, true)
 			items = append(items, item)
@@ -672,19 +700,73 @@ func (s *Server) favoritesResult(rq *request, include []string, start, limit int
 	return page(items, start, limit, false)
 }
 
-// favoriteRow renders one favourite as a list row. Movies and series are
-// built the way catalog rows are, from metadata alone: itemByID would run
-// resolveOnOpen's search for every favourite series on the page.
-func (s *Server) favoriteRow(rq *request, id itemID) *baseItem {
-	if id.Kind == kindSeason || id.Kind == kindEpisode {
-		item, err := s.itemByID(rq, id)
-		if err != nil {
-			return nil
-		}
-		return item
+// favoriteScope is what the request's ParentId admits. A ParentId that
+// decodes to nothing listable names no favourites, as it names no items in
+// an ordinary listing.
+func (s *Server) favoriteScope(rq *request, include []string) (func(itemID) bool, bool) {
+	raw := rq.param("parentId")
+	if raw == "" {
+		return func(itemID) bool { return true }, true
 	}
-	meta, err := s.meta(rq.Context(), rq, id)
+	parent, err := decodeItemID(raw)
 	if err != nil {
+		return nil, false
+	}
+	series := parent.series().encode()
+	switch parent.Kind {
+	case kindView:
+		def, ok := s.enabledCatalogByID(rq, parent.CatalogID)
+		if !ok {
+			return nil, false
+		}
+		return func(id itemID) bool { return id.ContentType == def.Type }, true
+	case kindSeries:
+		// Seasons, or episodes when the client asks for them or recurses.
+		child := kindSeason
+		if rq.boolParam("recursive") || slices.Contains(include, "episode") {
+			child = kindEpisode
+		}
+		return func(id itemID) bool { return id.Kind == child && id.series().encode() == series }, true
+	case kindSeason:
+		return func(id itemID) bool {
+			return id.Kind == kindEpisode && id.Season == parent.Season && id.series().encode() == series
+		}, true
+	}
+	return nil, false
+}
+
+// favoriteRow renders one favourite as the row its own listing shows: a
+// movie or series as a catalog row, a season or episode as childrenOf
+// renders it, list sources included. metas holds each title's metadata for
+// the request, failures too, so a series is fetched once however many of its
+// seasons and episodes are favourites. Nothing here searches: itemByID would
+// run resolveOnOpen for a series.
+func (s *Server) favoriteRow(rq *request, id itemID, metas map[string]*stremio.MetaObject) *baseItem {
+	key := id.ContentType + "/" + id.baseStremioID()
+	meta, fetched := metas[key]
+	if !fetched {
+		meta, _ = s.meta(rq.Context(), rq, id)
+		metas[key] = meta
+	}
+	if meta == nil {
+		return nil
+	}
+	switch id.Kind {
+	case kindSeason:
+		for _, season := range seasonsOf(meta) {
+			if season.Number == id.Season {
+				return s.seasonItem(id.series(), meta, season.Number, season.Episodes)
+			}
+		}
+		return nil
+	case kindEpisode:
+		for _, v := range videosOf(meta) {
+			if v.Season == id.Season && v.Episode == id.Episode {
+				item := s.episodeItem(id.series(), meta, v)
+				s.attachListSources(rq, id, item)
+				return item
+			}
+		}
 		return nil
 	}
 	item := s.metaItem(id, meta)

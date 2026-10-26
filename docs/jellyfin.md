@@ -99,18 +99,27 @@ stream never sees another's.
   (`/UserFavoriteItems/{id}` and `/Users/{id}/FavoriteItems/{id}`) and the
   `IsFavorite` field of `/UserItems/{id}/UserData` are honoured, and the
   item's `UserData` reports `IsFavorite` on its own page and in season and
-  episode lists.
+  episode lists. A `UserData` body applies only the fields that differ from
+  what is stored, so a client sending its whole `UserData` back to change the
+  favourite leaves the progress and last-played date as they were.
   A Favourites row (`Filters=IsFavorite`, `Filters=IsFavoriteOrLikes` or
   `isFavorite=true`) lists only favourites, filtered by `IncludeItemTypes` and
   paged with `StartIndex`/`Limit`. Under a library's `ParentId` it lists the
   favourites of that library's content type — movie, series or anime — since
   a favourite does not remember which catalog it was found in; an unknown or
-  disabled library lists nothing, and any other `ParentId` is ignored. A
-  favourite whose title no longer resolves is left out of both the row and its
-  count, which means every favourite's title is looked up (from the metadata
-  cache, for all but new titles) each time the row is listed. The row is in a
-  stable order rather than sorted by name, and building it never runs a
-  search. Catalog grid tiles do not carry a favourite flag, so a client that
+  disabled library lists nothing. Under a series' `ParentId` it lists that
+  series' favourite seasons, or its episodes with `Recursive=true` or
+  `IncludeItemTypes=Episode`, and under a season's its favourite episodes —
+  the same children the series and season list. Any other `ParentId` lists
+  nothing. The same filters narrow an `Ids` lookup or a `searchTerm` search to
+  the favourites among its results. A favourite whose title no longer
+  resolves is left out of both the row and its count, which means every
+  favourite's title is looked up (from the metadata cache, for all but new
+  titles, and once per series however many of its seasons and episodes are
+  favourites) each time the row is listed. The row is in a stable order
+  rather than sorted by name, and building it never runs a search. Episodes
+  in it carry the same media sources as in their season's list. Catalog grid
+  tiles do not carry a favourite flag, so a client that
   marks favourites on its grids shows them only on the title page and in the
   Favourites row.
 
