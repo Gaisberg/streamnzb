@@ -265,7 +265,7 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	if ids := rq.listParam("ids"); len(ids) > 0 {
 		var favorites map[string]persistence.JellyfinPlaystate
 		if wantFavorites {
-			favorites = s.favoriteStates(rq)
+			favorites = s.favoriteStates(rq, include)
 		}
 		result := emptyResult()
 		for _, raw := range ids {
@@ -288,7 +288,7 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 		if wantFavorites {
 			// The favourites among the matches are all of them, so the
 			// count is exact rather than open-ended.
-			favorites := s.favoriteStates(rq)
+			favorites := s.favoriteStates(rq, include)
 			kept := items[:0]
 			for _, item := range items {
 				if st, ok := favorites[item.ID]; ok {
@@ -650,15 +650,19 @@ func (s *Server) resumeResult(rq *request) queryResult {
 // IncludeItemTypes spells it.
 var favoriteKinds = map[itemKind]string{kindMovie: "movie", kindSeries: "series", kindSeason: "season", kindEpisode: "episode"}
 
-// favoriteStates is the stream's favourites keyed by item id, for checking
-// whether one item is among them.
-func (s *Server) favoriteStates(rq *request) map[string]persistence.JellyfinPlaystate {
+// favoriteStates is the stream's favourites that the request's ParentId
+// admits (favoriteScope), keyed by item id, for checking whether one item is
+// among them. Ids and search are narrowed by the same scope as the listing.
+func (s *Server) favoriteStates(rq *request, include []string) map[string]persistence.JellyfinPlaystate {
 	out := map[string]persistence.JellyfinPlaystate{}
-	if s.opts.Playstate == nil {
+	admit, ok := s.favoriteScope(rq, include)
+	if s.opts.Playstate == nil || !ok {
 		return out
 	}
 	for _, st := range s.opts.Playstate.ListFavorites(rq.streamName()) {
-		out[st.ItemID] = st
+		if id, err := decodeItemID(st.ItemID); err == nil && admit(id) {
+			out[st.ItemID] = st
+		}
 	}
 	return out
 }

@@ -2472,3 +2472,42 @@ func TestFavoritesListingReadsEachTitleOnce(t *testing.T) {
 		t.Fatalf("pages held %d of %d favourites", len(seen), total)
 	}
 }
+
+// TestFavoriteIdsAndSearchRespectParent covers a favourite filter on an Ids
+// lookup or a search combined with ParentId: each admits only the favourites
+// the favourites listing would under that parent, counted after narrowing.
+// Without a favourite filter both still ignore ParentId, as they always have.
+func TestFavoriteIdsAndSearchRespectParent(t *testing.T) {
+	f, movie, bb, got := favoritesFixture(t)
+	var ud userData
+	decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+bb.encode(), ""), &ud)
+	movies, series := viewID("tmdb.trending.movie"), viewID("tmdb.trending.series")
+
+	ids := "Ids=" + movie.encode() + "," + got.encode()
+	episodes := "Ids=" + bb.episode(1, 1).encode() + "," + got.episode(1, 1).encode() + "," + bb.episode(0, 1).encode() + "," + bb.season(1).encode()
+	for query, want := range map[string][]string{
+		ids + "&Filters=IsFavorite&ParentId=" + movies:                                    {movie.encode()},
+		ids + "&isFavorite=true&ParentId=" + series:                                       {got.encode()},
+		ids + "&Filters=IsFavorite&ParentId=not-an-id":                                    {},
+		episodes + "&Filters=IsFavorite&IncludeItemTypes=Episode&ParentId=" + bb.encode(): {bb.episode(1, 1).encode(), bb.episode(0, 1).encode()},
+		episodes + "&Filters=IsFavorite&ParentId=" + bb.encode():                          {bb.season(1).encode()},
+		episodes + "&Filters=IsFavorite&ParentId=" + bb.season(1).encode():                {bb.episode(1, 1).encode()},
+		ids + "&ParentId=" + movies:                                                       {movie.encode(), got.encode()},
+
+		// Search finds only movies and series, so a series or season parent,
+		// whose favourites are seasons and episodes, admits none of them.
+		"searchTerm=x&Filters=IsFavorite&ParentId=" + movies:                {movie.encode()},
+		"searchTerm=x&Filters=IsFavoriteOrLikes&ParentId=" + series:         {bb.encode()},
+		"searchTerm=x&Filters=IsFavorite&ParentId=" + bb.encode():           {},
+		"searchTerm=x&Filters=IsFavorite&ParentId=" + bb.season(1).encode(): {},
+		"searchTerm=x&Filters=IsFavorite&ParentId=not-an-id":                {},
+	} {
+		total, ids := favoriteIDs(t, f, query)
+		if total != len(want) || !slices.Equal(ids, want) {
+			t.Fatalf("%s: total %d, %v, want %v", query, total, ids, want)
+		}
+	}
+	if _, ids := favoriteIDs(t, f, "searchTerm=x&ParentId="+movies); len(ids) != 2 {
+		t.Fatalf("unfiltered search under a library: %v, want both matches", ids)
+	}
+}

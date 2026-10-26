@@ -112,7 +112,10 @@ stream never sees another's.
   `IncludeItemTypes=Episode`, and under a season's its favourite episodes —
   the same children the series and season list. Any other `ParentId` lists
   nothing. The same filters narrow an `Ids` lookup or a `searchTerm` search to
-  the favourites among its results. A favourite whose title no longer
+  the favourites among its results that the `ParentId` admits, by the same
+  rules; a search only finds movies and series, so under a series or season it
+  finds no favourites. Without a favourites filter, `Ids` and `searchTerm`
+  ignore `ParentId` as before. A favourite whose title no longer
   resolves is left out of both the row and its count, which means every
   favourite's title is looked up (from the metadata cache, for all but new
   titles, and once per series however many of its seasons and episodes are
