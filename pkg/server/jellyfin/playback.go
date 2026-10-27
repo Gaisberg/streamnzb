@@ -14,6 +14,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/server/stremio"
@@ -122,9 +123,8 @@ func (s *Server) servePlayback(w http.ResponseWriter, rq *request) bool {
 	case len(segs) == 2 && segs[0] == "userplayeditems":
 		s.handlePlayed(w, rq, segs[1])
 	case len(segs) == 2 && (segs[0] == "favoriteitems" || segs[0] == "userfavoriteitems"):
-		// Favourites have nowhere to live; the client gets its item's
-		// state back unchanged.
-		s.writeUserData(w, rq, segs[1])
+		// /Users/{id}/FavoriteItems/{itemId} and /UserFavoriteItems/{itemId}
+		s.handleFavorite(w, rq, segs[1])
 	case len(segs) == 3 && segs[0] == "useritems" && segs[2] == "userdata":
 		if rq.is(http.MethodPost) {
 			s.handleUserDataUpdate(w, rq, segs[1])
@@ -733,6 +733,29 @@ func (s *Server) handlePlayed(w http.ResponseWriter, rq *request, raw string) {
 	writeJSON(w, http.StatusOK, s.userData(rq, id))
 }
 
+// handleFavorite marks (POST) or clears (DELETE) a favourite and answers the
+// item's UserData, which is what clients read back to confirm the change.
+// Any other method only reads it, as before favourites were kept.
+func (s *Server) handleFavorite(w http.ResponseWriter, rq *request, raw string) {
+	id, ok := favoriteID(raw)
+	if !ok {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	var err error
+	switch {
+	case rq.is(http.MethodPost):
+		err = s.setFavorite(rq, id, true)
+	case rq.is(http.MethodDelete):
+		err = s.setFavorite(rq, id, false)
+	}
+	if err != nil {
+		writeFavoriteError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.userData(rq, id))
+}
+
 func (s *Server) writeUserData(w http.ResponseWriter, rq *request, raw string) {
 	id, err := decodeItemID(raw)
 	if err != nil {
@@ -743,9 +766,9 @@ func (s *Server) writeUserData(w http.ResponseWriter, rq *request, raw string) {
 }
 
 // handleUserDataUpdate serves POST /UserItems/{id}/UserData, the newer way
-// clients mark an item played or set its position.
+// clients mark an item played or favourite, or set its position.
 func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw string) {
-	id, _, ok := playableID(raw)
+	id, ok := favoriteID(raw)
 	if !ok {
 		http.NotFound(w, rq.Request)
 		return
@@ -753,14 +776,55 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	var body struct {
 		Played                *bool  `json:"Played"`
 		PlaybackPositionTicks *int64 `json:"PlaybackPositionTicks"`
+		IsFavorite            *bool  `json:"IsFavorite"`
 	}
 	if data, err := io.ReadAll(io.LimitReader(rq.Body, 64<<10)); err == nil {
 		_ = json.Unmarshal(data, &body)
 	}
-	if body.Played != nil {
+	if id.Kind != kindMovie && id.Kind != kindEpisode {
+		// A series or season has no progress of its own: marking one played
+		// (#345) or setting its position stays the 404 it always was, and
+		// nothing in the request is applied. Played false and position 0 are
+		// already its state, so a client sending its whole UserData along
+		// with a favourite still gets the favourite.
+		watched := body.Played != nil && *body.Played
+		positioned := body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != 0
+		if body.IsFavorite == nil || watched || positioned {
+			http.NotFound(w, rq.Request)
+			return
+		}
+		if err := s.setFavorite(rq, id, *body.IsFavorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.userData(rq, id))
+		return
+	}
+	// Clients post their whole UserData with any one change, so only what
+	// differs from the stored state is applied. Rewriting an unchanged played
+	// flag or position stamps LastPlayedAt, which moves a half-watched item
+	// to the front of Continue Watching and dates one never played.
+	var prev persistence.JellyfinPlaystate
+	if s.opts.Playstate != nil {
+		prev, _ = s.opts.Playstate.Get(rq.streamName(), id.encode())
+	}
+	// The favourite goes first, so a failed one stops the request before any
+	// played mark or position is written.
+	if body.IsFavorite != nil && *body.IsFavorite != prev.IsFavorite {
+		if err := s.setFavorite(rq, id, *body.IsFavorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
+	}
+	marked := body.Played != nil && *body.Played != prev.Played
+	if marked {
 		s.setPlayed(rq, id, *body.Played)
 	}
-	if body.PlaybackPositionTicks != nil {
+	// A played item is at the start: a position sent with Played true is the
+	// client's stale one and never written back over the reset. An unplayed
+	// mark resets it too, so a zero sent with one is already stored.
+	played := body.Played != nil && *body.Played
+	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks && !played && (*body.PlaybackPositionTicks != 0 || !marked) {
 		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))

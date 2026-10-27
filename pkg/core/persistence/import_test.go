@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -41,6 +42,9 @@ func seedSQLiteSource(t *testing.T) string {
 		StreamName: "default", ContentType: "movie", ContentID: "tt0111161",
 		ContentTitle: "Imported Movie", Payload: `{"total_ms":1500}`,
 	})
+	if err := src.JellyfinPlaystateStore().SetFavorite("default", "fav-item", "movie", "tt0111161", true); err != nil {
+		t.Fatalf("seed favourite: %v", err)
+	}
 	if err := src.Close(); err != nil {
 		t.Fatalf("close source: %v", err)
 	}
@@ -106,6 +110,83 @@ func TestMigrateDataCarriesEveryTable(t *testing.T) {
 	}
 	if diags[0].Payload != `{"total_ms":1500}` || diags[0].ContentTitle != "Imported Movie" {
 		t.Fatalf("diagnostics row not faithful: %+v", diags[0])
+	}
+
+	// The favourite is a column, not a table, so TestImportTablesCoverSchema
+	// would not notice it going missing from the import list.
+	if fav, ok := target.JellyfinPlaystateStore().Get("default", "fav-item"); !ok || !fav.IsFavorite {
+		t.Fatalf("favourite not imported: %+v (ok=%v)", fav, ok)
+	}
+}
+
+// seedLegacyPlaystateFile writes a streamnzb.db into dir from before
+// favourites existed: its jellyfin_playstate has no is_favorite column, and
+// one half-watched row, ('tv', 'a').
+func seedLegacyPlaystateFile(t *testing.T, dir string) {
+	t.Helper()
+	src, closeSrc, err := openSQLiteFile(filepath.Join(dir, dbFilename))
+	if err != nil {
+		t.Fatalf("open legacy file: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE jellyfin_playstate (
+			stream_name TEXT NOT NULL, item_id TEXT NOT NULL,
+			content_type TEXT NOT NULL, content_id TEXT NOT NULL,
+			position_ticks INTEGER NOT NULL DEFAULT 0, runtime_ticks INTEGER NOT NULL DEFAULT 0,
+			played INTEGER NOT NULL DEFAULT 0, play_count INTEGER NOT NULL DEFAULT 0,
+			last_played_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (stream_name, item_id))`,
+		`INSERT INTO jellyfin_playstate VALUES ('tv', 'a', 'movie', 'tta', 50, 100, 0, 1, 1700000000000)`,
+	} {
+		if _, err := src.Exec(stmt); err != nil {
+			t.Fatalf("seed legacy file: %v", err)
+		}
+	}
+	closeSrc()
+}
+
+// TestImportFromLegacyPlaystateWithoutFavorites covers a file written before
+// favourites existed: its play-state rows import with their progress, as not
+// favourites, rather than failing the table over the missing column.
+func TestImportFromLegacyPlaystateWithoutFavorites(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyPlaystateFile(t, dir)
+
+	target := openTestManager(t)
+	if err := importFromSQLite(target.wdb, dir); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, ok := target.JellyfinPlaystateStore().Get("tv", "a")
+	if !ok || got.PositionTicks != 50 || got.PlayCount != 1 || got.IsFavorite {
+		t.Fatalf("legacy row: %+v (ok=%v)", got, ok)
+	}
+}
+
+// TestImportFromLegacyPlaystateKeepsExistingFavorites covers a legacy file
+// meeting a row the database in use already holds, favourited. The file's 0
+// for the column it lacks is a fallback, not a value: the first-boot import
+// leaves existing rows alone, so neither the favourite nor the progress
+// recorded since is overwritten. The source-wins copy (a backend switch)
+// never reads a legacy file — its source is the live database, which carries
+// every column.
+func TestImportFromLegacyPlaystateKeepsExistingFavorites(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyPlaystateFile(t, dir)
+
+	target := openTestManager(t)
+	store := target.JellyfinPlaystateStore()
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "tv", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 80, RuntimeTicks: 100, PlayCount: 2}); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	if err := store.SetFavorite("tv", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("seed destination favourite: %v", err)
+	}
+	if err := importFromSQLite(target.wdb, dir); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	got, ok := store.Get("tv", "a")
+	if !ok || !got.IsFavorite || got.PositionTicks != 80 || got.PlayCount != 2 {
+		t.Fatalf("destination row after a legacy import: %+v (ok=%v)", got, ok)
 	}
 }
 

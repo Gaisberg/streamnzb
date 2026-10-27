@@ -458,3 +458,50 @@ func TestDeleteStreamSurvivesPlaystatePurgeFailure(t *testing.T) {
 		t.Fatal("stream survived the delete")
 	}
 }
+
+// TestDeleteStreamPurgesFavorites covers favourite-only play-state rows —
+// never played, so written by SetFavorite alone — going with the stream, so
+// a stream recreated under the name starts without them; another stream's
+// favourites, including one sharing the trimmed name, stay put.
+func TestDeleteStreamPurgesFavorites(t *testing.T) {
+	srv, store := newStreamsTestServerWithPlaystate(t)
+	for _, name := range []string{"stream1", "other"} {
+		if err := store.SetFavorite(name, "fav", "movie", "ttfav", true); err != nil {
+			t.Fatalf("favourite %s: %v", name, err)
+		}
+	}
+	body, _ := json.Marshal(map[string]string{"username": "stream1 "})
+	rr := httptest.NewRecorder()
+	srv.handleStreamsCreate(rr, adminStreamRequest(http.MethodPost, "/api/streams", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create padded name: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	// The padded stream shares stream1's rows; deleting it keeps them.
+	if rr := deleteStream(srv, "stream1%20"); rr.Code != http.StatusOK {
+		t.Fatalf("delete padded name: status %d", rr.Code)
+	}
+	if favs := store.ListFavorites("stream1"); len(favs) != 1 {
+		t.Fatalf("deleting the padded name took stream1's favourites: %+v", favs)
+	}
+
+	if rr := deleteStream(srv, "stream1"); rr.Code != http.StatusOK {
+		t.Fatalf("delete: status %d", rr.Code)
+	}
+	if rows := store.ListForStream("stream1"); len(rows) != 0 {
+		t.Fatalf("deleted stream kept favourite-only rows: %+v", rows)
+	}
+	if favs := store.ListFavorites("other"); len(favs) != 1 {
+		t.Fatalf("another stream's favourites changed: %+v", favs)
+	}
+
+	body, _ = json.Marshal(map[string]string{"username": "stream1"})
+	rr = httptest.NewRecorder()
+	srv.handleStreamsCreate(rr, adminStreamRequest(http.MethodPost, "/api/streams", body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("recreate: status %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if favs := store.ListFavorites("stream1"); len(favs) != 0 {
+		t.Fatalf("recreated stream inherited favourites: %+v", favs)
+	}
+}

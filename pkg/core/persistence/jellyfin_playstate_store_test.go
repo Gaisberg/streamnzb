@@ -172,3 +172,145 @@ func TestJellyfinPlaystateRenameOverStaleRows(t *testing.T) {
 		t.Fatalf("old name kept rows: %+v", rows)
 	}
 }
+
+// TestJellyfinPlaystateFavoriteRoundTrip covers marking and clearing: both are
+// idempotent, clearing a favourite the stream never had creates nothing, and
+// a favourite-only row is no play — no resume entry, no 1970 played date.
+func TestJellyfinPlaystateFavoriteRoundTrip(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+
+	if err := store.SetFavorite("alice", "a", "movie", "tta", false); err != nil {
+		t.Fatalf("clear missing: %v", err)
+	}
+	if _, ok := store.Get("alice", "a"); ok {
+		t.Fatal("clearing a missing favourite created a row")
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.SetFavorite("alice", "a", "movie", "tta", true); err != nil {
+			t.Fatalf("mark pass %d: %v", i+1, err)
+		}
+	}
+	got, ok := store.Get("alice", "a")
+	if !ok || !got.IsFavorite || got.ContentID != "tta" || got.PositionTicks != 0 || got.PlayCount != 0 || got.Played {
+		t.Fatalf("favourite-only row: %+v (ok=%v)", got, ok)
+	}
+	if !got.LastPlayedAt.IsZero() {
+		t.Fatalf("favourite-only row has a played date: %v", got.LastPlayedAt)
+	}
+	if rows := store.ListResume("alice", 10); len(rows) != 0 {
+		t.Fatalf("favourite-only row is resumable: %+v", rows)
+	}
+	if favs := store.ListFavorites("alice"); len(favs) != 1 || favs[0].ItemID != "a" {
+		t.Fatalf("favourites: %+v", favs)
+	}
+
+	// Per stream: bob's favourite on the same item is his own.
+	if err := store.SetFavorite("bob", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("mark bob: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.SetFavorite("alice", "a", "movie", "tta", false); err != nil {
+			t.Fatalf("clear pass %d: %v", i+1, err)
+		}
+	}
+	if got, ok := store.Get("alice", "a"); !ok || got.IsFavorite {
+		t.Fatalf("cleared favourite: %+v (ok=%v), want the row kept and unmarked", got, ok)
+	}
+	if favs := store.ListFavorites("alice"); len(favs) != 0 {
+		t.Fatalf("cleared favourite still listed: %+v", favs)
+	}
+	if favs := store.ListFavorites("bob"); len(favs) != 1 {
+		t.Fatalf("clearing alice's favourite touched bob's: %+v", favs)
+	}
+}
+
+// TestJellyfinPlaystateFavoriteAndPlaybackWritesAreDisjoint covers the two
+// writers sharing a row: neither may overwrite the other's columns, even when
+// one writes back a state it read before the other wrote.
+func TestJellyfinPlaystateFavoriteAndPlaybackWritesAreDisjoint(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+
+	playedAt := time.UnixMilli(time.Now().Add(-time.Hour).UnixMilli())
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "alice", ItemID: "a", ContentType: "movie", ContentID: "tta", PositionTicks: 5, RuntimeTicks: 100, PlayCount: 2, LastPlayedAt: playedAt}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := store.SetFavorite("alice", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	got, _ := store.Get("alice", "a")
+	if !got.IsFavorite || got.PositionTicks != 5 || got.PlayCount != 2 || !got.LastPlayedAt.Equal(playedAt) {
+		t.Fatalf("marking touched playback: %+v", got)
+	}
+
+	// Playback read the row before the favourite was cleared, and writes back
+	// what it read: the clear must stand.
+	stale, _ := store.Get("alice", "a")
+	if err := store.SetFavorite("alice", "a", "movie", "tta", false); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	stale.PositionTicks = 11
+	if err := store.Upsert(stale); err != nil {
+		t.Fatalf("stale upsert: %v", err)
+	}
+	if got, _ := store.Get("alice", "a"); got.IsFavorite || got.PositionTicks != 11 {
+		t.Fatalf("stale upsert after clear: %+v", got)
+	}
+
+	// And the other way: a progress report read before the favourite was set.
+	stale, _ = store.Get("alice", "a")
+	if err := store.SetFavorite("alice", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("re-mark: %v", err)
+	}
+	stale.PositionTicks = 13
+	if err := store.Upsert(stale); err != nil {
+		t.Fatalf("stale upsert: %v", err)
+	}
+	if got, _ := store.Get("alice", "a"); !got.IsFavorite || got.PositionTicks != 13 {
+		t.Fatalf("stale upsert after mark: %+v", got)
+	}
+
+	for _, played := range []bool{true, false} {
+		if err := store.SetPlayed("alice", "a", "movie", "tta", played); err != nil {
+			t.Fatalf("set played %v: %v", played, err)
+		}
+		if got, _ := store.Get("alice", "a"); !got.IsFavorite || got.Played != played {
+			t.Fatalf("set played %v: %+v", played, got)
+		}
+	}
+
+	// Clearing keeps the row, and with it the progress.
+	if err := store.SetFavorite("alice", "a", "movie", "tta", false); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got, ok := store.Get("alice", "a"); !ok || got.PlayCount == 0 {
+		t.Fatalf("clearing dropped the play state: %+v (ok=%v)", got, ok)
+	}
+}
+
+// TestJellyfinPlaystateFavoriteFollowsTheStream covers rename and delete,
+// which move and drop whole rows, the favourite with them.
+func TestJellyfinPlaystateFavoriteFollowsTheStream(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+
+	if err := store.SetFavorite("alice", "a", "movie", "tta", true); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if _, err := m.RenameStreamReferences("alice", "alicia"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if favs := store.ListFavorites("alice"); len(favs) != 0 {
+		t.Fatalf("old name kept favourites: %+v", favs)
+	}
+	if favs := store.ListFavorites("alicia"); len(favs) != 1 {
+		t.Fatalf("favourite did not move with the rename: %+v", favs)
+	}
+	if err := store.DeleteForStream("alicia"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if favs := store.ListFavorites("alicia"); len(favs) != 0 {
+		t.Fatalf("favourite survived the delete: %+v", favs)
+	}
+}

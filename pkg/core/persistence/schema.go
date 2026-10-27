@@ -220,7 +220,8 @@ const (
 	metadataCacheIndexFetched = `CREATE INDEX IF NOT EXISTS idx_metadata_cache_fetched ON metadata_cache(fetched_at);`
 
 	// jellyfin_playstate is per-stream playback progress reported by Jellyfin
-	// clients (position, played flag, play count). It is user state, so unlike
+	// clients (position, played flag, play count), plus the favourite flag
+	// added in addedColumns. It is user state, so unlike
 	// metadata_cache it is carried across backend switches. item_id is the
 	// Jellyfin item id; content_type/content_id are the Stremio-side keys so
 	// resume rows can be re-rendered without decoding the item id.
@@ -306,6 +307,10 @@ var addedColumns = []addedColumn{
 	// watchlists) back to the Kitsu entry the anime pipeline runs on. 0 means
 	// the source published none.
 	{"anime_mappings", "mal_id", "{INT} NOT NULL DEFAULT 0"},
+	// Jellyfin favourites, kept on the play-state row so they follow the
+	// stream through rename, delete and backend switches. Rows written
+	// before this are not favourites.
+	{"jellyfin_playstate", "is_favorite", "{INT} NOT NULL DEFAULT 0"},
 }
 
 // migratedIndexes are created after the column migrations, since several index

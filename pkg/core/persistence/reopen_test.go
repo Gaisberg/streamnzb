@@ -104,6 +104,11 @@ func TestReopenFromSQLiteToPostgresCarriesData(t *testing.T) {
 	if err := mgr.Set("probe_key", map[string]string{"where": "sqlite"}); err != nil {
 		t.Fatalf("seed kv: %v", err)
 	}
+	for _, item := range []string{"kept", "cleared"} {
+		if err := mgr.JellyfinPlaystateStore().SetFavorite("tv", item, "movie", "tt-"+item, true); err != nil {
+			t.Fatalf("seed favourite: %v", err)
+		}
+	}
 
 	closeOld, err := mgr.Reopen(target, dataDir)
 	if err != nil {
@@ -128,11 +133,20 @@ func TestReopenFromSQLiteToPostgresCarriesData(t *testing.T) {
 		t.Fatalf("kv did not carry across: found=%v probe=%#v err=%v", found, probe, err)
 	}
 
+	if favs := mgr.JellyfinPlaystateStore().ListFavorites("tv"); len(favs) != 2 {
+		t.Fatalf("favourites did not carry across: %+v", favs)
+	}
+
 	// Return leg: history written on Postgres must sync back into the same
 	// SQLite file, alongside what was already there and without duplicating it.
 	mgr.RecordAttempt(RecordAttemptParams{
 		ContentType: "movie", ContentID: "tt-pg", ReleaseTitle: "recorded-on-postgres", Success: true,
 	})
+	// A favourite cleared on Postgres must stay cleared back on SQLite, whose
+	// copy still says otherwise.
+	if err := mgr.JellyfinPlaystateStore().SetFavorite("tv", "cleared", "movie", "tt-cleared", false); err != nil {
+		t.Fatalf("clear favourite on postgres: %v", err)
+	}
 	closeBack, err := mgr.Reopen(Settings{Backend: BackendSQLite, MigrateData: true}, dataDir)
 	if err != nil {
 		t.Fatalf("reopen back onto sqlite: %v", err)
@@ -152,6 +166,10 @@ func TestReopenFromSQLiteToPostgresCarriesData(t *testing.T) {
 	}
 	if titles["probe-tt-carried"] != 1 || titles["recorded-on-postgres"] != 1 || len(attempts) != 2 {
 		t.Fatalf("cross-backend round trip lost or duplicated history: %#v", titles)
+	}
+	favs := mgr.JellyfinPlaystateStore().ListFavorites("tv")
+	if len(favs) != 1 || favs[0].ItemID != "kept" {
+		t.Fatalf("favourites after the round trip: %+v", favs)
 	}
 }
 

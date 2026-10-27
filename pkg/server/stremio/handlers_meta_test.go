@@ -157,8 +157,8 @@ func TestBuildMovieMeta(t *testing.T) {
 	if meta.ReleaseInfo != "1999" || meta.Runtime != "136 min" || meta.IMDBRating != "8.2" {
 		t.Fatalf("meta fields = %q %q %q", meta.ReleaseInfo, meta.Runtime, meta.IMDBRating)
 	}
-	if len(meta.Genres) != 1 || meta.Genres[0] != "Science Fiction" {
-		t.Fatalf("genres = %v", meta.Genres)
+	if len(meta.Genres) != 1 || meta.Genres[0] != "Science Fiction" || !slices.Equal(meta.GenreIDs, []int{878}) {
+		t.Fatalf("genres = %v, ids %v", meta.Genres, meta.GenreIDs)
 	}
 	// The details-panel fields Cinemeta users expect.
 	if len(meta.Cast) != 2 || meta.Cast[0] != "Keanu Reeves" {
@@ -418,13 +418,16 @@ func withCinemetaStub(t *testing.T, srv *Server, handler http.HandlerFunc) {
 // TestBuildSeriesMetaTVDBPrimary pins the source policy: series meta comes
 // from TVDB (resolved from the imdb id), with TVMaze still owning air dates.
 func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
+	var tmdbCalls atomic.Int32
 	tmdbStub := func(w http.ResponseWriter, r *http.Request) {
+		tmdbCalls.Add(1)
 		switch {
 		case strings.Contains(r.URL.Path, "/find/"):
 			_, _ = w.Write([]byte(`{"tv_results": [{"id": 1399}]}`))
 		case strings.HasSuffix(r.URL.Path, "/tv/1399"):
-			// Only the rating is read from here on the TVDB path.
-			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones", "vote_average": 8.4}`))
+			// Only the rating and genre ids are read from here on the TVDB path.
+			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones", "vote_average": 8.4,
+				"genres": [{"id": 10765, "name": "Sci-Fi & Fantasy"}, {"id": 18, "name": "Drama"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -491,6 +494,14 @@ func TestBuildSeriesMetaTVDBPrimary(t *testing.T) {
 	if meta.IMDBRating != "8.4" {
 		t.Fatalf("imdbRating = %q, want TMDB's 8.4 on the TVDB path", meta.IMDBRating)
 	}
+	// The names stay TVDB's; the ids are TMDB's, from the same details call
+	// (find + details, nothing more), so a TMDB genre filter can match them.
+	if !slices.Equal(meta.Genres, []string{"Fantasy"}) || !slices.Equal(meta.GenreIDs, []int{10765, 18}) {
+		t.Fatalf("genres = %v, ids %v", meta.Genres, meta.GenreIDs)
+	}
+	if n := tmdbCalls.Load(); n != 2 {
+		t.Fatalf("TMDB requests = %d, want 2 (find, details)", n)
+	}
 	if len(meta.Trailers) != 1 || meta.Trailers[0].Source != "KPLWWIOCOOQ" {
 		t.Fatalf("trailers = %v", meta.Trailers)
 	}
@@ -509,6 +520,7 @@ func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 			_, _ = w.Write([]byte(`{"tv_results": [{"id": 1399}]}`))
 		case strings.Contains(r.URL.Path, "/tv/1399"):
 			_, _ = w.Write([]byte(`{"id": 1399, "name": "Game of Thrones (TMDB)",
+				"genres": [{"id": 10765, "name": "Sci-Fi & Fantasy"}],
 				"seasons": [{"season_number": 1, "episode_count": 1}],
 				"season/1": {"season_number": 1, "episodes": [
 					{"episode_number": 1, "season_number": 1, "name": "Winter Is Coming", "air_date": "2011-04-17"}
@@ -526,6 +538,9 @@ func TestBuildSeriesMetaSourceOverride(t *testing.T) {
 	}
 	if meta.Name != "Game of Thrones (TMDB)" {
 		t.Fatalf("name = %q, want the TMDB record when tmdb leads series_sources", meta.Name)
+	}
+	if !slices.Equal(meta.Genres, []string{"Sci-Fi & Fantasy"}) || !slices.Equal(meta.GenreIDs, []int{10765}) {
+		t.Fatalf("genres = %v, ids %v", meta.Genres, meta.GenreIDs)
 	}
 }
 

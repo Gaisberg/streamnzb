@@ -572,9 +572,9 @@ func (s *Server) setImages(item *baseItem, id itemID, poster, background, logo s
 	}
 }
 
-// userDataFor renders the stream's progress on an item. Every playable item
-// carries UserData: clients read the Played flag and position off it, and a
-// missing object reads as "never asked".
+// userDataFor renders the stream's progress and favourite flag on an item.
+// Every playable item carries UserData: clients read the Played flag and
+// position off it, and a missing object reads as "never asked".
 func userDataFor(itemID string, state persistence.JellyfinPlaystate, ok bool) *userData {
 	ud := &userData{Key: itemID, ItemID: itemID}
 	if !ok {
@@ -583,6 +583,7 @@ func userDataFor(itemID string, state persistence.JellyfinPlaystate, ok bool) *u
 	ud.PlaybackPositionTicks = state.PositionTicks
 	ud.PlayCount = state.PlayCount
 	ud.Played = state.Played
+	ud.IsFavorite = state.IsFavorite
 	if !state.LastPlayedAt.IsZero() {
 		ud.LastPlayedDate = jellyfinTime(state.LastPlayedAt)
 	}

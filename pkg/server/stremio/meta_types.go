@@ -39,6 +39,11 @@ type MetaObject struct {
 	Trailers    []MetaTrailer  `json:"trailers,omitempty"`
 	Videos      []MetaVideo    `json:"videos,omitempty"`
 	AppExtras   *MetaAppExtras `json:"app_extras,omitempty"`
+	// GenreIDs are the title's TMDB genres, as MetaPreview.GenreIDs names a
+	// row's, whichever source wrote Genres: a TVDB or Cinemeta name need not
+	// be TMDB's, nor in the stream's language. Set wherever the build already
+	// read TMDB details, else empty. Stremio clients never see it.
+	GenreIDs []int `json:"-"`
 }
 
 // MetaAppExtras is the app_extras extension object popularized by the TMDB

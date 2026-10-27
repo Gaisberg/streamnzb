@@ -68,14 +68,17 @@ type Catalog interface {
 	ServePlay(w http.ResponseWriter, r *http.Request, stream *auth.Stream, slotPath string, opts stremio.PlayServeOptions)
 }
 
-// Playstate persists playback progress. *persistence.JellyfinPlaystateStore
-// satisfies it; a nil store is tolerated and simply remembers nothing.
+// Playstate persists playback progress and favourites.
+// *persistence.JellyfinPlaystateStore satisfies it; a nil store is tolerated
+// and simply remembers nothing.
 type Playstate interface {
 	Upsert(state persistence.JellyfinPlaystate) error
 	Get(streamName, itemID string) (persistence.JellyfinPlaystate, bool)
 	ListResume(streamName string, limit int) []persistence.JellyfinPlaystate
 	ListForStream(streamName string) []persistence.JellyfinPlaystate
 	SetPlayed(streamName, itemID, contentType, contentID string, played bool) error
+	SetFavorite(streamName, itemID, contentType, contentID string, favorite bool) error
+	ListFavorites(streamName string) []persistence.JellyfinPlaystate
 }
 
 // Options wires the server to the live process state. Config-derived fields

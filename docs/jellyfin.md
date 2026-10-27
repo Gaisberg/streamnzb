@@ -89,6 +89,50 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Favourites** — the heart (or watchlist) button on a movie, series, season
+  or episode is kept per stream, server-side, alongside the play state, so
+  each stream signed in has its own. Favourites follow the stream through a
+  rename or a database switch, and are deleted with it. Stream names are
+  compared with surrounding spaces trimmed, so a stream named `alice` and one
+  named `alice` with a trailing space share one set, play state included.
+  Clearing a favourite keeps the item's progress. Both route forms
+  (`/UserFavoriteItems/{id}` and `/Users/{id}/FavoriteItems/{id}`) and the
+  `IsFavorite` field of `/UserItems/{id}/UserData` are honoured, and the
+  item's `UserData` reports `IsFavorite` on its own page and in season and
+  episode lists. A `UserData` body applies only the fields that differ from
+  what is stored, so a client sending its whole `UserData` back to change the
+  favourite leaves the progress and last-played date as they were.
+  A Favourites row (`Filters=IsFavorite`, `Filters=IsFavoriteOrLikes` or
+  `isFavorite=true`) lists only favourites, filtered by `IncludeItemTypes` and
+  paged with `StartIndex`/`Limit`. Under a library's `ParentId` it lists the
+  favourites of that library's content type — movie, series or anime — since
+  a favourite does not remember which catalog it was found in; an unknown or
+  disabled library lists nothing. Under a series' `ParentId` it lists that
+  series' favourite seasons and/or episodes as `IncludeItemTypes` names them;
+  without it, the seasons, or the episodes with `Recursive=true`. Under a
+  season's it lists its favourite episodes. A genre (`GenreIds`, `Genres`, or
+  a genre's `ParentId`) keeps the movies and series of that genre, and a
+  genre's `ParentId` only those of its content type. Genres are matched by
+  their TMDB ids, as a library's genre listing matches them, even when a
+  title's metadata comes from TVDB; only a title whose metadata was built
+  without TMDB (Cinemeta) is matched by its own genre names. Any other `ParentId`
+  lists nothing. The same filters narrow an `Ids` lookup, a `searchTerm` search or
+  `Filters=IsResumable` to the favourites among its results that the
+  `ParentId` admits, by the same rules; a search only finds movies and series,
+  so under a series or season it finds no favourites. An `Ids` lookup with a
+  favourites filter returns the Favourites row's own rows, so it never runs
+  the search `JELLYFIN_RESOLVE_ON_OPEN` would for a title page. Without a
+  favourites filter, `Ids`, `searchTerm` and `IsResumable` ignore `ParentId`
+  as before. A favourite whose title no longer
+  resolves is left out of both the row and its count, which means every
+  favourite's title is looked up (from the metadata cache, for all but new
+  titles, and once per series however many of its seasons and episodes are
+  favourites) each time the row is listed. The row is in a stable order
+  rather than sorted by name, and building it never runs a search. Episodes
+  in it carry the same media sources as in their season's list. Catalog grid
+  tiles do not carry a favourite flag, so a client that
+  marks favourites on its grids shows them only on the title page and in the
+  Favourites row.
 
 ## What it deliberately does not do
 

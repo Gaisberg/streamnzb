@@ -282,6 +282,7 @@ func (s *Server) buildMovieMetaFromTMDB(ctx context.Context, profile *config.Met
 		Name:        details.Title,
 		Description: details.Overview,
 		Genres:      genreNames(details.Genres),
+		GenreIDs:    genreIDs(details.Genres),
 	}
 	if details.PosterPath != "" {
 		meta.Poster = tmdbPosterURL + details.PosterPath
@@ -614,12 +615,16 @@ func (s *Server) buildSeriesMetaFromTVDBWithVideos(ctx context.Context, profile 
 	}
 	// TVDB's "score" is a popularity rank, not a 0-10 rating, so the rating
 	// comes from TMDB when the id is known; a TVDB-only series stays unrated
-	// rather than carrying a number on the wrong scale.
+	// rather than carrying a number on the wrong scale. The same details name
+	// the TMDB genres the Jellyfin genre filter matches on.
 	if rid.tmdbID > 0 && rt.tmdbClient != nil {
-		if details, _, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage()); err == nil && details.VoteAverage > 0 {
-			meta.IMDBRating = fmt.Sprintf("%.1f", details.VoteAverage)
-		} else if err != nil {
+		if details, _, err := rt.tmdbClient.GetTVDetailsWithSeasons(rid.tmdbID, nil, profile.EffectiveLanguage()); err != nil {
 			logger.Debug("TMDB rating lookup for TVDB series failed", "tmdb_id", rid.tmdbID, "err", err)
+		} else {
+			if details.VoteAverage > 0 {
+				meta.IMDBRating = fmt.Sprintf("%.1f", details.VoteAverage)
+			}
+			meta.GenreIDs = genreIDs(details.Genres)
 		}
 	}
 	// The canonical id stays as requested; the fallback logo CDN needs imdb.
@@ -728,6 +733,7 @@ func (s *Server) buildSeriesMetaFromTMDB(ctx context.Context, profile *config.Me
 		Name:        details.Name,
 		Description: details.Overview,
 		Genres:      genreNames(details.Genres),
+		GenreIDs:    genreIDs(details.Genres),
 	}
 	if details.PosterPath != "" {
 		meta.Poster = tmdbPosterURL + details.PosterPath
@@ -1129,6 +1135,14 @@ func genreNames(genres []tmdb.Genre) []string {
 		}
 	}
 	return names
+}
+
+func genreIDs(genres []tmdb.Genre) []int {
+	var ids []int
+	for _, g := range genres {
+		ids = append(ids, g.ID)
+	}
+	return ids
 }
 
 var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
