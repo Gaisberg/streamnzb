@@ -820,9 +820,11 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	if marked {
 		s.setPlayed(rq, id, *body.Played)
 	}
-	// A played mark resets the position, so a zero sent with it is already
-	// stored.
-	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks && (*body.PlaybackPositionTicks != 0 || !marked) {
+	// A played item is at the start: a position sent with Played true is the
+	// client's stale one and never written back over the reset. An unplayed
+	// mark resets it too, so a zero sent with one is already stored.
+	played := body.Played != nil && *body.Played
+	if body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != prev.PositionTicks && !played && (*body.PlaybackPositionTicks != 0 || !marked) {
 		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))

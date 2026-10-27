@@ -280,8 +280,9 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 				}
 			}
 			metas := s.prefetchMetas(rq, wanted)
+			inGenres := s.favoriteGenres(rq)
 			for _, id := range wanted {
-				if item := s.favoriteRow(rq, id, metas); item != nil {
+				if item := s.favoriteRow(rq, id, metas); item != nil && (inGenres == nil || inGenres(id, metas[metaKey(id)])) {
 					item.UserData = userDataFor(item.ID, favorites[id.encode()], true)
 					result.Items = append(result.Items, item)
 				}
@@ -304,11 +305,22 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 			// count is exact rather than open-ended.
 			favorites := s.favoriteStates(rq, include)
 			kept := items[:0]
+			var ids []itemID
 			for _, item := range items {
 				if st, ok := favorites[item.ID]; ok {
 					item.UserData = userDataFor(item.ID, st, true)
 					kept = append(kept, item)
+					id, _ := decodeItemID(item.ID)
+					ids = append(ids, id)
 				}
+			}
+			if inGenres := s.favoriteGenres(rq); inGenres != nil {
+				// Matched on the metadata, as the favourites listing matches.
+				metas := s.prefetchMetas(rq, ids)
+				kept = slices.DeleteFunc(kept, func(item *baseItem) bool {
+					id, _ := decodeItemID(item.ID)
+					return !inGenres(id, metas[metaKey(id)])
+				})
 			}
 			writeJSON(w, http.StatusOK, page(kept, start, limit, false))
 			return
@@ -634,6 +646,7 @@ func (s *Server) resumeResult(rq *request, favoritesOnly bool) queryResult {
 	}
 	include := rq.listParam("includeItemTypes")
 	var states []persistence.JellyfinPlaystate
+	var inGenres func(itemID, *stremio.MetaObject) bool
 	if favoritesOnly {
 		// Narrowed before the limit, so the non-favourites played since
 		// never crowd a favourite off the page.
@@ -643,13 +656,12 @@ func (s *Server) resumeResult(rq *request, favoritesOnly bool) queryResult {
 			}
 		}
 		slices.SortStableFunc(states, func(a, b persistence.JellyfinPlaystate) int { return b.LastPlayedAt.Compare(a.LastPlayedAt) })
+		inGenres = s.favoriteGenres(rq)
 	} else {
 		states = s.opts.Playstate.ListResume(rq.streamName(), limit)
 	}
+	var ids []itemID
 	for _, state := range states {
-		if len(result.Items) == limit {
-			break
-		}
 		id, err := decodeItemID(state.ItemID)
 		if err != nil {
 			continue
@@ -663,11 +675,25 @@ func (s *Server) resumeResult(rq *request, favoritesOnly bool) queryResult {
 				continue
 			}
 		}
-		item, err := s.itemByID(rq, id)
-		if err != nil || item == nil {
-			continue
+		ids = append(ids, id)
+	}
+	// Fetched a batch at a time, each as large as the rows the page still
+	// needs and at least one round of lookups, so a cold cache costs the
+	// slowest lookup of a batch rather than their sum, and a title past the
+	// page is fetched only when a row before it drops out.
+	for len(ids) > 0 && len(result.Items) < limit {
+		batch := ids[:min(len(ids), max(limit-len(result.Items), metaFetchLimit))]
+		ids = ids[len(batch):]
+		metas := s.prefetchMetas(rq, batch)
+		for _, id := range batch {
+			meta := metas[metaKey(id)]
+			if len(result.Items) == limit || meta == nil || (inGenres != nil && !inGenres(id, meta)) {
+				continue
+			}
+			if item := s.itemOf(rq, id, meta); item != nil {
+				result.Items = append(result.Items, item)
+			}
 		}
-		result.Items = append(result.Items, item)
 	}
 	result.TotalRecordCount = len(result.Items)
 	return result
@@ -682,9 +708,10 @@ type scopedFavorite struct {
 	state persistence.JellyfinPlaystate
 }
 
-// scopedFavorites is the stream's favourites that the request's ParentId
-// admits (favoriteScope), in the store's order. Every selector a favourite
-// filter narrows reads this one list, so they cannot disagree on the scope.
+// scopedFavorites is the stream's favourites of the kinds IncludeItemTypes
+// names that the request's ParentId admits (favoriteScope), in the store's
+// order. Every selector a favourite filter narrows reads this one list, so
+// they cannot disagree on the scope.
 func (s *Server) scopedFavorites(rq *request, include []string) []scopedFavorite {
 	admit, ok := s.favoriteScope(rq, include)
 	if s.opts.Playstate == nil || !ok {
@@ -692,7 +719,11 @@ func (s *Server) scopedFavorites(rq *request, include []string) []scopedFavorite
 	}
 	var out []scopedFavorite
 	for _, st := range s.opts.Playstate.ListFavorites(rq.streamName()) {
-		if id, err := decodeItemID(st.ItemID); err == nil && favoriteKinds[id.Kind] != "" && admit(id) {
+		id, err := decodeItemID(st.ItemID)
+		if err != nil || favoriteKinds[id.Kind] == "" || (len(include) > 0 && !slices.Contains(include, favoriteKinds[id.Kind])) {
+			continue
+		}
+		if admit(id) {
 			out = append(out, scopedFavorite{id, st})
 		}
 	}
@@ -722,27 +753,32 @@ func (s *Server) favoriteStates(rq *request, include []string) map[string]persis
 // Every page resolves every title, since only that keeps the total exact and
 // no row on two pages when some metadata has gone.
 func (s *Server) favoritesResult(rq *request, include []string, start, limit int) queryResult {
-	var favs []scopedFavorite
-	for _, fav := range s.scopedFavorites(rq, include) {
-		if len(include) == 0 || slices.Contains(include, favoriteKinds[fav.id.Kind]) {
-			favs = append(favs, fav)
-		}
-	}
+	favs := s.scopedFavorites(rq, include)
 	ids := make([]itemID, len(favs))
 	for i, fav := range favs {
 		ids[i] = fav.id
 	}
 	metas := s.prefetchMetas(rq, ids)
-	genres, byGenre := s.requestedGenres(rq)
+	inGenres := s.favoriteGenres(rq)
 	var items []*baseItem
 	for _, fav := range favs {
-		if item := s.favoriteRow(rq, fav.id, metas); item != nil && (!byGenre || s.favoriteInGenres(rq, fav.id, metas[metaKey(fav.id)], genres)) {
+		if item := s.favoriteRow(rq, fav.id, metas); item != nil && (inGenres == nil || inGenres(fav.id, metas[metaKey(fav.id)])) {
 			// The listed row already holds the state to render.
 			item.UserData = userDataFor(item.ID, fav.state, true)
 			items = append(items, item)
 		}
 	}
 	return page(items, start, limit, false)
+}
+
+// favoriteGenres is the request's genre filter (requestedGenres) as every
+// favourite selector applies it, or nil when the request names no genre.
+func (s *Server) favoriteGenres(rq *request) func(itemID, *stremio.MetaObject) bool {
+	names, asked := s.requestedGenres(rq)
+	if !asked {
+		return nil
+	}
+	return func(id itemID, meta *stremio.MetaObject) bool { return s.favoriteInGenres(rq, id, meta, names) }
 }
 
 // favoriteInGenres matches a favourite as genreListing matches a row: on its
@@ -974,12 +1010,18 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.itemOf(rq, id, meta), nil
+}
+
+// itemOf renders a movie, series, season or episode from its title's
+// metadata. nil is an id the metadata does not have.
+func (s *Server) itemOf(rq *request, id itemID, meta *stremio.MetaObject) *baseItem {
 	switch id.Kind {
 	case kindMovie:
 		item := s.metaItem(id, meta)
 		item.UserData = s.userData(rq, id)
 		s.attachMediaSources(rq, id, item)
-		return item, nil
+		return item
 	case kindSeries:
 		item := s.metaItem(id, meta)
 		item.UserData = s.userData(rq, id)
@@ -1005,28 +1047,26 @@ func (s *Server) itemByID(rq *request, id itemID) (*baseItem, error) {
 			s.attachMediaSources(rq, episodeID, item)
 			s.resolveOnOpen(rq, episodeID, item)
 		}
-		return item, nil
+		return item
 	case kindSeason:
 		for _, season := range seasonsOf(meta) {
 			if season.Number == id.Season {
 				item := s.seasonItem(id.series(), meta, season.Number, season.Episodes)
 				item.UserData = s.userData(rq, id)
-				return item, nil
+				return item
 			}
 		}
-		return nil, nil
 	case kindEpisode:
 		for _, v := range videosOf(meta) {
 			if v.Season == id.Season && v.Episode == id.Episode {
 				item := s.episodeItem(id.series(), meta, v)
 				item.UserData = s.userData(rq, id)
 				s.attachMediaSources(rq, id, item)
-				return item, nil
+				return item
 			}
 		}
-		return nil, nil
 	}
-	return nil, nil
+	return nil
 }
 
 // childrenOf lists a series' seasons, or its episodes when the client asks

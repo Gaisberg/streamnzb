@@ -2698,6 +2698,48 @@ func TestPlayedWithZeroPositionWritesOnce(t *testing.T) {
 	}
 }
 
+// TestPlayedDiscardsStalePosition covers a client marking an item played
+// while it still holds an old position, after another device moved it on:
+// the played mark resets the position, and the stale one sent with it must
+// not write it back. Every other position change still lands.
+func TestPlayedDiscardsStalePosition(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	series, _ := itemIDFor("series", "tt0903747")
+	episode := series.episode(1, 1)
+	stale, moved := int64(10*60*ticksPerSecond), int64(20*60*ticksPerSecond)
+	post := func(id itemID, body string) userData {
+		t.Helper()
+		var ud userData
+		decodeInto(t, f.do(http.MethodPost, "/jellyfin/UserItems/"+id.encode()+"/UserData", body), &ud)
+		return ud
+	}
+	for _, id := range []itemID{movie, episode} {
+		f.play.Upsert(persistence.JellyfinPlaystate{StreamName: "living-room", ItemID: id.encode(), ContentType: id.ContentType,
+			ContentID: id.playStremioID(), PositionTicks: moved, PlayCount: 1})
+		body := fmt.Sprintf(`{"Played":true,"PlaybackPositionTicks":%d,"IsFavorite":true}`, stale)
+		// Twice: the repeat changes nothing.
+		for range 2 {
+			if ud := post(id, body); !ud.Played || ud.PlaybackPositionTicks != 0 || !ud.IsFavorite {
+				t.Fatalf("%v played with a stale position: %+v", id.Kind, ud)
+			}
+		}
+		for _, st := range f.play.ListResume("living-room", 10) {
+			if st.ItemID == id.encode() {
+				t.Fatalf("%v marked played is still resumable: %+v", id.Kind, st)
+			}
+		}
+		// A position on its own is still a real change.
+		if ud := post(id, fmt.Sprintf(`{"PlaybackPositionTicks":%d}`, stale)); ud.PlaybackPositionTicks != stale {
+			t.Fatalf("%v position after played: %+v", id.Kind, ud)
+		}
+		// So is unplaying at a position.
+		if ud := post(id, fmt.Sprintf(`{"Played":false,"PlaybackPositionTicks":%d}`, moved)); ud.Played || ud.PlaybackPositionTicks != moved {
+			t.Fatalf("%v unplayed at a position: %+v", id.Kind, ud)
+		}
+	}
+}
+
 // TestSeriesFavoritesByIncludedType covers IncludeItemTypes choosing between
 // a series' favourite seasons and episodes, recursive or not, and never
 // another series' favourites.
