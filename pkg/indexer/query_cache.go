@@ -219,7 +219,7 @@ func (c *CachedIndexer) Search(ctx context.Context, req SearchRequest) (*SearchR
 		}
 		logger.Debug("Indexer query cache miss", "indexer", c.Name(), "key", key)
 		resp, err := c.underlying.Search(ctx, req)
-		if err != nil || resp == nil {
+		if err != nil || resp == nil || resp.Incomplete {
 			return resp, err
 		}
 		c.cache.Put(key, resp, c.ttl)

@@ -153,6 +153,39 @@ func TestQueryCacheClear(t *testing.T) {
 	}
 }
 
+// An incomplete response reaches the caller but is never cached, so the next
+// identical search asks the indexer again instead of reusing a partial answer.
+func TestQueryCacheSkipsIncompleteResponses(t *testing.T) {
+	mock := &mockIndexer{
+		name: "MockIndexer",
+		response: &SearchResponse{
+			Channel:    Channel{Items: []Item{{Title: "Partial", GUID: "g1"}}},
+			Incomplete: true,
+		},
+	}
+	cached := NewCachedIndexer(mock, NewQueryCache(), 10*time.Minute)
+	req := SearchRequest{SearchMode: "text", Query: "show"}
+
+	resp, err := cached.Search(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(resp.Channel.Items) != 1 || !resp.Incomplete {
+		t.Fatalf("got %+v, want the partial result passed through and still marked", resp)
+	}
+	_, _ = cached.Search(context.Background(), req)
+	if mock.searchCalls != 2 {
+		t.Fatalf("expected the incomplete response to be re-fetched, got %d search calls", mock.searchCalls)
+	}
+
+	mock.response = &SearchResponse{Channel: Channel{Items: []Item{{Title: "Full", GUID: "g2"}}}}
+	_, _ = cached.Search(context.Background(), req)
+	_, _ = cached.Search(context.Background(), req)
+	if mock.searchCalls != 3 {
+		t.Fatalf("expected a complete response to be cached, got %d search calls", mock.searchCalls)
+	}
+}
+
 type slowMockIndexer struct {
 	name     string
 	delay    time.Duration

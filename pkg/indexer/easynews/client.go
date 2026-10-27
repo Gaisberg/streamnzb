@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"streamnzb/pkg/core/config"
@@ -32,6 +35,14 @@ const (
 	// so walk them up to a bound that keeps one search's latency sane.
 	maxResultsPerPage = 250
 	maxSearchPages    = 5
+	// easynewsPageRows is the most rows a 3.0 page carries, so sizing a limit
+	// with it never sends a page the limit cannot use; short pages are topped
+	// up by a further round.
+	easynewsPageRows = 100
+	// maxConcurrentSearchRequests bounds in-flight search requests per client,
+	// across every search sharing it. Kept at 2 — the documented 2.0 per-account
+	// cap — until a higher one is measured safe for 3.0.
+	maxConcurrentSearchRequests = 2
 
 	// The search endpoint must be requested WITHOUT a trailing slash — with one,
 	// Easynews serves the web app's HTML instead of JSON. NZB creation has no
@@ -84,6 +95,8 @@ type Client struct {
 	advancedSearch  bool
 	spamFilter      bool
 	fileExtensions  string
+	// searchSlots holds one token per in-flight search request.
+	searchSlots chan struct{}
 
 	core *indexer.ClientCore
 }
@@ -137,6 +150,7 @@ func NewClient(username, password, name string, downloadBase string, apiLimit, d
 		advancedSearch:  env.EasynewsAdvancedSearch(),
 		spamFilter:      env.EasynewsSpamFilter(),
 		fileExtensions:  fileExtensionList(),
+		searchSlots:     make(chan struct{}, maxConcurrentSearchRequests),
 		core:            indexer.NewClientCore(name, apiLimit, downloadLimit, rateLimitRPS, um),
 		client: &http.Client{
 			Timeout:   searchTimeout,
@@ -197,19 +211,14 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
 	defer cancel()
-	if err := c.core.Limiter.Wait(ctx); err != nil {
-		return err
-	}
 
 	// Easynews exposes no cheap auth-check endpoint; a minimal real search is
-	// the only reliable credential probe.
+	// the only reliable credential probe. Page one alone answers it, so it
+	// costs one API hit.
 	testQuery := "dune"
-	_, _, err := c.searchInternal(ctx, testQuery, "", "", config.SeriesSearchScopeNone, false, false)
-	if err != nil {
+	if _, err := c.fetchSearchPage(ctx, testQuery, "", "", config.SeriesSearchScopeNone, false, 1); err != nil {
 		return fmt.Errorf("easynews credentials invalid: %w", err)
 	}
-	// The probe is a real search; account for it like one.
-	c.core.RecordAPIHit(nil)
 	return nil
 }
 
@@ -234,9 +243,6 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
 	defer cancel()
-	if err := c.core.Limiter.Wait(ctx); err != nil {
-		return nil, err
-	}
 
 	query := prepareEasynewsQuery(req.Query)
 
@@ -257,12 +263,10 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 	)
 
 	startedAt := time.Now()
-	results, stats, err := c.searchInternal(ctx, query, season, episode, req.SeriesSearchScope, isSeries, false)
+	results, stats, err := c.searchInternal(ctx, query, season, episode, req.SeriesSearchScope, isSeries, false, searchResultLimit(req))
 	if err != nil {
 		return nil, fmt.Errorf("easynews search failed: %w", err)
 	}
-
-	c.core.RecordAPIHit(nil)
 
 	items := make([]indexer.Item, 0, len(results))
 	for _, result := range results {
@@ -294,6 +298,8 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		"unfiltered_results", stats.Unfiltered,
 		"pages_fetched", stats.Pages,
 		"pages_available", stats.NumPages,
+		"limit", searchResultLimit(req),
+		"incomplete", stats.Incomplete,
 		"duration_ms", time.Since(startedAt).Milliseconds(),
 	)
 	c.core.RecordSearchDuration(time.Since(startedAt))
@@ -302,7 +308,23 @@ func (c *Client) Search(ctx context.Context, req indexer.SearchRequest) (*indexe
 		Channel: indexer.Channel{
 			Items: items,
 		},
+		Incomplete: stats.Incomplete,
 	}, nil
+}
+
+// searchResultLimit is how many accepted results a stream search wants, 0 for
+// the indexer maximum. The per-indexer setting wins, as it does for newznab. A
+// proxied Newznab query gets everything: that endpoint re-sorts the merged
+// results by date and applies the caller's limit itself, so trimming here by
+// relevance would change which releases survive.
+func searchResultLimit(req indexer.SearchRequest) int {
+	if req.Passthrough != nil {
+		return 0
+	}
+	if o := req.OptionalOverrides; o != nil && o.SearchResultLimit > 0 {
+		return o.SearchResultLimit
+	}
+	return max(req.Limit, 0)
 }
 
 func prepareEasynewsQuery(baseQuery string) string {
@@ -417,51 +439,144 @@ type easynewsSearchStats struct {
 	Unfiltered int
 	NumPages   int
 	Pages      int
+	// Incomplete is set when a later page failed, so the results are a
+	// subset of what the search should have returned.
+	Incomplete bool
 }
 
-func (c *Client) searchInternal(ctx context.Context, query, season, episode, scope string, isSeries, strictMode bool) ([]easynewsResult, easynewsSearchStats, error) {
-	var (
-		rows  []interface{}
-		stats easynewsSearchStats
-	)
+// searchInternal fetches page one, then the further pages the search still
+// needs, in parallel within the client's request cap. Results keep page order
+// whichever request finishes first. limit is the accepted results wanted, 0 for
+// everything up to maxSearchPages.
+func (c *Client) searchInternal(ctx context.Context, query, season, episode, scope string, isSeries, strictMode bool, limit int) ([]easynewsResult, easynewsSearchStats, error) {
+	first, err := c.fetchSearchPage(ctx, query, season, episode, scope, isSeries, 1)
+	if err != nil {
+		// Page one failing is the search failing.
+		return nil, easynewsSearchStats{}, err
+	}
+	stats := easynewsSearchStats{
+		Total:      first.Results,
+		Unfiltered: first.UnfilteredResults,
+		NumPages:   first.NumPages,
+		Returned:   len(first.Data),
+		Pages:      1,
+	}
+	results := c.filterAndMapResults(*first, query, season, episode, strictMode)
 
-	for page := 1; page <= maxSearchPages; page++ {
-		data, err := c.fetchSearchPage(ctx, query, season, episode, scope, isSeries, page)
-		if err != nil {
-			// Page one failing is the search failing; a later page failing just
-			// means we return what we already have rather than nothing.
-			if page == 1 {
-				return nil, easynewsSearchStats{}, err
+	lastPage := min(first.NumPages, maxSearchPages)
+	next := 2
+	if len(first.Data) == 0 {
+		next = lastPage + 1
+	}
+	for next <= lastPage && (limit <= 0 || len(results) < limit) {
+		// A limit needs at least this many more pages; rows Easynews or our
+		// filter drops are topped up by the next round.
+		to := lastPage
+		if limit > 0 {
+			to = min(lastPage, next-1+(limit-len(results)+easynewsPageRows-1)/easynewsPageRows)
+		}
+		pages := c.fetchSearchPages(ctx, query, season, episode, scope, isSeries, next, to)
+		ended := false
+		for _, data := range pages {
+			if data == nil {
+				// A page before the end failed: the others still count, but
+				// they are not the whole answer.
+				stats.Incomplete = true
+				continue
 			}
-			logger.Debug("Easynews page fetch failed; keeping earlier pages",
-				"indexer", c.Name(), "page", page, "err", err)
+			if len(data.Data) == 0 {
+				// The result set ended early; anything after this page is too.
+				ended = true
+				break
+			}
+			stats.Returned += len(data.Data)
+			stats.Pages++
+			results = append(results, c.filterAndMapResults(*data, query, season, episode, strictMode)...)
+		}
+		if stats.Incomplete || ended {
 			break
 		}
-
-		rows = append(rows, data.Data...)
-		if page == 1 {
-			stats.Total = data.Results
-			stats.Unfiltered = data.UnfilteredResults
-			stats.NumPages = data.NumPages
-		}
-		stats.Returned = len(rows)
-		stats.Pages = page
-
-		if len(data.Data) == 0 || page >= data.NumPages {
-			break
-		}
+		next = to + 1
 	}
 
-	results := c.filterAndMapResults(easynewsSearchResponse{Data: rows}, query, season, episode, strictMode)
-
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
 	if stats.Total <= 0 {
 		stats.Total = stats.Returned
 	}
-
 	return results, stats, nil
 }
 
+// fetchSearchPages fetches pages from..to in parallel, started in page order,
+// and returns them indexed by page with nil for a page that failed. A refusal
+// (rate limit, rejected credentials) cancels the pages not yet sent.
+func (c *Client) fetchSearchPages(ctx context.Context, query, season, episode, scope string, isSeries bool, from, to int) []*easynewsSearchResponse {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	pages := make([]*easynewsSearchResponse, to-from+1)
+	var (
+		next atomic.Int32
+		wg   sync.WaitGroup
+	)
+	next.Store(int32(from))
+	for range min(maxConcurrentSearchRequests, len(pages)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for page := int(next.Add(1) - 1); page <= to; page = int(next.Add(1) - 1) {
+				data, err := c.fetchSearchPage(ctx, query, season, episode, scope, isSeries, page)
+				if err != nil {
+					logger.Debug("Easynews page fetch failed; keeping the other pages",
+						"indexer", c.Name(), "page", page, "err", err)
+					if errors.Is(err, indexer.ErrRateLimited) || errors.Is(err, indexer.ErrAuthFailed) {
+						cancel()
+					}
+					continue
+				}
+				pages[page-from] = data
+			}
+		}()
+	}
+	wg.Wait()
+	return pages
+}
+
+// acquireSearchSlot waits for one of the client's search request slots.
+func (c *Client) acquireSearchSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case c.searchSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) releaseSearchSlot() {
+	<-c.searchSlots
+}
+
+// fetchSearchPage sends one search request. Each one holds a slot, waits its
+// turn under the configured rate limit and honours a cooldown another request
+// opened meanwhile. The API budget counts searches, so only page one — sent
+// exactly once per search or probe — spends a hit, and only once Easynews
+// answers.
 func (c *Client) fetchSearchPage(ctx context.Context, query, season, episode, scope string, isSeries bool, page int) (*easynewsSearchResponse, error) {
+	if err := c.acquireSearchSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseSearchSlot()
+	if err := c.core.CheckThrottled(c.Name(), time.Now()); err != nil {
+		return nil, err
+	}
+	if err := c.core.Limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
 	opts := c.searchOptions()
 	opts.page = page
 	searchURL := buildEasynewsSearchURL(query, season, episode, scope, isSeries, opts)
@@ -479,6 +594,9 @@ func (c *Client) fetchSearchPage(ctx context.Context, query, season, episode, sc
 		return nil, fmt.Errorf("easynews search request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if page == 1 {
+		c.core.RecordAPIHit(nil)
+	}
 
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return nil, fmt.Errorf("easynews search: %w (status %d)", errCredentialsRejected, resp.StatusCode)

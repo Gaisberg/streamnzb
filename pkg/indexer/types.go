@@ -114,6 +114,9 @@ type SearchResponse struct {
 	XMLName  xml.Name           `xml:"rss"`
 	Channel  Channel            `xml:"channel"`
 	Releases []*release.Release `xml:"-"`
+	// Incomplete marks a response missing part of what the indexer had (a later
+	// page failed): still worth returning, never worth caching.
+	Incomplete bool `xml:"-"`
 }
 
 type NewznabResponse struct {
