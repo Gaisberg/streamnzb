@@ -354,12 +354,17 @@ type ProviderPoolSet struct {
 // whose connection settings are unchanged between prevCfg and cfg so their
 // established NNTP connections survive the reload. Pools left out of the
 // result are NOT shut down here — the caller owns teardown of dropped pools.
-func BuildProviderPools(cfg, prevCfg *config.Config, prevPools map[string]*nntp.ClientPool) *ProviderPoolSet {
+//
+// prev.UsenetPool, when set, is updated in place rather than replaced: sessions
+// already playing hold views of it, and a second pool beside it meant a second
+// segment cache and streams left on client pools the caller is about to shut
+// down.
+func BuildProviderPools(cfg, prevCfg *config.Config, prev *ProviderPoolSet) *ProviderPoolSet {
 	stateMgr, err := persistence.GetManager(paths.GetDataDir())
 	if err != nil {
 		logger.Error("Failed to initialize state manager", "err", err)
 	}
-	return buildProviderPools(cfg, stateMgr, prevCfg, prevPools)
+	return buildProviderPools(cfg, stateMgr, prevCfg, prev)
 }
 
 // providerConnEqual reports whether two provider entries dial the same
@@ -414,7 +419,11 @@ func providerPoolFor(provider config.Provider, poolName string, prevCfg config.P
 	return p, false, true
 }
 
-func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, prevCfg *config.Config, prevPools map[string]*nntp.ClientPool) *ProviderPoolSet {
+func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, prevCfg *config.Config, prev *ProviderPoolSet) *ProviderPoolSet {
+	if prev == nil {
+		prev = &ProviderPoolSet{}
+	}
+	prevPools := prev.Pools
 	providerPools := make(map[string]*nntp.ClientPool)
 	var streamingPools []*nntp.ClientPool
 
@@ -512,14 +521,22 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 	// Reserve headroom for non-cache memory (session + 100+ loader Files, NZB, RAR blueprint, runtime, stacks).
 	// Otherwise segment cache uses 80% of limit and the remaining 20% is too small, so we exceed the limit.
 	const reservedMB = 150
+	segmentCacheMB := 0
 	if cfg.MemoryLimitMB > reservedMB {
-		segmentCacheMB := cfg.MemoryLimitMB - reservedMB
+		segmentCacheMB = cfg.MemoryLimitMB - reservedMB
+	}
+	if prev.UsenetPool != nil && prev.SegmentCacheBudget.MaxBytes() == int64(segmentCacheMB)*1024*1024 {
+		// Same cap as the cache already runs under: keep its budget, which
+		// carries the bytes that cache holds.
+		segmentCacheBudget = prev.SegmentCacheBudget
+	} else if segmentCacheMB > 0 {
 		segmentCacheBudget = pool.NewSegmentCacheBudget(segmentCacheMB)
 		logger.Info("Segment cache set (memory limit minus reserved)", "segment_cache_mb", segmentCacheMB, "memory_limit_mb", cfg.MemoryLimitMB, "reserved_mb", reservedMB)
 	}
 
+	var providerConfigs []pool.ProviderConfig
 	if len(providerOrder) > 0 {
-		providerConfigs := make([]pool.ProviderConfig, 0, len(providerOrder))
+		providerConfigs = make([]pool.ProviderConfig, 0, len(providerOrder))
 		for i, name := range providerOrder {
 			cp := providerPools[name]
 			if cp == nil {
@@ -538,18 +555,33 @@ func buildProviderPools(cfg *config.Config, stateMgr *persistence.StateManager, 
 			// than leaving the operator to wonder why nothing is held back.
 			logger.Warn("Every enabled provider is marked backup — treating them all as primaries", "providers", backups)
 		}
-		if len(providerConfigs) > 0 {
-			var err error
-			usenetPool, err = pool.NewPool(&pool.Config{
-				Providers:     providerConfigs,
-				SegmentCache:  pool.NewMemorySegmentCacheWithBudget(segmentCacheBudget),
-				PipelineDepth: env.NNTPPipelineDepth(),
-			})
-			if err != nil {
-				logger.Error("Failed to build usenet pool", "err", err)
-			} else {
-				logger.Info("Usenet pool initialized", "providers", len(providerConfigs))
-			}
+	}
+
+	switch {
+	case prev.UsenetPool != nil:
+		usenetPool = prev.UsenetPool
+		usenetPool.UpdateProviders(providerConfigs)
+		usenetPool.SetSegmentCacheBudget(segmentCacheBudget)
+		if len(providerConfigs) == 0 {
+			// Nothing left to stream from: the cached segments can never be
+			// read again, so hand the memory back now rather than holding it
+			// until the last session idles out.
+			usenetPool.PurgeCache()
+			usenetPool = nil
+		} else {
+			logger.Info("Usenet pool updated in place", "providers", len(providerConfigs))
+		}
+	case len(providerConfigs) > 0:
+		var err error
+		usenetPool, err = pool.NewPool(&pool.Config{
+			Providers:     providerConfigs,
+			SegmentCache:  pool.NewMemorySegmentCacheWithBudget(segmentCacheBudget),
+			PipelineDepth: env.NNTPPipelineDepth(),
+		})
+		if err != nil {
+			logger.Error("Failed to build usenet pool", "err", err)
+		} else {
+			logger.Info("Usenet pool initialized", "providers", len(providerConfigs))
 		}
 	}
 

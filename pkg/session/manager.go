@@ -2230,6 +2230,13 @@ func (m *Manager) GetActiveSessions() []ActiveSessionInfo {
 	return result
 }
 
+// UsenetPool returns the pool sessions are currently cut from.
+func (m *Manager) UsenetPool() *pool.Pool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.usenetPool
+}
+
 func (m *Manager) UpdateUsenetPool(up *pool.Pool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -334,13 +334,18 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 	var oldProxy *proxy.Server
 	var oldPools map[string]*nntp.ClientPool
 	var newProxy *proxy.Server
-	// Providers feed the usenet pool the proxy serves from, so a pool swap
-	// forces a proxy restart even when the listener config itself is unchanged.
-	restartProxy := scope.Proxy || scope.Providers
+	// A provider reload updates the usenet pool in place, so the proxy keeps
+	// serving from the same pool and its clients stay connected. Only a pool
+	// that appeared or went away (no providers before, or none left) has to be
+	// handed to a fresh listener.
+	restartProxy := scope.Proxy
 
 	s.mu.Lock()
 	if scope.Providers {
 		oldPools = s.providerPools
+		if s.sessionMgr.UsenetPool() != comp.UsenetPool {
+			restartProxy = true
+		}
 
 		s.providerPools = comp.ProviderPools
 		s.streamingPools = make([]*nntp.ClientPool, 0, len(comp.ProviderPools))

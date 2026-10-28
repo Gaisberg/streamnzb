@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"streamnzb/pkg/core/health"
 	"streamnzb/pkg/core/logger"
@@ -99,6 +100,78 @@ type Pool struct {
 	// view fetches for, empty on the parent and on unattributed subsets.
 	streamBytes *streamByteRegistry
 	leaseKey    string
+
+	// root is the pool a Subset was cut from, nil on the root itself. selection
+	// is the provider IDs the view asked for, nil for "every provider the root
+	// has". Together they let UpdateProviders re-resolve a view against the new
+	// provider set instead of leaving it on the client pools of the old one.
+	root      *Pool
+	selection []string
+	// views is the root's registry of live Subsets, shared with every view.
+	views *viewRegistry
+}
+
+// viewRegistry tracks the Subsets cut from one root pool so a provider change
+// can reach them. Sessions hold their view for as long as they live, and a view
+// that kept the provider list it was born with went on fetching through client
+// pools the reload had already shut down. Entries are weak: a view the session
+// layer dropped is collected as usual and pruned from here on the next register.
+type viewRegistry struct {
+	mu      sync.Mutex
+	views   []weak.Pointer[Pool]
+	pruneAt int
+}
+
+func newViewRegistry() *viewRegistry {
+	return &viewRegistry{pruneAt: viewRegistryMinPrune}
+}
+
+// viewRegistryMinPrune is how many entries the registry may hold before it
+// first sweeps out collected views. Sweeps then run each time it doubles past
+// the live count, so registering stays amortised O(1) however many playlist
+// requests cut a view.
+const viewRegistryMinPrune = 64
+
+func (r *viewRegistry) register(v *Pool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.views = append(r.views, weak.Make(v))
+	if len(r.views) < r.pruneAt {
+		return
+	}
+	r.pruneLocked()
+	r.pruneAt = max(2*len(r.views), viewRegistryMinPrune)
+}
+
+func (r *viewRegistry) pruneLocked() {
+	alive := r.views[:0]
+	for _, w := range r.views {
+		if w.Value() != nil {
+			alive = append(alive, w)
+		}
+	}
+	clear(r.views[len(alive):])
+	r.views = alive
+}
+
+// live returns the views still referenced somewhere, sweeping out the rest.
+func (r *viewRegistry) live() []*Pool {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneLocked()
+	out := make([]*Pool, 0, len(r.views))
+	for _, w := range r.views {
+		if v := w.Value(); v != nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // streamByteRegistry tracks what each stream pulled off the providers, behind its
@@ -253,6 +326,33 @@ func (r *articleStatsRegistry) counter(providerID string, resolveHost func(strin
 	return c
 }
 
+// sync aligns the registry with a new provider set: counters of providers that
+// stayed keep their totals (with the host refreshed, since a reload can re-point
+// a provider), new providers start at zero, and removed ones are dropped so the
+// stats page stops listing a provider that is no longer configured.
+func (r *articleStatsRegistry) sync(providers []ProviderConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := make(map[string]*providerArticleCounter, len(providers))
+	for i := range providers {
+		providerID := strings.TrimSpace(providers[i].ID)
+		if providerID == "" {
+			continue
+		}
+		host := ""
+		if providers[i].ClientPool != nil {
+			host = providers[i].ClientPool.Host()
+		}
+		c := r.counters[providerID]
+		if c == nil {
+			c = &providerArticleCounter{}
+		}
+		c.host = host
+		next[providerID] = c
+	}
+	r.counters = next
+}
+
 func (r *articleStatsRegistry) snapshot() []ProviderArticleStats {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -346,8 +446,14 @@ func providerSignature(providers []ProviderConfig) string {
 	return strings.Join(ids, ",")
 }
 
+// missingKey scopes a missing-article marker to the provider set that proved it:
+// a provider added later may well carry the article, so a marker recorded
+// before UpdateProviders must not answer for the set after it.
 func (p *Pool) missingKey(messageID string) string {
-	return p.providerSig + "|" + strings.TrimSpace(messageID)
+	p.mu.RLock()
+	sig := p.providerSig
+	p.mu.RUnlock()
+	return sig + "|" + strings.TrimSpace(messageID)
 }
 
 func (p *Pool) isKnownMissing(messageID string) bool {
@@ -523,18 +629,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 	if cfg == nil || len(cfg.Providers) == 0 {
 		return nil, ErrNoProvidersConfigured
 	}
-	providers := make([]ProviderConfig, len(cfg.Providers))
-	copy(providers, cfg.Providers)
-	normalizeBackupTier(providers)
-	sort.Slice(providers, func(i, j int) bool {
-		// A backup is behind every primary by definition, whatever priority
-		// number it carries: the tier decides the order, priority only orders
-		// within a tier.
-		if providers[i].IsBackup != providers[j].IsBackup {
-			return !providers[i].IsBackup
-		}
-		return providers[i].Priority < providers[j].Priority
-	})
+	providers := orderProviders(cfg.Providers)
 	cache := cfg.SegmentCache
 	if cache == nil {
 		cache = NoopSegmentCache()
@@ -551,7 +646,114 @@ func NewPool(cfg *Config) (*Pool, error) {
 		consecutiveSuccesses: make(map[string]int),
 		leases:               newLeaseRegistry(),
 		streamBytes:          newStreamByteRegistry(),
+		views:                newViewRegistry(),
 	}, nil
+}
+
+// orderProviders copies providers into fetch order: primaries ahead of
+// backups, then by priority within each tier.
+func orderProviders(in []ProviderConfig) []ProviderConfig {
+	providers := make([]ProviderConfig, len(in))
+	copy(providers, in)
+	normalizeBackupTier(providers)
+	sort.Slice(providers, func(i, j int) bool {
+		// A backup is behind every primary by definition, whatever priority
+		// number it carries: the tier decides the order, priority only orders
+		// within a tier.
+		if providers[i].IsBackup != providers[j].IsBackup {
+			return !providers[i].IsBackup
+		}
+		return providers[i].Priority < providers[j].Priority
+	})
+	return providers
+}
+
+// UpdateProviders swaps the provider set in place, for the pool and for every
+// Subset cut from it.
+//
+// A reload used to build a fresh Pool instead. Every session already playing
+// kept the old one — its own segment cache under its own budget, so each
+// provider save added a full cache's worth of memory, and its own provider
+// list, so it went on fetching through client pools the reload had just shut
+// down. Updating in place keeps one cache, one budget, one set of lease
+// limiters, and moves live streams onto the new providers with their next
+// fetch. An empty set is allowed: views then report no providers available
+// rather than dialing a removed account.
+//
+// Calling it on a Subset updates the root it was cut from.
+func (p *Pool) UpdateProviders(cfgs []ProviderConfig) {
+	if p == nil {
+		return
+	}
+	root := p.rootPool()
+	providers := orderProviders(cfgs)
+
+	root.mu.Lock()
+	root.providers = providers
+	root.providerSig = providerSignature(providers)
+	root.pruneProviderStateLocked()
+	root.mu.Unlock()
+
+	if root.articleStats != nil {
+		root.articleStats.sync(providers)
+	}
+
+	views := root.views.live()
+	for _, v := range views {
+		resolved := resolveView(providers, v.selection)
+		if len(resolved) == 0 {
+			// Everything this view selected is gone. Subset answers that case
+			// with nil and the session layer then falls back to the whole pool;
+			// a live view gets the same fallback rather than a dead stream.
+			resolved = resolveView(providers, nil)
+		}
+		v.mu.Lock()
+		v.providers = resolved
+		v.providerSig = providerSignature(resolved)
+		v.pruneProviderStateLocked()
+		v.mu.Unlock()
+	}
+	logger.Debug("usenet pool providers updated", "providers", root.providerSig, "views", len(views))
+}
+
+// pruneProviderStateLocked drops 430 and cooloff bookkeeping for providers
+// this pool no longer holds. It must be called with p.mu held for writing.
+func (p *Pool) pruneProviderStateLocked() {
+	keep := make(map[string]struct{}, len(p.providers))
+	for i := range p.providers {
+		keep[p.providers[i].ID] = struct{}{}
+	}
+	for _, m := range []map[string]int{p.consecutive430s, p.consecutiveSuccesses} {
+		for id := range m {
+			if _, ok := keep[id]; !ok {
+				delete(m, id)
+			}
+		}
+	}
+	for id := range p.cooloffUntil {
+		if _, ok := keep[id]; !ok {
+			delete(p.cooloffUntil, id)
+		}
+	}
+}
+
+// SetSegmentCacheBudget re-caps the segment cache, evicting down to the new
+// budget at once when it shrinks. A nil budget falls back to the cache's
+// entry-count limit.
+func (p *Pool) SetSegmentCacheBudget(budget *SegmentCacheBudget) {
+	if p == nil {
+		return
+	}
+	if c, ok := p.cache.(budgetedSegmentCache); ok {
+		c.SetBudget(budget)
+	}
+}
+
+func (p *Pool) rootPool() *Pool {
+	if p.root != nil {
+		return p.root
+	}
+	return p
 }
 
 // recordStreamBytes attributes n wire bytes to the stream this view fetches for.
@@ -592,6 +794,8 @@ func (p *Pool) recordArticleResult(providerID string, available bool) {
 		return
 	}
 	counter := p.articleStats.counter(providerID, func(id string) string {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
 		for i := range p.providers {
 			if p.providers[i].ID == id && p.providers[i].ClientPool != nil {
 				return p.providers[i].ClientPool.Host()
@@ -1703,40 +1907,38 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 	if p == nil {
 		return nil
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	root := p.rootPool()
 
-	var subset []ProviderConfig
-	if len(providerIDs) == 0 {
-		subset = make([]ProviderConfig, len(p.providers))
-		copy(subset, p.providers)
-	} else {
-		byID := make(map[string]ProviderConfig, len(p.providers))
-		for i := range p.providers {
-			byID[p.providers[i].ID] = p.providers[i]
-		}
-		subset = make([]ProviderConfig, 0, len(providerIDs))
+	// The view records what it asked for, not just what that resolved to, so
+	// UpdateProviders can resolve it again against the next provider set.
+	p.mu.RLock()
+	selection := p.selection
+	parentProviders := p.providers
+	p.mu.RUnlock()
+	if len(providerIDs) > 0 {
+		selection = make([]string, 0, len(providerIDs))
 		for _, id := range providerIDs {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
+			if id = strings.TrimSpace(id); id != "" && providerIn(parentProviders, id) {
+				selection = append(selection, id)
 			}
-			if cfg, ok := byID[id]; ok {
-				cfg.Priority = len(subset)
-				subset = append(subset, cfg)
-			}
+		}
+		if len(selection) == 0 {
+			return nil
 		}
 	}
 
+	root.mu.RLock()
+	rootProviders := root.providers
+	root.mu.RUnlock()
+	subset := resolveView(rootProviders, selection)
 	if len(subset) == 0 {
 		return nil
 	}
-	// A stream may select only what the parent holds back for failover. That
-	// view has no tier above it, so the flag is dropped rather than leaving the
-	// stream with nothing it is allowed to fetch from.
-	normalizeBackupTier(subset)
 
-	return &Pool{
+	view := &Pool{
+		root:                 root,
+		selection:            selection,
+		views:                root.views,
 		providers:            subset,
 		cache:                p.cache,
 		sf:                   p.sf,
@@ -1750,6 +1952,45 @@ func (p *Pool) Subset(providerIDs []string) *Pool {
 		streamBytes:          p.streamBytes,
 		leaseKey:             p.leaseKey,
 	}
+	root.views.register(view)
+	return view
+}
+
+// resolveView builds a view's provider list from the root's: every provider
+// when selection is nil, otherwise the selected ones in the order given, with
+// priorities renumbered to that order.
+func resolveView(rootProviders []ProviderConfig, selection []string) []ProviderConfig {
+	var subset []ProviderConfig
+	if selection == nil {
+		subset = make([]ProviderConfig, len(rootProviders))
+		copy(subset, rootProviders)
+	} else {
+		byID := make(map[string]ProviderConfig, len(rootProviders))
+		for i := range rootProviders {
+			byID[rootProviders[i].ID] = rootProviders[i]
+		}
+		subset = make([]ProviderConfig, 0, len(selection))
+		for _, id := range selection {
+			if cfg, ok := byID[id]; ok {
+				cfg.Priority = len(subset)
+				subset = append(subset, cfg)
+			}
+		}
+	}
+	// A stream may select only what the parent holds back for failover. That
+	// view has no tier above it, so the flag is dropped rather than leaving the
+	// stream with nothing it is allowed to fetch from.
+	normalizeBackupTier(subset)
+	return subset
+}
+
+func providerIn(providers []ProviderConfig, id string) bool {
+	for i := range providers {
+		if providers[i].ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Pool) Host(providerID string) string {

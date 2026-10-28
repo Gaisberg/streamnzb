@@ -320,16 +320,10 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	old := a.components
 	scope := ConfigChanged(old.Config, newCfg)
 
-	if scope.Indexers && scope.Providers {
-		logger.Info("Reload: full rebuild (indexers and providers changed)")
-		comp, err := a.buildFull(newCfg, a.opts)
-		if err != nil {
-			return nil, scope, err
-		}
-		a.components = comp
-		return comp, scope, nil
-	}
-
+	// Indexers and providers changing together still go through the
+	// incremental paths below. A full rebuild replaced every NNTP client pool
+	// and the usenet pool with them, which broke every stream in flight and
+	// left their sessions holding a second segment cache.
 	comp := *old
 	a.refreshLightComponents(&comp, newCfg)
 
@@ -343,7 +337,11 @@ func (a *App) Reload(newCfg *config.Config) (*Components, ReloadScope, error) {
 	}
 	if scope.Providers {
 		logger.Info("Reload: rebuilding changed provider pools")
-		pools := initialization.BuildProviderPools(newCfg, old.Config, old.ProviderPools)
+		pools := initialization.BuildProviderPools(newCfg, old.Config, &initialization.ProviderPoolSet{
+			Pools:              old.ProviderPools,
+			UsenetPool:         old.UsenetPool,
+			SegmentCacheBudget: old.SegmentCacheBudget,
+		})
 		comp.ProviderPools = pools.Pools
 		comp.ProviderOrder = pools.Order
 		comp.StreamingPools = pools.StreamingPools

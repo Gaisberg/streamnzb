@@ -222,6 +222,45 @@ func (c *memorySegmentCache) Purge() {
 	c.lru.Init()
 }
 
+// budgetedSegmentCache is a cache whose memory cap can change while it holds
+// entries, so a reload re-caps the live cache instead of building a second one.
+type budgetedSegmentCache interface {
+	SetBudget(budget *SegmentCacheBudget)
+}
+
+// SetBudget moves the cache onto budget, carrying the bytes it already holds
+// across and evicting until they fit. nil switches to the entry-count limit.
+func (c *memorySegmentCache) SetBudget(budget *SegmentCacheBudget) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if budget == c.budget {
+		return
+	}
+	var held int64
+	for _, el := range c.m {
+		held += int64(len(el.Value.(*cacheEntry).data.Body))
+	}
+	c.budget.Release(held)
+	c.budget = budget
+	if budget != nil {
+		budget.current.Add(held)
+	}
+	for c.lru.Len() > 0 && c.overLimitLocked() {
+		c.evictLocked()
+	}
+}
+
+func (c *memorySegmentCache) overLimitLocked() bool {
+	if c.budget != nil {
+		return c.budget.CurrentBytes() > c.budget.MaxBytes()
+	}
+	limit := c.capacity
+	if limit <= 0 {
+		limit = DefaultSegmentCacheCapacity
+	}
+	return c.lru.Len() > limit
+}
+
 func (c *memorySegmentCache) Stats() CacheStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()

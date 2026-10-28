@@ -9,6 +9,7 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/usenet/nntp"
+	"streamnzb/pkg/usenet/pool"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -40,7 +41,7 @@ func TestBuildProviderPoolsReusesUnchangedPools(t *testing.T) {
 		{Name: "keep", Host: "news.keep.example", Port: 563, Username: "u", Password: "p", Connections: 10, UseSSL: true, Enabled: boolPtr(true), Priority: &priority},
 	}}
 
-	set := buildProviderPools(newCfg, nil, prevCfg, prevPools)
+	set := buildProviderPools(newCfg, nil, prevCfg, &ProviderPoolSet{Pools: prevPools})
 	if set.Pools["keep"] != keepPool {
 		t.Fatalf("expected unchanged provider pool to be reused, got a new pool")
 	}
@@ -64,7 +65,7 @@ func TestBuildProviderPoolsResizesPoolInPlace(t *testing.T) {
 		{Name: "prov", Host: "news.example", Port: 563, Username: "u", Password: "p", Connections: 20, UseSSL: true, Enabled: boolPtr(true)},
 	}}
 
-	set := buildProviderPools(newCfg, nil, prevCfg, prevPools)
+	set := buildProviderPools(newCfg, nil, prevCfg, &ProviderPoolSet{Pools: prevPools})
 	if set.Pools["prov"] != oldPool {
 		t.Fatalf("expected the pool to be resized in place, got a new pool")
 	}
@@ -89,7 +90,7 @@ func TestBuildProviderPoolsShutsDownPoolThatFailsValidation(t *testing.T) {
 		{Name: "prov", Host: "127.0.0.1", Port: port, Username: "u2", Password: "p", Connections: 10, Enabled: boolPtr(true)},
 	}}
 
-	set := buildProviderPools(newCfg, nil, prevCfg, prevPools)
+	set := buildProviderPools(newCfg, nil, prevCfg, &ProviderPoolSet{Pools: prevPools})
 	if _, ok := set.Pools["prov"]; ok {
 		t.Fatalf("expected the provider that failed validation to be dropped")
 	}
@@ -97,5 +98,51 @@ func TestBuildProviderPoolsShutsDownPoolThatFailsValidation(t *testing.T) {
 	defer cancel()
 	if _, err := oldPool.Get(ctx); !errors.Is(err, nntp.ErrPoolClosed) {
 		t.Fatalf("Get on the dropped pool = %v, want ErrPoolClosed", err)
+	}
+}
+
+// Toggling a provider must not build a second usenet pool: sessions already
+// playing hold views of the first, so a replacement doubled the segment cache
+// and left those streams on client pools the reload then shut down.
+func TestBuildProviderPoolsUpdatesUsenetPoolInPlace(t *testing.T) {
+	provs := func(otherEnabled bool) []config.Provider {
+		return []config.Provider{
+			{Name: "keep", Host: "news.keep.example", Port: 563, Username: "u", Password: "p", Connections: 10, UseSSL: true, Enabled: boolPtr(true)},
+			{Name: "other", Host: "news.other.example", Port: 563, Username: "u", Password: "p", Connections: 10, UseSSL: true, Enabled: boolPtr(otherEnabled)},
+		}
+	}
+	keepPool := nntp.NewClientPool("news.keep.example", 563, true, "u", "p", 10)
+	otherPool := nntp.NewClientPool("news.other.example", 563, true, "u", "p", 10)
+	t.Cleanup(keepPool.Shutdown)
+	t.Cleanup(otherPool.Shutdown)
+
+	prevCfg := &config.Config{MemoryLimitMB: 1024, Providers: provs(true)}
+	budget := pool.NewSegmentCacheBudget(1024 - 150)
+	usenet, err := pool.NewPool(&pool.Config{
+		Providers: []pool.ProviderConfig{
+			{ID: "keep", Priority: 0, ClientPool: keepPool},
+			{ID: "other", Priority: 1, ClientPool: otherPool},
+		},
+		SegmentCache: pool.NewMemorySegmentCacheWithBudget(budget),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := usenet.Subset(nil)
+
+	newCfg := &config.Config{MemoryLimitMB: 1024, Providers: provs(false)}
+	set := buildProviderPools(newCfg, nil, prevCfg, &ProviderPoolSet{
+		Pools:              map[string]*nntp.ClientPool{"keep": keepPool, "other": otherPool},
+		UsenetPool:         usenet,
+		SegmentCacheBudget: budget,
+	})
+	if set.UsenetPool != usenet {
+		t.Fatal("expected the usenet pool to be updated in place, got a new one")
+	}
+	if set.SegmentCacheBudget != budget {
+		t.Fatal("expected the segment cache budget to be kept")
+	}
+	if got := view.ProviderOrder(); len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("live view providers = %v, want [keep]", got)
 	}
 }
