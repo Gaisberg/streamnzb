@@ -532,3 +532,78 @@ func TestEnsureTokenRefreshesWhenKeyChanged(t *testing.T) {
 		t.Errorf("logins = %d, want 1 (an unchanged key must reuse the stored token)", got)
 	}
 }
+
+// The air-date lookup asks TVDB for one episode (#382). Jimmy Kimmel Live
+// S24E2524 sits past the 3,000 episodes the full-list walk reaches, so it is
+// only found by the server-side season/episode filter — and the walk must not
+// run at all.
+func TestGetSeriesEpisodeFiltersServerSide(t *testing.T) {
+	var hits atomic.Int64
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		q := r.URL.Query()
+		if r.URL.Path != "/series/71998/episodes/default" || q.Get("page") != "0" || q.Get("season") == "" || q.Get("episodeNumber") == "" {
+			t.Errorf("unexpected request %s", r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		switch q.Get("season") + "x" + q.Get("episodeNumber") {
+		case "24x2524":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+				{"seasonNumber": 24, "number": 2524, "name": "Dave Grohl, Connie Britton", "aired": "2026-10-26"}
+			]}, "links": {"next": null}}`))
+		case "24x9999":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": []}, "links": {"next": null}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	ep, ok, err := client.GetSeriesEpisode("71998", 24, 2524)
+	if err != nil || !ok || ep.Aired != "2026-10-26" {
+		t.Fatalf("GetSeriesEpisode = %+v, %v, %v; want S24E2524 aired 2026-10-26", ep, ok, err)
+	}
+	if _, _, err := client.GetSeriesEpisode("71998", 24, 2524); err != nil {
+		t.Fatalf("cached GetSeriesEpisode: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (the second call is served from the cache)", got)
+	}
+
+	// No such episode, whether TVDB answers with an empty list or a 404, is
+	// an answer rather than an error — and the 404 is cached like one.
+	for _, number := range []int{9999, 8888, 8888} {
+		if _, ok, err := client.GetSeriesEpisode("71998", 24, number); ok || err != nil {
+			t.Fatalf("S24E%d: ok=%v err=%v, want not found without error", number, ok, err)
+		}
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("upstream hits = %d, want 3 (the repeated 404 is cached)", got)
+	}
+}
+
+// The filter is verified, not trusted: an answer holding other episodes —
+// an API that ignored the filter and served the first page — yields nothing,
+// never the wrong episode's date. A failing API is an error, not an absence.
+func TestGetSeriesEpisodeNeverReturnsAnotherEpisode(t *testing.T) {
+	client := newStubClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("season") == "1" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status": "success", "data": {"episodes": [
+			{"seasonNumber": 1, "number": 1, "aired": "2003-01-26"},
+			{"seasonNumber": 24, "number": 2525, "aired": "2026-10-27"}
+		]}, "links": {"next": "/series/71998/episodes/default?page=1"}}`))
+	})
+
+	if _, ok, err := client.GetSeriesEpisode("71998", 24, 2524); ok || err != nil {
+		t.Fatalf("ok=%v err=%v, want not found: no returned episode is S24E2524", ok, err)
+	}
+	if _, ok, err := client.GetSeriesEpisode("71998", 1, 2); ok || err == nil {
+		t.Fatalf("ok=%v err=%v, want an error from a failing API", ok, err)
+	}
+	if _, _, err := NewClient("", t.TempDir()).GetSeriesEpisode("71998", 24, 2524); err == nil {
+		t.Fatal("a client without an API key must error, not report the episode absent")
+	}
+}

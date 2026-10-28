@@ -234,6 +234,98 @@ func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 	}
 }
 
+// Daily shows are released under their air date (#382). With the episode's
+// air date known, the date-named release is the episode; every other check —
+// title, numbering, packs, year — stays as it was.
+func TestValidateSearchResultsAcceptsDailyShowAirDate(t *testing.T) {
+	releases := []*release.Release{
+		{Title: "Jimmy.Kimmel.Live.2026.10.26.Dave.Grohl.1080p.WEB.h264-GROUP"},
+		{Title: "Jimmy.Kimmel.Live.2026.10.27.Owen.Wilson.1080p.WEB.h264-GROUP"}, // the next night
+		{Title: "Jimmy.Kimmel.Live.S24E2524.1080p.WEB.h264-GROUP"},               // numbered
+		{Title: "Jimmy.Kimmel.Live.S24E2525.1080p.WEB.h264-GROUP"},               // numbered, wrong
+		{Title: "Late.Night.with.Seth.Meyers.2026.10.26.1080p.WEB.h264-GROUP"},   // same night, other show
+	}
+	opts := ValidationOptions{Season: "24", Episode: "2524", AirDate: "2026-10-26", EnforceTitle: true, EnforceYear: true, AcceptPacks: true, RecordDropped: 10}
+
+	filtered, stats := ValidateSearchResultsWithOptions(releases, "series", []string{"Jimmy Kimmel Live 2003"}, opts)
+	got := make([]string, 0, len(filtered))
+	for _, rel := range filtered {
+		got = append(got, rel.Title)
+	}
+	want := []string{
+		"Jimmy.Kimmel.Live.2026.10.26.Dave.Grohl.1080p.WEB.h264-GROUP",
+		"Jimmy.Kimmel.Live.S24E2524.1080p.WEB.h264-GROUP",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("accepted %q, want %q", got, want)
+	}
+	// The year in the validation query is enforced, and a date-named release
+	// carries no year for it to disagree with.
+	if !stats.YearValidationApplied || stats.DroppedYear != 0 {
+		t.Fatalf("year validation applied=%v dropped=%d, want applied with no drops", stats.YearValidationApplied, stats.DroppedYear)
+	}
+	if stats.DroppedTitle != 1 || stats.DroppedEpisodeRequest != 2 || stats.AcceptedExactEpisode != 2 {
+		t.Fatalf("dropped title=%d episode=%d accepted exact=%d, want 1, 2, 2", stats.DroppedTitle, stats.DroppedEpisodeRequest, stats.AcceptedExactEpisode)
+	}
+	// The drop names both dates: "dated 2026-10-27, episode 2026-10-26" is
+	// the answer to "why was the daily release turned away".
+	var wrongNight diag.DroppedRelease
+	for _, d := range stats.Dropped {
+		if strings.Contains(d.Title, "2026.10.27") {
+			wrongNight = d
+		}
+	}
+	if !strings.Contains(wrongNight.Detail, "2026-10-27") || !strings.Contains(wrongNight.Detail, "2026-10-26") {
+		t.Errorf("drop detail should name both dates, got %q", wrongNight.Detail)
+	}
+
+	// Without the air date — no source knew it — the daily release is turned
+	// away exactly as before the fix.
+	opts.AirDate = ""
+	filtered, _ = ValidateSearchResultsWithOptions(releases, "series", []string{"Jimmy Kimmel Live 2003"}, opts)
+	if len(filtered) != 1 || filtered[0].Title != "Jimmy.Kimmel.Live.S24E2524.1080p.WEB.h264-GROUP" {
+		t.Fatalf("without an air date only the numbered release may pass, got %+v", filtered)
+	}
+}
+
+// The air date travels on the request: RunIndexerSearches must hand it to
+// validation, or an id search answered with date-named releases keeps nothing.
+func TestRunIndexerSearchesMatchesDailyShowByAirDate(t *testing.T) {
+	idx := &staticIndexer{
+		name: "Prowlarr",
+		resp: &indexer.SearchResponse{
+			Channel: indexer.Channel{
+				Items: []indexer.Item{
+					{Title: "The.Daily.Show.2026.10.26.1080p.WEB.h264-GROUP", ActualIndexer: "Prowlarr"},
+					{Title: "The.Daily.Show.2026.10.22.1080p.WEB.h264-GROUP", ActualIndexer: "Prowlarr"},
+				},
+			},
+		},
+	}
+	req := indexer.SearchRequest{
+		Cat:             "5000",
+		SearchMode:      "id",
+		IMDbID:          "tt0115147",
+		Season:          "31",
+		Episode:         "120",
+		AirDate:         "2026-10-26",
+		ValidationQuery: "The Daily Show",
+	}
+
+	got, err := RunIndexerSearches(context.Background(), idx, req, "series")
+	if err != nil {
+		t.Fatalf("RunIndexerSearches() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "The.Daily.Show.2026.10.26.1080p.WEB.h264-GROUP" {
+		t.Fatalf("expected only the release for the episode's air date, got %+v", got)
+	}
+
+	req.AirDate = ""
+	if got, _ = RunIndexerSearches(context.Background(), idx, req, "series"); len(got) != 0 {
+		t.Fatalf("without an air date the date-named releases cannot be matched, got %+v", got)
+	}
+}
+
 // Season 0 is Stremio's Specials season and a literal one: S00E01 serves a
 // season 0 request, the same episode number in another season does not, and
 // the seasonless anime path — asked for by an absent season, not season 0 —

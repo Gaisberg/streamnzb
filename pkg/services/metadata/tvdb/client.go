@@ -836,6 +836,41 @@ func (c *Client) GetSeriesEpisodesTranslated(seriesID, lang3 string) ([]Episode,
 	return episodes, nil
 }
 
+// GetSeriesEpisode fetches one default-order episode by season and number,
+// filtered server-side. It is one small request where GetSeriesEpisodes
+// pages through the whole run — and stops at episodesMaxPages, short of the
+// recent seasons of a long-running daily show. ok is false when TVDB holds no
+// such episode; that answer is cached like any other.
+func (c *Client) GetSeriesEpisode(seriesID string, season, number int) (ep Episode, ok bool, err error) {
+	if c == nil {
+		return Episode{}, false, fmt.Errorf("TVDB client not configured")
+	}
+	if c.apiKey == "" {
+		return Episode{}, false, fmt.Errorf("TVDB API key not configured")
+	}
+	path := fmt.Sprintf("/series/%s/episodes/default?page=0&season=%d&episodeNumber=%d", seriesID, season, number)
+	body, found, err := c.getBodyCachedOptional(path, episodesCacheTTL, true)
+	if err != nil || !found {
+		return Episode{}, false, err
+	}
+	var out seriesEpisodesResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return Episode{}, false, fmt.Errorf("failed to decode TVDB episode response: %w", err)
+	}
+	if out.Status != successVal {
+		return Episode{}, false, fmt.Errorf("TVDB series episode failed: status=%s", out.Status)
+	}
+	// The filter is checked rather than trusted: an API that ignored it would
+	// answer with the series' first page, and any episode taken from that is
+	// the wrong one.
+	for _, ep := range out.Data.Episodes {
+		if ep.SeasonNumber == season && ep.Number == number {
+			return ep, true, nil
+		}
+	}
+	return Episode{}, false, nil
+}
+
 // fetchEpisodePages walks one paginated episodes endpoint to the end. With
 // optional, a 404 on the first page means the endpoint has no record (an
 // untranslated language variant) and yields an empty list with the absence

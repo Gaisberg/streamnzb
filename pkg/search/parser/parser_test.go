@@ -132,6 +132,51 @@ func TestParsedReleaseTargetMatchRank(t *testing.T) {
 	}
 }
 
+// Daily shows are released under their air date, not their numbering (#382).
+// The date matches only a release that carries no season or episode number:
+// a number beside the date is what says which episode the release is.
+func TestParsedReleaseTargetMatchRankAirDate(t *testing.T) {
+	target := EpisodeTarget{Season: 5, Episode: 12, AirDate: "2026-10-26"}
+	for _, tc := range []struct {
+		title   string
+		airDate string
+		want    int
+	}{
+		{"Show.Name.2026.10.26.1080p.WEB.h264-GROUP", "2026-10-26", 4},
+		{"Show.Name.2026-10-26.1080p.WEB.h264-GROUP", "2026-10-26", 4},
+		{"Show.Name.20261026.1080p.WEB.h264-GROUP", "2026-10-26", 4},
+		{"Show.Name.2026.10.26.Guest.Name.720p.HDTV.x264-GROUP", "2026-10-26", 4},
+		// The day before is the previous night's episode.
+		{"Show.Name.2026.10.25.1080p.WEB.h264-GROUP", "2026-10-25", 0},
+		// Numbering keeps its own rules with an air date on the target.
+		{"Show.Name.S05E12.1080p.WEB.h264-GROUP", "", 4},
+		{"Show.Name.S05E12.2026.10.26.1080p.WEB.h264-GROUP", "2026-10-26", 4},
+		{"Show.Name.S05.1080p.WEB.h264-GROUP", "", 2},
+		// A conflicting number is not rescued by a matching date.
+		{"Show.Name.S05E13.2026.10.26.1080p.WEB.h264-GROUP", "2026-10-26", 0},
+		{"Show.Name.S04.2026.10.26.1080p.WEB.h264-GROUP", "2026-10-26", 0},
+	} {
+		parsed := ParseReleaseTitle(tc.title)
+		// Pin what jhin parses, so a case cannot pass for the wrong reason.
+		if parsed.Date != tc.airDate {
+			t.Fatalf("%s: jhin date = %q, want %q", tc.title, parsed.Date, tc.airDate)
+		}
+		if got := parsed.TargetMatchRank(target); got != tc.want {
+			t.Errorf("%s: rank = %d, want %d", tc.title, got, tc.want)
+		}
+	}
+
+	// Without a known air date a date-named release matches nothing, as before.
+	dated := ParseReleaseTitle("Show.Name.2026.10.26.1080p.WEB.h264-GROUP")
+	if got := dated.TargetMatchRank(EpisodeTarget{Season: 5, Episode: 12}); got != 0 {
+		t.Fatalf("date-named release with no target air date: rank = %d, want 0", got)
+	}
+	// Day-first dates are not parsed as dates by jhin, so they cannot match.
+	if got := ParseReleaseTitle("Show.Name.26.10.2026.1080p.WEB-GROUP").TargetMatchRank(target); got != 0 {
+		t.Fatalf("day-first date: rank = %d, want 0", got)
+	}
+}
+
 // Dashed anime numbering ("S4 - 03") is parsed by jhin itself since v0.5.0;
 // this pins the behavior the old in-house fallback existed for.
 func TestParseReleaseTitleRecognizesDashedSeasonEpisodePattern(t *testing.T) {

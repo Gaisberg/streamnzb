@@ -1103,6 +1103,9 @@ type AvailReportMeta struct {
 	// season/episode (0 when unknown or not applicable). Episode selection
 	// accepts absolute-numbered files alongside season/episode matches.
 	AbsoluteEpisode int
+	// AirDate is the episode's air date (YYYY-MM-DD, "" when unknown), which
+	// lets selection pick a daily show's file named only by its date.
+	AirDate string
 }
 
 // EpisodeTarget is the episode the request is after, as file selection
@@ -1116,6 +1119,7 @@ func (m *AvailReportMeta) EpisodeTarget() searchparser.EpisodeTarget {
 		Seasonless: m.Seasonless,
 		Episode:    m.Episode,
 		Absolute:   m.AbsoluteEpisode,
+		AirDate:    m.AirDate,
 	}
 }
 

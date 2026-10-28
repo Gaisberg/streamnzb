@@ -1,6 +1,7 @@
 package search
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -411,6 +412,9 @@ type ValidationOptions struct {
 	Season          string
 	Episode         string
 	AbsoluteEpisode string
+	// AirDate ("" when unknown) is the requested episode's air date as
+	// YYYY-MM-DD; a release named only by that date is the episode.
+	AirDate string
 	// EnforceTitle decides only whether a title mismatch drops the release;
 	// the check runs either way. An id attempt does not enforce it, because
 	// the indexer resolved the title itself.
@@ -449,7 +453,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 	}
 	expectEpisode, _ := strconv.Atoi(episode)
 	expectAbsolute, _ := strconv.Atoi(absoluteEpisode)
-	target := parser.EpisodeTarget{Season: expectSeason, Seasonless: seasonless, Episode: expectEpisode, Absolute: expectAbsolute}
+	target := parser.EpisodeTarget{Season: expectSeason, Seasonless: seasonless, Episode: expectEpisode, Absolute: expectAbsolute, AirDate: opts.AirDate}
 	stats.ExpectedSeason = expectSeason
 	stats.ExpectedEpisode = expectEpisode
 
@@ -510,12 +514,17 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				episodeRank = parsed.TargetMatchRank(target)
 				if episodeRank == 0 {
 					stats.DroppedEpisodeRequest++
-					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode,
-						fmt.Sprintf("expected S%02dE%02d, got seasons %v episodes %v", expectSeason, expectEpisode, parsed.Seasons, parsed.Episodes))
+					detail := fmt.Sprintf("expected S%02dE%02d, got seasons %v episodes %v", expectSeason, expectEpisode, parsed.Seasons, parsed.Episodes)
+					if parsed.Date != "" {
+						detail += fmt.Sprintf(", dated %s (episode air date %s)", parsed.Date, cmp.Or(opts.AirDate, "unknown"))
+					}
+					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode, detail)
 					logger.Trace("ValidateSearchResults dropped: episode_request",
 						"expect_season", expectSeason,
 						"expect_episode", expectEpisode,
 						"expect_absolute", expectAbsolute,
+						"expect_air_date", opts.AirDate,
+						"got_date", parsed.Date,
 						"got_seasons", parsed.Seasons,
 						"got_episodes", parsed.Episodes,
 						"complete", parsed.Complete,

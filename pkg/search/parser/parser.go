@@ -220,6 +220,10 @@ type EpisodeTarget struct {
 	// when unknown). Releases carrying it match even though their parsed
 	// season/episode differ from the target.
 	Absolute int
+	// AirDate is the episode's air date as YYYY-MM-DD ("" when unknown). A
+	// daily show is released under it ("Show.2026.10.26") rather than under
+	// its season/episode.
+	AirDate string
 }
 
 // Valid reports whether the target can pick a file out of a release: a season
@@ -343,7 +347,22 @@ func (p *ParsedRelease) TargetMatchRank(t EpisodeTarget) int {
 	if t.Absolute > 0 {
 		rank = max(rank, p.SeasonlessEpisodeMatchRank(t.Absolute))
 	}
+	if p.isAirDateRelease(t.AirDate) {
+		rank = max(rank, 4)
+	}
 	return rank
+}
+
+// isAirDateRelease reports whether the release is named by exactly this air
+// date and by nothing else. A release that also carries a season or episode
+// number is judged by that number alone: the number says which episode it
+// is, while a date beside it may be a repeat or a regional broadcast, so a
+// matching date never rescues a conflicting number.
+func (p *ParsedRelease) isAirDateRelease(airDate string) bool {
+	if p == nil || p.Result == nil || airDate == "" || p.Date != airDate {
+		return false
+	}
+	return len(p.Seasons) == 0 && len(p.Episodes) == 0
 }
 
 func (p *ParsedRelease) ResolutionGroup() string {
