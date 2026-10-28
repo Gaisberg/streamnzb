@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"streamnzb/pkg/core/env"
@@ -113,7 +114,7 @@ func TestSearchSendsAdvancedParams(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"data":[],"results":0}`), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false, 0); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
 	if gotPath != easynewsSearchPath {
@@ -139,7 +140,7 @@ func TestSearchWalksAllPages(t *testing.T) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	results, stats, err := client.searchInternal(context.Background(), "show", "1", "1", "", true, false)
+	results, stats, err := client.searchInternal(context.Background(), "show", "1", "1", "", true, false, 0)
 	if err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
@@ -160,18 +161,18 @@ func TestSearchStopsAtPageBound(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	var calls int
+	var calls atomic.Int32
 	client.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		calls++
+		calls.Add(1)
 		body := `{"results":9999,"numPages":500,"data":[{"hash":"h","fn":"Show.S01E01","extension":".mkv","rawSize":9,"runtime":3600}]}`
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false, 0); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
-	if calls != maxSearchPages {
-		t.Fatalf("requests = %d, want the %d-page bound", calls, maxSearchPages)
+	if got := calls.Load(); got != maxSearchPages {
+		t.Fatalf("requests = %d, want the %d-page bound", got, maxSearchPages)
 	}
 }
 
@@ -189,7 +190,7 @@ func TestSearchKeepsEarlierPagesWhenALaterOneFails(t *testing.T) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 
-	results, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false)
+	results, _, err := client.searchInternal(context.Background(), "show", "", "", "", false, false, 0)
 	if err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestSearchReportsRejectedCredentials(t *testing.T) {
 		return jsonResponse(http.StatusUnauthorized, ""), nil
 	})
 
-	_, _, err = client.searchInternal(context.Background(), "test", "", "", "", false, false)
+	_, _, err = client.searchInternal(context.Background(), "test", "", "", "", false, false, 0)
 	if !errors.Is(err, errCredentialsRejected) {
 		t.Fatalf("err = %v, want a rejected-credentials error", err)
 	}
@@ -228,7 +229,7 @@ func TestSearchSendsQueryHeaderAndAuth(t *testing.T) {
 		return jsonResponse(http.StatusOK, `{"data":[],"results":0}`), nil
 	})
 
-	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false); err != nil {
+	if _, _, err := client.searchInternal(context.Background(), "test", "", "", "", false, false, 0); err != nil {
 		t.Fatalf("searchInternal: %v", err)
 	}
 	if gotUA != "StreamNZB-Test/1.0" {
