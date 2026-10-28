@@ -89,6 +89,55 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Next Up** — the episode to watch next in each series the stream has been
+  watching, worked out the way Jellyfin works it out: from the furthest
+  episode watched, the first one after it that is neither watched nor
+  unaired, continuing into the next season. Watching episodes out of order
+  therefore goes on from the furthest, not from the gap, and the furthest
+  still counts if the metadata no longer lists it. A series with nothing
+  left that has aired is not listed. An episode with no air date counts as
+  aired, unless the last dated episode before it has not aired: the undated
+  rest of a season whose premiere is still to come is not offered. Series come
+  newest-watched first. An episode you are part-way through appears only when
+  it is the one to go on with, the first after the furthest watched; a
+  rewatch you left half-way is not offered. It carries its position, unless
+  the client asks for resumable episodes to be left out
+  (`EnableResumable=false`, which Jellyfin's web client sends because it shows
+  those under Continue Watching). Then the series is left out rather than
+  skipping ahead. `SeriesId` naming a series asks about that one, watched or
+  not — an unwatched one offers its first episode. Any other `SeriesId` is
+  ignored, as Jellyfin ignores it. `ParentId` naming a library narrows the
+  list to that library's content type, since a series does not remember
+  which catalog it was found in. Jellyfin narrows Next Up by library only, so
+  any other `ParentId`, a series or season included, lists nothing.
+  `NextUpDateCutoff` is honoured, including a time with no zone, which is
+  read as UTC. `StartIndex`, `Limit` and `EnableTotalRecordCount` are also
+  honoured. Limits:
+  - **Specials are never offered.** No metadata source here says where a
+    special airs among the regular episodes, which is what Jellyfin places
+    them by. A Kitsu film is not offered either: it is shown as a
+    one-episode series, but there is nothing to go on to.
+  - **Marking a whole season or series watched is not supported**: the
+    client's mark is refused, so Next Up does not move. Mark the episodes, or
+    play them.
+  - **Only the 100 most recently watched series are looked at**, since each
+    needs its episode list. A series watched less recently than that is not
+    listed.
+  - **The total can be short of the real count.** Series are looked at only
+    until the page is filled, plus one past it, instead of all of them as
+    Jellyfin does, so a home-screen row costs one batch of episode lists
+    rather than a hundred. The total is exact on the last page. Before that,
+    it is the episodes found so far, always at least one more than the page,
+    and never more than there are. A client paging by it never asks for an
+    empty page, but a count shown beside the row can read low.
+  - **Rewatching (`EnableRewatching`) is not supported.**
+  - **History belongs to the id a series was watched under.** A series
+    watched through one metadata source and later browsed through another
+    starts over in Next Up. Changing a profile's series source can also
+    renumber the episodes behind the same id.
+  - **An anime continues within its Kitsu entry**, since Kitsu lists each
+    season or cour as an entry of its own.
+  - **Upcoming is still answered empty.**
 - **Favourites** — the heart (or watchlist) button on a movie, series, season
   or episode is kept per stream, server-side, alongside the play state, so
   each stream signed in has its own. Favourites follow the stream through a

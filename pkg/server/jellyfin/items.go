@@ -1027,10 +1027,10 @@ func (s *Server) itemOf(rq *request, id itemID, meta *stremio.MetaObject) *baseI
 		item.UserData = s.userData(rq, id)
 		// Infuse (and other clients) read a series' own MediaSourceCount to
 		// decide whether its quick-play button gets a version-picker chevron,
-		// even though the button actually plays a specific episode. This addon
-		// has no per-episode resume state (see serveShows: NextUp is
-		// deliberately empty), so — matching the client's own fallback when it
-		// has no resume position either — the first numbered episode stands in.
+		// even though the button actually plays a specific episode. The series
+		// page does not work out Next Up's episode (nextUpResult), so —
+		// matching the client's own fallback when it has no resume position
+		// either — the first numbered episode stands in.
 		// A version-picker for the wrong episode once the user has actually
 		// progressed into the series is still strictly better than never
 		// offering one at all, which is the status quo this replaces.
