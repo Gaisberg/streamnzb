@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -57,7 +58,15 @@ func tvdbAirDateStub(t *testing.T, seriesID, name string, aired map[string]strin
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	client := tvdb.NewClient("test-key", t.TempDir())
+	// Not t.TempDir: the login persists its token through the process-wide
+	// database, which keeps the directory open, and Windows then fails the
+	// test on cleanup. Removal is best-effort, as in tvdb's newStubClient.
+	dir, err := os.MkdirTemp("", "tvdb_airdate_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	client := tvdb.NewClient("test-key", dir)
 	client.BaseURL = ts.URL
 	return client, &lookups
 }
