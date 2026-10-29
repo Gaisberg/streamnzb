@@ -125,8 +125,8 @@ stream never sees another's.
     listed.
   - **The total can be short of the real count.** Series are looked at only
     until the page is filled, plus one past it, instead of all of them as
-    Jellyfin does, so a home-screen row costs one batch of episode lists
-    rather than a hundred. The total is exact on the last page. Before that,
+    Jellyfin does, so a home-screen row costs about as many episode lists as
+    it shows, fetched 8 at a time, rather than a hundred. The total is exact on the last page. Before that,
     it is the episodes found so far, always at least one more than the page,
     and never more than there are. A client paging by it never asks for an
     empty page, but a count shown beside the row can read low.
@@ -134,7 +134,9 @@ stream never sees another's.
   - **History belongs to the id a series was watched under.** A series
     watched through one metadata source and later browsed through another
     starts over in Next Up. Changing a profile's series source can also
-    renumber the episodes behind the same id.
+    renumber the episodes behind the same id. A series watched both from an
+    anime catalog and a series catalog under the same IMDb id is listed
+    twice, once for each.
   - **An anime continues within its Kitsu entry**, since Kitsu lists each
     season or cour as an entry of its own.
   - **Upcoming is still answered empty.**

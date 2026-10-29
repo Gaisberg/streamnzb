@@ -196,7 +196,9 @@ func nextUpCutoff(raw string) time.Time {
 // ones. An undated episode takes the state of the last dated one before it,
 // so the undated rest of a season whose premiere has not aired is unaired
 // too, while one with nothing dated before it, or an aired episode, counts as
-// aired. A pick the stream is part-way through is offered only when
+// aired. A season that starts undated in a series with dates elsewhere is
+// the exception: it is unaired unless an episode after it has aired, as TMDB
+// and TVDB list an announced season before they date it. A pick the stream is part-way through is offered only when
 // includeResumable, and otherwise the series has no Next Up rather than a
 // later episode.
 func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.JellyfinPlaystate, includeResumable bool) (stremio.MetaVideo, bool) {
@@ -211,12 +213,27 @@ func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.J
 	slices.SortStableFunc(episodes, func(a, b stremio.MetaVideo) int {
 		return cmp.Or(cmp.Compare(a.Season, b.Season), cmp.Compare(a.Episode, b.Episode))
 	})
-	notAired := false
+	// lastAired is the furthest episode dated in the past.
+	var lastAired episodeKey
+	anyDated, anyAired := false, false
 	for _, v := range episodes {
+		if _, ok := parseISOTime(v.Released); ok {
+			anyDated = true
+			if !unaired(v.Released) {
+				lastAired, anyAired = episodeKey{v.Season, v.Episode}, true
+			}
+		}
+	}
+	notAired := false
+	for i, v := range episodes {
+		key := episodeKey{v.Season, v.Episode}
 		if _, dated := parseISOTime(v.Released); dated {
 			notAired = unaired(v.Released)
+		} else if anyDated && i > 0 && v.Season != episodes[i-1].Season {
+			// Sources list an announced season before dating it, so an undated
+			// season has aired only when an episode after it has.
+			notAired = !anyAired || slices.Compare(key[:], lastAired[:]) > 0
 		}
-		key := episodeKey{v.Season, v.Episode}
 		st := states[key]
 		if (anchored && slices.Compare(key[:], anchor[:]) <= 0) || st.Played || notAired {
 			continue
