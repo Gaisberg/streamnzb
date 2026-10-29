@@ -6,7 +6,7 @@ import (
 )
 
 // serveShows answers the /Shows routes clients use for a series' seasons
-// and episodes, and Next Up (see nextUpResult). Upcoming is empty.
+// and episodes, Next Up (see nextUpResult) and Upcoming (upcomingResult).
 func (s *Server) serveShows(w http.ResponseWriter, rq *request) bool {
 	if !rq.is(http.MethodGet) {
 		return false
@@ -16,7 +16,7 @@ func (s *Server) serveShows(w http.ResponseWriter, rq *request) bool {
 		return true
 	}
 	if _, ok := rq.match("shows", "upcoming"); ok {
-		writeJSON(w, http.StatusOK, emptyResult())
+		writeJSON(w, http.StatusOK, s.upcomingResult(rq))
 		return true
 	}
 	c, ok := rq.match("shows", "*", "*")

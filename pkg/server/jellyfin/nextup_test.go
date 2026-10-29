@@ -67,6 +67,7 @@ func TestNextUpVideo(t *testing.T) {
 		{name: "undated with nothing dated before counts as aired", videos: []stremio.MetaVideo{{Season: 1, Episode: 1}, {Season: 1, Episode: 2}}, states: states{{1, 1}: played}, want: episodeKey{1, 2}},
 		{name: "anchor the metadata no longer lists still counts", videos: []stremio.MetaVideo{{Season: 1, Episode: 1}, {Season: 1, Episode: 2}, {Season: 2, Episode: 1}}, states: states{{1, 1}: played, {1, 9}: played}, want: episodeKey{2, 1}},
 		{name: "nothing after an anchor the metadata no longer lists", videos: []stremio.MetaVideo{{Season: 1, Episode: 1}, {Season: 1, Episode: 2}}, states: states{{1, 9}: played}, none: true},
+		{name: "a later listing does not date an episode", videos: []stremio.MetaVideo{{Season: 1, Episode: 1, Released: "2020-01-01"}, {Season: 1, Episode: 2, Released: "2099-01-01"}, {Season: 1, Episode: 2, Released: "2020-01-08"}}, states: states{{1, 1}: played}, none: true},
 		{name: "no episodes", none: true},
 	}
 	for _, c := range cases {

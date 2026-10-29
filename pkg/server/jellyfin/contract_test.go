@@ -213,6 +213,14 @@ func TestResponsesSatisfyTheClientSDKContract(t *testing.T) {
 		t.Fatalf("Next Up lists nothing after an episode was watched")
 	}
 	checkQuery(t, nextUp, "Shows/NextUp")
+	future := addSeries(f, "tt0000301", "Coming Soon",
+		stremio.MetaVideo{Season: 1, Episode: 1, Released: time.Now().AddDate(0, 0, 7).Format("2006-01-02")})
+	f.play.SetFavorite("living-room", future.encode(), "series", "tt0000301", true)
+	upcoming := objectOf(t, f.do(http.MethodGet, "/jellyfin/Shows/Upcoming?UserId=u", "").Body.Bytes(), "Shows/Upcoming")
+	if len(children(upcoming, "Items")) == 0 {
+		t.Fatalf("Upcoming lists nothing for a favourite airing next week")
+	}
+	checkQuery(t, upcoming, "Shows/Upcoming")
 
 	// Search hints, the shape the client's search box reads.
 	hints := objectOf(t, f.do(http.MethodGet, "/jellyfin/Search/Hints?searchTerm=bad&includeItemTypes=Series", "").Body.Bytes(), "Search/Hints")
