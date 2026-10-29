@@ -91,28 +91,31 @@ stream never sees another's.
   it locally the way Stremio clients do. 90% in counts as watched.
 - **Next Up** — the episode to watch next in each series the stream has been
   watching, worked out the way Jellyfin works it out: from the furthest
-  episode watched, the first one after it that is neither watched nor
-  unaired, continuing into the next season. Watching episodes out of order
-  therefore goes on from the furthest, not from the gap, and the furthest
-  still counts if the metadata no longer lists it. A series with nothing
-  left that has aired is not listed. An episode with no air date counts as
-  aired, unless the last dated episode before it has not aired: the undated
-  rest of a season whose premiere is still to come is not offered. Series come
-  newest-watched first. An episode you are part-way through appears only when
-  it is the one to go on with, the first after the furthest watched; a
-  rewatch you left half-way is not offered. It carries its position, unless
-  the client asks for resumable episodes to be left out
-  (`EnableResumable=false`, which Jellyfin's web client sends because it shows
-  those under Continue Watching). Then the series is left out rather than
-  skipping ahead. `SeriesId` naming a series asks about that one, watched or
-  not — an unwatched one offers its first episode. Any other `SeriesId` is
-  ignored, as Jellyfin ignores it. `ParentId` naming a library narrows the
-  list to that library's content type, since a series does not remember
-  which catalog it was found in. Jellyfin narrows Next Up by library only, so
-  any other `ParentId`, a series or season included, lists nothing.
-  `NextUpDateCutoff` is honoured, including a time with no zone, which is
-  read as UTC. `StartIndex`, `Limit` and `EnableTotalRecordCount` are also
-  honoured. Limits:
+  episode watched, the first one after it that is neither watched nor unaired,
+  continuing into the next season. Watching episodes out of order therefore
+  goes on from the furthest, not from the gap, and the furthest still counts
+  if the metadata no longer lists it. A series with nothing left that has
+  aired is not listed. An episode with no air date takes the aired or unaired
+  state of the last dated episode before it, so the undated rest of a season
+  whose premiere is still to come is not offered. A season that starts undated
+  in a series dated elsewhere is the exception, since TMDB and TVDB list an
+  announced season before dating it: it counts as unaired unless a later
+  episode has aired, so an older undated season stays eligible. A series with
+  no air dates at all counts as aired throughout. Series come newest-watched
+  first. An episode you are part-way through appears only when it is the one
+  to go on with, the first after the furthest watched; a rewatch you left
+  half-way is not offered. It carries its position, unless the client asks for
+  resumable episodes to be left out (`EnableResumable=false`, which Jellyfin's
+  web client sends because it shows those under Continue Watching). Then the
+  series is left out rather than skipping ahead. `SeriesId` naming a series
+  asks about that one, watched or not — an unwatched one offers its first
+  episode. Any other `SeriesId` is ignored, as Jellyfin ignores it. `ParentId`
+  naming a library narrows the list to that library's content type, since a
+  series does not remember which catalog it was found in. Jellyfin narrows
+  Next Up by library only, so any other `ParentId`, a series or season
+  included, lists nothing. `NextUpDateCutoff` is honoured, including a time
+  with no zone, which is read as UTC. `StartIndex`, `Limit` and
+  `EnableTotalRecordCount` are also honoured. Limits:
   - **Specials are never offered.** No metadata source here says where a
     special airs among the regular episodes, which is what Jellyfin places
     them by. A Kitsu film is not offered either: it is shown as a

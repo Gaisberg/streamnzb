@@ -196,11 +196,11 @@ func nextUpCutoff(raw string) time.Time {
 // ones. An undated episode takes the state of the last dated one before it,
 // so the undated rest of a season whose premiere has not aired is unaired
 // too, while one with nothing dated before it, or an aired episode, counts as
-// aired. A season that starts undated in a series with dates elsewhere is
-// the exception: it is unaired unless an episode after it has aired, as TMDB
-// and TVDB list an announced season before they date it. A pick the stream is part-way through is offered only when
-// includeResumable, and otherwise the series has no Next Up rather than a
-// later episode.
+// aired. A season that starts undated in a series with dates elsewhere is the
+// exception: it is unaired unless an episode after it has aired, as TMDB and
+// TVDB list an announced season before they date it. A pick the stream is
+// part-way through is offered only when includeResumable, and otherwise the
+// series has no Next Up rather than a later episode.
 func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.JellyfinPlaystate, includeResumable bool) (stremio.MetaVideo, bool) {
 	var anchor episodeKey
 	anchored := false
