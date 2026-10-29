@@ -90,15 +90,19 @@ func isPlausibleLargestDirectFallbackName(name string) bool {
 // target. Season, episode and absolute number must match exactly. A plan made
 // with an air date must have the same one: the date may have chosen its files
 // beyond anything the plan records — the NZB layer narrows a multi-night
-// release by its dated volume names, even around an obfuscated inner file —
+// release to one night's dated volumes, whose inner file may be obfuscated —
 // so a changed or missing date rescans. A plan made before the date was known
 // (every one persisted before it existed) is reused when no air date could
 // have changed its pick. A date only ever matches a file named by a date, so a
 // pick without one stands: it was chosen by its numbering, or as the release's
-// only candidate, and several candidates none of which matched would have
-// failed rather than produced this plan. A dated pick, a pick numbered for
-// another episode, and a recorded failure the date might cure all rescan — a
-// scan is the cost there, where reuse could cost the wrong episode.
+// only candidate. That holds for an obfuscated pick too. A direct file's name
+// is the one the NZB layer would narrow by, so a date has nothing to narrow
+// on. An archive's inner file was chosen from every night's volumes, since
+// without a date the NZB layer narrows nothing, and several candidates none of
+// which matched would have failed rather than produced this plan. A dated
+// pick, a pick numbered for another episode, and a recorded failure the date
+// might cure all rescan — a scan is the cost there, where reuse could cost
+// the wrong episode.
 func blueprintTargetMatches(cachedBP Blueprint, requested EpisodeTarget) bool {
 	cached := cachedBP.TargetEpisode()
 	if cached == requested {

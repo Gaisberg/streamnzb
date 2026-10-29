@@ -214,8 +214,8 @@ func TestEpisodeAirDateTMDBCrossCheck(t *testing.T) {
 		want   string
 	}{
 		{"both agree", &rawTMDB, rawTVDB, http.StatusOK, rawS33E43, "2025-10-27"},
-		{"TMDB has no such season", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{32: {1: "2024-01-01"}} })), rawTVDB, http.StatusOK, rawS33E43, "2025-10-27"},
-		{"TMDB has the season, not the episode", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{33: {1: "2025-01-06"}} })), rawTVDB, http.StatusOK, rawS33E43, "2025-10-27"},
+		{"TMDB has no such season", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{32: {1: "2024-01-01"}} })), rawTVDB, http.StatusOK, rawS33E43, ""},
+		{"TMDB has the season, not the episode", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{33: {1: "2025-01-06"}} })), rawTVDB, http.StatusOK, rawS33E43, ""},
 		{"TMDB disagrees by a night", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{33: {43: "2025-10-28"}} })), rawTVDB, http.StatusOK, rawS33E43, ""},
 		{"TMDB episode undated", ptr(with(func(s *tmdbSeries) { s.seasons = map[int]map[int]string{33: {43: ""}} })), rawTVDB, http.StatusOK, rawS33E43, ""},
 		{"TMDB season request fails", ptr(with(func(s *tmdbSeries) { s.fail = "season" })), rawTVDB, http.StatusOK, rawS33E43, ""},
@@ -255,6 +255,86 @@ func TestEpisodeAirDateTMDBCrossCheck(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TMDB's series and season answers are cached for a day, so an episode or
+// season TMDB does not list may be one it has listed since. That is never
+// taken as TMDB numbering the show another way: the newest episode is asked
+// about again past the cache — only the answer that lacked it — and still
+// unlisted it leaves no date. Only an
+// episode far past TMDB's last one (Kimmel's) lets TVDB's date stand unasked.
+func TestEpisodeAirDateStaleTMDB(t *testing.T) {
+	today := time.Now().Format(airDateLayout)
+	yesterday := time.Now().AddDate(0, 0, -1).Format(airDateLayout)
+	series := func(seasons map[int]map[int]string) tmdbSeries {
+		s := gutfeldTMDB
+		s.seasons = seasons
+		return s
+	}
+	s4 := func(eps map[int]string) map[int]map[int]string { return map[int]map[int]string{4: eps} }
+	e158 := &session.AvailReportMeta{ImdbID: "tt4690816", TvdbID: "400622", TmdbID: "122653", Season: 4, Episode: 158}
+	s5e1 := &session.AvailReportMeta{ImdbID: "tt4690816", TvdbID: "400622", TmdbID: "122653", Season: 5, Episode: 1}
+
+	for _, tc := range []struct {
+		name          string
+		cached        tmdbSeries // what TMDB said when the cache was filled
+		fresh         tmdbSeries // what TMDB says now
+		ids           *session.AvailReportMeta
+		tvdb          map[string]string
+		want          string
+		wantRefetches int64 // details and season requests past the cache
+	}{
+		{"cached season ends at E157, TMDB still does",
+			series(s4(map[int]string{157: yesterday})), series(s4(map[int]string{157: yesterday})),
+			e158, map[string]string{"4x158": today}, "", 1},
+		{"cached season ends at E157, TMDB now dates E158 another night",
+			series(s4(map[int]string{157: yesterday})), series(s4(map[int]string{157: "2024-01-01", 158: yesterday})),
+			e158, map[string]string{"4x158": today}, "", 1},
+		{"cached season ends at E157, TMDB now dates E158 as TVDB does",
+			series(s4(map[int]string{157: yesterday})), series(s4(map[int]string{157: yesterday, 158: today})),
+			e158, map[string]string{"4x158": today}, today, 1},
+		{"cached series lacks a new season, TMDB still does",
+			series(s4(map[int]string{157: yesterday})), series(s4(map[int]string{157: yesterday})),
+			s5e1, map[string]string{"5x1": today}, "", 1},
+		{"cached series lacks a new season, TMDB now dates it as TVDB does",
+			series(s4(map[int]string{157: yesterday})), series(map[int]map[int]string{4: {157: yesterday}, 5: {1: today}}),
+			s5e1, map[string]string{"5x1": today}, today, 2},
+		{"TMDB fails the request past the cache",
+			series(s4(map[int]string{157: yesterday})), func() tmdbSeries { s := series(s4(map[int]string{158: today})); s.fail = "season"; return s }(),
+			e158, map[string]string{"4x158": today}, "", 1},
+		{"an old episode TMDB does not list is not asked about again",
+			series(s4(map[int]string{157: "2024-01-01"})), series(s4(map[int]string{157: "2024-01-01", 158: "2024-01-02"})),
+			e158, map[string]string{"4x158": "2024-01-02"}, "", 0},
+		{"Kimmel's numbering is settled from the cache",
+			kimmelTMDB, kimmelTMDB,
+			kimmelS24E2524, map[string]string{"24x2524": today}, today, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var current atomic.Pointer[tmdbSeries]
+			current.Store(&tc.cached)
+			var refetches atomic.Int64
+			srv := airedTestServer(t, tvmazeRawS33E43, func(w http.ResponseWriter, r *http.Request) {
+				s := current.Load()
+				if base := fmt.Sprintf("/tv/%d", s.id); r.URL.Path == base || strings.HasPrefix(r.URL.Path, base+"/season/") {
+					refetches.Add(1)
+				}
+				tmdbSeriesStub(*s)(w, r)
+			})
+			srv.tvdbClient, _ = tvdbAirDateStub(t, tc.ids.TvdbID, tc.cached.name, tc.tvdb, http.StatusOK)
+			// Yesterday's cache: what search resolution and the unaired gate read.
+			_, _ = srv.tmdbClient.GetTVDetails(tc.cached.id)
+			_, _ = srv.tmdbClient.GetTVSeasonDetails(tc.cached.id, tc.ids.Season)
+			current.Store(&tc.fresh)
+			refetches.Store(0)
+
+			if got := srv.episodeAirDate("series", tc.ids); got != tc.want {
+				t.Fatalf("air date = %q, want %q", got, tc.want)
+			}
+			if got := refetches.Load(); got != tc.wantRefetches {
+				t.Fatalf("TMDB details/season requests past the cache = %d, want %d", got, tc.wantRefetches)
+			}
+		})
+	}
+}
 
 // The unaired gate keeps its own sources and order: it still reads TVMaze
 // first, whatever date matching settles on.
