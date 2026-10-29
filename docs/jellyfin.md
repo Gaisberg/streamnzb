@@ -109,10 +109,11 @@ stream never sees another's.
   web client sends because it shows those under Continue Watching). Then the
   series is left out rather than skipping ahead. `SeriesId` naming a series
   asks about that one, watched or not — an unwatched one offers its first
-  episode. Any other `SeriesId` is ignored, as Jellyfin ignores it. `ParentId`
-  naming a library narrows the list to that library's content type, since a
-  series does not remember which catalog it was found in. Jellyfin narrows
-  Next Up by library only, so any other `ParentId`, a series or season
+  episode — and `ParentId`, `NextUpDateCutoff` and the 100-series limit then
+  do not apply. Any other `SeriesId` is ignored, as Jellyfin ignores it.
+  `ParentId` naming a library narrows the list to that library's content type,
+  since a series does not remember which catalog it was found in. Jellyfin
+  narrows Next Up by library only, so any other `ParentId`, a series or season
   included, lists nothing. `NextUpDateCutoff` is honoured, including a time
   with no zone, which is read as UTC. `StartIndex`, `Limit` and
   `EnableTotalRecordCount` are also honoured. Limits:
