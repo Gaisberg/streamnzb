@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -153,6 +154,153 @@ func (ps *JellyfinPlaystateStore) SetPlayed(streamName, itemID, contentType, con
 	return ps.Upsert(current)
 }
 
+// MarkPlayedMany marks items watched as SetPlayed marks one, in one
+// transaction stamped with one time, so a season or series marked at once is
+// either all marked or left as it was. Each item carries its ItemID,
+// ContentType and ContentID. An item already played is left as it was, date
+// and play count included; the rows missing are created. The favourite flag
+// is never written.
+func (ps *JellyfinPlaystateStore) MarkPlayedMany(streamName string, items []JellyfinPlaystate) error {
+	if ps == nil || ps.db == nil {
+		return nil
+	}
+	streamName = strings.TrimSpace(streamName)
+	if streamName == "" || len(items) == 0 {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	// Not the request's context: once begun, the marks land together or not
+	// at all, whatever the client does meanwhile.
+	tx, err := ps.wdb.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	// Rows go a chunk to a statement rather than one each: the store is locked
+	// meanwhile, and on Postgres every statement is a round trip. An id is
+	// written once, since one Postgres upsert cannot touch a row twice.
+	const chunk = 500
+	seen := make(map[string]bool, len(items))
+	for start := 0; start < len(items); start += chunk {
+		var values []string
+		var args []any
+		for _, item := range items[start:min(start+chunk, len(items))] {
+			itemID := strings.TrimSpace(item.ItemID)
+			if itemID == "" {
+				return errors.New("jellyfin playstate: empty item id")
+			}
+			if seen[itemID] {
+				continue
+			}
+			seen[itemID] = true
+			values = append(values, "(?, ?, ?, ?, 1, 1, ?)")
+			args = append(args, streamName, itemID, item.ContentType, item.ContentID, now)
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO jellyfin_playstate (stream_name, item_id, content_type, content_id, played, play_count, last_played_at)
+			VALUES `+strings.Join(values, ", ")+`
+			ON CONFLICT(stream_name, item_id) DO UPDATE SET
+				played = 1,
+				position_ticks = 0,
+				play_count = CASE WHEN jellyfin_playstate.play_count = 0 THEN 1 ELSE jellyfin_playstate.play_count END,
+				last_played_at = excluded.last_played_at
+			WHERE jellyfin_playstate.played = 0`, args...); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// prefixRange is the WHERE clause, and its arguments, admitting the item ids
+// that start with prefix, a lowercase hex one, as every item id is (so LIKE
+// has no wildcard to misread). The range lets the primary key find the rows
+// without reading the rest of the stream. Neither half alone is exact on
+// both backends, which compare text differently: Postgres under a glibc
+// collation such as en_US orders case aside, so the range admits "05AB…"
+// under "05ab", and SQLite's LIKE ignores case. Together they admit exactly
+// the ids that start with prefix and go on in hex.
+func prefixRange(prefix string) (string, []any, error) {
+	if prefix == "" || strings.Trim(prefix, "0123456789abcdef") != "" {
+		return "", nil, errors.New("jellyfin playstate: item id prefix must be lowercase hex")
+	}
+	return `item_id >= ? AND item_id < ? AND item_id LIKE ?`, []any{prefix, prefix + "g", prefix + "%"}, nil
+}
+
+// ListPrefix returns a stream's rows whose item id starts with prefix: a
+// series' or season's episodes, without the rest of the stream. Unlike the
+// listings above it reports a failed read, which a caller deciding what to
+// change must not take for no rows.
+func (ps *JellyfinPlaystateStore) ListPrefix(streamName, prefix string) ([]JellyfinPlaystate, error) {
+	if ps == nil || ps.db == nil {
+		return nil, nil
+	}
+	where, args, err := prefixRange(prefix)
+	if err != nil {
+		return nil, err
+	}
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	rows, err := ps.db.Query(`
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		FROM jellyfin_playstate WHERE stream_name = ? AND `+where,
+		append([]any{strings.TrimSpace(streamName)}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JellyfinPlaystate
+	for rows.Next() {
+		st, err := scanPlaystate(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// ClearPlayedPrefix marks unwatched every row of a stream whose item id
+// starts with prefix, its position cleared, its play count and favourite
+// kept, in one statement, and reports how many it changed: what it clears is
+// decided as it writes, so a row played before it lands is cleared too
+// rather than missed. A write landing after it wins, as after any mark: a
+// progress report that read its row before the clear writes that row's old
+// played flag back. Rows with nothing to clear are left as they are, and
+// none is created.
+func (ps *JellyfinPlaystateStore) ClearPlayedPrefix(streamName, prefix string) (int64, error) {
+	if ps == nil || ps.db == nil {
+		return 0, nil
+	}
+	where, args, err := prefixRange(prefix)
+	if err != nil {
+		return 0, err
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	res, err := ps.wdb.Exec(`
+		UPDATE jellyfin_playstate SET played = 0, position_ticks = 0, last_played_at = ?
+		WHERE stream_name = ? AND (played = 1 OR position_ticks > 0) AND `+where,
+		append([]any{time.Now().UnixMilli(), strings.TrimSpace(streamName)}, args...)...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetFavorite marks or clears an item as a favourite. It writes is_favorite
 // alone, so progress and last_played_at are never touched. Marking creates a
 // row when there is none; clearing only updates, and never deletes the row,
@@ -217,21 +365,31 @@ func scanPlaystates(rows interface {
 }) []JellyfinPlaystate {
 	var out []JellyfinPlaystate
 	for rows.Next() {
-		var st JellyfinPlaystate
-		var played, favorite int
-		var lastPlayed int64
-		if err := rows.Scan(&st.StreamName, &st.ItemID, &st.ContentType, &st.ContentID,
-			&st.PositionTicks, &st.RuntimeTicks, &played, &st.PlayCount, &lastPlayed, &favorite); err != nil {
+		st, err := scanPlaystate(rows)
+		if err != nil {
 			continue
-		}
-		st.Played = played != 0
-		st.IsFavorite = favorite != 0
-		// A favourite-only row was never played; 0 must read as zero time,
-		// not as 1970.
-		if lastPlayed > 0 {
-			st.LastPlayedAt = time.UnixMilli(lastPlayed)
 		}
 		out = append(out, st)
 	}
 	return out
+}
+
+// scanPlaystate reads the row rows is on. The listings skip a row it cannot
+// read; ListPrefix, whose rows decide a watched state, fails on it instead.
+func scanPlaystate(rows interface{ Scan(dest ...any) error }) (JellyfinPlaystate, error) {
+	var st JellyfinPlaystate
+	var played, favorite int
+	var lastPlayed int64
+	if err := rows.Scan(&st.StreamName, &st.ItemID, &st.ContentType, &st.ContentID,
+		&st.PositionTicks, &st.RuntimeTicks, &played, &st.PlayCount, &lastPlayed, &favorite); err != nil {
+		return JellyfinPlaystate{}, err
+	}
+	st.Played = played != 0
+	st.IsFavorite = favorite != 0
+	// A favourite-only row was never played; 0 must read as zero time,
+	// not as 1970.
+	if lastPlayed > 0 {
+		st.LastPlayedAt = time.UnixMilli(lastPlayed)
+	}
+	return st, nil
 }
