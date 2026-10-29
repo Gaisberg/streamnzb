@@ -31,6 +31,8 @@ type nextUpSeries struct {
 	// last is the newest LastPlayedAt among the episodes actually played or
 	// part-played; zero when there are none.
 	last time.Time
+	// favorite is set when the series itself is a favourite.
+	favorite bool
 }
 
 // nextUpResult answers /Shows/NextUp. Series are looked at newest first, a
@@ -110,25 +112,7 @@ func (s *Server) nextUpResult(rq *request) queryResult {
 // episode played or part-played, since nextUpDateCutoff when one is given,
 // inside ParentId.
 func (s *Server) nextUpCandidates(rq *request) []nextUpSeries {
-	bySeries := map[string]*nextUpSeries{}
-	for _, st := range s.opts.Playstate.ListForStream(rq.streamName()) {
-		id, err := decodeItemID(st.ItemID)
-		if err != nil || id.Kind != kindEpisode {
-			continue
-		}
-		key := id.series().encode()
-		sr := bySeries[key]
-		if sr == nil {
-			sr = &nextUpSeries{id: id.series(), states: map[episodeKey]persistence.JellyfinPlaystate{}}
-			bySeries[key] = sr
-		}
-		sr.states[episodeKey{id.Season, id.Episode}] = st
-		// A favourite-only or unmarked row says nothing about watching.
-		if (st.Played || st.PositionTicks > 0) && st.LastPlayedAt.After(sr.last) {
-			sr.last = st.LastPlayedAt
-		}
-	}
-
+	bySeries := s.seriesStates(rq)
 	if id, err := decodeItemID(rq.param("seriesId")); err == nil && id.Kind == kindSeries {
 		if sr := bySeries[id.encode()]; sr != nil {
 			return []nextUpSeries{*sr}
@@ -141,9 +125,50 @@ func (s *Server) nextUpCandidates(rq *request) []nextUpSeries {
 		return nil
 	}
 	cutoff := nextUpCutoff(rq.param("nextUpDateCutoff"))
+	return newestSeries(bySeries, func(sr *nextUpSeries) bool {
+		return !sr.last.IsZero() && !sr.last.Before(cutoff) && inScope(sr.id)
+	})
+}
+
+// seriesStates groups the stream's episode states by series, and marks the
+// series that are favourites themselves.
+func (s *Server) seriesStates(rq *request) map[string]*nextUpSeries {
+	bySeries := map[string]*nextUpSeries{}
+	entry := func(id itemID) *nextUpSeries {
+		key := id.series().encode()
+		sr := bySeries[key]
+		if sr == nil {
+			sr = &nextUpSeries{id: id.series(), states: map[episodeKey]persistence.JellyfinPlaystate{}}
+			bySeries[key] = sr
+		}
+		return sr
+	}
+	for _, st := range s.opts.Playstate.ListForStream(rq.streamName()) {
+		id, err := decodeItemID(st.ItemID)
+		if err != nil {
+			continue
+		}
+		switch {
+		case id.Kind == kindSeries && st.IsFavorite:
+			entry(id).favorite = true
+		case id.Kind == kindEpisode:
+			sr := entry(id)
+			sr.states[episodeKey{id.Season, id.Episode}] = st
+			// A favourite-only or unmarked row says nothing about watching.
+			if (st.Played || st.PositionTicks > 0) && st.LastPlayedAt.After(sr.last) {
+				sr.last = st.LastPlayedAt
+			}
+		}
+	}
+	return bySeries
+}
+
+// newestSeries keeps the series keep admits, most recently watched first,
+// up to nextUpMaxSeries.
+func newestSeries(bySeries map[string]*nextUpSeries, keep func(*nextUpSeries) bool) []nextUpSeries {
 	var out []nextUpSeries
 	for _, sr := range bySeries {
-		if !sr.last.IsZero() && !sr.last.Before(cutoff) && inScope(sr.id) {
+		if keep(sr) {
 			out = append(out, *sr)
 		}
 	}
@@ -202,17 +227,8 @@ func nextUpCutoff(raw string) time.Time {
 // part-way through is offered only when includeResumable, and otherwise the
 // series has no Next Up rather than a later episode.
 func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.JellyfinPlaystate, includeResumable bool) (stremio.MetaVideo, bool) {
-	var anchor episodeKey
-	anchored := false
-	for key, st := range states {
-		if st.Played && key[0] != 0 && (!anchored || slices.Compare(key[:], anchor[:]) > 0) {
-			anchor, anchored = key, true
-		}
-	}
-	episodes := slices.DeleteFunc(slices.Clone(videos), func(v stremio.MetaVideo) bool { return v.Season == 0 })
-	slices.SortStableFunc(episodes, func(a, b stremio.MetaVideo) int {
-		return cmp.Or(cmp.Compare(a.Season, b.Season), cmp.Compare(a.Episode, b.Episode))
-	})
+	anchor, anchored := furthestPlayed(states)
+	episodes := numberedEpisodes(videos)
 	// lastAired is the furthest episode dated in the past.
 	var lastAired episodeKey
 	anyDated, anyAired := false, false
@@ -244,4 +260,29 @@ func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.J
 		return v, true
 	}
 	return stremio.MetaVideo{}, false
+}
+
+// furthestPlayed is the furthest numbered episode the stream has played.
+func furthestPlayed(states map[episodeKey]persistence.JellyfinPlaystate) (episodeKey, bool) {
+	var anchor episodeKey
+	anchored := false
+	for key, st := range states {
+		if st.Played && key[0] != 0 && (!anchored || slices.Compare(key[:], anchor[:]) > 0) {
+			anchor, anchored = key, true
+		}
+	}
+	return anchor, anchored
+}
+
+// numberedEpisodes is a copy of videos in episode order, specials left out.
+// An episode the metadata lists twice is its first listing, the one itemOf
+// renders, so a later listing never dates it.
+func numberedEpisodes(videos []stremio.MetaVideo) []stremio.MetaVideo {
+	episodes := slices.DeleteFunc(slices.Clone(videos), func(v stremio.MetaVideo) bool { return v.Season == 0 })
+	slices.SortStableFunc(episodes, func(a, b stremio.MetaVideo) int {
+		return cmp.Or(cmp.Compare(a.Season, b.Season), cmp.Compare(a.Episode, b.Episode))
+	})
+	return slices.CompactFunc(episodes, func(a, b stremio.MetaVideo) bool {
+		return a.Season == b.Season && a.Episode == b.Episode
+	})
 }

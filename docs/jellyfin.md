@@ -143,7 +143,50 @@ stream never sees another's.
     twice, once for each.
   - **An anime continues within its Kitsu entry**, since Kitsu lists each
     season or cour as an entry of its own.
-  - **Upcoming is still answered empty.**
+- **Upcoming** — the episodes still to air in the series the stream follows,
+  soonest first. Jellyfin lists every dated episode in its libraries from
+  yesterday on; a catalog here has no end, so Upcoming follows the series the
+  stream has watched (an episode watched or part-way through) or marked as a
+  favourite — the series itself, not one of its seasons or episodes. Each
+  series contributes one episode, the one it is waiting on: the first dated
+  episode after the furthest watched that has not aired yet. A series with an
+  aired episode still to watch, part-way through included, is Next Up's and
+  is not listed, however soon its later episodes air. A favourite never
+  watched is listed only while nothing of it has aired, with its premiere.
+  Only episodes airing in the next 90 days are listed: a series waiting on
+  one further out is left out, and no later episode stands in for it.
+  Episodes airing at the same time are ordered by series name. A favourite
+  is not history: it does not put a series in Next Up, and unfavouriting a
+  series the stream has watched leaves it followed by that history. `ParentId`
+  naming a series lists all of its dated episodes still to air in those 90
+  days, whether or not the stream follows it, as Jellyfin's series page asks
+  for them; a season narrows that to the season. An episode the metadata
+  lists twice is listed once. A library narrows the followed series to its
+  content type. Any other `ParentId` lists nothing. `StartIndex` and `Limit`
+  are honoured. Next to Jellyfin:
+  - **The total is exact.** Every followed series is looked at before a page
+    is cut, since the list is sorted by air date. Jellyfin reports the size
+    of the page it returns, and its clients find the end by a short page,
+    which this gives them too.
+  - **Each request looks at up to 200 series**: the 100 most recently
+    watched, and up to 100 favourites besides, in its own bound so that a
+    long history never crowds them out (a favourite watched long ago
+    included). Never-watched favourites are taken in a fixed order, the
+    favourite itself having no date. A series in both is looked at once, and
+    at most 8 episode lists are fetched at a time. Nothing is cached between
+    requests beyond what the metadata sources cache themselves, and every
+    page asked for looks at them all again.
+  - **Undated episodes and specials are never listed**, nor is an episode
+    whose date the metadata gives in a form that cannot be read. An episode
+    dated without a time counts as airing at midnight UTC that day, so it
+    leaves Upcoming (and enters Next Up) from then.
+  - **The dates are believed over playback**, as Next Up believes them. A
+    series whose watched episode is dated in the future waits on the next
+    dated episode, passing undated ones in between; an episode part-way
+    through whose date is still to come is listed, with its position.
+  - **A request the client abandons part-way answers nothing**, since a
+    partial scan cannot say which episodes air soonest.
+  - The limits on history and Kitsu under Next Up apply here too.
 - **Favourites** — the heart (or watchlist) button on a movie, series, season
   or episode is kept per stream, server-side, alongside the play state, so
   each stream signed in has its own. Favourites follow the stream through a
