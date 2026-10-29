@@ -107,9 +107,10 @@ stream never sees another's.
   show it unwatched. A season with nothing aired or watched stays unwatched,
   with nothing counted, and marking it changes nothing; Jellyfin calls such a
   season watched, but also hides it, where it is listed here. Marking watched
-  needs the title's metadata to know what has aired, so it fails while the
-  metadata source is unreachable; marking unwatched does not, and neither
-  does a favourite. An unmark that cleared episodes answers at once, the
+  needs the title's metadata to know what has aired, so it fails without it:
+  502 while the metadata source is unreachable, and 404 while metadata is
+  switched off for the stream, as the season's own page is then not found
+  either. Marking unwatched does not need it, and neither does a favourite. An unmark that cleared episodes answers at once, the
   season unwatched and uncounted, without waiting on the metadata for the
   counts; its page shows them. While the metadata is unreachable, how many
   episodes a season has is unknown, so a favourite's answer shows the season
@@ -121,8 +122,10 @@ stream never sees another's.
   stored for it. What a source that has since renumbered left under one can
   still be read and removed: its stored row is answered as stored, unmarking
   clears its stored episodes, and unfavouriting clears its favourite; each
-  answers 404 only when nothing was stored. A metadata source that fails, or
-  is switched off, never makes a 404 here. Season and episode lists that
+  answers 404 only when nothing was stored. Beyond marking watched with
+  metadata switched off, metadata that is unreachable or switched off never
+  makes a 404: unmarking and favourites go ahead without it, and a UserData
+  lookup answers or fails with 502 as above. Season and episode lists that
   cannot read the stream's play state fail (500) rather than show it wrong.
   `POST /UserItems/{id}/UserData` on a season or series sets its favourite
   and nothing else. Its `Played` is ignored, true or false: clients send
