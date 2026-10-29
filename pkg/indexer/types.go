@@ -52,6 +52,10 @@ type SearchRequest struct {
 	// season/episode (e.g. S02E02 of One Piece = 63). When set, validation
 	// also accepts absolute-numbered releases ("Show - 63", "Show S01E63").
 	AbsoluteEpisode string
+	// AirDate is the requested episode's air date (YYYY-MM-DD, "" when
+	// unknown). Validation also accepts releases named only by that date, the
+	// way daily shows are released. It changes nothing sent to an indexer.
+	AirDate string
 	// ContentIsAnime marks the request as anime content (Kitsu-addressed, or
 	// TMDB metadata: animation not originally in English). Per-indexer
 	// content_scope decides participation from it.

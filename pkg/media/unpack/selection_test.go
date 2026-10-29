@@ -129,3 +129,65 @@ func TestSelectEpisodeCandidateRejectsLoneNamedWrongEpisode(t *testing.T) {
 		t.Fatalf("expected ErrEpisodeTargetNotFound, got %v", err)
 	}
 }
+
+// Daily shows name their files by air date (#382). A lone date-named file is
+// the episode whether or not the date is known; with it known, several dated
+// files resolve to the right night.
+func TestSelectEpisodeCandidateMatchesAirDate(t *testing.T) {
+	target := EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"}
+	best, err := selectMainFile([]filePart{
+		{name: "Jimmy.Kimmel.Live.2026.10.27.1080p.WEB.h264-GROUP.mkv", packedSize: 900, isMedia: true},
+		{name: "Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.mkv", packedSize: 800, isMedia: true},
+	}, target)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if best != "Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.mkv" {
+		t.Fatalf("expected the file for the air date, got %q", best)
+	}
+
+	idx, err := selectDirectFileIndex([]UnpackableFile{
+		&memoryUnpackableFile{name: "Show.2026.10.25.mkv", data: []byte("mon")},
+		&memoryUnpackableFile{name: "Show.2026.10.26.mkv", data: []byte("tue")},
+	}, target)
+	if err != nil || idx != 1 {
+		t.Fatalf("direct selection = %d, %v; want index 1", idx, err)
+	}
+
+	for _, lone := range []EpisodeTarget{target, {Season: 24, Episode: 2524}} {
+		candidates := []namedEpisodeCandidate{{Name: "Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.mkv", Size: 700}}
+		if _, _, err := selectEpisodeCandidateOrError(candidates, lone, "rar_main_media"); err != nil {
+			t.Fatalf("lone daily file (air date %q) must not fail the release, got %v", lone.AirDate, err)
+		}
+	}
+}
+
+// A lone file is played whatever date its name carries, as before #382:
+// the release was already accepted by its title, and a metadata date that
+// disagrees with the file name is weaker evidence than that. Several files
+// with nothing to tell them apart are still never guessed between.
+func TestSelectEpisodeCandidateDailyFilesFailOpenOnlyWhenAlone(t *testing.T) {
+	target := EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"}
+
+	lone := []namedEpisodeCandidate{{Name: "Jimmy.Kimmel.Live.2026.10.27.1080p.WEB.h264-GROUP.mkv", Size: 700}}
+	for _, tc := range []EpisodeTarget{target, {Season: 24, Episode: 2524}} {
+		if _, _, err := selectEpisodeCandidateOrError(lone, tc, "rar_main_media"); err != nil {
+			t.Fatalf("lone file dated another night (target air date %q) must not fail the release, got %v", tc.AirDate, err)
+		}
+	}
+
+	best, err := selectMainFile([]filePart{
+		{name: "Jimmy.Kimmel.Live.Part.A.mkv", packedSize: 900, isMedia: true},
+		{name: "Jimmy.Kimmel.Live.Part.B.mkv", packedSize: 800, isMedia: true},
+	}, target)
+	if !errors.Is(err, ErrEpisodeTargetNotFound) || best != "" {
+		t.Fatalf("ambiguous files: got %q, %v; want ErrEpisodeTargetNotFound", best, err)
+	}
+	best, err = selectMainFile([]filePart{
+		{name: "Jimmy.Kimmel.Live.2026.10.25.mkv", packedSize: 900, isMedia: true},
+		{name: "Jimmy.Kimmel.Live.2026.10.27.mkv", packedSize: 800, isMedia: true},
+	}, target)
+	if !errors.Is(err, ErrEpisodeTargetNotFound) || best != "" {
+		t.Fatalf("other nights only: got %q, %v; want ErrEpisodeTargetNotFound", best, err)
+	}
+}

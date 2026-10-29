@@ -1378,3 +1378,12 @@ func TestMediaDurationSecondsPrefersProbeOverHeader(t *testing.T) {
 		t.Fatalf("probed duration = %v, want 130", got)
 	}
 }
+
+// The air date rides the session's target into file selection, so a daily
+// show's archive is opened at the file for the requested night (#382).
+func TestEpisodeTargetCarriesTheAirDate(t *testing.T) {
+	meta := &AvailReportMeta{Season: 24, Episode: 2524, AirDate: "2026-10-26"}
+	if got := meta.EpisodeTarget(); got.AirDate != "2026-10-26" || got.Season != 24 || got.Episode != 2524 {
+		t.Fatalf("EpisodeTarget() = %+v, want S24E2524 aired 2026-10-26", got)
+	}
+}

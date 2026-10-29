@@ -554,6 +554,14 @@ var episodePartialParser = sync.OnceValue(func() func(string) *jhin.Result {
 	return jhin.GetPartialParser([]string{"seasons", "episodes"})
 })
 
+// episodeDatePartialParser reads only the air date a daily show's files are
+// named by. It runs on its own because the date handler changes what the
+// episode handlers read in a partial parse ("Show.S01E05.2023.11.10.1080p"
+// becomes episode 51080), and the numbering must stay exactly as it was.
+var episodeDatePartialParser = sync.OnceValue(func() func(string) *jhin.Result {
+	return jhin.GetPartialParser([]string{"date"})
+})
+
 func episodeMatchRank(filename string, target searchparser.EpisodeTarget) int {
 	if !target.Valid() {
 		return 0
@@ -564,6 +572,9 @@ func episodeMatchRank(filename string, target searchparser.EpisodeTarget) int {
 			"filename", filename,
 			"target", target)
 		return 0
+	}
+	if target.AirDate != "" {
+		parsed.Date = episodeDatePartialParser()(filename).Date
 	}
 	rank := parsed.TargetMatchRank(target)
 	logger.Debug("NZB episode filename rank evaluated",

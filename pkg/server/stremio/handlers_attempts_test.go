@@ -1,8 +1,10 @@
 package stremio
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -169,6 +171,111 @@ func TestAllowLargestDirectFallbackForSessionExactEpisodeOnly(t *testing.T) {
 	})
 	if allowLargestDirectFallbackForSession(completePack) {
 		t.Fatal("did not expect complete pack sessions to allow largest direct fallback")
+	}
+}
+
+// rawSession is a WWE Raw S33E43 session — aired 2025-10-27 — playing the
+// release given, with the air date search validation matched it by.
+func rawSession(title, airDate string) *session.Session {
+	sess := &session.Session{
+		ContentType: "series",
+		ContentID:   "tt0185103:33:43",
+		ContentIDs:  &session.AvailReportMeta{ImdbID: "tt0185103", TvdbID: "76779", Season: 33, Episode: 43, AirDate: airDate},
+	}
+	sess.SetRelease(&release.Release{Title: title})
+	return sess
+}
+
+// A release search validation accepted by its air date alone is the exact
+// episode at playback too (#382), and nothing else changes: the date never
+// rescues a conflicting number, packs and numbered releases classify as
+// before, and anime keeps classifying by season/episode only.
+func TestMatchTypeForSessionCountsTheAirDate(t *testing.T) {
+	const day = "2025-10-27"
+	for _, tc := range []struct {
+		name string
+		sess *session.Session
+		want string
+	}{
+		{"date-only, matching", rawSession("WWE.Raw.2025.10.27.1080p.WEB.h264-GROUP", day), "exact_episode"},
+		{"date-only, another night", rawSession("WWE.Raw.2026.10.26.1080p.WEB.h264-GROUP", day), ""},
+		{"date-only, no air date known", rawSession("WWE.Raw.2025.10.27.1080p.WEB.h264-GROUP", ""), ""},
+		{"conflicting number beside the date", rawSession("WWE.Raw.S33E44.2025.10.27.1080p.WEB.h264-GROUP", day), ""},
+		{"numbered", rawSession("WWE.Raw.S33E43.1080p.WEB.h264-GROUP", day), "exact_episode"},
+		{"multi-episode", rawSession("WWE.Raw.S33E43E44.1080p.WEB.h264-GROUP", day), "multi_episode"},
+		{"season pack", rawSession("WWE.Raw.S33.1080p.WEB.h264-GROUP", day), "season_pack"},
+		{"complete pack", rawSession("WWE.Raw.Complete.Series.1080p.WEB.h264-GROUP", day), "complete_pack"},
+	} {
+		if got := matchTypeForSession(tc.sess, "series"); got != tc.want {
+			t.Errorf("%s: match type = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+
+	anime := &session.Session{
+		ContentType: "series",
+		ContentID:   "kitsu:12:1100",
+		ContentIDs:  &session.AvailReportMeta{Season: 21, Episode: 7, AbsoluteEpisode: 1100, AirDate: "2024-03-10"},
+	}
+	anime.SetRelease(&release.Release{Title: "[Grp] One Piece - 1100 [1080p].mkv"})
+	if got := matchTypeForSession(anime, "series"); got != "" {
+		t.Errorf("absolute-numbered anime: match type = %q, want \"\" as before", got)
+	}
+}
+
+// obfuscatedFile is an extensionless, hash-named media file of the size the
+// largest-file fallback considers, read back as zeros.
+type obfuscatedFile struct{ name string }
+
+const obfuscatedFileSize = 64 << 20
+
+func (f obfuscatedFile) Name() string            { return f.name }
+func (f obfuscatedFile) Size() int64             { return obfuscatedFileSize }
+func (f obfuscatedFile) EnsureSegmentMap() error { return nil }
+func (f obfuscatedFile) ReadAt(p []byte, off int64) (int, error) {
+	if off >= obfuscatedFileSize {
+		return 0, io.EOF
+	}
+	n := min(int64(len(p)), obfuscatedFileSize-off)
+	clear(p[:n])
+	if n < int64(len(p)) {
+		return int(n), io.EOF
+	}
+	return int(n), nil
+}
+func (f obfuscatedFile) OpenStream() (io.ReadSeekCloser, error) {
+	return f.OpenStreamCtx(context.Background())
+}
+func (f obfuscatedFile) OpenStreamCtx(context.Context) (io.ReadSeekCloser, error) {
+	return struct {
+		*io.SectionReader
+		io.Closer
+	}{io.NewSectionReader(f, 0, obfuscatedFileSize), io.NopCloser(nil)}, nil
+}
+func (f obfuscatedFile) OpenReaderAt(_ context.Context, offset int64) (io.ReadCloser, error) {
+	return io.NopCloser(io.NewSectionReader(f, offset, obfuscatedFileSize-offset)), nil
+}
+
+// The review's scenario end to end: a release accepted by its air date whose
+// only content is an extensionless obfuscated file. Nothing names the episode
+// inside it, so playback rests on the largest-file fallback — open to the
+// matching night's release, and still refused to another night's.
+func TestDailyReleaseWithObfuscatedContentUsesLargestFileFallback(t *testing.T) {
+	files := []unpack.UnpackableFile{obfuscatedFile{name: "9f2c1a7b3e5d4c60a8b1"}}
+	target := unpack.EpisodeTarget{Season: 33, Episode: 43, AirDate: "2025-10-27"}
+	open := func(sess *session.Session) (string, error) {
+		hints := unpack.StreamSelectionHints{AllowLargestDirectFallback: allowLargestDirectFallbackForSession(sess)}
+		stream, name, _, _, err := unpack.GetMediaStreamForEpisodeWithHints(context.Background(), files, nil, "", target, hints)
+		if stream != nil {
+			stream.Close()
+		}
+		return name, err
+	}
+
+	if name, err := open(rawSession("WWE.Raw.2025.10.27.1080p.WEB.h264-GROUP", "2025-10-27")); err != nil || name != "9f2c1a7b3e5d4c60a8b1" {
+		t.Fatalf("matching night: got %q, %v; want the obfuscated file streamed", name, err)
+	}
+	if _, err := open(rawSession("WWE.Raw.2026.10.26.1080p.WEB.h264-GROUP", "2025-10-27")); !errors.Is(err, unpack.ErrEpisodeTargetNotFound) {
+		t.Fatalf("another night: err = %v, want ErrEpisodeTargetNotFound (fallback refused)", err)
 	}
 }
 

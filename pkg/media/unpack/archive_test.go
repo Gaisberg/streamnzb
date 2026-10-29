@@ -384,3 +384,136 @@ func TestWarmPlaybackTailIsBestEffort(t *testing.T) {
 		t.Fatal("a failed blueprint has nothing to warm")
 	}
 }
+
+// #382 added the air date to the target. A plan saved without it (every
+// blueprint persisted before the change) is reused unless an air date could
+// have steered its pick: a dated pick, a pick numbered for another episode, or
+// a failure. A plan saved with a date that has since changed or gone missing
+// is never reused: the date may have narrowed its files at the NZB layer.
+func TestBlueprintTargetMatchesAcrossAirDateChanges(t *testing.T) {
+	const day, nextDay = "2026-10-26", "2026-10-27"
+	s1e5 := EpisodeTarget{Season: 1, Episode: 5}
+	withDate := func(target EpisodeTarget, date string) EpisodeTarget { target.AirDate = date; return target }
+	direct := func(name string, target EpisodeTarget) Blueprint {
+		return &DirectBlueprint{FileName: name, Target: target}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		cached    Blueprint
+		requested EpisodeTarget
+		want      bool
+	}{
+		{"identical targets", direct("Show.S01E05.mkv", withDate(s1e5, day)), withDate(s1e5, day), true},
+		{"identical failure", &FailedBlueprint{Target: withDate(s1e5, day)}, withDate(s1e5, day), true},
+		{"legacy numbered pick, date now known", direct("Show.S01E05.mkv", s1e5), withDate(s1e5, day), true},
+		{"legacy rar numbered pick, date now known", &ArchiveBlueprint{MainFileName: "show.s01e05.720p.mkv", Target: s1e5}, withDate(s1e5, day), true},
+		{"legacy 7z numbered pick, date now known", &SevenZipBlueprint{MainFileName: "Show.S01E05.mkv", Target: s1e5}, withDate(s1e5, day), true},
+		{"numbered pick, date changed", direct("Show.S01E05.mkv", withDate(s1e5, day)), withDate(s1e5, nextDay), false},
+		{"numbered pick, date gone missing", direct("Show.S01E05.mkv", withDate(s1e5, day)), s1e5, false},
+		{"legacy dated pick, date now known", direct("Show.2026.10.26.mkv", s1e5), withDate(s1e5, day), false},
+		{"dated pick, date changed", direct("Show.2026.10.26.mkv", withDate(s1e5, day)), withDate(s1e5, nextDay), false},
+		{"dated pick, date gone missing", direct("Show.2026.10.26.mkv", withDate(s1e5, day)), s1e5, false},
+		{"numbered and dated pick", direct("Show.S01E05.2026.10.26.mkv", s1e5), withDate(s1e5, day), false},
+		{"multi-episode pick", direct("Show.S01E05E06.mkv", s1e5), withDate(s1e5, day), true},
+		{"season pack file pick", direct("Show.S01.mkv", s1e5), withDate(s1e5, day), true},
+		{"title-only pick", direct("Show.Name.1080p.WEB.h264-GROUP.mkv", s1e5), withDate(s1e5, day), true},
+		{"another episode's pick", direct("Show.S01E06.mkv", s1e5), withDate(s1e5, day), false},
+		{"obfuscated pick", direct("cc3299e0692fb5e3a8737f1c00361e72.mkv", s1e5), withDate(s1e5, day), true},
+		{"obfuscated pick, date gone missing", direct("cc3299e0692fb5e3a8737f1c00361e72.mkv", withDate(s1e5, day)), s1e5, false},
+		{"obfuscated pick, date changed", &ArchiveBlueprint{MainFileName: "a8f3e2c1b7d94e06a8f3e2c1b7d94e06.mkv", Target: withDate(s1e5, day)}, withDate(s1e5, nextDay), false},
+		{"legacy rar obfuscated pick", &ArchiveBlueprint{MainFileName: "a8f3e2c1b7d94e06a8f3e2c1b7d94e06.mkv", Target: s1e5}, withDate(s1e5, day), true},
+		{"legacy failure, date now known", &FailedBlueprint{Target: s1e5}, withDate(s1e5, day), false},
+		{"different episode", direct("Show.S01E05.mkv", s1e5), withDate(EpisodeTarget{Season: 1, Episode: 6}, day), false},
+	} {
+		if got := blueprintTargetMatches(tc.cached, tc.requested); got != tc.want {
+			t.Errorf("%s: reuse = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// End to end: a legacy plan whose file names the episode is replayed without
+// a rescan once the air date is known.
+func TestGetMediaStreamForEpisodeReusesLegacyNumberedBlueprint(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "Show.S01E05.mkv", data: []byte("ep5")},
+		&memoryUnpackableFile{name: "Show.S01E06.mkv", data: []byte("ep6")},
+	}
+	cachedBP := &DirectBlueprint{FileName: "Show.S01E05.mkv", FileIndex: 0, Target: EpisodeTarget{Season: 1, Episode: 5}}
+
+	stream, name, _, bp, err := GetMediaStreamForEpisode(context.Background(), files, cachedBP, "", EpisodeTarget{Season: 1, Episode: 5, AirDate: "2026-10-26"})
+	if err != nil {
+		t.Fatalf("GetMediaStreamForEpisode returned error: %v", err)
+	}
+	defer stream.Close()
+	if name != "Show.S01E05.mkv" || bp != cachedBP {
+		t.Fatalf("got %q (reused=%v), want the cached plan replayed", name, bp == cachedBP)
+	}
+}
+
+// End to end: a legacy plan in a release holding several nights, pointing at
+// the wrong one, is not trusted once the air date is known — the rescan finds
+// the requested night.
+func TestGetMediaStreamForEpisodeRescansLegacyDatedBlueprint(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "Show.2026.10.25.mkv", data: []byte("mon")},
+		&memoryUnpackableFile{name: "Show.2026.10.26.mkv", data: []byte("tue")},
+	}
+	cachedBP := &DirectBlueprint{FileName: "Show.2026.10.25.mkv", FileIndex: 0, Target: EpisodeTarget{Season: 24, Episode: 2524}}
+
+	stream, name, _, bp, err := GetMediaStreamForEpisode(context.Background(), files, cachedBP, "", EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"})
+	if err != nil {
+		t.Fatalf("GetMediaStreamForEpisode returned error: %v", err)
+	}
+	defer stream.Close()
+	data, _ := io.ReadAll(stream)
+	if name != "Show.2026.10.26.mkv" || string(data) != "tue" || bp == cachedBP {
+		t.Fatalf("got %q %q (reused=%v), want a rescan selecting the 2026-10-26 file", name, data, bp == cachedBP)
+	}
+	if got := bp.TargetEpisode().AirDate; got != "2026-10-26" {
+		t.Fatalf("new plan's air date = %q, want 2026-10-26 so the next play reuses it", got)
+	}
+}
+
+// The review's case: a library item's plan saved before #382, whose pick is
+// obfuscated. Library-sourced sessions never re-save their plan, so a rescan
+// here would repeat on every replay; an air date cannot change a pick without
+// a date in its name, so the plan is replayed.
+func TestGetMediaStreamForEpisodeReusesLegacyObfuscatedBlueprint(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "cc3299e0692fb5e3a8737f1c00361e72.mkv", data: []byte("ep5")},
+	}
+	cachedBP := &DirectBlueprint{FileName: "cc3299e0692fb5e3a8737f1c00361e72.mkv", FileIndex: 0, Target: EpisodeTarget{Season: 1, Episode: 5}}
+
+	stream, _, _, bp, err := GetMediaStreamForEpisode(context.Background(), files, cachedBP, "", EpisodeTarget{Season: 1, Episode: 5, AirDate: "2026-10-26"})
+	if err != nil {
+		t.Fatalf("GetMediaStreamForEpisode returned error: %v", err)
+	}
+	defer stream.Close()
+	if bp != cachedBP {
+		t.Fatal("expected the legacy obfuscated plan to be replayed, not rescanned")
+	}
+}
+
+// The review's case: a plan built with an air date, for a multi-night release
+// whose NZB was narrowed to that night's dated volumes around an obfuscated
+// inner file. When the date changes, the plan's file name cannot show the
+// date chose it, so the plan is rebuilt rather than replayed.
+func TestGetMediaStreamForEpisodeRescansBlueprintWhenAirDateChanges(t *testing.T) {
+	files := []UnpackableFile{
+		&memoryUnpackableFile{name: "cc3299e0692fb5e3a8737f1c00361e72.mkv", data: []byte("tue")},
+	}
+	cachedBP := &DirectBlueprint{FileName: "cc3299e0692fb5e3a8737f1c00361e72.mkv", FileIndex: 0, Target: EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-25"}}
+
+	stream, _, _, bp, err := GetMediaStreamForEpisode(context.Background(), files, cachedBP, "", EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"})
+	if err != nil {
+		t.Fatalf("GetMediaStreamForEpisode returned error: %v", err)
+	}
+	defer stream.Close()
+	if bp == cachedBP {
+		t.Fatal("expected a plan made for another air date to be rebuilt, not replayed")
+	}
+	if got := bp.TargetEpisode().AirDate; got != "2026-10-26" {
+		t.Fatalf("new plan's air date = %q, want 2026-10-26", got)
+	}
+}

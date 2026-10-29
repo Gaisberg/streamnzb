@@ -31,6 +31,7 @@ type searchFacts struct {
 	HasSeason  bool
 	HasEpisode bool
 	Absolute   int
+	AirDate    string
 	Class      string
 }
 
@@ -72,6 +73,9 @@ func (s *Server) searchFacts(contentType, streamLabel string, params *query.Sear
 	facts.Class = config.SearchClassFor(facts.IsSeries, facts.IsAnime)
 	if !facts.IsSeries {
 		return facts
+	}
+	if params.ContentIDs != nil {
+		facts.AirDate = params.ContentIDs.AirDate
 	}
 	// A Kitsu entry spanning a whole series resolves its absolute number up
 	// front, where deriving one from season/episode would not work.
@@ -754,6 +758,13 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 				},
 			}, nil
 		}
+	}
+	// The air date a daily show's releases are named by. It is not the gate's:
+	// see episodeAirDate for why it takes TVDB and TMDB agreeing. Resolved
+	// after the gates that answer without searching, before the library and
+	// the search that both read it.
+	if params.ContentIDs != nil {
+		params.ContentIDs.AirDate = s.episodeAirDate(contentType, params.ContentIDs)
 	}
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
 
@@ -1443,6 +1454,9 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	if facts.Absolute > 0 && plan.RunsAbsoluteAttempt() {
 		req.AbsoluteEpisode = strconv.Itoa(facts.Absolute)
 	}
+	// The air date is acceptance too, and needs no attempt of its own: a
+	// daily show's date-named release is recognised whichever attempt found it.
+	req.AirDate = facts.AirDate
 
 	// Acceptance titles are the spellings a release may match. They are the
 	// plan's, not the attempt's — what goes out and what may come back are

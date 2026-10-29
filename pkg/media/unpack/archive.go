@@ -12,6 +12,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/loader"
+	searchparser "streamnzb/pkg/search/parser"
 )
 
 // ErrTooManyZeroFills is re-exported from the loader layer, which owns the
@@ -85,8 +86,67 @@ func isPlausibleLargestDirectFallbackName(name string) bool {
 	return letters > 0 && alphaNum >= 6
 }
 
-func blueprintTargetMatches(cachedTarget, requestedTarget EpisodeTarget) bool {
-	return cachedTarget == requestedTarget
+// blueprintTargetMatches reports whether a cached plan may serve the requested
+// target. Season, episode and absolute number must match exactly. A plan made
+// with an air date must have the same one: the date may have chosen its files
+// beyond anything the plan records — the NZB layer narrows a multi-night
+// release to one night's dated volumes, whose inner file may be obfuscated —
+// so a changed or missing date rescans. A plan made before the date was known
+// (every one persisted before it existed) is reused when no air date could
+// have changed its pick. A date only ever matches a file named by a date, so a
+// pick without one stands: it was chosen by its numbering, or as the release's
+// only candidate. That holds for an obfuscated pick too. A direct file's name
+// is the one the NZB layer would narrow by, so a date has nothing to narrow
+// on. An archive's inner file was chosen from every night's volumes, since
+// without a date the NZB layer narrows nothing, and several candidates none of
+// which matched would have failed rather than produced this plan. A dated
+// pick, a pick numbered for another episode, and a recorded failure the date
+// might cure all rescan — a scan is the cost there, where reuse could cost
+// the wrong episode.
+func blueprintTargetMatches(cachedBP Blueprint, requested EpisodeTarget) bool {
+	cached := cachedBP.TargetEpisode()
+	if cached == requested {
+		return true
+	}
+	if cached.AirDate != "" {
+		return false
+	}
+	cached.AirDate = requested.AirDate
+	if cached != requested {
+		return false
+	}
+	name := blueprintMediaName(cachedBP)
+	if name == "" {
+		return false
+	}
+	base := filepath.Base(name)
+	// An obfuscated stem names nothing, though the parser digs numbers out of
+	// the hex; selection treats it the same way.
+	if looksObfuscatedFilename(base) {
+		return true
+	}
+	parsed := searchparser.ParseReleaseTitle(base)
+	if parsed == nil || parsed.Date != "" {
+		return false
+	}
+	if len(parsed.Seasons) == 0 && len(parsed.Episodes) == 0 {
+		return true
+	}
+	requested.AirDate = ""
+	return parsed.TargetMatchRank(requested) > 0
+}
+
+// blueprintMediaName is the media file a plan opens, "" for a recorded failure.
+func blueprintMediaName(bp Blueprint) string {
+	switch b := bp.(type) {
+	case *ArchiveBlueprint:
+		return b.MainFileName
+	case *SevenZipBlueprint:
+		return b.MainFileName
+	case *DirectBlueprint:
+		return b.FileName
+	}
+	return ""
 }
 
 func GetMediaStreamForEpisode(ctx context.Context, files []UnpackableFile, cachedBP Blueprint, password string, target EpisodeTarget) (ReadSeekCloser, string, int64, Blueprint, error) {
@@ -104,7 +164,7 @@ func GetMediaStreamForEpisodeWithHints(ctx context.Context, files []UnpackableFi
 	rarScanCtx := loader.WithSkipGapProbing(ctx, true)
 	if cachedBP != nil {
 		cachedTarget := cachedBP.TargetEpisode()
-		if !blueprintTargetMatches(cachedTarget, target) {
+		if !blueprintTargetMatches(cachedBP, target) {
 			logger.Debug("Skipping cached blueprint due to target mismatch",
 				"kind", cachedBP.Kind(), "cached", cachedTarget, "requested", target)
 		} else {

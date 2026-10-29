@@ -8,6 +8,7 @@ import (
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
+	"streamnzb/pkg/session"
 )
 
 func animeTVMetadata(seasons []tmdb.TVSeasonInfo) *query.ResolvedSearchMetadata {
@@ -149,6 +150,51 @@ func TestBuildSearchParamsForAttemptDispatchesTheAbsoluteQuery(t *testing.T) {
 	}
 	if params.Req.AbsoluteEpisode != "" {
 		t.Fatalf("AbsoluteEpisode = %q, want empty", params.Req.AbsoluteEpisode)
+	}
+}
+
+// The air date is acceptance like the absolute number, but needs no attempt of
+// its own: every attempt of every plan carries it, so a daily show's
+// date-named release is recognised whichever attempt surfaced it (#382).
+func TestEveryAttemptCarriesTheAirDate(t *testing.T) {
+	s := &Server{config: &config.Config{}}
+	base := func() *query.SearchParams {
+		return &query.SearchParams{
+			ContentType:        "series",
+			Req:                indexer.SearchRequest{IMDbID: "tt0320037", Season: "24", Episode: "2524"},
+			ContentIDs:         &session.AvailReportMeta{ImdbID: "tt0320037", Season: 24, Episode: 2524, AirDate: "2026-10-26"},
+			MovieTitleQueries:  map[string][]string{},
+			SeriesTitleQueries: map[string][]string{},
+			Metadata:           &query.ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{Name: "Jimmy Kimmel Live!", OriginalLanguage: "en"}},
+		}
+	}
+	plan := config.DefaultTVPlan("TV")
+	facts := s.searchFacts("series", "default", base())
+	if facts.AirDate != "2026-10-26" {
+		t.Fatalf("facts air date = %q, want 2026-10-26", facts.AirDate)
+	}
+	if len(plan.Attempts) < 2 {
+		t.Fatalf("the default TV plan should have fallback attempts, got %d", len(plan.Attempts))
+	}
+	for _, attempt := range plan.Attempts {
+		params, err := s.buildSearchParamsForAttempt(base(), &plan, attempt, facts)
+		if err != nil {
+			t.Fatalf("%s: buildSearchParamsForAttempt() error = %v", attempt.Label(), err)
+		}
+		if params.Req.AirDate != "2026-10-26" {
+			t.Fatalf("%s: AirDate = %q, want 2026-10-26", attempt.Label(), params.Req.AirDate)
+		}
+	}
+
+	// No date resolved, none claimed.
+	unknown := base()
+	unknown.ContentIDs.AirDate = ""
+	params, err := s.buildSearchParamsForAttempt(unknown, &plan, plan.Attempts[0], s.searchFacts("series", "default", unknown))
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+	}
+	if params.Req.AirDate != "" {
+		t.Fatalf("AirDate = %q, want empty", params.Req.AirDate)
 	}
 }
 

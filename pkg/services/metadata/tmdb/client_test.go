@@ -2,6 +2,7 @@ package tmdb
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -311,6 +312,40 @@ func TestDoRequestCachesOKResponses(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1 (responses should be cached)", got)
+	}
+}
+
+// A refresh asks TMDB past the cached season and leaves its answer in the
+// cache, so the next cached read sees the new episode without asking again.
+func TestRefreshTVSeasonDetailsReplacesCachedCopy(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		_, _ = fmt.Fprintf(w, `{"season_number": 4, "episodes": [{"episode_number": %d}]}`, 156+n)
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	last := func(s *TVSeasonDetails, err error) int {
+		t.Helper()
+		if err != nil || len(s.Episodes) != 1 {
+			t.Fatalf("season = %+v, err %v", s, err)
+		}
+		return s.Episodes[0].EpisodeNumber
+	}
+
+	if got := last(client.GetTVSeasonDetails(1, 4)); got != 157 {
+		t.Fatalf("first read = E%d, want E157", got)
+	}
+	if got := last(client.RefreshTVSeasonDetails(1, 4)); got != 158 {
+		t.Fatalf("refresh = E%d, want E158 (past the cache)", got)
+	}
+	if got := last(client.GetTVSeasonDetails(1, 4)); got != 158 {
+		t.Fatalf("read after refresh = E%d, want E158 from the cache", got)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("upstream hits = %d, want 2", got)
 	}
 }
 

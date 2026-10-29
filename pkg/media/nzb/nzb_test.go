@@ -319,3 +319,70 @@ func TestObfuscatedContentSetAdmitsDottedHashes(t *testing.T) {
 		}
 	}
 }
+
+// Daily shows name their files by air date (#382). An NZB carrying several
+// nights as separate RAR sets narrows to the requested night's set; with no
+// air date, or none matching, nothing is picked and every candidate is kept
+// for the archive layer to judge, as before.
+func TestGetSessionContentFilesForEpisodeMatchesAirDate(t *testing.T) {
+	logger.Init("ERROR")
+
+	n := &NZB{Files: []File{
+		{Subject: "Jimmy.Kimmel.Live.2026.10.25.1080p.WEB.h264-GROUP.part01.rar", Segments: []Segment{{ID: "<a>", Bytes: 900}}},
+		{Subject: "Jimmy.Kimmel.Live.2026.10.25.1080p.WEB.h264-GROUP.part02.rar", Segments: []Segment{{ID: "<b>", Bytes: 900}}},
+		{Subject: "Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.part01.rar", Segments: []Segment{{ID: "<c>", Bytes: 800}}},
+		{Subject: "Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.part02.rar", Segments: []Segment{{ID: "<d>", Bytes: 800}}},
+	}}
+
+	files := n.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"})
+	if len(files) != 2 {
+		t.Fatalf("expected the 2026-10-26 set's two volumes, got %d", len(files))
+	}
+	for _, f := range files {
+		if !strings.Contains(f.Filename, "2026.10.26") {
+			t.Fatalf("selected another night's volume %q", f.Filename)
+		}
+	}
+
+	for _, target := range []searchparser.EpisodeTarget{
+		{Season: 24, Episode: 2524},
+		{Season: 24, Episode: 2524, AirDate: "2026-10-27"},
+	} {
+		if files := n.GetSessionContentFilesForEpisode(target); len(files) != 4 {
+			t.Fatalf("air date %q: expected all four candidates kept, got %d", target.AirDate, len(files))
+		}
+	}
+
+	// Numbering is read exactly as before alongside the date handler.
+	numbered := &NZB{Files: []File{
+		{Subject: "Show.S01E06.1080p.mkv", Segments: []Segment{{ID: "<e>", Bytes: 600}}},
+		{Subject: "Show.S01E05.1080p.mkv", Segments: []Segment{{ID: "<f>", Bytes: 500}}},
+	}}
+	files = numbered.GetSessionContentFilesForEpisode(searchparser.EpisodeTarget{Season: 1, Episode: 5, AirDate: "2026-10-26"})
+	if len(files) != 1 || !strings.Contains(files[0].Filename, "S01E05") {
+		t.Fatalf("expected the S01E05 file, got %+v", files)
+	}
+}
+
+// Reading the date must not change how a dated name's numbering is read: a
+// date handler in the episode parse turned "Show.S01E05.2023.11.10.1080p"
+// into episode 51080 and dropped the absolute 1100 from a dated anime file.
+// Numbering still decides those files, whatever date the target carries.
+func TestEpisodeMatchRankKeepsNumberingOfDatedNames(t *testing.T) {
+	logger.Init("ERROR")
+	for _, tc := range []struct {
+		name   string
+		target searchparser.EpisodeTarget
+		want   int
+	}{
+		{"Show.S01E05.2023.11.10.1080p.mkv", searchparser.EpisodeTarget{Season: 1, Episode: 5, AirDate: "2023-11-10"}, 4},
+		{"Show.S01E05.2023.11.10.1080p.mkv", searchparser.EpisodeTarget{Season: 1, Episode: 6, AirDate: "2023-11-10"}, 0},
+		{"[Grp] One Piece - 1100 [2024.03.10][1080p].mkv", searchparser.EpisodeTarget{Season: 21, Episode: 7, Absolute: 1100, AirDate: "2024-03-10"}, 4},
+		{"Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.part01.rar", searchparser.EpisodeTarget{Season: 24, Episode: 2524, AirDate: "2026-10-26"}, 4},
+		{"Jimmy.Kimmel.Live.2026.10.26.1080p.WEB.h264-GROUP.part01.rar", searchparser.EpisodeTarget{Season: 24, Episode: 2524}, 0},
+	} {
+		if got := episodeMatchRank(tc.name, tc.target); got != tc.want {
+			t.Errorf("%s for %+v: rank = %d, want %d", tc.name, tc.target, got, tc.want)
+		}
+	}
+}

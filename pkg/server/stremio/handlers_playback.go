@@ -1810,7 +1810,14 @@ func matchTypeForSession(sess *session.Session, contentType string) string {
 		return ""
 	}
 	if targetEpisode > 0 {
-		switch parsed.EpisodeMatchRank(targetSeason, targetEpisode) {
+		// The air date counts as it did in search validation: a daily show's
+		// release named only by that date is the exact episode. The absolute
+		// number is left out, so anime classifies as before.
+		target := searchparser.EpisodeTarget{Season: targetSeason, Episode: targetEpisode}
+		if sess.ContentIDs != nil {
+			target.AirDate = sess.ContentIDs.AirDate
+		}
+		switch parsed.TargetMatchRank(target) {
 		case 4:
 			return "exact_episode"
 		case 3:

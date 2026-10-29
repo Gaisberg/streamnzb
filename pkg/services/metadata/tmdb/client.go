@@ -241,12 +241,13 @@ func (c *Client) fetch(reqURL string) (*http.Response, error) {
 // Caching sits here so every endpoint method benefits without per-method
 // bookkeeping; only 200 responses are cached. Cache keys are the request path
 // relative to BaseURL so persisted entries are independent of base-URL
-// overrides (tests, STREAMNZB_TMDB_BASE_URL).
-func (c *Client) doRequest(endpoint string, params url.Values) (*http.Response, error) {
+// overrides (tests, STREAMNZB_TMDB_BASE_URL). refresh skips the cached copy
+// but still stores the answer, so later cached reads see it.
+func (c *Client) doRequest(endpoint string, params url.Values, refresh bool) (*http.Response, error) {
 	reqURL := fmt.Sprintf("%s?%s", endpoint, params.Encode())
 	cacheKey := strings.TrimPrefix(reqURL, c.BaseURL)
 
-	if body, ok := c.cache.Get(cacheKey); ok {
+	if body, ok := c.cache.Get(cacheKey); ok && !refresh {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(body)),
@@ -290,10 +291,15 @@ func ttlForEndpoint(cacheKey string) time.Duration {
 // into a fresh T. It is a free function because Go does not allow type
 // parameters on methods. label appears in errors, e.g. "movie details".
 func getJSON[T any](c *Client, endpoint string, params url.Values, label string) (*T, error) {
+	return requestJSON[T](c, endpoint, params, label, false)
+}
+
+// requestJSON is getJSON with doRequest's refresh.
+func requestJSON[T any](c *Client, endpoint string, params url.Values, label string, refresh bool) (*T, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("TMDB Read Access Token not configured")
 	}
-	resp, err := c.doRequest(endpoint, params)
+	resp, err := c.doRequest(endpoint, params, refresh)
 	if err != nil {
 		return nil, fmt.Errorf("TMDB %s request failed: %w", label, err)
 	}
@@ -1364,6 +1370,12 @@ func (c *Client) GetTVDetailsWithLanguage(tmdbID int, language string) (*TVDetai
 	return getJSON[TVDetails](c, fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params, "TV details")
 }
 
+// RefreshTVDetails is GetTVDetails asked of TMDB again rather than the
+// cache, for a caller with reason to think the cached copy predates a season.
+func (c *Client) RefreshTVDetails(tmdbID int) (*TVDetails, error) {
+	return requestJSON[TVDetails](c, fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), url.Values{}, "TV details", true)
+}
+
 func (c *Client) GetTVTranslations(tmdbID int) (*TVTranslationsResponse, error) {
 	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/translations", tmdbID)
 	return getJSON[TVTranslationsResponse](c, endpoint, url.Values{}, "TV translations")
@@ -1377,6 +1389,14 @@ func (c *Client) GetTVAlternativeTitles(tmdbID int) (*TVAlternativeTitlesRespons
 func (c *Client) GetTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {
 	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/season/%d", seriesID, seasonNumber)
 	return getJSON[TVSeasonDetails](c, endpoint, url.Values{}, "TV season details")
+}
+
+// RefreshTVSeasonDetails is GetTVSeasonDetails asked of TMDB again rather
+// than the cache, for a caller with reason to think the cached copy predates
+// an episode.
+func (c *Client) RefreshTVSeasonDetails(seriesID, seasonNumber int) (*TVSeasonDetails, error) {
+	endpoint := fmt.Sprintf(c.BaseURL+"/tv/%d/season/%d", seriesID, seasonNumber)
+	return requestJSON[TVSeasonDetails](c, endpoint, url.Values{}, "TV season details", true)
 }
 
 // maxAppendedSeasons caps the seasons batched into one details request.
@@ -1413,7 +1433,7 @@ func (c *Client) GetTVDetailsWithSeasons(tmdbID int, seasonNumbers []int, lang s
 		// language param of their own request.
 		applyLanguage(params, lang)
 
-		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params)
+		resp, err := c.doRequest(fmt.Sprintf(c.BaseURL+"/tv/%d", tmdbID), params, false)
 		if err != nil {
 			return nil, nil, fmt.Errorf("TMDB TV details request failed: %w", err)
 		}
