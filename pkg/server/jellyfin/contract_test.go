@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/server/stremio"
 )
 
@@ -204,6 +206,13 @@ func TestResponsesSatisfyTheClientSDKContract(t *testing.T) {
 		t.Fatalf("episode detail carries no MediaSources")
 	}
 	checkQuery(t, objectOf(t, f.do(http.MethodGet, "/jellyfin/UserItems/Resume", "").Body.Bytes(), "Resume"), "Resume")
+	f.play.Upsert(persistence.JellyfinPlaystate{StreamName: "living-room", ItemID: series.episode(1, 1).encode(), ContentType: "series",
+		ContentID: "tt0903747:1:1", Played: true, LastPlayedAt: time.Now()})
+	nextUp := objectOf(t, f.do(http.MethodGet, "/jellyfin/Shows/NextUp?UserId=u", "").Body.Bytes(), "Shows/NextUp")
+	if len(children(nextUp, "Items")) == 0 {
+		t.Fatalf("Next Up lists nothing after an episode was watched")
+	}
+	checkQuery(t, nextUp, "Shows/NextUp")
 
 	// Search hints, the shape the client's search box reads.
 	hints := objectOf(t, f.do(http.MethodGet, "/jellyfin/Search/Hints?searchTerm=bad&includeItemTypes=Series", "").Body.Bytes(), "Search/Hints")

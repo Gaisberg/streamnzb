@@ -6,14 +6,13 @@ import (
 )
 
 // serveShows answers the /Shows routes clients use for a series' seasons
-// and episodes. Next Up needs an episode order the addon's playback history
-// does not keep per stream, so it is empty and clients fall back to Resume.
+// and episodes, and Next Up (see nextUpResult). Upcoming is empty.
 func (s *Server) serveShows(w http.ResponseWriter, rq *request) bool {
 	if !rq.is(http.MethodGet) {
 		return false
 	}
 	if _, ok := rq.match("shows", "nextup"); ok {
-		writeJSON(w, http.StatusOK, emptyResult())
+		writeJSON(w, http.StatusOK, s.nextUpResult(rq))
 		return true
 	}
 	if _, ok := rq.match("shows", "upcoming"); ok {

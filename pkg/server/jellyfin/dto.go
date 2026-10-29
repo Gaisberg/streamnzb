@@ -204,30 +204,31 @@ var now = time.Now
 // unaired reports whether an episode's release date lies in the future. An
 // unknown date is not unaired: the provider may simply not have one.
 func unaired(released string) bool {
-	released = strings.TrimSpace(released)
-	if released == "" {
-		return false
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
-		if t, err := time.Parse(layout, released); err == nil {
-			return t.After(now())
-		}
-	}
-	return false
+	t, ok := parseISOTime(released)
+	return ok && t.After(now())
 }
 
 // premiereDate normalises an ISO date to Jellyfin's timestamp form.
 func premiereDate(released string) string {
-	released = strings.TrimSpace(released)
-	if released == "" {
-		return ""
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
-		if t, err := time.Parse(layout, released); err == nil {
-			return jellyfinTime(t)
-		}
+	if t, ok := parseISOTime(released); ok {
+		return jellyfinTime(t)
 	}
 	return ""
+}
+
+// parseISOTime reads an ISO 8601 timestamp or bare date, as metadata
+// sources and clients send them.
+func parseISOTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func communityRating(rating string) *float64 {
