@@ -22,7 +22,9 @@ import (
 // Reports are tracked per playback: one device's one play session, not the
 // media session, which every device playing the title shares and which
 // outlives a playback by hours. A playback starts with the client's first
-// report, or a new play session from the same device, and ends with its stop.
+// report, or a new play session from the same device, and ends with its stop
+// — or with that new play session, which stops it at its last confirmed
+// position if it never stopped.
 // One that reports nothing at all for clientPlaybackIdleTTL is taken as gone —
 // an app closed mid-play — and its last confirmed position goes out as the
 // stop it never sent. Nothing is ever reported past a position the client
@@ -177,12 +179,12 @@ type clientScrobble struct {
 	pct       float64
 }
 
-// apply folds one report into its playback and returns what to send, if
-// anything. sessionID is the live media session serving the title, empty when
+// apply folds one report into its playback and returns what to send, in
+// order. sessionID is the live media session serving the title, empty when
 // there is none; pct is the report's position as a percentage, -1 when
 // unknown. A report that cannot be tracked is not recorded as reported, so
 // the transport still scrobbles that playback.
-func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, sessionID string, pct float64, expire func(key, device string, a *clientAttempt)) (clientScrobble, bool) {
+func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, sessionID string, pct float64, expire func(key, device string, a *clientAttempt)) []clientScrobble {
 	key := clientPlaybackKey(stream, p.ContentID)
 	now := time.Now()
 	c.mu.Lock()
@@ -195,18 +197,23 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, sessionID
 		(p.PlaySession != "" && p.PlaySession != a.playSession)
 	if !newPlayback && a.stopped {
 		// A repeated or late report for a playback already stopped.
-		return clientScrobble{}, false
+		return nil
 	}
 	title := c.titleLocked(key, now)
 	if title == nil || (a == nil && c.count >= maxClientPlaybacks) {
-		return clientScrobble{}, false
+		return nil
 	}
 	title.reportedAt = now
+	var out []clientScrobble
 	if newPlayback {
 		// The device's earlier playback of the title is over, stopped or not:
-		// a device plays one thing at a time.
+		// a device plays one thing at a time. One that never stopped stops
+		// now, at the last position it confirmed, ahead of the new one.
 		if a != nil {
 			c.removeLocked(key, p.Device, a)
+			if a.started && !a.stopped && a.lastPct >= 0 {
+				out = append(out, clientScrobble{verb: scrobble.VerbStop, sessionID: a.sessionID, pct: a.lastPct})
+			}
 		}
 		a = &clientAttempt{stream: stream, playSession: p.PlaySession, lastPct: -1}
 		if c.attempts[key] == nil {
@@ -222,18 +229,17 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, sessionID
 		a.lastPct = pct
 	}
 	wait := clientPlaybackIdleTTL
-	var out clientScrobble
 	switch p.Event {
 	case ClientPlaybackStop:
 		a.stopped = true
 		wait = clientPlaybackStopGrace
-		out = clientScrobble{verb: scrobble.VerbStop, sessionID: a.sessionID, pct: a.lastPct}
+		out = append(out, clientScrobble{verb: scrobble.VerbStop, sessionID: a.sessionID, pct: a.lastPct})
 	default:
 		// The start waits for a live session to address it by, so a client
 		// that reports before its stream is open starts on its next report.
 		if !a.started && a.sessionID != "" {
 			a.started = true
-			out = clientScrobble{verb: scrobble.VerbStart, sessionID: a.sessionID, pct: max(a.lastPct, 0)}
+			out = append(out, clientScrobble{verb: scrobble.VerbStart, sessionID: a.sessionID, pct: max(a.lastPct, 0)})
 		}
 	}
 	device := p.Device
@@ -241,7 +247,7 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, sessionID
 		a.timer.Stop()
 	}
 	a.timer = time.AfterFunc(wait, func() { expire(key, device, a) })
-	return out, out.verb != ""
+	return out
 }
 
 func (c *clientPlaybacks) removeLocked(key, device string, a *clientAttempt) {
@@ -287,7 +293,7 @@ func (s *Server) ReportClientPlayback(stream *auth.Stream, p ClientPlayback) {
 			pct = scrobble.ClampProgress(p.PositionSeconds / runtime * 100)
 		}
 	}
-	if out, ok := s.clientPlayback.apply(stream, p, sessionID, pct, s.expireClientPlayback); ok {
+	for _, out := range s.clientPlayback.apply(stream, p, sessionID, pct, s.expireClientPlayback) {
 		s.sendClientScrobble(stream, out)
 	}
 }

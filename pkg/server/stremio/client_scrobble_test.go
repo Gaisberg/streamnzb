@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -235,8 +236,10 @@ func TestClientPlaybackStartWaitsForALiveSession(t *testing.T) {
 	wantScrobble(t, h.settle(t, 1)[0], "start", 10)
 }
 
-// A device opening a new play session has left its last one, stopped or
-// not: the old one sends nothing more, not even when it would have gone quiet.
+// A device opening a new play session has left its last one. One that never
+// stopped — an app killed, then the title reopened — is reported stopped at
+// the position it last confirmed, as the new one starts, and sends nothing
+// more after: not even when it would have gone quiet.
 func TestNewPlaySessionReplacesTheDevicesLast(t *testing.T) {
 	idle := clientPlaybackIdleTTL
 	clientPlaybackIdleTTL = 400 * time.Millisecond
@@ -247,12 +250,20 @@ func TestNewPlaySessionReplacesTheDevicesLast(t *testing.T) {
 	h.settle(t, 1)
 	h.report("dev|ps-1", ClientPlaybackProgress, 576)
 	h.report("dev|ps-2", ClientPlaybackProgress, 600) // no start for the new one
-	wantScrobble(t, h.settle(t, 2)[1], "start", 41.67)
+	// The two sends race each other, so they are matched without order.
+	sent := h.settle(t, 3)[1:]
+	if !slices.ContainsFunc(sent, func(s sentScrobble) bool { return s.verb == "/scrobble/stop" && s.progress == 40 }) ||
+		!slices.ContainsFunc(sent, func(s sentScrobble) bool { return s.verb == "/scrobble/start" && s.progress == 41.67 }) {
+		t.Fatalf("replacement sent %+v, want ps-1 stopped at 40 and ps-2 started at 41.67", sent)
+	}
 	h.report("dev|ps-2", ClientPlaybackStop, 1368)
-	sent := h.settle(t, 3)
-	wantScrobble(t, sent[2], "stop", 95)
+	wantScrobble(t, h.settle(t, 4)[3], "stop", 95)
 	time.Sleep(600 * time.Millisecond) // past ps-1's idle window
-	h.settle(t, 3)
+	h.settle(t, 4)
+
+	// A stopped playback being replaced has nothing left to report.
+	h.report("dev|ps-3", ClientPlaybackStart, 0)
+	wantScrobble(t, h.settle(t, 5)[4], "start", 0)
 }
 
 func TestClientPlaybackNeedsALinkedEnabledAccount(t *testing.T) {
@@ -485,13 +496,18 @@ func TestTransportScrobblesWithoutClientReports(t *testing.T) {
 	h.serveRange(t, "bytes=0-", 50e6, 0, false)
 	open := time.Since(began)
 	sent := h.settle(t, 2)
-	if sent[0].verb != "/scrobble/start" || sent[1].verb != "/scrobble/stop" || sent[1].progress <= 0 {
+	// The sends race each other, so they are matched without order.
+	if starts, stops := countVerbs(sent); starts != 1 || stops != 1 {
 		t.Fatalf("transport scrobbles: %+v", sent)
+	}
+	stop := sent[slices.IndexFunc(sent, func(s sentScrobble) bool { return s.verb == "/scrobble/stop" })]
+	if stop.progress <= 0 {
+		t.Fatalf("transport stop credited nothing: %+v", stop)
 	}
 	// The whole file was delivered, yet the stop credits no more than the
 	// serve's own time at the title's rate (with its 25% slack).
-	if limit := open.Seconds() / 60 * 125; sent[1].progress > limit+0.01 {
-		t.Fatalf("a fully buffered serve open %v credited %v%%, limit %.2f%%", open, sent[1].progress, limit)
+	if limit := open.Seconds() / 60 * 125; stop.progress > limit+0.01 {
+		t.Fatalf("a fully buffered serve open %v credited %v%%, limit %.2f%%", open, stop.progress, limit)
 	}
 }
 
@@ -513,8 +529,12 @@ func TestJellyfinReportsDoNotSilenceStremio(t *testing.T) {
 
 	sent := h.settle(t, 4)
 	// Stremio: the transport's start and stop. Jellyfin: the client's.
+	// The sends race each other, so they are matched without order.
 	starts, stops := countVerbs(sent)
-	if starts != 2 || stops != 2 || sent[3].progress != 60 {
+	clientStop := slices.ContainsFunc(sent, func(s sentScrobble) bool {
+		return s.verb == "/scrobble/stop" && s.progress == 60
+	})
+	if starts != 2 || stops != 2 || !clientStop {
 		t.Fatalf("got %d starts and %d stops: %+v", starts, stops, sent)
 	}
 }

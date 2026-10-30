@@ -97,7 +97,8 @@ stream never sees another's.
   actually is. The client's first report is the start, its stop reports its
   position, and each service then applies its own threshold (80%), separate
   from the 90% above. Each device's play session is reported on its own; a
-  device opening a new play session ends its last one. Without a runtime to
+  device opening a new play session ends its last one, reporting it stopped
+  at its last position if it never stopped. Without a runtime to
   place the position (rare: the file's own duration is normally known) the
   stop is not sent rather than guessed. Pausing reports nothing; a
   playback that reports nothing at all for 30 minutes — an app closed
