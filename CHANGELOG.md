@@ -1,5 +1,29 @@
 # Changelog
 
+## [6.4.0](https://github.com/Gaisberg/streamnzb/compare/v6.3.0...v6.4.0) (2026-10-30)
+
+
+### Features
+
+* **formatter:** expose resolution-independent scores ([#373](https://github.com/Gaisberg/streamnzb/issues/373)) ([bc66edc](https://github.com/Gaisberg/streamnzb/commit/bc66edc2cc8545e91590796d19fc2b0c5ed7756f)), closes [#343](https://github.com/Gaisberg/streamnzb/issues/343)
+* **jellyfin:** list each watched series' next episode under Next Up ([#384](https://github.com/Gaisberg/streamnzb/issues/384)) ([dbe340d](https://github.com/Gaisberg/streamnzb/commit/dbe340d49f24e1fe0209c0310d20519478bfdbc4))
+* **jellyfin:** list followed series' upcoming episodes ([#386](https://github.com/Gaisberg/streamnzb/issues/386)) ([ebadda3](https://github.com/Gaisberg/streamnzb/commit/ebadda383bbd5330dabdc66ab0939bec386528d1))
+* **jellyfin:** remember favourites and list them under Filters=IsFavorite ([#381](https://github.com/Gaisberg/streamnzb/issues/381)) ([bd2b0cc](https://github.com/Gaisberg/streamnzb/commit/bd2b0ccc65023f5ed71969950389e5cec8d71e63)), closes [#346](https://github.com/Gaisberg/streamnzb/issues/346)
+
+
+### Bug Fixes
+
+* **api:** delete a stream's Jellyfin play state along with the stream ([#380](https://github.com/Gaisberg/streamnzb/issues/380)) ([47e8561](https://github.com/Gaisberg/streamnzb/commit/47e8561d4c6f7ec7847c1c8ac3f6da0677b8f7ee)), closes [#379](https://github.com/Gaisberg/streamnzb/issues/379)
+* **jellyfin:** mark seasons and series watched through episodes ([#387](https://github.com/Gaisberg/streamnzb/issues/387)) ([55e6487](https://github.com/Gaisberg/streamnzb/commit/55e648781cc7703b0563d4eca0954dda188f2da1))
+* **pool:** keep fetching by message-id when a provider refuses GROUP ([5dbd2e0](https://github.com/Gaisberg/streamnzb/commit/5dbd2e0f53e67e0757bf80875534c181a473216e)), closes [#389](https://github.com/Gaisberg/streamnzb/issues/389)
+* **pool:** update the usenet pool in place on provider reloads ([cca5a16](https://github.com/Gaisberg/streamnzb/commit/cca5a16464cd2afad6719d7fd45caf8297fdafe1))
+* **search:** match daily-show releases to episodes by air date ([#385](https://github.com/Gaisberg/streamnzb/issues/385)) ([3a1fc93](https://github.com/Gaisberg/streamnzb/commit/3a1fc934e60c7e75a888c3b9edc90b00baf864e9)), closes [#382](https://github.com/Gaisberg/streamnzb/issues/382)
+
+
+### Performance Improvements
+
+* **easynews:** fetch result pages with bounded concurrency ([#383](https://github.com/Gaisberg/streamnzb/issues/383)) ([3ed8f9a](https://github.com/Gaisberg/streamnzb/commit/3ed8f9a6eba16ffb82e594ce69c07ca3446af285)), closes [#199](https://github.com/Gaisberg/streamnzb/issues/199)
+
 ## [6.3.0](https://github.com/Gaisberg/streamnzb/compare/v6.2.0...v6.3.0) (2026-10-23)
 
 
