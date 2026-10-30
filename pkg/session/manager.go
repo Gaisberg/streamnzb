@@ -1768,6 +1768,11 @@ func (m *Manager) traceTeardownSnapshot(trigger, sessionID string) {
 	for _, delay := range []time.Duration{5 * time.Second, 15 * time.Second} {
 		d := delay
 		time.AfterFunc(d, func() {
+			select {
+			case <-m.stopCh:
+				return // a shut-down manager has nothing left to snapshot
+			default:
+			}
 			m.logTeardownSnapshot(trigger, sessionID, d.String())
 		})
 	}

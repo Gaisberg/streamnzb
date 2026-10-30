@@ -70,10 +70,12 @@ type Server struct {
 	// that *is* per-session lives on the session itself (see once_keys.go):
 	// session IDs are reused slot paths, so a map out here needed a goroutine
 	// parked on Done() to forget each entry before the slot came back.
-	playlistCache     sync.Map // cache key → *playlistCacheEntry
-	rawSearchCache    sync.Map // raw key → *rawSearchCacheEntry
-	nextReleaseIndex  sync.Map // streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
-	preloadCancels    sync.Map // StreamSlotKey.CacheKey() → *preloadCancelEntry; cancels the in-flight preload sweep when real playback starts
+	playlistCache     sync.Map        // cache key → *playlistCacheEntry
+	rawSearchCache    sync.Map        // raw key → *rawSearchCacheEntry
+	nextReleaseIndex  sync.Map        // streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
+	preloadCancels    sync.Map        // StreamSlotKey.CacheKey() → *preloadCancelEntry; cancels the in-flight preload sweep when real playback starts
+	clientPlayback    clientPlaybacks // client-reported playback attempts (see client_scrobble.go)
+	scrobbleSends     sync.WaitGroup  // scrobble requests in flight
 	webHandler        http.Handler
 	apiHandler        http.Handler
 	playback          *playback.Service

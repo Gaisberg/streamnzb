@@ -36,6 +36,15 @@ const (
 	// succeeds and then hits a mid-stream read error would otherwise be scored
 	// twice against the indexer that supplied the NZB.
 	onceGrabScored session.OnceKey = "grab-scored"
+	// A serve that ended owes the transport's scrobble stop: set by every serve
+	// except one to a client that reported its own playback during it, and
+	// claimed by the stop once the session's last serve has ended. Reset there,
+	// so each idle point reports for the serves before it.
+	onceTransportStopDue session.OnceKey = "transport-stop-due"
+	// The transport's scrobble start. Claimed with the good-attempt commit, but
+	// on its own key: a serve to a client reporting its own playback commits
+	// without one, and another client's serve of the session still owes it.
+	onceTransportStarted session.OnceKey = "transport-started"
 )
 
 // countPastEOFRanges tallies GET requests whose Range started at or beyond the

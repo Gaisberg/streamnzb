@@ -74,6 +74,7 @@ type fakeCatalog struct {
 	metaCalls     int
 	playlistCalls int
 	served        []servedPlay
+	reports       []stremio.ClientPlayback
 	disabled      bool
 	// drop thins a bucket the way the addon does when a provider row has
 	// no id it can use: skip → rows removed from the end of that bucket.
@@ -203,6 +204,12 @@ func (f *fakeCatalog) Playlist(context.Context, *auth.Stream, string, string) (*
 
 func (f *fakeCatalog) PlaylistCached(*auth.Stream, string, string) (*stremio.PlaylistView, bool) {
 	return f.cached, f.cached != nil
+}
+
+func (f *fakeCatalog) ReportClientPlayback(_ *auth.Stream, report stremio.ClientPlayback) {
+	f.mu.Lock()
+	f.reports = append(f.reports, report)
+	f.mu.Unlock()
 }
 
 func (f *fakeCatalog) ServePlay(w http.ResponseWriter, _ *http.Request, _ *auth.Stream, slotPath string, opts stremio.PlayServeOptions) {

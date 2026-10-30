@@ -89,6 +89,27 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Scrobbling** — a stream that scrobbles to Simkl or MDBList (see
+  [Scrobbling](metadata.md#scrobbling)) reports Jellyfin playback from the
+  position the client reports (`/Sessions/Playing`, `…/Progress`,
+  `…/Stopped`), not from the bytes served: a player that buffers the whole
+  episode in seconds and plays it from memory is still reported where it
+  actually is. The client's first report is the start, its stop reports its
+  position, and each service then applies its own threshold (80%), separate
+  from the 90% above. Each device's play session is reported on its own; a
+  device opening a new play session ends its last one. Without a runtime to
+  place the position (rare: the file's own duration is normally known) the
+  stop is not sent rather than guessed. Pausing reports nothing; a
+  playback that reports nothing at all for 30 minutes — an app closed
+  mid-play — is reported stopped at the last position the client gave, never
+  further, and reporting again starts it anew. A client that sends no
+  playback reports is scrobbled from the bytes served, but only with a stop:
+  a start from the transfer could not be told apart from an earlier
+  playback's. (While another device on the same stream reports the same
+  title, such a client's transfer is taken for that device's and is not
+  scrobbled.) Stremio playback of the same title on the same stream is
+  scrobbled from its own transfer as before, whatever a Jellyfin client is
+  doing. Marking an item watched or unwatched by hand is not scrobbled.
 - **Watched seasons and series** — marking a season or series watched
   (`POST /UserPlayedItems/{id}`, or `/Users/{userId}/PlayedItems/{id}`) marks
   its episodes, as Jellyfin does: every episode that has aired, by the same

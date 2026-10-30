@@ -623,6 +623,9 @@ func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
 	}
 	opts := stremio.PlayServeOptions{
 		FailWithStatus: true,
+		// Jellyfin clients report where they are (Sessions/Playing), and
+		// those reports are scrobbled rather than the transfer.
+		ClientReportsPlayback: true,
 		SlotLocation: func(nextSlot string) string {
 			nextIndex, ok := stremio.SlotIndexOf(nextSlot)
 			if !ok {
@@ -699,20 +702,42 @@ func (s *Server) handlePlaying(w http.ResponseWriter, rq *request, event, pathIt
 	switch event {
 	case "", "playing":
 		s.recordProgress(rq, id, position, playEventStart)
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackStart)
 	case "progress":
 		if report.IsPaused {
 			s.recordProgress(rq, id, position, playEventPause)
 		} else {
 			s.recordProgress(rq, id, position, playEventTick)
 		}
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackProgress)
 	case "stopped":
 		s.recordProgress(rq, id, position, playEventStop)
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackStop)
 	case "ping":
 	default:
 		http.NotFound(w, rq.Request)
 		return
 	}
 	writeEmpty(w)
+}
+
+// reportPlayback passes a playback report on for scrobbling. The client's
+// position is what it is showing, which the transport cannot know once a
+// player has buffered the file. One device's one play session is one
+// playback, so two devices playing the same title are reported apart, and a
+// device opening a new play session ends its last.
+func (s *Server) reportPlayback(rq *request, id itemID, report playbackReport, event stremio.ClientPlaybackEvent) {
+	position := -1.0
+	if report.PositionTicks != nil && *report.PositionTicks >= 0 {
+		position = float64(*report.PositionTicks) / float64(ticksPerSecond)
+	}
+	s.opts.Catalog.ReportClientPlayback(rq.stream, stremio.ClientPlayback{
+		ContentID:       id.playStremioID(),
+		Device:          clientOf(rq).DeviceID,
+		PlaySession:     report.PlaySessionID,
+		Event:           event,
+		PositionSeconds: position,
+	})
 }
 
 // handlePlayed marks (POST) or clears (DELETE) an item's played state and
