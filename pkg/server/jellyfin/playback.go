@@ -742,9 +742,11 @@ func (s *Server) reportPlayback(rq *request, id itemID, report playbackReport, e
 		position = float64(*report.PositionTicks) / float64(ticksPerSecond)
 	}
 	client := clientOf(rq)
+	// The device is read as handleStream reads it, so a serve and its
+	// client's reports name the same one.
 	s.opts.Catalog.ReportClientPlayback(rq.stream, stremio.ClientPlayback{
 		ContentID:       id.playStremioID(),
-		Device:          client.DeviceID,
+		Device:          cmp.Or(client.DeviceID, rq.param("deviceId")),
 		Client:          client.Client + "|" + client.Device,
 		Address:         httpx.ClientIP(rq.Request),
 		PlaySession:     report.PlaySessionID,

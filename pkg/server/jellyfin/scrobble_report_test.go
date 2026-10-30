@@ -95,3 +95,18 @@ func TestStreamServesAsAReportingClient(t *testing.T) {
 		}
 	}
 }
+
+// A report that names its device only in the URL, as a stream request may,
+// is matched by it the same way: a serve and the reports of the client it went
+// to must name one device, or the transfer is scrobbled alongside the client.
+func TestReportDeviceFromTheURL(t *testing.T) {
+	f := newFixture()
+	movie, _ := itemIDFor("movie", "tt0111161")
+	body := fmt.Sprintf(`{"ItemId":"%s","PositionTicks":0}`, movie.encode())
+	if rec := f.do(http.MethodPost, "/jellyfin/Sessions/Playing?DeviceId=d9&api_key="+testToken, body, "X-Nothing", "x"); rec.Code != http.StatusNoContent {
+		t.Fatalf("report: %d", rec.Code)
+	}
+	if len(f.catalog.reports) != 1 || f.catalog.reports[0].Device != "d9" {
+		t.Fatalf("reports: %+v, want device d9", f.catalog.reports)
+	}
+}

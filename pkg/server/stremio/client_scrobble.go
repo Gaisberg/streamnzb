@@ -116,7 +116,11 @@ type clientAttempt struct {
 	stopped     bool      // the client's stop has been handled
 	stoppedAt   time.Time // when it was
 	lastPct     float64   // last confirmed position as a percentage, -1 when unknown
-	timer       *time.Timer
+	// replaced is the play session this playback replaced: that one has
+	// stopped, and a report it sends late is ignored.
+	replaced string
+	timer    *time.Timer
+	timerGen int // counts the timer's arming; a callback from an earlier one is stale
 }
 
 // clientItem is what a title is scrobbled as, taken from a live media session.
@@ -239,7 +243,7 @@ type clientScrobble struct {
 // order. live is what the title's live media session says it is, nil when
 // there is none. A report that cannot be tracked is not recorded as reported,
 // so the transport still scrobbles that playback.
-func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *clientItem, expire func(key, device string, a *clientAttempt)) []clientScrobble {
+func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *clientItem, expire func(key, device string, a *clientAttempt, gen int)) []clientScrobble {
 	key := clientPlaybackKey(stream, p.ContentID)
 	device := p.playbackKey()
 	now := time.Now()
@@ -249,6 +253,12 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *cli
 		c.attempts = make(map[string]map[string]*clientAttempt)
 	}
 	a := c.attempts[key][device]
+	if a != nil && p.PlaySession != "" && p.PlaySession == a.replaced {
+		// shortcut: only the last replaced play session is remembered; a client
+		// switching sessions twice before the first one's late report lands
+		// would still have it taken for a new playback.
+		return nil
+	}
 	// Only a play session different from the one the playback has is a new
 	// playback: a client that names it on some reports and not others is
 	// still in the one it named.
@@ -286,13 +296,18 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *cli
 		// The device's earlier playback of the title is over, stopped or not:
 		// a device plays one thing at a time. One that never stopped stops
 		// now, at the last position it confirmed, ahead of the new one.
+		replaced := ""
 		if a != nil {
 			c.removeLocked(key, device, a)
 			if a.started && !a.stopped && a.lastPct >= 0 {
 				out = append(out, clientScrobble{verb: scrobble.VerbStop, item: title.item, pct: a.lastPct})
 			}
+			replaced = a.replaced
+			if a.playSession != p.PlaySession {
+				replaced = a.playSession
+			}
 		}
-		a = &clientAttempt{stream: stream, playSession: p.PlaySession, lastPct: -1}
+		a = &clientAttempt{stream: stream, playSession: p.PlaySession, lastPct: -1, replaced: replaced}
 		if c.attempts[key] == nil {
 			c.attempts[key] = make(map[string]*clientAttempt)
 		}
@@ -322,7 +337,9 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *cli
 	if a.timer != nil {
 		a.timer.Stop()
 	}
-	a.timer = time.AfterFunc(wait, func() { expire(key, device, a) })
+	a.timerGen++
+	gen := a.timerGen
+	a.timer = time.AfterFunc(wait, func() { expire(key, device, a, gen) })
 	return out
 }
 
@@ -349,11 +366,13 @@ func (c *clientPlaybacks) stopTimers() {
 }
 
 // release drops a playback whose time ran out, reporting whether it was still
-// the current one and, if so, the stop it never sent.
-func (c *clientPlaybacks) release(key, device string, a *clientAttempt) (clientScrobble, bool) {
+// the current one and, if so, the stop it never sent. gen is the arming that
+// fired: a report that re-armed the timer while it fired has kept the
+// playback alive.
+func (c *clientPlaybacks) release(key, device string, a *clientAttempt, gen int) (clientScrobble, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.attempts[key][device] != a {
+	if c.attempts[key][device] != a || a.timerGen != gen {
 		return clientScrobble{}, false
 	}
 	c.removeLocked(key, device, a)
@@ -385,15 +404,18 @@ func (s *Server) ReportClientPlayback(stream *auth.Stream, p ClientPlayback) {
 		item, ok := s.scrobbleItemForSession(sess)
 		live = &clientItem{item: item, addressable: ok, runtime: s.clientRuntimeSeconds(stream, sess)}
 	}
+	// One report's sends go out in order — a replaced playback's stop ahead
+	// of the new one's start — or a target could take the stop last.
+	var after *sync.WaitGroup
 	for _, out := range s.clientPlayback.apply(stream, p, live, s.expireClientPlayback) {
-		s.sendClientScrobble(stream, p.ContentID, out)
+		after = s.sendClientScrobble(stream, p.ContentID, out, after)
 	}
 }
 
-func (s *Server) expireClientPlayback(key, device string, a *clientAttempt) {
-	if out, ok := s.clientPlayback.release(key, device, a); ok {
+func (s *Server) expireClientPlayback(key, device string, a *clientAttempt, gen int) {
+	if out, ok := s.clientPlayback.release(key, device, a, gen); ok {
 		logger.Debug("Client playback went quiet; reporting its last confirmed position", "content", key, "progress", int(out.pct))
-		s.sendClientScrobble(a.stream, key, out)
+		s.sendClientScrobble(a.stream, key, out, nil)
 	}
 }
 
@@ -410,26 +432,28 @@ func (s *Server) clientRuntimeSeconds(stream *auth.Stream, sess *session.Session
 	return 0
 }
 
-func (s *Server) sendClientScrobble(stream *auth.Stream, contentID string, out clientScrobble) {
+// sendClientScrobble sends out once the sends in after are done, returning
+// what a later send should wait on.
+func (s *Server) sendClientScrobble(stream *auth.Stream, contentID string, out clientScrobble, after *sync.WaitGroup) *sync.WaitGroup {
 	if out.item == nil {
 		logger.Debug("Client playback not scrobbled: no playback session ever placed the title", "stream", streamLogName(stream), "content", contentID, "verb", out.verb)
-		return
+		return after
 	}
 	if out.verb == scrobble.VerbStop && out.pct < 0 {
 		// No runtime ever placed a position for this playback. The session's
 		// served estimate is no stand-in: it spans every playback the session
 		// has served.
 		logger.Debug("Client playback stop not scrobbled: no runtime to place its position", "content", contentID)
-		return
+		return after
 	}
 	targets := scrobbleTargets(s.runtime(), stream)
 	if len(targets) == 0 {
 		logUnlinkedScrobble(stream, out.verb)
-		return
+		return after
 	}
 	if !out.item.addressable {
 		logger.Debug("Client playback not scrobbled: no id a target can place", "content", contentID, "verb", out.verb)
-		return
+		return after
 	}
-	s.sendScrobble(targets, contentID, out.verb, out.item.item, out.pct)
+	return s.sendScrobble(targets, contentID, out.verb, out.item.item, out.pct, after)
 }

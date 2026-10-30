@@ -39,6 +39,8 @@ type scrobbleHarness struct {
 	sent   []sentScrobble
 	status int
 	delay  time.Duration
+	// stopLag holds each stop back before it lands, as a slower request would.
+	stopLag time.Duration
 }
 
 type harnessOpts struct {
@@ -58,6 +60,12 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		h.mu.Lock()
+		lag := h.stopLag
+		h.mu.Unlock()
+		if r.URL.Path == "/scrobble/stop" {
+			time.Sleep(lag)
+		}
 		h.mu.Lock()
 		status, delay := h.status, h.delay
 		progress, _ := body["progress"].(float64)
@@ -597,7 +605,7 @@ func TestClientPlaybackOutlivesItsMediaSession(t *testing.T) {
 
 	// The kept item is the title's on this stream alone: another stream, or
 	// another title on this one, finds nothing to address a stop by.
-	noop := func(string, string, *clientAttempt) {}
+	noop := func(string, string, *clientAttempt, int) {}
 	other := &auth.Stream{Username: "Other", MDBListScrobble: true}
 	for _, c := range []struct {
 		stream  *auth.Stream
@@ -794,4 +802,59 @@ func TestScrobbleTimersSendNothingAfterShutdown(t *testing.T) {
 	h.server.Shutdown()
 	time.Sleep(clientReportGrace + 500*time.Millisecond)
 	h.settle(t, 1)
+}
+
+// A report the device's previous play session sends late — its stop landing
+// after the new session's start — is about a playback already replaced and
+// stopped. It must not end the playback running now.
+func TestLateReportFromAReplacedPlaySessionIsIgnored(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.report("dev|A", ClientPlaybackStart, 0)
+	h.report("dev|A", ClientPlaybackProgress, 576)
+	h.settle(t, 1)
+	h.report("dev|B", ClientPlaybackStart, 600) // A stops at 40, B starts
+	h.settle(t, 3)
+	h.report("dev|A", ClientPlaybackStop, 576)
+	h.report("dev|A", ClientPlaybackProgress, 576)
+	h.report("dev|B", ClientPlaybackProgress, 700)
+	h.settle(t, 3)
+	h.report("dev|B", ClientPlaybackStop, 1368)
+	wantScrobble(t, h.settle(t, 4)[3], "stop", 95)
+}
+
+// A new play session replacing an unstopped one sends the old one's stop and
+// then the new one's start, in that order: a target taking the stop last
+// would show the title stopped while it plays.
+func TestReplacementStopLandsBeforeTheNewStart(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.report("dev|A", ClientPlaybackStart, 0)
+	h.report("dev|A", ClientPlaybackProgress, 576)
+	h.settle(t, 1)
+	h.mu.Lock()
+	h.stopLag = 200 * time.Millisecond
+	h.mu.Unlock()
+	h.report("dev|B", ClientPlaybackStart, 600)
+	sent := h.settle(t, 3)
+	wantScrobble(t, sent[1], "stop", 40)
+	wantScrobble(t, sent[2], "start", 41.67)
+}
+
+// An idle timer that fired while a report re-armed its playback is stale: it
+// must not end the playback the report just kept alive.
+func TestStaleIdleTimerDoesNotEndALivePlayback(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.report("dev|ps", ClientPlaybackStart, 0)
+	h.report("dev|ps", ClientPlaybackProgress, 576)
+	h.settle(t, 1)
+	key := clientPlaybackKey(h.stream, "kitsu:114:1")
+	h.server.clientPlayback.mu.Lock()
+	a := h.server.clientPlayback.attempts[key]["id:dev"]
+	stale := a.timerGen
+	h.server.clientPlayback.mu.Unlock()
+	h.report("dev|ps", ClientPlaybackProgress, 600) // re-arms the timer
+	if _, ok := h.server.clientPlayback.release(key, "id:dev", a, stale); ok {
+		t.Fatal("a stale idle timer ended a playback that had just reported")
+	}
+	h.report("dev|ps", ClientPlaybackStop, 1368)
+	wantScrobble(t, h.settle(t, 2)[1], "stop", 95)
 }

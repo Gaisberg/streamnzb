@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"streamnzb/pkg/auth"
@@ -119,7 +120,7 @@ func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, rs *r
 		logger.Debug("Playback not scrobbled: no id a target can place", "content", sess.ContentID)
 		return
 	}
-	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStart, item, sess.ServedProgressPercent())
+	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStart, item, sess.ServedProgressPercent(), nil)
 }
 
 // scrobbleStopIfIdle runs as a serve unwinds, after playback bookkeeping: when
@@ -190,17 +191,20 @@ func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session)
 		return
 	}
 	sess.SetLastReportedProgress(progress)
-	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStop, item, progress)
+	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStop, item, progress, nil)
 }
 
-// sendScrobble sends one scrobble to each target in the background. Nothing
-// goes out once Shutdown has run: the grace and idle timers can outlive the
-// server, and must not start network sends on a stopped one.
-func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string, item scrobble.Item, progress float64) {
+// sendScrobble sends one scrobble to each target in the background, each
+// once the sends in after (nil for none) are done, and returns what a send
+// that must follow this one waits on. Nothing goes out once Shutdown has run:
+// the grace and idle timers can outlive the server, and must not start
+// network sends on a stopped one.
+func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string, item scrobble.Item, progress float64, after *sync.WaitGroup) *sync.WaitGroup {
+	var sent sync.WaitGroup
 	select {
 	case <-s.stopCh:
 		logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
-		return
+		return &sent
 	default:
 	}
 	for _, target := range targets {
@@ -212,8 +216,13 @@ func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string,
 			continue
 		}
 		s.scrobbleSends.Add(1)
+		sent.Add(1)
 		go func(target scrobble.Target) {
 			defer s.scrobbleSends.Done()
+			defer sent.Done()
+			if after != nil {
+				after.Wait()
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), scrobbleRequestTimeout)
 			defer cancel()
 			if err := target.Scrobble(ctx, verb, item, progress); err != nil {
@@ -223,6 +232,7 @@ func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string,
 			logger.Debug("Scrobble sent", "target", target.Name(), "verb", verb, "content", contentID, "progress", int(progress))
 		}(target)
 	}
+	return &sent
 }
 
 // logUnlinkedScrobble notes a stream that has scrobbling switched on but no
