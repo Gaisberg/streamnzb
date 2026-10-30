@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -284,6 +285,9 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 			for _, id := range wanted {
 				if item := s.favoriteRow(rq, id, metas); item != nil && (inGenres == nil || inGenres(id, metas[metaKey(id)])) {
 					item.UserData = userDataFor(item.ID, favorites[id.encode()], true)
+					if isFolder(id) {
+						item.UserData = s.renderedUserData(rq, id, metas[metaKey(id)], item.UserData)
+					}
 					result.Items = append(result.Items, item)
 				}
 			}
@@ -768,7 +772,15 @@ func (s *Server) favoritesResult(rq *request, include []string, start, limit int
 			items = append(items, item)
 		}
 	}
-	return page(items, start, limit, false)
+	result := page(items, start, limit, false)
+	// A season's or series' counts read its episodes, so only the page's
+	// are counted.
+	for _, item := range result.Items {
+		if id, err := decodeItemID(item.ID); err == nil && isFolder(id) {
+			item.UserData = s.renderedUserData(rq, id, metas[metaKey(id)], item.UserData)
+		}
+	}
+	return result
 }
 
 // favoriteGenres is the request's genre filter (requestedGenres) as every
@@ -955,6 +967,10 @@ func (s *Server) resolveOnOpen(rq *request, id itemID, item *baseItem) {
 }
 
 func (s *Server) writeItemError(w http.ResponseWriter, rq *request, raw string, err error) {
+	if errors.Is(err, errPlayStateRead) {
+		writePlayStateError(w)
+		return
+	}
 	if errors.Is(err, stremio.ErrMetadataDisabled) {
 		http.NotFound(w, rq.Request)
 		return
@@ -1024,7 +1040,7 @@ func (s *Server) itemOf(rq *request, id itemID, meta *stremio.MetaObject) *baseI
 		return item
 	case kindSeries:
 		item := s.metaItem(id, meta)
-		item.UserData = s.userData(rq, id)
+		item.UserData = s.renderedUserData(rq, id, meta, s.userData(rq, id))
 		// Infuse (and other clients) read a series' own MediaSourceCount to
 		// decide whether its quick-play button gets a version-picker chevron,
 		// even though the button actually plays a specific episode. The series
@@ -1052,7 +1068,7 @@ func (s *Server) itemOf(rq *request, id itemID, meta *stremio.MetaObject) *baseI
 		for _, season := range seasonsOf(meta) {
 			if season.Number == id.Season {
 				item := s.seasonItem(id.series(), meta, season.Number, season.Episodes)
-				item.UserData = s.userData(rq, id)
+				item.UserData = s.renderedUserData(rq, id, meta, s.userData(rq, id))
 				return item
 			}
 		}
@@ -1084,18 +1100,28 @@ func (s *Server) childrenOf(rq *request, id itemID, include []string, recursive 
 	}
 	series := id.series()
 	var items []*baseItem
-	// One query for the whole listing rather than one per row.
-	states := map[string]persistence.JellyfinPlaystate{}
-	if s.opts.Playstate != nil {
-		for _, st := range s.opts.Playstate.ListForStream(rq.streamName()) {
-			states[st.ItemID] = st
-		}
+	// One query for the series' episodes rather than one per row. A failed
+	// one fails the listing rather than show every row unwatched.
+	states, err := s.episodeStates(rq, series)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errPlayStateRead, err)
 	}
 	if !wantEpisodes {
+		// The seasons' own rows, their favourites, in one query too.
+		seasonRows, err := s.prefixStates(rq, series.seasonsPrefix())
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errPlayStateRead, err)
+		}
+		// The series' counted episodes are worked out once, not per season.
+		bySeason := map[int][]itemID{}
+		for _, ep := range countedEpisodes(series, meta, states) {
+			bySeason[ep.Season] = append(bySeason[ep.Season], ep)
+		}
 		for _, season := range seasonsOf(meta) {
 			item := s.seasonItem(series, meta, season.Number, season.Episodes)
-			st, ok := states[item.ID]
-			item.UserData = userDataFor(item.ID, st, ok)
+			own, ok := seasonRows[item.ID]
+			item.UserData = userDataFor(item.ID, own, ok)
+			countFolder(item.UserData, bySeason[season.Number], states)
 			items = append(items, item)
 		}
 		return items, nil

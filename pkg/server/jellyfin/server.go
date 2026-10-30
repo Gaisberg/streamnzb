@@ -77,6 +77,9 @@ type Playstate interface {
 	ListResume(streamName string, limit int) []persistence.JellyfinPlaystate
 	ListForStream(streamName string) []persistence.JellyfinPlaystate
 	SetPlayed(streamName, itemID, contentType, contentID string, played bool) error
+	MarkPlayedMany(streamName string, items []persistence.JellyfinPlaystate) error
+	ListPrefix(streamName, prefix string) ([]persistence.JellyfinPlaystate, error)
+	ClearPlayedPrefix(streamName, prefix string) (int64, error)
 	SetFavorite(streamName, itemID, contentType, contentID string, favorite bool) error
 	ListFavorites(streamName string) []persistence.JellyfinPlaystate
 }
@@ -174,6 +177,9 @@ type request struct {
 	stream *auth.Stream
 	// genres memoizes the genre lists by content type for this request.
 	genres map[string][]stremio.Genre
+	// prefixed holds the stored rows this request has read by item id prefix
+	// (prefixStates), by prefix.
+	prefixed map[string]map[string]persistence.JellyfinPlaystate
 }
 
 func parseRequest(r *http.Request) *request {

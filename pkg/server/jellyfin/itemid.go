@@ -230,6 +230,21 @@ func (id itemID) episode(season, episode int) itemID {
 	return out
 }
 
+// episodesPrefix is the start the ids of a season's or series' episodes
+// share, and no other id does: by the layout above, an episode id holds its
+// series in bytes 0-10 and its season in 11-12.
+func (id itemID) episodesPrefix() string {
+	if id.Kind == kindSeason {
+		return id.episode(id.Season, 0).encode()[:2*13]
+	}
+	return id.episode(0, 0).encode()[:2*11]
+}
+
+// seasonsPrefix is the start the ids of a series' seasons share.
+func (id itemID) seasonsPrefix() string {
+	return id.season(0).encode()[:2*11]
+}
+
 // source is the media-source id of one candidate of a movie or episode.
 func (id itemID) source(index int) itemID {
 	out := id

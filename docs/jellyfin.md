@@ -89,6 +89,53 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Watched seasons and series** — marking a season or series watched
+  (`POST /UserPlayedItems/{id}`, or `/Users/{userId}/PlayedItems/{id}`) marks
+  its episodes, as Jellyfin does: every episode that has aired, by the same
+  rules Next Up uses, and for a whole series its aired specials too (a special
+  counts as aired unless it is dated in the future). Episodes still to air are
+  left alone. Episodes already watched keep their date and play count, and
+  episodes part-way through are marked watched and leave Continue Watching;
+  favourites are kept. Marking unwatched (`DELETE` on the same routes)
+  clears every episode in it, progress included. Either way the whole season
+  or series is written at once, or not at all. A season or series shows as
+  watched once every episode it counts is: its aired episodes, and any other
+  already watched, such as one the metadata dates in the future (as Jellyfin
+  counts any episode it has a file for, whatever its date). Its unwatched
+  count and percentage show on its own page, in its season list and in the
+  Favourites row; catalog rows and search results do not count episodes and
+  show it unwatched. A season with nothing aired or watched stays unwatched,
+  with nothing counted, and marking it changes nothing; Jellyfin calls such a
+  season watched, but also hides it, where it is listed here. Marking watched
+  needs the title's metadata to know what has aired, so it fails without it:
+  502 while the metadata source is unreachable, and 404 while metadata is
+  switched off for the stream, as the season's own page is then not found
+  either. Marking unwatched does not need it, and neither does a favourite. An unmark that cleared episodes answers at once, the
+  season unwatched and uncounted, without waiting on the metadata for the
+  counts; its page shows them. While the metadata is unreachable, how many
+  episodes a season has is unknown, so a favourite's answer shows the season
+  uncounted and unwatched, and a lookup of its UserData answers the same when
+  none of its episodes is watched, and otherwise fails (502) rather than
+  guess.
+  A season the metadata lists no episodes for is not found (404) when
+  marking it watched, favouriting it or looking it up, and nothing new is
+  stored for it. What a source that has since renumbered left under one can
+  still be read and removed: its stored row is answered as stored, unmarking
+  clears its stored episodes, and unfavouriting clears its favourite; each
+  answers 404 only when nothing was stored. Beyond marking watched with
+  metadata switched off, metadata that is unreachable or switched off never
+  makes a 404: unmarking and favourites go ahead without it, and a UserData
+  lookup answers or fails with 502 as above. Season and episode lists that
+  cannot read the stream's play state fail (500) rather than show it wrong.
+  `POST /UserItems/{id}/UserData` on a season or series sets its favourite
+  and nothing else. Its `Played` is ignored, true or false: clients send
+  their whole UserData back with every change, and a stale watched flag would
+  otherwise rewrite every episode. So a body with `IsFavorite` succeeds
+  (200) and changes only the favourite, even when it also says `Played`; a
+  client that means to mark the season watched through this route gets the
+  favourite and not the mark, and has to use `/UserPlayedItems`. A body
+  without `IsFavorite` is refused (404), as before. (Jellyfin itself never
+  marks episodes from this route either.)
 - **Next Up** — the episode to watch next in each series the stream has been
   watching, worked out the way Jellyfin works it out: from the furthest
   episode watched, the first one after it that is neither watched nor unaired,
@@ -121,9 +168,6 @@ stream never sees another's.
     special airs among the regular episodes, which is what Jellyfin places
     them by. A Kitsu film is not offered either: it is shown as a
     one-episode series, but there is nothing to go on to.
-  - **Marking a whole season or series watched is not supported**: the
-    client's mark is refused, so Next Up does not move. Mark the episodes, or
-    play them.
   - **Only the 100 most recently watched series are looked at**, since each
     needs its episode list. A series watched less recently than that is not
     listed.

@@ -217,18 +217,36 @@ func nextUpCutoff(raw string) time.Time {
 // state rather than the list, so an episode the metadata no longer has still
 // counts; with none played, the series starts from its first episode.
 //
-// Unaired episodes are passed over the way Jellyfin passes over its virtual
-// ones. An undated episode takes the state of the last dated one before it,
-// so the undated rest of a season whose premiere has not aired is unaired
-// too, while one with nothing dated before it, or an aired episode, counts as
-// aired. A season that starts undated in a series with dates elsewhere is the
-// exception: it is unaired unless an episode after it has aired, as TMDB and
-// TVDB list an announced season before they date it. A pick the stream is
-// part-way through is offered only when includeResumable, and otherwise the
-// series has no Next Up rather than a later episode.
+// Unaired episodes, as airedFlags finds them, are passed over the way
+// Jellyfin passes over its virtual ones. A pick the stream is part-way
+// through is offered only when includeResumable, and otherwise the series
+// has no Next Up rather than a later episode.
 func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.JellyfinPlaystate, includeResumable bool) (stremio.MetaVideo, bool) {
 	anchor, anchored := furthestPlayed(states)
 	episodes := numberedEpisodes(videos)
+	aired := airedFlags(episodes)
+	for i, v := range episodes {
+		key := episodeKey{v.Season, v.Episode}
+		st := states[key]
+		if (anchored && slices.Compare(key[:], anchor[:]) <= 0) || st.Played || !aired[i] {
+			continue
+		}
+		if st.PositionTicks > 0 && !includeResumable {
+			return stremio.MetaVideo{}, false
+		}
+		return v, true
+	}
+	return stremio.MetaVideo{}, false
+}
+
+// airedFlags reports which of numberedEpisodes' list have aired. An undated
+// episode takes the state of the last dated one before it, so the undated
+// rest of a season whose premiere has not aired is unaired too, while one
+// with nothing dated before it, or an aired episode, counts as aired. A
+// season that starts undated in a series with dates elsewhere is the
+// exception: it is unaired unless an episode after it has aired, as TMDB and
+// TVDB list an announced season before they date it.
+func airedFlags(episodes []stremio.MetaVideo) []bool {
 	// lastAired is the furthest episode dated in the past.
 	var lastAired episodeKey
 	anyDated, anyAired := false, false
@@ -240,6 +258,7 @@ func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.J
 			}
 		}
 	}
+	aired := make([]bool, len(episodes))
 	notAired := false
 	for i, v := range episodes {
 		key := episodeKey{v.Season, v.Episode}
@@ -250,16 +269,9 @@ func nextUpVideo(videos []stremio.MetaVideo, states map[episodeKey]persistence.J
 			// season has aired only when an episode after it has.
 			notAired = !anyAired || slices.Compare(key[:], lastAired[:]) > 0
 		}
-		st := states[key]
-		if (anchored && slices.Compare(key[:], anchor[:]) <= 0) || st.Played || notAired {
-			continue
-		}
-		if st.PositionTicks > 0 && !includeResumable {
-			return stremio.MetaVideo{}, false
-		}
-		return v, true
+		aired[i] = !notAired
 	}
-	return stremio.MetaVideo{}, false
+	return aired
 }
 
 // furthestPlayed is the furthest numbered episode the stream has played.

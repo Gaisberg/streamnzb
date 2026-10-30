@@ -715,22 +715,72 @@ func (s *Server) handlePlaying(w http.ResponseWriter, rq *request, event, pathIt
 	writeEmpty(w)
 }
 
+// handlePlayed marks (POST) or clears (DELETE) an item's played state and
+// answers its UserData, which clients read back to confirm the change. A
+// season or series is marked through its episodes (setFolderPlayed), and
+// marking one watched needs its metadata to know which have aired.
 func (s *Server) handlePlayed(w http.ResponseWriter, rq *request, raw string) {
-	id, _, ok := playableID(raw)
-	if !ok {
+	// A client may mark played what it may favourite.
+	id, ok := favoriteID(raw)
+	if !ok || !(rq.is(http.MethodPost) || rq.is(http.MethodDelete)) {
 		http.NotFound(w, rq.Request)
 		return
 	}
-	switch {
-	case rq.is(http.MethodPost):
-		s.setPlayed(rq, id, true)
-	case rq.is(http.MethodDelete):
-		s.setPlayed(rq, id, false)
-	default:
+	played := rq.is(http.MethodPost)
+	if !isFolder(id) {
+		if err := s.setPlayed(rq, id, played); err != nil {
+			writePlayedError(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.userData(rq, id))
+		return
+	}
+	s.markFolder(w, rq, raw, id, played)
+}
+
+// markFolder marks a season or series watched or unwatched and answers its
+// UserData. Marking watched needs the metadata, to know what has aired and
+// that a season exists: a season it does not list is not found, and nothing
+// is written; the answer is counted from the store once the mark is in.
+// Unmarking needs none and is done first, so the metadata's absence cannot
+// stop it, and once it has changed something its answer does not wait on
+// the metadata either: every episode is unwatched, uncounted. Only an unmark
+// that changed nothing asks the metadata, whether the season is there at all
+// (a season it does not list is not found) and for the counts.
+func (s *Server) markFolder(w http.ResponseWriter, rq *request, raw string, id itemID, played bool) {
+	if played {
+		meta, err := s.meta(rq.Context(), rq, id)
+		if err != nil {
+			s.writeItemError(w, rq, raw, err)
+			return
+		}
+		if !folderListed(id, meta) {
+			http.NotFound(w, rq.Request)
+			return
+		}
+		if err := s.markFolderPlayed(rq, id, meta); err != nil {
+			writePlayedError(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.renderedUserData(rq, id, meta, s.userData(rq, id)))
+		return
+	}
+	cleared, err := s.clearFolderPlayed(rq, id)
+	if err != nil {
+		writePlayedError(w)
+		return
+	}
+	ud := s.userData(rq, id)
+	if cleared > 0 {
+		writeJSON(w, http.StatusOK, ud)
+		return
+	}
+	meta, err := s.meta(rq.Context(), rq, id)
+	if err == nil && !folderListed(id, meta) {
 		http.NotFound(w, rq.Request)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.userData(rq, id))
+	writeJSON(w, http.StatusOK, s.renderedUserData(rq, id, meta, ud))
 }
 
 // handleFavorite marks (POST) or clears (DELETE) a favourite and answers the
@@ -742,27 +792,108 @@ func (s *Server) handleFavorite(w http.ResponseWriter, rq *request, raw string) 
 		http.NotFound(w, rq.Request)
 		return
 	}
-	var err error
-	switch {
-	case rq.is(http.MethodPost):
-		err = s.setFavorite(rq, id, true)
-	case rq.is(http.MethodDelete):
-		err = s.setFavorite(rq, id, false)
+	var favorite *bool
+	if marked := rq.is(http.MethodPost); marked || rq.is(http.MethodDelete) {
+		favorite = &marked
 	}
-	if err != nil {
-		writeFavoriteError(w)
+	if isFolder(id) {
+		s.setFolderFavorite(w, rq, id, favorite)
 		return
+	}
+	if favorite != nil {
+		if err := s.setFavorite(rq, id, *favorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))
 }
 
+// setFolderFavorite sets a season's or series' favourite, when favorite is
+// given and differs from the stored one, and answers its UserData, counted
+// from the metadata (renderedUserData), asked once. A season the metadata
+// does not list is not found, and nothing new is stored for it; what the
+// stream stored for it before a source renumbered it away can still be read,
+// uncounted, and its favourite cleared. When the metadata cannot be had the
+// change goes ahead all the same, since the season may well exist, and the
+// answer, which a stored favourite must not fail, is uncounted.
+func (s *Server) setFolderFavorite(w http.ResponseWriter, rq *request, id itemID, favorite *bool) {
+	ud := s.userData(rq, id)
+	change := favorite != nil && *favorite != ud.IsFavorite
+	meta, _ := s.meta(rq.Context(), rq, id)
+	listed := meta == nil || folderListed(id, meta)
+	if !listed && (change && *favorite || !change && !s.storedRow(rq, id)) {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	if change {
+		if rq.Context().Err() != nil {
+			writeFavoriteError(w)
+			return
+		}
+		if err := s.setFavorite(rq, id, *favorite); err != nil {
+			writeFavoriteError(w)
+			return
+		}
+		ud.IsFavorite = *favorite
+	}
+	if !listed {
+		writeJSON(w, http.StatusOK, ud)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.renderedUserData(rq, id, meta, ud))
+}
+
+// writeUserData answers GET /UserItems/{id}/UserData. A season's or series'
+// counts need its metadata. Without it, switched off or unreachable, one
+// none of whose stored episodes is watched is surely unwatched, and is
+// answered so, uncounted, as it always was; one with any watched cannot be
+// told, and the lookup fails with 502 rather than guess, or call it missing.
+// A season the metadata does not list is not found, unless the stream has a
+// row stored for it, left before a source renumbered it away, which is
+// answered as stored.
 func (s *Server) writeUserData(w http.ResponseWriter, rq *request, raw string) {
 	id, err := decodeItemID(raw)
 	if err != nil {
 		http.NotFound(w, rq.Request)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.userData(rq, id.playable()))
+	id = id.playable()
+	if !isFolder(id) {
+		writeJSON(w, http.StatusOK, s.userData(rq, id))
+		return
+	}
+	meta, err := s.meta(rq.Context(), rq, id)
+	if err != nil {
+		states, serr := s.episodeStates(rq, id)
+		if serr != nil {
+			writePlayStateError(w)
+			return
+		}
+		prefix := id.episodesPrefix()
+		for key, st := range states {
+			if st.Played && strings.HasPrefix(key, prefix) {
+				http.Error(w, "Watched state unavailable without metadata", http.StatusBadGateway)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, s.userData(rq, id))
+		return
+	}
+	if !folderListed(id, meta) {
+		if s.storedRow(rq, id) {
+			writeJSON(w, http.StatusOK, s.userData(rq, id))
+			return
+		}
+		http.NotFound(w, rq.Request)
+		return
+	}
+	ud, err := s.countedUserData(rq, id, meta, s.userData(rq, id))
+	if err != nil {
+		writePlayStateError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, ud)
 }
 
 // handleUserDataUpdate serves POST /UserItems/{id}/UserData, the newer way
@@ -781,23 +912,8 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	if data, err := io.ReadAll(io.LimitReader(rq.Body, 64<<10)); err == nil {
 		_ = json.Unmarshal(data, &body)
 	}
-	if id.Kind != kindMovie && id.Kind != kindEpisode {
-		// A series or season has no progress of its own: marking one played
-		// (#345) or setting its position stays the 404 it always was, and
-		// nothing in the request is applied. Played false and position 0 are
-		// already its state, so a client sending its whole UserData along
-		// with a favourite still gets the favourite.
-		watched := body.Played != nil && *body.Played
-		positioned := body.PlaybackPositionTicks != nil && *body.PlaybackPositionTicks != 0
-		if body.IsFavorite == nil || watched || positioned {
-			http.NotFound(w, rq.Request)
-			return
-		}
-		if err := s.setFavorite(rq, id, *body.IsFavorite); err != nil {
-			writeFavoriteError(w)
-			return
-		}
-		writeJSON(w, http.StatusOK, s.userData(rq, id))
+	if isFolder(id) {
+		s.updateFolderUserData(w, rq, body.PlaybackPositionTicks, body.IsFavorite, id)
 		return
 	}
 	// Clients post their whole UserData with any one change, so only what
@@ -818,7 +934,10 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 	}
 	marked := body.Played != nil && *body.Played != prev.Played
 	if marked {
-		s.setPlayed(rq, id, *body.Played)
+		if err := s.setPlayed(rq, id, *body.Played); err != nil {
+			writePlayedError(w)
+			return
+		}
 	}
 	// A played item is at the start: a position sent with Played true is the
 	// client's stale one and never written back over the reset. An unplayed
@@ -828,4 +947,21 @@ func (s *Server) handleUserDataUpdate(w http.ResponseWriter, rq *request, raw st
 		s.recordProgress(rq, id, *body.PlaybackPositionTicks, playEventStop)
 	}
 	writeJSON(w, http.StatusOK, s.userData(rq, id))
+}
+
+// updateFolderUserData is handleUserDataUpdate for a season or series, which
+// takes a favourite and nothing else. Its watched state is its episodes',
+// marked through /UserPlayedItems (markFolder); a Played sent here is the
+// client's copy of its whole UserData, which may be stale, and a mark would
+// rewrite every episode, so it is ignored, true or false. (Jellyfin itself
+// never marks episodes from this route either: it writes a folder's own
+// record, which its counts never read.) A body without IsFavorite, or one
+// setting a position, which a folder does not have, is refused, nothing in
+// it applied, as it always was.
+func (s *Server) updateFolderUserData(w http.ResponseWriter, rq *request, position *int64, favorite *bool, id itemID) {
+	if favorite == nil || (position != nil && *position != 0) {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	s.setFolderFavorite(w, rq, id, favorite)
 }

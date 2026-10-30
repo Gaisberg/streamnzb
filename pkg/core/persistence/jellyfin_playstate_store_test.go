@@ -1,6 +1,10 @@
 package persistence
 
 import (
+	"fmt"
+	"os"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -313,4 +317,429 @@ func TestJellyfinPlaystateFavoriteFollowsTheStream(t *testing.T) {
 	if favs := store.ListFavorites("alicia"); len(favs) != 0 {
 		t.Fatalf("favourite survived the delete: %+v", favs)
 	}
+}
+
+func TestJellyfinPlaystateMarkPlayedMany(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	item := func(id string) JellyfinPlaystate {
+		return JellyfinPlaystate{ItemID: id, ContentType: "series", ContentID: "tt1:1:" + id}
+	}
+	long := time.Now().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	// e1 played long ago, e2 part-way and a favourite, e3 never touched.
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "alice", ItemID: "e1", ContentType: "series", ContentID: "tt1:1:e1", Played: true, PlayCount: 3, LastPlayedAt: long}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "alice", ItemID: "e2", ContentType: "series", ContentID: "tt1:1:e2", PositionTicks: 500, RuntimeTicks: 1000, LastPlayedAt: long}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFavorite("alice", "e2", "series", "tt1:1:e2", true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MarkPlayedMany("alice", []JellyfinPlaystate{item("e1"), item("e2"), item("e3")}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	e1, _ := store.Get("alice", "e1")
+	if !e1.Played || e1.PlayCount != 3 || !e1.LastPlayedAt.Equal(long) {
+		t.Fatalf("an episode already played must keep its history: %+v", e1)
+	}
+	e2, _ := store.Get("alice", "e2")
+	e3, ok := store.Get("alice", "e3")
+	if !ok || !e2.Played || e2.PositionTicks != 0 || e2.PlayCount != 1 || !e2.IsFavorite || e2.RuntimeTicks != 1000 {
+		t.Fatalf("part-played favourite: %+v", e2)
+	}
+	if !e3.Played || e3.PlayCount != 1 || e3.ContentID != "tt1:1:e3" || !e3.LastPlayedAt.Equal(e2.LastPlayedAt) {
+		t.Fatalf("new row: %+v (stamped with e2's %v)", e3, e2.LastPlayedAt)
+	}
+	if _, ok := store.Get("bob", "e3"); ok {
+		t.Fatal("marks are per stream")
+	}
+	// Again: nothing changes, the date included.
+	if err := store.MarkPlayedMany("alice", []JellyfinPlaystate{item("e2"), item("e3")}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := store.Get("alice", "e3"); !again.LastPlayedAt.Equal(e3.LastPlayedAt) {
+		t.Fatalf("repeat mark restamped: %v, was %v", again.LastPlayedAt, e3.LastPlayedAt)
+	}
+}
+
+// TestJellyfinPlaystatePrefix covers the reads and clears scoped to an item
+// id prefix: exactly the rows that start with it, in the stream given.
+func TestJellyfinPlaystatePrefix(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	long := time.Now().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	for _, st := range []JellyfinPlaystate{
+		{StreamName: "alice", ItemID: "aa01", Played: true, PlayCount: 3, LastPlayedAt: long},
+		{StreamName: "alice", ItemID: "aa02", PositionTicks: 500, LastPlayedAt: long},
+		{StreamName: "alice", ItemID: "aa03", LastPlayedAt: long},
+		{StreamName: "alice", ItemID: "ab01", Played: true, PlayCount: 1, LastPlayedAt: long},
+		{StreamName: "alice", ItemID: "0aa01", Played: true, PlayCount: 1, LastPlayedAt: long},
+		// No id is stored in capitals, but a collation that sets case aside
+		// would put these under "aa", and SQLite's LIKE would match them.
+		{StreamName: "alice", ItemID: "AA01", Played: true, PlayCount: 1, LastPlayedAt: long},
+		{StreamName: "alice", ItemID: "aA02", Played: true, PlayCount: 1, LastPlayedAt: long},
+		{StreamName: "bob", ItemID: "aa01", Played: true, PlayCount: 1, LastPlayedAt: long},
+	} {
+		st.ContentType, st.ContentID = "series", st.ItemID
+		if err := store.Upsert(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"aa02", "aa03"} {
+		if err := store.SetFavorite("alice", id, "series", id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(rows []JellyfinPlaystate) []string {
+		var out []string
+		for _, st := range rows {
+			out = append(out, st.ItemID)
+		}
+		slices.Sort(out)
+		return out
+	}
+	rows, err := store.ListPrefix("alice", "aa")
+	if err != nil || !slices.Equal(ids(rows), []string{"aa01", "aa02", "aa03"}) {
+		t.Fatalf("ListPrefix: %v, %v", ids(rows), err)
+	}
+
+	for want := range []int64{2, 0} {
+		// Two rows to clear, then none: the count is what changed.
+		cleared, err := store.ClearPlayedPrefix("alice", "aa")
+		if err != nil || cleared != []int64{2, 0}[want] {
+			t.Fatalf("cleared %d, %v; want %d", cleared, err, []int64{2, 0}[want])
+		}
+		a1, _ := store.Get("alice", "aa01")
+		a2, _ := store.Get("alice", "aa02")
+		a3, _ := store.Get("alice", "aa03")
+		if a1.Played || a1.PlayCount != 3 || a1.LastPlayedAt.Equal(long) {
+			t.Fatalf("aa01: %+v", a1)
+		}
+		if a2.Played || a2.PositionTicks != 0 || !a2.IsFavorite {
+			t.Fatalf("aa02: %+v", a2)
+		}
+		// Nothing to clear: left as it was, its date included.
+		if a3.Played || !a3.IsFavorite || !a3.LastPlayedAt.Equal(long) {
+			t.Fatalf("aa03: %+v", a3)
+		}
+	}
+	for _, key := range [][2]string{{"alice", "ab01"}, {"alice", "0aa01"}, {"alice", "AA01"}, {"alice", "aA02"}, {"bob", "aa01"}} {
+		if st, _ := store.Get(key[0], key[1]); !st.Played {
+			t.Fatalf("%s %s cleared out of the prefix: %+v", key[0], key[1], st)
+		}
+	}
+	if n := len(store.ListForStream("alice")); n != 7 {
+		t.Fatalf("%d rows: clearing created some", n)
+	}
+
+	// Only lowercase hex is a prefix, so nothing reads as a wildcard.
+	for _, prefix := range []string{"", "%", "a_", "a%", "AA", "0g", "a'"} {
+		if _, err := store.ListPrefix("alice", prefix); err == nil {
+			t.Errorf("ListPrefix %q: no error", prefix)
+		}
+		if _, err := store.ClearPlayedPrefix("alice", prefix); err == nil {
+			t.Errorf("ClearPlayedPrefix %q: no error", prefix)
+		}
+	}
+	if st, _ := store.Get("alice", "ab01"); !st.Played {
+		t.Fatal("a refused prefix cleared a row")
+	}
+}
+
+// TestJellyfinPlaystatePrefixFailedReads closes the database under the
+// store: the scoped read and the writes report it, rather than read as no
+// rows or as done.
+func TestJellyfinPlaystatePrefixFailedReads(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	if err := store.MarkPlayedMany("alice", []JellyfinPlaystate{{ItemID: "aa01"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := store.ListPrefix("alice", "aa"); err == nil {
+		t.Fatalf("read of a closed database: %v, no error", rows)
+	}
+	if _, err := store.ClearPlayedPrefix("alice", "aa"); err == nil {
+		t.Fatal("clear on a closed database: no error")
+	}
+	if err := store.MarkPlayedMany("alice", []JellyfinPlaystate{{ItemID: "aa02"}}); err == nil {
+		t.Fatal("mark on a closed database: no error")
+	}
+}
+
+// TestJellyfinPlaystateMarkPlayedManyRollsBack fails a batch in its second
+// statement, after the first has written its rows, and expects none of it
+// kept.
+func TestJellyfinPlaystateMarkPlayedManyRollsBack(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "alice", ItemID: "e000", ContentType: "series", ContentID: "a", PositionTicks: 100}); err != nil {
+		t.Fatal(err)
+	}
+	var batch []JellyfinPlaystate
+	for i := range 600 {
+		batch = append(batch, JellyfinPlaystate{ItemID: fmt.Sprintf("e%03d", i), ContentType: "series", ContentID: "a"})
+	}
+	broken := append(slices.Clone(batch), JellyfinPlaystate{ItemID: " "})
+	if err := store.MarkPlayedMany("alice", broken); err == nil {
+		t.Fatal("a batch with an empty id must fail")
+	}
+	if rows := store.ListForStream("alice"); len(rows) != 1 || rows[0].Played || rows[0].PositionTicks != 100 {
+		t.Fatalf("rolled-back mark kept %d rows: %+v", len(rows), rows[0])
+	}
+	// The store is usable afterwards: the transaction did not leak.
+	if err := store.MarkPlayedMany("alice", batch); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(store.ListForStream("alice")); n != 600 {
+		t.Fatalf("%d rows after the retry", n)
+	}
+}
+
+// TestJellyfinPlaystateMarkPlayedManyDuplicates gives a batch the same id
+// twice, as duplicate metadata listings would, which one Postgres upsert
+// statement cannot take.
+func TestJellyfinPlaystateMarkPlayedManyDuplicates(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	batch := []JellyfinPlaystate{{ItemID: "c1"}, {ItemID: "c2"}, {ItemID: "c1"}, {ItemID: " c2 "}}
+	if err := store.MarkPlayedMany("alice", batch); err != nil {
+		t.Fatal(err)
+	}
+	if rows := store.ListForStream("alice"); len(rows) != 2 || !rows[0].Played || !rows[1].Played {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// TestJellyfinPlaystateLargeBatch marks, clears and marks again a
+// long-running series while another stream keeps reading and writing its
+// own rows, and logs how long each took and how long those operations
+// waited on it. It asserts correctness only; the timings are for the record.
+func TestJellyfinPlaystateLargeBatch(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	const n = 2000
+	items := make([]JellyfinPlaystate, n)
+	for i := range items {
+		items[i] = JellyfinPlaystate{ItemID: fmt.Sprintf("ee%04x", i), ContentType: "series", ContentID: fmt.Sprintf("tt1:1:%d", i)}
+	}
+	if err := store.Upsert(JellyfinPlaystate{StreamName: "bob", ItemID: "bob-ep", ContentType: "series", ContentID: "tt2:1:1", PositionTicks: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var ops int
+	var slowest time.Duration
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for pos := int64(2); ; pos++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			start := time.Now()
+			_, _ = store.Get("bob", "bob-ep")
+			if err := store.Upsert(JellyfinPlaystate{StreamName: "bob", ItemID: "bob-ep", ContentType: "series", ContentID: "tt2:1:1", PositionTicks: pos}); err != nil {
+				t.Errorf("concurrent upsert: %v", err)
+				return
+			}
+			slowest = max(slowest, time.Since(start))
+			ops++
+		}
+	}()
+
+	for _, step := range []string{"mark", "clear", "mark"} {
+		start := time.Now()
+		var err error
+		if step == "mark" {
+			err = store.MarkPlayedMany("alice", items)
+		} else {
+			_, err = store.ClearPlayedPrefix("alice", "ee")
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		t.Logf("%s: %s %d rows in %v", testBackend(), step, n, time.Since(start))
+	}
+	close(stop)
+	wg.Wait()
+	t.Logf("%s: %d concurrent Get+Upsert pairs on another stream, slowest %v", testBackend(), ops, slowest)
+
+	rows := store.ListForStream("alice")
+	if len(rows) != n {
+		t.Fatalf("%d rows, want %d", len(rows), n)
+	}
+	for _, st := range rows {
+		if !st.Played || st.PlayCount != 1 || st.PositionTicks != 0 {
+			t.Fatalf("row %+v", st)
+		}
+	}
+	if bob, _ := store.Get("bob", "bob-ep"); bob.Played || bob.PositionTicks < 2 {
+		t.Fatalf("other stream: %+v", bob)
+	}
+}
+
+// TestJellyfinPlaystateListPrefixScale reads one series out of a stream
+// holding many, and logs it against a read of the whole stream.
+func TestJellyfinPlaystateListPrefixScale(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	const series, episodes = 200, 50
+	for s := range series {
+		items := make([]JellyfinPlaystate, episodes)
+		for e := range items {
+			items[e] = JellyfinPlaystate{ItemID: fmt.Sprintf("05%04x%04x", s, e), ContentType: "series", ContentID: "tt"}
+		}
+		if err := store.MarkPlayedMany("alice", items); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	rows, err := store.ListPrefix("alice", fmt.Sprintf("05%04x", 123))
+	scoped := time.Since(start)
+	if err != nil || len(rows) != episodes {
+		t.Fatalf("%d rows, %v", len(rows), err)
+	}
+	start = time.Now()
+	all := store.ListForStream("alice")
+	full := time.Since(start)
+	if len(all) != series*episodes {
+		t.Fatalf("%d rows in the stream", len(all))
+	}
+	t.Logf("%s: one series of %d rows in %v; the whole stream of %d in %v", testBackend(), episodes, scoped, len(all), full)
+}
+
+// TestJellyfinPlaystateMarkAndClearRace starts a mark and a clear of the
+// same rows together, many times over. Each is atomic and they run one
+// after the other, in whichever order, so the rows end all marked or all
+// cleared, never some of each.
+func TestJellyfinPlaystateMarkAndClearRace(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	items := make([]JellyfinPlaystate, 600)
+	for i := range items {
+		items[i] = JellyfinPlaystate{ItemID: fmt.Sprintf("f%03x", i), ContentType: "series", ContentID: "tt"}
+	}
+	outcomes := map[bool]int{}
+	for range 20 {
+		if err := store.MarkPlayedMany("alice", items[:300]); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := store.MarkPlayedMany("alice", items); err != nil {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := store.ClearPlayedPrefix("alice", "f"); err != nil {
+				t.Error(err)
+			}
+		}()
+		close(start)
+		wg.Wait()
+		rows := store.ListForStream("alice")
+		played := 0
+		for _, st := range rows {
+			if st.Played {
+				played++
+			}
+		}
+		if len(rows) != 600 || (played != 0 && played != 600) {
+			t.Fatalf("%d rows, %d played: a mark and a clear interleaved", len(rows), played)
+		}
+		outcomes[played == 600]++
+		if _, err := store.ClearPlayedPrefix("alice", "f"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Logf("%s: mark last %d times, clear last %d times", testBackend(), outcomes[true], outcomes[false])
+}
+
+// TestJellyfinPlaystateMarkPlayedManyConcurrent runs overlapping batches on
+// two streams at once, against per-item marks on the same rows, and expects
+// every batch whole and the streams apart.
+func TestJellyfinPlaystateMarkPlayedManyConcurrent(t *testing.T) {
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	batch := func(from, to int) []JellyfinPlaystate {
+		var out []JellyfinPlaystate
+		for i := from; i < to; i++ {
+			out = append(out, JellyfinPlaystate{ItemID: fmt.Sprintf("e%03d", i), ContentType: "series", ContentID: "tt1"})
+		}
+		return out
+	}
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream := []string{"alice", "bob"}[g%2]
+			// Seasons overlapping by half, each stream marking all of them.
+			if err := store.MarkPlayedMany(stream, batch(g/2*50, g/2*50+100)); err != nil {
+				t.Errorf("batch %d: %v", g, err)
+			}
+			if err := store.SetPlayed(stream, fmt.Sprintf("e%03d", g), "series", "tt1", true); err != nil {
+				t.Errorf("single %d: %v", g, err)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, stream := range []string{"alice", "bob"} {
+		rows := store.ListForStream(stream)
+		if len(rows) != 250 {
+			t.Fatalf("%s: %d rows, want 250", stream, len(rows))
+		}
+		for _, st := range rows {
+			if !st.Played || st.PlayCount != 1 || st.StreamName != stream {
+				t.Fatalf("%s: %+v", stream, st)
+			}
+		}
+	}
+}
+
+// TestJellyfinPlaystateListPrefixMalformedRow stores a row whose
+// last_played_at is not a number, as an import from a damaged database
+// could: the scoped read fails on it rather than read the season without
+// that episode, while the listings still skip it as they always have.
+// Postgres types its columns and will not hold such a row, so only SQLite
+// can be given one.
+func TestJellyfinPlaystateListPrefixMalformedRow(t *testing.T) {
+	if testBackend() == "postgres" {
+		t.Skip("Postgres will not store a non-integer in an integer column")
+	}
+	m := openTestManager(t)
+	store := m.JellyfinPlaystateStore()
+	if err := store.MarkPlayedMany("alice", []JellyfinPlaystate{{ItemID: "aa01"}, {ItemID: "aa02"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.wdb.Exec(`UPDATE jellyfin_playstate SET last_played_at = 'yesterday' WHERE item_id = 'aa02'`); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := store.ListPrefix("alice", "aa"); err == nil {
+		t.Fatalf("read a malformed row as %v, no error", rows)
+	}
+	if rows := store.ListForStream("alice"); len(rows) != 1 || rows[0].ItemID != "aa01" {
+		t.Fatalf("listing: %+v", rows)
+	}
+}
+
+func testBackend() string {
+	if os.Getenv(testPostgresDSNEnv) != "" {
+		return "postgres"
+	}
+	return "sqlite"
 }

@@ -84,6 +84,9 @@ type fakeCatalog struct {
 	metaDelay time.Duration
 	inflight  int
 	peakMeta  int
+	// onMeta, when set, runs at the start of every Meta call, outside the
+	// lock, with the call's context.
+	onMeta func(context.Context)
 	// genreLists replaces Genres' English lists, keyed by content type, as
 	// a stream with another metadata language sees TMDB's.
 	genreLists map[string][]stremio.Genre
@@ -161,7 +164,10 @@ func (f *fakeCatalog) Catalog(_ context.Context, _ *auth.Stream, catalogID, _, s
 	return rows, nil
 }
 
-func (f *fakeCatalog) Meta(_ context.Context, _ *auth.Stream, contentType, id string) (*stremio.MetaObject, error) {
+func (f *fakeCatalog) Meta(ctx context.Context, _ *auth.Stream, contentType, id string) (*stremio.MetaObject, error) {
+	if f.onMeta != nil {
+		f.onMeta(ctx)
+	}
 	f.mu.Lock()
 	f.metaCalls++
 	f.inflight++
@@ -216,6 +222,16 @@ type fakePlaystate struct {
 	// counting it in favWrites.
 	favErr    error
 	favWrites int
+	// playedErr fails every SetPlayed and SetPlayedMany, writing nothing, as
+	// a rolled-back transaction would.
+	playedErr error
+	// lists counts ListForStream calls, each a read of the whole stream,
+	// and prefixReads ListPrefix calls, each a read of one series.
+	lists, prefixReads int
+	// readErr fails every ListPrefix, as a failed query would; onRead runs
+	// before each one, outside the lock.
+	readErr error
+	onRead  func()
 }
 
 func newFakePlaystate() *fakePlaystate {
@@ -256,6 +272,7 @@ func (p *fakePlaystate) ListResume(streamName string, limit int) []persistence.J
 func (p *fakePlaystate) ListForStream(streamName string) []persistence.JellyfinPlaystate {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.lists++
 	var out []persistence.JellyfinPlaystate
 	for _, st := range p.rows {
 		if st.StreamName == streamName {
@@ -265,13 +282,98 @@ func (p *fakePlaystate) ListForStream(streamName string) []persistence.JellyfinP
 	return out
 }
 
+// MarkPlayedMany follows the store: a played row is left as it was, the
+// missing ones are created, and every row changed carries one timestamp.
+func (p *fakePlaystate) MarkPlayedMany(streamName string, items []persistence.JellyfinPlaystate) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.playedErr != nil {
+		return p.playedErr
+	}
+	now := time.Now()
+	for _, item := range items {
+		key := streamName + "|" + item.ItemID
+		st, ok := p.rows[key]
+		if st.Played {
+			continue
+		}
+		if !ok {
+			st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: item.ItemID, ContentType: item.ContentType, ContentID: item.ContentID}
+		}
+		st.Played, st.PositionTicks, st.LastPlayedAt = true, 0, now
+		if st.PlayCount == 0 {
+			st.PlayCount = 1
+		}
+		p.saves++
+		p.rows[key] = st
+	}
+	return nil
+}
+
+// ListPrefix follows the store, failing with readErr as a failed query
+// would, after running onRead.
+func (p *fakePlaystate) ListPrefix(streamName, prefix string) ([]persistence.JellyfinPlaystate, error) {
+	p.mu.Lock()
+	onRead := p.onRead
+	p.mu.Unlock()
+	if onRead != nil {
+		onRead()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.prefixReads++
+	if p.readErr != nil {
+		return nil, p.readErr
+	}
+	var out []persistence.JellyfinPlaystate
+	for _, st := range p.rows {
+		if st.StreamName == streamName && strings.HasPrefix(st.ItemID, prefix) {
+			out = append(out, st)
+		}
+	}
+	return out, nil
+}
+
+// ClearPlayedPrefix follows the store: rows with progress or a played mark
+// are cleared in place, nothing is created.
+func (p *fakePlaystate) ClearPlayedPrefix(streamName, prefix string) (int64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.playedErr != nil {
+		return 0, p.playedErr
+	}
+	now := time.Now()
+	var cleared int64
+	for key, st := range p.rows {
+		if st.StreamName == streamName && strings.HasPrefix(st.ItemID, prefix) && (st.Played || st.PositionTicks > 0) {
+			st.Played, st.PositionTicks, st.LastPlayedAt = false, 0, now
+			p.saves++
+			cleared++
+			p.rows[key] = st
+		}
+	}
+	return cleared, nil
+}
+
+// SetPlayed follows the store: the position reset, a first play counted
+// when marking, and the row dated now.
 func (p *fakePlaystate) SetPlayed(streamName, itemID, contentType, contentID string, played bool) error {
+	p.mu.Lock()
+	err := p.playedErr
+	p.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	st, ok := p.Get(streamName, itemID)
 	if !ok {
 		st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: itemID, ContentType: contentType, ContentID: contentID}
 	}
 	st.Played = played
 	st.PositionTicks = 0
+	if played && st.PlayCount == 0 {
+		st.PlayCount = 1
+	}
+	st.LastPlayedAt = time.Now()
 	return p.Upsert(st)
 }
 
@@ -1832,13 +1934,12 @@ func TestFavorites(t *testing.T) {
 		t.Fatalf("clearing the favourite dropped the progress: %+v (ok=%v)", st, ok)
 	}
 
-	// A library is not a favourite, and a series still has no played state
-	// of its own to set.
+	// A library is not a favourite, and a series has no position to set.
 	if rec := f.do(http.MethodPost, "/jellyfin/UserFavoriteItems/"+viewID("tmdb.trending.movie"), ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("favouriting a library: status %d", rec.Code)
 	}
-	if rec := f.do(http.MethodPost, "/jellyfin/UserItems/"+series.encode()+"/UserData", `{"Played":true}`); rec.Code != http.StatusNotFound {
-		t.Fatalf("marking a series played: status %d", rec.Code)
+	if rec := f.do(http.MethodPost, "/jellyfin/UserItems/"+series.encode()+"/UserData", `{"PlaybackPositionTicks":600000000}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("positioning a series: status %d", rec.Code)
 	}
 }
 
@@ -1913,10 +2014,10 @@ func TestFavoritesPagingSkipsUnresolvable(t *testing.T) {
 
 // TestUserDataUpdateMixesFavoriteWithWatchedState covers a UserData body
 // carrying a favourite and watched state together. A movie or episode takes
-// both. A series or season has no watched state of its own (#345), so a body
-// that marks one played or sets its position is refused whole, as it was
-// before favourites — rather than keeping the favourite and dropping the
-// rest behind a 200.
+// both. A series or season takes the favourite alone: its watched state is
+// marked through /UserPlayedItems, and a Played sent here, its client's echo
+// of its whole UserData, is ignored, true or false. It has no position, so a
+// body setting one is refused whole, as is one without IsFavorite.
 func TestUserDataUpdateMixesFavoriteWithWatchedState(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")
@@ -1941,12 +2042,10 @@ func TestUserDataUpdateMixesFavoriteWithWatchedState(t *testing.T) {
 	}
 
 	for _, body := range []string{
-		`{"Played":true}`,
-		`{"IsFavorite":true,"Played":true}`,
 		`{"IsFavorite":true,"PlaybackPositionTicks":600000000}`,
-		`{}`,
+		`{"Played":true,"PlaybackPositionTicks":600000000}`,
 	} {
-		for _, id := range []itemID{series, series.season(1)} {
+		for _, id := range []itemID{series, series.season(2)} {
 			if rec := post(id, body); rec.Code != http.StatusNotFound {
 				t.Fatalf("%v %s: status %d, want 404", id.Kind, body, rec.Code)
 			}
@@ -1955,12 +2054,75 @@ func TestUserDataUpdateMixesFavoriteWithWatchedState(t *testing.T) {
 			}
 		}
 	}
+	if st, ok := f.play.Get("living-room", series.episode(2, 1).encode()); ok {
+		t.Fatalf("refused request marked an episode: %+v", st)
+	}
 	// What a client sends when it posts the whole UserData back: unplayed,
-	// at the start, now a favourite.
+	// at the start, now a favourite. The series is part-watched, so its
+	// Played false is no change, and nothing is unmarked.
 	decodeInto(t, post(series, `{"IsFavorite":true,"Played":false,"PlaybackPositionTicks":0}`), &ud)
 	if !ud.IsFavorite || ud.Played {
 		t.Fatalf("series favourite with its unchanged state: %+v", ud)
 	}
+	if st, _ := f.play.Get("living-room", episode.encode()); !st.Played {
+		t.Fatalf("a favourite unmarked the series: %+v", st)
+	}
+	// Season 1 is part-watched. Played sent with IsFavorite, whatever it
+	// says, leaves it so, and the favourite is applied; a body without
+	// IsFavorite, or with nothing a season takes, is refused as it always was.
+	season := series.season(1)
+	for _, c := range []struct {
+		body     string
+		favorite bool
+	}{
+		{`{"IsFavorite":true,"Played":true}`, true},
+		{`{"IsFavorite":true,"Played":false}`, true},
+		{`{"IsFavorite":false,"Played":true,"PlaybackPositionTicks":0}`, false},
+		{`{"IsFavorite":false,"Played":false}`, false},
+	} {
+		before := f.play.ListForStream("living-room")
+		decodeInto(t, post(season, c.body), &ud)
+		if ud.IsFavorite != c.favorite || ud.Played || ud.UnplayedItemCount == nil || *ud.UnplayedItemCount != 1 {
+			t.Fatalf("%s: %+v", c.body, ud)
+		}
+		var episodes []persistence.JellyfinPlaystate
+		for _, st := range f.play.ListForStream("living-room") {
+			if id, _ := decodeItemID(st.ItemID); id.Kind == kindEpisode {
+				episodes = append(episodes, st)
+			}
+		}
+		var beforeEpisodes []persistence.JellyfinPlaystate
+		for _, st := range before {
+			if id, _ := decodeItemID(st.ItemID); id.Kind == kindEpisode {
+				beforeEpisodes = append(beforeEpisodes, st)
+			}
+		}
+		if !sameRows(beforeEpisodes, episodes) {
+			t.Fatalf("%s changed episodes", c.body)
+		}
+	}
+	for _, body := range []string{`{"Played":true}`, `{"Played":false}`, `{}`, `{"PlaybackPositionTicks":0}`, `{"Likes":true,"Rating":5}`} {
+		before := f.play.ListForStream("living-room")
+		metas := f.catalog.metaCalls
+		if rec := post(season, body); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: %d, want 404", body, rec.Code)
+		}
+		if f.catalog.metaCalls != metas || !sameRows(before, f.play.ListForStream("living-room")) {
+			t.Fatalf("%s looked up metadata or wrote", body)
+		}
+	}
+}
+
+// sameRows reports whether two listings of a stream hold the same rows.
+func sameRows(a, b []persistence.JellyfinPlaystate) bool {
+	keyed := func(rows []persistence.JellyfinPlaystate) map[string]persistence.JellyfinPlaystate {
+		out := map[string]persistence.JellyfinPlaystate{}
+		for _, st := range rows {
+			out[st.ItemID] = st
+		}
+		return out
+	}
+	return maps.Equal(keyed(a), keyed(b))
 }
 
 func TestPlayedThresholdUsesProbedDuration(t *testing.T) {
