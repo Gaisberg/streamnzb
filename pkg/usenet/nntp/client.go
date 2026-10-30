@@ -36,6 +36,9 @@ type Client struct {
 	// group is the newsgroup currently selected on this connection, so a
 	// repeat GROUP for the same group can be skipped.
 	group string
+	// groupRefused is the newsgroup this server last refused to select with a
+	// status reply, so SelectGroupForArticle does not ask again per segment.
+	groupRefused string
 
 	LastUsed time.Time
 	pool     *ClientPool
@@ -184,6 +187,9 @@ func (c *Client) Group(group string) error {
 
 		if err == nil {
 			c.group = group
+			if c.groupRefused == group {
+				c.groupRefused = ""
+			}
 			return nil
 		}
 
@@ -197,6 +203,30 @@ func (c *Client) Group(group string) error {
 	}
 
 	return errors.New("group command failed after retries")
+}
+
+// SelectGroupForArticle selects group ahead of a command that names its article
+// by message-id (BODY, STAT), and treats the server refusing it as harmless.
+//
+// RFC 3977 does not require a selected group for a message-id command, so a
+// server that refuses the GROUP — 411 for a group it does not carry, 501 for a
+// name it will not parse — can still serve the article. Failing the fetch on
+// that refusal instead made the provider's answer look transient: mixed with
+// 430s from every other provider, the segment was neither served nor proven
+// missing, so it was never zero-filled and playback ended at it. The refusal is
+// remembered on this connection so the server is not asked again for every
+// segment. Only an error that leaves the connection unusable is returned.
+func (c *Client) SelectGroupForArticle(group string) error {
+	if group == "" || c.group == group || c.groupRefused == group {
+		return nil
+	}
+	err := c.Group(group)
+	if err == nil || !LeavesConnectionInSync(err) {
+		return err
+	}
+	c.groupRefused = group
+	logger.Debug("nntp GROUP refused, addressing articles by message-id", "host", c.host, "group", group, "err", err)
+	return nil
 }
 
 type bodyReader struct {
@@ -328,8 +358,9 @@ func (c *Client) Reconnect() error {
 	if old != nil {
 		old.Close()
 	}
-	// A fresh connection has no group selected.
+	// A fresh connection has no group selected, and nothing refused yet.
 	c.group = ""
+	c.groupRefused = ""
 
 	conn, tp, err := dialNNTP(c.host, c.port, c.ssl)
 	if err != nil {

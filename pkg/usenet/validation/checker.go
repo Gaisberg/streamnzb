@@ -303,7 +303,7 @@ func (c *Checker) validateProviderExtendedWithClient(ctx context.Context, nzbDat
 	probeIndices := probeSegmentIndices(len(segments))
 
 	if len(info.File.Groups) > 0 {
-		_ = client.Group(info.File.Groups[0])
+		_ = client.SelectGroupForArticle(info.File.Groups[0])
 	}
 
 	ct := compressionTypeForValidation(nzbData, season, episode)

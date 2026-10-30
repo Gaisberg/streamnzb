@@ -1171,7 +1171,7 @@ func (p *Pool) fetchArticleBody(ctx context.Context, conn *nntp.Client, discard 
 	defer p.activeFetches.Add(-1)
 
 	if len(groups) > 0 {
-		if err := conn.Group(groups[0]); err != nil {
+		if err := conn.SelectGroupForArticle(groups[0]); err != nil {
 			if nntp.IsBenignDisconnect(err) || ctx.Err() != nil {
 				logger.Trace("fetch segment group cancelled", "provider", providerID, "err", err)
 			} else {
@@ -1537,7 +1537,7 @@ func (p *Pool) StatSegment(ctx context.Context, messageID string, groups []strin
 			}()
 
 			if len(groups) > 0 {
-				if groupErr := conn.Group(groups[0]); groupErr != nil {
+				if groupErr := conn.SelectGroupForArticle(groups[0]); groupErr != nil {
 					// A sibling STAT winning the race cancels statCtx and discards this
 					// connection mid-command; the resulting error is expected noise.
 					if nntp.IsBenignDisconnect(groupErr) || statCtx.Err() != nil {

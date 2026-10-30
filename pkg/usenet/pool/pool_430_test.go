@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"streamnzb/pkg/media/nzb"
@@ -75,6 +76,14 @@ func startMockNNTPServer(t *testing.T) (string, int, func()) {
 // startScriptedNNTPServer answers every BODY with the given response line, so a
 // test can stand up providers with distinct failure modes.
 func startScriptedNNTPServer(t *testing.T, bodyResponse string) (string, int, func()) {
+	host, port, _, cleanup := startGroupScriptedNNTPServer(t, "211 group selected\r\n", bodyResponse)
+	return host, port, cleanup
+}
+
+// startGroupScriptedNNTPServer is startScriptedNNTPServer with a scripted GROUP
+// response as well. It counts the GROUP commands it receives.
+func startGroupScriptedNNTPServer(t *testing.T, groupResponse, bodyResponse string) (string, int, *atomic.Int32, func()) {
+	groups := &atomic.Int32{}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +111,8 @@ func startScriptedNNTPServer(t *testing.T, bodyResponse string) (string, int, fu
 					case strings.HasPrefix(cmd, "AUTHINFO PASS"):
 						_, _ = c.Write([]byte("281 Authentication accepted\r\n"))
 					case strings.HasPrefix(cmd, "GROUP"):
-						_, _ = c.Write([]byte("211 group selected\r\n"))
+						groups.Add(1)
+						_, _ = c.Write([]byte(groupResponse))
 					case strings.HasPrefix(cmd, "BODY"):
 						_, _ = c.Write([]byte(bodyResponse))
 					case strings.HasPrefix(cmd, "QUIT"):
@@ -115,7 +125,68 @@ func startScriptedNNTPServer(t *testing.T, bodyResponse string) (string, int, fu
 			}(conn)
 		}
 	}()
-	return addr.IP.String(), addr.Port, func() { _ = ln.Close() }
+	return addr.IP.String(), addr.Port, groups, func() { _ = ln.Close() }
+}
+
+// A provider that refuses GROUP can still serve the article: BODY names it by
+// message-id, which needs no selected group. The refusal is remembered, so the
+// connection does not repeat the GROUP for every segment.
+func TestGroupRefusalStillFetchesBody(t *testing.T) {
+	host, port, groups, cleanup := startGroupScriptedNNTPServer(t,
+		"501 GROUP command error\r\n",
+		"222 Body follows\r\n=ybegin size=4 line=128 name=test\r\ndata\r\n=yend size=4\r\n.\r\n")
+	defer cleanup()
+
+	clientPool := nntp.NewClientPool(host, port, false, "user", "pass", 1)
+	defer clientPool.Shutdown()
+
+	p, err := NewPool(&Config{Providers: []ProviderConfig{
+		{ID: "provider-no-group", Priority: 0, ClientPool: clientPool},
+	}})
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+
+	for _, id := range []string{"seg-1", "seg-2"} {
+		data, err := p.fetchSegmentOnce(context.Background(), id, &nzb.Segment{ID: id}, []string{"alt.binaries.test"})
+		if err != nil {
+			t.Fatalf("fetch %s: a refused GROUP must not fail the fetch: %v", id, err)
+		}
+		if data.Size == 0 {
+			t.Fatalf("fetch %s: no body returned", id)
+		}
+	}
+	if got := groups.Load(); got != 1 {
+		t.Fatalf("GROUP sent %d times on one connection, want 1", got)
+	}
+}
+
+// Issue #389: one provider refusing GROUP while every other provider answers
+// 430 is a segment missing everywhere, not a transient failure. Reported as
+// transient, it was never zero-filled and the stream ended at it.
+func TestGroupRefusalWithMissingArticleIsReportedAsMissing(t *testing.T) {
+	hostA, portA, cleanupA := startScriptedNNTPServer(t, "430 No Such Article\r\n")
+	defer cleanupA()
+	hostB, portB, _, cleanupB := startGroupScriptedNNTPServer(t, "501 GROUP command error\r\n", "430 No Such Article\r\n")
+	defer cleanupB()
+
+	poolA := nntp.NewClientPool(hostA, portA, false, "user", "pass", 2)
+	poolB := nntp.NewClientPool(hostB, portB, false, "user", "pass", 2)
+	defer poolA.Shutdown()
+	defer poolB.Shutdown()
+
+	p, err := NewPool(&Config{Providers: []ProviderConfig{
+		{ID: "provider-430", Priority: 0, ClientPool: poolA},
+		{ID: "provider-no-group", Priority: 1, ClientPool: poolB},
+	}})
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+
+	_, err = p.fetchSegmentOnce(context.Background(), "hole-1", &nzb.Segment{ID: "hole-1"}, []string{"alt.binaries.test"})
+	if !nntp.IsArticleNotFound(err) {
+		t.Fatalf("430 everywhere behind a refused GROUP must read as missing, got %v", err)
+	}
 }
 
 // A mixed outcome — one provider says 430, another fails for a weaker reason —

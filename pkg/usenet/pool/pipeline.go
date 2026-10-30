@@ -168,7 +168,7 @@ func (p *Pool) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segme
 	}
 
 	if len(groups) > 0 {
-		if err := conn.Group(groups[0]); err != nil {
+		if err := conn.SelectGroupForArticle(groups[0]); err != nil {
 			if nntp.IsBenignDisconnect(err) || fetchCtx.Err() != nil {
 				logger.Trace("pipelined fetch group cancelled", "provider", providerID, "err", err)
 			} else {
