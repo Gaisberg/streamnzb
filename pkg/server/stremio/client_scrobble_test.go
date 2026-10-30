@@ -858,3 +858,22 @@ func TestStaleIdleTimerDoesNotEndALivePlayback(t *testing.T) {
 	h.report("dev|ps", ClientPlaybackStop, 1368)
 	wantScrobble(t, h.settle(t, 2)[1], "stop", 95)
 }
+
+// A resume reported without a play session is not a switch of play session:
+// the resumed playback's later reports, which name the session again, still
+// count.
+func TestResumeWithoutAPlaySessionKeepsItsReports(t *testing.T) {
+	settle := clientStopSettle
+	clientStopSettle = 100 * time.Millisecond
+	t.Cleanup(func() { clientStopSettle = settle })
+
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.report("dev|ps", ClientPlaybackStart, 0)
+	h.report("dev|ps", ClientPlaybackStop, 432)
+	h.settle(t, 2)
+	time.Sleep(2 * clientStopSettle)
+	h.report("dev|", ClientPlaybackProgress, 440)
+	wantScrobble(t, h.settle(t, 3)[2], "start", 30.56)
+	h.report("dev|ps", ClientPlaybackStop, 1368)
+	wantScrobble(t, h.settle(t, 4)[3], "stop", 95)
+}

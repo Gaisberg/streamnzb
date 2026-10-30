@@ -303,7 +303,9 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *cli
 				out = append(out, clientScrobble{verb: scrobble.VerbStop, item: title.item, pct: a.lastPct})
 			}
 			replaced = a.replaced
-			if a.playSession != p.PlaySession {
+			// Only a named play session switching to another named one is
+			// replaced; a report naming none is still in the one it had.
+			if p.PlaySession != "" && a.playSession != "" && a.playSession != p.PlaySession {
 				replaced = a.playSession
 			}
 		}
