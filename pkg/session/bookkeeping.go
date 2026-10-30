@@ -57,6 +57,22 @@ func (s *Session) ResetOnce(key OnceKey) {
 	delete(s.once, key)
 }
 
+// TakeOnce releases key if it was claimed and reports whether it was: the one
+// atomic check-and-release for a key that marks something owed, so of
+// concurrent callers exactly one is handed it.
+func (s *Session) TakeOnce(key OnceKey) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, claimed := s.once[key]; !claimed {
+		return false
+	}
+	delete(s.once, key)
+	return true
+}
+
 // CountEvent increments the per-session tally named by key and returns the new
 // count. Counters follow the same lifecycle argument as the once-flags above:
 // held on the session, they end when it does, so a reused slot path starts

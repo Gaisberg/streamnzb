@@ -74,6 +74,7 @@ type fakeCatalog struct {
 	metaCalls     int
 	playlistCalls int
 	served        []servedPlay
+	reports       []stremio.ClientPlayback
 	disabled      bool
 	// drop thins a bucket the way the addon does when a provider row has
 	// no id it can use: skip → rows removed from the end of that bucket.
@@ -203,6 +204,12 @@ func (f *fakeCatalog) Playlist(context.Context, *auth.Stream, string, string) (*
 
 func (f *fakeCatalog) PlaylistCached(*auth.Stream, string, string) (*stremio.PlaylistView, bool) {
 	return f.cached, f.cached != nil
+}
+
+func (f *fakeCatalog) ReportClientPlayback(_ *auth.Stream, report stremio.ClientPlayback) {
+	f.mu.Lock()
+	f.reports = append(f.reports, report)
+	f.mu.Unlock()
 }
 
 func (f *fakeCatalog) ServePlay(w http.ResponseWriter, _ *http.Request, _ *auth.Stream, slotPath string, opts stremio.PlayServeOptions) {
@@ -1413,7 +1420,7 @@ func TestPlaybackInfo(t *testing.T) {
 	if best.ETag != testToken || !best.IsRemote {
 		t.Fatalf("token carriers: %+v", best)
 	}
-	if best.Path != "https://nzb.example/jellyfin/videos/"+movie.encode()+"/stream?api_key="+testToken+"&mediaSourceId="+movie.source(0).encode()+"&static=true" {
+	if best.Path != "https://nzb.example/jellyfin/videos/"+movie.encode()+"/stream?DeviceId=dev-1&api_key="+testToken+"&mediaSourceId="+movie.source(0).encode()+"&static=true" {
 		t.Fatalf("stream URL: %q", best.Path)
 	}
 	if best.RunTimeTicks == nil || *best.RunTimeTicks != 142*60*ticksPerSecond || best.Size == nil || best.Bitrate == nil {
@@ -2340,7 +2347,7 @@ func TestListRowsCarryVersionSignal(t *testing.T) {
 			t.Fatalf("%s: row id: %v", at, err)
 		}
 		for i, src := range row.MediaSources {
-			if src.ID != mediaSourceIDFor(id, i) || src.Path != f.server.streamURLFor(id, i, stream) || !src.SupportsDirectPlay {
+			if src.ID != mediaSourceIDFor(id, i) || src.Path != f.server.streamURLFor(id, i, stream, "dev-1") || !src.SupportsDirectPlay {
 				t.Fatalf("%s: slot %d is not a playable stand-in: %+v", at, i, src)
 			}
 		}

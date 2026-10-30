@@ -67,11 +67,16 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}(resolved.ctx.Done())
 
 	clientIP := httpx.ClientIP(r)
+	// A client that reports its own playback is scrobbled from those reports.
+	var rs *reportingServe
+	if opts := playServeOptionsFromContext(r.Context()); opts.ClientReportsPlayback {
+		rs = &reportingServe{device: opts.ClientDevice, address: clientIP, began: playStart}
+	}
 	s.sessionManager.MarkPlaybackValidated(sessionID)
 	s.sessionManager.StartPlayback(sessionID, clientIP)
 	// Registered before the EndPlayback defer so it runs after it (LIFO) —
 	// the stop must see the decremented play count and the folded progress.
-	defer s.scrobbleStopIfIdle(streamConfig, sess)
+	defer s.scrobbleStopIfIdle(streamConfig, sess, rs)
 	var endPlaybackOnce sync.Once
 	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
@@ -159,7 +164,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 
 	serveStartedAt := time.Now()
 	monitoredStream.onProgress = func() {
-		s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
+		s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs)
 	}
 	monitoredStream.onServeWindow = serveWindowLogger(sessionID, monitoredStream, bufW, serveStartedAt)
 
@@ -176,6 +181,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 		"stream_mode", resolved.mode,
 	)
 
+	s.clientPlayback.noteServed(streamConfig, sess)
 	sess.BeginServeProviderTracking()
 	defer func() {
 		sess.EndServeProviderTracking()
@@ -239,7 +245,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}()
 
 	defer func() {
-		s.finishServeBookkeeping(r, streamConfig, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded)
+		s.finishServeBookkeeping(r, streamConfig, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded, rs)
 	}()
 
 	http.ServeContent(bufW, r, resolved.name, time.Time{}, monitoredStream)
@@ -430,6 +436,7 @@ func (s *Server) finishServeBookkeeping(
 	effectiveRange string,
 	serveStartedAt time.Time,
 	serveFailureRecorded *bool,
+	rs *reportingServe,
 ) {
 	rt := s.runtime()
 	if *serveFailureRecorded {
@@ -456,7 +463,7 @@ func (s *Server) finishServeBookkeeping(
 		return
 	}
 
-	if s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt) {
+	if s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs) {
 		return
 	}
 
@@ -481,5 +488,5 @@ func (s *Server) finishServeBookkeeping(
 	}
 	// Safety fallback: this path should normally already have returned via
 	// commitGoodAttemptIfQualified above.
-	s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
+	s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs)
 }

@@ -34,6 +34,14 @@ type PlayServeOptions struct {
 	// FailWithStatus answers exhausted candidates with a 502 and the cause
 	// instead of a redirect to the error video.
 	FailWithStatus bool
+	// ClientReportsPlayback marks a client that reports its own position
+	// (ReportClientPlayback). Its serves send the transport's start and stop
+	// only when that client reported nothing around them.
+	ClientReportsPlayback bool
+	// ClientDevice is the DeviceId the request carried, empty when none. It
+	// matches a reporting client's serves to its reports; without it the
+	// request's address does.
+	ClientDevice string
 }
 
 type playServeOptionsKeyType struct{}

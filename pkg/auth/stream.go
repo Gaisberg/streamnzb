@@ -105,6 +105,12 @@ type Stream struct {
 	MDBListScrobble bool `json:"mdblist_scrobble,omitempty"`
 }
 
+// ScrobbleEnabled reports whether the stream has any watch-tracking target
+// switched on, linked or not.
+func (s *Stream) ScrobbleEnabled() bool {
+	return s != nil && (s.SimklScrobble || s.MDBListScrobble)
+}
+
 // ActiveProviderSelections lists the providers this stream actually uses, in
 // priority order: its selections minus the ones disabled at stream level.
 // Callers should prefer this over reading ProviderSelections directly, which is

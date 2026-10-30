@@ -1,6 +1,7 @@
 package jellyfin
 
 import (
+	"cmp"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/auth"
+	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/release"
@@ -199,7 +201,11 @@ func mediaSourceIDFor(id itemID, index int) string {
 //
 // Both are honoured only on the stream route, so a token read off either one
 // opens one video and cannot be spent on browsing.
-func (s *Server) streamURLFor(id itemID, index int, stream *auth.Stream) string {
+//
+// It also carries the DeviceId of the client it is handed to, so a serve can
+// be matched to that client's playback reports (see stremio's
+// client_scrobble.go) even when the player fetching it sends no header.
+func (s *Server) streamURLFor(id itemID, index int, stream *auth.Stream, deviceID string) string {
 	base := s.baseURL()
 	if base == "" {
 		return ""
@@ -207,6 +213,9 @@ func (s *Server) streamURLFor(id itemID, index int, stream *auth.Stream) string 
 	q := url.Values{}
 	q.Set("mediaSourceId", mediaSourceIDFor(id, index))
 	q.Set("static", "true")
+	if deviceID != "" {
+		q.Set("DeviceId", deviceID)
+	}
 	if token := streamTokenOf(stream); token != "" {
 		q.Set("api_key", token)
 	}
@@ -465,7 +474,7 @@ func (s *Server) mediaSourceOf(rq *request, id itemID, entry stremio.PlaylistEnt
 	src := mediaSource{
 		Protocol:               "Http",
 		ID:                     mediaSourceIDFor(id, entry.Index),
-		Path:                   s.streamURLFor(id, entry.Index, rq.stream),
+		Path:                   s.streamURLFor(id, entry.Index, rq.stream, clientOf(rq).DeviceID),
 		ETag:                   streamTokenOf(rq.stream),
 		Type:                   "Default",
 		Container:              container,
@@ -623,6 +632,10 @@ func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
 	}
 	opts := stremio.PlayServeOptions{
 		FailWithStatus: true,
+		// Jellyfin clients report where they are (Sessions/Playing), and
+		// those reports are scrobbled rather than the transfer.
+		ClientReportsPlayback: true,
+		ClientDevice:          cmp.Or(clientOf(rq).DeviceID, rq.param("deviceId")),
 		SlotLocation: func(nextSlot string) string {
 			nextIndex, ok := stremio.SlotIndexOf(nextSlot)
 			if !ok {
@@ -699,20 +712,47 @@ func (s *Server) handlePlaying(w http.ResponseWriter, rq *request, event, pathIt
 	switch event {
 	case "", "playing":
 		s.recordProgress(rq, id, position, playEventStart)
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackStart)
 	case "progress":
 		if report.IsPaused {
 			s.recordProgress(rq, id, position, playEventPause)
 		} else {
 			s.recordProgress(rq, id, position, playEventTick)
 		}
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackProgress)
 	case "stopped":
 		s.recordProgress(rq, id, position, playEventStop)
+		s.reportPlayback(rq, id, report, stremio.ClientPlaybackStop)
 	case "ping":
 	default:
 		http.NotFound(w, rq.Request)
 		return
 	}
 	writeEmpty(w)
+}
+
+// reportPlayback passes a playback report on for scrobbling. The client's
+// position is what it is showing, which the transport cannot know once a
+// player has buffered the file. One device's one play session is one
+// playback, so two devices playing the same title are reported apart, and a
+// device opening a new play session ends its last.
+func (s *Server) reportPlayback(rq *request, id itemID, report playbackReport, event stremio.ClientPlaybackEvent) {
+	position := -1.0
+	if report.PositionTicks != nil && *report.PositionTicks >= 0 {
+		position = float64(*report.PositionTicks) / float64(ticksPerSecond)
+	}
+	client := clientOf(rq)
+	// The device is read as handleStream reads it, so a serve and its
+	// client's reports name the same one.
+	s.opts.Catalog.ReportClientPlayback(rq.stream, stremio.ClientPlayback{
+		ContentID:       id.playStremioID(),
+		Device:          cmp.Or(client.DeviceID, rq.param("deviceId")),
+		Client:          client.Client + "|" + client.Device,
+		Address:         httpx.ClientIP(rq.Request),
+		PlaySession:     report.PlaySessionID,
+		Event:           event,
+		PositionSeconds: position,
+	})
 }
 
 // handlePlayed marks (POST) or clears (DELETE) an item's played state and
