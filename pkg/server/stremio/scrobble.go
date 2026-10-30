@@ -50,7 +50,7 @@ func scrobbleTargets(rt serverRuntime, stream *auth.Stream) []scrobble.Target {
 // nowhere (direct NZB plays with no ids, series requests without an episode,
 // anime neither the MAL mapping nor anime-lists' aired ids can name).
 func (s *Server) scrobbleItemForSession(sess *session.Session) (scrobble.Item, bool) {
-	meta := sess.ContentIDs
+	meta := sess.ReportMeta()
 	if meta == nil {
 		return scrobble.Item{}, false
 	}
@@ -87,11 +87,26 @@ func (s *Server) scrobbleItemForSession(sess *session.Session) (scrobble.Item, b
 
 // scrobbleStart reports "watching now" once real playback is proven (the
 // good-attempt commit). Fire-and-forget: scrobbling must never slow a serve.
-// A serve to a client that reports its own playback sends none: the client's
-// first report is its start, and a start sent here could not be told apart
-// from an earlier playback's.
-func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, clientServe bool) {
-	if sess == nil || clientServe || !sess.Once(onceTransportStarted) {
+// A serve to a client that reports its own playback (rs) leaves the start to
+// the client's first report, and sends the transport's only when that client
+// has reported nothing clientReportGrace after the serve qualified: a client
+// that does not report.
+func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, rs *reportingServe) {
+	if sess == nil {
+		return
+	}
+	if rs != nil {
+		if !rs.startDecided.CompareAndSwap(false, true) || !stream.ScrobbleEnabled() || s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
+			return
+		}
+		s.afterReportGrace(func() {
+			if !s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
+				s.scrobbleStart(stream, sess, nil)
+			}
+		})
+		return
+	}
+	if !sess.Once(onceTransportStarted) {
 		return
 	}
 	targets := scrobbleTargets(s.runtime(), stream)
@@ -104,7 +119,7 @@ func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, clien
 		logger.Debug("Playback not scrobbled: no id a target can place", "content", sess.ContentID)
 		return
 	}
-	s.sendScrobble(targets, sess, scrobble.VerbStart, item, sess.ServedProgressPercent())
+	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStart, item, sess.ServedProgressPercent())
 }
 
 // scrobbleStopIfIdle runs as a serve unwinds, after playback bookkeeping: when
@@ -113,25 +128,24 @@ func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, clien
 // store a resumable playback below that, so a pause/stop mid-film shows up at
 // the right position and a finished film lands in history.
 //
-// A serve to a client that reports its own playback leaves the stop to those
-// reports. Every other serve — Stremio's, and one to a Jellyfin client that
-// reports nothing — owes it, so a reporting client sharing the session never
-// silences them. A reporting client's serve that ends before the client has
-// reported anything (a request opened and dropped before it says it plays)
-// waits clientReportGrace before deciding which kind it was.
-func (s *Server) scrobbleStopIfIdle(stream *auth.Stream, sess *session.Session, clientServe bool, playStart time.Time) {
+// A serve to a client that reports its own playback (rs) leaves the stop to
+// those reports. Every other serve — Stremio's, and one to a Jellyfin client
+// that reports nothing — owes it, so a reporting client sharing the session
+// never silences them. A reporting client's serve that ends before its client
+// has reported anything (a request opened and dropped before it says it
+// plays) waits clientReportGrace before deciding which kind it was. Reports
+// are matched to the serve's own client, so another device reporting the same
+// title decides nothing for it.
+func (s *Server) scrobbleStopIfIdle(stream *auth.Stream, sess *session.Session, rs *reportingServe) {
 	if sess == nil {
 		return
 	}
-	reported := func() bool {
-		return s.clientPlayback.reportedSince(stream, sess.ContentID, playStart.Add(-clientReportLead))
-	}
 	switch {
-	case !clientServe:
+	case rs == nil:
 		sess.Once(onceTransportStopDue)
-	case !reported() && stream != nil && (stream.MDBListScrobble || stream.SimklScrobble):
-		time.AfterFunc(clientReportGrace, func() {
-			if !reported() {
+	case stream.ScrobbleEnabled() && !s.clientPlayback.reportedBy(stream, sess.ContentID, rs):
+		s.afterReportGrace(func() {
+			if !s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
 				sess.Once(onceTransportStopDue)
 				s.transportStopIfIdle(stream, sess)
 			}
@@ -140,13 +154,24 @@ func (s *Server) scrobbleStopIfIdle(stream *auth.Stream, sess *session.Session, 
 	s.transportStopIfIdle(stream, sess)
 }
 
+// afterReportGrace runs fn once clientReportGrace has passed, counted with
+// the sends it may make, so whatever waits on those waits on it too.
+func (s *Server) afterReportGrace(fn func()) {
+	s.scrobbleSends.Add(1)
+	time.AfterFunc(clientReportGrace, func() {
+		defer s.scrobbleSends.Done()
+		fn()
+	})
+}
+
 // transportStopIfIdle sends the transport's stop when the session's last
-// serve has ended and one of its serves owes it.
+// serve has ended and one of its serves owes it. Claiming the debt is one
+// atomic step, so a serve ending and a fallback timer firing together send it
+// once.
 func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session) {
-	if sess.CurrentActivePlays() != 0 || !sess.OnceDone(onceTransportStopDue) {
+	if sess.CurrentActivePlays() != 0 || !sess.TakeOnce(onceTransportStopDue) {
 		return
 	}
-	sess.ResetOnce(onceTransportStopDue)
 	targets := scrobbleTargets(s.runtime(), stream)
 	if len(targets) == 0 {
 		logUnlinkedScrobble(stream, scrobble.VerbStop)
@@ -165,11 +190,19 @@ func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session)
 		return
 	}
 	sess.SetLastReportedProgress(progress)
-	s.sendScrobble(targets, sess, scrobble.VerbStop, item, progress)
+	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStop, item, progress)
 }
 
-func (s *Server) sendScrobble(targets []scrobble.Target, sess *session.Session, verb string, item scrobble.Item, progress float64) {
-	contentID := sess.ContentID
+// sendScrobble sends one scrobble to each target in the background. Nothing
+// goes out once Shutdown has run: the grace and idle timers can outlive the
+// server, and must not start network sends on a stopped one.
+func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string, item scrobble.Item, progress float64) {
+	select {
+	case <-s.stopCh:
+		logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
+		return
+	default:
+	}
 	for _, target := range targets {
 		// A target that cannot address this item is skipped: anime only
 		// anime-lists' aired mapping names has no Simkl address, and anime only
@@ -195,7 +228,7 @@ func (s *Server) sendScrobble(targets []scrobble.Target, sess *session.Session, 
 // logUnlinkedScrobble notes a stream that has scrobbling switched on but no
 // linked account to take it — otherwise indistinguishable from scrobbling off.
 func logUnlinkedScrobble(stream *auth.Stream, verb string) {
-	if stream != nil && (stream.SimklScrobble || stream.MDBListScrobble) {
+	if stream.ScrobbleEnabled() {
 		logger.Debug("Scrobbling is on but no linked account can take it", "stream", streamLogName(stream), "verb", verb)
 	}
 }

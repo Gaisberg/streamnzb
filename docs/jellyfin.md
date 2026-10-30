@@ -98,17 +98,27 @@ stream never sees another's.
   position, and each service then applies its own threshold (80%), separate
   from the 90% above. Each device's play session is reported on its own; a
   device opening a new play session ends its last one, reporting it stopped
-  at its last position if it never stopped. Without a runtime to
+  at its last position if it never stopped. A start repeated within a play
+  session (after a seek, or coming back from the background) changes
+  nothing; playing again after a stop — an app that stops when backgrounded
+  and resumes — is reported as a new start and its own stop. Playback keeps
+  being reported after the server has evicted the media session, as it can
+  be once a player has buffered the whole file. Without a runtime to
   place the position (rare: the file's own duration is normally known) the
   stop is not sent rather than guessed. Pausing reports nothing; a
   playback that reports nothing at all for 30 minutes — an app closed
   mid-play — is reported stopped at the last position the client gave, never
   further, and reporting again starts it anew. A client that sends no
-  playback reports is scrobbled from the bytes served, but only with a stop:
-  a start from the transfer could not be told apart from an earlier
-  playback's. (While another device on the same stream reports the same
-  title, such a client's transfer is taken for that device's and is not
-  scrobbled.) Stremio playback of the same title on the same stream is
+  playback reports is scrobbled from the bytes served — start and stop, as a
+  Stremio player is — once it has gone a minute without reporting: its
+  start a minute after the transfer proves real, its stop a minute after the
+  transfer ends. Reports are matched to the transfer by the client's
+  DeviceId, which StreamNZB adds to the stream URL it hands out, or failing
+  that by its address; so another device reporting the same title does not
+  silence it. (Two such clients behind one address, a reverse proxy for
+  example, whose transfers carry no DeviceId, cannot be told apart; and a
+  client whose first report comes more than a minute late is reported from
+  both.) Stremio playback of the same title on the same stream is
   scrobbled from its own transfer as before, whatever a Jellyfin client is
   doing. Marking an item watched or unwatched by hand is not scrobbled.
 - **Watched seasons and series** — marking a season or series watched

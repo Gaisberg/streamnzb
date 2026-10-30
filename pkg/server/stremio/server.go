@@ -75,7 +75,7 @@ type Server struct {
 	nextReleaseIndex  sync.Map        // streamToken|key.CacheKey() → *nextReleaseCursor; tracks manual "next" progression
 	preloadCancels    sync.Map        // StreamSlotKey.CacheKey() → *preloadCancelEntry; cancels the in-flight preload sweep when real playback starts
 	clientPlayback    clientPlaybacks // client-reported playback attempts (see client_scrobble.go)
-	scrobbleSends     sync.WaitGroup  // scrobble requests in flight
+	scrobbleSends     sync.WaitGroup  // scrobble requests in flight, and the report-grace timers that may make one
 	webHandler        http.Handler
 	apiHandler        http.Handler
 	playback          *playback.Service
@@ -257,13 +257,16 @@ func clearSyncMap(m *sync.Map) int {
 	return cleared
 }
 
-// Shutdown stops the server's background sweeps. Safe on a Server that was
-// never started through NewServer, and safe to call more than once.
+// Shutdown stops the server's background sweeps and its client playbacks'
+// idle timers; scrobbles still due go nowhere (sendScrobble). Safe on a
+// Server that was never started through NewServer, and safe to call more than
+// once.
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() {
 		if s.stopCh != nil {
 			close(s.stopCh)
 		}
+		s.clientPlayback.stopTimers()
 	})
 }
 

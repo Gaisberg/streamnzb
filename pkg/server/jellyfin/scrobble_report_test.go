@@ -9,7 +9,8 @@ import (
 )
 
 // Every Sessions/Playing report is passed on for scrobbling with the client's
-// own position, as the title's addon id, with its device and play session.
+// own position, as the title's addon id, with its device, client, address
+// and play session.
 func TestPlayingReportsArePassedOnForScrobbling(t *testing.T) {
 	f := newFixture()
 	series, _ := itemIDFor("series", "tt0903747")
@@ -45,6 +46,8 @@ func TestPlayingReportsArePassedOnForScrobbling(t *testing.T) {
 	}
 	for i, got := range f.catalog.reports {
 		want[i].ContentID, want[i].Device, want[i].PlaySession = "tt0903747:1:2", "dev-1", "ps-1"
+		// httptest's request address.
+		want[i].Client, want[i].Address = "Swiftfin|iPhone 15, Pro", "192.0.2.1"
 		if got != want[i] {
 			t.Fatalf("report %d = %+v, want %+v", i, got, want[i])
 		}
@@ -71,14 +74,24 @@ func TestMarkingPlayedIsNotScrobbled(t *testing.T) {
 }
 
 // Video served to a Jellyfin client is marked as reporting its own playback,
-// which is what keeps the transfer from being scrobbled as well.
+// which is what keeps the transfer from being scrobbled as well, with the
+// device it went to — from the header, or failing that the URL — so that
+// only that device's reports stand the transfer down.
 func TestStreamServesAsAReportingClient(t *testing.T) {
 	f := newFixture()
 	movie, _ := itemIDFor("movie", "tt0111161")
 	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true", ""); rec.Code != http.StatusOK {
 		t.Fatalf("stream: %d", rec.Code)
 	}
-	if len(f.catalog.served) != 1 || !f.catalog.served[0].opts.ClientReportsPlayback {
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&DeviceId=d9&api_key="+testToken, "", "X-Nothing", "x"); rec.Code != http.StatusOK {
+		t.Fatalf("stream: %d", rec.Code)
+	}
+	if len(f.catalog.served) != 2 {
 		t.Fatalf("served: %+v", f.catalog.served)
+	}
+	for i, device := range []string{"dev-1", "d9"} {
+		if opts := f.catalog.served[i].opts; !opts.ClientReportsPlayback || opts.ClientDevice != device {
+			t.Fatalf("serve %d: %+v, want device %q", i, opts, device)
+		}
 	}
 }

@@ -2058,18 +2058,18 @@ func (s *Server) logBelowGoodThresholdOnce(sess *session.Session, sessionID stri
 
 // commitGoodAttemptIfQualified records a successful attempt once the play has
 // run long enough and far enough to count. It reports whether the session has
-// committed, including when an earlier call already did it. clientServe marks
-// a serve to a client that reports its own playback, which sends its own
-// scrobble start.
-func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session.Session, sessionID string, serveStartedAt time.Time, clientServe bool) bool {
+// committed, including when an earlier call already did it. rs marks a serve
+// to a client that reports its own playback, nil for any other.
+func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session.Session, sessionID string, serveStartedAt time.Time, rs *reportingServe) bool {
 	rt := s.runtime()
 	if sess == nil {
 		return false
 	}
 	committed := sess.OnceDone(onceSuccessRecorded)
-	// A session a reporting client's serve committed has sent no transport
-	// start; another client's serve still sends its own once it qualifies.
-	if committed && (clientServe || sess.OnceDone(onceTransportStarted)) {
+	// A committed session may still owe this serve its scrobble start: a
+	// reporting client's commit sends no transport start, and each reporting
+	// serve settles its own once it qualifies.
+	if committed && (sess.OnceDone(onceTransportStarted) || (rs != nil && rs.startDecided.Load())) {
 		return true
 	}
 	serveDuration := time.Since(serveStartedAt)
@@ -2083,7 +2083,7 @@ func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session
 		return committed
 	}
 	if committed {
-		s.scrobbleStart(stream, sess, clientServe)
+		s.scrobbleStart(stream, sess, rs)
 		return true
 	}
 	availOutcome := availnzb.ReportOutcome{}
@@ -2098,7 +2098,7 @@ func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session
 	// Playback is proven real at this point — the moment to tell the
 	// watch-tracking targets the title is being watched (once per session; the
 	// stop with final progress comes from the serve teardown).
-	s.scrobbleStart(stream, sess, clientServe)
+	s.scrobbleStart(stream, sess, rs)
 	// Populate the library from a real successful play, not just preload
 	// pre-probe, so the cache reflects actual usage even when pre-probing is
 	// limited or disabled. Skip sessions already sourced from the library.

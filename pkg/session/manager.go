@@ -184,6 +184,18 @@ func (s *Session) IsWarm() bool {
 	return s.nzbData != nil
 }
 
+// ReportMeta returns the content ids the session was opened with, nil once
+// it has closed. Read through here by anything that can outlive the serve —
+// a timer, a client's report — since Close clears them.
+func (s *Session) ReportMeta() *AvailReportMeta {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ContentIDs
+}
+
 // NZB returns the parsed NZB, or nil before the lazy download completes or
 // after teardown. Snapshot into a local before dereferencing.
 func (s *Session) NZB() *nzb.NZB {
