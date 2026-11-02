@@ -424,6 +424,12 @@ func jellyfinServe(device string) *PlayServeOptions {
 // opts, nil for a Stremio serve, are the serve's options.
 func (h *scrobbleHarness) serveRange(t *testing.T, rangeHeader string, rate float64, cancelAfter time.Duration, opts *PlayServeOptions) {
 	t.Helper()
+	h.serveMethod(t, http.MethodGet, rangeHeader, rate, cancelAfter, opts)
+}
+
+// serveMethod is serveRange with the request's method.
+func (h *scrobbleHarness) serveMethod(t *testing.T, method, rangeHeader string, rate float64, cancelAfter time.Duration, opts *PlayServeOptions) {
+	t.Helper()
 	done := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
@@ -442,7 +448,7 @@ func (h *scrobbleHarness) serveRange(t *testing.T, rangeHeader string, rate floa
 	if cancelAfter > 0 {
 		time.AfterFunc(cancelAfter, cancel)
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	req, _ := http.NewRequestWithContext(ctx, method, srv.URL, nil)
 	req.Header.Set("Range", rangeHeader)
 	// A redirect (failover) is the player's next request, not this one's.
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -745,7 +751,7 @@ func TestResumeByProgressAfterStop(t *testing.T) {
 func TestTransportStopIsSentOnce(t *testing.T) {
 	h := newScrobbleHarness(t, harnessOpts{noRuntime: true})
 	h.sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: 950, TotalSize: 1000, Elapsed: time.Hour})
-	item, ok := h.server.scrobbleItemForSession(h.sess)
+	item := takenItem(h.server.scrobbleItemForSession(h.sess))
 	const rounds = 20
 	for range rounds {
 		h.sess.SetLastReportedProgress(0)
@@ -753,7 +759,7 @@ func TestTransportStopIsSentOnce(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Add(1)
-			go func() { defer wg.Done(); h.server.transportStopIfIdle(h.stream, h.sess, item, ok) }()
+			go func() { defer wg.Done(); h.server.transportStopIfIdle(h.stream, h.sess, item) }()
 		}
 		wg.Wait()
 		// Each round's stop lands before the next: the title's sends queue
@@ -779,9 +785,10 @@ func TestClientReportsDoNotKeepTheSessionAlive(t *testing.T) {
 	}
 }
 
-// Timers that outlive the server send nothing: a playback going quiet, or a
-// serve's fallback, after Shutdown.
-func TestScrobbleTimersSendNothingAfterShutdown(t *testing.T) {
+// At shutdown a playback still running is left unstopped — its client is
+// still playing — while a serve's pending fallback is decided at once; no
+// timer sends anything after.
+func TestShutdownLeavesRunningPlaybacksUnstopped(t *testing.T) {
 	h := newScrobbleHarness(t, harnessOpts{runtime: 10})
 	h.server.clientPlayback.timings.idleTTL = time.Second
 	h.server.clientPlayback.timings.reportGrace = time.Second
@@ -792,12 +799,14 @@ func TestScrobbleTimersSendNothingAfterShutdown(t *testing.T) {
 	// A serve to a device that never reports, qualified and ended: both its
 	// fallbacks are pending.
 	h.sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: 950, TotalSize: 1000, Elapsed: time.Hour})
-	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now()}
+	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now(), media: true}
 	h.server.scrobbleStart(h.stream, h.sess, rs)
 	h.server.scrobbleStopIfIdle(h.stream, h.sess, rs)
 	h.server.Shutdown()
-	time.Sleep(h.server.clientPlayback.timings.reportGrace + 500*time.Millisecond)
-	h.settle(t, 1)
+	time.Sleep(h.server.clientPlayback.timings.idleTTL + 500*time.Millisecond)
+	sent := h.settle(t, 3)
+	wantScrobble(t, sent[1], "start", 95)
+	wantScrobble(t, sent[2], "stop", 95)
 }
 
 // A report the device's previous play session sends late — its stop landing

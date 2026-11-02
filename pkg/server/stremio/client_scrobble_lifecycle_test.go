@@ -50,7 +50,7 @@ func TestFallbackStartLandsBeforeItsStop(t *testing.T) {
 	h.startLag = 300 * time.Millisecond
 	h.mu.Unlock()
 	h.sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: 500, TotalSize: 1000, Elapsed: time.Hour})
-	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now()}
+	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now(), media: true}
 	h.server.clientPlayback.register(h.stream, h.sess.ContentID, rs)
 	h.server.scrobbleStart(h.stream, h.sess, rs)
 	h.server.scrobbleStopIfIdle(h.stream, h.sess, rs)
@@ -383,25 +383,28 @@ func TestStremioServesTrackNothing(t *testing.T) {
 	}
 }
 
-// Shutdown cancels what is scheduled rather than leaving it to fire: nothing
-// waits on a fallback's grace, and a report after it arms nothing.
-func TestShutdownCancelsScheduledScrobbles(t *testing.T) {
+// Shutdown decides what is scheduled rather than waiting out its grace or
+// dropping it: a serve's pending fallback goes out at once, and a report
+// after Shutdown is not tracked.
+func TestShutdownDecidesScheduledFallbacks(t *testing.T) {
 	h := newScrobbleHarness(t, harnessOpts{runtime: 10})
 	h.server.clientPlayback.timings.reportGrace = 5 * time.Second
 	h.sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: 500, TotalSize: 1000, Elapsed: time.Hour})
-	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now()}
+	rs := &reportingServe{device: "silent", address: "127.0.0.1", began: time.Now(), media: true}
 	h.server.clientPlayback.register(h.stream, h.sess.ContentID, rs)
 	h.server.scrobbleStart(h.stream, h.sess, rs)
 	h.server.scrobbleStopIfIdle(h.stream, h.sess, rs)
+	began := time.Now()
 	h.server.Shutdown()
-
-	done := make(chan struct{})
-	go func() { h.server.scrobbleSends.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("pending fallbacks outlived Shutdown")
+	if waited := time.Since(began); waited > time.Second {
+		t.Fatalf("Shutdown waited %v on a fallback's grace", waited)
 	}
+	sent := h.sentSoFar()
+	if len(sent) != 2 {
+		t.Fatalf("sent %+v at shutdown, want the fallback's start and stop", sent)
+	}
+	wantScrobble(t, sent[0], "start", 50)
+	wantScrobble(t, sent[1], "stop", 50)
 	h.report("dev|ps", ClientPlaybackStart, 0)
 	h.server.clientPlayback.mu.Lock()
 	tracked := len(h.server.clientPlayback.attempts)
@@ -409,14 +412,14 @@ func TestShutdownCancelsScheduledScrobbles(t *testing.T) {
 	if tracked != 0 {
 		t.Fatal("a report after Shutdown was tracked")
 	}
-	h.settle(t, 0)
+	h.settle(t, 2)
 }
 
 // laneWaiting is how many sends wait on the harness title's lane.
 func (h *scrobbleHarness) laneWaiting() int {
 	h.server.scrobbleLanes.mu.Lock()
 	defer h.server.scrobbleLanes.mu.Unlock()
-	return len(h.server.scrobbleLanes.lanes[clientPlaybackKey(h.stream, "kitsu:114:1")])
+	return len(h.server.scrobbleLanes.lanes["MDBList|"+clientPlaybackKey(h.stream, "kitsu:114:1")])
 }
 
 // stopResumeCycles reports a start, then n stops each resumed at once, then a
@@ -521,16 +524,25 @@ func TestTimedOutSendReleasesTheLane(t *testing.T) {
 	}
 }
 
-// Shutdown with a full lane sends nothing more than what is already in
-// flight, and leaves no lane goroutine behind.
+// Shutdown with a full lane drains it for the drain and no longer: after
+// that nothing more goes out, and no lane goroutine is left behind.
 func TestShutdownDuringAFullLane(t *testing.T) {
 	h := newScrobbleHarness(t, harnessOpts{})
 	h.server.stopCh = make(chan struct{})
+	h.server.clientPlayback.timings.shutdownDrain = 500 * time.Millisecond
 	h.mu.Lock()
 	h.delay = 300 * time.Millisecond
 	h.mu.Unlock()
 	h.stopResumeCycles("dev|ps", 8)
+	began := time.Now()
 	h.server.Shutdown()
+	if waited := time.Since(began); waited > time.Second {
+		t.Fatalf("Shutdown waited %v, past its drain", waited)
+	}
+	drained := len(h.sentSoFar())
+	if drained < 2 || drained > maxQueuedScrobbles {
+		t.Fatalf("%d sends went out in the drain", drained)
+	}
 	done := make(chan struct{})
 	go func() { h.server.scrobbleSends.Wait(); close(done) }()
 	select {
@@ -538,11 +550,8 @@ func TestShutdownDuringAFullLane(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a full lane outlived Shutdown")
 	}
-	h.mu.Lock()
-	n := len(h.sent)
-	h.mu.Unlock()
-	if n > 1 {
-		t.Fatalf("%d sends went out after Shutdown, want only the one in flight", n)
+	if n := len(h.sentSoFar()); n != drained {
+		t.Fatalf("%d sends went out after the drain", n-drained)
 	}
 	time.Sleep(50 * time.Millisecond) // the lane goroutine exits as its last send returns
 	if w := h.laneWaiting(); w != 0 {

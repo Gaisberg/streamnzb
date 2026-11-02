@@ -119,25 +119,36 @@ stream never sees another's.
   played by a device other than the one it was handed to. A transfer with no
   DeviceId at all is matched only by reports that carry none either, from
   its address. So another device reporting the same title, even from behind
-  the same reverse proxy, does not silence it. Only reports made during the
-  transfer, a start made just before it, or a report made in the minute
-  after it ends count: an earlier playback's stop does not, so replaying a
-  title within a minute in a player that does not report is still
-  scrobbled. Each stream's sends for a title go out in order, one at a
-  time, so a slow MDBList or Simkl request is never overtaken by the next
-  one, for example a resume overtaking the stop before it. At most 16 wait
-  behind a slow one; past that, the oldest waiting send that a later one
-  overwrites anyway (a start, or a stop below 80%) is skipped, so the
-  latest state still goes out, and a watched stop is kept unless every
-  waiting send is one. (When a transfer cannot be matched to its client —
-  a player that sends no DeviceId of its own and plays a URL handed to
-  another device, a client reporting from a different address than it
-  streams from,
-  or two clients with no DeviceId behind one address, where one reports — it
-  is taken for a client that does not report, and a reporting client among
-  them is reported twice rather than not at all. A client whose first report
-  comes more than a minute late is also reported twice.) Stremio playback
-  of the same title on the same stream is
+  the same reverse proxy, does not silence it. Only a report that the client
+  is playing counts: one made during the transfer or in the minute after it
+  ends, or a start made just before it. A stop never counts, since it may be
+  an earlier playback's arriving late, so replaying a title in a player that
+  does not report is still scrobbled. HEAD requests, ranges the release
+  cannot deliver, and players sampling the end of the file are not playback,
+  so they wait for no report. Sends go out in order, one at a time, per
+  service, stream and title, so a slow request is never overtaken by the
+  next one (for example a resume overtaking the stop before it), and a slow
+  or unreachable Simkl holds back nothing sent to MDBList, or the other way
+  round. At most 16 wait behind a slow one. Past that, the oldest waiting
+  send that a later one makes moot is skipped: a start, then a stop below
+  80% followed by a later stop, then a watched stop followed by a later
+  watched one. A stop is never skipped for a later start, so its resume
+  position stands. On a graceful shutdown, sends already decided get up to
+  3 seconds to go out, and a transfer the shutdown cut that is still
+  waiting to learn whether its client reports is decided at once. A
+  playback still running is not reported stopped: its client keeps playing
+  and reports again after the restart. Anything still unsent after those
+  3 seconds, or lost in a crash, is not retried. (When a transfer cannot be
+  matched to its client, it is taken for a client that does not report, and
+  a reporting client among them is reported twice rather than not at all.
+  That happens with a player that sends no DeviceId of its own and plays a
+  URL handed to another device, a client reporting from a different address
+  than it streams from, or two clients with no DeviceId behind one address,
+  where one reports. Forwarded headers are not trusted. A client whose first
+  report comes more than a minute late is also reported twice, and an
+  earlier playback's progress, delivered late after the replay began, can
+  still silence the replay.) Stremio playback of the same title on the same
+  stream is
   scrobbled from its own transfer as before, whatever a Jellyfin client is
   doing. Marking an item watched or unwatched by hand is not scrobbled.
 - **Watched seasons and series** — marking a season or series watched

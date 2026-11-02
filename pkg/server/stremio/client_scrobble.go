@@ -23,8 +23,10 @@ import (
 // a Jellyfin client is doing.
 //
 // A serve is matched to its own client's reports, and only to reports about
-// it: ones made while it runs, or a start made just ahead of it. A previous
-// playback's stop is no proof the client reports this one. When nothing can
+// it: a start or progress made while it runs, or a start made just ahead of
+// it. A stop is never proof the client reports a serve — it may be a previous
+// playback's, landing late — and a client that does report always says it is
+// playing before it stops. When nothing can
 // tell the serve's client from another (reportingServe.matches), the serve is
 // taken for a client that does not report: a playback scrobbled twice is
 // better than one not scrobbled at all.
@@ -111,14 +113,19 @@ type clientPlaybackTimings struct {
 	// limit bounds the playbacks, and the titles, tracked at once. Past it a
 	// new one is not tracked, and its serves scrobble from the transport.
 	limit int
+	// shutdownDrain is how long Shutdown waits for the sends already decided
+	// to go out. It fits, with the HTTP grace before it, inside Docker's ten
+	// seconds.
+	shutdownDrain time.Duration
 }
 
 var defaultClientPlaybackTimings = clientPlaybackTimings{
-	idleTTL:     30 * time.Minute,
-	stopGrace:   2 * time.Minute,
-	stopSettle:  10 * time.Second,
-	reportGrace: time.Minute,
-	limit:       1000,
+	idleTTL:       30 * time.Minute,
+	stopGrace:     2 * time.Minute,
+	stopSettle:    10 * time.Second,
+	reportGrace:   time.Minute,
+	limit:         1000,
+	shutdownDrain: 3 * time.Second,
 }
 
 // clientReportLead is how long before a serve began a client's start still
@@ -165,7 +172,7 @@ type clientTitle struct {
 type reportMark struct {
 	device, address string
 	at              time.Time
-	stop            bool
+	start           bool
 }
 
 func reporterKey(device, address string) string {
@@ -183,7 +190,7 @@ type clientPlaybacks struct {
 	titles   map[string]*clientTitle // stream|content
 	// scheduled are the serves with a fallback timer pending.
 	scheduled map[*reportingServe]struct{}
-	closed    bool // shut down: nothing new is tracked or scheduled
+	closed    bool // shut down: nothing new is tracked, and a fallback is decided at once
 }
 
 // reportingServe is one serve to a client that reports its own playback.
@@ -195,8 +202,12 @@ type reportingServe struct {
 	deviceFromURL bool
 	address       string
 	began         time.Time
-	// reported is set once the serve's client has reported the title: while
-	// the serve runs, or with a start just ahead of it.
+	// media is set once the serve has streamed media: not a HEAD, a refused
+	// range or a probe (classifyProbeLikeServe). Only such a serve owes a
+	// fallback stop. Set and read on the serve's own goroutine.
+	media bool
+	// reported is set once the serve's client has reported the title playing:
+	// while the serve runs, or with a start just ahead of it.
 	reported atomic.Bool
 	// startDecided is set once the serve has qualified and settled whether
 	// its client or the transport sends its start.
@@ -205,8 +216,14 @@ type reportingServe struct {
 	// most once; the fallback stop runs it first, so a start still due goes
 	// out ahead of the stop.
 	startOnce sync.Once
-	start     func()        // guarded by clientPlaybacks.mu
-	timers    []*time.Timer // pending fallbacks; guarded by clientPlaybacks.mu
+	start     func()            // guarded by clientPlaybacks.mu
+	pending   []pendingFallback // guarded by clientPlaybacks.mu
+}
+
+// pendingFallback is a fallback waiting out the report grace.
+type pendingFallback struct {
+	timer *time.Timer
+	run   func()
 }
 
 // matches reports whether a report from device at address is from the serve's
@@ -253,27 +270,45 @@ func (c *clientPlaybacks) titleLocked(key string, now time.Time) *clientTitle {
 	if c.titles == nil {
 		c.titles = make(map[string]*clientTitle)
 	}
-	c.reclaimLocked(now, false)
-	if len(c.titles) >= c.timing().limit {
-		c.reclaimLocked(now, true)
-		if len(c.titles) >= c.timing().limit {
-			return nil
-		}
+	c.reclaimLocked(now)
+	if len(c.titles) >= c.timing().limit && !c.evictIdleLocked() {
+		return nil
 	}
 	t := &clientTitle{active: now, reporters: map[string]reportMark{}, serves: map[*reportingServe]struct{}{}}
 	c.titles[key] = t
 	return t
 }
 
-// reclaimLocked drops the titles nothing is playing or serving: those idle for
-// the idle TTL, or every one when all is set. What they kept only helps a
-// client resuming from its buffer long after it stopped.
-func (c *clientPlaybacks) reclaimLocked(now time.Time, all bool) {
+// reclaimLocked drops the titles nothing has played or served for the idle
+// TTL. What they kept only helps a client resuming from its buffer long after
+// it stopped.
+func (c *clientPlaybacks) reclaimLocked(now time.Time) {
 	for k, t := range c.titles {
-		if len(t.serves) == 0 && len(c.attempts[k]) == 0 && (all || now.Sub(t.active) > c.timing().idleTTL) {
+		if c.idleLocked(k, t) && now.Sub(t.active) > c.timing().idleTTL {
 			delete(c.titles, k)
 		}
 	}
+}
+
+// evictIdleLocked makes room in a full table by dropping the title nothing is
+// playing or serving that was active longest ago, reporting false when every
+// title is in use.
+func (c *clientPlaybacks) evictIdleLocked() bool {
+	oldest := ""
+	for k, t := range c.titles {
+		if c.idleLocked(k, t) && (oldest == "" || t.active.Before(c.titles[oldest].active)) {
+			oldest = k
+		}
+	}
+	if oldest == "" {
+		return false
+	}
+	delete(c.titles, oldest)
+	return true
+}
+
+func (c *clientPlaybacks) idleLocked(key string, t *clientTitle) bool {
+	return len(t.serves) == 0 && len(c.attempts[key]) == 0
 }
 
 // noteServed records which media session a stream's title is being served
@@ -293,9 +328,9 @@ func (c *clientPlaybacks) noteServed(stream *auth.Stream, sess *session.Session)
 }
 
 // register starts matching the title's reports to a reporting serve. A start
-// its client made just ahead of the serve counts; a stop from before the
-// serve began is the previous playback's. A serve the table has no room for
-// is never matched, so the transport scrobbles it.
+// its client made just ahead of the serve counts; its progress then is the
+// previous playback's as likely as this one's. A serve the table has no room
+// for is never matched, so the transport scrobbles it.
 func (c *clientPlaybacks) register(stream *auth.Stream, contentID string, rs *reportingServe) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -307,7 +342,7 @@ func (c *clientPlaybacks) register(stream *auth.Stream, contentID string, rs *re
 		return
 	}
 	for _, m := range t.reporters {
-		if rs.matches(m.device, m.address) && !m.at.Before(rs.began.Add(-clientReportLead)) && (!m.stop || !m.at.Before(rs.began)) {
+		if m.start && rs.matches(m.device, m.address) && !m.at.Before(rs.began.Add(-clientReportLead)) {
 			rs.reported.Store(true)
 		}
 	}
@@ -333,8 +368,8 @@ type clientScrobble struct {
 // apply folds one report into its playback and hands send what to send, in
 // order, while still holding the lock: a later report's sends are queued
 // behind this one's. live is what the title's live media session says it is,
-// nil when there is none. A report that cannot be tracked is not recorded as
-// reported, so the transport still scrobbles that playback.
+// nil when there is none. A report that cannot be tracked changes nothing,
+// so the transport still scrobbles that playback.
 func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *clientItem, expire func(key, device string, a *clientAttempt, gen int), send func(clientScrobble)) {
 	key := clientPlaybackKey(stream, p.ContentID)
 	device := p.playbackKey()
@@ -365,14 +400,21 @@ func (c *clientPlaybacks) apply(stream *auth.Stream, p ClientPlayback, live *cli
 		}
 		newPlayback = true // resumed
 	}
-	title := c.titleLocked(key, now)
-	if title == nil || (a == nil && c.count >= c.timing().limit) {
+	// Room for a new playback is checked before its title is made, which may
+	// evict another's: a report turned away leaves the table as it was.
+	if a == nil && c.count >= c.timing().limit {
 		return
 	}
-	title.reporters[reporterKey(p.Device, p.Address)] = reportMark{device: p.Device, address: p.Address, at: now, stop: p.Event == ClientPlaybackStop}
-	for rs := range title.serves {
-		if rs.matches(p.Device, p.Address) {
-			rs.reported.Store(true)
+	title := c.titleLocked(key, now)
+	if title == nil {
+		return
+	}
+	title.reporters[reporterKey(p.Device, p.Address)] = reportMark{device: p.Device, address: p.Address, at: now, start: p.Event == ClientPlaybackStart}
+	if p.Event != ClientPlaybackStop {
+		for rs := range title.serves {
+			if rs.matches(p.Device, p.Address) {
+				rs.reported.Store(true)
+			}
 		}
 	}
 	// Newer is better only when a target can place it: a session closing, or
@@ -545,29 +587,26 @@ func (s *Server) sendClientScrobble(targets []scrobble.Target, stream *auth.Stre
 
 // afterReportGrace runs fn once the report grace has passed, as one of the
 // serve's pending fallbacks: counted with the sends it may make, so whatever
-// waits on those waits on it too, and cancelled by Shutdown. Once Shutdown has
-// run it schedules nothing.
+// waits on those waits on it too. Shutdown runs it early; once Shutdown has
+// begun, fn runs at once, deciding from the reports so far.
 func (s *Server) afterReportGrace(rs *reportingServe, fn func()) {
 	c := &s.clientPlayback
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
+		fn()
 		return
 	}
+	defer c.mu.Unlock()
 	if c.scheduled == nil {
 		c.scheduled = make(map[*reportingServe]struct{})
 	}
 	c.scheduled[rs] = struct{}{}
 	s.scrobbleSends.Add(1)
-	rs.timers = append(rs.timers, time.AfterFunc(c.timing().reportGrace, func() {
+	rs.pending = append(rs.pending, pendingFallback{run: fn, timer: time.AfterFunc(c.timing().reportGrace, func() {
 		defer s.scrobbleSends.Done()
-		c.mu.Lock()
-		closed := c.closed
-		c.mu.Unlock()
-		if !closed {
-			fn()
-		}
-	}))
+		fn()
+	})})
 }
 
 // runFallbackStart sends the serve's fallback start if one is due, once. A
@@ -576,9 +615,9 @@ func (s *Server) afterReportGrace(rs *reportingServe, fn func()) {
 func (s *Server) runFallbackStart(rs *reportingServe) {
 	rs.startOnce.Do(func() {
 		s.clientPlayback.mu.Lock()
-		start, closed := rs.start, s.clientPlayback.closed
+		start := rs.start
 		s.clientPlayback.mu.Unlock()
-		if start != nil && !closed {
+		if start != nil {
 			start()
 		}
 	})
@@ -596,29 +635,41 @@ func (s *Server) endReportingServe(stream *auth.Stream, contentID string, rs *re
 	s.cancelFallbacksLocked(rs)
 }
 
-func (s *Server) cancelFallbacksLocked(rs *reportingServe) {
-	for _, t := range rs.timers {
-		if t.Stop() {
+// cancelFallbacksLocked stops the serve's pending fallbacks, returning those
+// it stopped before they fired.
+func (s *Server) cancelFallbacksLocked(rs *reportingServe) []func() {
+	var stopped []func()
+	for _, p := range rs.pending {
+		if p.timer.Stop() {
+			stopped = append(stopped, p.run)
 			s.scrobbleSends.Done()
 		}
 	}
-	rs.timers = nil
+	rs.pending = nil
 	delete(s.clientPlayback.scheduled, rs)
+	return stopped
 }
 
-// shutdownClientPlayback stops every timer client playback tracking has
-// pending, and anything new from being tracked or scheduled.
+// shutdownClientPlayback stops tracking. A playback still running is left
+// unstopped — its client is still playing, and reports again to whatever
+// serves next — but a serve's pending fallback is decided now, from the
+// reports so far, rather than dropped with its timer: the shutdown cut that
+// serve, and its client may never report it.
 func (s *Server) shutdownClientPlayback() {
 	c := &s.clientPlayback
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closed = true
 	for _, devices := range c.attempts {
 		for _, a := range devices {
 			a.timer.Stop()
 		}
 	}
+	var due []func()
 	for rs := range c.scheduled {
-		s.cancelFallbacksLocked(rs)
+		due = append(due, s.cancelFallbacksLocked(rs)...)
+	}
+	c.mu.Unlock()
+	for _, fn := range due {
+		fn()
 	}
 }
