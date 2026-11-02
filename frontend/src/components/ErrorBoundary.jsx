@@ -51,7 +51,7 @@ class ErrorBoundary extends Component {
           <CardContent className="space-y-4">
             <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="break-words">{error.message || String(error)}</span>
+              <span className="wrap-break-word">{error.message || String(error)}</span>
             </div>
             <p className="text-sm text-muted-foreground">
               Full details are in the browser console. If this keeps happening, include them in a

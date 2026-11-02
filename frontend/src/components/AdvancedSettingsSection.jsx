@@ -151,7 +151,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
   )
 
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
-  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-40"
   const labelClass = "min-w-0 text-sm font-medium"
 
   return (
@@ -162,7 +162,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
             <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                  <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                     <CardTitle>Logs</CardTitle>
                     <CardDescription>Log level and file retention. Changes save automatically.</CardDescription>
                   </div>
@@ -177,7 +177,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                         <div className={stackedFieldRowClass}>
                           <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Log Level <EnvOverrideIndicator show={envOverrides.includes('log_level')} /></FormLabel>
                           <FormControl>
-                            <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitField('log_level') }}>
+                            <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-56")} {...field} onChange={(e) => { field.onChange(e); commitField('log_level') }}>
                               <option value="DEBUG">DEBUG</option>
                               <option value="INFO">INFO</option>
                               <option value="WARN">WARN</option>
@@ -244,7 +244,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
             <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+                  <div className="min-w-0 flex-1 max-w-120 space-y-0.5">
                     <CardTitle>Playback</CardTitle>
                     <CardDescription>Startup behavior before the first playable response is sent.</CardDescription>
                   </div>
@@ -369,7 +369,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
             <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                  <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                     <CardTitle>AvailNZB</CardTitle>
                     <CardDescription>Configure how StreamNZB interacts with AvailNZB.</CardDescription>
                   </div>
@@ -438,7 +438,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
             <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+                  <div className="min-w-0 flex-1 max-w-120 space-y-0.5">
                     <CardTitle>Memory & Cache</CardTitle>
                     <CardDescription>Runtime memory limits and search cache maintenance.</CardDescription>
                   </div>
@@ -497,7 +497,7 @@ export const AdvancedSettingsSection = React.memo(function AdvancedSettingsSecti
                       <FormLabel className={labelClass}>Library Search Priority</FormLabel>
                     </div>
                     <FormControl>
-                      <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitField('library_search_mode') }}>
+                      <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-56")} {...field} onChange={(e) => { field.onChange(e); commitField('library_search_mode') }}>
                         <option value="library_first">Library First (Fastest)</option>
                         <option value="combine">Combine Library + Indexers</option>
                         <option value="fallback_only">Fallback to Library</option>

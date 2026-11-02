@@ -637,7 +637,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                 <Button type="button" size="sm" className="shrink-0" onClick={inspectSource} disabled={sourceLoading}>
                   {sourceLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking…</> : <><Link2 className="mr-2 h-4 w-4" /> Check source</>}
                 </Button>
-                <p className="min-w-[12rem] flex-1 text-xs text-muted-foreground">
+                <p className="min-w-48 flex-1 text-xs text-muted-foreground">
                   Supported: public Stremio manifests, TMDB lists, MDBList lists, and Letterboxd film lists.
                 </p>
               </div>
@@ -653,7 +653,7 @@ function MetadataProfileEditor({ draft, onChange, registry, registryError, certO
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
                   <p className="text-sm text-muted-foreground">{sourcePreview.name || "Catalog source"}: {sourcePreview.catalogs?.length || 0} usable browse rows.</p>
                   {sourcePreview.warnings?.length > 0 && (
-                    <p className="max-h-24 overflow-y-auto break-words text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
+                    <p className="max-h-24 overflow-y-auto wrap-break-word text-xs text-muted-foreground">Unavailable rows were not added: {sourcePreview.warnings.join(" · ")}</p>
                   )}
                   <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
                     {(sourcePreview.catalogs || []).map((catalog) => {

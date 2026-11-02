@@ -430,7 +430,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
                       <Card key={sess.id} className="group relative min-w-0 pr-10">
                         <CardContent className="p-3">
                           <div
-                            className="min-w-0 pr-2 text-sm font-medium leading-snug whitespace-normal break-words [overflow-wrap:anywhere] md:truncate md:whitespace-nowrap"
+                            className="min-w-0 pr-2 text-sm font-medium leading-snug whitespace-normal wrap-break-word wrap-anywhere md:truncate md:whitespace-nowrap"
                             title={sess.title}
                           >
                             {sess.title}
@@ -635,7 +635,7 @@ export function DashboardPage({ stats, chartData, sendCommand, config, onNavigat
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>End active stream?</DialogTitle>
-            <DialogDescription className="break-words [overflow-wrap:anywhere]">
+            <DialogDescription className="wrap-break-word wrap-anywhere">
               {activeSessionToClose
                 ? `This will stop playback for "${activeSessionToClose.title}".`
                 : 'This will stop playback for the selected stream.'}

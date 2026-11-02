@@ -389,7 +389,7 @@ function IndexerDialog({ open, onOpenChange, initialValue, onSave, onClearStatus
                 </div>
                 <div className={controlWideClass}>
                   <select
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
                     value={draft.content_scope || 'all'}
                     onChange={(event) => update('content_scope', event.target.value === 'all' ? '' : event.target.value)}
                   >
@@ -635,7 +635,7 @@ export function IndexerSettings({ fields = [], append, update, replace, defaultP
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
               <div className="min-w-0 space-y-0.5">
                 <CardTitle>Indexers</CardTitle>
-                <CardDescription className="break-words">Configure your search sources.</CardDescription>
+                <CardDescription className="wrap-break-word">Configure your search sources.</CardDescription>
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>

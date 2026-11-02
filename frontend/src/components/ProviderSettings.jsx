@@ -457,7 +457,7 @@ function ProviderDialog({ open, onOpenChange, initialValue, onSave, onClearStatu
               </div>
               <div className={controlNarrowClass}>
                 <select
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
                   value={draft.pipeline_depth ?? ''}
                   onChange={(event) => update('pipeline_depth', event.target.value === '' ? undefined : Number(event.target.value))}
                 >
@@ -609,7 +609,7 @@ export function ProviderSettings({ fields = [], replace, onPersist, onClearStatu
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
               <div className="min-w-0 space-y-0.5">
                 <CardTitle>Providers</CardTitle>
-                <CardDescription className="break-words">Configure your Usenet provider connections.</CardDescription>
+                <CardDescription className="wrap-break-word">Configure your Usenet provider connections.</CardDescription>
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>

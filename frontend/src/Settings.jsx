@@ -262,7 +262,7 @@ function Settings({
                   onClick={() => handleTabChange(tab.id)}
                   className={cn(
                     'relative flex items-center gap-1.5 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors',
-                    'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md',
+                    'hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-t-md',
                     activeTab === tab.id
                       ? 'text-foreground after:absolute after:bottom-0 after:inset-x-0 after:h-0.5 after:bg-primary'
                       : 'text-muted-foreground',
@@ -323,7 +323,7 @@ function Settings({
             <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                  <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                     <CardTitle>Default Proxy</CardTitle>
                     <CardDescription>Global HTTP(S) proxy used by indexers when a per-indexer proxy is not set. Changes save automatically.</CardDescription>
                   </div>
@@ -412,7 +412,7 @@ function Settings({
             footerStatusVisible ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
           )}>
             <div className={cn(
-              "mx-auto w-full rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/90",
+              "mx-auto w-full rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur-sm supports-backdrop-filter:bg-background/90",
               visibleFooterStatus.type === 'error'
                 ? "border-destructive/30 bg-destructive/10 text-destructive"
                 : visibleFooterStatus.type === 'success'

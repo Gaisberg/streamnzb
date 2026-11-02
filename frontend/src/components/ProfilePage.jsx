@@ -146,7 +146,7 @@ export const ProfilePage = React.memo(function ProfilePage({
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+              <div className="min-w-0 flex-1 max-w-120 space-y-0.5">
                 <CardTitle>Account</CardTitle>
                 <CardDescription>Manage the username you use to sign in to the dashboard.</CardDescription>
               </div>
@@ -203,7 +203,7 @@ export const ProfilePage = React.memo(function ProfilePage({
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1 max-w-[30rem] space-y-0.5">
+              <div className="min-w-0 flex-1 max-w-120 space-y-0.5">
                 <CardTitle>Password</CardTitle>
                 <CardDescription>Change your password. You will stay logged in after changing it.</CardDescription>
               </div>

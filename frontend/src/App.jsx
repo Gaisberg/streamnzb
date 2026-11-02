@@ -275,7 +275,7 @@ function App() {
 
   if (!authChecked) {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm gap-4">
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-xs gap-4">
         <Loader2 className="h-12 w-12 text-primary animate-spin" />
         <div className="text-xl font-semibold tracking-tight">Verifying session...</div>
       </div>
@@ -303,7 +303,7 @@ function App() {
   }
 
   if (!stats || isRestarting) return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm gap-4">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-xs gap-4">
         <Loader2 className="h-12 w-12 text-primary animate-spin" />
         <div className="text-xl font-semibold tracking-tight">
             {isRestarting ? "Restarting StreamNZB..." : "Initializing StreamNZB Dashboard..."}

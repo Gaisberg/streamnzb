@@ -25,7 +25,7 @@ function PresetCard({ preset, active, onSelect }) {
       className={cn(
         "group relative flex flex-col overflow-hidden rounded-xl border text-left transition-all",
         active
-          ? "border-primary/60 bg-primary/5 shadow-sm"
+          ? "border-primary/60 bg-primary/5 shadow-xs"
           : "border-border hover:border-muted-foreground/40 hover:bg-muted/30",
       )}
     >

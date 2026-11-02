@@ -88,7 +88,7 @@ export function ManagerShell({
 
       {children && (
         <div ref={detailRef} className="min-w-0 scroll-mt-4 space-y-4">
-          <div className="sticky top-0 z-10 rounded-lg border border-border bg-card/95 p-3 shadow-sm backdrop-blur-sm">
+          <div className="sticky top-0 z-10 rounded-lg border border-border bg-card/95 p-3 shadow-xs backdrop-blur-xs">
             <div className="flex flex-wrap items-center gap-2">
               {title}
               <div className="ml-auto flex flex-wrap items-center justify-end gap-1">

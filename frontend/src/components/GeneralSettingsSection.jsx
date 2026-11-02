@@ -171,7 +171,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
 
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
   const controlWideClass = "w-full min-w-0 sm:max-w-xs"
-  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-40"
   const labelClass = "min-w-0 text-sm font-medium"
 
   return (
@@ -181,7 +181,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                   <CardTitle>Addon</CardTitle>
                   <CardDescription>Configure how the Stremio addon listens and is accessed. Changes save automatically.</CardDescription>
                 </div>
@@ -218,7 +218,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                   <CardTitle>Database</CardTitle>
                   <CardDescription>Where the library, NZB history, and metrics are stored. Changes are applied without a restart.</CardDescription>
                 </div>
@@ -237,7 +237,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
                     <div className={stackedFieldRowClass}>
                       <FormLabel className={cn(labelClass, 'flex items-center gap-1.5 sm:flex-1')}>Backend <EnvOverrideIndicator show={envOverrides.includes('database_driver')} /></FormLabel>
                       <FormControl>
-                        <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-[14rem]")} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
+                        <select className={cn(selectClass, "overflow-hidden text-ellipsis whitespace-nowrap sm:max-w-56")} {...field} onChange={(e) => { field.onChange(e); commitDatabaseDriver() }}>
                           <option value="sqlite">SQLite (default)</option>
                           <option value="postgres">Postgres</option>
                         </select>
@@ -282,7 +282,7 @@ export const GeneralSettingsSection = React.memo(function GeneralSettingsSection
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1 max-w-[34rem] space-y-0.5">
+              <div className="min-w-0 flex-1 max-w-136 space-y-0.5">
                 <CardTitle>User-Agent</CardTitle>
                 <CardDescription>Custom User-Agent headers for indexer queries, NZB grabs, and provider-facing requests.</CardDescription>
               </div>

@@ -66,7 +66,7 @@ const FORMAT_FIELDS = [
   },
 ]
 
-const templateBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+const templateBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 
 // FormatPreview renders the live sample output for the result templates being
 // edited, debounced against the admin preview endpoint. Compile errors are

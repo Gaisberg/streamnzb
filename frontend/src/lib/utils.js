@@ -23,7 +23,7 @@ export function streamSeriesKey(name) {
 // selectClass styles a native <select> to match the Input primitive. Native
 // selects are used wherever a Radix popover would be more machinery than the
 // choice deserves; this keeps them looking like every other control.
-export const selectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-60"
+export const selectClass = "flex h-9 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-60"
 
 // copyToClipboard writes text to the clipboard, falling back to a hidden
 // textarea where the async API is unavailable — StreamNZB is routinely served

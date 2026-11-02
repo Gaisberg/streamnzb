@@ -215,14 +215,14 @@ export const DirectPlayPage = memo(function DirectPlayPage({ libraryItem = null,
       )}
 
       {playerOpen && playback?.playUrl && playerSource && (
-        <div className="direct-play-overlay z-[100]">
+        <div className="direct-play-overlay z-100">
           <Button
             type="button"
             variant="ghost"
             size="icon"
             onClick={closePlayer}
             aria-label="Close player"
-            className="absolute right-3 top-3 z-[110] bg-black/40 text-white hover:bg-black/60 hover:text-white"
+            className="absolute right-3 top-3 z-110 bg-black/40 text-white hover:bg-black/60 hover:text-white"
           >
             <X className="h-4 w-4" />
           </Button>

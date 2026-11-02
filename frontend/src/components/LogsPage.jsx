@@ -67,7 +67,7 @@ export const LogsPage = memo(function LogsPage({ logs = [] }) {
       <Card className="flex flex-col overflow-hidden flex-1 min-h-0">
         <CardHeader>
 			  <div className="flex items-start justify-between gap-4">
-				<div className="min-w-0 flex-1 max-w-[34rem] space-y-0.5">
+				<div className="min-w-0 flex-1 max-w-136 space-y-0.5">
 				  <CardTitle className="flex items-center gap-2">
 					<FileText className="size-5" />
 					Logs

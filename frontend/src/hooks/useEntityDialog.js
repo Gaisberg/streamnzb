@@ -23,9 +23,9 @@ export function firstFieldErrorMessage(fieldErrors, fallback) {
 export const dialogRowClass = "flex flex-col gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:gap-4"
 export const dialogLabelClass = "min-w-0 min-[360px]:flex-1"
 export const dialogControlBaseClass = "w-full min-[360px]:ml-auto min-[360px]:shrink-0"
-export const dialogControlWideClass = `${dialogControlBaseClass} min-[360px]:w-[14rem]`
-export const dialogControlNameClass = `${dialogControlBaseClass} flex items-center gap-2 min-[360px]:w-[16.5rem]`
-export const dialogControlNarrowClass = `${dialogControlBaseClass} min-[360px]:w-[9rem]`
+export const dialogControlWideClass = `${dialogControlBaseClass} min-[360px]:w-56`
+export const dialogControlNameClass = `${dialogControlBaseClass} flex items-center gap-2 min-[360px]:w-66`
+export const dialogControlNarrowClass = `${dialogControlBaseClass} min-[360px]:w-36`
 // A switch has no width of its own to override the stacked-layout w-full with,
 // and the base class pins it against shrinking — so without w-auto it claims
 // the whole row, squeezes the label box to nothing and sits on top of the

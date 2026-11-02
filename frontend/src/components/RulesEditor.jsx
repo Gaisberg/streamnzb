@@ -452,7 +452,7 @@ function RuleCard({ rule, rules, stat, sampleCount, onChange, onRemove, onDuplic
             rows={2}
             spellCheck={false}
             placeholder={'dolbyVision and not hdrFallback'}
-            className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
             aria-label="Condition"
           />
           {action === "limit" && customGroup && (
@@ -721,7 +721,7 @@ export function RulesEditor({ values = [], onChange, libraryRules = [], ruleStat
               rows={Math.min(24, Math.max(8, ruleText.split("\n").length + 1))}
               spellCheck={false}
               placeholder={'Atmos: score -800 if "atmos" in traits\n3D: reject if threeD\n4K cap [movie]: keep 3 if resolution == "2160p"\nWeak tail: prune if finalScore < 0 and count(finalScore >= 0) >= 6'}
-              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
               aria-label="All rules as text"
             />
             {ruleTextError ? (

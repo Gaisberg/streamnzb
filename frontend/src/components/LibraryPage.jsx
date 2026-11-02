@@ -211,7 +211,7 @@ export function LibraryPage({ onPlay } = {}) {
       <Card className="flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 flex-1 max-w-[42rem] space-y-0.5">
+            <div className="min-w-0 flex-1 max-w-2xl space-y-0.5">
               <CardTitle className="flex items-center gap-2">
                 <Library className="size-5" />
                 Library &amp; Pre-Indexer Storage
@@ -281,7 +281,7 @@ export function LibraryPage({ onPlay } = {}) {
           <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-muted/20 p-3">
             <label className="space-y-1.5">
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Search</span>
-              <div className="flex h-11 min-w-0 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 shadow-xs">
+              <div className="flex h-11 min-w-0 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 shadow-2xs">
                 <Search className="size-4 shrink-0 text-muted-foreground" />
                 <Input
                   value={searchQuery}
@@ -297,7 +297,7 @@ export function LibraryPage({ onPlay } = {}) {
                 <select
                   value={contentType}
                   onChange={(e) => { setContentType(e.target.value); setPage(1); }}
-                  className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <option value="all">All Types</option>
                   <option value="movie">Movies</option>
@@ -309,7 +309,7 @@ export function LibraryPage({ onPlay } = {}) {
                 <select
                   value={statusFilter}
                   onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-                  className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-9 rounded-md border border-input bg-background px-3 py-1 text-xs font-medium shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <option value="all">All Statuses</option>
                   <option value="good">Good</option>
@@ -350,11 +350,11 @@ export function LibraryPage({ onPlay } = {}) {
                   <div
                     key={item.id}
                     className={cn(
-                      'overflow-hidden rounded-xl border bg-background/95 shadow-sm transition-all duration-200 hover:bg-muted/10',
+                      'overflow-hidden rounded-xl border bg-background/95 shadow-xs transition-all duration-200 hover:bg-muted/10',
                       item.status === 'bad'
-                        ? 'border-destructive/40 bg-destructive/[0.03]'
+                        ? 'border-destructive/40 bg-destructive/3'
                         : item.pinned
-                          ? 'border-amber-500/40 bg-amber-500/[0.03]'
+                          ? 'border-amber-500/40 bg-amber-500/3'
                           : 'border-border/60'
                     )}
                   >
@@ -402,7 +402,7 @@ export function LibraryPage({ onPlay } = {}) {
                         </div>
                       </div>
                       <div className="space-y-1.5">
-                        <div className="line-clamp-2 text-base font-semibold leading-snug [overflow-wrap:anywhere]" title={item.release_title || item.releaseTitle}>
+                        <div className="line-clamp-2 text-base font-semibold leading-snug wrap-anywhere" title={item.release_title || item.releaseTitle}>
                           {item.release_title || item.releaseTitle}
                         </div>
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -419,7 +419,7 @@ export function LibraryPage({ onPlay } = {}) {
                             </Badge>
                           )}
                           <StatusBadge status={item.status} reason={item.status_reason} />
-                          <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                          <span className="text-xs text-muted-foreground wrap-anywhere">
                             {[
                               item.content_id,
                               item.season > 0 ? `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}` : null,
@@ -429,7 +429,7 @@ export function LibraryPage({ onPlay } = {}) {
                           </span>
                         </div>
                         {item.media_file_name && (
-                          <div className="text-xs text-emerald-600 dark:text-emerald-400 [overflow-wrap:anywhere]" title={item.media_file_name}>
+                          <div className="text-xs text-emerald-600 dark:text-emerald-400 wrap-anywhere" title={item.media_file_name}>
                             {item.media_file_name}
                           </div>
                         )}

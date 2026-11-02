@@ -417,10 +417,10 @@ function TurnedAwayRelease({ release }) {
         {open
           ? <ChevronDown className="mt-0.5 size-3.5 shrink-0" />
           : <ChevronRight className="mt-0.5 size-3.5 shrink-0" />}
-        <span className="break-words text-xs [overflow-wrap:anywhere]">{release.title || '—'}</span>
+        <span className="wrap-break-word text-xs wrap-anywhere">{release.title || '—'}</span>
       </button>
       {open && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-[1.125rem]">
+        <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-4.5">
           {release.meta.map((entry) => (
             <span key={entry} className="text-[10px] text-muted-foreground">{entry}</span>
           ))}
@@ -576,7 +576,7 @@ function SearchDiagnosticsPanel({ diagnostic }) {
                   <td className="py-1 pr-3 text-right tabular-nums">{call.results}</td>
                   <td className="py-1">
                     {call.error
-                      ? <span className="text-red-500 [overflow-wrap:anywhere]" title={call.error}>{call.error.length > 60 ? `${call.error.slice(0, 60)}…` : call.error}</span>
+                      ? <span className="text-red-500 wrap-anywhere" title={call.error}>{call.error.length > 60 ? `${call.error.slice(0, 60)}…` : call.error}</span>
                       : <span className="text-muted-foreground">{call.cached ? 'cached' : 'ok'}</span>}
                   </td>
                 </tr>
@@ -660,7 +660,7 @@ function DetailRow({ label, value, mono = false, tone = 'default', bordered = fa
         <div className="text-muted-foreground">{label}</div>
         <div
           className={cn(
-            'min-w-0 break-words leading-relaxed [overflow-wrap:anywhere]',
+            'min-w-0 wrap-break-word leading-relaxed wrap-anywhere',
             mono && 'rounded-md border border-border/50 bg-background/70 px-3 py-2 font-mono text-xs sm:text-sm',
             tone === 'warning' && 'rounded-md border border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200',
             tone === 'danger' && 'rounded-md border border-red-200/70 bg-red-50/70 px-3 py-2 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300'
@@ -909,7 +909,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
       <Card className="flex min-w-0 flex-1 min-h-0 flex-col overflow-hidden">
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 flex-1 max-w-[42rem] space-y-0.5">
+            <div className="min-w-0 flex-1 max-w-2xl space-y-0.5">
               <CardTitle className="flex items-center gap-2">
                 <History className="size-5" />
                 History
@@ -953,7 +953,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
             <label className="space-y-1.5">
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Search</span>
               <div className="flex items-center gap-2">
-                <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 shadow-xs">
+                <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 shadow-2xs">
                   <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
                   <div className="relative min-w-0 flex-1">
                     <Input
@@ -979,7 +979,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                 >
                   <SlidersHorizontal className="size-4" />
                   {activeFilterChips.length > 0 ? (
-                    <span className="absolute -right-1 -top-1 size-3.5 rounded-full border-2 border-background bg-primary shadow-sm" />
+                    <span className="absolute -right-1 -top-1 size-3.5 rounded-full border-2 border-background bg-primary shadow-xs" />
                   ) : null}
                 </Button>
               </div>
@@ -1024,9 +1024,9 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                             <div
                               key={group.key}
                               className={cn(
-                                'overflow-hidden rounded-xl border bg-background/95 shadow-sm transition-all duration-200 hover:bg-muted/10',
+                                'overflow-hidden rounded-xl border bg-background/95 shadow-xs transition-all duration-200 hover:bg-muted/10',
                                 expanded
-                                  ? 'border-primary/40 ring-1 ring-primary/25 shadow-md bg-primary/[0.03]'
+                                  ? 'border-primary/40 ring-1 ring-primary/25 shadow-md bg-primary/3'
                                   : 'border-border/60'
                               )}
                             >
@@ -1067,7 +1067,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                   <div className="line-clamp-2 text-base font-semibold leading-snug md:text-lg">
                                     {group.title}
                                   </div>
-                                  <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                                  <div className="text-xs text-muted-foreground wrap-anywhere">
                                     {[group.latest?.stream_name || group.streamName || 'default', formatContentTypeLabel(group.contentType), group.latest?.content_id || group.contentID || '—'].join(' • ')}
                                   </div>
                                 </div>
@@ -1119,10 +1119,10 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                                             </div>
                                           </div>
                                           <div className="min-w-0 space-y-1">
-                                            <div className="line-clamp-3 break-words font-medium leading-snug">
+                                            <div className="line-clamp-3 wrap-break-word font-medium leading-snug">
                                               {attempt.release_title || '—'}
                                             </div>
-                                            <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                                            <div className="text-xs text-muted-foreground wrap-anywhere">
                                               {[attempt.indexer_name || '—', attempt.provider_name || '—', formatSize(attempt.release_size), formatMatchType(attempt.match_type), attempt.ttff_ms > 0 ? `⚡ ${attempt.ttff_ms} ms` : ''].filter(Boolean).join(' • ')}
                                             </div>
                                           </div>
@@ -1159,7 +1159,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
               {selectedAttempt ? (
                 <>
                   <DialogHeader className="space-y-1 pb-1">
-                    <DialogTitle className="pr-10 text-left text-lg leading-tight break-words [overflow-wrap:anywhere] sm:text-2xl">
+                    <DialogTitle className="pr-10 text-left text-lg leading-tight wrap-break-word wrap-anywhere sm:text-2xl">
                       {selectedAttempt.release_title || 'Attempt details'}
                     </DialogTitle>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1241,7 +1241,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                               href={getSafeReleaseUrl(selectedAttempt.release_url)}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground"
+                              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium shadow-2xs hover:bg-accent hover:text-accent-foreground"
                             >
                               <ExternalLink className="size-4" />
                               Open
@@ -1273,7 +1273,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                       aria-label="Timeframe"
                       value={timeframe}
                       onChange={(event) => setTimeframe(event.target.value)}
-                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
                     >
                       <option value="today">Today</option>
                       <option value="7d">7 days</option>
@@ -1290,7 +1290,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                       aria-label="Stream"
                       value={streamFilter}
                       onChange={(event) => setStreamFilter(event.target.value)}
-                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
                     >
                       <option value="all">All streams</option>
                       {streamOptions.map((streamName) => (
@@ -1307,7 +1307,7 @@ export const NZBHistoryPage = memo(function NZBHistoryPage({ refreshTrigger }) {
                       aria-label="Status"
                       value={resultFilter}
                       onChange={(event) => setResultFilter(event.target.value)}
-                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                      className="flex h-9 w-40 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
                     >
                       <option value="all">All</option>
                       <option value="ok">OK</option>

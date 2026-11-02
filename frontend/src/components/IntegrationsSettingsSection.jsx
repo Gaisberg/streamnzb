@@ -140,7 +140,7 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
 
   const stackedFieldRowClass = "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
   const controlWideClass = "w-full min-w-0 sm:max-w-xs"
-  const controlMediumClass = "w-full min-w-0 sm:max-w-[10rem]"
+  const controlMediumClass = "w-full min-w-0 sm:max-w-40"
   const labelClass = "min-w-0 text-sm font-medium"
 
   return (
@@ -150,7 +150,7 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                   <CardTitle>Newznab Endpoint</CardTitle>
                   <CardDescription>Serve your configured indexers to any Newznab-compatible application as a single indexer.</CardDescription>
                 </div>
@@ -210,7 +210,7 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 max-w-[26rem] space-y-0.5">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
                   <CardTitle>NNTP Proxy Server</CardTitle>
                   <CardDescription>Allow other apps (SABnzbd, NZBGet) to use StreamNZB as a localized news server.</CardDescription>
                 </div>

@@ -44,7 +44,7 @@ export function ComponentHealthBadge({ record, className }) {
           </div>
           {hint ? <div className="text-xs">{hint}</div> : null}
           {record.detail ? (
-            <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{record.detail}</div>
+            <div className="text-xs text-muted-foreground wrap-anywhere">{record.detail}</div>
           ) : null}
         </div>
       </TooltipContent>
@@ -87,7 +87,7 @@ export function ComponentHealthNotice({ record, onRefresh }) {
     <div
       className={cn(
         'mt-2 rounded-md border px-2 py-1.5 text-[11px] leading-snug',
-        blocked ? 'border-destructive/40 bg-destructive/[0.06] text-destructive' : 'border-amber-500/40 bg-amber-500/[0.06] text-amber-600 dark:text-amber-400'
+        blocked ? 'border-destructive/40 bg-destructive/6 text-destructive' : 'border-amber-500/40 bg-amber-500/6 text-amber-600 dark:text-amber-400'
       )}
     >
       <div className="flex items-center gap-1.5">
@@ -110,11 +110,11 @@ export function ComponentHealthNotice({ record, onRefresh }) {
           </Button>
         )}
       </div>
-      {hint ? <div className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{hint}</div> : null}
+      {hint ? <div className="mt-0.5 text-muted-foreground wrap-anywhere">{hint}</div> : null}
       {/* The server's own line. It is the one thing here that is not our
           interpretation, so when the label is wrong this is what says so. */}
       {record.detail ? (
-        <div className="mt-0.5 text-muted-foreground [overflow-wrap:anywhere]">{record.detail}</div>
+        <div className="mt-0.5 text-muted-foreground wrap-anywhere">{record.detail}</div>
       ) : null}
     </div>
   )

@@ -47,7 +47,7 @@ function ResultRow({ result, expanded, onToggle }) {
   return (
     <div className={cn(
       "overflow-hidden rounded-lg border transition-colors",
-      result.fetch ? "border-border/60 bg-card/40" : "border-destructive/25 bg-destructive/[0.03]",
+      result.fetch ? "border-border/60 bg-card/40" : "border-destructive/25 bg-destructive/3",
     )}>
       <button type="button" onClick={onToggle} className="flex w-full items-start gap-3 px-3 py-2.5 text-left">
         <ChevronDown className={cn(
@@ -228,7 +228,7 @@ export function ProfilePreview({
               onChange={(e) => onSampleInputChange(e.target.value)}
               rows={5}
               spellCheck={false}
-              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
               aria-label="Release names"
             />
           </SettingBlock>

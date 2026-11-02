@@ -242,7 +242,7 @@ export function AppSidebar({
                 <button
                   type="button"
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-lg p-2 text-left outline-none",
+                    "flex w-full items-center gap-3 rounded-lg p-2 text-left outline-hidden",
                     "hover:bg-sidebar-accent focus:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
                   )}
                   aria-label="Open account menu"

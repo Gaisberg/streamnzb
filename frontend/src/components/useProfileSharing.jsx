@@ -8,7 +8,7 @@ import { uniqueProfileName } from "@/hooks/useProfileDrafts"
 import { selectClass } from "@/lib/utils"
 
 // One box style for every share-code textarea.
-const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+const shareBoxClass = "w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-[11px] leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 
 // downloadText hands the user a file, for hosting a share code at a raw URL
 // without a copy-paste step in the middle.

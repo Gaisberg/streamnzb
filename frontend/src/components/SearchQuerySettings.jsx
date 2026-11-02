@@ -372,7 +372,7 @@ function LabelWithHelp({ label, items = [] }) {
       <Label className="text-sm font-medium">{label}</Label>
       <button
         type="button"
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground transition hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground transition hover:text-foreground focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={`${label} help`}
@@ -475,7 +475,7 @@ function ToggleRow({ label, items, value, onChange, onLabel = 'On', offLabel = '
       </div>
       <div className={className}>
         <select
-          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
           value={value ? 'on' : 'off'}
           onChange={(event) => onChange(event.target.value === 'on')}
         >
@@ -487,7 +487,7 @@ function ToggleRow({ label, items, value, onChange, onLabel = 'On', offLabel = '
   )
 }
 
-const attemptSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+const attemptSelectClass = "h-8 rounded-md border border-input bg-background px-2 text-xs ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-1"
 
 // AttemptRow is one question in the plan. Everything it needs is on the row —
 // address, target, and for a title attempt the language it queries under and
@@ -632,9 +632,9 @@ export function QueryDraftFields({ kind, draft, setDraft, editing = false, field
   const inlineRowClass = "flex flex-col gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:gap-4"
   const inlineLabelClass = "min-w-0 min-[360px]:flex-1"
   const controlBaseClass = "w-full min-[360px]:ml-auto min-[360px]:shrink-0"
-  const controlWideClass = `${controlBaseClass} min-[360px]:w-[14rem]`
-  const controlMediumClass = `${controlBaseClass} min-[360px]:w-[13rem]`
-  const controlNarrowClass = `${controlBaseClass} min-[360px]:w-[9rem]`
+  const controlWideClass = `${controlBaseClass} min-[360px]:w-56`
+  const controlMediumClass = `${controlBaseClass} min-[360px]:w-52`
+  const controlNarrowClass = `${controlBaseClass} min-[360px]:w-36`
   const sectionCardClass = "rounded-lg border border-border/60 bg-background/80"
   const attemptsError = fieldErrors.attempts
 
@@ -731,7 +731,7 @@ export function QueryDraftFields({ kind, draft, setDraft, editing = false, field
               </div>
               <div className={controlMediumClass}>
                 <select
-                  className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('stop')}`}
+                  className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('stop')}`}
                   value={stop}
                   onChange={(event) => {
                     // Switching to a threshold rule starts from the default
@@ -783,7 +783,7 @@ export function QueryDraftFields({ kind, draft, setDraft, editing = false, field
                 </div>
                 <div className={controlWideClass}>
                   <select
-                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('order')}`}
+                    className={`flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 ${fieldClass('order')}`}
                     value={order}
                     onChange={(event) => update({ order: event.target.value })}
                   >
@@ -1042,7 +1042,7 @@ function QuerySection({ title, description, kind, items, names, update, remove, 
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
           <div className="min-w-0 space-y-0.5">
             <CardTitle>{title}</CardTitle>
-            <CardDescription className="break-words">{description}</CardDescription>
+            <CardDescription className="wrap-break-word">{description}</CardDescription>
           </div>
           <AddQueryButton
             kind={kind}

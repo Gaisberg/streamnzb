@@ -57,7 +57,7 @@ export function DefineLibraryEditor({ library, onChange }) {
           rows={Math.min(24, Math.max(8, text.split("\n").length + 1))}
           spellCheck={false}
           placeholder={'Movies Remux T1 Groups: define if group in ["FraMeSToR", "W4NK3R"]\nMovies WEB T1 Groups [movie]: define if releaseName matches "(?i)-(NTb|FLUX)$"'}
-          className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="w-full resize-y rounded-md border border-input bg-background p-2.5 font-mono text-xs leading-relaxed focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
           aria-label="Library defines as text"
         />
         {error ? (
