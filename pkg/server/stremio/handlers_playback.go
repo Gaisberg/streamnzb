@@ -2091,6 +2091,8 @@ func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session
 		availOutcome = rt.availReporter.ReportGood(sess, serveDuration)
 	}
 	if !sess.Once(onceSuccessRecorded) {
+		// Another serve committed first; this one still settles its start.
+		s.scrobbleStart(stream, sess, rs)
 		return true
 	}
 	s.recordAttempt(sess, true, "", availOutcome)

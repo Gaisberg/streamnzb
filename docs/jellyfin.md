@@ -112,13 +112,27 @@ stream never sees another's.
   playback reports is scrobbled from the bytes served — start and stop, as a
   Stremio player is — once it has gone a minute without reporting: its
   start a minute after the transfer proves real, its stop a minute after the
-  transfer ends. Reports are matched to the transfer by the client's
-  DeviceId, which StreamNZB adds to the stream URL it hands out, or failing
-  that by its address; so another device reporting the same title does not
-  silence it. (Two such clients behind one address, a reverse proxy for
-  example, whose transfers carry no DeviceId, cannot be told apart; and a
-  client whose first report comes more than a minute late is reported from
-  both.) Stremio playback of the same title on the same stream is
+  transfer ends, the start always ahead of the stop. Reports are matched to
+  the transfer by the DeviceId its request sends. Failing that, they are
+  matched by the DeviceId StreamNZB adds to the stream URL it hands out, but
+  only from the transfer's own address, since a cached or shared URL can be
+  played by a device other than the one it was handed to. A transfer with no
+  DeviceId at all is matched only by reports that carry none either, from
+  its address. So another device reporting the same title, even from behind
+  the same reverse proxy, does not silence it. Only reports made during the
+  transfer, or a start made just before it, count: an earlier playback's
+  stop does not, so replaying a title within a minute in a player that does
+  not report is still scrobbled. Each stream's sends for a title go out in
+  order, one at a time, so a slow MDBList or Simkl request is never
+  overtaken by the next one, for example a resume overtaking the stop
+  before it. (When a transfer cannot be matched to its client — a player
+  that sends no DeviceId of its own and plays a URL handed to another
+  device, a client reporting from a different address than it streams from,
+  or two clients with no DeviceId behind one address, where one reports — it
+  is taken for a client that does not report, and a reporting client among
+  them is reported twice rather than not at all. A client whose first report
+  comes more than a minute late is also reported twice.) Stremio playback
+  of the same title on the same stream is
   scrobbled from its own transfer as before, whatever a Jellyfin client is
   doing. Marking an item watched or unwatched by hand is not scrobbled.
 - **Watched seasons and series** — marking a season or series watched

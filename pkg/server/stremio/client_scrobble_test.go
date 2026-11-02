@@ -39,8 +39,12 @@ type scrobbleHarness struct {
 	sent   []sentScrobble
 	status int
 	delay  time.Duration
-	// stopLag holds each stop back before it lands, as a slower request would.
-	stopLag time.Duration
+	// stopLag and startLag hold each stop or start back before it lands, as a
+	// slower request would.
+	stopLag, startLag time.Duration
+	// holeFrom, when set, is where the served file's data stops being
+	// available: reads from there fail as a missing segment does.
+	holeFrom int64
 }
 
 type harnessOpts struct {
@@ -61,11 +65,9 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		h.mu.Lock()
-		lag := h.stopLag
+		lag := map[string]time.Duration{"/scrobble/stop": h.stopLag, "/scrobble/start": h.startLag}[r.URL.Path]
 		h.mu.Unlock()
-		if r.URL.Path == "/scrobble/stop" {
-			time.Sleep(lag)
-		}
+		time.Sleep(lag)
 		h.mu.Lock()
 		status, delay := h.status, h.delay
 		progress, _ := body["progress"].(float64)
@@ -102,6 +104,7 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 	}
 
 	h.server = &Server{sessionManager: manager, mdblistClients: mdblist.NewRegistry("client-id", dir)}
+	h.server.clientPlayback.timings = defaultClientPlaybackTimings
 	h.server.availReporter = &availnzb.Reporter{MinBytesToReportGood: 1 << 20, MinDurationToReportGood: 300 * time.Millisecond, Disabled: true}
 	// Sends log after they land; a later test re-initialising the logger
 	// must not race them.
@@ -252,11 +255,8 @@ func TestClientPlaybackStartWaitsForALiveSession(t *testing.T) {
 // the position it last confirmed, as the new one starts, and sends nothing
 // more after: not even when it would have gone quiet.
 func TestNewPlaySessionReplacesTheDevicesLast(t *testing.T) {
-	idle := clientPlaybackIdleTTL
-	clientPlaybackIdleTTL = 400 * time.Millisecond
-	t.Cleanup(func() { clientPlaybackIdleTTL = idle })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.idleTTL = 400 * time.Millisecond
 	h.report("dev|ps-1", ClientPlaybackStart, 0)
 	h.settle(t, 1)
 	h.report("dev|ps-1", ClientPlaybackProgress, 576)
@@ -280,10 +280,12 @@ func TestNewPlaySessionReplacesTheDevicesLast(t *testing.T) {
 func TestClientPlaybackNeedsALinkedEnabledAccount(t *testing.T) {
 	for name, opts := range map[string]harnessOpts{"off": {off: true}, "unlinked": {unlinked: true}} {
 		h := newScrobbleHarness(t, opts)
+		rs := &reportingServe{device: "a", began: time.Now()}
+		h.server.clientPlayback.register(h.stream, "kitsu:114:1", rs)
 		h.report("a", ClientPlaybackStart, 10)
 		h.report("a", ClientPlaybackStop, 700)
 		h.settle(t, 0)
-		if h.server.clientPlayback.reportedBy(h.stream, "kitsu:114:1", &reportingServe{device: "a"}) {
+		if rs.reported.Load() {
 			t.Fatalf("%s: a stream that reports nowhere stood its serves' stop down", name)
 		}
 	}
@@ -328,11 +330,8 @@ func TestConsecutiveClientPlaybacks(t *testing.T) {
 // client that stays quiet, or an app killed — goes out at the last position
 // the client confirmed, never further; reporting again starts it anew.
 func TestClientPlaybackGoneQuietReportsItsLastConfirmedPosition(t *testing.T) {
-	idle := clientPlaybackIdleTTL
-	clientPlaybackIdleTTL = 500 * time.Millisecond
-	t.Cleanup(func() { clientPlaybackIdleTTL = idle })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.idleTTL = 500 * time.Millisecond
 	h.report("a", ClientPlaybackStart, 0)
 	h.settle(t, 1)
 	h.report("a", ClientPlaybackProgress, 720) // paused here
@@ -364,6 +363,7 @@ type diagFile struct {
 	size, pos int64
 	rate      float64 // bytes per second, 0 unthrottled
 	closed    bool
+	holeFrom  int64 // reads from here fail as a missing segment; 0 for none
 }
 
 func (f *diagFile) Read(p []byte) (int, error) {
@@ -374,6 +374,9 @@ func (f *diagFile) Read(p []byte) (int, error) {
 	}
 	if f.pos >= f.size {
 		return 0, io.EOF
+	}
+	if f.holeFrom > 0 && f.pos >= f.holeFrom {
+		return 0, errors.New("segment unavailable")
 	}
 	n := min(int64(len(p)), f.size-f.pos)
 	if f.rate > 0 {
@@ -426,7 +429,7 @@ func (h *scrobbleHarness) serveRange(t *testing.T, rangeHeader string, rate floa
 		}
 		ctx, cancel := context.WithCancel(r.Context())
 		h.server.servePlaybackStream(w, r, h.stream, &resolvedPlayback{
-			session: h.sess, sessionID: h.sess.ID, stream: &diagFile{size: diagFileSize, rate: rate},
+			session: h.sess, sessionID: h.sess.ID, stream: &diagFile{size: diagFileSize, rate: rate, holeFrom: h.holeFrom},
 			name: "video.mkv", size: diagFileSize, ctx: ctx, cancel: cancel,
 		}, time.Now())
 	}))
@@ -438,7 +441,9 @@ func (h *scrobbleHarness) serveRange(t *testing.T, rangeHeader string, rate floa
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	req.Header.Set("Range", rangeHeader)
-	if resp, err := http.DefaultClient.Do(req); err == nil {
+	// A redirect (failover) is the player's next request, not this one's.
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if resp, err := noRedirect.Do(req); err == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
@@ -450,11 +455,8 @@ func (h *scrobbleHarness) serveRange(t *testing.T, rangeHeader string, rate floa
 // reports from its own buffer, stopping long after the transfer ended. The
 // client's positions are reported, and the transport adds nothing of its own.
 func TestBufferedPlaybackIsScrobbledFromClientPositions(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 300 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.reportGrace = 300 * time.Millisecond
 	h.serveRange(t, "bytes=0-", 20e6, 30*time.Millisecond, jellyfinServe("vidhub"))
 	h.serveRange(t, fmt.Sprintf("bytes=%d-", diagFileSize-64<<10), 0, 0, jellyfinServe("vidhub"))
 	served := make(chan struct{})
@@ -482,15 +484,12 @@ func TestBufferedPlaybackIsScrobbledFromClientPositions(t *testing.T) {
 // grace for a report. The stop still credits no more than the serve's own
 // time, however fast the client buffered.
 func TestJellyfinServeWithoutReportsFallsBackToTheTransport(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 200 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	h := newScrobbleHarness(t, harnessOpts{runtime: 60})
+	h.server.clientPlayback.timings.reportGrace = 200 * time.Millisecond
 	began := time.Now()
 	h.serveRange(t, "bytes=0-", 50e6, 0, jellyfinServe("silent"))
 	open := time.Since(began)
-	time.Sleep(clientReportGrace) // the stop waits out the grace before deciding
+	time.Sleep(h.server.clientPlayback.timings.reportGrace) // the stop waits out the grace before deciding
 	sent := h.settle(t, 2)
 	if starts, stops := countVerbs(sent); starts != 1 || stops != 1 {
 		t.Fatalf("fallback: %+v", sent)
@@ -504,13 +503,10 @@ func TestJellyfinServeWithoutReportsFallsBackToTheTransport(t *testing.T) {
 // A probe — a request opened and dropped at once — by a client that never
 // reports is no playback: it sends no start, and moves no stop.
 func TestJellyfinProbeWithoutReportsSendsNothing(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 100 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	h := newScrobbleHarness(t, harnessOpts{runtime: 60})
+	h.server.clientPlayback.timings.reportGrace = 100 * time.Millisecond
 	h.serveRange(t, "bytes=0-", 20e6, 30*time.Millisecond, jellyfinServe("silent"))
-	time.Sleep(3 * clientReportGrace)
+	time.Sleep(3 * h.server.clientPlayback.timings.reportGrace)
 	h.settle(t, 0)
 }
 
@@ -518,11 +514,8 @@ func TestJellyfinProbeWithoutReportsSendsNothing(t *testing.T) {
 // which alone credits 8% — before it says it is playing. The serve waits for
 // that, and sends no stop of its own.
 func TestReportJustAfterAnOpenerKeepsTheTransportOut(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 300 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.reportGrace = 300 * time.Millisecond
 	h.serveRange(t, fmt.Sprintf("bytes=%d-", diagFileSize*119/1440), 50e6, 50*time.Millisecond, jellyfinServe("vidhub"))
 	h.report("vidhub|ps", ClientPlaybackStart, 119)
 	wantScrobble(t, h.settle(t, 1)[0], "start", 8.26)
@@ -611,7 +604,8 @@ func TestClientPlaybackOutlivesItsMediaSession(t *testing.T) {
 		stream  *auth.Stream
 		content string
 	}{{other, "kitsu:114:1"}, {h.stream, "kitsu:114:2"}} {
-		out := h.server.clientPlayback.apply(c.stream, ClientPlayback{ContentID: c.content, Device: "dev", Event: ClientPlaybackStop, PositionSeconds: 1368}, nil, noop)
+		var out []clientScrobble
+		h.server.clientPlayback.apply(c.stream, ClientPlayback{ContentID: c.content, Device: "dev", Event: ClientPlaybackStop, PositionSeconds: 1368}, nil, noop, func(o clientScrobble) { out = append(out, o) })
 		if len(out) != 1 || out[0].item != nil {
 			t.Fatalf("%s %s reused another playback's item: %+v", c.stream.Username, c.content, out)
 		}
@@ -622,12 +616,9 @@ func TestClientPlaybackOutlivesItsMediaSession(t *testing.T) {
 // another device playing it that reports nothing. Each gets its own start
 // and stop, and the reporting one no more than its own.
 func TestReportingDeviceDoesNotSilenceAnother(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 200 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	// A 10-second title, so a second-long serve earns a stop.
 	h := newScrobbleHarness(t, harnessOpts{runtime: 10})
+	h.server.clientPlayback.timings.reportGrace = 200 * time.Millisecond
 	h.report("vidhub|ps", ClientPlaybackStart, 0)
 	h.settle(t, 1)
 	var wg sync.WaitGroup
@@ -636,7 +627,7 @@ func TestReportingDeviceDoesNotSilenceAnother(t *testing.T) {
 	go func() { defer wg.Done(); h.serveRange(t, "bytes=0-", 30e6, 0, jellyfinServe("silent")) }() // ends last
 	wg.Wait()
 	h.report("vidhub|ps", ClientPlaybackStop, 6)
-	time.Sleep(clientReportGrace)
+	time.Sleep(h.server.clientPlayback.timings.reportGrace)
 
 	sent := h.settle(t, 4)
 	starts, stops := countVerbs(sent)
@@ -646,23 +637,26 @@ func TestReportingDeviceDoesNotSilenceAnother(t *testing.T) {
 	}
 }
 
-// A serve whose request carried no DeviceId is matched to reports by address:
-// a client reporting from elsewhere decides nothing for it.
+// A serve whose request carried no DeviceId is matched by address to reports
+// that carried none either: a client reporting from elsewhere decides nothing
+// for it, and nor does a device that names itself (see
+// TestDevicelessServeBehindAProxy).
 func TestServeWithoutDeviceIDMatchesReportsByAddress(t *testing.T) {
-	grace := clientReportGrace
-	clientReportGrace = 100 * time.Millisecond
-	t.Cleanup(func() { clientReportGrace = grace })
-
 	h := newScrobbleHarness(t, harnessOpts{runtime: 10})
-	h.server.ReportClientPlayback(h.stream, ClientPlayback{ContentID: "kitsu:114:1", Device: "phone", Address: "10.0.0.9", Event: ClientPlaybackStart})
-	h.settle(t, 1)
 	rs := &reportingServe{address: "127.0.0.1", began: time.Now()}
-	if h.server.clientPlayback.reportedBy(h.stream, "kitsu:114:1", rs) {
+	h.server.clientPlayback.register(h.stream, "kitsu:114:1", rs)
+	h.server.ReportClientPlayback(h.stream, ClientPlayback{ContentID: "kitsu:114:1", Address: "10.0.0.9", Event: ClientPlaybackStart})
+	h.settle(t, 1)
+	if rs.reported.Load() {
 		t.Fatal("a report from another address stood the serve down")
 	}
 	h.report("tv|ps", ClientPlaybackStart, 0)
-	if !h.server.clientPlayback.reportedBy(h.stream, "kitsu:114:1", rs) {
-		t.Fatal("a report from the serve's own address did not count")
+	if rs.reported.Load() {
+		t.Fatal("a device naming itself stood down a serve that named no device")
+	}
+	h.report("|ps", ClientPlaybackStart, 0)
+	if !rs.reported.Load() {
+		t.Fatal("a report naming no device from the serve's own address did not count")
 	}
 }
 
@@ -731,15 +725,12 @@ func TestResumeAfterStopIsReported(t *testing.T) {
 // A client that resumes with progress alone, no start, resumes too once the
 // report is past what could be the stopped playback's own.
 func TestResumeByProgressAfterStop(t *testing.T) {
-	settle := clientStopSettle
-	clientStopSettle = 100 * time.Millisecond
-	t.Cleanup(func() { clientStopSettle = settle })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.stopSettle = 100 * time.Millisecond
 	h.report("dev|ps", ClientPlaybackProgress, 432)
 	h.report("dev|ps", ClientPlaybackStop, 432)
 	h.settle(t, 2)
-	time.Sleep(2 * clientStopSettle)
+	time.Sleep(2 * h.server.clientPlayback.timings.stopSettle)
 	h.report("dev|ps", ClientPlaybackProgress, 440)
 	wantScrobble(t, h.settle(t, 3)[2], "start", 30.56)
 	h.report("dev|ps", ClientPlaybackStop, 1368)
@@ -751,6 +742,7 @@ func TestResumeByProgressAfterStop(t *testing.T) {
 func TestTransportStopIsSentOnce(t *testing.T) {
 	h := newScrobbleHarness(t, harnessOpts{noRuntime: true})
 	h.sess.NoteServedWindow(session.ServeWindow{StartOffset: 0, MaxOffset: 950, TotalSize: 1000, Elapsed: time.Hour})
+	item, ok := h.server.scrobbleItemForSession(h.sess)
 	const rounds = 20
 	for range rounds {
 		h.sess.SetLastReportedProgress(0)
@@ -758,9 +750,12 @@ func TestTransportStopIsSentOnce(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Add(1)
-			go func() { defer wg.Done(); h.server.transportStopIfIdle(h.stream, h.sess) }()
+			go func() { defer wg.Done(); h.server.transportStopIfIdle(h.stream, h.sess, item, ok) }()
 		}
 		wg.Wait()
+		// Each round's stop lands before the next: the title's sends queue
+		// one behind another, and only so many may wait.
+		h.server.scrobbleSends.Wait()
 	}
 	if _, stops := countVerbs(h.settle(t, rounds)); stops != rounds {
 		t.Fatalf("sent %d stops over %d rounds", stops, rounds)
@@ -784,11 +779,9 @@ func TestClientReportsDoNotKeepTheSessionAlive(t *testing.T) {
 // Timers that outlive the server send nothing: a playback going quiet, or a
 // serve's fallback, after Shutdown.
 func TestScrobbleTimersSendNothingAfterShutdown(t *testing.T) {
-	idle, grace := clientPlaybackIdleTTL, clientReportGrace
-	clientPlaybackIdleTTL, clientReportGrace = time.Second, time.Second
-	t.Cleanup(func() { clientPlaybackIdleTTL, clientReportGrace = idle, grace })
-
 	h := newScrobbleHarness(t, harnessOpts{runtime: 10})
+	h.server.clientPlayback.timings.idleTTL = time.Second
+	h.server.clientPlayback.timings.reportGrace = time.Second
 	h.server.stopCh = make(chan struct{})
 	h.report("dev|ps", ClientPlaybackStart, 0)
 	h.report("dev|ps", ClientPlaybackProgress, 5)
@@ -800,7 +793,7 @@ func TestScrobbleTimersSendNothingAfterShutdown(t *testing.T) {
 	h.server.scrobbleStart(h.stream, h.sess, rs)
 	h.server.scrobbleStopIfIdle(h.stream, h.sess, rs)
 	h.server.Shutdown()
-	time.Sleep(clientReportGrace + 500*time.Millisecond)
+	time.Sleep(h.server.clientPlayback.timings.reportGrace + 500*time.Millisecond)
 	h.settle(t, 1)
 }
 
@@ -852,7 +845,7 @@ func TestStaleIdleTimerDoesNotEndALivePlayback(t *testing.T) {
 	stale := a.timerGen
 	h.server.clientPlayback.mu.Unlock()
 	h.report("dev|ps", ClientPlaybackProgress, 600) // re-arms the timer
-	if _, ok := h.server.clientPlayback.release(key, "id:dev", a, stale); ok {
+	if h.server.clientPlayback.release(key, "id:dev", a, stale, func(clientScrobble) {}) {
 		t.Fatal("a stale idle timer ended a playback that had just reported")
 	}
 	h.report("dev|ps", ClientPlaybackStop, 1368)
@@ -863,15 +856,12 @@ func TestStaleIdleTimerDoesNotEndALivePlayback(t *testing.T) {
 // the resumed playback's later reports, which name the session again, still
 // count.
 func TestResumeWithoutAPlaySessionKeepsItsReports(t *testing.T) {
-	settle := clientStopSettle
-	clientStopSettle = 100 * time.Millisecond
-	t.Cleanup(func() { clientStopSettle = settle })
-
 	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.clientPlayback.timings.stopSettle = 100 * time.Millisecond
 	h.report("dev|ps", ClientPlaybackStart, 0)
 	h.report("dev|ps", ClientPlaybackStop, 432)
 	h.settle(t, 2)
-	time.Sleep(2 * clientStopSettle)
+	time.Sleep(2 * h.server.clientPlayback.timings.stopSettle)
 	h.report("dev|", ClientPlaybackProgress, 440)
 	wantScrobble(t, h.settle(t, 3)[2], "start", 30.56)
 	h.report("dev|ps", ClientPlaybackStop, 1368)

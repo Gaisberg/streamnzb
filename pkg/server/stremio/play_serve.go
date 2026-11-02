@@ -70,7 +70,13 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	// A client that reports its own playback is scrobbled from those reports.
 	var rs *reportingServe
 	if opts := playServeOptionsFromContext(r.Context()); opts.ClientReportsPlayback {
-		rs = &reportingServe{device: opts.ClientDevice, address: clientIP, began: playStart}
+		rs = &reportingServe{device: opts.ClientDevice, deviceFromURL: opts.ClientDeviceFromURL, address: clientIP, began: playStart}
+		// Before anything below can return early: the stop deferred next
+		// decides from the reports matched to it.
+		if streamConfig.ScrobbleEnabled() {
+			s.clientPlayback.noteServed(streamConfig, sess)
+			s.clientPlayback.register(streamConfig, sess.ContentID, rs)
+		}
 	}
 	s.sessionManager.MarkPlaybackValidated(sessionID)
 	s.sessionManager.StartPlayback(sessionID, clientIP)
@@ -181,7 +187,6 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 		"stream_mode", resolved.mode,
 	)
 
-	s.clientPlayback.noteServed(streamConfig, sess)
 	sess.BeginServeProviderTracking()
 	defer func() {
 		sess.EndServeProviderTracking()

@@ -39,9 +39,13 @@ type PlayServeOptions struct {
 	// only when that client reported nothing around them.
 	ClientReportsPlayback bool
 	// ClientDevice is the DeviceId the request carried, empty when none. It
-	// matches a reporting client's serves to its reports; without it the
-	// request's address does.
+	// matches a reporting client's serves to its reports.
 	ClientDevice string
+	// ClientDeviceFromURL marks a ClientDevice read from the stream URL rather
+	// than the request's own headers. The URL names the device it was handed
+	// to, which need not be the one fetching it now (a cached or shared URL),
+	// so that device's reports count only from the request's own address.
+	ClientDeviceFromURL bool
 }
 
 type playServeOptionsKeyType struct{}

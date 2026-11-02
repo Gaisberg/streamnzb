@@ -630,12 +630,20 @@ func (s *Server) handleStream(w http.ResponseWriter, rq *request, raw string) {
 	if clientOf(rq).Token != "" && rq.param("api_key") == "" && rq.param("apikey") == "" {
 		query.Set("api_key", clientOf(rq).Token)
 	}
+	// The DeviceId streamURLFor put in the URL is the device the URL was
+	// handed to; one the request sends itself is the device fetching it.
+	device, deviceFromURL := clientOf(rq).DeviceID, false
+	if device == "" {
+		device = rq.param("deviceId")
+		deviceFromURL = device != ""
+	}
 	opts := stremio.PlayServeOptions{
 		FailWithStatus: true,
 		// Jellyfin clients report where they are (Sessions/Playing), and
 		// those reports are scrobbled rather than the transfer.
 		ClientReportsPlayback: true,
-		ClientDevice:          cmp.Or(clientOf(rq).DeviceID, rq.param("deviceId")),
+		ClientDevice:          device,
+		ClientDeviceFromURL:   deviceFromURL,
 		SlotLocation: func(nextSlot string) string {
 			nextIndex, ok := stremio.SlotIndexOf(nextSlot)
 			if !ok {

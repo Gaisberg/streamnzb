@@ -86,12 +86,20 @@ func TestStreamServesAsAReportingClient(t *testing.T) {
 	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&DeviceId=d9&api_key="+testToken, "", "X-Nothing", "x"); rec.Code != http.StatusOK {
 		t.Fatalf("stream: %d", rec.Code)
 	}
-	if len(f.catalog.served) != 2 {
+	// A header naming its own device wins over the URL's, which names the
+	// device the URL was handed to.
+	if rec := f.do(http.MethodGet, "/jellyfin/Videos/"+movie.encode()+"/stream?static=true&DeviceId=d9", ""); rec.Code != http.StatusOK {
+		t.Fatalf("stream: %d", rec.Code)
+	}
+	if len(f.catalog.served) != 3 {
 		t.Fatalf("served: %+v", f.catalog.served)
 	}
-	for i, device := range []string{"dev-1", "d9"} {
-		if opts := f.catalog.served[i].opts; !opts.ClientReportsPlayback || opts.ClientDevice != device {
-			t.Fatalf("serve %d: %+v, want device %q", i, opts, device)
+	for i, want := range []struct {
+		device  string
+		fromURL bool
+	}{{"dev-1", false}, {"d9", true}, {"dev-1", false}} {
+		if opts := f.catalog.served[i].opts; !opts.ClientReportsPlayback || opts.ClientDevice != want.device || opts.ClientDeviceFromURL != want.fromURL {
+			t.Fatalf("serve %d: %+v, want device %q from the URL %v", i, opts, want.device, want.fromURL)
 		}
 	}
 }

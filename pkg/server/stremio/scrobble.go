@@ -90,23 +90,35 @@ func (s *Server) scrobbleItemForSession(sess *session.Session) (scrobble.Item, b
 // good-attempt commit). Fire-and-forget: scrobbling must never slow a serve.
 // A serve to a client that reports its own playback (rs) leaves the start to
 // the client's first report, and sends the transport's only when that client
-// has reported nothing clientReportGrace after the serve qualified: a client
+// has reported nothing the report grace after the serve qualified: a client
 // that does not report.
 func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, rs *reportingServe) {
 	if sess == nil {
 		return
 	}
+	item, ok := s.scrobbleItemForSession(sess)
 	if rs != nil {
-		if !rs.startDecided.CompareAndSwap(false, true) || !stream.ScrobbleEnabled() || s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
+		if !rs.startDecided.CompareAndSwap(false, true) || !stream.ScrobbleEnabled() || rs.reported.Load() {
 			return
 		}
-		s.afterReportGrace(func() {
-			if !s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
-				s.scrobbleStart(stream, sess, nil)
+		// The item is taken now, while the serve has the session: it may be
+		// evicted before the grace is out.
+		s.clientPlayback.mu.Lock()
+		rs.start = func() {
+			if !rs.reported.Load() {
+				s.transportStart(stream, sess, item, ok)
 			}
-		})
+		}
+		s.clientPlayback.mu.Unlock()
+		s.afterReportGrace(rs, func() { s.runFallbackStart(rs) })
 		return
 	}
+	s.transportStart(stream, sess, item, ok)
+}
+
+// transportStart sends the transport's start for the session, once. item is
+// what the title is scrobbled as, taken while the session was live.
+func (s *Server) transportStart(stream *auth.Stream, sess *session.Session, item scrobble.Item, ok bool) {
 	if !sess.Once(onceTransportStarted) {
 		return
 	}
@@ -115,12 +127,11 @@ func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, rs *r
 		logUnlinkedScrobble(stream, scrobble.VerbStart)
 		return
 	}
-	item, ok := s.scrobbleItemForSession(sess)
 	if !ok {
 		logger.Debug("Playback not scrobbled: no id a target can place", "content", sess.ContentID)
 		return
 	}
-	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStart, item, sess.ServedProgressPercent(), nil)
+	s.sendScrobble(targets, clientPlaybackKey(stream, sess.ContentID), sess.ContentID, scrobble.VerbStart, item, sess.ServedProgressPercent())
 }
 
 // scrobbleStopIfIdle runs as a serve unwinds, after playback bookkeeping: when
@@ -134,42 +145,41 @@ func (s *Server) scrobbleStart(stream *auth.Stream, sess *session.Session, rs *r
 // that reports nothing — owes it, so a reporting client sharing the session
 // never silences them. A reporting client's serve that ends before its client
 // has reported anything (a request opened and dropped before it says it
-// plays) waits clientReportGrace before deciding which kind it was. Reports
-// are matched to the serve's own client, so another device reporting the same
+// plays) waits the report grace before deciding which kind it was, and then
+// sends its fallback start, if still due, ahead of its stop. Reports are
+// matched to the serve's own client, so another device reporting the same
 // title decides nothing for it.
 func (s *Server) scrobbleStopIfIdle(stream *auth.Stream, sess *session.Session, rs *reportingServe) {
 	if sess == nil {
 		return
 	}
+	// Taken now for the same reason as the start's: the session may be gone
+	// by the time a fallback stop is decided.
+	item, ok := s.scrobbleItemForSession(sess)
 	switch {
 	case rs == nil:
 		sess.Once(onceTransportStopDue)
-	case stream.ScrobbleEnabled() && !s.clientPlayback.reportedBy(stream, sess.ContentID, rs):
-		s.afterReportGrace(func() {
-			if !s.clientPlayback.reportedBy(stream, sess.ContentID, rs) {
+	case stream.ScrobbleEnabled() && !rs.reported.Load():
+		s.afterReportGrace(rs, func() {
+			s.runFallbackStart(rs)
+			if !rs.reported.Load() {
 				sess.Once(onceTransportStopDue)
-				s.transportStopIfIdle(stream, sess)
+				s.transportStopIfIdle(stream, sess, item, ok)
 			}
+			s.endReportingServe(stream, sess.ContentID, rs)
 		})
+	default:
+		s.endReportingServe(stream, sess.ContentID, rs)
 	}
-	s.transportStopIfIdle(stream, sess)
-}
-
-// afterReportGrace runs fn once clientReportGrace has passed, counted with
-// the sends it may make, so whatever waits on those waits on it too.
-func (s *Server) afterReportGrace(fn func()) {
-	s.scrobbleSends.Add(1)
-	time.AfterFunc(clientReportGrace, func() {
-		defer s.scrobbleSends.Done()
-		fn()
-	})
+	s.transportStopIfIdle(stream, sess, item, ok)
 }
 
 // transportStopIfIdle sends the transport's stop when the session's last
 // serve has ended and one of its serves owes it. Claiming the debt is one
 // atomic step, so a serve ending and a fallback timer firing together send it
-// once.
-func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session) {
+// once. item is what the title is scrobbled as, taken while the session was
+// live.
+func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session, item scrobble.Item, ok bool) {
 	if sess.CurrentActivePlays() != 0 || !sess.TakeOnce(onceTransportStopDue) {
 		return
 	}
@@ -185,28 +195,70 @@ func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session)
 		logger.Debug("Scrobble stop skipped: progress has not moved since the last report", "content", sess.ContentID, "progress", int(progress))
 		return
 	}
-	item, ok := s.scrobbleItemForSession(sess)
 	if !ok {
 		logger.Debug("Playback not scrobbled: no id a target can place", "content", sess.ContentID)
 		return
 	}
 	sess.SetLastReportedProgress(progress)
-	s.sendScrobble(targets, sess.ContentID, scrobble.VerbStop, item, progress, nil)
+	s.sendScrobble(targets, clientPlaybackKey(stream, sess.ContentID), sess.ContentID, scrobble.VerbStop, item, progress)
 }
 
-// sendScrobble sends one scrobble to each target in the background, each
-// once the sends in after (nil for none) are done, and returns what a send
-// that must follow this one waits on. Nothing goes out once Shutdown has run:
-// the grace and idle timers can outlive the server, and must not start
-// network sends on a stopped one.
-func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string, item scrobble.Item, progress float64, after *sync.WaitGroup) *sync.WaitGroup {
-	var sent sync.WaitGroup
-	select {
-	case <-s.stopCh:
-		logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
-		return &sent
-	default:
+// maxQueuedScrobbles bounds the sends one lane holds behind the one in
+// flight. Each takes at most scrobbleRequestTimeout and a playback makes a
+// handful, so reaching it means the targets are not answering.
+const maxQueuedScrobbles = 16
+
+// scrobbleLanes sends a stream's scrobbles of one title one at a time, in the
+// order they were made, so a slow request is never overtaken by a later one:
+// a resume's start by the stop before it, a fallback's stop by its start.
+// Each lane is a stream and a title, so other titles and other streams go out
+// alongside, and a lane's goroutine lives only while it has sends.
+type scrobbleLanes struct {
+	mu    sync.Mutex
+	lanes map[string][]func() // lane → sends waiting; present while its goroutine runs
+}
+
+// run queues send on lane, reporting false when the lane is full.
+func (l *scrobbleLanes) run(lane string, send func()) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if waiting, busy := l.lanes[lane]; busy {
+		if len(waiting) >= maxQueuedScrobbles {
+			return false
+		}
+		l.lanes[lane] = append(waiting, send)
+		return true
 	}
+	if l.lanes == nil {
+		l.lanes = make(map[string][]func())
+	}
+	l.lanes[lane] = nil
+	go func() {
+		for send != nil {
+			send()
+			l.mu.Lock()
+			if waiting := l.lanes[lane]; len(waiting) > 0 {
+				send, l.lanes[lane] = waiting[0], waiting[1:]
+			} else {
+				send = nil
+				delete(l.lanes, lane)
+			}
+			l.mu.Unlock()
+		}
+	}()
+	return true
+}
+
+// sendScrobble sends one scrobble to each target in the background, on the
+// lane (a stream and title, clientPlaybackKey) it belongs to: after the
+// lane's earlier sends, and before its later ones. Nothing goes out once
+// Shutdown has run.
+func (s *Server) sendScrobble(targets []scrobble.Target, lane, contentID, verb string, item scrobble.Item, progress float64) {
+	if s.shuttingDown() {
+		logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
+		return
+	}
+	var placed []scrobble.Target
 	for _, target := range targets {
 		// A target that cannot address this item is skipped: anime only
 		// anime-lists' aired mapping names has no Simkl address, and anime only
@@ -215,24 +267,45 @@ func (s *Server) sendScrobble(targets []scrobble.Target, contentID, verb string,
 			logger.Debug("Scrobble skipped: the target cannot place this item", "target", target.Name(), "content", contentID)
 			continue
 		}
-		s.scrobbleSends.Add(1)
-		sent.Add(1)
-		go func(target scrobble.Target) {
-			defer s.scrobbleSends.Done()
-			defer sent.Done()
-			if after != nil {
-				after.Wait()
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), scrobbleRequestTimeout)
-			defer cancel()
-			if err := target.Scrobble(ctx, verb, item, progress); err != nil {
-				logger.Debug("Scrobble failed", "target", target.Name(), "verb", verb, "content", contentID, "err", err)
-				return
-			}
-			logger.Debug("Scrobble sent", "target", target.Name(), "verb", verb, "content", contentID, "progress", int(progress))
-		}(target)
+		placed = append(placed, target)
 	}
-	return &sent
+	if len(placed) == 0 {
+		return
+	}
+	s.scrobbleSends.Add(1)
+	queued := s.scrobbleLanes.run(lane, func() {
+		defer s.scrobbleSends.Done()
+		if s.shuttingDown() {
+			logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
+			return
+		}
+		var sent sync.WaitGroup
+		for _, target := range placed {
+			sent.Go(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), scrobbleRequestTimeout)
+				defer cancel()
+				if err := target.Scrobble(ctx, verb, item, progress); err != nil {
+					logger.Debug("Scrobble failed", "target", target.Name(), "verb", verb, "content", contentID, "err", err)
+					return
+				}
+				logger.Debug("Scrobble sent", "target", target.Name(), "verb", verb, "content", contentID, "progress", int(progress))
+			})
+		}
+		sent.Wait()
+	})
+	if !queued {
+		s.scrobbleSends.Done()
+		logger.Debug("Scrobble dropped: too many sends waiting on the targets", "verb", verb, "content", contentID)
+	}
+}
+
+func (s *Server) shuttingDown() bool {
+	select {
+	case <-s.stopCh:
+		return true
+	default:
+		return false
+	}
 }
 
 // logUnlinkedScrobble notes a stream that has scrobbling switched on but no
