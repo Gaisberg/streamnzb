@@ -2,6 +2,7 @@ package stremio
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,48 +206,68 @@ func (s *Server) transportStopIfIdle(stream *auth.Stream, sess *session.Session,
 
 // maxQueuedScrobbles bounds the sends one lane holds behind the one in
 // flight. Each takes at most scrobbleRequestTimeout and a playback makes a
-// handful, so reaching it means the targets are not answering.
+// handful, so reaching it means the targets are answering slower than a
+// client stops and resumes.
 const maxQueuedScrobbles = 16
+
+// scrobbleWatchedPercent is where both targets take a stop as watched and
+// add it to history; below it a stop only leaves a resume position.
+const scrobbleWatchedPercent = 80
 
 // scrobbleLanes sends a stream's scrobbles of one title one at a time, in the
 // order they were made, so a slow request is never overtaken by a later one:
 // a resume's start by the stop before it, a fallback's stop by its start.
 // Each lane is a stream and a title, so other titles and other streams go out
 // alongside, and a lane's goroutine lives only while it has sends.
+//
+// A lane is one account's one item, and a target keeps one state per item: a
+// start, or a stop below the watched mark, is wholly overwritten by any later
+// send on its lane. So a full lane makes room by dropping the oldest waiting
+// send a later one overwrites, never the new one — the latest state always
+// lands. A watched stop also lands in history and is dropped only when every
+// waiting send is one, and then the oldest: the item stays watched by the
+// ones after it.
 type scrobbleLanes struct {
 	mu    sync.Mutex
-	lanes map[string][]func() // lane → sends waiting; present while its goroutine runs
+	lanes map[string][]laneSend // lane → sends waiting; present while its goroutine runs
 }
 
-// run queues send on lane, reporting false when the lane is full.
-func (l *scrobbleLanes) run(lane string, send func()) bool {
+type laneSend struct {
+	send        func(deliver bool) // deliver false: overwritten before it went out
+	overwritten bool               // a later send on the lane overwrites it
+}
+
+// run queues send on lane, after the lane's earlier sends.
+func (l *scrobbleLanes) run(lane string, next laneSend) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if waiting, busy := l.lanes[lane]; busy {
 		if len(waiting) >= maxQueuedScrobbles {
-			return false
+			i := max(0, slices.IndexFunc(waiting, func(w laneSend) bool { return w.overwritten }))
+			waiting[i].send(false)
+			waiting = slices.Delete(waiting, i, i+1)
 		}
-		l.lanes[lane] = append(waiting, send)
-		return true
+		l.lanes[lane] = append(waiting, next)
+		return
 	}
 	if l.lanes == nil {
-		l.lanes = make(map[string][]func())
+		l.lanes = make(map[string][]laneSend)
 	}
 	l.lanes[lane] = nil
 	go func() {
-		for send != nil {
-			send()
+		for {
+			next.send(true)
 			l.mu.Lock()
-			if waiting := l.lanes[lane]; len(waiting) > 0 {
-				send, l.lanes[lane] = waiting[0], waiting[1:]
-			} else {
-				send = nil
+			waiting := l.lanes[lane]
+			if len(waiting) == 0 {
 				delete(l.lanes, lane)
+				l.mu.Unlock()
+				return
 			}
+			next, l.lanes[lane] = waiting[0], waiting[1:]
 			l.mu.Unlock()
 		}
 	}()
-	return true
 }
 
 // sendScrobble sends one scrobble to each target in the background, on the
@@ -273,8 +294,12 @@ func (s *Server) sendScrobble(targets []scrobble.Target, lane, contentID, verb s
 		return
 	}
 	s.scrobbleSends.Add(1)
-	queued := s.scrobbleLanes.run(lane, func() {
+	s.scrobbleLanes.run(lane, laneSend{overwritten: verb == scrobble.VerbStart || progress < scrobbleWatchedPercent, send: func(deliver bool) {
 		defer s.scrobbleSends.Done()
+		if !deliver {
+			logger.Debug("Scrobble superseded: a later send for the title overwrites it before it went out", "verb", verb, "content", contentID, "progress", int(progress))
+			return
+		}
 		if s.shuttingDown() {
 			logger.Debug("Scrobble dropped: the server is shutting down", "verb", verb, "content", contentID)
 			return
@@ -292,11 +317,7 @@ func (s *Server) sendScrobble(targets []scrobble.Target, lane, contentID, verb s
 			})
 		}
 		sent.Wait()
-	})
-	if !queued {
-		s.scrobbleSends.Done()
-		logger.Debug("Scrobble dropped: too many sends waiting on the targets", "verb", verb, "content", contentID)
-	}
+	}})
 }
 
 func (s *Server) shuttingDown() bool {

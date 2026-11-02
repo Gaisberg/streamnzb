@@ -42,6 +42,8 @@ type scrobbleHarness struct {
 	// stopLag and startLag hold each stop or start back before it lands, as a
 	// slower request would.
 	stopLag, startLag time.Duration
+	// dir holds the linked accounts' state.
+	dir string
 	// holeFrom, when set, is where the served file's data stops being
 	// available: reads from there fail as a missing segment does.
 	holeFrom int64
@@ -80,6 +82,7 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 	t.Setenv("STREAMNZB_MDBLIST_BASE_URL", fake.URL)
 
 	dir := t.TempDir()
+	h.dir = dir
 	if !opts.unlinked {
 		// The registry's own state key, written the way a completed device
 		// flow leaves it.

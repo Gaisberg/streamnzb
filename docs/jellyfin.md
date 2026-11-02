@@ -120,14 +120,19 @@ stream never sees another's.
   DeviceId at all is matched only by reports that carry none either, from
   its address. So another device reporting the same title, even from behind
   the same reverse proxy, does not silence it. Only reports made during the
-  transfer, or a start made just before it, count: an earlier playback's
-  stop does not, so replaying a title within a minute in a player that does
-  not report is still scrobbled. Each stream's sends for a title go out in
-  order, one at a time, so a slow MDBList or Simkl request is never
-  overtaken by the next one, for example a resume overtaking the stop
-  before it. (When a transfer cannot be matched to its client — a player
-  that sends no DeviceId of its own and plays a URL handed to another
-  device, a client reporting from a different address than it streams from,
+  transfer, a start made just before it, or a report made in the minute
+  after it ends count: an earlier playback's stop does not, so replaying a
+  title within a minute in a player that does not report is still
+  scrobbled. Each stream's sends for a title go out in order, one at a
+  time, so a slow MDBList or Simkl request is never overtaken by the next
+  one, for example a resume overtaking the stop before it. At most 16 wait
+  behind a slow one; past that, the oldest waiting send that a later one
+  overwrites anyway (a start, or a stop below 80%) is skipped, so the
+  latest state still goes out, and a watched stop is kept unless every
+  waiting send is one. (When a transfer cannot be matched to its client —
+  a player that sends no DeviceId of its own and plays a URL handed to
+  another device, a client reporting from a different address than it
+  streams from,
   or two clients with no DeviceId behind one address, where one reports — it
   is taken for a client that does not report, and a reporting client among
   them is reported twice rather than not at all. A client whose first report

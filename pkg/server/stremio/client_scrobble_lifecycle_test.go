@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/media/nzb"
+	"streamnzb/pkg/services/metadata/scrobble"
 	"streamnzb/pkg/session"
 )
 
@@ -408,4 +410,170 @@ func TestShutdownCancelsScheduledScrobbles(t *testing.T) {
 		t.Fatal("a report after Shutdown was tracked")
 	}
 	h.settle(t, 0)
+}
+
+// laneWaiting is how many sends wait on the harness title's lane.
+func (h *scrobbleHarness) laneWaiting() int {
+	h.server.scrobbleLanes.mu.Lock()
+	defer h.server.scrobbleLanes.mu.Unlock()
+	return len(h.server.scrobbleLanes.lanes[clientPlaybackKey(h.stream, "kitsu:114:1")])
+}
+
+// stopResumeCycles reports a start, then n stops each resumed at once, then a
+// final stop at 95%: 2n+2 sends for one title, decided faster than a slow
+// target answers them.
+func (h *scrobbleHarness) stopResumeCycles(playback string, n int) {
+	h.report(playback, ClientPlaybackStart, 0)
+	for i := range n {
+		h.report(playback, ClientPlaybackStop, float64(100+i))
+		h.report(playback, ClientPlaybackStart, float64(100+i))
+	}
+	h.report(playback, ClientPlaybackStop, 1368)
+}
+
+// A client stopping and resuming faster than a slow target answers fills the
+// title's lane. The lane stays bounded, but what makes room must never be the
+// playback's final stop: what lands keeps its order, and the title ends
+// stopped at 95%, not left watching.
+func TestFullLaneKeepsTheFinalStop(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.mu.Lock()
+	h.delay = 300 * time.Millisecond // each send answers, slowly
+	h.mu.Unlock()
+	h.stopResumeCycles("dev|ps", 8) // 18 sends
+	if n := h.laneWaiting(); n > maxQueuedScrobbles {
+		t.Fatalf("%d sends waiting, bound %d", n, maxQueuedScrobbles)
+	}
+	h.server.scrobbleSends.Wait()
+	h.mu.Lock()
+	sent := append([]sentScrobble(nil), h.sent...)
+	h.mu.Unlock()
+	wantScrobble(t, sent[len(sent)-1], "stop", 95)
+	for i := 1; i < len(sent); i++ {
+		if sent[i].progress < sent[i-1].progress {
+			t.Fatalf("sends landed out of order: %+v", sent)
+		}
+	}
+	if n := h.laneWaiting(); n != 0 {
+		t.Fatalf("%d sends left on a drained lane", n)
+	}
+}
+
+// Two devices on one title share its lane — one account's one item. An
+// overflow makes room from sends a later one overwrites, so each device's
+// watched stop still lands, and so does the last send of all.
+func TestFullLaneKeepsWatchedStopsOfEveryDevice(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.mu.Lock()
+	h.delay = 200 * time.Millisecond
+	h.mu.Unlock()
+	h.report("a|pa", ClientPlaybackStart, 0)
+	h.report("b|pb", ClientPlaybackStart, 0)
+	for i := range 6 {
+		for _, p := range []string{"a|pa", "b|pb"} {
+			h.report(p, ClientPlaybackStop, float64(100+i))
+			h.report(p, ClientPlaybackStart, float64(100+i))
+		}
+	}
+	h.report("a|pa", ClientPlaybackStop, 1368) // watched
+	h.report("b|pb", ClientPlaybackStop, 1300) // watched, last
+	if n := h.laneWaiting(); n > maxQueuedScrobbles {
+		t.Fatalf("%d sends waiting, bound %d", n, maxQueuedScrobbles)
+	}
+	h.server.scrobbleSends.Wait()
+	h.mu.Lock()
+	sent := append([]sentScrobble(nil), h.sent...)
+	h.mu.Unlock()
+	if len(sent) >= 28 {
+		t.Fatalf("all %d sends went out: the lane never filled, so this proved nothing", len(sent))
+	}
+	n := len(sent)
+	wantScrobble(t, sent[n-2], "stop", 95)
+	wantScrobble(t, sent[n-1], "stop", 90.28)
+}
+
+// A target that never answers holds its lane for the request timeout, not
+// for ever: the stop behind the stuck start still goes out after it.
+func TestTimedOutSendReleasesTheLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the 15 s request timeout")
+	}
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.mu.Lock()
+	h.delay = scrobbleRequestTimeout + time.Second
+	h.mu.Unlock()
+	h.report("dev|ps", ClientPlaybackStart, 0)
+	h.settle(t, 1)
+	h.mu.Lock()
+	h.delay = 0
+	h.mu.Unlock()
+	began := time.Now()
+	h.report("dev|ps", ClientPlaybackStop, 1368)
+	h.server.scrobbleSends.Wait()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.sent) != 2 {
+		t.Fatalf("sent %+v", h.sent)
+	}
+	wantScrobble(t, h.sent[1], "stop", 95)
+	if waited := time.Since(began); waited > scrobbleRequestTimeout {
+		t.Fatalf("the stop waited %v behind a timed-out start", waited)
+	}
+}
+
+// Shutdown with a full lane sends nothing more than what is already in
+// flight, and leaves no lane goroutine behind.
+func TestShutdownDuringAFullLane(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	h.server.stopCh = make(chan struct{})
+	h.mu.Lock()
+	h.delay = 300 * time.Millisecond
+	h.mu.Unlock()
+	h.stopResumeCycles("dev|ps", 8)
+	h.server.Shutdown()
+	done := make(chan struct{})
+	go func() { h.server.scrobbleSends.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a full lane outlived Shutdown")
+	}
+	h.mu.Lock()
+	n := len(h.sent)
+	h.mu.Unlock()
+	if n > 1 {
+		t.Fatalf("%d sends went out after Shutdown, want only the one in flight", n)
+	}
+	time.Sleep(50 * time.Millisecond) // the lane goroutine exits as its last send returns
+	if w := h.laneWaiting(); w != 0 {
+		t.Fatalf("%d sends left waiting", w)
+	}
+	h.server.scrobbleLanes.mu.Lock()
+	defer h.server.scrobbleLanes.mu.Unlock()
+	if len(h.server.scrobbleLanes.lanes) != 0 {
+		t.Fatal("a lane outlived Shutdown")
+	}
+}
+
+// Lanes are per stream too: one stream's slow stop holds back nothing of
+// another stream's playback of the same title.
+func TestSlowSendHoldsBackNoOtherStream(t *testing.T) {
+	h := newScrobbleHarness(t, harnessOpts{})
+	scrobble.NewStore[map[string]any](h.dir, "mdblist_tokens").Set("Second", map[string]any{
+		"access_token": "token2", "refresh_token": "refresh2",
+		"created_at":  time.Now().Format(time.RFC3339),
+		"fingerprint": scrobble.CredentialFingerprint("client-id"),
+	})
+	second := &auth.Stream{Username: "Second", MDBListScrobble: true}
+	h.server.clientPlayback.noteServed(second, h.sess)
+	h.report("dev|ps", ClientPlaybackStart, 0)
+	h.settle(t, 1)
+	h.mu.Lock()
+	h.stopLag = 500 * time.Millisecond
+	h.mu.Unlock()
+	h.report("dev|ps", ClientPlaybackStop, 432)
+	h.server.ReportClientPlayback(second, ClientPlayback{ContentID: "kitsu:114:1", Device: "tv", PlaySession: "p2", Event: ClientPlaybackStart})
+	sent := h.settle(t, 3)
+	wantScrobble(t, sent[1], "start", 0)
+	wantScrobble(t, sent[2], "stop", 30)
 }
