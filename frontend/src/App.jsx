@@ -23,6 +23,7 @@ import { AlertCircle, Loader2 } from "lucide-react"
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAdminRuntime } from '@/hooks/useAdminRuntime'
 import { isAvailNZBEnabled } from '@/lib/availnzb'
+import { normalizeTheme, resolveTheme } from '@/lib/themes'
 
 // Stream speeds are namespaced so a stream name can never shadow the chart's own
 // `time` / `speed` / `conns` keys.
@@ -39,7 +40,7 @@ function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [mustChangePassword, setMustChangePassword] = useState(false)
-  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'system')
+  const [theme, setTheme] = useState(() => normalizeTheme(localStorage.getItem('theme')))
   const hasLoggedOutRef = useRef(false)
   const getInitialPageFromHash = () => {
     const hash = window.location.hash.replace(/^#\/?/, '')
@@ -214,13 +215,14 @@ function App() {
 
   useEffect(() => {
     const root = window.document.documentElement;
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const { mode, preset } = resolveTheme(theme, prefersDark);
     root.classList.remove("light", "dark");
-
-    if (theme === "system") {
-      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-      root.classList.add(systemTheme);
+    root.classList.add(mode);
+    if (preset) {
+      root.dataset.theme = preset;
     } else {
-      root.classList.add(theme);
+      delete root.dataset.theme;
     }
     localStorage.setItem('theme', theme);
   }, [theme]);

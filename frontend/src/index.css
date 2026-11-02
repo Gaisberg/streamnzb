@@ -76,6 +76,137 @@
     --sidebar-primary-foreground: 0 0% 0%;
     --sidebar-ring: 2 100% 76%;
   }
+
+  /* Presets (see src/lib/themes.js). Each one rides on .dark and overrides
+     only the tokens; anything left out inherits from the Obsidian theme. */
+
+  /* OLED — true black, Obsidian accent kept */
+  .dark[data-theme="oled"] {
+    --background: 0 0% 0%;
+    --card: 0 0% 4%;
+    --popover: 0 0% 4%;
+    --secondary: 0 0% 9%;
+    --muted: 0 0% 7%;
+    --muted-foreground: 0 0% 64%;
+    --accent: 0 0% 10%;
+    --border: 0 0% 14%;
+    --input: 0 0% 14%;
+    --sidebar: 0 0% 0%;
+    --sidebar-background: 0 0% 0%;
+    --sidebar-border: 0 0% 10%;
+    --sidebar-accent: 0 0% 8%;
+  }
+
+  /* Nord — https://www.nordtheme.com/docs/colors-and-palettes */
+  .dark[data-theme="nord"] {
+    --background: 220 16% 22%;
+    --foreground: 218 27% 94%;
+    --card: 222 16% 28%;
+    --card-foreground: 218 27% 94%;
+    --popover: 222 16% 28%;
+    --popover-foreground: 218 27% 94%;
+    --primary: 193 43% 67%;
+    --primary-foreground: 220 16% 22%;
+    --secondary: 220 17% 32%;
+    --secondary-foreground: 218 27% 94%;
+    --muted: 222 16% 28%;
+    --muted-foreground: 219 20% 72%;
+    --accent: 220 17% 32%;
+    --accent-foreground: 218 27% 94%;
+    --destructive: 354 42% 56%;
+    --destructive-foreground: 218 27% 94%;
+    --border: 220 16% 36%;
+    --input: 220 16% 36%;
+    --ring: 193 43% 67%;
+    --chart-1: 193 43% 67%;
+    --chart-2: 92 28% 65%;
+    --chart-3: 14 51% 63%;
+    --chart-4: 311 20% 63%;
+    --chart-5: 40 71% 73%;
+    --sidebar: 220 17% 19%;
+    --sidebar-foreground: 219 20% 72%;
+    --sidebar-border: 220 16% 26%;
+    --sidebar-accent: 222 16% 28%;
+    --sidebar-accent-foreground: 193 43% 67%;
+    --sidebar-background: 220 17% 19%;
+    --sidebar-primary: 193 43% 67%;
+    --sidebar-primary-foreground: 220 16% 22%;
+    --sidebar-ring: 193 43% 67%;
+  }
+
+  /* Dracula — https://draculatheme.com/contribute#color-palette */
+  .dark[data-theme="dracula"] {
+    --background: 231 15% 18%;
+    --foreground: 60 30% 96%;
+    --card: 231 15% 22%;
+    --card-foreground: 60 30% 96%;
+    --popover: 231 15% 22%;
+    --popover-foreground: 60 30% 96%;
+    --primary: 265 89% 78%;
+    --primary-foreground: 231 15% 18%;
+    --secondary: 232 14% 31%;
+    --secondary-foreground: 60 30% 96%;
+    --muted: 231 15% 22%;
+    --muted-foreground: 228 20% 72%;
+    --accent: 232 14% 31%;
+    --accent-foreground: 60 30% 96%;
+    --destructive: 0 100% 67%;
+    --destructive-foreground: 231 15% 18%;
+    --border: 232 14% 31%;
+    --input: 232 14% 31%;
+    --ring: 265 89% 78%;
+    --chart-1: 265 89% 78%;
+    --chart-2: 135 94% 65%;
+    --chart-3: 31 100% 71%;
+    --chart-4: 326 100% 74%;
+    --chart-5: 191 97% 77%;
+    --sidebar: 232 14% 15%;
+    --sidebar-foreground: 228 20% 72%;
+    --sidebar-border: 232 14% 22%;
+    --sidebar-accent: 231 15% 22%;
+    --sidebar-accent-foreground: 265 89% 78%;
+    --sidebar-background: 232 14% 15%;
+    --sidebar-primary: 265 89% 78%;
+    --sidebar-primary-foreground: 231 15% 18%;
+    --sidebar-ring: 265 89% 78%;
+  }
+
+  /* Gruvbox (dark, medium) — https://github.com/morhetz/gruvbox */
+  .dark[data-theme="gruvbox"] {
+    --background: 0 0% 16%;
+    --foreground: 43 59% 81%;
+    --card: 20 5% 22%;
+    --card-foreground: 43 59% 81%;
+    --popover: 20 5% 22%;
+    --popover-foreground: 43 59% 81%;
+    --primary: 27 99% 55%;
+    --primary-foreground: 0 0% 16%;
+    --secondary: 22 7% 29%;
+    --secondary-foreground: 43 59% 81%;
+    --muted: 20 5% 22%;
+    --muted-foreground: 35 17% 59%;
+    --accent: 22 7% 29%;
+    --accent-foreground: 43 59% 81%;
+    --destructive: 6 96% 59%;
+    --destructive-foreground: 0 0% 16%;
+    --border: 22 7% 29%;
+    --input: 22 7% 29%;
+    --ring: 27 99% 55%;
+    --chart-1: 27 99% 55%;
+    --chart-2: 104 35% 62%;
+    --chart-3: 42 95% 58%;
+    --chart-4: 344 47% 68%;
+    --chart-5: 157 16% 58%;
+    --sidebar: 195 6% 12%;
+    --sidebar-foreground: 35 17% 59%;
+    --sidebar-border: 20 5% 18%;
+    --sidebar-accent: 20 5% 20%;
+    --sidebar-accent-foreground: 27 99% 55%;
+    --sidebar-background: 195 6% 12%;
+    --sidebar-primary: 27 99% 55%;
+    --sidebar-primary-foreground: 0 0% 16%;
+    --sidebar-ring: 27 99% 55%;
+  }
 }
 
 @layer base {
