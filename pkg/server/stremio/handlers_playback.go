@@ -1416,6 +1416,9 @@ func (s *Server) deriveNextSlotIDFromPlaylist(currentID string, key StreamSlotKe
 			}
 		}
 		if !foundCurrent {
+			startIndex = s.nextSlotPositionFromFailoverOrder(currentID, key, list, stream)
+		}
+		if startIndex < 0 {
 			startIndex = 0
 			for i, slotPath := range list.SlotPaths {
 				_, _, _, slotIndex, ok := parseStreamSlotID(slotPath)
@@ -1445,6 +1448,36 @@ func (s *Server) deriveNextSlotIDFromPlaylist(currentID string, key StreamSlotKe
 		}
 	}
 	return ""
+}
+
+// nextSlotPositionFromFailoverOrder finds where failover continues when the
+// current slot has already been purged from the play list. An AIOStreams list
+// follows the order the client posted, not slot index order, so the slot that
+// comes next is the one after currentID in that order — comparing indexes
+// would skip every lower-numbered slot ranked behind the failed one. Returns
+// the list position to resume from, len(list.SlotPaths) when nothing follows,
+// or -1 when the order does not place currentID.
+func (s *Server) nextSlotPositionFromFailoverOrder(currentID string, key StreamSlotKey, list *playlistResult, stream *auth.Stream) int {
+	if !streamUsesAIOStreamsProfile(stream) {
+		return -1
+	}
+	order := s.sessionManager.GetStreamFailoverOrder(streamToken(stream), key.CacheKey())
+	for j, entry := range order {
+		if entry != currentID {
+			continue
+		}
+		positions := make(map[string]int, len(list.SlotPaths))
+		for i, slotPath := range list.SlotPaths {
+			positions[slotPath] = i
+		}
+		for _, next := range order[j+1:] {
+			if i, ok := positions[next]; ok {
+				return i
+			}
+		}
+		return len(list.SlotPaths)
+	}
+	return -1
 }
 
 // switchToNextFallback derives the next fallback slot from the cached play list and returns its session.

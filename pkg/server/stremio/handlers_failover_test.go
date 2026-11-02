@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/indexer"
@@ -85,6 +86,52 @@ func TestSwitchToNextFallbackSkipsUnresolvableCandidate(t *testing.T) {
 	}
 	if _, ok := server.rawSearchCache.Load(key.StreamID + ":" + key.ContentType + ":" + key.ID); !ok {
 		t.Fatalf("expected raw search cache to survive failover skipping")
+	}
+}
+
+func TestDeriveNextSlotFollowsAIOStreamsOrderAfterPurge(t *testing.T) {
+	initFailoverTestLogger()
+	t.Parallel()
+
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "series", ID: "tt0182576:24:2"}
+	stream := &auth.Stream{Token: "tok", FilterSortingMode: "aiostreams"}
+
+	tests := []struct {
+		name      string
+		order     []int
+		remaining []int // slot paths left in the list after the purge, in posted order
+		failed    int
+		want      string
+	}{
+		// #392: :3 failed and was purged; :1 and :0 rank behind it but have lower indexes.
+		{name: "lower indexes ranked after failed slot", order: []int{3, 1, 0}, remaining: []int{1, 0}, failed: 3, want: key.SlotPath(1)},
+		// :2 and :3 both purged; :0 ranks before :8 and must not be skipped.
+		{name: "does not skip a lower index for a higher one", order: []int{2, 3, 0, 8}, remaining: []int{0, 8}, failed: 3, want: key.SlotPath(0)},
+		{name: "failed slot was last in the order", order: []int{1, 0, 3}, remaining: []int{1, 0}, failed: 3, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := session.NewManager(nil, time.Minute)
+			t.Cleanup(manager.Shutdown)
+			server := &Server{config: &config.Config{}, sessionManager: manager}
+
+			order := make([]string, 0, len(tt.order))
+			for _, idx := range tt.order {
+				order = append(order, key.SlotPath(idx))
+			}
+			manager.SetStreamFailoverOrder(stream.Token, key.CacheKey(), order)
+
+			list := &playlistResult{}
+			for _, idx := range tt.remaining {
+				list.Candidates = append(list.Candidates, triage.Candidate{Release: &release.Release{Link: fmt.Sprintf("https://example.invalid/%d", idx)}})
+				list.SlotPaths = append(list.SlotPaths, key.SlotPath(idx))
+			}
+
+			got := server.deriveNextSlotIDFromPlaylist(key.SlotPath(tt.failed), key, tt.failed, list, stream)
+			if got != tt.want {
+				t.Fatalf("next slot = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
