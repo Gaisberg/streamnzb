@@ -61,6 +61,37 @@ func TestOnceIsSafeUnderConcurrency(t *testing.T) {
 	}
 }
 
+// TakeOnce hands a claimed key to exactly one of the callers racing for it —
+// a serve ending and a fallback timer both reaching for the stop a session
+// owes — and to none when nothing is owed.
+func TestTakeOnceHandsTheKeyToOneCaller(t *testing.T) {
+	s := &Session{ID: "sess-1"}
+	if s.TakeOnce(testKey) {
+		t.Fatal("an unclaimed key was taken")
+	}
+	for range 50 {
+		s.Once(testKey)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		winners := 0
+		for range 16 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if s.TakeOnce(testKey) {
+					mu.Lock()
+					winners++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if winners != 1 || s.OnceDone(testKey) {
+			t.Fatalf("%d callers took the key, want exactly 1, and it released", winners)
+		}
+	}
+}
+
 func TestOnceIsPerSession(t *testing.T) {
 	// Session IDs are slot paths and slot paths are reused: a later play of the
 	// same slot is a new session and must be able to record for itself.

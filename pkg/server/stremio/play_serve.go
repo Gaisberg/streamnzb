@@ -67,11 +67,19 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}(resolved.ctx.Done())
 
 	clientIP := httpx.ClientIP(r)
+	// A client that reports its own playback is scrobbled from those reports.
+	var rs *reportingServe
+	if opts := playServeOptionsFromContext(r.Context()); opts.ClientReportsPlayback {
+		rs = &reportingServe{device: opts.ClientDevice, deviceFromURL: opts.ClientDeviceFromURL, address: clientIP, began: playStart}
+	}
 	s.sessionManager.MarkPlaybackValidated(sessionID)
 	s.sessionManager.StartPlayback(sessionID, clientIP)
+	// A shutdown drain waits for the stop this serve may decide as it ends.
+	s.scrobbleSends.Add(1)
+	defer s.scrobbleSends.Done()
 	// Registered before the EndPlayback defer so it runs after it (LIFO) —
 	// the stop must see the decremented play count and the folded progress.
-	defer s.scrobbleStopIfIdle(streamConfig, sess)
+	defer s.scrobbleStopIfIdle(streamConfig, sess, rs)
 	var endPlaybackOnce sync.Once
 	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
@@ -134,6 +142,12 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	if !s.primeRangeOrFailover(w, r, streamConfig, resolved, effectiveRange, onReadError, closeStream) {
 		return
 	}
+	// Past the ranges refused above, before any media goes out: a report
+	// while it streams is about this serve. A HEAD streams none.
+	if rs != nil && r.Method != http.MethodHead && streamConfig.ScrobbleEnabled() {
+		s.clientPlayback.noteServed(streamConfig, sess)
+		s.clientPlayback.register(streamConfig, sess.ContentID, rs)
+	}
 
 	monitoredStream := &StreamMonitor{
 		ReadSeekCloser: stream,
@@ -159,7 +173,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 
 	serveStartedAt := time.Now()
 	monitoredStream.onProgress = func() {
-		s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
+		s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs)
 	}
 	monitoredStream.onServeWindow = serveWindowLogger(sessionID, monitoredStream, bufW, serveStartedAt)
 
@@ -189,6 +203,10 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 			closeReasonText = v.(string)
 		}
 		probeLikeServe, probeLikeServeReason := classifyProbeLikeServe(r, resolved.size, effectiveRange, responseStats, streamStats, closeReasonText)
+		if rs != nil {
+			// A refused range writes an error body but reads no media.
+			rs.media = !probeLikeServe && streamStats.BytesRead > 0
+		}
 		if !probeLikeServe {
 			// Watched-progress signal for scrobbling: how far into the file
 			// this serve proves playback reached. Probe-like serves are
@@ -239,7 +257,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}()
 
 	defer func() {
-		s.finishServeBookkeeping(r, streamConfig, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded)
+		s.finishServeBookkeeping(r, streamConfig, resolved, bufW, monitoredStream, effectiveRange, serveStartedAt, &serveFailureRecorded, rs)
 	}()
 
 	http.ServeContent(bufW, r, resolved.name, time.Time{}, monitoredStream)
@@ -430,6 +448,7 @@ func (s *Server) finishServeBookkeeping(
 	effectiveRange string,
 	serveStartedAt time.Time,
 	serveFailureRecorded *bool,
+	rs *reportingServe,
 ) {
 	rt := s.runtime()
 	if *serveFailureRecorded {
@@ -456,7 +475,7 @@ func (s *Server) finishServeBookkeeping(
 		return
 	}
 
-	if s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt) {
+	if s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs) {
 		return
 	}
 
@@ -481,5 +500,5 @@ func (s *Server) finishServeBookkeeping(
 	}
 	// Safety fallback: this path should normally already have returned via
 	// commitGoodAttemptIfQualified above.
-	s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt)
+	s.commitGoodAttemptIfQualified(streamConfig, sess, sessionID, serveStartedAt, rs)
 }

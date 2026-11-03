@@ -38,7 +38,9 @@ func shutdownSignals() <-chan os.Signal {
 //   - HTTP first, so nothing new arrives while the rest is going away.
 //   - The addon's background sweeps and the API server's stats loop next: they
 //     read the library and the search caches and write metric rows, and must not
-//     still be running when the database closes below.
+//     still be running when the database closes below. The addon's Shutdown
+//     also gives scrobbles already decided a bounded drain (three seconds,
+//     inside Docker's ten with the HTTP grace) to reach MDBList and Simkl.
 //   - The NNTP proxy next, for the same reason.
 //   - Sessions before provider pools: closing a session ends its playback
 //     stream, which hands the NNTP connections back instead of leaving them for

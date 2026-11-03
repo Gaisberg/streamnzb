@@ -66,6 +66,9 @@ type Catalog interface {
 	Playlist(ctx context.Context, stream *auth.Stream, contentType, id string) (*stremio.PlaylistView, error)
 	PlaylistCached(stream *auth.Stream, contentType, id string) (*stremio.PlaylistView, bool)
 	ServePlay(w http.ResponseWriter, r *http.Request, stream *auth.Stream, slotPath string, opts stremio.PlayServeOptions)
+	// ReportClientPlayback hands a client's own playback report to the
+	// stream's watch-tracking targets. It must not block.
+	ReportClientPlayback(stream *auth.Stream, report stremio.ClientPlayback)
 }
 
 // Playstate persists playback progress and favourites.

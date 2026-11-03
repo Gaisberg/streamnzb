@@ -89,6 +89,68 @@ stream never sees another's.
 - **Resume** — position and watched state are kept per stream, server-side,
   because Jellyfin clients expect the server to remember rather than keeping
   it locally the way Stremio clients do. 90% in counts as watched.
+- **Scrobbling** — a stream that scrobbles to Simkl or MDBList (see
+  [Scrobbling](metadata.md#scrobbling)) reports Jellyfin playback from the
+  position the client reports (`/Sessions/Playing`, `…/Progress`,
+  `…/Stopped`), not from the bytes served: a player that buffers the whole
+  episode in seconds and plays it from memory is still reported where it
+  actually is. The client's first report is the start, its stop reports its
+  position, and each service then applies its own threshold (80%), separate
+  from the 90% above. Each device's play session is reported on its own; a
+  device opening a new play session ends its last one, reporting it stopped
+  at its last position if it never stopped. A start repeated within a play
+  session (after a seek, or coming back from the background) changes
+  nothing; playing again after a stop — an app that stops when backgrounded
+  and resumes — is reported as a new start and its own stop. Playback keeps
+  being reported after the server has evicted the media session, as it can
+  be once a player has buffered the whole file. Without a runtime to
+  place the position (rare: the file's own duration is normally known) the
+  stop is not sent rather than guessed. Pausing reports nothing; a
+  playback that reports nothing at all for 30 minutes — an app closed
+  mid-play — is reported stopped at the last position the client gave, never
+  further, and reporting again starts it anew. A client that sends no
+  playback reports is scrobbled from the bytes served — start and stop, as a
+  Stremio player is — once it has gone a minute without reporting: its
+  start a minute after the transfer proves real, its stop a minute after the
+  transfer ends, the start always ahead of the stop. Reports are matched to
+  the transfer by the DeviceId its request sends. Failing that, they are
+  matched by the DeviceId StreamNZB adds to the stream URL it hands out, but
+  only from the transfer's own address, since a cached or shared URL can be
+  played by a device other than the one it was handed to. A transfer with no
+  DeviceId at all is matched only by reports that carry none either, from
+  its address. So another device reporting the same title, even from behind
+  the same reverse proxy, does not silence it. Only a report that the client
+  is playing counts: one made during the transfer or in the minute after it
+  ends, or a start made just before it. A stop never counts, since it may be
+  an earlier playback's arriving late, so replaying a title in a player that
+  does not report is still scrobbled. HEAD requests, ranges the release
+  cannot deliver, and players sampling the end of the file are not playback,
+  so they wait for no report. Sends go out in order, one at a time, per
+  service, stream and title, so a slow request is never overtaken by the
+  next one (for example a resume overtaking the stop before it), and a slow
+  or unreachable Simkl holds back nothing sent to MDBList, or the other way
+  round. At most 16 wait behind a slow one. Past that, the oldest waiting
+  send that a later one makes moot is skipped: a start, then a stop below
+  80% followed by a later stop, then a watched stop followed by a later
+  watched one. A stop is never skipped for a later start, so its resume
+  position stands. On a graceful shutdown, sends already decided get up to
+  3 seconds to go out, and a transfer the shutdown cut that is still
+  waiting to learn whether its client reports is decided at once. A
+  playback still running is not reported stopped: its client keeps playing
+  and reports again after the restart. Anything still unsent after those
+  3 seconds, or lost in a crash, is not retried. (When a transfer cannot be
+  matched to its client, it is taken for a client that does not report, and
+  a reporting client among them is reported twice rather than not at all.
+  That happens with a player that sends no DeviceId of its own and plays a
+  URL handed to another device, a client reporting from a different address
+  than it streams from, or two clients with no DeviceId behind one address,
+  where one reports. Forwarded headers are not trusted. A client whose first
+  report comes more than a minute late is also reported twice, and an
+  earlier playback's progress, delivered late after the replay began, can
+  still silence the replay.) Stremio playback of the same title on the same
+  stream is
+  scrobbled from its own transfer as before, whatever a Jellyfin client is
+  doing. Marking an item watched or unwatched by hand is not scrobbled.
 - **Watched seasons and series** — marking a season or series watched
   (`POST /UserPlayedItems/{id}`, or `/Users/{userId}/PlayedItems/{id}`) marks
   its episodes, as Jellyfin does: every episode that has aired, by the same
