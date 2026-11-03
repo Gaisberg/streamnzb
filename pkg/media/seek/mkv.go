@@ -1,92 +1,49 @@
 package seek
 
 import (
-	"bytes"
 	"encoding/binary"
 	"math"
 
 	"streamnzb/pkg/media/ebml"
 )
 
-var (
-	ebmlSegmentID = []byte{0x18, 0x53, 0x80, 0x67}
+const (
+	idTimestampScale = 0x2AD7B1
+	idDuration       = 0x4489
 
-	ebmlInfoID = []byte{0x15, 0x49, 0xA9, 0x66}
-
-	ebmlTimestampScaleID = []byte{0x2A, 0xD7, 0xB1}
-
-	ebmlDurationID = []byte{0x44, 0x89}
+	defaultTimestampScale = 1000000
 )
 
-const defaultTimestampScale = 1000000
-
+// durationFromMKV reads the duration the segment Info declares. Info is found
+// by walking elements, not by searching for its ID: the SeekHead mkvmerge and
+// ffmpeg write ahead of it names Info by that same ID.
 func durationFromMKV(data []byte) (durationSec float64, ok bool) {
-
-	segStart := findInBytes(data, ebmlSegmentID)
-	if segStart < 0 {
+	infoPayload := childPayload(childPayload(data, ebml.IDSegment), ebml.IDInfo)
+	if infoPayload == nil {
 		return 0, false
-	}
-	segData := data[segStart:]
-
-	off, payloadLen := ebml.ReadElementHeader(segData)
-	if off < 0 {
-		return 0, false
-	}
-	segPayload := segData[off:]
-	// A payloadLen of -1 is the unknown-size marker a live mux writes; there is
-	// nothing to truncate to then.
-	if payloadLen >= 0 && int64(len(segPayload)) >= payloadLen {
-		segPayload = segPayload[:payloadLen]
-	}
-
-	infoStart := findInBytes(segPayload, ebmlInfoID)
-	if infoStart < 0 {
-		return 0, false
-	}
-	infoData := segPayload[infoStart:]
-	off2, infoPayloadLen := ebml.ReadElementHeader(infoData)
-	if off2 < 0 {
-		return 0, false
-	}
-	infoPayload := infoData[off2:]
-	if infoPayloadLen >= 0 && int64(len(infoPayload)) > infoPayloadLen {
-		infoPayload = infoPayload[:infoPayloadLen]
 	}
 	var timecodeScale uint64 = defaultTimestampScale
 	var duration float64 = -1
 
 	for len(infoPayload) > 0 {
-		idLen, _ := ebml.ReadVint(infoPayload)
-		if idLen <= 0 {
+		id, size, payload, rest, ok := nextElement(infoPayload)
+		if !ok {
 			break
 		}
-		idBytes := infoPayload[:idLen]
-		rest := infoPayload[idLen:]
-		if len(rest) < 1 {
-			break
-		}
-		sizeLen, size := ebml.ReadVint(rest)
-		if sizeLen <= 0 {
-			break
-		}
-		payloadStart := sizeLen
-		payloadEnd := payloadStart + int(size)
-		if payloadEnd > len(rest) {
-			payloadEnd = len(rest)
-		}
-		payload := rest[payloadStart:payloadEnd]
-		switch {
-		case bytesEqual(idBytes, ebmlTimestampScaleID):
-			if len(payload) >= 1 && size <= 8 {
+		switch id {
+		case idTimestampScale:
+			if size >= 1 && size <= 8 {
 				timecodeScale = ebml.ReadUint(payload, int(size))
 			}
-		case bytesEqual(idBytes, ebmlDurationID):
-			if size == 8 && len(payload) >= 8 {
-				bits := binary.BigEndian.Uint64(payload)
-				duration = math.Float64frombits(bits)
+		case idDuration:
+			switch {
+			case size == 8 && len(payload) >= 8:
+				duration = math.Float64frombits(binary.BigEndian.Uint64(payload))
+			case size == 4 && len(payload) >= 4:
+				duration = float64(math.Float32frombits(binary.BigEndian.Uint32(payload)))
 			}
 		}
-		infoPayload = rest[payloadEnd:]
+		infoPayload = rest
 	}
 	if duration <= 0 || timecodeScale == 0 {
 		return 0, false
@@ -95,10 +52,38 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 	return duration * float64(timecodeScale) / 1e9, true
 }
 
-func findInBytes(data, needle []byte) int {
-	return bytes.Index(data, needle)
+// childPayload returns the payload of the first element with the given ID
+// among the sibling elements data starts with, cut to what data holds, or nil
+// when data runs out, or an element of unknown size hides the rest, first.
+func childPayload(data []byte, id uint32) []byte {
+	for len(data) > 0 {
+		elID, size, payload, rest, ok := nextElement(data)
+		if !ok {
+			return nil
+		}
+		if elID == id {
+			return payload
+		}
+		if size < 0 {
+			return nil
+		}
+		data = rest
+	}
+	return nil
 }
 
-func bytesEqual(a, b []byte) bool {
-	return bytes.Equal(a, b)
+// nextElement splits off the element data starts with: its ID, its declared
+// size (-1 when unknown), its payload cut to what data holds, and what follows.
+func nextElement(data []byte) (id uint32, size int64, payload, rest []byte, ok bool) {
+	off, size := ebml.ReadElementHeader(data)
+	if off < 0 {
+		return 0, 0, nil, nil, false
+	}
+	end := len(data)
+	// Compared before converting: a declared size can overflow a 32-bit int.
+	if size >= 0 && size < int64(end-off) {
+		end = off + int(size)
+	}
+	_, id = ebml.ReadID(data)
+	return id, size, data[off:end], data[end:], true
 }
