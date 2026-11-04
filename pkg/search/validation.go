@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -434,11 +435,22 @@ type ValidationOptions struct {
 
 // ValidateSearchResultsWithOptions filters releases against the expected
 // title/year/season/episode and the plan's acceptance.
+//
+// "anime" is episodic anime (an anime film arrives as "movie") and is checked
+// by episode only, leniently: fansub names (romaji titles, absolute or
+// per-season numbering) do not reliably match the metadata, so the title and
+// year are never enforced and a release is dropped only when it names another
+// episode outright.
 func ValidateSearchResultsWithOptions(releases []*release.Release, contentType string, validationQueries []string, opts ValidationOptions) ([]*release.Release, ValidationStats) {
 	season, episode, absoluteEpisode := opts.Season, opts.Episode, opts.AbsoluteEpisode
 	enableTitleValidation, enableYearValidation := opts.EnforceTitle, opts.EnforceYear
 	stats := ValidationStats{}
-	if contentType != "movie" && contentType != "series" {
+	anime := contentType == "anime"
+	episodic := contentType == "series" || anime
+	if anime {
+		enableYearValidation = false
+	}
+	if contentType != "movie" && !episodic {
 		stats.RawResults = len(releases)
 		stats.FinalResults = len(releases)
 		return releases, stats
@@ -464,7 +476,8 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 	}
 	// The title is checked whenever there is something to check it against;
 	// enableTitleValidation only decides whether a mismatch drops the release.
-	checkTitle := len(expectations) > 0
+	// Anime is not checked at all: a fansub's romaji name is no mismatch.
+	checkTitle := len(expectations) > 0 && !anime
 	stats.TitleValidationApplied = enableTitleValidation && checkTitle
 	stats.YearValidationApplied = enableYearValidation && anyExpectationHasYear(expectations)
 	// A requested season or episode backs the title up, so the release does not
@@ -509,10 +522,12 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		}
 
 		episodeRank := 0
-		if contentType == "series" {
+		if episodic {
 			if expectEpisode > 0 {
 				episodeRank = parsed.TargetMatchRank(target)
-				if episodeRank == 0 {
+				// An anime release that did not rank stays unless it names
+				// another episode.
+				if episodeRank == 0 && (!anime || namesOtherEpisode(parsed, target)) {
 					stats.DroppedEpisodeRequest++
 					detail := fmt.Sprintf("expected S%02dE%02d, got seasons %v episodes %v", expectSeason, expectEpisode, parsed.Seasons, parsed.Episodes)
 					if parsed.Date != "" {
@@ -532,7 +547,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 					)
 					continue
 				}
-			} else if !seasonless && !parsed.HasSeason(expectSeason) {
+			} else if !anime && !seasonless && !parsed.HasSeason(expectSeason) {
 				stats.DroppedSeason++
 				stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
 					fmt.Sprintf("expected season %d, got %v", expectSeason, parsed.Seasons))
@@ -557,16 +572,22 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 			continue
 		}
 
-		if contentType == "series" {
+		if episodic {
 			switch {
 			case expectEpisode > 0:
 				// Ranks 2 and 1 are a season pack and a complete-series pack:
 				// they contain the episode without naming it, and a plan that
-				// does not accept packs wants neither.
-				if !opts.AcceptPacks && episodeRank > 0 && episodeRank < 3 {
+				// does not accept packs wants neither. Anime also keeps another
+				// season's pack unranked (see namesOtherEpisode), which is a
+				// pack all the same.
+				otherPack := anime && episodeRank == 0 && isSeasonOnly(parsed)
+				if !opts.AcceptPacks && (otherPack || (episodeRank > 0 && episodeRank < 3)) {
+					detail := "a pack containing the episode, which this request does not accept"
+					if otherPack {
+						detail = "a pack that may contain the episode, which this request does not accept"
+					}
 					stats.DroppedEpisodeRequest++
-					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode,
-						"a pack containing the episode, which this request does not accept")
+					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonEpisode, detail)
 					logger.Trace("ValidateSearchResults dropped: pack not accepted",
 						"expect_season", expectSeason,
 						"expect_episode", expectEpisode,
@@ -584,7 +605,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				case 1:
 					stats.AcceptedCompletePack++
 				}
-			case !seasonless:
+			case !seasonless && !anime:
 				if !opts.AcceptPacks && (parsed.IsShowPack() || parsed.IsSeasonPack(expectSeason)) {
 					stats.DroppedSeason++
 					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
@@ -607,4 +628,47 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 	stats.FinalResults = len(out)
 	stats.RejectedResults = stats.RawResults - stats.FinalResults
 	return out, stats
+}
+
+// namesOtherEpisode reports whether an anime release that did not match the
+// target has a title that confidently names another episode: a season or
+// episode number the parser reads, which the target's numberings do not
+// match. It judges the release title only; playback validates the files
+// themselves, whose names may differ. Everything else is no evidence of
+// another episode and is kept (packs are left to the plan's pack setting):
+//
+//   - a title with no number the parser reads ("Show (BD)", "Show - SP02");
+//   - a target that cannot pick a file (an unmapped Kitsu entry with no
+//     absolute number), which playback does not check either;
+//   - OVA notation with no season, which the parser flags but cannot number:
+//     "Show - OVA 2" reads as episode 2 only for want of a better reading.
+//     Ancillary extras (Sample, Trailer, Featurette, NCOP, NCED) number
+//     nothing and excuse nothing;
+//   - a season-only release when the absolute number is known: anime packs
+//     are often numbered absolutely inside, so "Show S01 [BD]" may hold
+//     "Show - 13.mkv" for S02E01;
+//   - for a special (season 0), a season-only release tagged OVA, which BD
+//     packs use for the specials they bundle ("Show S01 + OVA"). The parser
+//     tags only the word "OVA"; "OVAs" and "Specials" go unrecognised.
+//
+// A season tag with continuing absolute numbering ("S3 - 38" for S03E01,
+// absolute 38) is dropped: it parses exactly like the season's own episode 38.
+func namesOtherEpisode(p *parser.ParsedRelease, t parser.EpisodeTarget) bool {
+	if !t.Valid() {
+		return false
+	}
+	ova := slices.Contains(p.Extras, "OVA")
+	if ova && len(p.Seasons) == 0 {
+		return false
+	}
+	if isSeasonOnly(p) && (t.Absolute > 0 || (ova && t.Season == 0 && !t.Seasonless)) {
+		return false
+	}
+	return len(p.Seasons) > 0 || len(p.Episodes) > 0
+}
+
+// isSeasonOnly reports whether the title names seasons and no episodes: a
+// season pack, of whichever season.
+func isSeasonOnly(p *parser.ParsedRelease) bool {
+	return len(p.Seasons) > 0 && len(p.Episodes) == 0
 }

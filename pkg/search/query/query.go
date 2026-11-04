@@ -936,18 +936,20 @@ func AbsoluteEpisodeFromMetadata(metadata *ResolvedSearchMetadata, seasonStr, ep
 }
 
 // AbsoluteEpisodeForContent returns the anime absolute episode number for a
-// series request, or 0 when it does not apply: movie content, non-anime
+// series or anime request, or 0 when it does not apply: movie content, non-anime
 // metadata, or a number that cannot be derived. An already-resolved absolute
 // number wins — a Kitsu entry spanning a whole series carries one directly,
 // where deriving it from season/episode would not work.
 func AbsoluteEpisodeForContent(contentType, resolvedAbsolute string, metadata *ResolvedSearchMetadata, season, episode string) int {
-	if contentType != "series" {
+	if contentType != "series" && contentType != "anime" {
 		return 0
 	}
 	if absolute, err := strconv.Atoi(strings.TrimSpace(resolvedAbsolute)); err == nil && absolute > 0 {
 		return absolute
 	}
-	if !MetadataLooksLikeAnime(metadata, contentType) {
+	// The anime type is anime whatever the metadata says: a Kitsu entry mapped
+	// to TVDB alone has no TMDB genres to recognise it by.
+	if contentType != "anime" && !MetadataLooksLikeAnime(metadata, contentType) {
 		return 0
 	}
 	return AbsoluteEpisodeFromMetadata(metadata, season, episode)

@@ -79,8 +79,10 @@ func (s *Server) searchFacts(contentType, streamLabel string, params *query.Sear
 	}
 	// A Kitsu entry spanning a whole series resolves its absolute number up
 	// front, where deriving one from season/episode would not work.
+	// The anime type is anime even when the metadata does not say so, which
+	// is how playback's target numbers it too.
 	absolute, _ := strconv.Atoi(params.Req.AbsoluteEpisode)
-	if absolute <= 0 && facts.IsAnime {
+	if absolute <= 0 && (facts.IsAnime || contentType == "anime") {
 		absolute = query.AbsoluteEpisodeFromMetadata(params.Metadata, params.Req.Season, params.Req.Episode)
 	}
 	if absolute > 0 {
@@ -961,12 +963,12 @@ func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release
 }
 
 // validationContentType maps a request's catalog type onto the validator's
-// movie/series split. The validator skips types it does not know, and "anime"
-// covers films and episodic entries alike — a film must validate as a movie,
-// or episode-titled series releases pass ("Avatar ... S01E05 Spirited Away"
-// matches a "Spirited Away" text query). Episodic anime deliberately keeps
-// its unvalidated behaviour: fansub naming (romaji titles, absolute
-// numbering) does not reliably match the resolved metadata titles.
+// types. "anime" covers films and episodic entries alike — a film must
+// validate as a movie, or episode-titled series releases pass ("Avatar ...
+// S01E05 Spirited Away" matches a "Spirited Away" text query). Episodic anime
+// stays "anime", which the validator checks by episode only: fansub naming
+// (romaji titles, absolute or per-season numbering) does not reliably match
+// the resolved metadata titles.
 func validationContentType(params *query.SearchParams, contentType string) string {
 	if params != nil && query.MovieLike(params.Metadata, contentType) {
 		return "movie"
@@ -1449,9 +1451,10 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	}
 	// The absolute number is acceptance, not addressing: it lets an
 	// absolute-numbered release be recognised whichever attempt found it, so
-	// every attempt of a plan that asks by absolute number carries it.
+	// every attempt of every plan carries it — an episode or season query
+	// surfaces absolute-numbered releases too.
 	req.AbsoluteEpisode = ""
-	if facts.Absolute > 0 && plan.RunsAbsoluteAttempt() {
+	if facts.Absolute > 0 {
 		req.AbsoluteEpisode = strconv.Itoa(facts.Absolute)
 	}
 	// The air date is acceptance too, and needs no attempt of its own: a

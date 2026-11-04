@@ -265,7 +265,7 @@ func logPerProfileValidationStats(req indexer.SearchRequest, contentType string,
 		} else if len(profile.Languages) > 1 {
 			validationAttrs = append(validationAttrs, "title_languages", profile.Languages)
 		}
-		if contentType == "series" {
+		if contentType == "series" || contentType == "anime" {
 			if req.AbsoluteEpisode != "" {
 				validationAttrs = append(validationAttrs, "expected_absolute_episode", req.AbsoluteEpisode)
 			}

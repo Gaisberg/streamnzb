@@ -318,23 +318,6 @@ func (sq *SearchQueryConfig) Acceptance() *SearchAcceptance {
 	return sq.Accept
 }
 
-// RunsAbsoluteAttempt reports whether the plan asks by absolute episode number
-// anywhere. It is what decides whether the absolute number is resolved at all,
-// and resolving it also lets acceptance recognise absolute-numbered releases
-// whichever attempt surfaced them.
-func (sq *SearchQueryConfig) RunsAbsoluteAttempt() bool {
-	if sq == nil {
-		return false
-	}
-	for _, attempt := range sq.Attempts {
-		if NormalizeSearchTarget(attempt.Target) == SearchTargetAbsolute &&
-			NormalizeSearchAddress(attempt.Address) == SearchAddressTitle {
-			return true
-		}
-	}
-	return false
-}
-
 // The stock plans. Both are ordered narrowest-first and stop at the first
 // attempt that matches, so a request costs one indexer round trip when the
 // precise question answers and widens only when it does not.

@@ -183,24 +183,28 @@ func TestKitsuSeasonRequestWithoutOffset(t *testing.T) {
 
 // An entry covering a whole series numbers episodes absolutely — there is no
 // season to map onto, so the number carries through as the absolute episode.
+// Stremio asks under the "anime" type, which the playback target must survive
+// as well as "series" does.
 func TestKitsuSeriesSpanningRequestKeepsAbsoluteEpisode(t *testing.T) {
 	srv := &Server{kitsuClient: kitsuStub(t), animeLists: animeListsStore(t)}
 
-	params, err := srv.buildSearchParamsBase("series", "kitsu:486:154", nil)
-	if err != nil {
-		t.Fatalf("buildSearchParamsBase: %v", err)
-	}
-	if params.Req.Season != "" {
-		t.Fatalf("season = %q, want empty", params.Req.Season)
-	}
-	if params.Req.AbsoluteEpisode != "154" {
-		t.Fatalf("absolute episode = %q, want 154", params.Req.AbsoluteEpisode)
-	}
-	if params.ContentIDs.AbsoluteEpisode != 154 {
-		t.Fatalf("content ids absolute episode = %d, want 154", params.ContentIDs.AbsoluteEpisode)
-	}
-	if params.Req.TVDBID != "76703" {
-		t.Fatalf("tvdb id = %q, want 76703", params.Req.TVDBID)
+	for _, contentType := range []string{"series", "anime"} {
+		params, err := srv.buildSearchParamsBase(contentType, "kitsu:486:154", nil)
+		if err != nil {
+			t.Fatalf("%s: buildSearchParamsBase: %v", contentType, err)
+		}
+		if params.Req.Season != "" {
+			t.Fatalf("%s: season = %q, want empty", contentType, params.Req.Season)
+		}
+		if params.Req.AbsoluteEpisode != "154" {
+			t.Fatalf("%s: absolute episode = %q, want 154", contentType, params.Req.AbsoluteEpisode)
+		}
+		if params.ContentIDs.AbsoluteEpisode != 154 {
+			t.Fatalf("%s: content ids absolute episode = %d, want 154", contentType, params.ContentIDs.AbsoluteEpisode)
+		}
+		if params.Req.TVDBID != "76703" {
+			t.Fatalf("%s: tvdb id = %q, want 76703", contentType, params.Req.TVDBID)
+		}
 	}
 }
 
@@ -274,7 +278,7 @@ func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
 	if !query.MovieLike(params.Metadata, "anime") {
 		t.Fatal("expected the request to classify as movie-like")
 	}
-	// The validator skips the "anime" type entirely; a film must reach it as
+	// The validator checks "anime" by episode only; a film must reach it as
 	// a movie or episode-titled series releases pass title validation.
 	if got := validationContentType(params, "anime"); got != "movie" {
 		t.Fatalf("validation content type = %q, want movie", got)
