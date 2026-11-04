@@ -1,12 +1,15 @@
 package stremio
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -17,17 +20,20 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/media/nzb"
+	"streamnzb/pkg/media/seek"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/services/metadata/mdblist"
 	"streamnzb/pkg/services/metadata/scrobble"
+	"streamnzb/pkg/services/metadata/simkl"
 	"streamnzb/pkg/session"
 )
 
-// sentScrobble is one request the fake MDBList received.
+// sentScrobble is one request the fake MDBList, or Simkl, received.
 type sentScrobble struct {
 	verb     string
 	progress float64
 	body     map[string]any
+	simkl    bool // sent to Simkl, not MDBList
 }
 
 type scrobbleHarness struct {
@@ -73,13 +79,14 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 		h.mu.Lock()
 		status, delay := h.status, h.delay
 		progress, _ := body["progress"].(float64)
-		h.sent = append(h.sent, sentScrobble{verb: r.URL.Path, progress: progress, body: body})
+		h.sent = append(h.sent, sentScrobble{verb: r.URL.Path, progress: progress, body: body, simkl: r.Header.Get("simkl-api-key") != ""})
 		h.mu.Unlock()
 		time.Sleep(delay)
 		w.WriteHeader(status)
 	}))
 	t.Cleanup(fake.Close)
 	t.Setenv("STREAMNZB_MDBLIST_BASE_URL", fake.URL)
+	t.Setenv("STREAMNZB_SIMKL_BASE_URL", fake.URL)
 
 	dir := t.TempDir()
 	h.dir = dir
@@ -89,6 +96,11 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 		scrobble.NewStore[map[string]any](dir, "mdblist_tokens").Set("Test", map[string]any{
 			"access_token": "token", "refresh_token": "refresh",
 			"created_at":  time.Now().Format(time.RFC3339),
+			"fingerprint": scrobble.CredentialFingerprint("client-id"),
+		})
+		// Simkl is linked too; a stream reaches it only by switching it on.
+		scrobble.NewStore[map[string]any](dir, "simkl_tokens").Set("Test", map[string]any{
+			"token": "token", "created_at": time.Now().Format(time.RFC3339),
 			"fingerprint": scrobble.CredentialFingerprint("client-id"),
 		})
 	}
@@ -106,7 +118,7 @@ func newScrobbleHarness(t *testing.T, opts harnessOpts) *scrobbleHarness {
 		sess.SetMediaCapabilities(&session.MediaCapabilities{DurationSeconds: cmp.Or(opts.runtime, 1440)})
 	}
 
-	h.server = &Server{sessionManager: manager, mdblistClients: mdblist.NewRegistry("client-id", dir)}
+	h.server = &Server{sessionManager: manager, mdblistClients: mdblist.NewRegistry("client-id", dir), simklClients: simkl.NewRegistry("client-id", dir)}
 	h.server.clientPlayback.timings = defaultClientPlaybackTimings
 	h.server.availReporter = &availnzb.Reporter{MinBytesToReportGood: 1 << 20, MinDurationToReportGood: 300 * time.Millisecond, Disabled: true}
 	// Sends log after they land; a later test re-initialising the logger
@@ -878,4 +890,105 @@ func TestResumeWithoutAPlaySessionKeepsItsReports(t *testing.T) {
 	wantScrobble(t, h.settle(t, 3)[2], "start", 30.56)
 	h.report("dev|ps", ClientPlaybackStop, 1368)
 	wantScrobble(t, h.settle(t, 4)[3], "stop", 95)
+}
+
+// odinHarness is the harness on the title Odin played: Ted Lasso S04E03, a
+// series both targets can address, served from a session with no probed
+// capabilities and no metadata runtime. Simkl is switched on beside MDBList.
+func odinHarness(t *testing.T) (*scrobbleHarness, func(ClientPlaybackEvent, float64)) {
+	t.Helper()
+	h := newScrobbleHarness(t, harnessOpts{noRuntime: true})
+	h.stream.SimklScrobble = true
+	data := &nzb.NZB{Files: []nzb.File{{Subject: "video.mkv", Segments: []nzb.Segment{{ID: "<b>", Bytes: 10}}}}}
+	meta := &session.AvailReportMeta{ImdbID: "tt10986410", TmdbID: "97546", TvdbID: "383203", Season: 4, Episode: 3}
+	sess, err := h.server.sessionManager.CreateSession("stream:Test:series:tt10986410:4:3:1", data, nil, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.ContentType, sess.ContentID = "series", "tt10986410:4:3"
+	h.sess = sess
+	h.server.clientPlayback.noteServed(h.stream, sess)
+	return h, func(event ClientPlaybackEvent, position float64) {
+		h.server.ReportClientPlayback(h.stream, ClientPlayback{ContentID: "tt10986410:4:3", Device: "odin", Address: "127.0.0.1", PlaySession: "ps", Event: event, PositionSeconds: position})
+	}
+}
+
+// servedMKV has the transport open the session's Matroska file the way
+// Prepare does — its head inspected, the result cached on the session — and
+// nothing else. durationMS 0 writes no Duration. The head is laid out as
+// mkvmerge writes it, a SeekHead ahead of Info.
+func (h *scrobbleHarness) servedMKV(t *testing.T, durationMS float64) {
+	t.Helper()
+	el := func(id []byte, payload ...byte) []byte {
+		return append(append(append([]byte{}, id...), 0x80|byte(len(payload))), payload...)
+	}
+	info := el([]byte{0x2A, 0xD7, 0xB1}, 0x0F, 0x42, 0x40)
+	if durationMS > 0 {
+		info = append(info, el([]byte{0x44, 0x89}, binary.BigEndian.AppendUint64(nil, math.Float64bits(durationMS))...)...)
+	}
+	seekHead := el([]byte{0x11, 0x4D, 0x9B, 0x74}, el([]byte{0x4D, 0xBB}, append(el([]byte{0x53, 0xAB}, 0x15, 0x49, 0xA9, 0x66), el([]byte{0x53, 0xAC}, 0x40)...)...)...)
+	segment := append(append(seekHead, el([]byte{0xEC}, make([]byte, 32)...)...), el([]byte{0x15, 0x49, 0xA9, 0x66}, info...)...)
+	head := append(el([]byte{0x1A, 0x45, 0xDF, 0xA3}, el([]byte{0x42, 0x82}, []byte("matroska")...)...), 0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF)
+	head = append(head, segment...)
+	startInfo, err := seek.InspectStreamStart(bytes.NewReader(head), int64(len(head)), "video.mkv", len(head))
+	if err != nil || !startInfo.HeaderValid {
+		t.Fatalf("head %+v, %v", startInfo, err)
+	}
+	h.sess.CachePlaybackStreamSnapshot(session.PlaybackStreamSpec{Key: h.sess.ID + "|video.mkv", Name: "video.mkv", Size: 8736060411}, startInfo, true)
+}
+
+// wantBoth checks that one send went to MDBList and to Simkl alike.
+func wantBoth(t *testing.T, sent []sentScrobble, verb string, progress float64) {
+	t.Helper()
+	if len(sent) != 2 || sent[0].simkl == sent[1].simkl {
+		t.Fatalf("want one %s to each target, got %+v", verb, sent)
+	}
+	wantScrobble(t, sent[0], verb, progress)
+	wantScrobble(t, sent[1], verb, progress)
+}
+
+// Odin's playback in the field: the metadata gave the episode no runtime, so
+// the file's own duration places every position the client reports. Each
+// stop goes out where the client stopped, the resume starts there, and the
+// stop after the media session was evicted still does.
+func TestClientPlaybackIsPlacedByTheServedFilesDuration(t *testing.T) {
+	h, report := odinHarness(t)
+	h.servedMKV(t, 2789792)
+
+	report(ClientPlaybackStart, 1649)
+	wantBoth(t, h.settle(t, 2), "start", 59.11)
+	report(ClientPlaybackProgress, 1700)
+	report(ClientPlaybackStop, 1769)
+	report(ClientPlaybackStop, 1769) // repeated
+	wantBoth(t, h.settle(t, 4)[2:], "stop", 63.41)
+
+	report(ClientPlaybackStart, 1769)
+	wantBoth(t, h.settle(t, 6)[4:], "start", 63.41)
+	h.server.sessionManager.DeleteSession(h.sess.ID)
+	report(ClientPlaybackStop, 1794)
+	wantBoth(t, h.settle(t, 8)[6:], "stop", 64.31)
+}
+
+// A client reporting before the transport has read the file's head starts at
+// zero, as nothing can place it yet; once the head is read, its stop is
+// placed.
+func TestClientPlaybackDurationLearnedAfterTheStart(t *testing.T) {
+	h, report := odinHarness(t)
+	report(ClientPlaybackStart, 1649)
+	wantBoth(t, h.settle(t, 2), "start", 0)
+	h.servedMKV(t, 2789792)
+	report(ClientPlaybackProgress, 1700)
+	report(ClientPlaybackStop, 1769)
+	wantBoth(t, h.settle(t, 4)[2:], "stop", 63.41)
+}
+
+// A file whose head declares no duration places nothing, and no stop is made
+// up for it.
+func TestClientPlaybackFileWithoutDuration(t *testing.T) {
+	h, report := odinHarness(t)
+	h.servedMKV(t, 0)
+	report(ClientPlaybackStart, 1649)
+	wantBoth(t, h.settle(t, 2), "start", 0)
+	report(ClientPlaybackStop, 1769)
+	h.settle(t, 2)
 }
