@@ -99,6 +99,45 @@ func TestMKVDurationUnknownForMalformedInfoSizes(t *testing.T) {
 	}
 }
 
+// A Duration or TimestampScale that yields no finite positive length leaves
+// the duration unknown; NaN in particular slips past a plain <= 0 check.
+func TestMKVDurationUnknownForNonFiniteOrNonPositiveValues(t *testing.T) {
+	f64 := func(v float64) []byte {
+		return append([]byte{0x44, 0x89, 0x88}, binary.BigEndian.AppendUint64(nil, math.Float64bits(v))...)
+	}
+	f32 := func(v float32) []byte {
+		return append([]byte{0x44, 0x89, 0x84}, binary.BigEndian.AppendUint32(nil, math.Float32bits(v))...)
+	}
+	scale := func(v uint64) []byte {
+		return append([]byte{0x2A, 0xD7, 0xB1, 0x88}, binary.BigEndian.AppendUint64(nil, v)...)
+	}
+	for _, c := range []struct {
+		name  string
+		info  []byte
+		want  float64
+		known bool
+	}{
+		{"float64 NaN", f64(math.NaN()), 0, false},
+		{"float64 +Inf", f64(math.Inf(1)), 0, false},
+		{"float64 -Inf", f64(math.Inf(-1)), 0, false},
+		{"float64 zero", f64(0), 0, false},
+		{"float64 negative", f64(-5000), 0, false},
+		{"float32 NaN", f32(float32(math.NaN())), 0, false},
+		{"float32 +Inf", f32(float32(math.Inf(1))), 0, false},
+		{"float32 -Inf", f32(float32(math.Inf(-1))), 0, false},
+		{"zero TimestampScale", append(scale(0), f64(5000)...), 0, false},
+		{"scaling overflows", append(scale(1e18), f64(1e300)...), 0, false},
+		{"float64 valid", f64(5000), 5, true},
+		{"float32 valid", f32(1440000), 1440, true},
+		{"second TimestampScale", append(scale(1e9), f64(2.5)...), 2.5, true},
+	} {
+		data := []byte{0x1A, 0x45, 0xDF, 0xA3, 0x80, 0x18, 0x53, 0x80, 0x67, 0xFF, 0x15, 0x49, 0xA9, 0x66, 0x80 | byte(len(c.info))}
+		if d, ok := durationFromMKV(append(data, c.info...)); ok != c.known || d != c.want {
+			t.Errorf("%s: duration %v known=%v, want %v known=%v", c.name, d, ok, c.want, c.known)
+		}
+	}
+}
+
 // makeTestMKV lays a Matroska head out the way mkvmerge does: EBML header,
 // then a Segment opening with a SeekHead that points at Info, a Void, and
 // Info with a millisecond TimestampScale and, when given, a Duration.

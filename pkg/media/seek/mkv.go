@@ -45,11 +45,13 @@ func durationFromMKV(data []byte) (durationSec float64, ok bool) {
 		}
 		infoPayload = rest
 	}
-	if duration <= 0 || timecodeScale == 0 {
+	// A missing, NaN, infinite or non-positive Duration, a zero TimestampScale
+	// and an overflowing product all land here; NaN fails <= 0, so it is named.
+	sec := duration * float64(timecodeScale) / 1e9
+	if math.IsNaN(sec) || math.IsInf(sec, 0) || sec <= 0 {
 		return 0, false
 	}
-
-	return duration * float64(timecodeScale) / 1e9, true
+	return sec, true
 }
 
 // childPayload returns the payload of the first element with the given ID
