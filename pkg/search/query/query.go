@@ -6,6 +6,7 @@
 package query
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,6 +48,10 @@ type ResolvedSearchMetadata struct {
 	TVTranslations         *tmdb.TVTranslationsResponse
 	TVAlternativeTitles    *tmdb.TVAlternativeTitlesResponse
 	TVDBDetails            *tvdb.SeriesDetails
+	// KitsuValidationTitles is a mapped Kitsu entry's details, kept only so
+	// validation accepts its titles (canonical, English, romaji, synonyms);
+	// queries are built from the series metadata instead.
+	KitsuValidationTitles *kitsu.AnimeDetails
 	// Certification is the resolved age certification, populated only when
 	// the requesting stream's metadata profile carries a certification cap —
 	// it rides the cached raw search result so the gate outcome is inspectable.
@@ -748,13 +753,13 @@ func ValidationQueryProfilesFromMetadata(metadata *ResolvedSearchMetadata, conte
 	grouped := make(map[string]*indexer.ValidationQueryProfile, len(languages))
 	order := make([]string, 0, len(languages))
 
-	if metadata != nil && metadata.KitsuDetails != nil {
+	if kitsuDetails := metadata.Kitsu(); kitsuDetails != nil {
 		rawTitles := []string{
-			metadata.KitsuDetails.CanonicalTitle,
-			metadata.KitsuDetails.EnglishTitle,
-			metadata.KitsuDetails.RomajiTitle,
+			kitsuDetails.CanonicalTitle,
+			kitsuDetails.EnglishTitle,
+			kitsuDetails.RomajiTitle,
 		}
-		rawTitles = append(rawTitles, metadata.KitsuDetails.Synonyms...)
+		rawTitles = append(rawTitles, kitsuDetails.Synonyms...)
 
 		var kitsuQueries []string
 		seenKitsu := make(map[string]bool)
@@ -765,8 +770,8 @@ func ValidationQueryProfilesFromMetadata(metadata *ResolvedSearchMetadata, conte
 			}
 			if !seenKitsu[strings.ToLower(t)] {
 				seenKitsu[strings.ToLower(t)] = true
-				if includeYear && metadata.KitsuDetails.Year != "" {
-					kitsuQueries = append(kitsuQueries, AppendYearQuery(t, metadata.KitsuDetails.Year))
+				if includeYear && kitsuDetails.Year != "" {
+					kitsuQueries = append(kitsuQueries, AppendYearQuery(t, kitsuDetails.Year))
 				}
 				kitsuQueries = append(kitsuQueries, t)
 			}
@@ -789,8 +794,8 @@ func ValidationQueryProfilesFromMetadata(metadata *ResolvedSearchMetadata, conte
 			asciiNorm := strings.TrimSpace(release.NormalizeTitleForSearchQuery(norm))
 			if asciiNorm != "" && !seenKitsu[strings.ToLower(asciiNorm)] {
 				seenKitsu[strings.ToLower(asciiNorm)] = true
-				if includeYear && metadata.KitsuDetails.Year != "" {
-					kitsuQueries = append(kitsuQueries, AppendYearQuery(asciiNorm, metadata.KitsuDetails.Year))
+				if includeYear && kitsuDetails.Year != "" {
+					kitsuQueries = append(kitsuQueries, AppendYearQuery(asciiNorm, kitsuDetails.Year))
 				}
 				kitsuQueries = append(kitsuQueries, asciiNorm)
 			}
@@ -935,37 +940,49 @@ func AbsoluteEpisodeFromMetadata(metadata *ResolvedSearchMetadata, seasonStr, ep
 	return total + episode
 }
 
-// AbsoluteEpisodeForContent returns the anime absolute episode number for a
-// series or anime request, or 0 when it does not apply: movie content, non-anime
-// metadata, or a number that cannot be derived. An already-resolved absolute
-// number wins — a Kitsu entry spanning a whole series carries one directly,
-// where deriving it from season/episode would not work.
-func AbsoluteEpisodeForContent(contentType, resolvedAbsolute string, metadata *ResolvedSearchMetadata, season, episode string) int {
-	if contentType != "series" && contentType != "anime" {
+// AbsoluteEpisodeForRequest returns the anime absolute episode number of a
+// series or anime request, or 0 when it does not apply: movie content, a
+// request RequestLooksLikeAnime does not call anime, or a number that cannot
+// be derived. An already-resolved absolute number wins — a Kitsu entry
+// spanning a whole series carries one directly, where deriving it from
+// season/episode would not work.
+func AbsoluteEpisodeForRequest(params *SearchParams) int {
+	if params == nil || (params.ContentType != "series" && params.ContentType != "anime") || MovieLike(params.Metadata, params.ContentType) {
 		return 0
 	}
-	if absolute, err := strconv.Atoi(strings.TrimSpace(resolvedAbsolute)); err == nil && absolute > 0 {
+	if absolute, err := strconv.Atoi(strings.TrimSpace(params.Req.AbsoluteEpisode)); err == nil && absolute > 0 {
 		return absolute
 	}
-	// The anime type is anime whatever the metadata says: a Kitsu entry mapped
-	// to TVDB alone has no TMDB genres to recognise it by.
-	if contentType != "anime" && !MetadataLooksLikeAnime(metadata, contentType) {
+	if !RequestLooksLikeAnime(params) {
 		return 0
 	}
-	return AbsoluteEpisodeFromMetadata(metadata, season, episode)
+	return AbsoluteEpisodeFromMetadata(params.Metadata, params.Req.Season, params.Req.Episode)
 }
 
-// RequestLooksLikeAnime reports whether a series request targets anime:
-// Kitsu-addressed content is anime by definition, otherwise TMDB metadata
-// decides.
+// RequestLooksLikeAnime reports whether a request targets anime. It is the one
+// anime test for search plans, absolute numbering and the playback target: a
+// request addressed as anime (RequestAddressedAsAnime) is anime by definition —
+// a Kitsu entry mapped to TVDB alone has no TMDB genres to recognise it by —
+// otherwise TMDB metadata decides.
 func RequestLooksLikeAnime(params *SearchParams) bool {
-	if params == nil {
-		return false
+	return RequestAddressedAsAnime(params) || (params != nil && MetadataLooksLikeAnime(params.Metadata, params.ContentType))
+}
+
+// RequestAddressedAsAnime reports whether the request itself says it is anime:
+// the Stremio "anime" type or a Kitsu id, whatever type it arrived under. Only
+// such a request is validated by the lenient anime rules; one that merely looks
+// like anime by its metadata keeps the strict series rules.
+func RequestAddressedAsAnime(params *SearchParams) bool {
+	return params != nil && (params.ContentType == "anime" || params.Req.KitsuID != "")
+}
+
+// Kitsu is the request's Kitsu entry, whether it drives the queries
+// (KitsuDetails) or only lends validation its titles (KitsuValidationTitles).
+func (m *ResolvedSearchMetadata) Kitsu() *kitsu.AnimeDetails {
+	if m == nil {
+		return nil
 	}
-	if params.Req.KitsuID != "" {
-		return true
-	}
-	return MetadataLooksLikeAnime(params.Metadata, params.ContentType)
+	return cmp.Or(m.KitsuDetails, m.KitsuValidationTitles)
 }
 
 // MetadataLooksLikeAnime treats anime as animation that is not originally in

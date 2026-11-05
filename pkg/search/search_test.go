@@ -262,16 +262,13 @@ func TestValidateSearchResultsAnimeDropsOnlyWhatPlaybackRefuses(t *testing.T) {
 				"Show (2006) S01E01-E37 BluRay Remux 1080p",
 				"[Grp] Show - 01-37 [Batch]",
 				"[Grp] Show - Complete Series [BD]",
-				// Season-only packs may be numbered absolutely inside, whatever
-				// season their title names, and an extras tag changes nothing.
+			},
+			dropped: []string{
+				// A later season's pack holds only later episodes, however it
+				// is numbered inside, and an extras tag changes nothing.
 				"Show S02 1080p BluRay x264",
 				"[Grp] Show S2 [BD][NCOP+NCED]",
 				"[Grp] Show S03 + OVA [BD]",
-				// OVA notation with no season: the number may be the OVA's.
-				"[Grp] Show - 23 [1080p][OVA]",
-				"[Grp] Show (TV + OVA) - 23 [1080p]",
-			},
-			dropped: []string{
 				"Show (2006) S01E22 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
 				"Show (2006) S01E23 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
 				"Show (2006) S01E24 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
@@ -284,6 +281,11 @@ func TestValidateSearchResultsAnimeDropsOnlyWhatPlaybackRefuses(t *testing.T) {
 				// An explicit season leaves an OVA tag nothing to explain.
 				"Show.S01E23.OVA.1080p.WEB-DL-GRP",
 				"[Grp] Show S01E05 + OVA [BD]",
+				// A regular episode is never an OVA: one numbered otherwise
+				// is another episode, tag or not.
+				"[Grp] Show - 23 [1080p][OVA]",
+				"[Grp] Show (TV + OVA) - 23 [1080p]",
+				"[Grp] Show OVA 2 [1080p]",
 			},
 		},
 		{
@@ -384,7 +386,10 @@ func TestValidateSearchResultsAnimeDropsOnlyWhatPlaybackRefuses(t *testing.T) {
 			for _, title := range append(append([]string{}, tc.kept...), tc.dropped...) {
 				releases = append(releases, &release.Release{Title: title})
 			}
-			opts := ValidationOptions{Season: tc.season, Episode: tc.episode, AbsoluteEpisode: tc.abs, EnforceTitle: true, EnforceYear: true, AcceptPacks: true}
+			// An id-addressed attempt: the title is not enforced, so these
+			// cases isolate the episode rules (title attempts are covered by
+			// TestValidateSearchResultsAnimeTitleAttempts).
+			opts := ValidationOptions{Season: tc.season, Episode: tc.episode, AbsoluteEpisode: tc.abs, EnforceYear: true, AcceptPacks: true}
 			filtered, stats := ValidateSearchResultsWithOptions(releases, "anime", []string{"Show 2006"}, opts)
 			got := make([]string, 0, len(filtered))
 			for _, rel := range filtered {
@@ -396,9 +401,10 @@ func TestValidateSearchResultsAnimeDropsOnlyWhatPlaybackRefuses(t *testing.T) {
 			if stats.DroppedEpisodeRequest != len(tc.dropped) {
 				t.Fatalf("episode drops = %d, want %d", stats.DroppedEpisodeRequest, len(tc.dropped))
 			}
-			// A fansub's romaji name is not reported as a title mismatch.
-			if stats.TitleMismatchKept != 0 || stats.TitleValidationApplied {
-				t.Fatalf("anime title checked: mismatches=%d applied=%v", stats.TitleMismatchKept, stats.TitleValidationApplied)
+			// An id attempt counts a fansub's romaji name as a mismatch, as
+			// for a series, but does not enforce it.
+			if stats.TitleValidationApplied || stats.DroppedTitle != 0 {
+				t.Fatalf("anime id attempt enforced the title: applied=%v dropped=%d", stats.TitleValidationApplied, stats.DroppedTitle)
 			}
 
 			// No dropped title would match as a file name either: playback

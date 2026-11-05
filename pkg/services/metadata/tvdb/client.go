@@ -796,6 +796,10 @@ type Episode struct {
 	Overview     string `json:"overview"`
 	Image        string `json:"image"`
 	Runtime      int    `json:"runtime"` // minutes, 0 when TVDB has none
+	// AbsoluteNumber is TVDB's absolute order, 0 when TVDB has none. It can
+	// count specials TVDB files under season 0 (Mushoku Tensei's S00E01 is
+	// absolute 17), so it is not always the number releases are named by.
+	AbsoluteNumber int `json:"absoluteNumber"`
 }
 
 type seriesEpisodesResponse struct {

@@ -5,7 +5,6 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer"
-	"streamnzb/pkg/search/parser"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -142,18 +141,37 @@ func TestBuildSearchParamsForAttemptDispatchesTheAbsoluteQuery(t *testing.T) {
 		t.Fatalf("expected every attempt of the plan to carry the absolute number, got %q", params.Req.AbsoluteEpisode)
 	}
 
-	// A custom plan with no absolute attempt still carries the number: it is
-	// acceptance, and an episode query surfaces absolute-numbered releases too.
+	// A plan with no absolute attempt does not claim the number, so acceptance
+	// stays strict about season and episode.
 	noAbsolute := planOf("TV", nil, episode)
 	params, err = s.buildSearchParamsForAttempt(base(), &noAbsolute, episode, facts)
 	if err != nil {
 		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
 	}
-	if params.Req.AbsoluteEpisode != "63" {
-		t.Fatalf("AbsoluteEpisode = %q, want 63", params.Req.AbsoluteEpisode)
+	if params.Req.AbsoluteEpisode != "" {
+		t.Fatalf("AbsoluteEpisode = %q, want empty", params.Req.AbsoluteEpisode)
 	}
 	if params.Req.Query != "One Piece S02E02" {
 		t.Fatalf("custom plan query = %q, want %q", params.Req.Query, "One Piece S02E02")
+	}
+
+	// A request with no season — a Kitsu entry spanning the series — has no
+	// numbering but the absolute one, so even that plan carries it.
+	spanning := func() *query.SearchParams {
+		return &query.SearchParams{
+			ContentType:        "series",
+			Req:                indexer.SearchRequest{KitsuID: "12", Episode: "1000", AbsoluteEpisode: "1000"},
+			MovieTitleQueries:  map[string][]string{},
+			SeriesTitleQueries: map[string][]string{},
+			Metadata:           animeTVMetadata(nil),
+		}
+	}
+	params, err = s.buildSearchParamsForAttempt(spanning(), &noAbsolute, episode, s.searchFacts("series", "default", spanning()))
+	if err != nil {
+		t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+	}
+	if params.Req.AbsoluteEpisode != "1000" {
+		t.Fatalf("seasonless AbsoluteEpisode = %q, want 1000", params.Req.AbsoluteEpisode)
 	}
 }
 
@@ -173,51 +191,22 @@ func TestSearchFactsNumberAnimeTypeAbsolutely(t *testing.T) {
 			Seasons:          []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 25}, {SeasonNumber: 2, EpisodeCount: 12}},
 		}},
 	}
-	if got := s.searchFacts("anime", "default", params).Absolute; got != 28 {
-		t.Fatalf("anime-type absolute = %d, want 28", got)
+	facts := s.searchFacts("anime", "default", params)
+	if facts.Absolute != 28 {
+		t.Fatalf("anime-type absolute = %d, want 28", facts.Absolute)
 	}
+	if !facts.IsAnime || facts.Class != config.SearchClassTVAnime {
+		t.Fatalf("anime type: anime=%v class=%q, want anime %q", facts.IsAnime, facts.Class, config.SearchClassTVAnime)
+	}
+	// The same show asked for as a series, with no anime evidence, stays a
+	// regular series: no absolute number, the TV class.
 	params.ContentType = "series"
-	if got := s.searchFacts("series", "default", params).Absolute; got != 0 {
-		t.Fatalf("series-type absolute = %d, want 0 for non-anime metadata", got)
+	facts = s.searchFacts("series", "default", params)
+	if facts.Absolute != 0 {
+		t.Fatalf("series-type absolute = %d, want 0 for non-anime metadata", facts.Absolute)
 	}
-}
-
-// Stremio's "anime" type is how Kitsu and anime catalogues ask, and playback
-// matches files against the target built from it: the absolute number must
-// survive there as it does under "series", or "Show - 28" is no episode.
-func TestAbsoluteEpisodeForContentKeepsAnimeEpisodes(t *testing.T) {
-	metadata := animeTVMetadata([]tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 25}, {SeasonNumber: 2, EpisodeCount: 12}})
-	if got := query.AbsoluteEpisodeForContent("anime", "", metadata, "2", "3"); got != 28 {
-		t.Fatalf("AbsoluteEpisodeForContent(anime, derived) = %d, want 28", got)
-	}
-	if got := query.AbsoluteEpisodeForContent("anime", "154", nil, "", ""); got != 154 {
-		t.Fatalf("AbsoluteEpisodeForContent(anime, resolved) = %d, want 154", got)
-	}
-	// A film under the anime type has no episode to number.
-	if got := query.AbsoluteEpisodeForContent("anime", "", metadata, "", ""); got != 0 {
-		t.Fatalf("AbsoluteEpisodeForContent(anime film) = %d, want 0", got)
-	}
-	// A Kitsu entry mapped to TVDB alone carries no TMDB genres; the type
-	// still makes it anime, and season 1 needs no episode counts.
-	if got := query.AbsoluteEpisodeForContent("anime", "", nil, "1", "4"); got != 4 {
-		t.Fatalf("AbsoluteEpisodeForContent(anime, no metadata) = %d, want 4", got)
-	}
-	// A "series" request still needs the metadata to call it anime.
-	if got := query.AbsoluteEpisodeForContent("series", "", nil, "1", "4"); got != 0 {
-		t.Fatalf("AbsoluteEpisodeForContent(series, no metadata) = %d, want 0", got)
-	}
-
-	meta := session.AvailReportMeta{Season: 2, Episode: 3, AbsoluteEpisode: query.AbsoluteEpisodeForContent("anime", "", metadata, "2", "3")}
-	target := meta.EpisodeTarget()
-	for name, want := range map[string]bool{
-		"[Grp] Show - 28 [1080p].mkv": true,
-		"Show.S02E03.1080p.mkv":       true,
-		"[Grp] Show - 27 [1080p].mkv": false,
-		"Show.S02E04.1080p.mkv":       false,
-	} {
-		if got := parser.ParseReleaseTitle(name).TargetMatchRank(target) > 0; got != want {
-			t.Errorf("playback match %q = %v, want %v", name, got, want)
-		}
+	if facts.IsAnime || facts.Class != config.SearchClassTV {
+		t.Fatalf("series type: anime=%v class=%q, want regular %q", facts.IsAnime, facts.Class, config.SearchClassTV)
 	}
 }
 
@@ -305,6 +294,17 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "anime type is anime whatever the metadata says",
+			params: &query.SearchParams{
+				ContentType: "anime",
+				Req:         indexer.SearchRequest{IMDbID: "tt0903747", Season: "2", Episode: "2"},
+				Metadata: &query.ResolvedSearchMetadata{
+					TVDetails: &tmdb.TVDetails{Name: "Breaking Bad", OriginalLanguage: "en"},
+				},
+			},
+			want: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -315,17 +315,21 @@ func TestRequestLooksLikeAnime(t *testing.T) {
 	}
 }
 
-func TestAbsoluteEpisodeForContentPrefersResolvedAbsolute(t *testing.T) {
-	if got := query.AbsoluteEpisodeForContent("series", "63", nil, "", ""); got != 63 {
-		t.Fatalf("query.AbsoluteEpisodeForContent(resolved) = %d, want 63", got)
+func TestAbsoluteEpisodeForRequestPrefersResolvedAbsolute(t *testing.T) {
+	request := func(contentType, absolute, season, episode string, metadata *query.ResolvedSearchMetadata) *query.SearchParams {
+		return &query.SearchParams{ContentType: contentType, Metadata: metadata,
+			Req: indexer.SearchRequest{AbsoluteEpisode: absolute, Season: season, Episode: episode}}
 	}
-	if got := query.AbsoluteEpisodeForContent("movie", "63", nil, "", ""); got != 0 {
-		t.Fatalf("query.AbsoluteEpisodeForContent(movie) = %d, want 0", got)
+	if got := query.AbsoluteEpisodeForRequest(request("series", "63", "", "", nil)); got != 63 {
+		t.Fatalf("query.AbsoluteEpisodeForRequest(resolved) = %d, want 63", got)
+	}
+	if got := query.AbsoluteEpisodeForRequest(request("movie", "63", "", "", nil)); got != 0 {
+		t.Fatalf("query.AbsoluteEpisodeForRequest(movie) = %d, want 0", got)
 	}
 	// Without a resolved number it still derives one from anime metadata.
 	metadata := animeTVMetadata([]tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 61}, {SeasonNumber: 2, EpisodeCount: 16}})
-	if got := query.AbsoluteEpisodeForContent("series", "", metadata, "2", "2"); got != 63 {
-		t.Fatalf("query.AbsoluteEpisodeForContent(derived) = %d, want 63", got)
+	if got := query.AbsoluteEpisodeForRequest(request("series", "", "2", "2", metadata)); got != 63 {
+		t.Fatalf("query.AbsoluteEpisodeForRequest(derived) = %d, want 63", got)
 	}
 }
 

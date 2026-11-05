@@ -56,6 +56,10 @@ type SearchRequest struct {
 	// unknown). Validation also accepts releases named only by that date, the
 	// way daily shows are released. It changes nothing sent to an indexer.
 	AirDate string
+	// OVASeries marks a request for an entry Kitsu types as an OVA, whose
+	// episodes are OVAs: validation then lets an OVA-numbered release be the
+	// episode. Without that metadata an OVA is never a regular episode.
+	OVASeries bool
 	// ContentIsAnime marks the request as anime content (Kitsu-addressed, or
 	// TMDB metadata: animation not originally in English). Per-indexer
 	// content_scope decides participation from it.

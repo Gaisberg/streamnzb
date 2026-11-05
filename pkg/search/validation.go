@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/dreulavelle/jhin/rank"
@@ -416,6 +417,10 @@ type ValidationOptions struct {
 	// AirDate ("" when unknown) is the requested episode's air date as
 	// YYYY-MM-DD; a release named only by that date is the episode.
 	AirDate string
+	// OVASeries says the requested entry is itself an OVA series (Kitsu's show
+	// type), so an OVA numbered as its season-1 episode is that episode.
+	// Without it an OVA is never a regular episode.
+	OVASeries bool
 	// EnforceTitle decides only whether a title mismatch drops the release;
 	// the check runs either way. An id attempt does not enforce it, because
 	// the indexer resolved the title itself.
@@ -436,20 +441,19 @@ type ValidationOptions struct {
 // ValidateSearchResultsWithOptions filters releases against the expected
 // title/year/season/episode and the plan's acceptance.
 //
-// "anime" is episodic anime (an anime film arrives as "movie") and is checked
-// by episode only, leniently: fansub names (romaji titles, absolute or
-// per-season numbering) do not reliably match the metadata, so the title and
-// year are never enforced and a release is dropped only when it names another
-// episode outright.
+// "anime" is episodic anime (an anime film arrives as "movie"), checked
+// leniently because fansub names (romaji titles, absolute or per-season
+// numbering) do not reliably match the metadata: an episode request drops a
+// release only when it names another episode outright. The title and year are
+// handled as for a series — the title enforced on title attempts, where the
+// query was just a keyword, and the year when the plan asks (a fansub name
+// carrying none passes) — and so is a season request.
 func ValidateSearchResultsWithOptions(releases []*release.Release, contentType string, validationQueries []string, opts ValidationOptions) ([]*release.Release, ValidationStats) {
 	season, episode, absoluteEpisode := opts.Season, opts.Episode, opts.AbsoluteEpisode
 	enableTitleValidation, enableYearValidation := opts.EnforceTitle, opts.EnforceYear
 	stats := ValidationStats{}
 	anime := contentType == "anime"
 	episodic := contentType == "series" || anime
-	if anime {
-		enableYearValidation = false
-	}
 	if contentType != "movie" && !episodic {
 		stats.RawResults = len(releases)
 		stats.FinalResults = len(releases)
@@ -476,14 +480,13 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 	}
 	// The title is checked whenever there is something to check it against;
 	// enableTitleValidation only decides whether a mismatch drops the release.
-	// Anime is not checked at all: a fansub's romaji name is no mismatch.
-	checkTitle := len(expectations) > 0 && !anime
+	checkTitle := len(expectations) > 0
 	stats.TitleValidationApplied = enableTitleValidation && checkTitle
 	stats.YearValidationApplied = enableYearValidation && anyExpectationHasYear(expectations)
 	// A requested season or episode backs the title up, so the release does not
 	// have to *start* with the expected title to be the right show — scene
 	// names keep prefixes the metadata title drops ("Special Ops: Lioness").
-	allowLeadingTitleWords := contentType == "series" && (!seasonless || expectEpisode > 0)
+	allowLeadingTitleWords := episodic && (!seasonless || expectEpisode > 0)
 
 	var out []*release.Release
 	for _, rel := range releases {
@@ -525,9 +528,17 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 		if episodic {
 			if expectEpisode > 0 {
 				episodeRank = parsed.TargetMatchRank(target)
+				// An OVA matched by a bare number names an OVA, not the regular
+				// episode sharing it, unless the entry is itself an OVA series;
+				// namesOtherEpisode then decides. A numbered batch bundling an
+				// OVA ("01-12 + OVA") is the episodes it names and stays.
+				if anime && episodeRank == 4 && !opts.OVASeries && (target.Season > 0 || target.Seasonless) &&
+					len(parsed.Seasons) == 0 && isOVA(parsed, rel.Title) {
+					episodeRank = 0
+				}
 				// An anime release that did not rank stays unless it names
 				// another episode.
-				if episodeRank == 0 && (!anime || namesOtherEpisode(parsed, target)) {
+				if episodeRank == 0 && (!anime || namesOtherEpisode(parsed, rel.Title, target, opts.OVASeries)) {
 					stats.DroppedEpisodeRequest++
 					detail := fmt.Sprintf("expected S%02dE%02d, got seasons %v episodes %v", expectSeason, expectEpisode, parsed.Seasons, parsed.Episodes)
 					if parsed.Date != "" {
@@ -547,7 +558,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 					)
 					continue
 				}
-			} else if !anime && !seasonless && !parsed.HasSeason(expectSeason) {
+			} else if !seasonless && !parsed.HasSeason(expectSeason) {
 				stats.DroppedSeason++
 				stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
 					fmt.Sprintf("expected season %d, got %v", expectSeason, parsed.Seasons))
@@ -605,7 +616,7 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 				case 1:
 					stats.AcceptedCompletePack++
 				}
-			case !seasonless && !anime:
+			case !seasonless:
 				if !opts.AcceptPacks && (parsed.IsShowPack() || parsed.IsSeasonPack(expectSeason)) {
 					stats.DroppedSeason++
 					stats.recordDrop(opts.RecordDropped, rel, diag.DropReasonSeason,
@@ -640,31 +651,96 @@ func ValidateSearchResultsWithOptions(releases []*release.Release, contentType s
 //   - a title with no number the parser reads ("Show (BD)", "Show - SP02");
 //   - a target that cannot pick a file (an unmapped Kitsu entry with no
 //     absolute number), which playback does not check either;
-//   - OVA notation with no season, which the parser flags but cannot number:
-//     "Show - OVA 2" reads as episode 2 only for want of a better reading.
-//     Ancillary extras (Sample, Trailer, Featurette, NCOP, NCED) number
-//     nothing and excuse nothing;
-//   - a season-only release when the absolute number is known: anime packs
-//     are often numbered absolutely inside, so "Show S01 [BD]" may hold
-//     "Show - 13.mkv" for S02E01;
+//   - for a special (season 0), OVA notation with no season, which the parser
+//     flags but cannot number against TVDB's specials: "Show - OVA 2" reads as
+//     episode 2 only for want of a better reading. Ancillary extras (Sample,
+//     Trailer, Featurette, NCOP, NCED) number nothing and excuse nothing;
+//   - a season-only release naming the requested season or an earlier one
+//     when the absolute number is known: anime packs are often numbered
+//     absolutely inside, so "Show S01 [BD]" may hold "Show - 13.mkv" for
+//     S02E01, while a later season's pack holds only later episodes;
 //   - for a special (season 0), a season-only release tagged OVA, which BD
 //     packs use for the specials they bundle ("Show S01 + OVA"). The parser
 //     tags only the word "OVA"; "OVAs" and "Specials" go unrecognised.
 //
 // A season tag with continuing absolute numbering ("S3 - 38" for S03E01,
 // absolute 38) is dropped: it parses exactly like the season's own episode 38.
-func namesOtherEpisode(p *parser.ParsedRelease, t parser.EpisodeTarget) bool {
+// So is an OVA numbered as another episode, for a regular episode:
+// "Show - 23 [OVA]", "Show OVA 2" for S01E05, and "Show S01 OVA 2" for S02E01
+// (for S01E05 the parser reads that one as season 1's pack, ranked above). One
+// numbered as a season-1 episode itself, under no other season, stays — an
+// OVA-only series (Hellsing Ultimate, FLCL) lists its OVAs as season 1 — but
+// not for a later season's episode. An unnumbered OVA bundle ("Show (TV + OVA)
+// [BD]") and a season pack tagged OVA ("Show S03 + OVA") name no other
+// episode and are left to the rules above.
+func namesOtherEpisode(p *parser.ParsedRelease, title string, t parser.EpisodeTarget, ovaSeries bool) bool {
 	if !t.Valid() {
 		return false
 	}
-	ova := slices.Contains(p.Extras, "OVA")
-	if ova && len(p.Seasons) == 0 {
+	// The parser misses an OVA glued to its number ("OVA2") and does not read
+	// the number as an episode.
+	ovaNumber, numbered := -1, false
+	if m := numberedOVA.FindStringSubmatch(title); m != nil {
+		ovaNumber, _ = strconv.Atoi(m[1])
+		numbered = true
+	}
+	ova := numbered || slices.Contains(p.Extras, "OVA")
+	special := t.Season == 0 && !t.Seasonless
+	// Named only by an air date: another night's unless it is within a day of
+	// the episode's; with the episode's date unknown nothing confirms it.
+	if len(p.Seasons) == 0 && len(p.Episodes) == 0 && p.Date != "" && (t.AirDate == "" || airDateApart(p.Date, t.AirDate)) {
+		return true
+	}
+	if ova && !special && (numbered || !isSeasonOnly(p)) {
+		numbers := p.Episodes
+		if len(numbers) == 0 && numbered {
+			numbers = []int{ovaNumber}
+		}
+		// Only an OVA series (by Kitsu's show type) lists its OVAs as
+		// episodes, as season 1.
+		if ovaSeries && (t.Season <= 1 || t.Seasonless) && (len(p.Seasons) == 0 || p.HasSeason(1)) && slices.Contains(numbers, t.Episode) {
+			return false
+		}
+		if len(numbers) > 0 {
+			return true
+		}
+	}
+	if ova && special && len(p.Seasons) == 0 {
 		return false
 	}
-	if isSeasonOnly(p) && (t.Absolute > 0 || (ova && t.Season == 0 && !t.Seasonless)) {
+	// Specials (S00) hold no regular episode, whatever their numbering.
+	regularSeasonUpTo := slices.ContainsFunc(p.Seasons, func(s int) bool { return s >= 1 && (t.Seasonless || s <= t.Season) })
+	if isSeasonOnly(p) && ((t.Absolute > 0 && regularSeasonUpTo) || (ova && special)) {
 		return false
 	}
 	return len(p.Seasons) > 0 || len(p.Episodes) > 0
+}
+
+// isOVA reports whether the release is tagged as an OVA, by the parser or by an
+// OVA number the parser missed.
+func isOVA(p *parser.ParsedRelease, title string) bool {
+	return slices.Contains(p.Extras, "OVA") || numberedOVA.MatchString(title)
+}
+
+// numberedOVA finds an OVA's own number ("OVA 2", "OVA-02", "_OVA_02_",
+// "OVA2", "Show.OVA.02.1080p", "OVA 02v2", "OVA 02[1080p]"), which the parser
+// leaves unread. The number must end the token — anything but a letter,
+// digit or dot may follow, or a version ("02v2") — so "OVA.720p", "OVA 10bit"
+// and "OVA 5.1" (a dot before one or two digits is a channel count, before
+// three or more a resolution) are no OVA numbers; the edges are spelled out
+// because \b does not fire beside an underscore.
+var numberedOVA = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])OVA[\s._#-]*(\d{1,3})(?:[^a-z0-9.]|v\d|\.(?:\D|\d{3,}|$)|$)`)
+
+// airDateApart reports whether a release dated date is another night's than
+// the episode's airDate (both YYYY-MM-DD): more than a day apart, since a
+// late-night broadcast (25:30 JST) is often dated the next calendar day.
+func airDateApart(date, airDate string) bool {
+	d, err1 := time.Parse(time.DateOnly, date)
+	a, err2 := time.Parse(time.DateOnly, airDate)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return d.Sub(a).Abs() > 24*time.Hour
 }
 
 // isSeasonOnly reports whether the title names seasons and no episodes: a

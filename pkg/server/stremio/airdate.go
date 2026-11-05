@@ -7,11 +7,84 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/services/metadata/tmdb"
+	"streamnzb/pkg/services/metadata/tvdb"
 	"streamnzb/pkg/session"
 )
 
-// episodeAirDate is the air date a daily show's date-named releases are
-// matched against, as YYYY-MM-DD, or "" when it is not known.
+// confirmAbsoluteEpisode returns the request's absolute episode number once
+// TVDB's record for the episode (found by tvdbEpisode) has had its say, or 0
+// when TVDB contradicts it.
+//
+// A derived absolute number sums TMDB's season counts, but the season and
+// episode it is added to come from TVDB's order — Cinemeta and the
+// anime-lists mapping both number seasons as TVDB does — and the two split
+// seasons differently (One Piece is S1 of 8 episodes on TVDB, 61 on TMDB).
+// TVDB's own absolute number is no substitute: it can count specials filed
+// under season 0 that releases do not (Mushoku Tensei's S01E17 is absolute 18
+// there, "- 17" in release names). So TVDB only vetoes: when it numbers the
+// same episode differently, which source is right is unknown, and an unknown
+// number accepts no wrong episode. Season 1 maps to its own episode numbers
+// whatever either source says, a number resolved up front (a Kitsu entry
+// spanning the series) is not derived, and when TVDB has no number or no
+// record the derived number stands as before.
+func confirmAbsoluteEpisode(ids *session.AvailReportMeta, ep tvdb.Episode, found bool) int {
+	if ids == nil {
+		return 0
+	}
+	if !found || ids.AbsoluteEpisode <= 0 || ids.Seasonless || ids.Season <= 1 ||
+		ep.AbsoluteNumber <= 0 || ep.AbsoluteNumber == ids.AbsoluteEpisode {
+		return ids.AbsoluteEpisode
+	}
+	logger.Debug("TVDB numbers the episode differently; absolute episode unknown",
+		"tvdb_id", ids.TvdbID, "season", ids.Season, "episode", ids.Episode,
+		"derived_absolute", ids.AbsoluteEpisode, "tvdb_absolute", ep.AbsoluteNumber)
+	return 0
+}
+
+// settleEpisodeNumbering resolves the air date and confirms the absolute
+// number from one TVDB lookup, before the library and the search read them,
+// so search and playback share one number. The id cannot say whose numbering
+// the season and episode follow — this addon's own tmdb: episode ids carry
+// TVDB's numbering when TVDB is the meta source — so TVDB is asked whatever
+// the id, and a disagreement leaves the number unknown rather than wrong.
+func (s *Server) settleEpisodeNumbering(contentType string, ids *session.AvailReportMeta) {
+	if ids == nil {
+		return
+	}
+	switch contentType {
+	case "series", "anime", "tv":
+	default:
+		return
+	}
+	ep, found := s.tvdbEpisode(ids)
+	ids.AirDate = s.episodeAirDateFrom(ids, ep, found)
+	ids.AbsoluteEpisode = confirmAbsoluteEpisode(ids, ep, found)
+}
+
+// tvdbEpisode is TVDB's record for the request's season and episode, looked
+// up once per request for both the air date and the absolute number: TVDB
+// errors are not cached, so a second lookup would wait out a second timeout
+// while TVDB is down. found is false when there is nothing to look up, no
+// client, an error, or no such episode.
+func (s *Server) tvdbEpisode(ids *session.AvailReportMeta) (ep tvdb.Episode, found bool) {
+	if s == nil || ids == nil || ids.TvdbID == "" || ids.Season <= 0 || ids.Episode <= 0 {
+		return tvdb.Episode{}, false
+	}
+	rt := s.runtime()
+	if rt.tvdbClient == nil {
+		return tvdb.Episode{}, false
+	}
+	ep, ok, err := rt.tvdbClient.GetSeriesEpisode(ids.TvdbID, ids.Season, ids.Episode)
+	if err != nil {
+		logger.Debug("TVDB episode lookup failed", "tvdb_id", ids.TvdbID, "season", ids.Season, "episode", ids.Episode, "err", err)
+		return tvdb.Episode{}, false
+	}
+	return ep, ok
+}
+
+// episodeAirDateFrom is the air date a daily show's date-named releases are
+// matched against, as YYYY-MM-DD, or "" when it is not known, given TVDB's
+// record for the episode (see settleEpisodeNumbering).
 //
 // It is TVDB's date for the request's season and episode, kept only when TMDB
 // does not contradict it. No single source can be trusted with the request's
@@ -26,25 +99,8 @@ import (
 // shown to share with TVDB — leaves no date, and date-named releases are
 // dropped as before. Unlike the unaired gate, which only decides whether to
 // search, nothing falls back to another source.
-func (s *Server) episodeAirDate(contentType string, ids *session.AvailReportMeta) string {
-	if s == nil || ids == nil || ids.TvdbID == "" || ids.Season <= 0 || ids.Episode <= 0 {
-		return ""
-	}
-	switch contentType {
-	case "series", "anime", "tv":
-	default:
-		return ""
-	}
-	rt := s.runtime()
-	if rt.tvdbClient == nil {
-		return ""
-	}
-	ep, ok, err := rt.tvdbClient.GetSeriesEpisode(ids.TvdbID, ids.Season, ids.Episode)
-	if err != nil {
-		logger.Debug("TVDB episode for air-date matching failed", "tvdb_id", ids.TvdbID, "season", ids.Season, "episode", ids.Episode, "err", err)
-		return ""
-	}
-	if !ok {
+func (s *Server) episodeAirDateFrom(ids *session.AvailReportMeta, ep tvdb.Episode, found bool) string {
+	if !found {
 		return ""
 	}
 	if _, err := time.Parse(airDateLayout, ep.Aired); err != nil {

@@ -278,8 +278,10 @@ func TestKitsuFilmRequestTakesMoviePath(t *testing.T) {
 	if !query.MovieLike(params.Metadata, "anime") {
 		t.Fatal("expected the request to classify as movie-like")
 	}
-	// The validator checks "anime" by episode only; a film must reach it as
-	// a movie or episode-titled series releases pass title validation.
+	// The validator's "anime" rules keep the title and year checks a series
+	// gets but match episode numbers leniently, which suits episodes, not
+	// films: a film must reach it as a movie, or episode-titled series
+	// releases ("Avatar ... S01E05 Spirited Away") pass as the film.
 	if got := validationContentType(params, "anime"); got != "movie" {
 		t.Fatalf("validation content type = %q, want movie", got)
 	}
