@@ -1,12 +1,15 @@
 package stremio
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"streamnzb/pkg/core/config"
@@ -173,8 +176,10 @@ func TestSettleEpisodeNumberingConfirmsTheAbsolute(t *testing.T) {
 		// The id plays no part — tt, kitsu, tvdb, or this addon's own tmdb: ids,
 		// which carry TVDB numbering when TVDB is the meta source.
 		{"One Piece S02E01: seasons split differently", "81797", map[string]int{"2x1": 9}, session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 62}, 0},
-		// Same counts, but TVDB counts two season-0 specials into its order.
-		{"Mushoku Tensei S02E01: TVDB counts specials", "371310", map[string]int{"2x1": 26}, session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, 0},
+		// Same counts, but TVDB counts two season-0 specials into its order; this
+		// stub serves no episode list to reconcile them by (see
+		// TestConfirmAbsoluteEpisodeReconcilesCountedSpecials).
+		{"Mushoku Tensei S02E01: no episode list", "371310", map[string]int{"2x1": 26}, session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, 0},
 		// Season 1 is its own numbering; TVDB's 18 (an OVA counted) is not asked.
 		{"Mushoku Tensei S01E17: season 1 stands", "371310", map[string]int{"1x17": 18}, session.AvailReportMeta{Season: 1, Episode: 17, AbsoluteEpisode: 17}, 17},
 		{"TVDB has no absolute number", "1", map[string]int{"2x1": 0}, session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 30}, 30},
@@ -298,5 +303,294 @@ func TestOVASeriesFollowsKitsuShowType(t *testing.T) {
 		if params.Req.OVASeries != tc.want {
 			t.Errorf("%s: OVASeries = %v, want %v", tc.name, params.Req.OVASeries, tc.want)
 		}
+	}
+}
+
+// TVDB episode lists for the reconciliation tests, shaped on live TVDB answers
+// (November 2026); only the episodes the tests reach are listed. TVDB lists
+// season 0 first.
+func tvdbEp(season, number, absolute int) tvdb.Episode {
+	return tvdb.Episode{SeasonNumber: season, Number: number, AbsoluteNumber: absolute}
+}
+
+// Mushoku Tensei (TVDB 371310): two of four specials are in TVDB's absolute
+// order ("Eris the Goblin Slayer" 17, "Guardian Fitz" 25), the other two are
+// not; TVDB's seasons hold 23, 24 and 14 episodes, as TMDB's do.
+func mushokuTVDB() []tvdb.Episode {
+	eps := []tvdb.Episode{tvdbEp(0, 1, 17), tvdbEp(0, 2, 25), tvdbEp(0, 3, 0), tvdbEp(0, 4, 0)}
+	for n := 1; n <= 23; n++ {
+		eps = append(eps, tvdbEp(1, n, n+min(n/17, 1)))
+	}
+	for n := 1; n <= 24; n++ {
+		eps = append(eps, tvdbEp(2, n, 25+n))
+	}
+	return append(eps, tvdbEp(3, 1, 50))
+}
+
+// One Piece (TVDB 81797): episode 590, the Toriko crossover, is a TVDB special
+// counted in its absolute order — and an episode TMDB and release names count
+// as well. TVDB's seasons are split by arc (S1 of 8 episodes, TMDB's of 61).
+func onePieceTVDB() []tvdb.Episode {
+	return []tvdb.Episode{tvdbEp(0, 1, 0), tvdbEp(0, 39, 590), tvdbEp(1, 8, 8), tvdbEp(2, 1, 9),
+		tvdbEp(16, 11, 589), tvdbEp(16, 12, 591), tvdbEp(20, 1, 878)}
+}
+
+// Attack on Titan (TVDB 267440): 42 specials, none in the absolute order.
+func attackOnTitanTVDB() []tvdb.Episode {
+	eps := []tvdb.Episode{}
+	for n := 1; n <= 42; n++ {
+		eps = append(eps, tvdbEp(0, n, 0))
+	}
+	return append(eps, tvdbEp(2, 1, 26), tvdbEp(4, 1, 60))
+}
+
+// When TVDB's absolute number disagrees with the derived one, the derived
+// number still stands if it equals TVDB's less the specials TVDB counts before
+// the episode. It is never replaced by TVDB's, and whatever cannot establish
+// that count keeps the veto. Derived numbers sum TMDB's season counts.
+func TestConfirmAbsoluteEpisodeReconcilesCountedSpecials(t *testing.T) {
+	list := func(eps []tvdb.Episode) func() ([]tvdb.Episode, error) {
+		return func() ([]tvdb.Episode, error) { return eps, nil }
+	}
+	failing := func() ([]tvdb.Episode, error) { return nil, fmt.Errorf("TVDB unavailable") }
+	// Three counted specials before S02E01, one after it, one with no number.
+	threeSpecials := []tvdb.Episode{tvdbEp(0, 1, 3), tvdbEp(0, 2, 6), tvdbEp(0, 3, 9), tvdbEp(0, 4, 20), tvdbEp(0, 5, 0), tvdbEp(2, 1, 14)}
+	for _, tc := range []struct {
+		name     string
+		ids      session.AvailReportMeta
+		tvdb     tvdb.Episode
+		episodes func() ([]tvdb.Episode, error)
+		want     int
+	}{
+		{"Mushoku Tensei S02E01: 26 less two counted specials", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26), list(mushokuTVDB()), 24},
+		{"Mushoku Tensei S03E01", session.AvailReportMeta{Season: 3, Episode: 1, AbsoluteEpisode: 48}, tvdbEp(3, 1, 50), list(mushokuTVDB()), 48},
+		{"Mushoku Tensei S02E01, another derived number", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 25}, tvdbEp(2, 1, 26), list(mushokuTVDB()), 0},
+		{"One Piece S20E01: raw agreement", session.AvailReportMeta{Season: 20, Episode: 1, AbsoluteEpisode: 878}, tvdbEp(20, 1, 878), list(onePieceTVDB()), 878},
+		{"One Piece S02E01: seasons split differently", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 62}, tvdbEp(2, 1, 9), list(onePieceTVDB()), 0},
+		{"One Piece S16E12: special 590 counted, still off", session.AvailReportMeta{Season: 16, Episode: 12, AbsoluteEpisode: 654}, tvdbEp(16, 12, 591), list(onePieceTVDB()), 0},
+		{"Attack on Titan S04E01: agree", session.AvailReportMeta{Season: 4, Episode: 1, AbsoluteEpisode: 60}, tvdbEp(4, 1, 60), list(attackOnTitanTVDB()), 60},
+		{"Attack on Titan: uncounted specials shift nothing", session.AvailReportMeta{Season: 4, Episode: 1, AbsoluteEpisode: 59}, tvdbEp(4, 1, 60), list(attackOnTitanTVDB()), 0},
+		{"Death Note S01E37: season 1 is not checked", session.AvailReportMeta{Season: 1, Episode: 37, AbsoluteEpisode: 37}, tvdbEp(1, 37, 38), failing, 37},
+		{"several counted specials before the episode", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 11}, tvdbEp(2, 1, 14), list(threeSpecials), 11},
+		{"episode list fails", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26), failing, 0},
+		{"no episode list to ask", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26), nil, 0},
+		{"list lacks the episode (truncated)", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26), list(mushokuTVDB()[:20]), 0},
+		{"list numbers the episode differently", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26),
+			list([]tvdb.Episode{tvdbEp(0, 1, 17), tvdbEp(0, 2, 25), tvdbEp(2, 1, 27)}), 0},
+		{"two entries share an absolute number", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 26),
+			list(append(mushokuTVDB(), tvdbEp(0, 9, 18))), 0},
+		{"TVDB has no absolute number", session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, tvdbEp(2, 1, 0), failing, 24},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := tc.ids
+			if got := confirmAbsoluteEpisode(&ids, tc.tvdb, true, tc.episodes); got != tc.want {
+				t.Fatalf("absolute = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// tvdbEpisodeListStub serves TVDB's filtered single-episode lookup and its
+// whole episode list from eps, counting list requests; with listFails the
+// list request fails.
+func tvdbEpisodeListStub(t *testing.T, seriesID string, eps []tvdb.Episode, listFails bool) (*tvdb.Client, *atomic.Int32) {
+	t.Helper()
+	var listCalls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			_, _ = w.Write([]byte(`{"status": "success", "data": {"token": "test-token"}}`))
+		case "/series/" + seriesID + "/episodes/default":
+			q := r.URL.Query()
+			served := eps
+			if q.Has("season") {
+				served = nil
+				for _, e := range eps {
+					if strconv.Itoa(e.SeasonNumber) == q.Get("season") && strconv.Itoa(e.Number) == q.Get("episodeNumber") {
+						served = append(served, e)
+					}
+				}
+			} else {
+				listCalls.Add(1)
+				if listFails {
+					http.Error(w, "unavailable", http.StatusInternalServerError)
+					return
+				}
+			}
+			body, _ := json.Marshal(map[string]any{"status": "success", "data": map[string]any{"episodes": served}})
+			_, _ = w.Write(body)
+		default:
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	// Not t.TempDir, for the reason tvdbAirDateStub gives.
+	dir, err := os.MkdirTemp("", "tvdb_episode_list_test")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	client := tvdb.NewClient("test-key", dir)
+	client.BaseURL = ts.URL
+	return client, &listCalls
+}
+
+// End to end through TVDB: the episode list is asked for only when the single
+// episode's absolute number disagrees, and a failed list keeps the veto.
+func TestSettleEpisodeNumberingReconcilesThroughTheEpisodeList(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		eps       []tvdb.Episode
+		ids       session.AvailReportMeta
+		listFails bool
+		want      int
+		wantLists int32
+	}{
+		{"Mushoku Tensei S02E01", mushokuTVDB(), session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, false, 24, 1},
+		{"Mushoku Tensei S02E01, list fails", mushokuTVDB(), session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 24}, true, 0, 1},
+		{"Attack on Titan S04E01 agrees: no list", attackOnTitanTVDB(), session.AvailReportMeta{Season: 4, Episode: 1, AbsoluteEpisode: 60}, true, 60, 0},
+		{"One Piece S02E01", onePieceTVDB(), session.AvailReportMeta{Season: 2, Episode: 1, AbsoluteEpisode: 62}, false, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, lists := tvdbEpisodeListStub(t, "100", tc.eps, tc.listFails)
+			ids := tc.ids
+			ids.TvdbID = "100"
+			(&Server{tvdbClient: client}).settleEpisodeNumbering("anime", &ids)
+			if ids.AbsoluteEpisode != tc.want {
+				t.Fatalf("absolute = %d, want %d", ids.AbsoluteEpisode, tc.want)
+			}
+			if got := lists.Load(); got != tc.wantLists {
+				t.Fatalf("episode list requests = %d, want %d", got, tc.wantLists)
+			}
+		})
+	}
+}
+
+// A later-season Kitsu entry's titles carry the season ("Shingeki no Kyojin
+// Season 3"), while fansubs name the show plainly ("Shingeki no Kyojin S3 -
+// 05"). The title check reads the season out of the expected title as it does
+// out of the release's, so the plain name passes on a title attempt whether or
+// not TMDB lends its romaji title, and an unrelated show is still dropped.
+// Kitsu's titles are entry 13569's (canonical and English "Attack on Titan
+// Season 3", romaji "Shingeki no Kyojin Season 3", no abbreviations).
+func TestLaterSeasonKitsuTitlesAcceptThePlainName(t *testing.T) {
+	season3 := &kitsu.AnimeDetails{ID: "13569", CanonicalTitle: "Attack on Titan Season 3", EnglishTitle: "Attack on Titan Season 3",
+		RomajiTitle: "Shingeki no Kyojin Season 3", ShowType: "TV", Year: "2018"}
+	const (
+		plain     = "[Grp] Shingeki no Kyojin S3 - 05 [1080p]"
+		unrelated = "[Grp] Some Other Show S3 - 05 [1080p]"
+	)
+	romaji := &tmdb.TVAlternativeTitlesResponse{Results: []tmdb.AlternativeTitle{{ISO3166_1: "JP", Title: "Shingeki no Kyojin", Type: "romaji"}}}
+	for _, tc := range []struct {
+		name      string
+		alts      *tmdb.TVAlternativeTitlesResponse
+		languages []string
+	}{
+		{"no TMDB alternatives, plan acceptance titles", nil, config.DefaultIDSearchTitleLanguages()},
+		{"TMDB romaji alternative, plan acceptance titles", romaji, config.DefaultIDSearchTitleLanguages()},
+		{"no TMDB alternatives, English only", nil, []string{"en-US"}},
+		{"TMDB romaji alternative, English only", romaji, []string{"en-US"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := &query.ResolvedSearchMetadata{
+				TVDetails:             &tmdb.TVDetails{Name: "Attack on Titan", OriginalName: "進撃の巨人", OriginalLanguage: "ja", Genres: []tmdb.Genre{{Name: "Animation"}}},
+				TVAlternativeTitles:   tc.alts,
+				KitsuValidationTitles: season3,
+			}
+			accepted := query.ValidationQueriesFromProfiles(query.ValidationQueryProfilesFromMetadata(meta, "anime", tc.languages, false))
+			out, _ := search.ValidateSearchResultsWithOptions([]*release.Release{{Title: plain}, {Title: unrelated}}, "anime", accepted,
+				search.ValidationOptions{Season: "3", Episode: "5", AbsoluteEpisode: "42", EnforceTitle: true, AcceptPacks: true})
+			if len(out) != 1 || out[0].Title != plain {
+				titles := []string{}
+				for _, r := range out {
+					titles = append(titles, r.Title)
+				}
+				t.Fatalf("kept %q against accepted titles %q, want only %q", titles, accepted, plain)
+			}
+		})
+	}
+}
+
+// mushokuTMDB is TMDB's Mushoku Tensei (tv/94664, November 2026), trimmed to
+// the alternative titles that matter: the plain "Mushoku Tensei" is a US
+// "short title", while the first "Romaji" title and every other title carry a
+// subtitle; untyped entries include season tags ("Mushoku Tensei S3").
+func mushokuTMDB() *query.ResolvedSearchMetadata {
+	return &query.ResolvedSearchMetadata{
+		TVDetails: &tmdb.TVDetails{Name: "Mushoku Tensei: Jobless Reincarnation", OriginalName: "無職転生 ～異世界行ったら本気だす～",
+			OriginalLanguage: "ja", Genres: []tmdb.Genre{{Name: "Animation"}},
+			Seasons: []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 23}, {SeasonNumber: 2, EpisodeCount: 24}}},
+		TVAlternativeTitles: &tmdb.TVAlternativeTitlesResponse{Results: []tmdb.AlternativeTitle{
+			{ISO3166_1: "FR", Title: "Mushoku Tensei Jobless Reincarnation"},
+			{ISO3166_1: "JP", Title: "Mushoku Tensei: Isekai Ittara Honki Dasu", Type: "Romaji"},
+			{ISO3166_1: "JP", Title: "Mushoku Tensei II: Isekai Ittara Honki Dasu", Type: "season 2 romaji"},
+			{ISO3166_1: "JP", Title: "Mushoku Tensei S3"},
+			{ISO3166_1: "JP", Title: "Mushoku Tensei"},
+			{ISO3166_1: "TW", Title: "無職轉生", Type: "short title"},
+			{ISO3166_1: "US", Title: "Mushoku Tensei", Type: "short title"},
+			{ISO3166_1: "US", Title: "Jobless Reincarnation"},
+		}},
+		// Kitsu 47694, the season-2 part-2 entry anime-lists places as S02.
+		KitsuValidationTitles: &kitsu.AnimeDetails{ID: "47694", CanonicalTitle: "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+			EnglishTitle: "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2", RomajiTitle: "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2", ShowType: "TV"},
+	}
+}
+
+// An anime fansub names Mushoku Tensei plainly, a name TMDB records as the
+// show's short title while all its other titles carry a subtitle. A title
+// attempt for a request addressed as anime accepts it, still drops an
+// unrelated show, and an id attempt stays lenient about the title. A tt series
+// that only looks like anime keeps the series acceptance titles.
+func TestAnimeTitleAttemptsAcceptTMDBShortTitle(t *testing.T) {
+	s := &Server{config: &config.Config{}}
+	const (
+		plain     = "[Grp] Mushoku Tensei S2 - 05 [1080p]"
+		unrelated = "[Grp] Tensei Shitara Slime Datta Ken S2 - 05 [1080p]"
+	)
+	plan := config.DefaultTVPlan("TV")
+	for _, tc := range []struct {
+		name, contentType, kitsuID string
+		address                    string
+		kept, dropped              []string
+	}{
+		{"anime type, title attempt", "anime", "47694", config.SearchAddressTitle, []string{plain}, []string{unrelated}},
+		{"Kitsu as series, title attempt", "series", "47694", config.SearchAddressTitle, []string{plain}, []string{unrelated}},
+		{"anime type, id attempt", "anime", "47694", config.SearchAddressID, []string{plain, unrelated}, nil},
+		{"anime-looking tt series, title attempt", "series", "", config.SearchAddressTitle, nil, []string{plain, unrelated}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := func() *query.SearchParams {
+				meta := mushokuTMDB()
+				if tc.kitsuID == "" {
+					meta.KitsuValidationTitles = nil
+				}
+				return &query.SearchParams{ContentType: tc.contentType, Metadata: meta,
+					Req:               indexer.SearchRequest{KitsuID: tc.kitsuID, Season: "2", Episode: "5"},
+					MovieTitleQueries: map[string][]string{}, SeriesTitleQueries: map[string][]string{}}
+			}
+			facts := s.searchFacts(tc.contentType, "default", base())
+			params, err := s.buildSearchParamsForAttempt(base(), &plan, config.SearchAttempt{Address: tc.address, Target: config.SearchTargetEpisode}, facts)
+			if err != nil {
+				t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+			}
+			out, _ := search.ValidateSearchResultsWithOptions([]*release.Release{{Title: plain}, {Title: unrelated}},
+				validationContentType(base(), tc.contentType), params.Req.ValidationQueries, search.ValidationOptions{
+					Season: "2", Episode: "5", AbsoluteEpisode: params.Req.AbsoluteEpisode,
+					EnforceTitle: tc.address == config.SearchAddressTitle, AcceptPacks: true})
+			kept := map[string]bool{}
+			for _, r := range out {
+				kept[r.Title] = true
+			}
+			for _, title := range tc.kept {
+				if !kept[title] {
+					t.Errorf("%q dropped against %q, want kept", title, params.Req.ValidationQueries)
+				}
+			}
+			for _, title := range tc.dropped {
+				if kept[title] {
+					t.Errorf("%q kept against %q, want dropped", title, params.Req.ValidationQueries)
+				}
+			}
+		})
 	}
 }

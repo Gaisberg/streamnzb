@@ -191,3 +191,33 @@ func TestSelectEpisodeCandidateDailyFilesFailOpenOnlyWhenAlone(t *testing.T) {
 		t.Fatalf("other nights only: got %q, %v; want ErrEpisodeTargetNotFound", best, err)
 	}
 }
+
+// Playback matches a date-named file by the exact air date only, while anime
+// search keeps a date-only release dated a day either side. A single video file
+// is played whatever its name (the sole-candidate escape: a date names no
+// episode), so the gap shows only when several date-named videos are present
+// and none carries the exact date: playback then finds no file for the
+// episode. This pins the documented limitation.
+func TestSelectDirectFileIndexDateOnlyNamesNeedTheExactDate(t *testing.T) {
+	target := EpisodeTarget{Season: 2, Episode: 3, Absolute: 28, AirDate: "2024-01-14"}
+	idx, err := selectDirectFileIndex([]UnpackableFile{
+		&memoryUnpackableFile{name: "Show.2024.01.15.1080p.WEB-DL-GRP.mkv", data: []byte("x")},
+	}, target)
+	if err != nil || idx != 0 {
+		t.Fatalf("single date-named file a day late: idx=%d err=%v, want it played", idx, err)
+	}
+	idx, err = selectDirectFileIndex([]UnpackableFile{
+		&memoryUnpackableFile{name: "Show.2024.01.15.1080p.WEB-DL-GRP.mkv", data: []byte("x")},
+		&memoryUnpackableFile{name: "Show.2024.01.22.1080p.WEB-DL-GRP.mkv", data: []byte("y")},
+	}, target)
+	if !errors.Is(err, ErrEpisodeTargetNotFound) || idx != -1 {
+		t.Fatalf("several date-named files, none exact: idx=%d err=%v, want ErrEpisodeTargetNotFound", idx, err)
+	}
+	idx, err = selectDirectFileIndex([]UnpackableFile{
+		&memoryUnpackableFile{name: "Show.2024.01.15.1080p.WEB-DL-GRP.mkv", data: []byte("x")},
+		&memoryUnpackableFile{name: "Show.2024.01.14.1080p.WEB-DL-GRP.mkv", data: []byte("y")},
+	}, target)
+	if err != nil || idx != 1 {
+		t.Fatalf("several date-named files, one exact: idx=%d err=%v, want the exact one", idx, err)
+	}
+}

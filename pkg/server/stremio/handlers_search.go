@@ -1459,15 +1459,16 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	}
 	// The absolute number is acceptance, not addressing: it lets an
 	// absolute-numbered release be recognised whichever attempt found it, so
-	// every attempt of a plan that asks by absolute number carries it. A plan
-	// that never asks by it keeps the season/episode acceptance it was written
-	// for; playback still matches files by the number, so search accepting
-	// less than playback would is the safe direction.
-	// A request with no season (a Kitsu entry spanning the series) has no
-	// other numbering: its episode number is the absolute one, so no plan
-	// withholds it.
+	// every attempt of a plan that asks by absolute number carries it. A series
+	// plan that never asks by it keeps the season/episode acceptance it was
+	// written for; playback still matches files by the number, so search
+	// accepting less than playback would is the safe direction.
+	// Two requests carry it under any plan: one with no season (a Kitsu entry
+	// spanning the series), which has no other numbering, and one addressed
+	// as anime, whose releases are named by the number and whose playback
+	// matches files by it.
 	req.AbsoluteEpisode = ""
-	if facts.Absolute > 0 && (plan.RunsAbsoluteAttempt() || !facts.HasSeason) {
+	if facts.Absolute > 0 && (plan.RunsAbsoluteAttempt() || !facts.HasSeason || query.RequestAddressedAsAnime(params)) {
 		req.AbsoluteEpisode = strconv.Itoa(facts.Absolute)
 	}
 	// The air date is acceptance too, and needs no attempt of its own: a
@@ -1485,7 +1486,9 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	if len(validationLanguages) == 0 {
 		validationLanguages = []string{language}
 	}
-	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, contentType, validationLanguages, accept.YearEnforced())
+	// Validated as the release check will validate it, so anime gets its
+	// fansub spellings.
+	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, validationContentType(params, contentType), validationLanguages, accept.YearEnforced())
 	req.ValidationQueries = query.ValidationQueriesFromProfiles(req.ValidationQueryProfiles)
 	req.ValidationQuery = ""
 	if len(req.ValidationQueries) > 0 {

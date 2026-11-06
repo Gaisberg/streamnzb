@@ -847,6 +847,24 @@ func ValidationQueryProfilesFromMetadata(metadata *ResolvedSearchMetadata, conte
 			profile.Languages = append(profile.Languages, logLanguage)
 		}
 	}
+	// Fansubs often name anime by its short title ("Mushoku Tensei") where
+	// every other title carries a subtitle. Only alternatives TMDB types as a
+	// short title count; untyped ones include season tags and translations.
+	if contentType == "anime" && metadata != nil && metadata.TVAlternativeTitles != nil {
+		for _, alt := range metadata.TVAlternativeTitles.Results {
+			title := strings.TrimSpace(release.NormalizeTitleForSearchQuery(alt.Title))
+			if !strings.EqualFold(strings.TrimSpace(alt.Type), "short title") || !HasLatinLetter(title) {
+				continue
+			}
+			if includeYear {
+				title = AppendYearQuery(title, SeriesYearFromMetadata(metadata))
+			}
+			if key := strings.ToLower(title); grouped[key] == nil {
+				grouped[key] = &indexer.ValidationQueryProfile{Languages: []string{"en-US"}, Query: title}
+				order = append(order, key)
+			}
+		}
+	}
 	profiles := make([]indexer.ValidationQueryProfile, 0, len(order))
 	for _, key := range order {
 		if profile := grouped[key]; profile != nil {

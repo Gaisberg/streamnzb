@@ -523,3 +523,34 @@ func TestValidationTitleLanguagesForIDAlwaysIncludeDefaults(t *testing.T) {
 		t.Fatalf("text mode = %#v, want [de-DE]", got)
 	}
 }
+
+// Anime validation accepts the alternatives TMDB types as a short title, with
+// the series year when the plan enforces one; untyped alternatives (season
+// tags, translations) and short titles without Latin letters are not titles a
+// fansub uses, and a series is validated by its usual titles only.
+func TestValidationQueriesAcceptAnimeShortTitles(t *testing.T) {
+	meta := &ResolvedSearchMetadata{
+		TVDetails: &tmdb.TVDetails{Name: "Mushoku Tensei: Jobless Reincarnation", OriginalName: "無職転生", OriginalLanguage: "ja", FirstAirDate: "2021-01-11"},
+		TVAlternativeTitles: &tmdb.TVAlternativeTitlesResponse{Results: []tmdb.AlternativeTitle{
+			{ISO3166_1: "JP", Title: "Mushoku Tensei: Isekai Ittara Honki Dasu", Type: "Romaji"},
+			{ISO3166_1: "JP", Title: "Mushoku Tensei S3"},
+			{ISO3166_1: "US", Title: "Jobless Reincarnation"},
+			{ISO3166_1: "TW", Title: "無職轉生", Type: "short title"},
+			{ISO3166_1: "US", Title: "Mushoku Tensei", Type: "Short Title"},
+		}},
+	}
+	for _, tc := range []struct {
+		contentType string
+		includeYear bool
+		want        []string
+	}{
+		{"anime", false, []string{"Mushoku Tensei Jobless Reincarnation", "Mushoku Tensei Isekai Ittara Honki Dasu", "Mushoku Tensei"}},
+		{"anime", true, []string{"Mushoku Tensei Jobless Reincarnation 2021", "Mushoku Tensei Isekai Ittara Honki Dasu 2021", "Mushoku Tensei 2021"}},
+		{"series", false, []string{"Mushoku Tensei Jobless Reincarnation", "Mushoku Tensei Isekai Ittara Honki Dasu"}},
+	} {
+		got := ValidationQueriesFromProfiles(ValidationQueryProfilesFromMetadata(meta, tc.contentType, config.DefaultIDSearchTitleLanguages(), tc.includeYear))
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s (year %v): %q, want %q", tc.contentType, tc.includeYear, got, tc.want)
+		}
+	}
+}

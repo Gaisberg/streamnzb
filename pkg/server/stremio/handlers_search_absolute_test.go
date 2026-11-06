@@ -5,6 +5,8 @@ import (
 
 	"streamnzb/pkg/core/config"
 	"streamnzb/pkg/indexer"
+	"streamnzb/pkg/release"
+	"streamnzb/pkg/search"
 	"streamnzb/pkg/search/query"
 	"streamnzb/pkg/services/metadata/kitsu"
 	"streamnzb/pkg/services/metadata/tmdb"
@@ -433,5 +435,101 @@ func TestSearchFactsTreatAnimeTypeAsSeries(t *testing.T) {
 	facts = s.searchFacts("anime", "default", params)
 	if facts.IsSeries || facts.Class != config.SearchClassMovie {
 		t.Fatalf("kitsu film: series=%v class=%q, want a movie", facts.IsSeries, facts.Class)
+	}
+}
+
+// Which attempts carry the absolute number into acceptance, and what the
+// validator then keeps. A plan with an Absolute row carries it for every
+// anime request; one without carries it only for a request addressed as
+// anime (the anime type, or a Kitsu id under "series") or one with no season,
+// whose playback matches files by the number. A tt series that only looks like
+// anime keeps the strict series acceptance its plan was written for, and a
+// series that is not anime has no absolute number at all.
+func TestAbsoluteAcceptanceFollowsHowTheRequestIsAddressed(t *testing.T) {
+	s := &Server{config: &config.Config{}}
+	seasons := []tmdb.TVSeasonInfo{{SeasonNumber: 1, EpisodeCount: 25}, {SeasonNumber: 2, EpisodeCount: 12}}
+	anime := func() *query.ResolvedSearchMetadata {
+		m := animeTVMetadata(seasons) // S02E03 derives absolute 28
+		m.TVDetails.Name = "Show"
+		return m
+	}
+	drama := func() *query.ResolvedSearchMetadata {
+		return &query.ResolvedSearchMetadata{TVDetails: &tmdb.TVDetails{Name: "Show", OriginalLanguage: "en",
+			Genres: []tmdb.Genre{{Name: "Drama"}}, Seasons: seasons}}
+	}
+	noAbsoluteRow := config.SearchQueryConfig{Name: "custom", Attempts: []config.SearchAttempt{
+		{Address: config.SearchAddressTitle, Target: config.SearchTargetEpisode},
+		{Address: config.SearchAddressTitle, Target: config.SearchTargetSeason},
+	}}
+	absoluteRow := config.DefaultTVPlan("TV")
+	const (
+		absolute   = "[Grp] Show - 28 [1080p]"
+		wrong      = "[Grp] Show - 29 [1080p]"
+		perSeason  = "[Grp] Show - 03 [1080p]"
+		seasonEp   = "[Grp] Show S2 - 03 [1080p]"
+		sceneStyle = "Show.S02E03.1080p.WEB-DL-GRP"
+	)
+	for _, tc := range []struct {
+		name, contentType, kitsuID, season, episode, resolved string
+		meta                                                  func() *query.ResolvedSearchMetadata
+		plan                                                  config.SearchQueryConfig
+		wantAbsolute                                          string
+		kept, dropped                                         []string
+	}{
+		{"anime type, no Absolute row", "anime", "1", "2", "3", "", anime, noAbsoluteRow, "28",
+			[]string{absolute, seasonEp, sceneStyle}, []string{wrong, perSeason}},
+		{"Kitsu as series, no Absolute row", "series", "1", "2", "3", "", anime, noAbsoluteRow, "28",
+			[]string{absolute, seasonEp, sceneStyle}, []string{wrong, perSeason}},
+		{"anime-looking tt series, no Absolute row", "series", "", "2", "3", "", anime, noAbsoluteRow, "",
+			[]string{seasonEp, sceneStyle}, []string{absolute, wrong, perSeason}},
+		{"anime-looking tt series, Absolute row", "series", "", "2", "3", "", anime, absoluteRow, "28",
+			[]string{absolute, seasonEp, sceneStyle}, []string{wrong, perSeason}},
+		{"anime type, Absolute row", "anime", "1", "2", "3", "", anime, absoluteRow, "28",
+			[]string{absolute, seasonEp, sceneStyle}, []string{wrong, perSeason}},
+		{"ordinary series, no Absolute row", "series", "", "2", "3", "", drama, noAbsoluteRow, "",
+			[]string{seasonEp, sceneStyle}, []string{absolute, wrong, perSeason}},
+		{"ordinary series, Absolute row", "series", "", "2", "3", "", drama, absoluteRow, "",
+			[]string{seasonEp, sceneStyle}, []string{absolute, wrong, perSeason}},
+		{"no season, no Absolute row", "anime", "1", "", "28", "28", anime, noAbsoluteRow, "28",
+			[]string{absolute}, []string{wrong}},
+		{"no season, Absolute row", "anime", "1", "", "28", "28", anime, absoluteRow, "28",
+			[]string{absolute}, []string{wrong}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := func() *query.SearchParams {
+				return &query.SearchParams{ContentType: tc.contentType, Metadata: tc.meta(),
+					Req:               indexer.SearchRequest{KitsuID: tc.kitsuID, Season: tc.season, Episode: tc.episode, AbsoluteEpisode: tc.resolved},
+					MovieTitleQueries: map[string][]string{}, SeriesTitleQueries: map[string][]string{}}
+			}
+			facts := s.searchFacts(tc.contentType, "default", base())
+			attempt := config.SearchAttempt{Address: config.SearchAddressID, Target: config.SearchTargetEpisode}
+			params, err := s.buildSearchParamsForAttempt(base(), &tc.plan, attempt, facts)
+			if err != nil {
+				t.Fatalf("buildSearchParamsForAttempt() error = %v", err)
+			}
+			if params.Req.AbsoluteEpisode != tc.wantAbsolute {
+				t.Fatalf("AbsoluteEpisode = %q, want %q", params.Req.AbsoluteEpisode, tc.wantAbsolute)
+			}
+			rels := []*release.Release{}
+			for _, title := range append(append([]string{}, tc.kept...), tc.dropped...) {
+				rels = append(rels, &release.Release{Title: title})
+			}
+			out, _ := search.ValidateSearchResultsWithOptions(rels, validationContentType(base(), tc.contentType), nil, search.ValidationOptions{
+				Season: params.Req.Season, Episode: params.Req.Episode, AbsoluteEpisode: params.Req.AbsoluteEpisode, AcceptPacks: true})
+			kept := map[string]bool{}
+			for _, r := range out {
+				kept[r.Title] = true
+			}
+			for _, title := range tc.kept {
+				if !kept[title] {
+					t.Errorf("%q dropped, want kept", title)
+				}
+			}
+			for _, title := range tc.dropped {
+				if kept[title] {
+					t.Errorf("%q kept, want dropped", title)
+				}
+			}
+		})
 	}
 }

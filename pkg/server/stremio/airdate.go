@@ -27,7 +27,17 @@ import (
 // whatever either source says, a number resolved up front (a Kitsu entry
 // spanning the series) is not derived, and when TVDB has no number or no
 // record the derived number stands as before.
-func confirmAbsoluteEpisode(ids *session.AvailReportMeta, ep tvdb.Episode, found bool) int {
+//
+// On a disagreement, the derived number also stands when it equals TVDB's
+// with the season-0 specials TVDB counts before the episode taken out
+// (Mushoku Tensei's S02E01: 26 less two counted specials is TMDB's 24); see
+// specialsCountedBefore. Either reading is kept, never TVDB's in place of the
+// derived one: One Piece's numbered special 590 is counted by TVDB, TMDB and
+// release names alike, so the raw match is the right one there. This is a
+// conservative reconciliation of two metadata sources, not a statement about
+// how every anime's releases are numbered. episodes is TVDB's episode list,
+// asked for only on a disagreement; nil, or an error, keeps the veto.
+func confirmAbsoluteEpisode(ids *session.AvailReportMeta, ep tvdb.Episode, found bool, episodes func() ([]tvdb.Episode, error)) int {
 	if ids == nil {
 		return 0
 	}
@@ -35,10 +45,43 @@ func confirmAbsoluteEpisode(ids *session.AvailReportMeta, ep tvdb.Episode, found
 		ep.AbsoluteNumber <= 0 || ep.AbsoluteNumber == ids.AbsoluteEpisode {
 		return ids.AbsoluteEpisode
 	}
+	if episodes != nil {
+		all, err := episodes()
+		if err != nil {
+			logger.Debug("TVDB episode list failed; absolute episode unknown", "tvdb_id", ids.TvdbID, "err", err)
+		} else if counted, ok := specialsCountedBefore(all, ep); ok && ep.AbsoluteNumber-counted == ids.AbsoluteEpisode {
+			return ids.AbsoluteEpisode
+		}
+	}
 	logger.Debug("TVDB numbers the episode differently; absolute episode unknown",
 		"tvdb_id", ids.TvdbID, "season", ids.Season, "episode", ids.Episode,
 		"derived_absolute", ids.AbsoluteEpisode, "tvdb_absolute", ep.AbsoluteNumber)
 	return 0
+}
+
+// specialsCountedBefore counts the season-0 episodes TVDB places in its
+// absolute order ahead of ep (an absolute number above 0 and below ep's);
+// specials without one are not in the order and shift nothing. ok is false
+// when the list cannot establish the count: it lacks ep itself with the same
+// absolute number (a truncated or different list), or two entries up to ep
+// share an absolute number, so which one comes first is unknown.
+func specialsCountedBefore(episodes []tvdb.Episode, ep tvdb.Episode) (counted int, ok bool) {
+	seen := make(map[int]bool)
+	for _, e := range episodes {
+		if e.AbsoluteNumber <= 0 || e.AbsoluteNumber > ep.AbsoluteNumber {
+			continue
+		}
+		if seen[e.AbsoluteNumber] {
+			return 0, false
+		}
+		seen[e.AbsoluteNumber] = true
+		if e.SeasonNumber == ep.SeasonNumber && e.Number == ep.Number && e.AbsoluteNumber == ep.AbsoluteNumber {
+			ok = true
+		} else if e.SeasonNumber == 0 {
+			counted++
+		}
+	}
+	return counted, ok
 }
 
 // settleEpisodeNumbering resolves the air date and confirms the absolute
@@ -58,7 +101,9 @@ func (s *Server) settleEpisodeNumbering(contentType string, ids *session.AvailRe
 	}
 	ep, found := s.tvdbEpisode(ids)
 	ids.AirDate = s.episodeAirDateFrom(ids, ep, found)
-	ids.AbsoluteEpisode = confirmAbsoluteEpisode(ids, ep, found)
+	ids.AbsoluteEpisode = confirmAbsoluteEpisode(ids, ep, found, func() ([]tvdb.Episode, error) {
+		return s.runtime().tvdbClient.GetSeriesEpisodes(ids.TvdbID)
+	})
 }
 
 // tvdbEpisode is TVDB's record for the request's season and episode, looked

@@ -202,12 +202,16 @@ func TestValidateSearchResultsAnimeOVA(t *testing.T) {
 
 // A release named only by an air date is judged by that date: another night's
 // is dropped. A day either side stays, since a late-night broadcast (25:30
-// JST) is often dated the next calendar day. With the episode's date unknown
-// nothing confirms the release is this episode, and it is dropped.
+// JST) is often dated the next calendar day; a regular series keeps the exact
+// date only. With the episode's date unknown nothing confirms the release is
+// this episode, and it is dropped.
 func TestValidateSearchResultsAnimeAirDate(t *testing.T) {
 	titles := []string{"Show.2024.01.14.1080p.WEB-DL-GRP", "Show.2024.01.15.1080p.WEB-DL-GRP", "Show.2024.01.07.1080p.WEB-DL-GRP"}
 	dated := ValidationOptions{Season: "2", Episode: "3", AbsoluteEpisode: "28", AirDate: "2024-01-14", AcceptPacks: true}
 	assertKept(t, "air date known", validate(t, "anime", nil, dated, titles...), titles[:2], titles[2:])
+	// A regular series keeps the exact date only: a daily show's next night is
+	// another episode.
+	assertKept(t, "series, air date known", validate(t, "series", nil, dated, titles...), titles[:1], titles[1:])
 	dated.AirDate = ""
 	assertKept(t, "air date unknown", validate(t, "anime", nil, dated, titles...), nil, titles)
 }
