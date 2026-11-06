@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.4.1](https://github.com/Gaisberg/streamnzb/compare/v6.4.0...v6.4.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **search:** validate anime episodes and keep their absolute number through playback ([#394](https://github.com/Gaisberg/streamnzb/issues/394)) ([845f550](https://github.com/Gaisberg/streamnzb/commit/845f5503efcb596c5c4885c820130ecf638a8f86))
+
 ## [6.4.0](https://github.com/Gaisberg/streamnzb/compare/v6.3.0...v6.4.0) (2026-11-04)
 
 
