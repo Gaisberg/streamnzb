@@ -74,14 +74,14 @@ func (s *Server) searchFacts(contentType, streamLabel string, params *query.Sear
 	if !facts.IsSeries {
 		return facts
 	}
+	// The absolute number is the playback target's own, so search accepts by
+	// the number playback will match files against (see confirmAbsoluteEpisode).
+	var absolute int
 	if params.ContentIDs != nil {
 		facts.AirDate = params.ContentIDs.AirDate
-	}
-	// A Kitsu entry spanning a whole series resolves its absolute number up
-	// front, where deriving one from season/episode would not work.
-	absolute, _ := strconv.Atoi(params.Req.AbsoluteEpisode)
-	if absolute <= 0 && facts.IsAnime {
-		absolute = query.AbsoluteEpisodeFromMetadata(params.Metadata, params.Req.Season, params.Req.Episode)
+		absolute = params.ContentIDs.AbsoluteEpisode
+	} else {
+		absolute = query.AbsoluteEpisodeForRequest(params)
 	}
 	if absolute > 0 {
 		facts.Absolute = absolute
@@ -759,13 +759,12 @@ func (s *Server) buildRawSearchResult(ctx context.Context, contentType, id strin
 			}, nil
 		}
 	}
-	// The air date a daily show's releases are named by. It is not the gate's:
-	// see episodeAirDate for why it takes TVDB and TMDB agreeing. Resolved
+	// The air date a daily show's releases are named by, and the absolute
+	// number TVDB has had its say on. The date is not the gate's: see
+	// episodeAirDateFrom for why it takes TVDB and TMDB agreeing. Resolved
 	// after the gates that answer without searching, before the library and
-	// the search that both read it.
-	if params.ContentIDs != nil {
-		params.ContentIDs.AirDate = s.episodeAirDate(contentType, params.ContentIDs)
-	}
+	// the search that both read them.
+	s.settleEpisodeNumbering(contentType, params.ContentIDs)
 	logStreamConfiguration(streamLabel, contentType, stream, selectedQueries)
 
 	libMode := rt.config.EffectiveLibrarySearchMode()
@@ -960,16 +959,23 @@ func convertLibraryItemToRelease(item *persistence.LibraryItem) *release.Release
 	}
 }
 
-// validationContentType maps a request's catalog type onto the validator's
-// movie/series split. The validator skips types it does not know, and "anime"
+// validationContentType maps a request onto the validator's types. "anime"
 // covers films and episodic entries alike — a film must validate as a movie,
 // or episode-titled series releases pass ("Avatar ... S01E05 Spirited Away"
-// matches a "Spirited Away" text query). Episodic anime deliberately keeps
-// its unvalidated behaviour: fansub naming (romaji titles, absolute
-// numbering) does not reliably match the resolved metadata titles.
+// matches a "Spirited Away" text query). An episodic request addressed as
+// anime (query.RequestAddressedAsAnime: the anime type, or a Kitsu id under
+// "series") validates as "anime", whose fansub naming (romaji titles, absolute
+// or per-season numbering) does not reliably match the metadata. A tt series
+// that only looks like anime keeps the strict series rules.
 func validationContentType(params *query.SearchParams, contentType string) string {
-	if params != nil && query.MovieLike(params.Metadata, contentType) {
+	if params == nil {
+		return contentType
+	}
+	if query.MovieLike(params.Metadata, contentType) {
 		return "movie"
+	}
+	if (contentType == "series" || contentType == "anime") && query.RequestAddressedAsAnime(params) {
+		return "anime"
 	}
 	return contentType
 }
@@ -1079,6 +1085,10 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 			// could not place the entry.
 			if strings.EqualFold(details.ShowType, "movie") || !kitsuMapped {
 				params.Metadata.KitsuDetails = details
+			} else {
+				// Still the show's names: a title attempt's results may carry
+				// any of them.
+				params.Metadata.KitsuValidationTitles = details
 			}
 			if !kitsuMapped {
 				if req.TVDBID == "" && details.TVDBID != "" {
@@ -1303,7 +1313,6 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	}
 	episodeNum, _ := strconv.Atoi(req.Episode)
 	contentIDs := &session.AvailReportMeta{ImdbID: req.IMDbID, TmdbID: req.TMDBID, TvdbID: req.TVDBID, KitsuID: req.KitsuID, Season: seasonNum, Seasonless: seasonless, Episode: episodeNum}
-	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForContent(contentType, req.AbsoluteEpisode, params.Metadata, req.Season, req.Episode)
 	if movieLike && req.TMDBID != "" && rt.tmdbClient != nil {
 		if tmdbIDNum, err := strconv.Atoi(req.TMDBID); err == nil {
 			var movieDetails *tmdb.MovieDetails
@@ -1349,6 +1358,7 @@ func (s *Server) buildSearchParamsBase(contentType, id string, searchQuery *conf
 	contentIDs.TmdbID = req.TMDBID
 	contentIDs.TvdbID = req.TVDBID
 	params.Req = req
+	contentIDs.AbsoluteEpisode = query.AbsoluteEpisodeForRequest(params)
 	params.ContentIDs = contentIDs
 	params.ImdbForText = imdbForText
 	params.TmdbForText = tmdbForText
@@ -1449,14 +1459,25 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	}
 	// The absolute number is acceptance, not addressing: it lets an
 	// absolute-numbered release be recognised whichever attempt found it, so
-	// every attempt of a plan that asks by absolute number carries it.
+	// every attempt of a plan that asks by absolute number carries it. A series
+	// plan that never asks by it keeps the season/episode acceptance it was
+	// written for; playback still matches files by the number, so search
+	// accepting less than playback would is the safe direction.
+	// Two requests carry it under any plan: one with no season (a Kitsu entry
+	// spanning the series), which has no other numbering, and one addressed
+	// as anime, whose releases are named by the number and whose playback
+	// matches files by it.
 	req.AbsoluteEpisode = ""
-	if facts.Absolute > 0 && plan.RunsAbsoluteAttempt() {
+	if facts.Absolute > 0 && (plan.RunsAbsoluteAttempt() || !facts.HasSeason || query.RequestAddressedAsAnime(params)) {
 		req.AbsoluteEpisode = strconv.Itoa(facts.Absolute)
 	}
 	// The air date is acceptance too, and needs no attempt of its own: a
 	// daily show's date-named release is recognised whichever attempt found it.
 	req.AirDate = facts.AirDate
+	// Only Kitsu's own show type says the entry is an OVA series; release
+	// titles never do.
+	kitsuEntry := params.Metadata.Kitsu()
+	req.OVASeries = kitsuEntry != nil && strings.EqualFold(strings.TrimSpace(kitsuEntry.ShowType), "OVA")
 
 	// Acceptance titles are the spellings a release may match. They are the
 	// plan's, not the attempt's — what goes out and what may come back are
@@ -1465,7 +1486,9 @@ func (s *Server) buildSearchParamsForAttempt(base *query.SearchParams, plan *con
 	if len(validationLanguages) == 0 {
 		validationLanguages = []string{language}
 	}
-	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, contentType, validationLanguages, accept.YearEnforced())
+	// Validated as the release check will validate it, so anime gets its
+	// fansub spellings.
+	req.ValidationQueryProfiles = query.ValidationQueryProfilesFromMetadata(params.Metadata, validationContentType(params, contentType), validationLanguages, accept.YearEnforced())
 	req.ValidationQueries = query.ValidationQueriesFromProfiles(req.ValidationQueryProfiles)
 	req.ValidationQuery = ""
 	if len(req.ValidationQueries) > 0 {

@@ -319,8 +319,8 @@ func (sq *SearchQueryConfig) Acceptance() *SearchAcceptance {
 }
 
 // RunsAbsoluteAttempt reports whether the plan asks by absolute episode number
-// anywhere. It is what decides whether the absolute number is resolved at all,
-// and resolving it also lets acceptance recognise absolute-numbered releases
+// anywhere. It decides whether the plan's attempts carry the absolute number
+// into acceptance, which lets it recognise absolute-numbered releases
 // whichever attempt surfaced them.
 func (sq *SearchQueryConfig) RunsAbsoluteAttempt() bool {
 	if sq == nil {

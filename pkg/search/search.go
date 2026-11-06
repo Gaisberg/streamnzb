@@ -196,6 +196,7 @@ func RunIndexerSearches(ctx context.Context, idx indexer.Indexer, req indexer.Se
 		Episode:         req.Episode,
 		AbsoluteEpisode: req.AbsoluteEpisode,
 		AirDate:         req.AirDate,
+		OVASeries:       req.OVASeries,
 		EnforceTitle:    !runIDSearch,
 		EnforceYear:     req.EnableYearValidation,
 		AcceptPacks:     req.AcceptPacks,
@@ -243,6 +244,7 @@ func logPerProfileValidationStats(req indexer.SearchRequest, contentType string,
 			Episode:         req.Episode,
 			AbsoluteEpisode: req.AbsoluteEpisode,
 			AirDate:         req.AirDate,
+			OVASeries:       req.OVASeries,
 			EnforceTitle:    !runIDSearch,
 			EnforceYear:     req.EnableYearValidation,
 			AcceptPacks:     req.AcceptPacks,
@@ -265,7 +267,7 @@ func logPerProfileValidationStats(req indexer.SearchRequest, contentType string,
 		} else if len(profile.Languages) > 1 {
 			validationAttrs = append(validationAttrs, "title_languages", profile.Languages)
 		}
-		if contentType == "series" {
+		if contentType == "series" || contentType == "anime" {
 			if req.AbsoluteEpisode != "" {
 				validationAttrs = append(validationAttrs, "expected_absolute_episode", req.AbsoluteEpisode)
 			}

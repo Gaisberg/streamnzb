@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/dreulavelle/jhin"
+
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/diag"
+	"streamnzb/pkg/search/parser"
 )
 
 type recordingIndexer struct {
@@ -231,6 +236,279 @@ func TestValidateSearchResultsAcceptsAbsoluteNumberedAnime(t *testing.T) {
 	filtered, _ = ValidateSearchResultsWithStatsForQueries(releases, "series", []string{"One Piece"}, "2", "2", "", true, false)
 	if len(filtered) != 1 {
 		t.Fatalf("expected only the standard release without absolute, got %d", len(filtered))
+	}
+}
+
+// Episodic anime is validated by episode, and only as far as playback's file
+// match can back it: a release is dropped when it carries a number playback
+// would read and refuse, and kept when playback would accept it or could not
+// tell. The first case is the incident's own release formats, offered for an
+// S01E04 request.
+func TestValidateSearchResultsAnimeDropsOnlyWhatPlaybackRefuses(t *testing.T) {
+	cases := []struct {
+		name                 string
+		season, episode, abs string
+		kept, dropped        []string
+	}{
+		{
+			name: "incident: S01E04, absolute 4", season: "1", episode: "4", abs: "4",
+			kept: []string{
+				"SHOW.S01E04.Pursuit.1080p.NF.WEB-DL.DDP2.0.H.264-GRP",
+				"[Grp] Show - 04 - Pursuit [ABCDEF12]",
+				"[Grp] Romaji Title - 04 [1080p]", // fansub title: not enforced
+				"[Grp] Show (BD 1080p)",           // no episode marker
+				"Show 1080p BluRay",               // no episode marker
+				"Show S01 1080p BluRay x264",      // season pack
+				"Show (2006) S01E01-E37 BluRay Remux 1080p",
+				"[Grp] Show - 01-37 [Batch]",
+				"[Grp] Show - Complete Series [BD]",
+			},
+			dropped: []string{
+				// A later season's pack holds only later episodes, however it
+				// is numbered inside, and an extras tag changes nothing.
+				"Show S02 1080p BluRay x264",
+				"[Grp] Show S2 [BD][NCOP+NCED]",
+				"[Grp] Show S03 + OVA [BD]",
+				"Show (2006) S01E22 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
+				"Show (2006) S01E23 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
+				"Show (2006) S01E24 BluRay Remux 1080p DTS-HD MA 5.1 H264 AVC GRP",
+				"[Grp] Show - 28 - Impatience [47CF5862]",
+				// Ancillary extras excuse no wrong episode.
+				"Show.S01E23.Sample.1080p.WEB-DL-GRP",
+				"Show.S01E23.Featurette.1080p.WEB-DL-GRP",
+				"Show.S01E23.Trailer.1080p.WEB-DL-GRP",
+				"[Grp] Show - 23 [ONA]",
+				// An explicit season leaves an OVA tag nothing to explain.
+				"Show.S01E23.OVA.1080p.WEB-DL-GRP",
+				"[Grp] Show S01E05 + OVA [BD]",
+				// A regular episode is never an OVA: one numbered otherwise
+				// is another episode, tag or not.
+				"[Grp] Show - 23 [1080p][OVA]",
+				"[Grp] Show (TV + OVA) - 23 [1080p]",
+				"[Grp] Show OVA 2 [1080p]",
+			},
+		},
+		{
+			// A Kitsu cour mapped onto S01E14: playback reads the cour's own
+			// "- 01" as episode 1 and refuses it, so search does too.
+			name: "per-cour numbering: mapped S01E14", season: "1", episode: "14", abs: "14",
+			kept:    []string{"[SubsPlease] Show - 14 (1080p) [ABCD1234]", "Show.S01E14.1080p.WEB-DL-GRP"},
+			dropped: []string{"[SubsPlease] Show - Part 2 - 01 (1080p) [ABCD1234]"},
+		},
+		{
+			// Absolute and in-season numbering of S02E03 are both accepted; a
+			// bare in-season "- 03" names no season, which playback reads as
+			// absolute 3 and refuses.
+			name: "absolute vs season/episode: S02E03, absolute 28", season: "2", episode: "3", abs: "28",
+			kept: []string{
+				"Show.S02E03.1080p.WEB-DL-GRP",
+				"[Grp] Show S2 - 03 (1080p) [ABCD1234]",
+				"[Grp] Show 2nd Season - 03 [1080p]",
+				"[Grp] Show - 28 [1080p]",      // absolute
+				"Show.S01E28.1080p.WEB-DL-GRP", // absolute under season 1
+				"[Grp] Show S2 [Batch]",        // season pack
+				"[Grp] Show - 01-37 [Batch]",   // absolute range
+				"Show S01 1080p BluRay x264",   // season-only: may hold "- 28"
+			},
+			dropped: []string{
+				"[Grp] Show - 03 [1080p]", // bare per-season numbering
+				"Show.S02E04.1080p.WEB-DL-GRP",
+				"[Grp] Show S2 - 15 [1080p]",
+				"Show.S01E03.1080p.WEB-DL-GRP",
+				"[Grp] Show - 27 [1080p]",
+				"Show.S02E28.1080p.WEB-DL-GRP", // a season's own E28, not absolute 28
+			},
+		},
+		{
+			// A first-season BD pack can be numbered absolutely inside and
+			// hold "Show - 13.mkv" for S02E01.
+			name: "season-only pack: S02E01, absolute 13", season: "2", episode: "1", abs: "13",
+			kept:    []string{"Show S01 [BD 1080p]", "[Grp] Show Season 1 [BD]", "[Grp] Show - 13 [1080p]"},
+			dropped: []string{"[Grp] Show - 12 [1080p]", "Show.S01E01.1080p.WEB-DL-GRP"},
+		},
+		{
+			// The parser flags OVA notation without numbering it as a special,
+			// and reads nothing in "SP02"/"Special 2": neither is evidence of
+			// another episode. A plain bare number is a regular episode.
+			name: "OVA specials: S00E02", season: "0", episode: "2",
+			kept: []string{
+				"Show.S00E02.1080p.WEB-DL-GRP",
+				"[Grp] Show - OVA 2 [1080p]",
+				"[Grp] Show OVA - 02 [1080p]",
+				"[Grp] Show - SP02 [1080p]",
+				"[Grp] Show - Special 2 [1080p]",
+				"[Grp] Show OAD 2 [1080p]",
+				// A season pack tagged OVA may bundle the special.
+				"[Grp] Show S01 + OVA [BD 1080p]",
+				"[Grp] Show Season 1 + OVA [BD]",
+				// OVA notation with no season stays ambiguous, as before.
+				"[Grp] Show - 05 [OVA]",
+			},
+			dropped: []string{
+				"[Grp] Show - 02 [1080p]",
+				"Show.S01E02.1080p.WEB-DL-GRP",
+				// An explicit episode number is not excused by the OVA tag.
+				"[Grp] Show S01E05 + OVA [BD]",
+				"Show.S01E05.OVA.1080p.WEB-DL-GRP",
+				// The parser tags only the word "OVA": a known limitation.
+				"[Grp] Show Season 1 + OVAs [BD]",
+				"[Grp] Show S1 + Specials [BD]",
+				// Ancillary tags excuse nothing.
+				"[Grp] Show S01 [BD][NCOP+NCED]",
+			},
+		},
+		{
+			// An entry spanning the whole series numbers absolutely; another
+			// season's number cannot be placed in it, by search or playback.
+			name: "seasonless absolute 154", episode: "154", abs: "154",
+			kept:    []string{"[Grp] Show - 154 [1080p]", "Show.S01E154.1080p.WEB-DL-GRP", "Show 1080p BluRay"},
+			dropped: []string{"[Grp] Show - 153 [1080p]", "Show.S01E23.1080p.WEB-DL-GRP", "Show.S05E15.1080p.WEB-DL-GRP"},
+		},
+		{
+			// An unmapped Kitsu entry with no absolute number cannot pick a
+			// file, so playback does not check it and nothing is turned away.
+			name: "seasonless episode 4, absolute unknown", episode: "4",
+			kept: []string{"Show.S03E04.1080p.WEB-DL-GRP", "[Grp] Show - 04 [1080p]", "Show S03 1080p BluRay x264",
+				"Show.S03E05.1080p.WEB-DL-GRP", "[Grp] Show - 28 [1080p]"},
+		},
+		{
+			// Missing absolute metadata: only the season/episode numbering
+			// can match, at search as at playback.
+			name: "absolute unknown: S02E01", season: "2", episode: "1",
+			kept: []string{"Show.S02E01.1080p.WEB-DL-GRP", "[Grp] Show S2 - 01 [1080p]", "[Grp] Show (BD 1080p)", "[Grp] Show S2 [BD]"},
+			dropped: []string{"Show.S02E02.1080p.WEB-DL-GRP", "Show.S01E01.1080p.WEB-DL-GRP", "[SubsPlease] Show - 25 (1080p)",
+				"Show S01 [BD 1080p]"}, // with no absolute, another season's pack is just that
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var releases []*release.Release
+			for _, title := range append(append([]string{}, tc.kept...), tc.dropped...) {
+				releases = append(releases, &release.Release{Title: title})
+			}
+			// An id-addressed attempt: the title is not enforced, so these
+			// cases isolate the episode rules (title attempts are covered by
+			// TestValidateSearchResultsAnimeTitleAttempts).
+			opts := ValidationOptions{Season: tc.season, Episode: tc.episode, AbsoluteEpisode: tc.abs, EnforceYear: true, AcceptPacks: true}
+			filtered, stats := ValidateSearchResultsWithOptions(releases, "anime", []string{"Show 2006"}, opts)
+			got := make([]string, 0, len(filtered))
+			for _, rel := range filtered {
+				got = append(got, rel.Title)
+			}
+			if !reflect.DeepEqual(got, tc.kept) {
+				t.Fatalf("kept %q\nwant %q", got, tc.kept)
+			}
+			if stats.DroppedEpisodeRequest != len(tc.dropped) {
+				t.Fatalf("episode drops = %d, want %d", stats.DroppedEpisodeRequest, len(tc.dropped))
+			}
+			// An id attempt counts a fansub's romaji name as a mismatch, as
+			// for a series, but does not enforce it.
+			if stats.TitleValidationApplied || stats.DroppedTitle != 0 {
+				t.Fatalf("anime id attempt enforced the title: applied=%v dropped=%d", stats.TitleValidationApplied, stats.DroppedTitle)
+			}
+
+			// No dropped title would match as a file name either: playback
+			// ranks NZB file names with the seasons/episodes-only partial
+			// parse and archive members with the full one, against the same
+			// target. A release's files may be named otherwise; those are
+			// playback's to check.
+			season, err := strconv.Atoi(tc.season)
+			abs, _ := strconv.Atoi(tc.abs)
+			episode, _ := strconv.Atoi(tc.episode)
+			target := parser.EpisodeTarget{Season: season, Seasonless: err != nil, Episode: episode, Absolute: abs}
+			partial := jhin.GetPartialParser([]string{"seasons", "episodes"})
+			for _, title := range tc.dropped {
+				if rank := parser.ParseReleaseTitle(title).TargetMatchRank(target); rank > 0 {
+					t.Errorf("dropped %q, which the full parse ranks %d", title, rank)
+				}
+				if rank := parser.ParseReleaseTitleWithParser(title, partial).TargetMatchRank(target); rank > 0 {
+					t.Errorf("dropped %q, which the partial parse ranks %d", title, rank)
+				}
+			}
+		})
+	}
+
+	// A plan refusing packs refuses the packs it can recognise, and nothing
+	// on a guess: a name with no number, or a special the parser cannot
+	// number, may be a single episode. Numbered ranges and batches name the
+	// episode and stay.
+	for _, tc := range []struct {
+		name                 string
+		season, episode, abs string
+	}{
+		{"S02E03, absolute 28", "2", "3", "28"},
+		{"unmapped Kitsu entry, episode 4", "", "4", ""},
+	} {
+		noPacks := []*release.Release{
+			{Title: "[Grp] Show - 28 [1080p]"}, {Title: "[Grp] Show (BD 1080p)"}, {Title: "[Grp] Show - SP02 [1080p]"},
+			{Title: "Show S01E01-E37 BluRay 1080p"},
+			{Title: "[Grp] Show S2 [Batch]"}, {Title: "Show S01 [BD 1080p]"}, {Title: "[Grp] Show - Complete Series [BD]"},
+		}
+		kept, stats := ValidateSearchResultsWithOptions(noPacks, "anime", nil, ValidationOptions{Season: tc.season, Episode: tc.episode, AbsoluteEpisode: tc.abs, AcceptPacks: false, RecordDropped: 10})
+		if len(kept) != 4 || kept[3].Title != "Show S01E01-E37 BluRay 1080p" || len(stats.Dropped) != 3 {
+			t.Fatalf("%s, packs refused: kept %d, dropped %d; want the episode, the two unnumbered releases and the range kept, the three packs dropped", tc.name, len(kept), len(stats.Dropped))
+		}
+		for _, drop := range stats.Dropped {
+			if !strings.Contains(drop.Detail, "pack") {
+				t.Fatalf("%s: %q dropped as %q, want the pack reason", tc.name, drop.Title, drop.Detail)
+			}
+		}
+	}
+
+	// Specials with packs refused: OVA-tagged season packs go as packs that
+	// may hold the special, an explicit wrong episode as a wrong episode.
+	specials := []*release.Release{
+		{Title: "Show.S00E02.1080p.WEB-DL-GRP"}, {Title: "[Grp] Show - OVA 2 [1080p]"},
+		{Title: "[Grp] Show S01 + OVA [BD 1080p]"}, {Title: "[Grp] Show Season 1 + OVA [BD]"}, {Title: "[Grp] Show S01E05 + OVA [BD]"},
+	}
+	kept, stats := ValidateSearchResultsWithOptions(specials, "anime", nil, ValidationOptions{Season: "0", Episode: "2", AcceptPacks: false, RecordDropped: 10})
+	wantDetail := map[string]string{
+		"[Grp] Show S01 + OVA [BD 1080p]": "a pack that may contain the episode, which this request does not accept",
+		"[Grp] Show Season 1 + OVA [BD]":  "a pack that may contain the episode, which this request does not accept",
+		"[Grp] Show S01E05 + OVA [BD]":    "expected S00E02, got seasons [1] episodes [5]",
+	}
+	if len(kept) != 2 || len(stats.Dropped) != len(wantDetail) {
+		t.Fatalf("specials, packs refused: kept %d, dropped %d; want 2 kept, 3 dropped", len(kept), len(stats.Dropped))
+	}
+	for _, drop := range stats.Dropped {
+		if drop.Detail != wantDetail[drop.Title] {
+			t.Fatalf("%q dropped as %q, want %q", drop.Title, drop.Detail, wantDetail[drop.Title])
+		}
+	}
+
+	// Standard TV keeps its strict rule: no episode marker, or a bare number
+	// without the absolute, is not the episode.
+	strict := []*release.Release{{Title: "Show.S01E04.1080p.WEB-DL-GRP"}, {Title: "[Grp] Show - 04 [ABCDEF12]"}, {Title: "Show 1080p BluRay"}}
+	filtered, _ := ValidateSearchResultsWithOptions(strict, "series", []string{"Show"}, ValidationOptions{Season: "1", Episode: "4", AcceptPacks: true})
+	if len(filtered) != 1 || filtered[0].Title != "Show.S01E04.1080p.WEB-DL-GRP" {
+		t.Fatalf("series validation changed: kept %d", len(filtered))
+	}
+}
+
+// Search judges the release title with the full parse; playback ranks NZB
+// file names with a seasons/episodes-only partial parse, and the two read OVA
+// notation differently. Neither reading is trusted: search keeps an OVA title
+// with no season whatever number it parsed.
+func TestAnimeOVANotationParsesDifferentlyAndIsKept(t *testing.T) {
+	partial := jhin.GetPartialParser([]string{"seasons", "episodes"})
+	for _, tc := range []struct {
+		title               string
+		fullEps, partialEps []int
+	}{
+		{"[Grp] Show - OVA 2 [1080p]", []int{2}, nil},
+		{"[Grp] Show OVA - 02 [1080p]", []int{2}, []int{2}},
+	} {
+		full := parser.ParseReleaseTitle(tc.title)
+		if !slices.Equal(full.Episodes, tc.fullEps) || !slices.Contains(full.Extras, "OVA") {
+			t.Fatalf("%q full parse: episodes %v extras %v, want episodes %v with OVA", tc.title, full.Episodes, full.Extras, tc.fullEps)
+		}
+		if got := parser.ParseReleaseTitleWithParser(tc.title, partial).Episodes; !slices.Equal(got, tc.partialEps) {
+			t.Fatalf("%q partial parse: episodes %v, want %v", tc.title, got, tc.partialEps)
+		}
+		kept, _ := ValidateSearchResultsWithOptions([]*release.Release{{Title: tc.title}}, "anime", nil, ValidationOptions{Season: "0", Episode: "5", AcceptPacks: true})
+		if len(kept) != 1 {
+			t.Fatalf("%q dropped for S00E05", tc.title)
+		}
 	}
 }
 

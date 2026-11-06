@@ -185,7 +185,7 @@ func TestEpisodeAirDateRealShows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := airedTestServer(t, tvmazeRawS33E43, tmdbSeriesStub(tc.tmdb))
 			srv.tvdbClient, _ = tvdbAirDateStub(t, tc.tvdbID, tc.tmdb.name, tc.tvdb, http.StatusOK)
-			if got := srv.episodeAirDate("series", tc.ids); got != tc.want {
+			if got := airDateOf(srv, "series", tc.ids); got != tc.want {
 				t.Fatalf("air date = %q, want %q", got, tc.want)
 			}
 		})
@@ -240,7 +240,7 @@ func TestEpisodeAirDateTMDBCrossCheck(t *testing.T) {
 			}
 			srv := airedTestServer(t, tvmazeRawS33E43, tmdbHandler)
 			srv.tvdbClient, _ = tvdbAirDateStub(t, "76779", "WWE Raw", tc.tvdb, tc.status)
-			if got := srv.episodeAirDate("series", tc.ids); got != tc.want {
+			if got := airDateOf(srv, "series", tc.ids); got != tc.want {
 				t.Fatalf("air date = %q, want %q", got, tc.want)
 			}
 		})
@@ -249,7 +249,7 @@ func TestEpisodeAirDateTMDBCrossCheck(t *testing.T) {
 	// Movies never carry one.
 	srv := airedTestServer(t, tvmazeRawS33E43, tmdbSeriesStub(rawTMDB))
 	srv.tvdbClient, _ = tvdbAirDateStub(t, "76779", "WWE Raw", rawTVDB, http.StatusOK)
-	if got := srv.episodeAirDate("movie", rawS33E43); got != "" {
+	if got := airDateOf(srv, "movie", rawS33E43); got != "" {
 		t.Fatalf("movie air date = %q, want none", got)
 	}
 }
@@ -326,7 +326,7 @@ func TestEpisodeAirDateStaleTMDB(t *testing.T) {
 			current.Store(&tc.fresh)
 			refetches.Store(0)
 
-			if got := srv.episodeAirDate("series", tc.ids); got != tc.want {
+			if got := airDateOf(srv, "series", tc.ids); got != tc.want {
 				t.Fatalf("air date = %q, want %q", got, tc.want)
 			}
 			if got := refetches.Load(); got != tc.wantRefetches {
@@ -341,7 +341,7 @@ func TestEpisodeAirDateStaleTMDB(t *testing.T) {
 func TestEpisodeAirDateLeavesTheGateAlone(t *testing.T) {
 	srv := airedTestServer(t, tvmazeRawS33E43, tmdbSeriesStub(rawTMDB))
 	srv.tvdbClient, _ = tvdbAirDateStub(t, "76779", "WWE Raw", map[string]string{"33x43": "2025-10-27"}, http.StatusOK)
-	if got := srv.episodeAirDate("series", rawS33E43); got != "2025-10-27" {
+	if got := airDateOf(srv, "series", rawS33E43); got != "2025-10-27" {
 		t.Fatalf("air date = %q, want 2025-10-27", got)
 	}
 	if _, window, known := srv.episodeAiredState(context.Background(), nil, "series", rawS33E43); !known || !window.date.Equal(mustDay(t, "2026-10-26")) {
@@ -472,4 +472,15 @@ func mustDay(t *testing.T, s string) time.Time {
 		t.Fatalf("bad date %q", s)
 	}
 	return w.date
+}
+
+// airDateOf is the air date settleEpisodeNumbering resolves for ids, read off
+// a copy so the case's ids stay as given.
+func airDateOf(srv *Server, contentType string, ids *session.AvailReportMeta) string {
+	if ids == nil {
+		return ""
+	}
+	copied := *ids
+	srv.settleEpisodeNumbering(contentType, &copied)
+	return copied.AirDate
 }
