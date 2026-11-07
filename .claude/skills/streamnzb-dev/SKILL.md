@@ -273,6 +273,11 @@ changes content is always reviewed as the whole amended commit, not just
 the new edits: use step 2's snapshot with `HEAD~1` as both the worktree
 base and the diff base (append `HEAD~1` to the `git diff` command).
 
+Commits on step 2's `<tmp>` snapshot branch need no review of their own,
+because they are what step 4 reviews. They must never be pushed, merged or
+moved onto the development branch, and are deleted with `<tmp>`. No other
+commit is exempt on these grounds.
+
 **Before every commit:**
 
 1. Finish the implementation, its tests and any documentation it needs (§7).
