@@ -89,6 +89,8 @@ func TestJellyfinUserConfigUpdatesDoNotLoseEachOther(t *testing.T) {
 	}
 }
 
+// TestJellyfinUserConfigIsPerStream covers two streams each reading back only
+// their own row, and a blank stream name being refused.
 func TestJellyfinUserConfigIsPerStream(t *testing.T) {
 	m := openTestManager(t)
 	store := m.JellyfinPlaystateStore()

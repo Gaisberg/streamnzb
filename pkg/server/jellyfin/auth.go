@@ -495,6 +495,9 @@ func (s *Server) serveUser(w http.ResponseWriter, rq *request) bool {
 // either as a JSON number or as a string holding one.
 var subtitleModes = []string{"Default", "Always", "OnlyForced", "None", "Smart"}
 
+// parseSubtitleMode returns the canonical name for a SubtitleMode in one of
+// the forms above, or false. A string is trimmed first, and a number in a
+// string is read with strconv.Atoi, so "+2" is accepted too.
 func parseSubtitleMode(raw json.RawMessage) (string, bool) {
 	var n int
 	var name string
@@ -544,6 +547,7 @@ type userConfigUpdate struct {
 	playDefaultAudioTrack                         *bool
 }
 
+// apply returns cfg with the fields the body set replaced and the rest kept.
 func (u userConfigUpdate) apply(cfg persistence.JellyfinUserConfig) persistence.JellyfinUserConfig {
 	if u.audioLanguage != nil {
 		cfg.AudioLanguagePreference = *u.audioLanguage

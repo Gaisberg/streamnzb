@@ -407,6 +407,9 @@ func (ps *JellyfinPlaystateStore) GetUserConfig(streamName string) (JellyfinUser
 	return readUserConfig(ps.db, strings.TrimSpace(streamName))
 }
 
+// readUserConfig reads the stream's row through c, which may be the read or
+// the write handle, and returns the defaults when there is none. The caller
+// trims the name and holds the store's lock.
 func readUserConfig(c *connRef, streamName string) (JellyfinUserConfig, error) {
 	var cfg JellyfinUserConfig
 	var playDefault int

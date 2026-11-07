@@ -33,6 +33,8 @@ func (f *fakeUserConfig) row(stream string) persistence.JellyfinUserConfig {
 	return persistence.DefaultJellyfinUserConfig()
 }
 
+// GetUserConfig returns the stream's row, the defaults when it has none, or
+// readErr when one is set. Names are used as given, untrimmed.
 func (f *fakeUserConfig) GetUserConfig(stream string) (persistence.JellyfinUserConfig, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -42,6 +44,9 @@ func (f *fakeUserConfig) GetUserConfig(stream string) (persistence.JellyfinUserC
 	return f.row(stream), nil
 }
 
+// UpdateUserConfig reads, updates and stores the row under one lock.
+// readErr fails it before update runs; writeErr fails it after, and either
+// way nothing is stored or counted in writes. Names are used as given.
 func (f *fakeUserConfig) UpdateUserConfig(stream string, update func(persistence.JellyfinUserConfig) persistence.JellyfinUserConfig) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -88,6 +93,9 @@ type wantConfig struct {
 	playDefault bool
 }
 
+// requireConfig fails the test unless the four kept fields of a
+// Configuration block equal want, and AudioLanguagePreference is present
+// even when it is null.
 func requireConfig(t *testing.T, cfg map[string]any, want wantConfig) {
 	t.Helper()
 	audio, present := cfg["AudioLanguagePreference"]
