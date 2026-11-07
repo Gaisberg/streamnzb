@@ -268,7 +268,10 @@ use Claude Code are not asked to install it.
 
 **Exempt:** merges and rebases that apply without conflicts, reverts that
 cleanly undo an earlier commit, and message-only amends. A conflict
-resolution or any new edit is reviewed like any other change.
+resolution or any new edit is reviewed like any other change. An amend that
+changes content is always reviewed as the whole amended commit, not just
+the new edits: use step 2's snapshot with `HEAD~1` as both the worktree
+base and the diff base (append `HEAD~1` to the `git diff` command).
 
 **Before every commit:**
 
@@ -279,7 +282,22 @@ resolution or any new edit is reviewed like any other change.
    files but not untracked files, while the build uses all of them, so the
    tree should hold nothing else. If it does (gitignored build outputs aside),
    ask the user how to set that work aside; never stash, reset or delete it
-   yourself. If they keep it in place, continue only with their agreement.
+   yourself. If they keep it in place, build and review a snapshot of the
+   staged change instead, recreated every round:
+   - `git diff --cached --binary --no-color --no-ext-diff --src-prefix=a/
+     --dst-prefix=b/ --output=<patch>`
+   - `git worktree add --detach <dir> HEAD`, then
+     `git -C <dir> apply --index <patch>`, `git -C <dir> switch -c <tmp>`
+     and commit there
+   - in step 3, run `npm ci` in `<dir>/frontend` and the build in `<dir>`;
+     if it changes tracked files there, stop and ask the user
+   - in step 4, run `/code-review <level> <tmp>` from the normal session;
+     a branch target reviews that branch's commits, not the working tree
+
+   `<patch>` and `<dir>` are absolute paths outside the repository, and
+   `<tmp>` is a local branch that is never pushed. Afterwards run
+   `git worktree remove --force <dir>` and `git branch -D <tmp>`; both hold
+   only the snapshot.
 3. Run the build script to `Build Complete!`. If it changed tracked files
    (`go fmt`), re-stage only files that were fully staged; if it touched a
    partially staged file or one outside the change, stop and ask the user
