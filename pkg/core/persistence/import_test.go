@@ -45,6 +45,11 @@ func seedSQLiteSource(t *testing.T) string {
 	if err := src.JellyfinPlaystateStore().SetFavorite("default", "fav-item", "movie", "tt0111161", true); err != nil {
 		t.Fatalf("seed favourite: %v", err)
 	}
+	if err := setUserConfig(src.JellyfinPlaystateStore(), "default", JellyfinUserConfig{
+		AudioLanguagePreference: "jpn", SubtitleLanguagePreference: "eng", SubtitleMode: "Always",
+	}); err != nil {
+		t.Fatalf("seed user config: %v", err)
+	}
 	if err := src.Close(); err != nil {
 		t.Fatalf("close source: %v", err)
 	}
@@ -116,6 +121,12 @@ func TestMigrateDataCarriesEveryTable(t *testing.T) {
 	// would not notice it going missing from the import list.
 	if fav, ok := target.JellyfinPlaystateStore().Get("default", "fav-item"); !ok || !fav.IsFavorite {
 		t.Fatalf("favourite not imported: %+v (ok=%v)", fav, ok)
+	}
+
+	// Every field, the false default-track flag included, must survive.
+	want := JellyfinUserConfig{AudioLanguagePreference: "jpn", SubtitleLanguagePreference: "eng", SubtitleMode: "Always"}
+	if cfg, err := target.JellyfinPlaystateStore().GetUserConfig("default"); err != nil || cfg != want {
+		t.Fatalf("user config not imported: %+v (err=%v)", cfg, err)
 	}
 }
 

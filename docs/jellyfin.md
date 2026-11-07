@@ -337,6 +337,30 @@ stream never sees another's.
   tiles do not carry a favourite flag, so a client that
   marks favourites on its grids shows them only on the title page and in the
   Favourites row.
+- **Language preferences** — the preferred audio language, preferred subtitle
+  language, subtitle mode and "play default audio track" set in a client's
+  account or user settings are kept per stream, server-side, and returned in
+  the user's `Configuration` on every read, so a saved choice no longer
+  reverts. A stream that never saved any reads Jellyfin's defaults (no
+  language preference, subtitle mode `Default`, default audio track on).
+  They follow the stream through a rename or a database switch, and are
+  deleted with it. Both `POST /Users/{id}/Configuration` and
+  `POST /Users/Configuration` are honoured; the token decides which stream is
+  written, not the user id. Unlike Jellyfin, which resets whatever a body
+  leaves out, a body may name only the fields it changes and the others keep
+  their saved values. `null` or `""` clears a language. A body that is not a
+  JSON object, or that carries a subtitle mode other than `Default`,
+  `Always`, `OnlyForced`, `None` or `Smart` (by name, or by number 0–4), a
+  default-track flag that is not `true`/`false`, or a language longer than
+  255 characters, is
+  refused with 400 and changes nothing. The rest of `UserConfiguration`
+  (remembered track selections, next-episode autoplay, missing episodes, …)
+  is accepted but not kept, and reads back at its fixed value.
+  StreamNZB only stores these preferences: it picks no audio or subtitle track
+  by language, and a media source still names its first audio track as the
+  default. A client that applies the preference itself when choosing a track
+  (Plezy does) honours it; one that plays the server's default track plays
+  the release's default track, as before.
 
 ## What it deliberately does not do
 

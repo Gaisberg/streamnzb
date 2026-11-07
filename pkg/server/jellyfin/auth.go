@@ -1,16 +1,22 @@
 package jellyfin
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 )
 
 // A login is a stream: the stream name as the username and the stream token
@@ -218,6 +224,8 @@ func jellyfinTime(t time.Time) string {
 }
 
 type userConfiguration struct {
+	// AudioLanguagePreference is null when unset, as Jellyfin sends it.
+	AudioLanguagePreference    *string  `json:"AudioLanguagePreference"`
 	PlayDefaultAudioTrack      bool     `json:"PlayDefaultAudioTrack"`
 	SubtitleLanguagePreference string   `json:"SubtitleLanguagePreference"`
 	DisplayMissingEpisodes     bool     `json:"DisplayMissingEpisodes"`
@@ -296,6 +304,11 @@ type userDto struct {
 
 func (s *Server) userDto(stream *auth.Stream) userDto {
 	now := jellyfinTime(time.Now())
+	cfg := s.storedUserConfig(stream.Username)
+	var audioLanguage *string
+	if cfg.AudioLanguagePreference != "" {
+		audioLanguage = &cfg.AudioLanguagePreference
+	}
 	return userDto{
 		Name:                  stream.Username,
 		ServerID:              s.serverID(),
@@ -305,9 +318,11 @@ func (s *Server) userDto(stream *auth.Stream) userDto {
 		LastLoginDate:         now,
 		LastActivityDate:      now,
 		Configuration: userConfiguration{
-			PlayDefaultAudioTrack:      true,
+			AudioLanguagePreference:    audioLanguage,
+			PlayDefaultAudioTrack:      cfg.PlayDefaultAudioTrack,
+			SubtitleLanguagePreference: cfg.SubtitleLanguagePreference,
 			GroupedFolders:             []string{},
-			SubtitleMode:               "Default",
+			SubtitleMode:               cfg.SubtitleMode,
 			OrderedViews:               []string{},
 			LatestItemsExcludes:        []string{},
 			MyMediaExcludes:            []string{},
@@ -464,10 +479,190 @@ func (s *Server) serveUser(w http.ResponseWriter, rq *request) bool {
 		writeEmpty(w)
 	case rq.is(http.MethodPost) && len(rq.segs) >= 2 && rq.segs[0] == "sessions" && rq.segs[1] == "capabilities":
 		writeEmpty(w)
-	case rq.is(http.MethodPost) && len(rq.segs) == 3 && rq.segs[0] == "users" && rq.segs[2] == "configuration":
-		writeEmpty(w)
+	case rq.is(http.MethodPost) && len(rq.segs) == 3 && rq.segs[0] == "users" && rq.segs[2] == "configuration",
+		rq.is(http.MethodPost) && len(rq.segs) == 2 && rq.segs[0] == "users" && rq.segs[1] == "configuration":
+		// /Users/{id}/Configuration, and its modern spelling
+		// /Users/Configuration?userId=.
+		s.handleUserConfiguration(w, rq)
 	default:
 		return false
 	}
 	return true
+}
+
+// subtitleModes are Jellyfin's SubtitlePlaybackMode names in enum order.
+// Jellyfin reads the enum by name without regard to case, or by number,
+// either as a JSON number or as a string holding one.
+var subtitleModes = []string{"Default", "Always", "OnlyForced", "None", "Smart"}
+
+func parseSubtitleMode(raw json.RawMessage) (string, bool) {
+	var n int
+	var name string
+	switch {
+	case json.Unmarshal(raw, &name) == nil:
+		name = strings.TrimSpace(name)
+		for _, mode := range subtitleModes {
+			if strings.EqualFold(mode, name) {
+				return mode, true
+			}
+		}
+		var err error
+		if n, err = strconv.Atoi(name); err != nil {
+			return "", false
+		}
+	case json.Unmarshal(raw, &n) != nil:
+		return "", false
+	}
+	if n < 0 || n >= len(subtitleModes) {
+		return "", false
+	}
+	return subtitleModes[n], true
+}
+
+// maxLanguagePreference is Jellyfin's own length limit on both language fields.
+const maxLanguagePreference = 255
+
+// storedUserConfig is the stream's saved configuration, or the defaults when
+// it saved none. A failed read also serves the defaults: the user routes
+// must answer for a client to work at all.
+func (s *Server) storedUserConfig(streamName string) persistence.JellyfinUserConfig {
+	if s.opts.UserConfig == nil {
+		return persistence.DefaultJellyfinUserConfig()
+	}
+	cfg, err := s.opts.UserConfig.GetUserConfig(streamName)
+	if err != nil {
+		logger.Warn("Reading Jellyfin user configuration failed", "stream", streamName, "err", err)
+		return persistence.DefaultJellyfinUserConfig()
+	}
+	return cfg
+}
+
+// userConfigUpdate is what a configuration body sets; nil leaves a field as
+// it is.
+type userConfigUpdate struct {
+	audioLanguage, subtitleLanguage, subtitleMode *string
+	playDefaultAudioTrack                         *bool
+}
+
+func (u userConfigUpdate) apply(cfg persistence.JellyfinUserConfig) persistence.JellyfinUserConfig {
+	if u.audioLanguage != nil {
+		cfg.AudioLanguagePreference = *u.audioLanguage
+	}
+	if u.subtitleLanguage != nil {
+		cfg.SubtitleLanguagePreference = *u.subtitleLanguage
+	}
+	if u.subtitleMode != nil {
+		cfg.SubtitleMode = *u.subtitleMode
+	}
+	if u.playDefaultAudioTrack != nil {
+		cfg.PlayDefaultAudioTrack = *u.playDefaultAudioTrack
+	}
+	return cfg
+}
+
+// parseUserConfigUpdate reads the kept fields out of a UserConfiguration
+// body, which must be one JSON object (a leading UTF-8 byte order mark is
+// skipped, as Jellyfin skips it), and fails if any of them is not valid.
+// Names match without regard to case and fields are read in document order,
+// so a field named twice takes its last value, both as Jellyfin does. A
+// language may be a string or null, null and "" both meaning no preference;
+// the subtitle mode and the default-track flag are not nullable in Jellyfin,
+// so null is refused for them.
+func parseUserConfigUpdate(raw []byte) (userConfigUpdate, error) {
+	var u userConfigUpdate
+	errBody := errors.New("body must be a JSON object")
+	dec := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return u, errBody
+	}
+	language := func(field string, raw json.RawMessage) (*string, error) {
+		var v *string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, fmt.Errorf("%s must be a string or null", field)
+		}
+		value := ""
+		if v != nil {
+			value = strings.TrimSpace(*v)
+		}
+		if utf8.RuneCountInString(value) > maxLanguagePreference {
+			return nil, fmt.Errorf("%s is longer than %d characters", field, maxLanguagePreference)
+		}
+		return &value, nil
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, isKey := tok.(string)
+		var raw json.RawMessage
+		if err != nil || !isKey || dec.Decode(&raw) != nil {
+			return userConfigUpdate{}, errBody
+		}
+		switch strings.ToLower(key) {
+		case "audiolanguagepreference":
+			u.audioLanguage, err = language("AudioLanguagePreference", raw)
+		case "subtitlelanguagepreference":
+			u.subtitleLanguage, err = language("SubtitleLanguagePreference", raw)
+		case "subtitlemode":
+			mode, ok := parseSubtitleMode(raw)
+			if !ok {
+				err = errors.New("SubtitleMode must be one of Default, Always, OnlyForced, None, Smart, or 0-4")
+			}
+			u.subtitleMode = &mode
+		case "playdefaultaudiotrack":
+			var v *bool
+			if json.Unmarshal(raw, &v) != nil || v == nil {
+				err = errors.New("PlayDefaultAudioTrack must be true or false")
+			}
+			u.playDefaultAudioTrack = v
+		}
+		if err != nil {
+			return userConfigUpdate{}, err
+		}
+	}
+	// The closing brace, and nothing after it.
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return userConfigUpdate{}, errBody
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return userConfigUpdate{}, errBody
+	}
+	return u, nil
+}
+
+// handleUserConfiguration saves a stream's language and subtitle preferences.
+// The user id, in the path or the userId query, is ignored as on every user
+// route: the token names the stream, so one stream cannot write another's.
+//
+// Only AudioLanguagePreference, SubtitleLanguagePreference, SubtitleMode and
+// PlayDefaultAudioTrack are kept. The rest of the body is accepted and
+// dropped, and is served at its fixed value as before, because nothing here
+// acts on it. Jellyfin replaces the whole configuration, resetting what a
+// body leaves out; here a kept field left out keeps its stored value, so a
+// client sending only what changed resets nothing. The body is validated
+// whole before anything is written: one bad field changes nothing.
+//
+// The preferences are stored and served back for the client to apply when it
+// picks tracks. Media sources are built as before — the server picks no track
+// by language.
+func (s *Server) handleUserConfiguration(w http.ResponseWriter, rq *request) {
+	raw, err := io.ReadAll(io.LimitReader(rq.Body, 64<<10))
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	update, err := parseUserConfigUpdate(raw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.opts.UserConfig == nil {
+		writeEmpty(w)
+		return
+	}
+	name := rq.stream.Username
+	if err := s.opts.UserConfig.UpdateUserConfig(name, update.apply); err != nil {
+		logger.Error("Saving Jellyfin user configuration failed", "stream", name, "err", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeEmpty(w)
 }

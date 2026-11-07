@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -347,15 +348,115 @@ func (ps *JellyfinPlaystateStore) ListFavorites(streamName string) []JellyfinPla
 	return scanPlaystates(rows)
 }
 
-// DeleteForStream drops every row for a stream; used when the stream is
-// deleted.
+// DeleteForStream drops every row for a stream, its user configuration
+// included; used when the stream is deleted.
 func (ps *JellyfinPlaystateStore) DeleteForStream(streamName string) error {
 	if ps == nil || ps.db == nil {
 		return nil
 	}
+	streamName = strings.TrimSpace(streamName)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	_, err := ps.wdb.Exec(`DELETE FROM jellyfin_playstate WHERE stream_name = ?`, strings.TrimSpace(streamName))
+	tx, err := ps.wdb.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, table := range []string{"jellyfin_playstate", "jellyfin_user_config"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE stream_name = ?`, streamName); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// JellyfinUserConfig is the part of a stream's Jellyfin user configuration a
+// client may change and read back. An empty language means no preference.
+type JellyfinUserConfig struct {
+	AudioLanguagePreference    string
+	SubtitleLanguagePreference string
+	SubtitleMode               string
+	PlayDefaultAudioTrack      bool
+}
+
+// DefaultJellyfinUserConfig is what a stream that never saved its
+// configuration reads: Jellyfin's own defaults, no language preference, the
+// default subtitle mode and the file's default audio track. The column
+// defaults of jellyfin_user_config and its import fallbacks repeat it.
+func DefaultJellyfinUserConfig() JellyfinUserConfig {
+	return JellyfinUserConfig{SubtitleMode: "Default", PlayDefaultAudioTrack: true}
+}
+
+// GetUserConfig returns the stream's stored configuration, or the defaults
+// when it has none. Unlike Get it reports a failed read.
+func (ps *JellyfinPlaystateStore) GetUserConfig(streamName string) (JellyfinUserConfig, error) {
+	if ps == nil || ps.db == nil {
+		return DefaultJellyfinUserConfig(), nil
+	}
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return readUserConfig(ps.db, strings.TrimSpace(streamName))
+}
+
+func readUserConfig(c *connRef, streamName string) (JellyfinUserConfig, error) {
+	var cfg JellyfinUserConfig
+	var playDefault int
+	err := c.QueryRow(`
+		SELECT audio_language_preference, subtitle_language_preference, subtitle_mode, play_default_audio_track
+		FROM jellyfin_user_config WHERE stream_name = ?`, streamName).
+		Scan(&cfg.AudioLanguagePreference, &cfg.SubtitleLanguagePreference, &cfg.SubtitleMode, &playDefault)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DefaultJellyfinUserConfig(), nil
+	}
+	if err != nil {
+		return JellyfinUserConfig{}, err
+	}
+	cfg.PlayDefaultAudioTrack = playDefault != 0
+	return cfg, nil
+}
+
+// UpdateUserConfig writes what update makes of the stream's configuration,
+// the defaults when it has none stored. The read and the write happen under
+// the store's write lock, so two partial updates of one stream cannot both
+// start from the same row and lose one another's change. A failed read is
+// returned without writing anything: taking it for no row would reset the
+// fields the update leaves alone.
+func (ps *JellyfinPlaystateStore) UpdateUserConfig(streamName string, update func(current JellyfinUserConfig) JellyfinUserConfig) error {
+	if ps == nil || ps.db == nil {
+		return nil
+	}
+	streamName = strings.TrimSpace(streamName)
+	if streamName == "" {
+		return errors.New("jellyfin user config: empty stream name")
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	current, err := readUserConfig(ps.wdb, streamName)
+	if err != nil {
+		return err
+	}
+	cfg := update(current)
+	_, err = ps.wdb.Exec(`
+		INSERT INTO jellyfin_user_config
+			(stream_name, audio_language_preference, subtitle_language_preference, subtitle_mode, play_default_audio_track, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(stream_name) DO UPDATE SET
+			audio_language_preference = excluded.audio_language_preference,
+			subtitle_language_preference = excluded.subtitle_language_preference,
+			subtitle_mode = excluded.subtitle_mode,
+			play_default_audio_track = excluded.play_default_audio_track,
+			updated_at = excluded.updated_at
+	`, streamName, cfg.AudioLanguagePreference, cfg.SubtitleLanguagePreference, cfg.SubtitleMode,
+		boolToInt(cfg.PlayDefaultAudioTrack), time.Now().UnixMilli())
 	return err
 }
 

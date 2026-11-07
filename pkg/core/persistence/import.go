@@ -133,6 +133,15 @@ var importTables = []importTable{
 		),
 	},
 	{
+		name:     "jellyfin_user_config",
+		conflict: "stream_name",
+		columns: cols(
+			txt("stream_name"), txt("audio_language_preference"), txt("subtitle_language_preference"),
+			importColumn{"subtitle_mode", "'Default'"}, importColumn{"play_default_audio_track", "1"},
+			num("updated_at"),
+		),
+	},
+	{
 		name:       "provider_metrics",
 		syncColumn: "collected_at",
 		columns: cols(

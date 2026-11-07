@@ -364,10 +364,11 @@ func main() {
 			liveCfg := apiServer.Config()
 			return liveCfg == nil || liveCfg.EffectiveJellyfinResolveOnOpen()
 		},
-		Streams:   streamManager,
-		Catalog:   stremioServer,
-		Playstate: stateMgr.JellyfinPlaystateStore(),
-		Version:   Version,
+		Streams:    streamManager,
+		Catalog:    stremioServer,
+		Playstate:  stateMgr.JellyfinPlaystateStore(),
+		UserConfig: stateMgr.JellyfinPlaystateStore(),
+		Version:    Version,
 	})
 	mux.Handle(jellyfin.Mount, jellyfinServer.Handler())
 	logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)

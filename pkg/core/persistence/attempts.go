@@ -396,7 +396,8 @@ func (m *StateManager) DeleteAttempts(streamName string) (int64, error) {
 // store the stream name as plain text, and the history UI filters on it —
 // leaving the old value behind would make a renamed stream look like it had
 // never played anything, while its past runs sat under a name that no longer
-// exists.
+// exists. The stream's Jellyfin user configuration moves with them, but is
+// left out of the count returned, which is of history rows.
 func (m *StateManager) RenameStreamReferences(oldName, newName string) (int64, error) {
 	oldName = strings.TrimSpace(oldName)
 	newName = strings.TrimSpace(newName)
@@ -415,6 +416,17 @@ func (m *StateManager) RenameStreamReferences(oldName, newName string) (int64, e
 			if _, err := tx.Exec(`DELETE FROM jellyfin_playstate WHERE stream_name = ? AND item_id IN (
 				SELECT item_id FROM jellyfin_playstate WHERE stream_name = ?
 			)`, newName, oldName); err != nil {
+				return err
+			}
+			// jellyfin_user_config holds one row per stream, so whatever sits
+			// under the new name is stale for the same reason; it goes even
+			// when the renamed stream has no row of its own, which leaves it
+			// on the defaults rather than inheriting a deleted stream's. The
+			// moved row is a setting, not history, so it is not counted.
+			if _, err := tx.Exec(`DELETE FROM jellyfin_user_config WHERE stream_name = ?`, newName); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE jellyfin_user_config SET stream_name = ? WHERE stream_name = ?`, newName, oldName); err != nil {
 				return err
 			}
 			for _, table := range []string{"nzb_attempts", "search_diagnostics", "jellyfin_playstate"} {

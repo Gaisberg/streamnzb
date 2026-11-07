@@ -238,6 +238,21 @@ const (
 		PRIMARY KEY (stream_name, item_id)
 	);`
 	jellyfinPlaystateIndexPlayed = `CREATE INDEX IF NOT EXISTS idx_jellyfin_playstate_played ON jellyfin_playstate(stream_name, last_played_at DESC);`
+
+	// jellyfin_user_config is the part of a stream's Jellyfin user
+	// configuration a client may change and read back: its audio and subtitle
+	// language preferences, subtitle mode and default-audio-track flag. A
+	// stream without a row is served DefaultJellyfinUserConfig, which the
+	// column defaults repeat. User state, carried across backend switches like
+	// the play state.
+	jellyfinUserConfigSchema = `CREATE TABLE IF NOT EXISTS jellyfin_user_config (
+		stream_name {TEXT} PRIMARY KEY,
+		audio_language_preference {TEXT} NOT NULL DEFAULT '',
+		subtitle_language_preference {TEXT} NOT NULL DEFAULT '',
+		subtitle_mode {TEXT} NOT NULL DEFAULT 'Default',
+		play_default_audio_track {INT} NOT NULL DEFAULT 1,
+		updated_at {INT} NOT NULL DEFAULT 0
+	);`
 )
 
 // addedColumn is one idempotent ALTER TABLE ADD COLUMN migration. Existing
@@ -371,6 +386,7 @@ func initSchema(c *connRef) error {
 		metadataCacheIndexFetched,
 		jellyfinPlaystateSchema,
 		jellyfinPlaystateIndexPlayed,
+		jellyfinUserConfigSchema,
 	} {
 		if _, err := c.Exec(d.ExpandDDL(stmt)); err != nil {
 			return fmt.Errorf("schema: %w", err)
