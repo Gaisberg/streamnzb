@@ -22,6 +22,9 @@ func TestResetLegacyLinksRunsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state manager: %v", err)
 	}
+	// The manager is a process-wide singleton; closing it before the temp dir
+	// is removed lets that removal succeed on Windows.
+	t.Cleanup(func() { _ = manager.Close() })
 	if err := manager.Set("simkl_token", link{Token: "server-wide"}); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
