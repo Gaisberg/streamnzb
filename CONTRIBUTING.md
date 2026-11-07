@@ -147,6 +147,14 @@ Address or reply to each comment; "fixed in abc123" is enough. Force-pushing
 after review is fine — the PR is squash-merged anyway — but a follow-up commit
 is easier to re-review.
 
+Commits made through Claude Code must also pass a local `/code-review high`
+(anything that can or might affect playback) or `/code-review medium`
+(everything else) first; the "Pre-commit code review" section of the
+[skill](.claude/skills/streamnzb-dev/SKILL.md) has the full rule. It comes on
+top of the reviews above and the `build.sh` requirement, not in place of
+either. You do not need Claude Code to contribute; without it, the reviews
+above apply as usual.
+
 ## Reporting bugs
 
 See the [troubleshooting guide](docs/troubleshooting.md) for what a useful

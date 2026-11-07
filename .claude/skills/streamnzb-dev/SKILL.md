@@ -1,6 +1,6 @@
 ---
 name: streamnzb-dev
-description: StreamNZB development workflow — build, test, lint, style, architecture and commit conventions for the Go backend + React frontend. Use when developing, testing, building, debugging, or preparing a pull request in this repository.
+description: StreamNZB development workflow — build, test, lint, style, architecture and commit conventions for the Go backend + React frontend. Use when developing, testing, building, debugging, committing, or preparing a pull request in this repository.
 ---
 
 # StreamNZB Development Skill
@@ -40,7 +40,8 @@ The script performs, in order:
 
 A change is only "verified" when `build.sh` completes with `Build Complete!`.
 CI (`.github/workflows/ci.yml`) runs the same steps plus `go test -race ./...`,
-and a pull request must be green on all of them.
+and a pull request must be green on all of them. Commits made through Claude
+Code also need the pre-commit code review in §6.
 
 ### During iteration (not verification)
 Targeted commands are fine while developing — they never replace the build script:
@@ -218,10 +219,11 @@ until it comes back clean.
 When implementing features or bug fixes:
 
 1. Write/update backend and/or frontend code (match existing style; reuse per §4; add tests for new behavior — a bug fix should include a test that failed before the fix).
-2. **Verify with the build script**: `bash build.sh` (or `build.bat`) — fmt, vet, all tests, lint, frontend build, and binary compile in one shot.
-3. **Update documentation** when the change is user-facing (per §7): edit or create the relevant page under `docs/`, not the README.
+2. **Update documentation** when the change is user-facing (per §7): edit or create the relevant page under `docs/`, not the README.
+3. **Verify with the build script**: `bash build.sh` (or `build.bat`) — fmt, vet, all tests, lint, frontend build, and binary compile in one shot.
 4. **Check the staged list** for build artifacts (per §6) before committing.
-5. **Propose a Conventional Commit message** (per §6) — the same text becomes the pull request title.
+5. **When committing through Claude Code**, follow §6, "Pre-commit code review", in place of steps 3–4 here: it stages, builds and checks the staged list in its own order, then adds the review.
+6. **Propose a Conventional Commit message** (per §6) — the same text becomes the pull request title.
 
 ---
 
@@ -237,6 +239,98 @@ When implementing features or bug fixes:
 - **Never add attribution trailers** (`Co-Authored-By`, `Generated-by`, etc.) to commit messages.
 - **Never commit build artifacts**: `streamnzb`, `streamnzb.exe`, `pkg/media/ffprobe/bin/*` binaries, `/ffprobe`, `*.log`, `streamnzb.db*`, `config.json`, `frontend/dist/`, `pkg/server/web/static` (all gitignored — verify staged lists stay clean on large commits).
 - **Dependency bumps** come from Dependabot (`.github/dependabot.yml`), grouped per ecosystem. Don't hand-roll them.
+
+### Pre-commit code review — mandatory for Claude Code
+
+Every commit made through Claude Code, whether the user asked for it or Claude
+proposed it, must first pass a Claude Code `/code-review` at the effort level
+below. The review is a gate on top of the build script (§1), never a
+substitute for it, and it does not replace the CodeRabbit and maintainer
+reviews every pull request gets (`CONTRIBUTING.md`). Contributors who do not
+use Claude Code are not asked to install it.
+
+**Pick the level by playback impact, not by path:**
+
+- **`/code-review high`** when the change can affect playback, directly or
+  indirectly. Typical locations: `pkg/playback/`, `pkg/session/`,
+  `pkg/media/{loader,unpack,rar,seek,ffprobe,decode,ebml,nzb,fileutil}/`,
+  `pkg/usenet/{pool,nntp,validation}/`, and playback-related server
+  handlers, APIs, integrations, configuration and tests. Typical concerns:
+  concurrency, buffering, caching, failover, validation, seeking and segment
+  delivery. A change elsewhere can still reach playback (a config default, a
+  shared helper, a field playback consumes, search ranking or filtering that
+  changes which release plays), so judge the effect rather than the path.
+  **If unsure, use `high`.**
+- **`/code-review medium`** for everything else: frontend work, metadata and
+  catalogs unrelated to playback, search changes that do not affect which
+  release plays, documentation, build scripts and tooling, and tests
+  unrelated to playback.
+
+**Exempt:** merges and rebases that apply without conflicts, reverts that
+cleanly undo an earlier commit, and message-only amends. A conflict
+resolution or any new edit is reviewed like any other change.
+
+**Before every commit:**
+
+1. Finish the implementation, its tests and any documentation it needs (§7).
+2. Stage exactly the intended commit with `git add`, new files included, and
+   confirm with `git status` and `git diff --cached`: nothing unrelated, no
+   build artifacts. The review sees staged and unstaged changes to tracked
+   files but not untracked files, while the build uses all of them, so the
+   tree should hold nothing else. If it does (gitignored build outputs aside),
+   ask the user how to set that work aside; never stash, reset or delete it
+   yourself. If they keep it in place, continue only with their agreement.
+3. Run the build script to `Build Complete!`. If it changed tracked files
+   (`go fmt`), re-stage only files that were fully staged; if it touched a
+   partially staged file or one outside the change, stop and ask the user
+   rather than `git add` it. Re-check the staged list.
+4. Run `/code-review high` or `/code-review medium`, picked as above. The
+   first review is always mandatory.
+5. Classify each finding as **valid** (with a severity: critical, high,
+   medium or low), **false positive** (record the reasoning) or **out of
+   scope** (record it as a follow-up for the PR description, or an issue if
+   the user agrees). Valid findings in code the change neither touches nor
+   relies on are out of scope. Dismissing a finding that would be critical
+   or high, as a false positive or out of scope, needs the user's
+   confirmation.
+6. Fix the valid findings, then repeat steps 1–5. Re-check the level after
+   changes, but never drop below the first review's level. Medium and low
+   findings get at most **two** further review rounds; critical and high
+   ones keep the loop going (step 7). Once the limit is reached, do not fix
+   remaining medium or low findings on your own; put them to the user
+   (step 7). Classifying a false positive does not by itself call for
+   another round, and a repeat of an already-classified finding on
+   unchanged code keeps its classification.
+7. Commit only when the build is green and:
+   - no critical or high valid finding is unresolved. These always block;
+     keep fixing and reviewing past the round limit if needed.
+   - every medium or low valid finding is fixed or, once the round limit is
+     reached, put to the user, who explicitly accepts it, defers it or
+     authorizes more work. Authorized work gets one new review, classified
+     as in step 5; it does not restart the round count.
+
+   Reaching the limit is not a pass. Present the final outcome (level,
+   rounds, each finding and how it was resolved) and wait for the user's
+   explicit approval before committing; presenting results is not approval.
+
+**Running it:**
+
+- Invoke the real `/code-review` command with the level named explicitly. A
+  generic "review your own diff" prompt does not count.
+- Keep it read-only: no `--fix` and no `--comment` unless the user explicitly
+  asks for them.
+- The review must cover the whole change being committed, not a selection of
+  files. It may also include earlier commits on the branch; that is fine, and
+  findings confined to those earlier commits are out of scope for this
+  commit's gate (record them per step 5). If the review evidently covered a
+  different change (for example, its stated scope leaves out staged files),
+  stop and report it instead of committing.
+- Never run it under a smaller findings cap than the default. `--max-findings`
+  persists across sessions and a session cannot see an earlier setting, so
+  pass `--max-findings default` on every gate run.
+- If the command is unavailable, fails, or cannot see the changes, stop and
+  report the blocker. Never skip the review silently, and never report a
+  review as passed unless the command actually completed.
 
 ---
 
