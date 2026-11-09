@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/logger"
+	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/services/metadata/scrobble"
 )
 
@@ -63,7 +64,21 @@ func (s *oauthStub) refuses(code string) {
 
 func (s *oauthStub) client(t *testing.T) *Client {
 	t.Helper()
-	return s.stream(NewRegistry("client-id", t.TempDir()), "alice")
+	return s.stream(NewRegistry("client-id", stateDir(t)), "alice")
+}
+
+// stateDir is a temp data dir whose state database is closed before the dir is
+// removed. The manager is a process-wide singleton; closing it lets the next
+// test open its own, and Windows cannot delete the file while it is open.
+func stateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mgr, err := persistence.GetManager(dir)
+	if err != nil {
+		t.Fatalf("state manager: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	return dir
 }
 
 // stream builds one stream's client against the stub server.
@@ -242,7 +257,7 @@ func TestTransientRefreshFailureKeepsTheAccount(t *testing.T) {
 func TestTokenIsPinnedToTheClientID(t *testing.T) {
 	logger.Init("ERROR")
 	stub := newOAuthStub(t)
-	dir := t.TempDir()
+	dir := stateDir(t)
 	client := stub.stream(NewRegistry("client-id", dir), "alice")
 	link(t, client)
 
@@ -256,7 +271,7 @@ func TestTokenIsPinnedToTheClientID(t *testing.T) {
 func TestAccountsArePerStream(t *testing.T) {
 	logger.Init("ERROR")
 	stub := newOAuthStub(t)
-	reg := NewRegistry("client-id", t.TempDir())
+	reg := NewRegistry("client-id", stateDir(t))
 
 	alice := stub.stream(reg, "alice")
 	bob := stub.stream(reg, "bob")
