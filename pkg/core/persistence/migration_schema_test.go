@@ -25,6 +25,8 @@ func TestInitSchemaIsIdempotentAndComplete(t *testing.T) {
 		"nzb_attempts": {"preload", "served_file", "match_type", "indexer_name", "stream_name",
 			"provider_name", "avail_status", "avail_reason", "ttff_ms"},
 		"jellyfin_playstate": {"is_favorite"},
+		"jellyfin_user_config": {"stream_name", "audio_language_preference", "subtitle_language_preference",
+			"subtitle_mode", "play_default_audio_track", "updated_at"},
 	}
 	for table, columns := range want {
 		have, err := tableColumns(mgr.db, table)

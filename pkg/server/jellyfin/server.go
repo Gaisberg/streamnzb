@@ -87,6 +87,14 @@ type Playstate interface {
 	ListFavorites(streamName string) []persistence.JellyfinPlaystate
 }
 
+// UserConfig persists the user-configuration fields a client may change.
+// *persistence.JellyfinPlaystateStore satisfies it; a nil store is tolerated
+// and every stream is served the defaults.
+type UserConfig interface {
+	GetUserConfig(streamName string) (persistence.JellyfinUserConfig, error)
+	UpdateUserConfig(streamName string, update func(current persistence.JellyfinUserConfig) persistence.JellyfinUserConfig) error
+}
+
 // Options wires the server to the live process state. Config-derived fields
 // are functions so a config reload reaches them without a rebind.
 type Options struct {
@@ -111,6 +119,8 @@ type Options struct {
 	Streams   Streams
 	Catalog   Catalog
 	Playstate Playstate
+	// UserConfig keeps each stream's language and subtitle preferences.
+	UserConfig UserConfig
 	// Version is the StreamNZB version, reported alongside the Jellyfin one.
 	Version string
 }
