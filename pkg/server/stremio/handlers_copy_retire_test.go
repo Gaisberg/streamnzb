@@ -255,15 +255,15 @@ func TestPreloadVerdictWithoutCopyWalkingFailsTheRelease(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
-		prep func(f copyRetireFixture, sess *session.Session)
+		prep func(t *testing.T, f copyRetireFixture, sess *session.Session)
 	}{
-		{"idle", func(copyRetireFixture, *session.Session) {}},
-		{"busy", func(f copyRetireFixture, sess *session.Session) {
+		{"idle", func(*testing.T, copyRetireFixture, *session.Session) {}},
+		{"busy", func(t *testing.T, f copyRetireFixture, sess *session.Session) {
 			if !f.manager.BeginSessionStartup(sess) {
 				t.Fatal("startup should register")
 			}
 		}},
-		{"previously played", func(f copyRetireFixture, _ *session.Session) {
+		{"previously played", func(_ *testing.T, f copyRetireFixture, _ *session.Session) {
 			f.manager.MarkPlaybackValidated(f.slot)
 		}},
 	} {
@@ -271,7 +271,7 @@ func TestPreloadVerdictWithoutCopyWalkingFailsTheRelease(t *testing.T) {
 			t.Parallel()
 			f := newCopyRetireFixture(t, 3).withoutCopyWalking()
 			sess := f.resolve(t, "NZBGeek")
-			tc.prep(f, sess)
+			tc.prep(t, f, sess)
 
 			f.server.retirePreloadedCopy(sess, fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable), f.stream)
 
