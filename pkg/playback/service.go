@@ -711,7 +711,7 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 			return nil, "", 0, fmt.Errorf("container track validation failed: %w", err)
 		}
 		validateMS = time.Since(validateStart).Milliseconds()
-		p.Sessions.MarkPlaybackValidated(sessionID)
+		p.Sessions.MarkPlaybackValidated(sess)
 	} else {
 		logger.Debug("Skipping redundant FFprobe validation (session already validated)", "id", sessionID)
 	}

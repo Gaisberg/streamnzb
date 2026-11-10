@@ -141,6 +141,9 @@ func (b *bufferedResponseWriter) Snapshot() bufferedResponseSnapshot {
 
 type StreamMonitor struct {
 	io.ReadSeekCloser
+	// session is the one being served; its accounting goes to it, not to
+	// whatever the slot id names by the time a read lands.
+	session       *session.Session
 	sessionID     string
 	clientIP      string
 	manager       *session.Manager
@@ -204,9 +207,7 @@ func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 				break
 			}
 		}
-		if s.manager != nil {
-			s.manager.AddBytesRead(s.sessionID, int64(n))
-		}
+		s.session.AddBytesRead(int64(n))
 		if s.onProgress != nil {
 			s.onProgress()
 		}
@@ -225,7 +226,7 @@ func (s *StreamMonitor) Read(p []byte) (n int, err error) {
 		windowElapsed := false
 		s.mu.Lock()
 		if time.Since(s.lastUpdate) > 10*time.Second {
-			s.manager.KeepAlive(s.sessionID, s.clientIP)
+			s.manager.KeepAlive(s.session, s.clientIP)
 			s.lastUpdate = time.Now()
 			windowElapsed = true
 		}
