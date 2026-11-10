@@ -74,6 +74,11 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}
 	s.sessionManager.MarkPlaybackValidated(sessionID)
 	s.sessionManager.StartPlayback(sessionID, clientIP)
+	if resolved.startupHeld {
+		// Validated and playing now: the startup resolve registered has done
+		// its job of keeping background verdicts off this session.
+		s.sessionManager.EndSessionStartup(sess)
+	}
 	// A shutdown drain waits for the stop this serve may decide as it ends.
 	s.scrobbleSends.Add(1)
 	defer s.scrobbleSends.Done()
@@ -94,46 +99,10 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	// session being served. The success defer checks it so it never overwrites a
 	// Failure with an OK (the "flip-flop" bug).
 	serveFailureRecorded := false
-	onReadError := func(playbackSessionID string, readErr error) {
-		// Trigger slot failover for any permanent mid-stream error:
-		//   - a missing article the loader could not treat as a fillable hole
-		//     (the file's first segment, or a hole past MaxZeroFills)
-		//   - yEnc decode failure (data corruption)
-		//   - ErrTooManyZeroFills (the file accumulated more holes than allowed)
-		// All of them mean the slot is unrecoverable; isolated missing articles do
-		// not reach here, because the loader zero-fills those and playback continues.
-		// SetSlotFailedDuringPlayback marks the slot so resolvePlaybackSlot sends
-		// the player to the next one on reconnect, without the user having to
-		// switch manually in Stremio.
-		if !isFatalStreamErr(readErr) {
-			return
-		}
-		errSess, _ := s.sessionManager.GetSession(playbackSessionID)
-		if errSess == nil {
-			s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
-			return
-		}
-		// Mid-stream the slot can still have an untried copy of the same
-		// release. Moving the cursor on instead of marking the slot failed
-		// keeps the player on the release it was playing: the session goes, so
-		// the reconnect rebuilds this slot against the next NZB rather than
-		// being redirected to a different release.
-		nextCopy := streamFailoverEnabled(streamConfig) &&
-			s.sessionManager.AdvanceSlotCopy(playbackSessionID, streamConfig.EffectiveVariantAttempts())
-		if !nextCopy {
-			s.sessionManager.SetSlotFailedDuringPlayback(playbackSessionID)
-		}
-		errSess.ResetPlaybackStream()
-		availOutcome := s.reportBadReleaseOutcome(errSess, readErr, true, nextCopy)
-		if !errSess.OnceDone(onceSuccessRecorded) && errSess.Once(onceFailureRecorded) {
-			s.recordFailureAttempt(errSess, readErr, availOutcome)
-		}
-		if nextCopy {
-			logger.Info("Mid-stream failure; the slot moves to another copy of the same release",
-				"slot", playbackSessionID, "err", readErr)
-			s.sessionManager.DeleteSession(playbackSessionID)
-		}
-		if playbackSessionID == sessionID {
+	// Every caller reports about this serve's own session; the id argument is
+	// part of StreamMonitor's callback signature.
+	onReadError := func(_ string, readErr error) {
+		if s.failServedCopy(streamConfig, sess, readErr) {
 			serveFailureRecorded = true
 		}
 	}
@@ -261,6 +230,69 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}()
 
 	http.ServeContent(bufW, r, resolved.name, time.Time{}, monitoredStream)
+}
+
+// failServedCopy acts on a read error from the stream being served and reports
+// whether it recorded a failure.
+//
+// It triggers slot failover for any permanent mid-stream error:
+//   - a missing article the loader could not treat as a fillable hole (the
+//     file's first segment, or a hole past MaxZeroFills)
+//   - yEnc decode failure (data corruption)
+//   - ErrTooManyZeroFills (the file accumulated more holes than allowed)
+//
+// All of them mean the slot is unrecoverable; isolated missing articles do not
+// reach here, because the loader zero-fills those and playback continues.
+// SetSlotFailedDuringPlayback marks the slot so resolvePlaybackSlot sends the
+// player to the next one on reconnect, without the user having to switch
+// manually in Stremio.
+//
+// The verdict is about served — the session this stream belongs to — and
+// nothing else. A read still in flight on a copy the slot has already left
+// (another request retired it, and the player may be on the next copy) is
+// stale: it is ignored rather than allowed to fail the slot or to blame the
+// copy that replaced it.
+func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Session, readErr error) bool {
+	if !isFatalStreamErr(readErr) {
+		return false
+	}
+	report := func(nextCopy bool) {
+		served.ResetPlaybackStream()
+		availOutcome := s.reportBadReleaseOutcome(served, readErr, true, nextCopy)
+		if !served.OnceDone(onceSuccessRecorded) && served.Once(onceFailureRecorded) {
+			s.recordFailureAttempt(served, readErr, availOutcome)
+		}
+	}
+	// Mid-stream the slot can still have an untried copy of the same
+	// release. Moving the cursor on instead of marking the slot failed
+	// keeps the player on the release it was playing: the session goes, so
+	// the reconnect rebuilds this slot against the next NZB rather than
+	// being redirected to a different release.
+	attempts := 1
+	if streamFailoverEnabled(streamConfig) {
+		attempts = streamConfig.EffectiveVariantAttempts()
+	}
+	switch s.sessionManager.RetireSlotCopy(served, attempts, false, func() { report(true) }) {
+	case session.SlotCopyRetired:
+		logger.Info("Mid-stream failure; the slot moves to another copy of the same release",
+			"slot", served.ID, "err", readErr)
+		return true
+	case session.SlotCopyAlreadyRetired:
+		// Another request on this session already recorded the failure and
+		// moved the slot on. This serve failed too, which keeps its
+		// bookkeeping from counting the condemned copy as good.
+		logger.Debug("Read error from a copy the slot has already left", "slot", served.ID, "err", readErr)
+		return true
+	case session.SlotCopyGone:
+		// The session left the slot without a copy verdict (evicted, or the
+		// slot was failed): keep the player from coming back to it. The serve
+		// itself still failed, so its bookkeeping must not count it good.
+		s.sessionManager.SetSlotFailedDuringPlayback(served.ID)
+		return true
+	}
+	s.sessionManager.SetSlotFailedDuringPlayback(served.ID)
+	report(false)
+	return true
 }
 
 // primeRangeOrFailover proves the requested range can actually be delivered

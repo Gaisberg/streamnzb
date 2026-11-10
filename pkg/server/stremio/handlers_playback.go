@@ -2296,14 +2296,36 @@ func (s *Server) preloadSlots(cacheKey string, slotPaths []string, list *playlis
 			logger.Debug("Preload candidate failed, trying next failover candidate",
 				"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 			if s.preloadConfirmsBadRelease(probeErr) {
-				// Moving the slot on to another copy of the same release keeps
-				// the verdict on the NZB that failed. The real play then starts
-				// on a copy the probe never condemned.
-				copyOnly := s.sessionManager.AdvanceSlotCopy(sess.ID, stream.EffectiveVariantAttempts())
-				s.reportBadReleaseOutcome(sess, probeErr, false, copyOnly)
+				s.retirePreloadedCopy(sess, probeErr, stream)
 			}
 		}
 	}()
+}
+
+// retirePreloadedCopy applies a preload probe's confirmed bad-release verdict.
+// Moving the slot on to another copy of the same release keeps the verdict on
+// the NZB that failed. The real play then starts on a copy the probe never
+// condemned — which needs the condemned copy's session out of the slot: left in
+// place, the play request finds it by id and starts on the bad NZB again.
+func (s *Server) retirePreloadedCopy(sess *session.Session, probeErr error, stream *auth.Stream) {
+	switch s.sessionManager.RetireSlotCopy(sess, stream.EffectiveVariantAttempts(), true, func() {
+		s.reportBadReleaseOutcome(sess, probeErr, false, true)
+	}) {
+	case session.SlotCopyRetired, session.SlotCopyAlreadyRetired:
+		// Recorded, by this call or by the report that retired the copy first.
+	case session.SlotCopyLast:
+		s.reportBadReleaseOutcome(sess, probeErr, false, false)
+	case session.SlotCopyBusy:
+		// A play is starting on or serving the session. The slot is left to
+		// the play — closing the session would end that request with no
+		// response — but the verdict on this NZB still counts. Busy is only
+		// reported while another copy remains, so copy-scoped is right here.
+		s.reportBadReleaseOutcome(sess, probeErr, false, true)
+	case session.SlotCopyGone:
+		// The session left the slot some other way and has been closed, which
+		// drops the release a verdict would be recorded against.
+		logger.Debug("Preload verdict on a session that left its slot; nothing to record", "slot", sess.ID, "err", probeErr)
+	}
 }
 
 // libraryReleaseValidated reports whether rel is a library-sourced release

@@ -28,6 +28,12 @@ type resolvedPlayback struct {
 	// cancel belongs to the serve phase once this is handed over.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// startupHeld says resolvePlaybackSlot handed over the playback startup it
+	// registered on session; the serve phase ends it once the session is
+	// validated and playing, so there is no moment between the two in which a
+	// background verdict sees an idle session it may close.
+	startupHeld bool
 }
 
 // resolvePlaybackSlot walks the stream's failover candidates, starting at the
@@ -68,6 +74,30 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 
 		ctx, cancel := s.playbackContext(r, sess)
 
+		// Registering the startup is also the last check that the slot still
+		// holds this session: a preload verdict can retire its copy after the
+		// session was found. Once registered, background verdicts leave it
+		// alone; if that already happened, carry on with what the slot holds
+		// now instead of starting on a closed session. It comes before the
+		// preload row, which would otherwise be left unresolved on a session
+		// this request then abandons.
+		if !s.sessionManager.BeginSessionStartup(sess) {
+			cancel()
+			if current, ok := s.sessionAfterSlotMoved(r.Context(), sessionID, streamConfig); ok {
+				logger.Debug("Slot moved on before playback started; continuing with the slot", "slot", sessionID)
+				sess = current
+				continue
+			}
+			// Given up, or not rebuildable: walk on (or end, with failover off).
+			nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
+			if nextID == "" {
+				failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
+				return nil, false
+			}
+			sess, sessionID = nextSess, nextID
+			continue
+		}
+
 		// Record preload at most once per session: subsequent HTTP requests
 		// (seeks, range retries) for the same session must not insert another
 		// "Preload" row that would never be resolved. The flag lives on the
@@ -80,9 +110,10 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		preloadMS := time.Since(preloadStart).Milliseconds()
 
 		prepareStart := time.Now()
-		s.sessionManager.BeginPlaybackStartup(sessionID)
 		prepared, prepareErr := s.preparePlaybackStream(ctx, sess)
-		s.sessionManager.EndPlaybackStartup(sessionID)
+		if prepareErr != nil {
+			s.sessionManager.EndSessionStartup(sess)
+		}
 
 		// Startup is a chain of independently slow steps (slot recovery, the
 		// preload row, NZB download, probe) and a log that only reports the
@@ -106,9 +137,11 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 				cancel:    cancel,
 			}
 			if sessionID != requestedSessionID {
+				s.sessionManager.EndSessionStartup(sess)
 				s.redirectToResolvedSlot(w, r, streamConfig, resolved, requestedSessionID)
 				return nil, false
 			}
+			resolved.startupHeld = true
 			return resolved, true
 		}
 
@@ -121,13 +154,18 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		// Another indexer's copy of the same release comes before a different
 		// release: the user picked this one, and the copy that would not open
 		// is not evidence about the copy next to it.
-		if nextSess, ok := s.retrySlotWithNextCopy(r.Context(), sess, sessionID, streamConfig, prepareErr); ok {
+		copySess, retry := s.retrySlotWithNextCopy(r.Context(), sess, sessionID, streamConfig, prepareErr)
+		switch retry {
+		case copyRetryNext:
 			logger.Info("Trying another copy of the same release", "slot", sessionID, "err", prepareErr)
-			sess = nextSess
+			sess = copySess
 			continue
+		case copyRetryNone:
+			s.recordFailedSlot(sess, sessionID, prepareErr)
+		case copyRetryElsewhere:
+			// Already handled; recording the slot verdict here could condemn
+			// the copy another request moved the slot to.
 		}
-
-		s.recordFailedSlot(sess, sessionID, prepareErr)
 
 		nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
 		if nextID == "" {
@@ -208,36 +246,87 @@ func (s *Server) recordFailedSlot(sess *session.Session, sessionID string, prepa
 // failed, so the copies beside it stay playable. Because the slot id does not
 // change, the client is never redirected — it asked for this release and it
 // still gets this release, out of a different indexer's NZB.
-func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Session, sessionID string, streamConfig *auth.Stream, prepareErr error) (*session.Session, bool) {
+func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Session, sessionID string, streamConfig *auth.Stream, prepareErr error) (*session.Session, copyRetry) {
 	if !streamFailoverEnabled(streamConfig) {
+		return nil, copyRetryNone
+	}
+	if _, _, _, _, ok := parseStreamSlotID(sessionID); !ok {
+		return nil, copyRetryNone
+	}
+	// The session is bound to the NZB that failed, so it leaves the slot before
+	// the slot can be rebuilt against the next copy under the same id.
+	retirement := s.sessionManager.RetireSlotCopy(sess, streamConfig.EffectiveVariantAttempts(), false, func() {
+		availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, true)
+		if sess.Once(onceFailureRecorded) {
+			s.recordFailureAttempt(sess, prepareErr, availOutcome)
+		}
+	})
+	switch retirement {
+	case session.SlotCopyLast:
+		return nil, copyRetryNone
+	case session.SlotCopyRetired:
+		if next, ok := s.sessionAfterSlotMoved(ctx, sessionID, streamConfig); ok {
+			return next, copyRetryNext
+		}
+		// The next copy cannot be built, so the release gives up: park the
+		// cursor past the copies and fail the slot here. The copy's verdict is
+		// already recorded, and the failed session is closed — the caller's
+		// slot-level path would report it again with nothing to report, and
+		// delete whatever a duplicate request has meanwhile built under this id.
+		s.sessionManager.ExhaustSlotCopies(sessionID)
+		s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
+		return nil, copyRetryElsewhere
+	}
+
+	// The session left the slot before this report: a duplicate request for
+	// the slot reported the same copy first and moved the slot on, or the
+	// session went some other way. Whoever did that owns the verdict; this
+	// request carries on with whatever the slot holds now, unless the slot
+	// was given up.
+	logger.Debug("Slot already moved on from this session", "slot", sessionID, "err", prepareErr)
+	if current, ok := s.sessionAfterSlotMoved(ctx, sessionID, streamConfig); ok {
+		return current, copyRetryNext
+	}
+	return nil, copyRetryElsewhere
+}
+
+// sessionAfterSlotMoved returns the session to carry on with in a slot that
+// moved on from the one a request was holding: the slot's current session, or
+// one built from the play list when there is none yet. It reports false when
+// the slot was given up or cannot be rebuilt.
+func (s *Server) sessionAfterSlotMoved(ctx context.Context, sessionID string, streamConfig *auth.Stream) (*session.Session, bool) {
+	if s.sessionManager.GetSlotFailedDuringPlayback(sessionID) {
 		return nil, false
+	}
+	if current := s.sessionManager.PeekSession(sessionID); current != nil {
+		return current, true
 	}
 	streamId, contentType, id, index, ok := parseStreamSlotID(sessionID)
 	if !ok {
 		return nil, false
 	}
-	if !s.sessionManager.AdvanceSlotCopy(sessionID, streamConfig.EffectiveVariantAttempts()) {
-		return nil, false
-	}
-	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, true)
-	if sess.Once(onceFailureRecorded) {
-		s.recordFailureAttempt(sess, prepareErr, availOutcome)
-	}
-	// The session is bound to the NZB that failed, so it has to go before the
-	// slot can be rebuilt against the next copy under the same id.
-	s.sessionManager.DeleteSession(sessionID)
-
 	key := StreamSlotKey{StreamID: streamId, ContentType: contentType, ID: id}
 	nextSess, err := s.resolveStreamSlot(ctx, key, index, streamConfig)
 	if err != nil {
-		// Park the cursor past the copies so the normal failure path treats
-		// this as the release giving up rather than as an untried copy.
-		logger.Debug("Could not resolve the next copy of the release", "slot", sessionID, "err", err)
-		s.sessionManager.ExhaustSlotCopies(sessionID)
+		logger.Debug("Could not rebuild the slot after it moved on", "slot", sessionID, "err", err)
 		return nil, false
 	}
 	return nextSess, true
 }
+
+// copyRetry is what retrySlotWithNextCopy did with a failed attempt.
+type copyRetry int
+
+const (
+	// copyRetryNone: no copy to move to; the slot-level verdict is the caller's.
+	copyRetryNone copyRetry = iota
+	// copyRetryNext: the slot was rebuilt against another copy of the release.
+	copyRetryNext
+	// copyRetryElsewhere: the failure is already fully handled — by another
+	// request for the slot, or by giving the slot up here — so the caller
+	// records nothing more and walks on.
+	copyRetryElsewhere
+)
 
 // nextFallbackSlot returns the next candidate after sess, or ("" ) when
 // failover is off for this stream or nothing is left to try.

@@ -79,6 +79,10 @@ type Session struct {
 	clients             map[string]time.Time
 	mu                  sync.Mutex
 
+	// copyRetired is set by RetireSlotCopy when this session's copy failed and
+	// the slot moved on, so a later report about it is known to be stale.
+	copyRetired atomic.Bool
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -1678,23 +1682,122 @@ func (m *Manager) SlotCopyIndex(slotPath string) int {
 // try in total, so a release with five copies does not turn one failure into a
 // five-NZB startup.
 func (m *Manager) AdvanceSlotCopy(slotPath string, maxAttempts int) bool {
-	if slotPath == "" || maxAttempts <= 1 {
+	ent := m.nextSlotCopy(slotPath, maxAttempts)
+	if ent == nil {
 		return false
+	}
+	m.slotCopyCursor.Store(slotPath, &slotCopyEntry{index: ent.index + 1, total: ent.total, expiresAt: time.Now().Add(m.ttl)})
+	return true
+}
+
+// nextSlotCopy returns the slot's cursor when AdvanceSlotCopy could move it on,
+// and nil when there is no copy left to try.
+func (m *Manager) nextSlotCopy(slotPath string, maxAttempts int) *slotCopyEntry {
+	if slotPath == "" || maxAttempts <= 1 {
+		return nil
 	}
 	val, ok := m.slotCopyCursor.Load(slotPath)
 	if !ok || val == nil {
-		return false
+		return nil
 	}
 	ent, ok := val.(*slotCopyEntry)
 	if !ok || ent == nil || time.Now().After(ent.expiresAt) {
-		return false
+		return nil
 	}
 	next := ent.index + 1
 	if next >= ent.total || next >= maxAttempts {
-		return false
+		return nil
 	}
-	m.slotCopyCursor.Store(slotPath, &slotCopyEntry{index: next, total: ent.total, expiresAt: time.Now().Add(m.ttl)})
-	return true
+	return ent
+}
+
+// SlotCopyRetirement is what RetireSlotCopy did with a failure report.
+type SlotCopyRetirement int
+
+const (
+	// SlotCopyRetired: the slot moved on to the next copy and the session
+	// left the slot.
+	SlotCopyRetired SlotCopyRetirement = iota
+	// SlotCopyLast: no copy is left to move to; the slot is untouched and the
+	// slot-level verdict is the caller's.
+	SlotCopyLast
+	// SlotCopyBusy: the caller asked for an idle session and a play is using
+	// this one; nothing changed.
+	SlotCopyBusy
+	// SlotCopyAlreadyRetired: another report about this session already
+	// retired its copy and recorded the verdict.
+	SlotCopyAlreadyRetired
+	// SlotCopyGone: the session left the slot some other way — evicted,
+	// deleted with a failed slot, or replaced — without a copy verdict.
+	SlotCopyGone
+)
+
+// RetireSlotCopy acts on a failure report about sess: it moves the slot on to
+// the next copy of the same release and takes sess out of the slot, so the slot
+// is rebuilt against that copy. report runs once sess is out of the slot but
+// before it is closed, because closing drops the release a verdict is recorded
+// against.
+//
+// Several requests can hold one session — Stremio sends duplicate play
+// requests, and parallel range requests share a stream — so one failed copy
+// can be reported more than once. Only a report about the slot's current
+// session counts: checking that and acting on it happen under the manager
+// lock, so a later report finds the session out of the slot and changes
+// nothing. Without that, every duplicate report moved the cursor again,
+// skipping an untried copy and tearing down the session just built for the
+// next one. Such a report is told apart as SlotCopyAlreadyRetired from a
+// session that left the slot without a verdict (SlotCopyGone).
+//
+// ifIdle leaves a session alone while a play is starting on it or serving it,
+// or once a play has validated it (SlotCopyBusy): a background caller must not
+// close a session a request holds, which would end that request without a
+// response. Validation counts because it is how a startup hands over to
+// serving — the startup registration ends only after the session is validated,
+// so one of the two always covers it.
+//
+// When there is no copy left to move to, the slot is left exactly as it was,
+// for the caller's slot-level failure handling — busy or not, since that
+// handling never closes the session.
+func (m *Manager) RetireSlotCopy(sess *Session, maxAttempts int, ifIdle bool, report func()) SlotCopyRetirement {
+	if sess == nil || sess.ID == "" {
+		return SlotCopyGone
+	}
+	m.mu.Lock()
+	if m.sessions[sess.ID] != sess {
+		m.mu.Unlock()
+		if sess.copyRetired.Load() {
+			return SlotCopyAlreadyRetired
+		}
+		return SlotCopyGone
+	}
+	// No copy left comes before busy: the failure then condemns the release,
+	// and that slot-level verdict must not be lost because a play holds the
+	// session (with copy walking off, the default, this is every report).
+	if m.nextSlotCopy(sess.ID, maxAttempts) == nil {
+		m.mu.Unlock()
+		return SlotCopyLast
+	}
+	if ifIdle {
+		sess.mu.Lock()
+		busy := sess.ActivePlays > 0 || sess.playbackStarting > 0 || !sess.PlaybackValidatedAt.IsZero()
+		sess.mu.Unlock()
+		if busy {
+			m.mu.Unlock()
+			return SlotCopyBusy
+		}
+	}
+	if !m.AdvanceSlotCopy(sess.ID, maxAttempts) {
+		m.mu.Unlock()
+		return SlotCopyLast
+	}
+	delete(m.sessions, sess.ID)
+	sess.copyRetired.Store(true)
+	m.mu.Unlock()
+	if report != nil {
+		report()
+	}
+	m.closeRemovedSession(sess, "retire_slot_copy")
+	return SlotCopyRetired
 }
 
 // ExhaustSlotCopies parks the slot past its last copy, so a retry that could
@@ -1891,18 +1994,24 @@ func (m *Manager) DeleteSession(sessionID string) {
 	m.mu.Unlock()
 
 	if sess != nil {
-		logger.Debug("session DeleteSession closing", "id", sessionID)
-		sess.Close()
-		// Purge the shared pool segment cache if no remaining session still has
-		// loader files — deferred (catalog) sessions never set Files, so this
-		// correctly fires when streaming ends even though the map is non-empty.
-		m.maybePurgePoolCache()
-		m.traceTeardownSnapshot("delete_session", sessionID)
-		// Suggest returning freed memory to the OS so RSS drops (Go keeps heap by default).
-		go freeOSMemory()
+		m.closeRemovedSession(sess, "delete_session")
 	} else {
 		logger.Trace("session DeleteSession no session", "id", sessionID)
 	}
+}
+
+// closeRemovedSession closes a session already taken out of m.sessions;
+// reason names the path that removed it in the logs.
+func (m *Manager) closeRemovedSession(sess *Session, reason string) {
+	logger.Debug("session closing after removal", "id", sess.ID, "reason", reason)
+	sess.Close()
+	// Purge the shared pool segment cache if no remaining session still has
+	// loader files — deferred (catalog) sessions never set Files, so this
+	// correctly fires when streaming ends even though the map is non-empty.
+	m.maybePurgePoolCache()
+	m.traceTeardownSnapshot(reason, sess.ID)
+	// Suggest returning freed memory to the OS so RSS drops (Go keeps heap by default).
+	go freeOSMemory()
 }
 
 // ClearBlueprintCache clears cached playback blueprints from active sessions so
@@ -2121,20 +2230,37 @@ func (m *Manager) MarkPlaybackValidated(id string) {
 	})
 }
 
-func (m *Manager) BeginPlaybackStartup(id string) {
-	m.withSession(id, func(s *Session) {
-		s.playbackStarting++
-		s.LastAccess = time.Now()
-	})
+// BeginSessionStartup registers a playback startup on sess itself and reports
+// whether sess is still the session its slot holds; when it is not, nothing is
+// registered. It replaces an id-keyed pair that could land on a session that
+// had replaced sess under the same id. The check and the registration happen
+// under the manager lock, so RetireSlotCopy either sees the startup (and
+// leaves an ifIdle caller's session alone) or has already taken sess out of
+// the slot — which this reports.
+func (m *Manager) BeginSessionStartup(sess *Session) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if sess == nil || m.sessions[sess.ID] != sess {
+		return false
+	}
+	sess.mu.Lock()
+	sess.playbackStarting++
+	sess.LastAccess = time.Now()
+	sess.mu.Unlock()
+	return true
 }
 
-func (m *Manager) EndPlaybackStartup(id string) {
-	m.withSession(id, func(s *Session) {
-		if s.playbackStarting > 0 {
-			s.playbackStarting--
-		}
-		s.LastAccess = time.Now()
-	})
+// EndSessionStartup ends a startup BeginSessionStartup registered on sess.
+func (m *Manager) EndSessionStartup(sess *Session) {
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.playbackStarting > 0 {
+		sess.playbackStarting--
+	}
+	sess.LastAccess = time.Now()
+	sess.mu.Unlock()
 }
 
 func (m *Manager) EndPlayback(id, ip string) {
