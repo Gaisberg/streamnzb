@@ -49,6 +49,8 @@ func TestStragglingServeOnARetiredCopyLeavesTheNextCopyAlone(t *testing.T) {
 	t.Cleanup(f.server.Shutdown)
 	t.Cleanup(f.server.scrobbleSends.Wait)
 	a := f.resolve(t, "NZBGeek")
+	// The first byte would start a fallback prefetch that outlives the test.
+	a.Once(onceFallbackPrefetched)
 
 	// The second serve keeps reading after B takes the slot, so bytes that
 	// followed the slot id would land on B.

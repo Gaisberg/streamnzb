@@ -137,10 +137,8 @@ func TestStaleSlotFailureDoesNotCondemnTheRebuiltCopy(t *testing.T) {
 	}
 	// The duplicate request finds no copy left to move to. Before the fix it
 	// fell through to the slot-level verdict, still holding the retired
-	// session; resolvePlaybackSlot does exactly this for copyRetryNone.
-	if _, retry := f.server.retrySlotWithNextCopy(context.Background(), failed, f.slot, f.stream, missing); retry == copyRetryNone {
-		f.server.recordFailedSlot(failed, f.slot, missing)
-	}
+	// session.
+	f.server.retrySlotWithNextCopy(context.Background(), failed, f.slot, f.stream, missing)
 	if f.manager.GetSlotFailedDuringPlayback(f.slot) {
 		t.Fatal("a report about the retired copy failed the slot the next copy is playing in")
 	}
@@ -244,10 +242,11 @@ func TestPreloadVerdictLeavesASessionInUseToThePlay(t *testing.T) {
 	t.Parallel()
 	f := newCopyRetireFixture(t, 2)
 	inUse := f.resolve(t, "NZBGeek")
-	if !f.manager.BeginSessionStartup(inUse) {
+	startup := f.manager.BeginSessionStartup(inUse)
+	if startup == nil {
 		t.Fatal("the play should register its startup on the slot's session")
 	}
-	t.Cleanup(func() { f.manager.EndSessionStartup(inUse) })
+	t.Cleanup(startup.Release)
 
 	f.server.retirePreloadedCopy(inUse, fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable), f.stream)
 
@@ -281,9 +280,11 @@ func TestPreloadVerdictWithoutCopyWalkingFailsTheRelease(t *testing.T) {
 	}{
 		{"idle", func(*testing.T, copyRetireFixture, *session.Session) {}},
 		{"busy", func(t *testing.T, f copyRetireFixture, sess *session.Session) {
-			if !f.manager.BeginSessionStartup(sess) {
+			startup := f.manager.BeginSessionStartup(sess)
+			if startup == nil {
 				t.Fatal("startup should register")
 			}
+			t.Cleanup(startup.Release)
 		}},
 		{"previously played", func(_ *testing.T, f copyRetireFixture, sess *session.Session) {
 			f.manager.MarkPlaybackValidated(sess)
@@ -322,10 +323,11 @@ func TestPreloadVerdictRacingAPlayStartup(t *testing.T) {
 				f = f.withoutCopyWalking()
 			}
 			sess := f.resolve(t, "NZBGeek")
-			started := make(chan bool)
+			started := make(chan *session.StartupHold)
 			go func() { started <- f.manager.BeginSessionStartup(sess) }()
 			f.server.retirePreloadedCopy(sess, fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable), f.stream)
-			ok := <-started
+			startup := <-started
+			ok := startup != nil
 
 			slotFailed := f.manager.GetSlotFailedDuringPlayback(f.slot)
 			bound := f.manager.PeekSession(f.slot) == sess
@@ -343,9 +345,7 @@ func TestPreloadVerdictRacingAPlayStartup(t *testing.T) {
 					t.Fatal("the preload retired the copy first; the play must see the slot moved to copy 1")
 				}
 			}
-			if ok {
-				f.manager.EndSessionStartup(sess)
-			}
+			startup.Release()
 		}
 	}
 }
@@ -374,10 +374,11 @@ func TestDuplicatePreloadVerdicts(t *testing.T) {
 		failed := f.resolve(t, "NZBGeek")
 		f.server.retirePreloadedCopy(failed, bad, f.stream)
 		next := f.resolve(t, "DrunkenSlug")
-		if !f.manager.BeginSessionStartup(next) {
+		startup := f.manager.BeginSessionStartup(next)
+		if startup == nil {
 			t.Fatal("startup on the replacement should register")
 		}
-		t.Cleanup(func() { f.manager.EndSessionStartup(next) })
+		t.Cleanup(startup.Release)
 
 		f.server.retirePreloadedCopy(failed, bad, f.stream)
 
@@ -619,8 +620,8 @@ func TestUnbuildableNextCopyUnderCancellationIsLeftToTheNextRequest(t *testing.T
 	}
 }
 
-// Every copy failing still condemns the release: the last copy hands the slot
-// verdict to the caller, which fails the slot.
+// Every copy failing still condemns the release: the last copy's failure fails
+// the slot.
 func TestEveryCopyFailingFailsTheSlot(t *testing.T) {
 	t.Parallel()
 	f := newCopyRetireFixture(t, 3)
@@ -635,15 +636,15 @@ func TestEveryCopyFailingFailsTheSlot(t *testing.T) {
 		sess = next
 	}
 	if _, retry := f.server.retrySlotWithNextCopy(context.Background(), sess, f.slot, f.stream, missing); retry != copyRetryNone {
-		t.Fatalf("the last copy should hand the slot verdict to the caller, got outcome %d", retry)
+		t.Fatalf("the last copy should fail the slot, got outcome %d", retry)
 	}
-	f.server.recordFailedSlot(sess, f.slot, missing)
-	if !f.manager.GetSlotFailedDuringPlayback(f.slot) {
-		t.Fatal("the slot should fail once every copy has failed")
+	if !f.manager.GetSlotFailedDuringPlayback(f.slot) || f.manager.PeekSession(f.slot) != nil {
+		t.Fatal("the slot should fail once every copy has failed, its session gone")
 	}
 }
 
-// With copy walking off, a cancelled request's failure is the slot's, as before.
+// With copy walking off, a cancelled request's failure is the slot's, as before:
+// it fails the slot without moving the cursor.
 func TestCancelledRequestWithoutCopyWalkingKeepsTheSlotVerdict(t *testing.T) {
 	t.Parallel()
 	f := newCopyRetireFixture(t, 2).withoutCopyWalking()
@@ -655,5 +656,8 @@ func TestCancelledRequestWithoutCopyWalkingKeepsTheSlotVerdict(t *testing.T) {
 	}
 	if got := f.manager.SlotCopyIndex(f.slot); got != 0 {
 		t.Fatalf("with copy walking off the cursor moved to %d", got)
+	}
+	if !f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("with copy walking off the failure should fail the slot")
 	}
 }

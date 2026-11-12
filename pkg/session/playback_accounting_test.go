@@ -181,7 +181,8 @@ func TestConcurrentStaleAndLiveAccountingStaySeparate(t *testing.T) {
 func TestPlaybackLifecycleOnTheCurrentSession(t *testing.T) {
 	m := newAccountingManager(t)
 	s := newSlotSession(t, m, "x", "https://indexer/a.nzb")
-	if !m.BeginSessionStartup(s) {
+	startup := m.BeginSessionStartup(s)
+	if startup == nil {
 		t.Fatal("startup should register on the current session")
 	}
 
@@ -190,9 +191,18 @@ func TestPlaybackLifecycleOnTheCurrentSession(t *testing.T) {
 	s.mu.Lock()
 	started, starting := !s.PlaybackStartedAt.IsZero(), s.playbackStarting
 	s.mu.Unlock()
-	if !s.IsPlaybackValidated() || !started || starting != 0 || s.CurrentActivePlays() != 1 {
+	// The startup is the request's own until it hands over: validation and
+	// the start leave it held, so the session is never unheld in between.
+	if !s.IsPlaybackValidated() || !started || starting != 1 || s.CurrentActivePlays() != 1 {
 		t.Fatalf("after start: validated=%v started=%v starting=%d plays=%d",
 			s.IsPlaybackValidated(), started, starting, s.CurrentActivePlays())
+	}
+	startup.Release()
+	s.mu.Lock()
+	starting = s.playbackStarting
+	s.mu.Unlock()
+	if starting != 0 {
+		t.Fatalf("after the hand-over: starting=%d, want 0", starting)
 	}
 
 	m.EndPlayback(s, "1.1.1.1")

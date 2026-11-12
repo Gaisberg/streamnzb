@@ -74,11 +74,8 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	}
 	s.sessionManager.MarkPlaybackValidated(sess)
 	s.sessionManager.StartPlayback(sess, clientIP)
-	if resolved.startupHeld {
-		// Validated and playing now: the startup resolve registered has done
-		// its job of keeping background verdicts off this session.
-		s.sessionManager.EndSessionStartup(sess)
-	}
+	// Playing now: the play itself holds the session from here on.
+	resolved.startup.Release()
 	// A shutdown drain waits for the stop this serve may decide as it ends.
 	s.scrobbleSends.Add(1)
 	defer s.scrobbleSends.Done()

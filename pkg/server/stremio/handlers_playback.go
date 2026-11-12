@@ -1299,11 +1299,15 @@ func (s *Server) servePlaySlot(w http.ResponseWriter, r *http.Request, streamCon
 
 	resolved, ok := s.resolvePlaybackSlot(w, r, streamConfig, requestedSessionID)
 	if !ok {
-		// Already answered: a 404, a redirect to the slot that opened, or the
-		// error video once the candidates ran out.
+		// Already answered: a 404, a redirect to the slot that opened or to a
+		// fallback another request is playing, a 503 when another request
+		// holds the slot, or the error video once the candidates ran out.
 		return
 	}
 	defer resolved.cancel()
+	// The serve releases the startup once playing; this only covers a serve
+	// that ends before that (a panic), which would otherwise hold the session.
+	defer resolved.startup.Release()
 
 	s.servePlaybackStream(w, r, streamConfig, resolved, playStart)
 }

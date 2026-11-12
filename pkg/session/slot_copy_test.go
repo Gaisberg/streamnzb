@@ -24,14 +24,14 @@ func TestRetireSlotCopyActsOnceAndOnlyOnTheCurrentSession(t *testing.T) {
 	first := create("https://a.invalid/0")
 
 	// A background caller leaves a session alone while a play is starting on it.
-	m.BeginSessionStartup(first)
+	startup := m.BeginSessionStartup(first)
 	if got := m.RetireSlotCopy(first, 3, true, nil); got != SlotCopyBusy {
 		t.Fatalf("busy session: got %d, want SlotCopyBusy", got)
 	}
 	if m.PeekSession(slot) != first || m.SlotCopyIndex(slot) != 0 {
 		t.Fatal("a busy session must keep its slot and cursor")
 	}
-	m.EndSessionStartup(first)
+	startup.Release()
 
 	reports := 0
 	got := m.RetireSlotCopy(first, 3, false, func() {
@@ -94,22 +94,23 @@ func TestBeginSessionStartupIsBoundToTheSessionItHolds(t *testing.T) {
 	m.NoteSlotCopies(slot, 3)
 	held := create("https://a.invalid/0")
 
-	if !m.BeginSessionStartup(held) {
+	startup := m.BeginSessionStartup(held)
+	if startup == nil {
 		t.Fatal("the slot holds this session; the startup should register")
 	}
 	if got := m.RetireSlotCopy(held, 3, true, nil); got != SlotCopyBusy {
 		t.Fatalf("a registered startup must make an idle-only retirement back off, got %d", got)
 	}
-	m.EndSessionStartup(held)
+	startup.Release()
 
 	if got := m.RetireSlotCopy(held, 3, true, nil); got != SlotCopyRetired {
 		t.Fatalf("an idle session should be retired, got %d", got)
 	}
-	if m.BeginSessionStartup(held) {
+	if m.BeginSessionStartup(held) != nil {
 		t.Fatal("a retired session must not register a startup")
 	}
 	rebuilt := create("https://b.invalid/1")
-	if m.BeginSessionStartup(held) {
+	if m.BeginSessionStartup(held) != nil {
 		t.Fatal("a startup on the retired session must not land on the session that replaced it")
 	}
 	if got := m.RetireSlotCopy(rebuilt, 3, true, nil); got != SlotCopyRetired {
@@ -150,10 +151,8 @@ func TestNoCopyLeftIsReportedEvenForABusySession(t *testing.T) {
 	}
 }
 
-// A play hands its startup over to serving by validating the session, and the
-// startup registration ends only afterwards. Validation has to count as in use
-// on its own, or the hand-over leaves a moment in which a background verdict
-// may close the session the request is about to serve.
+// A session that has played is not idle for a background verdict even after
+// every hold is gone: a preload probe has no business closing it.
 func TestValidatedSessionIsNotIdleForABackgroundVerdict(t *testing.T) {
 	m := NewManager(nil, time.Minute)
 	t.Cleanup(m.Shutdown)
@@ -165,11 +164,12 @@ func TestValidatedSessionIsNotIdleForABackgroundVerdict(t *testing.T) {
 	}
 	m.NoteSlotCopies(slot, 2)
 
-	if !m.BeginSessionStartup(sess) {
+	startup := m.BeginSessionStartup(sess)
+	if startup == nil {
 		t.Fatal("startup should register")
 	}
-	m.MarkPlaybackValidated(sess) // serving takes over; this zeroes the startup count
-	m.EndSessionStartup(sess)
+	m.MarkPlaybackValidated(sess)
+	startup.Release()
 	if got := m.RetireSlotCopy(sess, 2, true, nil); got != SlotCopyBusy {
 		t.Fatalf("a validated session must not be closed by a background verdict, got %d", got)
 	}
