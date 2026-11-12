@@ -188,7 +188,7 @@ func TestMarkPlaybackValidatedSeparatesValidationFromPlaybackEnd(t *testing.T) {
 		t.Fatal("expected unvalidated session to report false")
 	}
 
-	m.MarkPlaybackValidated("sess-1")
+	m.MarkPlaybackValidated(s)
 
 	if !s.HasPreviouslyServed() {
 		t.Fatal("expected validated session to report true")

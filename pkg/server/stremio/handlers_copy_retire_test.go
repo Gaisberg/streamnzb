@@ -285,8 +285,8 @@ func TestPreloadVerdictWithoutCopyWalkingFailsTheRelease(t *testing.T) {
 				t.Fatal("startup should register")
 			}
 		}},
-		{"previously played", func(_ *testing.T, f copyRetireFixture, _ *session.Session) {
-			f.manager.MarkPlaybackValidated(f.slot)
+		{"previously played", func(_ *testing.T, f copyRetireFixture, sess *session.Session) {
+			f.manager.MarkPlaybackValidated(sess)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

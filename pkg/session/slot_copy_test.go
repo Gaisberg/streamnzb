@@ -138,7 +138,7 @@ func TestNoCopyLeftIsReportedEvenForABusySession(t *testing.T) {
 	}{
 		{"idle", func() {}},
 		{"starting", func() { m.BeginSessionStartup(sess) }},
-		{"validated", func() { m.MarkPlaybackValidated(slot) }},
+		{"validated", func() { m.MarkPlaybackValidated(sess) }},
 	} {
 		tc.prep()
 		if got := m.RetireSlotCopy(sess, 1, true, nil); got != SlotCopyLast {
@@ -168,7 +168,7 @@ func TestValidatedSessionIsNotIdleForABackgroundVerdict(t *testing.T) {
 	if !m.BeginSessionStartup(sess) {
 		t.Fatal("startup should register")
 	}
-	m.MarkPlaybackValidated(slot) // serving takes over; this zeroes the startup count
+	m.MarkPlaybackValidated(sess) // serving takes over; this zeroes the startup count
 	m.EndSessionStartup(sess)
 	if got := m.RetireSlotCopy(sess, 2, true, nil); got != SlotCopyBusy {
 		t.Fatalf("a validated session must not be closed by a background verdict, got %d", got)

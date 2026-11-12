@@ -72,8 +72,8 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	if opts := playServeOptionsFromContext(r.Context()); opts.ClientReportsPlayback {
 		rs = &reportingServe{device: opts.ClientDevice, deviceFromURL: opts.ClientDeviceFromURL, address: clientIP, began: playStart}
 	}
-	s.sessionManager.MarkPlaybackValidated(sessionID)
-	s.sessionManager.StartPlayback(sessionID, clientIP)
+	s.sessionManager.MarkPlaybackValidated(sess)
+	s.sessionManager.StartPlayback(sess, clientIP)
 	if resolved.startupHeld {
 		// Validated and playing now: the startup resolve registered has done
 		// its job of keeping background verdicts off this session.
@@ -86,7 +86,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 	// the stop must see the decremented play count and the folded progress.
 	defer s.scrobbleStopIfIdle(streamConfig, sess, rs)
 	var endPlaybackOnce sync.Once
-	endPlayback := func() { s.sessionManager.EndPlayback(sessionID, clientIP) }
+	endPlayback := func() { s.sessionManager.EndPlayback(sess, clientIP) }
 	defer endPlaybackOnce.Do(endPlayback)
 	// When the client cancels (e.g. stop in Stremio) the request context is
 	// cancelled; end playback so downloading stops and the session can be evicted.
@@ -120,6 +120,7 @@ func (s *Server) servePlaybackStream(w http.ResponseWriter, r *http.Request, str
 
 	monitoredStream := &StreamMonitor{
 		ReadSeekCloser: stream,
+		session:        sess,
 		sessionID:      sessionID,
 		clientIP:       clientIP,
 		manager:        s.sessionManager,

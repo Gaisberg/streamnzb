@@ -536,7 +536,7 @@ func (s *Session) BytesRead() int64 {
 
 // AddBytesRead adds n to the session's bytes-read counter (called from stream read path).
 func (s *Session) AddBytesRead(n int64) {
-	if n > 0 {
+	if s != nil && n > 0 {
 		s.bytesRead.Add(n)
 	}
 }
@@ -2210,14 +2210,19 @@ func (m *Manager) cleanup() {
 
 }
 
-// withSession runs fn against the named session with s.mu held, or does
-// nothing when the session is gone. Unlike GetSession it does NOT touch
-// LastAccess, so callers that want the access time refreshed set it in fn -
-// making that write visible rather than an accident of the lookup helper.
-func (m *Manager) withSession(id string, fn func(*Session)) {
-	m.mu.RLock()
-	s := m.sessions[id]
-	m.mu.RUnlock()
+// withHeldSession runs fn against s with s.mu held, or does nothing when s is
+// nil. It does NOT touch LastAccess, so callers that want the access time
+// refreshed set it in fn - making that write visible rather than an accident
+// of the helper.
+//
+// Playback accounting takes the session a request holds rather than its id: a
+// slot id outlives its session (a copy retry, a deferred-session replacement
+// or an eviction puts a new one behind the same id), so a lookup by id from a
+// request still finishing on the old session lands on the new one, ending,
+// starting or validating playback that is not its own. On the old session the
+// update is harmless: it is out of the map, so neither cleanup nor a
+// replacement check sees it, and Start/End stay balanced on it.
+func withHeldSession(s *Session, fn func(*Session)) {
 	if s == nil {
 		return
 	}
@@ -2226,20 +2231,28 @@ func (m *Manager) withSession(id string, fn func(*Session)) {
 	fn(s)
 }
 
-func (m *Manager) StartPlayback(id, ip string) {
-	m.withSession(id, func(s *Session) {
+// noteClient records ip as seen at now. Close drops the clients map, and a
+// request can still hold the session after it closed.
+func (s *Session) noteClient(ip string, now time.Time) {
+	if s.clients != nil {
+		s.clients[ip] = now
+	}
+}
+
+func (m *Manager) StartPlayback(sess *Session, ip string) {
+	withHeldSession(sess, func(s *Session) {
 		now := time.Now()
 		if s.ActivePlays == 0 {
 			s.PlaybackStartedAt = now
 		}
 		s.ActivePlays++
-		s.clients[ip] = now
+		s.noteClient(ip, now)
 		s.LastAccess = now
 	})
 }
 
-func (m *Manager) MarkPlaybackValidated(id string) {
-	m.withSession(id, func(s *Session) {
+func (m *Manager) MarkPlaybackValidated(sess *Session) {
+	withHeldSession(sess, func(s *Session) {
 		now := time.Now()
 		if s.PlaybackValidatedAt.IsZero() {
 			s.PlaybackValidatedAt = now
@@ -2282,9 +2295,12 @@ func (m *Manager) EndSessionStartup(sess *Session) {
 	sess.mu.Unlock()
 }
 
-func (m *Manager) EndPlayback(id, ip string) {
+func (m *Manager) EndPlayback(sess *Session, ip string) {
+	if sess == nil {
+		return
+	}
 	var plays int32
-	m.withSession(id, func(s *Session) {
+	withHeldSession(sess, func(s *Session) {
 		now := time.Now()
 		if s.ActivePlays > 0 {
 			s.ActivePlays--
@@ -2293,34 +2309,22 @@ func (m *Manager) EndPlayback(id, ip string) {
 			s.PlaybackStartedAt = time.Time{}
 			s.PlaybackEndedAt = now // so cleanup can evict session after PostPlaybackEvictTTL
 		}
-		s.clients[ip] = now
+		s.noteClient(ip, now)
 		s.LastAccess = now
 		plays = s.ActivePlays
 	})
-	if plays == 0 {
-		m.traceTeardownSnapshot("playback_ended", id)
+	// The snapshot reports on the slot; a session replaced in it says nothing about it.
+	if cur := m.PeekSession(sess.ID); plays == 0 && (cur == nil || cur == sess) {
+		m.traceTeardownSnapshot("playback_ended", sess.ID)
 	}
 }
 
-func (m *Manager) KeepAlive(id, ip string) {
-	m.withSession(id, func(s *Session) {
+func (m *Manager) KeepAlive(sess *Session, ip string) {
+	withHeldSession(sess, func(s *Session) {
 		now := time.Now()
 		s.LastAccess = now
-		s.clients[ip] = now
+		s.noteClient(ip, now)
 	})
-}
-
-// AddBytesRead adds n to the session's bytes-read counter. Used by the stream read path to track data downloaded before reporting good to AvailNZB.
-func (m *Manager) AddBytesRead(sessionID string, n int64) {
-	if n <= 0 {
-		return
-	}
-	m.mu.RLock()
-	s := m.sessions[sessionID]
-	m.mu.RUnlock()
-	if s != nil {
-		s.AddBytesRead(n)
-	}
 }
 
 type ActiveSessionInfo struct {
