@@ -285,9 +285,13 @@ func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Sessi
 		return true
 	case session.SlotCopyGone:
 		// The session left the slot without a copy verdict (evicted, or the
-		// slot was failed): keep the player from coming back to it. The serve
-		// itself still failed, so its bookkeeping must not count it good.
-		s.sessionManager.SetSlotFailedDuringPlayback(served.ID)
+		// slot was failed): keep the player from coming back to it — unless a
+		// replacement now holds the slot, which this stale read says nothing
+		// about. The serve itself still failed, so its bookkeeping must not
+		// count it good.
+		if !s.sessionManager.FailSlotUnlessReplaced(served) {
+			logger.Debug("Read error from a session the slot has replaced", "slot", served.ID, "err", readErr)
+		}
 		return true
 	}
 	s.sessionManager.SetSlotFailedDuringPlayback(served.ID)

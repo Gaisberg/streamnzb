@@ -178,3 +178,46 @@ func TestValidatedSessionIsNotIdleForABackgroundVerdict(t *testing.T) {
 		t.Fatalf("a failure report about the validated session should still retire it, got %d", got)
 	}
 }
+
+// A failure on a session that left its slot fails the slot only while nothing
+// replaced it; a failure on the slot's current session always does.
+func TestFailSlotUnlessReplacedSparesAReplacement(t *testing.T) {
+	m := NewManager(nil, time.Minute)
+	t.Cleanup(m.Shutdown)
+	const slot = "stream:s:movie:tt1:0"
+	create := func() *Session {
+		t.Helper()
+		sess, _, err := m.CreateDeferredSessionWithFetcherOutcome(slot, "https://a.invalid/0", &release.Release{Title: "Movie-GRP", Link: "https://a.invalid/0"},
+			nil, nil, "movie", "tt1", "Movie", "s", nil, nil)
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		return sess
+	}
+
+	old := create()
+	m.DeleteSession(slot)
+	replacement := create()
+	if m.FailSlotUnlessReplaced(old) || m.GetSlotFailedDuringPlayback(slot) {
+		t.Fatal("a failure on a replaced session failed the replacement's slot")
+	}
+	if m.PeekSession(slot) != replacement {
+		t.Fatal("the replacement must keep its slot")
+	}
+
+	if !m.FailSlotUnlessReplaced(replacement) || !m.GetSlotFailedDuringPlayback(slot) {
+		t.Fatal("a failure on the slot's current session should fail the slot")
+	}
+
+	m2 := NewManager(nil, time.Minute)
+	t.Cleanup(m2.Shutdown)
+	m = m2
+	gone := create()
+	m.DeleteSession(slot)
+	if !m.FailSlotUnlessReplaced(gone) || !m.GetSlotFailedDuringPlayback(slot) {
+		t.Fatal("a failure on a session whose slot is empty should fail the slot")
+	}
+	if m.FailSlotUnlessReplaced(nil) {
+		t.Fatal("a nil session has no slot to fail")
+	}
+}

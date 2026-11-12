@@ -1631,6 +1631,25 @@ func (m *Manager) SetSlotFailedDuringPlayback(slotPath string) {
 	m.slotFailedDuringPlayback.Store(slotPath, &failedSlotEntry{expiresAt: expiresAt})
 }
 
+// FailSlotUnlessReplaced marks sess's slot failed during playback unless
+// another session now holds it, and reports whether it did. A failure on a
+// session that left its slot is about the slot only while nothing replaced it:
+// a late read error from the old session must not fail a healthy replacement.
+// The check and the mark happen under the manager lock, which every change to
+// the slot's session takes, so a replacement cannot slip in between them.
+func (m *Manager) FailSlotUnlessReplaced(sess *Session) bool {
+	if sess == nil || sess.ID == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if cur := m.sessions[sess.ID]; cur != nil && cur != sess {
+		return false
+	}
+	m.SetSlotFailedDuringPlayback(sess.ID)
+	return true
+}
+
 // GetSlotFailedDuringPlayback returns true if this slot recently failed during playback (430).
 func (m *Manager) GetSlotFailedDuringPlayback(slotPath string) bool {
 	val, ok := m.slotFailedDuringPlayback.Load(slotPath)

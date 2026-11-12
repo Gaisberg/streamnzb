@@ -3,6 +3,7 @@ package stremio
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -384,5 +385,80 @@ func TestTemporaryPreloadFailureIsNotAVerdict(t *testing.T) {
 	}
 	if !f.server.preloadConfirmsBadRelease(fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable)) {
 		t.Fatal("a missing first segment should stay a conclusive verdict")
+	}
+}
+
+// A served session evicted without a copy verdict, with a replacement already
+// rebuilt under the same slot id, is the case review caught: the late fatal
+// reads from the old session — Stremio's parallel range requests can deliver
+// several at once — used to fail the slot the healthy replacement is playing
+// in. They are about the old session only: the replacement keeps its slot,
+// session and copy, and each straggling serve still counts as failed.
+func TestStaleServedFailureAfterReplacementLeavesTheReplacementAlone(t *testing.T) {
+	t.Parallel()
+	f := newCopyRetireFixture(t, 2)
+	served := f.resolve(t, "NZBGeek")
+	f.manager.DeleteSession(f.slot)
+	replacement := f.resolve(t, "NZBGeek")
+	if replacement == served {
+		t.Fatal("the slot should have been rebuilt with a new session")
+	}
+	fatal := fmt.Errorf("read: %w", unpack.ErrTooManyZeroFills)
+
+	const reads = 8
+	start := make(chan struct{})
+	recorded := make(chan bool, reads)
+	var wg sync.WaitGroup
+	for range reads {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			recorded <- f.server.failServedCopy(f.stream, served, fatal)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(recorded)
+	for ok := range recorded {
+		if !ok {
+			t.Fatal("a straggling serve must count as failed, or its bookkeeping may report it good")
+		}
+	}
+
+	if f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("a stale read from the replaced session failed the replacement's slot")
+	}
+	if f.manager.PeekSession(f.slot) != replacement {
+		t.Fatal("a stale read from the replaced session removed the replacement")
+	}
+	select {
+	case <-replacement.Done():
+		t.Fatal("a stale read from the replaced session closed the replacement")
+	default:
+	}
+	if got := f.manager.SlotCopyIndex(f.slot); got != 0 {
+		t.Fatalf("a stale read from the replaced session moved the cursor to %d", got)
+	}
+}
+
+// A fatal read on the slot's current session with no copy left to move to
+// fails the slot and leaves the session in place for the reconnect to skip.
+func TestServedFailureOnTheLastCopyFailsTheSlot(t *testing.T) {
+	t.Parallel()
+	f := newCopyRetireFixture(t, 2).withoutCopyWalking()
+	served := f.resolve(t, "NZBGeek")
+
+	if !f.server.failServedCopy(f.stream, served, fmt.Errorf("read: %w", unpack.ErrTooManyZeroFills)) {
+		t.Fatal("the fatal read should be recorded")
+	}
+	if !f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("with no copy left the fatal read should fail the slot")
+	}
+	if got := f.manager.SlotCopyIndex(f.slot); got != 0 {
+		t.Fatalf("with copy walking off the cursor moved to %d", got)
+	}
+	if f.manager.PeekSession(f.slot) != served {
+		t.Fatal("the slot-level verdict should leave the session for the reconnect to skip")
 	}
 }
