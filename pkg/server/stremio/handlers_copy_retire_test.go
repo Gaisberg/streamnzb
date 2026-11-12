@@ -9,6 +9,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/media/unpack"
 	"streamnzb/pkg/release"
 	"streamnzb/pkg/search/query"
@@ -23,15 +24,21 @@ type copyRetireFixture struct {
 	key     StreamSlotKey
 	slot    string
 	stream  *auth.Stream
+	rel     *release.Release
 }
 
 func newCopyRetireFixture(t *testing.T, copies int) copyRetireFixture {
 	t.Helper()
 	initFailoverTestLogger()
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
+	return seedCopyRetireFixture(t, &Server{config: &config.Config{}}, key, copies)
+}
+
+func seedCopyRetireFixture(t *testing.T, server *Server, key StreamSlotKey, copies int) copyRetireFixture {
+	t.Helper()
 	manager := session.NewManager(nil, time.Minute)
 	t.Cleanup(manager.Shutdown)
-	server := &Server{config: &config.Config{}, sessionManager: manager}
-	key := StreamSlotKey{StreamID: "stream_test", ContentType: "movie", ID: "tt123"}
+	server.sessionManager = manager
 
 	indexers := []string{"NZBGeek", "DrunkenSlug", "NZBFinder"}[:copies]
 	var all []*release.Release
@@ -45,21 +52,35 @@ func newCopyRetireFixture(t *testing.T, copies int) copyRetireFixture {
 	}
 	rel := all[0]
 	rel.Variants = all[1:]
-	server.playlistCache.Store(key.CacheKey(), &playlistCacheEntry{
-		result: variantTestPlaylist(key, rel),
-		until:  time.Now().Add(time.Minute),
-	})
-	server.rawSearchCache.Store(key.CacheKey(), &rawSearchCacheEntry{
-		raw:   &rawSearchResult{Params: &query.SearchParams{ContentType: key.ContentType, ID: key.ID}},
-		until: time.Now().Add(time.Minute),
-	})
-	return copyRetireFixture{
+	f := copyRetireFixture{
 		manager: manager,
 		server:  server,
 		key:     key,
 		slot:    key.SlotPath(0),
 		stream:  &auth.Stream{Username: key.StreamID, VariantAttempts: copies},
+		rel:     rel,
 	}
+	f.searchAnswers()
+	return f
+}
+
+// searchAnswers caches the release's copies as a finished search would.
+func (f copyRetireFixture) searchAnswers() {
+	f.server.playlistCache.Store(f.key.CacheKey(), &playlistCacheEntry{
+		result: variantTestPlaylist(f.key, f.rel),
+		until:  time.Now().Add(time.Minute),
+	})
+	f.server.rawSearchCache.Store(f.key.CacheKey(), &rawSearchCacheEntry{
+		raw:   &rawSearchResult{Params: &query.SearchParams{ContentType: f.key.ContentType, ID: f.key.ID}},
+		until: time.Now().Add(time.Minute),
+	})
+}
+
+// expireSearch drops the cached search, so the next rebuild of the slot has to
+// search the indexers again.
+func (f copyRetireFixture) expireSearch() {
+	f.server.playlistCache.Delete(f.key.CacheKey())
+	f.server.rawSearchCache.Delete(f.key.CacheKey())
 }
 
 func (f copyRetireFixture) resolve(t *testing.T, wantIndexer string) *session.Session {
@@ -460,5 +481,179 @@ func TestServedFailureOnTheLastCopyFailsTheSlot(t *testing.T) {
 	}
 	if f.manager.PeekSession(f.slot) != served {
 		t.Fatal("the slot-level verdict should leave the session for the reconnect to skip")
+	}
+}
+
+// heldIndexer holds every search until release is closed, then answers the way
+// an indexer does for a request that has gone away.
+type heldIndexer struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHeldIndexer() *heldIndexer {
+	return &heldIndexer{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *heldIndexer) Search(ctx context.Context, _ indexer.SearchRequest) (*indexer.SearchResponse, error) {
+	h.once.Do(func() { close(h.entered) })
+	<-h.release
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &indexer.SearchResponse{}, nil
+}
+func (*heldIndexer) Name() string                                        { return "Held" }
+func (*heldIndexer) GetUsage() indexer.Usage                             { return indexer.Usage{} }
+func (*heldIndexer) Ping(context.Context) error                          { return nil }
+func (*heldIndexer) DownloadNZB(context.Context, string) ([]byte, error) { return nil, nil }
+
+// newSearchingCopyFixture is copyRetireFixture on a server that really
+// searches once the cached search expires: the series has resolvable metadata
+// and every search goes to a heldIndexer.
+func newSearchingCopyFixture(t *testing.T, copies int) (copyRetireFixture, *heldIndexer) {
+	t.Helper()
+	srv, _ := dailySearchServer(t, tvmazeRawS33E43, rawTMDB, "76779", map[string]string{"33x43": "2025-10-27"})
+	held := newHeldIndexer()
+	srv.indexer = held
+	key := StreamSlotKey{StreamID: "stream_test", ContentType: "series", ID: "tvdb:76779:33:43"}
+	f := seedCopyRetireFixture(t, srv, key, copies)
+	f.stream.SeriesSearchQueries = []string{"TV"}
+	return f, held
+}
+
+// retryWhileCancelled reports the failed copy from a request that is cancelled
+// while the slot is being rebuilt on the next copy, past an expired search.
+func retryWhileCancelled(t *testing.T, f copyRetireFixture, held *heldIndexer, failed *session.Session) copyRetry {
+	t.Helper()
+	f.expireSearch()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan copyRetry, 1)
+	go func() {
+		_, retry := f.server.retrySlotWithNextCopy(ctx, failed, f.slot, f.stream, fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable))
+		done <- retry
+	}()
+	<-held.entered
+	cancel()
+	close(held.release)
+	return <-done
+}
+
+// A client that leaves while the next copy is being set up says nothing about
+// that copy. The failed copy stays retired and the cursor stays on the next
+// one; the slot used to be given up instead, its untried copies skipped.
+func TestCancelledRebuildKeepsTheNextCopy(t *testing.T) {
+	f, held := newSearchingCopyFixture(t, 3)
+	failed := f.resolve(t, "NZBGeek")
+
+	if retry := retryWhileCancelled(t, f, held, failed); retry != copyRetryElsewhere {
+		t.Fatalf("the cancelled request should end its walk here, got outcome %d", retry)
+	}
+	if got := f.manager.RetireSlotCopy(failed, f.stream.EffectiveVariantAttempts(), false, nil); got != session.SlotCopyAlreadyRetired {
+		t.Fatalf("the genuinely failed copy should stay retired, got %d", got)
+	}
+	if got := f.manager.SlotCopyIndex(f.slot); got != 1 {
+		t.Fatalf("a cancellation moved the cursor to copy %d; copy 1 was never tried", got)
+	}
+	if f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("a cancellation failed the slot")
+	}
+
+	// The next request finds the search answering again and plays copy 1.
+	f.searchAnswers()
+	next, ok := f.server.sessionAfterSlotMoved(context.Background(), f.slot, f.stream)
+	if !ok || next.Release().Indexer != "DrunkenSlug" {
+		t.Fatal("a later request should rebuild the slot on the next copy")
+	}
+}
+
+// Stremio's duplicate play requests share the failed copy. One is cancelled
+// during the rebuild; the one still connected must carry on with the next
+// copy, not find the slot given up because the other left.
+func TestCancelledRebuildLeavesTheNextCopyToALiveRequest(t *testing.T) {
+	f, held := newSearchingCopyFixture(t, 3)
+	failed := f.resolve(t, "NZBGeek")
+
+	retryWhileCancelled(t, f, held, failed)
+	f.searchAnswers()
+	next, retry := f.server.retrySlotWithNextCopy(context.Background(), failed, f.slot, f.stream,
+		fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable))
+	if retry != copyRetryNext || next.Release().Indexer != "DrunkenSlug" {
+		t.Fatalf("the live request should carry on with the next copy, got outcome %d", retry)
+	}
+	if got := f.manager.SlotCopyIndex(f.slot); got != 1 {
+		t.Fatalf("the duplicate report moved the cursor to %d", got)
+	}
+	if f.manager.GetSlotFailedDuringPlayback(f.slot) || f.manager.PeekSession(f.slot) != next {
+		t.Fatal("the next copy's session should hold the slot, unfailed")
+	}
+}
+
+// A rebuild that fails for its own reason while the request is also cancelled
+// is left to the next request, whose own rebuild still gives the slot up.
+func TestUnbuildableNextCopyUnderCancellationIsLeftToTheNextRequest(t *testing.T) {
+	t.Parallel()
+	f := newCopyRetireFixture(t, 2)
+	failed := f.resolve(t, "NZBGeek")
+	cached, _ := f.server.playlistCache.Load(f.key.CacheKey())
+	cached.(*playlistCacheEntry).result.Candidates[0].Release.Variants[0].Link = ""
+	missing := fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, retry := f.server.retrySlotWithNextCopy(ctx, failed, f.slot, f.stream, missing); retry != copyRetryElsewhere {
+		t.Fatalf("expected the cancelled request to end its walk, got outcome %d", retry)
+	}
+	if f.manager.GetSlotFailedDuringPlayback(f.slot) || f.manager.SlotCopyIndex(f.slot) != 1 {
+		t.Fatal("a cancelled request must not give the slot up")
+	}
+
+	// The next play finds the slot empty and rebuilds it, as openPlaySession does.
+	if _, _, err := f.server.recoverPlaySessionAfterEviction(context.Background(), f.slot, f.stream); err == nil {
+		t.Fatal("the next copy cannot be built, so the next request should not recover the slot")
+	}
+	if !f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("the next request should fail the slot whose next copy cannot be built")
+	}
+}
+
+// Every copy failing still condemns the release: the last copy hands the slot
+// verdict to the caller, which fails the slot.
+func TestEveryCopyFailingFailsTheSlot(t *testing.T) {
+	t.Parallel()
+	f := newCopyRetireFixture(t, 3)
+	sess := f.resolve(t, "NZBGeek")
+	missing := fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable)
+
+	for _, want := range []string{"DrunkenSlug", "NZBFinder"} {
+		next, retry := f.server.retrySlotWithNextCopy(context.Background(), sess, f.slot, f.stream, missing)
+		if retry != copyRetryNext || next.Release().Indexer != want {
+			t.Fatalf("expected %s next, got outcome %d", want, retry)
+		}
+		sess = next
+	}
+	if _, retry := f.server.retrySlotWithNextCopy(context.Background(), sess, f.slot, f.stream, missing); retry != copyRetryNone {
+		t.Fatalf("the last copy should hand the slot verdict to the caller, got outcome %d", retry)
+	}
+	f.server.recordFailedSlot(sess, f.slot, missing)
+	if !f.manager.GetSlotFailedDuringPlayback(f.slot) {
+		t.Fatal("the slot should fail once every copy has failed")
+	}
+}
+
+// With copy walking off, a cancelled request's failure is the slot's, as before.
+func TestCancelledRequestWithoutCopyWalkingKeepsTheSlotVerdict(t *testing.T) {
+	t.Parallel()
+	f := newCopyRetireFixture(t, 2).withoutCopyWalking()
+	failed := f.resolve(t, "NZBGeek")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, retry := f.server.retrySlotWithNextCopy(ctx, failed, f.slot, f.stream, fmt.Errorf("probe: %w", ErrFirstSegmentUnavailable)); retry != copyRetryNone {
+		t.Fatalf("with copy walking off the verdict should be the caller's, got outcome %d", retry)
+	}
+	if got := f.manager.SlotCopyIndex(f.slot); got != 0 {
+		t.Fatalf("with copy walking off the cursor moved to %d", got)
 	}
 }

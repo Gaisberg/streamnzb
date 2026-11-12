@@ -268,6 +268,12 @@ func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Sessio
 		if next, ok := s.sessionAfterSlotMoved(ctx, sessionID, streamConfig); ok {
 			return next, copyRetryNext
 		}
+		if ctx.Err() != nil {
+			// The client left mid-rebuild, which says nothing about the next
+			// copy: the cursor stays on it for the next request, which rebuilds
+			// it or gives the slot up on its own evidence.
+			return nil, copyRetryElsewhere
+		}
 		// The next copy cannot be built, so the release gives up: park the
 		// cursor past the copies and fail the slot here. The copy's verdict is
 		// already recorded, and the failed session is closed — the caller's
