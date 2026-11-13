@@ -1,10 +1,69 @@
 package proxy
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
+	"time"
+
+	"streamnzb/pkg/usenet/pool"
 )
+
+func TestBodyUpstreamResetDoesNotInjectStatusIntoArticle(t *testing.T) {
+	body := strings.Repeat("article data\r\n", 20000)
+	delivered := make(chan struct{})
+	backend := proxyTestBackend(t, "222 body\r\n"+body, "", func(conn net.Conn) {
+		// Reset only after the downloader has received a body chunk, so this
+		// reproduces a failure during streaming, not a rejected BODY command.
+		select {
+		case <-delivered:
+		case <-time.After(5 * time.Second):
+			return
+		}
+		conn.(*net.TCPConn).SetLinger(0)
+	})
+	usenet, err := pool.NewPool(&pool.Config{Providers: []pool.ProviderConfig{{ID: "resetting", ClientPool: backend}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, proxy := net.Pipe()
+	defer client.Close()
+	defer proxy.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	srv := NewServer("", 0, usenet, "", "")
+	done := make(chan struct{})
+	go func() { defer close(done); srv.handleConnection(proxy) }()
+	r := bufio.NewReader(client)
+	if _, err := r.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprint(client, "BODY <article>\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, clientWriteBufferSize)
+	if _, err := io.ReadFull(r, first); err != nil {
+		t.Fatal(err)
+	}
+	close(delivered)
+	rest, err := io.ReadAll(r)
+	wire := string(first) + string(rest)
+	if !strings.HasPrefix(wire, "222 0 <article>\r\n") {
+		t.Fatalf("missing BODY status: %.100q", wire)
+	}
+	if strings.Contains(wire, "\r\n500 ") || strings.Contains(wire, "\r\n400 ") || strings.Contains(wire, "\r\n430 ") {
+		t.Fatalf("proxy inserted a status line into the interrupted article: tail %q", wire[len(wire)-200:])
+	}
+	if err != nil {
+		t.Fatalf("proxy did not close after upstream reset: %v", err)
+	}
+	<-done
+	if strings.HasSuffix(wire, ".\r\n") {
+		t.Fatal("proxy marked an interrupted article complete")
+	}
+}
 
 // TestListenReportsFailureInsteadOfBinding covers the half of issue #192 that
 // existing configs still hit: the port is unavailable, and the caller has to

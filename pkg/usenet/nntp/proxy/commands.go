@@ -20,18 +20,6 @@ import (
 // or the client hangs up mid-command and the wait was wasted on both ends.
 const poolGetTimeout = 30 * time.Second
 
-func isClientWriteError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "forcibly closed") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "wsasend") ||
-		strings.Contains(msg, "use of closed network connection")
-}
-
 func normalizeMessageID(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -300,8 +288,12 @@ func (s *Session) handleBody(args []string) error {
 	return s.forEachProvider("BODY", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
 		written, err := client.StreamBody(messageID, s.bw)
 		if err != nil {
-			if isClientWriteError(err) {
+			// bufio.Writer retains downstream failures. An empty write retrieves
+			// that error without flushing anything; socket error text cannot
+			// distinguish a provider reset from a disconnected downloader.
+			if _, writeErr := s.bw.Write(nil); writeErr != nil {
 				discard()
+				s.shouldQuit = true
 				return true, err
 			}
 			s.recordArticleOutcome(pid, err, false)

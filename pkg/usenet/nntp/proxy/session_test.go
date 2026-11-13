@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -15,7 +16,7 @@ import (
 
 // Script backend replies over real NNTP connections so the test exercises
 // status parsing, pool failover, and the reply a downloader actually receives.
-func proxyTestBackend(t *testing.T, response, groupResponse string) *nntp.ClientPool {
+func proxyTestBackend(t *testing.T, response, groupResponse string, afterResponse ...func(net.Conn)) *nntp.ClientPool {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -50,6 +51,10 @@ func proxyTestBackend(t *testing.T, response, groupResponse string) *nntp.Client
 							return
 						}
 						fmt.Fprint(conn, response)
+						if len(afterResponse) > 0 {
+							afterResponse[0](conn)
+							return
+						}
 					}
 				}
 			}()
@@ -84,6 +89,7 @@ func TestArticleCommandsOnlyReportMissingAfterDefinitiveMisses(t *testing.T) {
 			{"missing_then_unavailable", []string{"430 missing\r\n", "unavailable"}, false, false, "400 "},
 			{"unavailable_then_missing", []string{"unavailable", "430 missing\r\n"}, false, false, "400 "},
 			{"temporary_then_success", []string{"503 temporary failure\r\n", command.success}, false, false, command.success[:4]},
+			{"reset_text_then_success", []string{"503 connection reset by peer\r\n", command.success}, false, false, command.success[:4]},
 			{"backup_temporary", []string{"430 missing\r\n", "503 temporary failure\r\n"}, true, false, "400 "},
 			{"backup_unavailable", []string{"430 missing\r\n", "unavailable"}, true, false, "400 "},
 			{"backup_success", []string{"430 missing\r\n", command.success}, true, false, command.success[:4]},
@@ -134,6 +140,32 @@ func TestArticleCommandsOnlyReportMissingAfterDefinitiveMisses(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type proxyWriteFailure struct {
+	net.Conn
+	err error
+}
+
+func (c proxyWriteFailure) Write([]byte) (int, error) { return 0, c.err }
+
+func TestBodyDownstreamFailureDoesNotRetryOrClearWriteError(t *testing.T) {
+	backend := proxyTestBackend(t, "222 body\r\n"+strings.Repeat("data\r\n", 30000)+".\r\n", "")
+	usenet, err := pool.NewPool(&pool.Config{Providers: []pool.ProviderConfig{{ID: "provider", ClientPool: backend}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeErr := errors.New("downstream write failed")
+	sess := NewSession(proxyWriteFailure{err: writeErr}, usenet, "", "")
+	if err := sess.HandleCommand("BODY", []string{"<article>"}); !errors.Is(err, writeErr) {
+		t.Fatalf("BODY error = %v, want downstream error", err)
+	}
+	if !sess.ShouldQuit() {
+		t.Fatal("session stayed open after downstream write failure")
+	}
+	if _, err := sess.bw.Write(nil); !errors.Is(err, writeErr) {
+		t.Fatalf("downstream error was cleared for retry: %v", err)
 	}
 }
 
