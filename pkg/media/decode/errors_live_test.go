@@ -3,6 +3,7 @@ package decode
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"testing"
@@ -115,5 +116,54 @@ func TestLiveDecoderSizeMismatchIsParsed(t *testing.T) {
 	}
 	if mismatch.Shortfall() <= 0 {
 		t.Errorf("Shortfall() = %d, want a positive shortfall", mismatch.Shortfall())
+	}
+}
+
+// Rounded sizes are tolerated, but must not hide a failed CRC check. Otherwise
+// damaged segments are cached as successful downloads and played as corrupt data.
+func TestRoundedSizeStillChecksCRC(t *testing.T) {
+	payload := bytes.Repeat([]byte("size and crc canary "), 64)
+	for _, multipart := range []bool{false, true} {
+		for _, shortfall := range []int{1, maxDecodeSizeTolerance} {
+			for _, chunk := range []int{1, 127, 16 << 10, 32 << 10} {
+				for _, badCRC := range []bool{false, true} {
+					t.Run(fmt.Sprintf("multipart=%t/shortfall=%d/chunk=%d/badCRC=%t", multipart, shortfall, chunk, badCRC), func(t *testing.T) {
+						wire := manualYencArticle(payload, 128)
+						fileSize := len(payload)
+						if !multipart {
+							wire = bytes.Replace(wire, []byte(" part=1 total=1"), nil, 1)
+							wire = regexp.MustCompile(`=ypart[^\r\n]*\r\n`).ReplaceAll(wire, nil)
+							wire = bytes.Replace(wire, []byte("pcrc32="), []byte("crc32="), 1)
+							fileSize += shortfall
+							wire = bytes.Replace(wire, []byte(fmt.Sprintf(" size=%d name=", len(payload))), []byte(fmt.Sprintf(" size=%d name=", fileSize)), 1)
+						}
+						wire = bytes.Replace(wire, []byte(fmt.Sprintf("=yend size=%d ", len(payload))), []byte(fmt.Sprintf("=yend size=%d ", len(payload)+shortfall)), 1)
+						if badCRC {
+							wire = regexp.MustCompile(`crc32=[0-9a-fA-F]+`).ReplaceAll(wire, []byte("crc32=deadbeef"))
+						}
+						wire = stuffAndTerminate(wire, false)
+						frame, err := DecodeToBytesSized(benchmarkWireReader{bytes.NewReader(wire), chunk}, 511)
+						if badCRC {
+							if err == nil || frame != nil {
+								t.Fatal("rounded size hid invalid CRC")
+							}
+							if !IsCorrupt(err) {
+								t.Fatalf("CRC failure not classified as corruption: %v", err)
+							}
+						} else {
+							if err != nil {
+								t.Fatal(err)
+							}
+							if !bytes.Equal(frame.Data, payload) {
+								t.Fatal("rounded size changed payload")
+							}
+							if frame.FileSize != int64(fileSize) || frame.PartOffset != 0 {
+								t.Fatal("geometry changed")
+							}
+						}
+					})
+				}
+			}
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,18 +19,6 @@ import (
 // end well inside the client's own article timeout (SABnzbd defaults to 60s),
 // or the client hangs up mid-command and the wait was wasted on both ends.
 const poolGetTimeout = 30 * time.Second
-
-func isClientWriteError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "forcibly closed") ||
-		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "wsasend") ||
-		strings.Contains(msg, "use of closed network connection")
-}
 
 func normalizeMessageID(s string) string {
 	s = strings.TrimSpace(s)
@@ -138,13 +127,13 @@ func (s *Session) ensureGroup(client *nntp.Client) bool {
 }
 
 // providerAttempt is the per-verb work the proxy runs against one backend
-// connection. Returning done=true ends the provider loop (the command was
-// answered); returning an error excludes that provider and tries the next.
-// fatal aborts the whole session.
-type providerAttempt func(client *nntp.Client, release, discard func(), providerID string) (done bool, fatal error)
+// connection. done=true ends the command, with err propagated to the session.
+// Otherwise err describes the backend failure; nil means a definitive miss
+// (STAT reports a 430 as false, nil). Both exclude the provider and try the next.
+type providerAttempt func(client *nntp.Client, release, discard func(), providerID string) (done bool, err error)
 
 // forEachProvider walks providers for one message, excluding any that fail,
-// and replies "430 No such article" when none could answer. It owns the
+// and replies "430 No such article" only after definitive misses. It owns the
 // GetConnection / GROUP / exclude-on-error scaffolding that every article
 // command needs; the verb-specific work lives in attempt.
 func (s *Session) forEachProvider(verb, messageID string, attempt providerAttempt) error {
@@ -153,6 +142,7 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 
 	var exclude []string
 	reached := false
+	inconclusive := false
 	// Primaries first, then the backup tier: a backup is paid for by the byte,
 	// so it answers only what the primaries could not.
 	useBackup := false
@@ -164,20 +154,14 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 				continue
 			}
 			logger.Debug("NNTP proxy: GetConnection failed", "err", err)
-			if !reached {
-				// No provider was ever reached — the pool is saturated or every
-				// provider is down. That is inconclusive about the article, and
-				// a 430 here would have the downloader record it as missing and
-				// start a needless repair. 400 closes the connection per RFC
-				// 3977 §3.1, which every client retries.
-				logger.Warn("NNTP proxy: no backend connection available", "verb", verb, "messageID", messageID, "err", err)
-				s.shouldQuit = true
-				return s.WriteLine("400 No provider connection available, try again")
+			if !errors.Is(err, pool.ErrNoProvidersAvailable) {
+				inconclusive = true
 			}
 			break
 		}
 		reached = true
 		if !s.ensureGroup(client) {
+			inconclusive = true
 			// A GROUP that failed for any reason other than a status-line
 			// refusal may have left the socket mid-reply; pooling it would hand
 			// that reply to the next command.
@@ -185,16 +169,33 @@ func (s *Session) forEachProvider(verb, messageID string, attempt providerAttemp
 			exclude = append(exclude, pid) // don't retry the same broken provider
 			continue
 		}
-		done, fatal := attempt(client, release, discard, pid)
-		if fatal != nil {
-			return fatal
-		}
+		done, err := attempt(client, release, discard, pid)
 		if done {
-			return nil
+			return err
+		}
+		if err != nil && !nntp.IsArticleNotFound(err) {
+			inconclusive = true
 		}
 		exclude = append(exclude, pid) // always exclude on error; prevents infinite retry
 	}
 
+	if s.usenet != nil {
+		// GetConnection can skip an undialable or disabled account and return
+		// ErrNoProvidersAvailable. A miss on the reachable providers alone
+		// cannot prove that the article is absent from the skipped ones.
+		for _, pid := range s.usenet.ProviderOrder() {
+			if !slices.Contains(exclude, pid) {
+				inconclusive = true
+			}
+		}
+	}
+	if !reached || inconclusive {
+		// Temporary failures say nothing about article availability, even if
+		// another provider returned a genuine 430. Close with a transient 400
+		// so downloaders retry rather than mark the segment missing.
+		s.shouldQuit = true
+		return s.WriteLine("400 Article temporarily unavailable, try again")
+	}
 	logger.Info("NNTP proxy: "+verb+" failed (all pools)", "messageID", messageID)
 	return s.WriteLine("430 No such article")
 }
@@ -243,7 +244,7 @@ func (s *Session) handleArticle(args []string) error {
 		s.recordArticleOutcome(pid, err, true)
 		if err != nil {
 			logger.Debug("NNTP proxy: GetArticle failed", "messageID", messageID, "err", err)
-			return false, nil
+			return false, err
 		}
 		replyErr = s.writeTextResponse(fmt.Sprintf("220 0 %s", messageID), article)
 		return true, nil
@@ -267,7 +268,7 @@ func (s *Session) handleHead(args []string) error {
 		s.recordArticleOutcome(pid, err, true)
 		if err != nil {
 			logger.Debug("NNTP proxy: GetHead failed", "messageID", messageID, "err", err)
-			return false, nil
+			return false, err
 		}
 		replyErr = s.writeTextResponse(fmt.Sprintf("221 0 %s", messageID), head)
 		return true, nil
@@ -287,9 +288,13 @@ func (s *Session) handleBody(args []string) error {
 	return s.forEachProvider("BODY", messageID, func(client *nntp.Client, release, discard func(), pid string) (bool, error) {
 		written, err := client.StreamBody(messageID, s.bw)
 		if err != nil {
-			if isClientWriteError(err) {
+			// bufio.Writer retains downstream failures. An empty write retrieves
+			// that error without flushing anything; socket error text cannot
+			// distinguish a provider reset from a disconnected downloader.
+			if _, writeErr := s.bw.Write(nil); writeErr != nil {
 				discard()
-				return false, err
+				s.shouldQuit = true
+				return true, err
 			}
 			s.recordArticleOutcome(pid, err, false)
 			logger.Debug("NNTP proxy: StreamBody failed", "messageID", messageID, "err", err)
@@ -302,10 +307,10 @@ func (s *Session) handleBody(args []string) error {
 			// the downstream client re-requests.
 			if sent := written - int64(s.buffered()); sent > 0 {
 				s.shouldQuit = true
-				return false, fmt.Errorf("BODY %s aborted after %d bytes already written to client: %w", messageID, sent, err)
+				return true, fmt.Errorf("BODY %s aborted after %d bytes already written to client: %w", messageID, sent, err)
 			}
 			s.discardBuffered()
-			return false, nil
+			return false, err
 		}
 		release()
 		s.usenet.RecordProviderArticleResult(pid, true)
@@ -325,7 +330,7 @@ func (s *Session) handleStat(args []string) error {
 		if err != nil {
 			s.recordArticleOutcome(pid, err, false)
 			logger.Debug("NNTP proxy: CheckArticle failed", "messageID", messageID, "err", err)
-			return false, nil
+			return false, err
 		}
 		s.usenet.RecordProviderArticleResult(pid, exists)
 		if !exists {

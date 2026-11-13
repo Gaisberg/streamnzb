@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -10,6 +13,161 @@ import (
 	"streamnzb/pkg/usenet/nntp"
 	"streamnzb/pkg/usenet/pool"
 )
+
+// Script backend replies over real NNTP connections so the test exercises
+// status parsing, pool failover, and the reply a downloader actually receives.
+func proxyTestBackend(t *testing.T, response, groupResponse string, afterResponse ...func(net.Conn)) *nntp.ClientPool {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(10 * time.Second))
+				fmt.Fprint(conn, "200 test backend\r\n")
+				scanner := bufio.NewScanner(conn)
+				for scanner.Scan() {
+					command := strings.Fields(scanner.Text())
+					if len(command) == 0 {
+						return
+					}
+					switch command[0] {
+					case "AUTHINFO":
+						fmt.Fprint(conn, "281 authenticated\r\n")
+					case "QUIT":
+						return
+					case "GROUP":
+						fmt.Fprint(conn, groupResponse)
+					default:
+						if response == "disconnect" {
+							return
+						}
+						fmt.Fprint(conn, response)
+						if len(afterResponse) > 0 {
+							afterResponse[0](conn)
+							return
+						}
+					}
+				}
+			}()
+		}
+	}()
+	backend := nntp.NewClientPool("127.0.0.1", ln.Addr().(*net.TCPAddr).Port, false, ln.Addr().String(), "", 1)
+	t.Cleanup(backend.Shutdown)
+	if response == "unavailable" {
+		backend.Shutdown()
+	}
+	return backend
+}
+
+func TestArticleCommandsOnlyReportMissingAfterDefinitiveMisses(t *testing.T) {
+	for _, command := range []struct{ verb, success string }{
+		{"BODY", "222 0 <article>\r\ndata\r\n.\r\n"},
+		{"ARTICLE", "220 0 <article>\r\nHeader: value\r\n\r\ndata\r\n.\r\n"},
+		{"HEAD", "221 0 <article>\r\nHeader: value\r\n.\r\n"},
+		{"STAT", "223 0 <article>\r\n"},
+	} {
+		for _, tc := range []struct {
+			name                 string
+			responses            []string
+			backup, groupFailure bool
+			want                 string
+		}{
+			{"missing", []string{"430 missing\r\n", "430 missing\r\n"}, false, false, "430 "},
+			{"temporary", []string{"503 temporary failure\r\n"}, false, false, "400 "},
+			{"disconnected", []string{"disconnect"}, false, false, "400 "},
+			{"missing_then_temporary", []string{"430 missing\r\n", "503 temporary failure\r\n"}, false, false, "400 "},
+			{"temporary_then_missing", []string{"503 temporary failure\r\n", "430 missing\r\n"}, false, false, "400 "},
+			{"missing_then_unavailable", []string{"430 missing\r\n", "unavailable"}, false, false, "400 "},
+			{"unavailable_then_missing", []string{"unavailable", "430 missing\r\n"}, false, false, "400 "},
+			{"temporary_then_success", []string{"503 temporary failure\r\n", command.success}, false, false, command.success[:4]},
+			{"reset_text_then_success", []string{"503 connection reset by peer\r\n", command.success}, false, false, command.success[:4]},
+			{"backup_temporary", []string{"430 missing\r\n", "503 temporary failure\r\n"}, true, false, "400 "},
+			{"backup_unavailable", []string{"430 missing\r\n", "unavailable"}, true, false, "400 "},
+			{"backup_success", []string{"430 missing\r\n", command.success}, true, false, command.success[:4]},
+			{"group_failure", []string{"430 missing\r\n"}, false, true, "400 "},
+		} {
+			t.Run(command.verb+"/"+tc.name, func(t *testing.T) {
+				var providers []pool.ProviderConfig
+				for i, response := range tc.responses {
+					providers = append(providers, pool.ProviderConfig{
+						ID: fmt.Sprintf("provider-%d", i), Priority: i,
+						IsBackup:   tc.backup && i == len(tc.responses)-1,
+						ClientPool: proxyTestBackend(t, response, "411 group unavailable\r\n"),
+					})
+				}
+				usenet, err := pool.NewPool(&pool.Config{Providers: providers})
+				if err != nil {
+					t.Fatal(err)
+				}
+				client, server := net.Pipe()
+				defer client.Close()
+				defer server.Close()
+				sess := NewSession(server, usenet, "", "")
+				if tc.groupFailure {
+					sess.currentGroup = "alt.binaries.test"
+				}
+				done := make(chan error, 1)
+				go func() {
+					if err := sess.HandleCommand(command.verb, []string{"<article>"}); err != nil {
+						done <- err
+						return
+					}
+					done <- sess.Flush()
+				}()
+				client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				buf := make([]byte, 1024)
+				n, err := client.Read(buf)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				if got := string(buf[:n]); !strings.HasPrefix(got, tc.want) {
+					t.Fatalf("reply = %q, want prefix %q", got, tc.want)
+				}
+				if sess.ShouldQuit() != (tc.want == "400 ") {
+					t.Fatalf("ShouldQuit = %v after %q", sess.ShouldQuit(), string(buf[:n]))
+				}
+			})
+		}
+	}
+}
+
+type proxyWriteFailure struct {
+	net.Conn
+	err error
+}
+
+func (c proxyWriteFailure) Write([]byte) (int, error) { return 0, c.err }
+
+func TestBodyDownstreamFailureDoesNotRetryOrClearWriteError(t *testing.T) {
+	backend := proxyTestBackend(t, "222 body\r\n"+strings.Repeat("data\r\n", 30000)+".\r\n", "")
+	usenet, err := pool.NewPool(&pool.Config{Providers: []pool.ProviderConfig{{ID: "provider", ClientPool: backend}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeErr := errors.New("downstream write failed")
+	sess := NewSession(proxyWriteFailure{err: writeErr}, usenet, "", "")
+	if err := sess.HandleCommand("BODY", []string{"<article>"}); !errors.Is(err, writeErr) {
+		t.Fatalf("BODY error = %v, want downstream error", err)
+	}
+	if !sess.ShouldQuit() {
+		t.Fatal("session stayed open after downstream write failure")
+	}
+	if _, err := sess.bw.Write(nil); !errors.Is(err, writeErr) {
+		t.Fatalf("downstream error was cleared for retry: %v", err)
+	}
+}
 
 // WriteMultiLine must dot-stuff exactly once and terminate with a bare dot.
 // Paired with the client-side DotReader un-stuffing, a body line ".hidden"

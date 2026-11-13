@@ -28,6 +28,8 @@ Starting a release means measuring things that are not written down anywhere. Th
 
 ## Playback glitches or drops on a damaged release
 
+Articles with rounded yEnc sizes are accepted within the existing 256-byte shortfall tolerance, but their CRC checks still apply. A checksum failure is treated as damaged data rather than cached and sent to the player.
+
 Usenet releases decay: individual articles go missing from providers over time. StreamNZB tiers its response by how much of a file is actually gone, rather than treating every miss the same way.
 
 **Preloading can check every article instead of a sample.** The sampled check — the first two volumes in full, six points in every later volume — sees about five percent of a file, so a single missing article mid-body usually goes unseen until a seek lands on it. **Check every article when preloading** (Settings → Advanced → Playback, off by default) makes preloading STAT every article of the selected file, in an order that keeps whatever it reaches within its budget spread evenly over the file (the head, the tail and the first article of every volume first, then a bit-reversal permutation of the rest). It runs at the pool's own STAT width and inside the preload attempt's window, logged as `Article census finished` with how much of the file it reached. A hole found sends the player to the next candidate, exactly as the sampled check does. Holes the NZB itself declares (numbering gaps) are not the census's to judge — the pre-flight already counts those — so it only ever reports articles a provider was asked about. It applies to RAR archive releases; direct and 7z releases are checked as before. It costs STAT connections and a few more seconds per preloaded candidate, which is why it is opt-in.
@@ -52,11 +54,19 @@ Usenet releases decay: individual articles go missing from providers over time. 
 
 ## Stalls after a seek, on a release with very large articles
 
+When a read starts at a distant seek target, StreamNZB releases abandoned read-ahead downloads before fetching the requested bytes. This also applies when the player closes one Range request and opens another elsewhere in the file: old prefetches must release provider connections before the new request waits for one. Size-probing seeks alone leave read-ahead intact.
+
 Read-ahead — how much of the file is being fetched ahead of what the player is reading — is sized as a fraction of the file, which works out to a fraction of its runtime whatever the bitrate, and is then clamped to a sane number of megabytes and of articles.
 
 It has to be, because the size of a single article is a poster's choice and varies by more than an order of magnitude between releases. Fetches in flight share the line, so a window counted in articles rather than bytes means a release posted in 4 MiB articles queues several times more data ahead of the player than one posted in 700 KB articles — and the article the player is actually waiting on arrives no sooner than the dozens it does not need yet. In the log that looks like a wave of `Slow segment fetch` warnings all reporting a similar duration, finishing at the same moment, with `Serve window` showing `read_blocked` close to the whole window.
 
 Nothing is configurable here and nothing needs to be. If you see that pattern with modest article sizes, the bottleneck is the link or the providers rather than the window — check the connection speeds on the dashboard and the **Buffering behind Cloudflare Tunnel** note above.
+
+Pipelined read-ahead also releases its connection when a seek or an expired
+closed-reader window abandons an unfinished article. Any articles in that
+batch still needed by another reader retry through the ordinary fetch path;
+already completed articles remain available. This prevents an old, stalled
+batch from occupying the connections needed at the new playback position.
 
 ## A Dolby Vision release is reported as plain HDR10
 
@@ -69,6 +79,8 @@ Dolby Vision hides in a different place per profile. Profile 5 announces itself 
 Either way the fallback is a degraded answer, not a failure: the probe is retried without the side-data section and everything else about the stream is still reported. The log names the binary at DEBUG, as `FFprobe lacks stream_side_data support; retrying compatibility query`.
 
 ## A provider reports "too many connections"
+
+Saving a different provider account also moves requests waiting for a free connection to the new account's allowance. Existing transfers keep their old connections until they finish; waiting requests do not need those transfers to end before using the replacement account. Shutting down a provider pool releases its waiting requests immediately.
 
 A provider that answers login with `502` *and* words to the effect of "too many connections" means the account already has as many connections open as the plan allows, and the dashboard shows the provider as degraded with that reason. The code alone is not what decides this: `502` is also how many providers reject a login outright — Eweka answers `502 "Authentication Failed"` for a lapsed subscription — and that reads as **Credentials rejected**, not as a connection limit. Whichever way it went, the server's own line is quoted under the notice. StreamNZB enforces the configured connection count per **account** rather than per activity: playback, the NNTP proxy, speed tests, connection tests, settings validation, health probes and a settings save that re-points a provider all draw on one allowance for that account, so the total StreamNZB holds never exceeds the count on the provider card — two provider entries with the same host and username share one allowance, and changing a provider's settings re-uses its existing connections instead of opening a second set beside them.
 

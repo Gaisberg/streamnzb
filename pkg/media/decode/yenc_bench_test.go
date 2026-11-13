@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -55,4 +56,37 @@ func BenchmarkDecodeToBytes(b *testing.B) {
 		}
 	}
 	reportSpeed(b, len(payload))
+}
+
+// benchmarkWireReader models the maximum plaintext returned by TCP/TLS reads.
+type benchmarkWireReader struct {
+	*bytes.Reader
+	chunk int
+}
+
+func (r benchmarkWireReader) Read(p []byte) (int, error) {
+	return r.Reader.Read(p[:min(len(p), r.chunk)])
+}
+
+func BenchmarkDecodeWire(b *testing.B) {
+	payload, _ := benchCorpus(b)
+	wire := stuffAndTerminate(manualYencArticle(payload, 128), false)
+	for _, chunk := range []int{16 << 10, 32 << 10, len(wire)} {
+		for _, hint := range []int{0, 4096, len(payload) - 1024, len(payload), len(wire)} {
+			b.Run(fmt.Sprintf("chunk=%d/hint=%d", chunk, hint), func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					frame, err := DecodeToBytesSized(benchmarkWireReader{bytes.NewReader(wire), chunk}, int64(hint))
+					if err != nil {
+						b.Fatal(err)
+					}
+					if len(frame.Data) != len(payload) {
+						b.Fatal("incorrect output size")
+					}
+				}
+				reportSpeed(b, len(payload))
+			})
+		}
+	}
 }

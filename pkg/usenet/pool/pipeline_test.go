@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/usenet/nntp"
@@ -35,8 +36,9 @@ func TestPipelineDepthOrDefault(t *testing.T) {
 // pipelinePoolServer answers BODY line by line so several commands may be in
 // flight at once, and can be scripted to answer a given message ID with a 430.
 type pipelinePoolServer struct {
-	ln      net.Listener
-	missing map[string]bool
+	ln         net.Listener
+	missing    map[string]bool
+	beforeBody func(string)
 
 	mu     sync.Mutex
 	bodies int
@@ -104,6 +106,9 @@ func (s *pipelinePoolServer) handle(conn net.Conn) {
 			id := ""
 			if len(fields) > 1 {
 				id = strings.Trim(fields[1], "<>")
+			}
+			if s.beforeBody != nil {
+				s.beforeBody(id)
 			}
 			s.mu.Lock()
 			s.bodies++
@@ -378,5 +383,89 @@ func TestPipelineDepthUnknownProviderTakesPoolDefault(t *testing.T) {
 
 	if got := p.pipelineDepthFor("nobody"); got != 4 {
 		t.Fatalf("unknown provider depth = %d, want the pool default 4", got)
+	}
+}
+
+// The second reply cannot finish until the consumer has observed the first.
+// Cancellation must retain that first success and leave the rest for fallback.
+func TestPipelineIncrementalPublishesBeforeBlockedReply(t *testing.T) {
+	for _, cancelBatch := range []bool{false, true} {
+		t.Run(fmt.Sprint("cancel=", cancelBatch), func(t *testing.T) {
+			s := startPipelinePoolServer(t, nil)
+			gate := make(chan struct{})
+			defer close(gate)
+			s.beforeBody = func(id string) {
+				if id == "b@x" {
+					<-gate
+				}
+			}
+			p := newPipelineTestPool(t, s, 3)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			first := make(chan struct{})
+			done := make(chan []PipelinedResult, 1)
+			calls := make([]int, 3)
+			go func() {
+				done <- p.FetchSegmentsPipelinedIncremental(ctx, segmentsFor("a@x", "b@x", "c@x"), nil, func(i int, data SegmentData) {
+					calls[i]++
+					if i == 0 {
+						close(first)
+					}
+				})
+			}()
+			select {
+			case <-first:
+			case <-time.After(3 * time.Second):
+				t.Fatal("first result withheld behind blocked later reply")
+			}
+			select {
+			case <-done:
+				t.Fatal("batch finished while second reply blocked")
+			default:
+			}
+			if cancelBatch {
+				cancel()
+			} else {
+				gate <- struct{}{}
+			}
+			select {
+			case results := <-done:
+				if !results[0].OK || calls[0] != 1 {
+					t.Fatalf("first success lost or duplicated: %v, %v", results, calls)
+				}
+				for i := 1; i < 3; i++ {
+					if results[i].OK == cancelBatch {
+						t.Fatalf("result %d OK=%v on cancel=%v", i, results[i].OK, cancelBatch)
+					}
+					if results[i].OK && calls[i] != 1 {
+						t.Fatalf("callback count %v", calls)
+					}
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("batch did not finish")
+			}
+		})
+	}
+}
+
+func TestPipelineIncrementalCacheAndPartialFailure(t *testing.T) {
+	s := startPipelinePoolServer(t, map[string]bool{"missing@x": true})
+	p := newPipelineTestPool(t, s, 3)
+	p.cache.Set("cached@x", SegmentData{Body: []byte("cached")})
+	calls := make([]int, 3)
+	results := p.FetchSegmentsPipelinedIncremental(context.Background(), segmentsFor("cached@x", "missing@x", "live@x"), nil, func(i int, data SegmentData) {
+		calls[i]++
+		if i == 0 && string(data.Body) != "cached" {
+			t.Fatal("cache result changed")
+		}
+	})
+	if !results[0].OK || results[1].OK || !results[2].OK {
+		t.Fatalf("results=%v", results)
+	}
+	if calls[0] != 1 || calls[1] != 0 || calls[2] != 1 {
+		t.Fatalf("calls=%v", calls)
+	}
+	if s.bodyCount() != 2 {
+		t.Fatalf("BODY count=%d", s.bodyCount())
 	}
 }

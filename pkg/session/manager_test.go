@@ -1387,3 +1387,33 @@ func TestEpisodeTargetCarriesTheAirDate(t *testing.T) {
 		t.Fatalf("EpisodeTarget() = %+v, want S24E2524 aired 2026-10-26", got)
 	}
 }
+
+type incrementalTrackingTestFetcher struct{ fakeSegmentFetcher }
+
+func (f *incrementalTrackingTestFetcher) PipelineDepth() int { return 3 }
+func (f *incrementalTrackingTestFetcher) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult {
+	panic("incremental forwarding lost")
+}
+func (f *incrementalTrackingTestFetcher) FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, pool.SegmentData)) []pool.PipelinedResult {
+	data := pool.SegmentData{Body: []byte("first"), ProviderHost: "news.example.net"}
+	publish(0, data)
+	return []pool.PipelinedResult{{OK: true, Data: data}, {}}
+}
+func TestSessionForwardsIncrementalBatchOnce(t *testing.T) {
+	s := &Session{}
+	s.BeginServeProviderTracking()
+	f := &sessionTrackingFetcher{session: s, base: &incrementalTrackingTestFetcher{}}
+	calls := 0
+	results := f.FetchSegmentsPipelinedIncremental(context.Background(), []*nzb.Segment{{ID: "a"}, {ID: "b"}}, nil, func(i int, data pool.SegmentData) {
+		calls++
+		if i != 0 || string(data.Body) != "first" {
+			t.Fatal("wrong result")
+		}
+		if len(s.UsedProviderHosts()) != 1 || len(s.ServedProviderHosts()) != 1 {
+			t.Fatal("provider accounting was not recorded before publication")
+		}
+	})
+	if calls != 1 || !results[0].OK || results[1].OK {
+		t.Fatalf("calls=%d results=%v", calls, results)
+	}
+}

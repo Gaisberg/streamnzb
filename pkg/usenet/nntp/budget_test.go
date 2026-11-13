@@ -11,6 +11,81 @@ import (
 // dial, so a connection one of them leaves open cannot skew a ceiling here.
 const budgetTestUser = "budget"
 
+func waitForBudgetWaiter(t *testing.T, budget *connBudget) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		budget.mu.Lock()
+		waiting := len(budget.waiters) > 0
+		budget.mu.Unlock()
+		if waiting {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("Get did not start waiting for an account permit")
+}
+
+func TestWaitingGetFollowsPoolLifecycle(t *testing.T) {
+	for _, shutdown := range []bool{false, true} {
+		name := "reconfigure"
+		if shutdown {
+			name = "shutdown"
+		}
+		t.Run(name, func(t *testing.T) {
+			testHealthRegistry(t)
+			host, port := fakeNNTPListener(t, "accept")
+			pool := NewClientPool(host, port, false, budgetTestUser, "good", 1)
+			t.Cleanup(pool.Shutdown)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			held, err := pool.Get(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Discard(held)
+			_, oldBudget, _ := pool.snapshot()
+			done := make(chan error, 1)
+			go func() {
+				c, err := pool.Get(ctx)
+				if c != nil {
+					_, budget, generation := pool.snapshot()
+					if c.budget != budget || c.generation != generation {
+						err = errors.New("Get dialed under obsolete account settings")
+					}
+					pool.Discard(c)
+				}
+				done <- err
+			}()
+			waitForBudgetWaiter(t, oldBudget)
+			if shutdown {
+				pool.Shutdown()
+			} else {
+				pool.Reconfigure(host, port, false, "replacement-budget", "good", 1)
+			}
+			select {
+			case err := <-done:
+				if shutdown && !errors.Is(err, ErrPoolClosed) {
+					t.Fatalf("Get = %v, want ErrPoolClosed", err)
+				}
+				if !shutdown && err != nil {
+					t.Fatalf("Get on the replacement account: %v", err)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				<-done
+				t.Fatal("Get stayed blocked on the old account after " + name)
+			}
+			oldBudget.mu.Lock()
+			queued := len(oldBudget.waiters)
+			oldBudget.mu.Unlock()
+			if queued != 0 || oldBudget.InUse() != 1 {
+				t.Fatalf("old budget: waiters=%d inUse=%d, want 0 and the one held connection", queued, oldBudget.InUse())
+			}
+		})
+	}
+}
+
 // TestBudgetSharedAcrossPoolsOnOneAccount: two pools on the same account — even
 // on different ports — draw on one ceiling. The provider counts the account,
 // so a second pool must not be able to dial on top of the first pool's

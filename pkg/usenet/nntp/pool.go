@@ -41,6 +41,7 @@ type ClientPool struct {
 
 	idleClients chan *Client
 	stopCh      chan struct{} // closed once by Shutdown(); never re-used
+	changedCh   chan struct{} // closed and replaced when the dial target changes
 
 	// established counts connections that finished the handshake and are still
 	// open — idle, checked out, or probing. It moves only in dial (on success)
@@ -67,6 +68,7 @@ func NewClientPool(host string, port int, ssl bool, user, pass string, maxConn i
 		maxConn:     maxConn,
 		idleClients: make(chan *Client, maxConn),
 		stopCh:      make(chan struct{}),
+		changedCh:   make(chan struct{}),
 	}
 	p.budget = claimBudget(p, host, user, maxConn)
 
@@ -93,6 +95,8 @@ func (p *ClientPool) Reconfigure(host string, port int, ssl bool, user, pass str
 	p.maxConn = maxConn
 	if targetChanged {
 		p.generation++
+		close(p.changedCh)
+		p.changedCh = make(chan struct{})
 	}
 	// Same account resolves to the same budget, so this is a no-op claim update
 	// unless the pool moved to another account.
@@ -421,9 +425,21 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 		}
 
 		waitStarted := time.Now()
-		_, budget, _ := p.snapshot()
+		// The target and its notification must be captured together: a waiter
+		// must neither miss a reconfigure nor dial a new account on an old
+		// account's permit.
+		p.mu.Lock()
+		target, budget, generation := p.target, p.budget, p.generation
+		changed := p.changedCh
+		p.mu.Unlock()
 		w := budget.wait()
 		select {
+		case <-p.stopCh:
+			budget.cancel(w)
+			return nil, ErrPoolClosed
+		case <-changed:
+			budget.cancel(w)
+			continue
 		case <-ctx.Done():
 			budget.cancel(w)
 			if wait := time.Since(waitStarted); wait >= 250*time.Millisecond {
@@ -447,11 +463,15 @@ func (p *ClientPool) Get(ctx context.Context) (*Client, error) {
 			return c, nil
 		case <-w.granted:
 			wait := time.Since(waitStarted)
-			// The permit was taken on the budget snapshotted above; a
-			// Reconfigure that swapped budgets in the meantime is the rare
-			// case, and dialing the old target under the old permit is still
-			// consistent — the connection returns its permit to that budget.
-			target, _, generation := p.snapshot()
+			// A grant may race with shutdown, reconfiguration or cancellation.
+			// Return it and recheck those conditions before starting any IO.
+			p.mu.Lock()
+			obsolete := p.closed || generation != p.generation
+			p.mu.Unlock()
+			if obsolete || ctx.Err() != nil {
+				budget.release()
+				continue
+			}
 			c, err := p.dial(target, budget, generation)
 			if err != nil {
 				budget.release()

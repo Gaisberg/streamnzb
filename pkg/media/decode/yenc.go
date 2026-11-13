@@ -66,7 +66,14 @@ func DecodeToBytesSized(r io.Reader, sizeHint int64) (*Frame, error) {
 		// starving it below that stalls in-place decoding. Only a hint smaller
 		// than the actual article ever grows.
 		if len(buf)-n < 1024 {
-			grown := make([]byte, len(buf)*2)
+			nextSize := len(buf) * 2
+			// The parsed part size can avoid doubling a nearly-full frame
+			// only to copy it again in trimExact. Keep scratch space for raw
+			// bytes and never let untrusted metadata grow faster than doubling.
+			if target := dec.Meta.PartSize + 2048; target > int64(len(buf)) && target < int64(nextSize) {
+				nextSize = int(target)
+			}
+			grown := make([]byte, nextSize)
 			copy(grown, buf[:n])
 			buf = grown
 		}
@@ -89,6 +96,17 @@ func DecodeToBytesSized(r io.Reader, sizeHint int64) (*Frame, error) {
 			// payload is a few bytes smaller; the decoded bytes are the true file
 			// content. Padding up to the declared size would splice phantom bytes
 			// at every segment boundary and corrupt the concatenated archive.
+			// rapidyenc checks size before CRC. Waive only the size check,
+			// then ask the completed decoder to validate the trailer again;
+			// otherwise a nominal size can hide damaged payload bytes.
+			// Restore the poster's geometry before constructing the frame.
+			meta := dec.Meta
+			dec.Meta.FileSize, dec.Meta.PartSize = int64(n), int64(n)
+			_, validationErr := dec.Read(nil)
+			dec.Meta = meta
+			if !errors.Is(validationErr, io.EOF) {
+				return nil, classify(validationErr)
+			}
 			return frameWithMeta(dec, buf, n), nil
 		}
 	}
