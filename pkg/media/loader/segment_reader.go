@@ -144,21 +144,10 @@ func (r *SegmentReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	total := 0
-	for total < len(p) {
-		n, err := r.readInto(p[total:])
-		total += n
-		if err != nil {
-			if err == io.EOF && total > 0 {
-				return total, nil
-			}
-			if total > 0 && err != io.EOF {
-				return total, err
-			}
-			return total, err
-		}
-	}
-	return total, nil
+	// Return available bytes before waiting for another article. HTTP copying
+	// can write this segment's tail while read-ahead fetches the next one;
+	// filling p here stalls those bytes behind the next network round trip.
+	return r.readInto(p)
 }
 
 func (r *SegmentReader) readInto(p []byte) (int, error) {
