@@ -523,15 +523,22 @@ func (c *Client) GetArticle(messageID string) (string, error) {
 	return c.readCommand("ARTICLE", 220, messageID)
 }
 
-// drainBackendBody discards any unread body remaining in the pipeline.
-// It is capped at 10 MB to prevent a corrupt or adversarial response from
-// stalling the connection indefinitely.
-func (c *Client) drainBackendBody() {
-	const maxDrainBytes = 10 << 20 // 10 MB
-	n, _ := io.Copy(io.Discard, io.LimitReader(c.conn.DotReader(), maxDrainBytes))
-	if c.pool != nil && n > 0 {
-		c.pool.TrackRead(int(n))
-	}
+var streamBodyBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, 32<<10)
+	return &buf
+}}
+
+// Count consumed body bytes even when a downstream write only accepts part of
+// a chunk. This reader deliberately retains StreamBody's absolute deadline.
+type streamBodySource struct {
+	*articleReader
+	read int64
+}
+
+func (r *streamBodySource) Read(p []byte) (int, error) {
+	n, err := r.articleReader.Read(p)
+	r.read += int64(n)
+	return n, err
 }
 
 func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err error) {
@@ -542,17 +549,31 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 	}
 
 	c.conn.StartResponse(id)
-	defer func() {
-		c.conn.EndResponse(id)
-		if err != nil {
-			c.drainBackendBody()
-		}
-	}()
+	defer c.conn.EndResponse(id)
 
 	_, _, err = c.conn.ReadCodeLine(222)
 	if err != nil {
 		return 0, err
 	}
+
+	body := &streamBodySource{articleReader: newArticleReader(c.conn.R)}
+	defer func() {
+		if err != nil && !body.done && body.err == nil {
+			// Only a downstream failure needs draining. Reuse the SAME reader:
+			// it owns framing state and cannot consume a subsequent response.
+			// The caller discards failed connections even if this cap is hit.
+			const maxDrainBytes = 10 << 20
+			_, _ = io.Copy(io.Discard, io.LimitReader(body, maxDrainBytes))
+		}
+		if c.pool != nil {
+			n := body.read
+			if err == nil {
+				// Preserve successful-transfer accounting, including framing.
+				n = written
+			}
+			c.pool.TrackRead(int(n))
+		}
+	}()
 
 	header := "222 0 " + messageID + "\r\n"
 	n, err := w.Write([]byte(header))
@@ -560,24 +581,16 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 	if err != nil {
 		return written, err
 	}
+	if n != len(header) {
+		return written, io.ErrShortWrite
+	}
 
-	// One reusable line buffer: a body is thousands of ~128-byte yEnc lines, and
-	// the concat-then-convert form allocated twice per line.
-	buf := make([]byte, 0, 512)
-	for {
-		line, err := c.conn.ReadLine()
-		if err != nil {
-			return written, err
-		}
-		if line == "." {
-			break
-		}
-		buf = append(append(buf[:0], line...), '\r', '\n')
-		n, err = w.Write(buf)
-		written += int64(n)
-		if err != nil {
-			return written, err
-		}
+	buf := streamBodyBuffers.Get().(*[]byte)
+	defer streamBodyBuffers.Put(buf)
+	forwarded, err := io.CopyBuffer(w, body, *buf)
+	written += forwarded
+	if err != nil {
+		return written, err
 	}
 
 	n, err = w.Write([]byte(".\r\n"))
@@ -585,8 +598,8 @@ func (c *Client) StreamBody(messageID string, w io.Writer) (written int64, err e
 	if err != nil {
 		return written, err
 	}
-	if c.pool != nil {
-		c.pool.TrackRead(int(written))
+	if n != 3 {
+		return written, io.ErrShortWrite
 	}
 	return written, nil
 }
