@@ -186,6 +186,10 @@ func (r *SegmentReader) readInto(p []byte) (int, error) {
 	r.mu.Unlock()
 
 	if data == nil {
+		// Release connections held by abandoned windows before waiting for the
+		// seek target. Doing this only after the read can starve the target of
+		// every connection it needs to finish that very read.
+		r.prepareReadAhead(segIdx)
 		logger.Trace("SegmentReader readInto: calling DownloadSegment", "file", r.file.Name(), "segIdx", segIdx, "segOff", segOff)
 		data, err = r.file.DownloadSegment(r.ctx, segIdx)
 		logger.Trace("SegmentReader readInto: DownloadSegment returned", "file", r.file.Name(), "segIdx", segIdx, "err", err, "dataLen", len(data))
@@ -260,13 +264,25 @@ func (r *SegmentReader) logEOFBeforeVirtualSize() {
 		"seg_off", r.segOff)
 }
 
-// triggerReadAhead fires off background downloads for the next readAheadSize
-// segments starting from fromSeg. It is idempotent: calling it repeatedly with
-// the same fromSeg is a no-op. A new window disjoint from this reader's
-// previous one means the previous one was abandoned by a seek, and its
-// still-running fetches are cancelled so they stop occupying connections the
-// new window needs. Overlapping windows — sequential progress, small seeks —
-// cancel nothing.
+// prepareReadAhead frees abandoned connections before the foreground fetch.
+// Seeks alone do not run this: ServeContent probes EOF and rewinds before
+// reading, so only an actual read proves which window it needs.
+func (r *SegmentReader) prepareReadAhead(fromSeg int) {
+	if r.readAheadSize <= 0 {
+		return
+	}
+	r.mu.Lock()
+	oldFrom, oldTo := r.raWinFrom, r.raWinTo
+	end := min(fromSeg+r.readAheadSize, len(r.file.segments))
+	r.mu.Unlock()
+	if oldTo > oldFrom && (fromSeg >= oldTo || end <= oldFrom) {
+		r.file.cancelAbandonedReadAheadIn(oldFrom, oldTo)
+	}
+	r.file.reapAbandonedReadAhead(fromSeg, end)
+}
+
+// triggerReadAhead fires background downloads for the next readAheadSize
+// segments. Repeated calls from the same segment are a no-op.
 func (r *SegmentReader) triggerReadAhead(fromSeg int) {
 	if r.readAheadSize <= 0 {
 		return
@@ -286,7 +302,6 @@ func (r *SegmentReader) triggerReadAhead(fromSeg int) {
 	oldFrom, oldTo := r.raWinFrom, r.raWinTo
 	r.raWinFrom, r.raWinTo = fromSeg, end
 	r.mu.Unlock()
-
 	if oldTo > oldFrom && (fromSeg >= oldTo || end <= oldFrom) {
 		r.file.cancelAbandonedReadAheadIn(oldFrom, oldTo)
 	}

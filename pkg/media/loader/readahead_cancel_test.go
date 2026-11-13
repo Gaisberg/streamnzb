@@ -3,6 +3,7 @@ package loader
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,81 @@ import (
 	"streamnzb/pkg/media/nzb"
 	"streamnzb/pkg/usenet/pool"
 )
+
+type seekStarvedFetcher struct {
+	slot    chan struct{}
+	blocked chan struct{}
+	once    sync.Once
+}
+
+func (f *seekStarvedFetcher) FetchSegment(ctx context.Context, segment *nzb.Segment, _ []string) (pool.SegmentData, error) {
+	select {
+	case f.slot <- struct{}{}:
+		defer func() { <-f.slot }()
+	case <-ctx.Done():
+		return pool.SegmentData{}, ctx.Err()
+	}
+	if segment.Number >= 2 && segment.Number <= 5 {
+		f.once.Do(func() { close(f.blocked) })
+		<-ctx.Done()
+		return pool.SegmentData{}, ctx.Err()
+	}
+	return pool.SegmentData{Body: bytesForSegment(segment.Number, segment.Bytes), Size: segment.Bytes}, nil
+}
+
+func TestSeekReadReleasesOldWindowBeforeWaitingForConnection(t *testing.T) {
+	for _, closeFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same reader", true: "new range reader"}[closeFirst], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			fetcher := &seekStarvedFetcher{slot: make(chan struct{}, 1), blocked: make(chan struct{})}
+			f := NewFile(ctx, testNZBFileWithNSegments(30), nil, fetcher)
+			r := NewSegmentReaderWithReadAhead(ctx, f, 0, 4)
+			defer func() { _ = r.Close() }()
+			if _, err := io.ReadFull(r, make([]byte, f.segments[0].Bytes)); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-fetcher.blocked:
+			case <-time.After(time.Second):
+				t.Fatal("old read-ahead never occupied the connection")
+			}
+			deadline := time.Now().Add(time.Second)
+			for inflightAbandoned(f) != 4 {
+				if time.Now().After(deadline) {
+					t.Fatal("read-ahead window was not fully queued")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if closeFirst {
+				_ = r.Close()
+				r = NewSegmentReaderWithReadAhead(ctx, f, 0, 4)
+			}
+			if _, err := r.Seek(f.segments[20].StartOffset, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				buf := make([]byte, 1)
+				_, err := r.Read(buf)
+				if err == nil && buf[0] != 'u' {
+					err = errors.New("seek returned bytes from the wrong article")
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				<-done
+				t.Fatal("seek waited behind abandoned prefetches occupying the provider connection")
+			}
+		})
+	}
+}
 
 // blockingCancelFetcher blocks every fetch until its context ends or the test
 // releases it, and records the context per segment number.

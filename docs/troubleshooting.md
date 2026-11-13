@@ -54,6 +54,8 @@ Usenet releases decay: individual articles go missing from providers over time. 
 
 ## Stalls after a seek, on a release with very large articles
 
+When a read starts at a distant seek target, StreamNZB releases abandoned read-ahead downloads before fetching the requested bytes. This also applies when the player closes one Range request and opens another elsewhere in the file: old prefetches must release provider connections before the new request waits for one. Size-probing seeks alone leave read-ahead intact.
+
 Read-ahead — how much of the file is being fetched ahead of what the player is reading — is sized as a fraction of the file, which works out to a fraction of its runtime whatever the bitrate, and is then clamped to a sane number of megabytes and of articles.
 
 It has to be, because the size of a single article is a poster's choice and varies by more than an order of magnitude between releases. Fetches in flight share the line, so a window counted in articles rather than bytes means a release posted in 4 MiB articles queues several times more data ahead of the player than one posted in 700 KB articles — and the article the player is actually waiting on arrives no sooner than the dozens it does not need yet. In the log that looks like a wave of `Slow segment fetch` warnings all reporting a similar duration, finishing at the same moment, with `Serve window` showing `read_blocked` close to the whole window.
