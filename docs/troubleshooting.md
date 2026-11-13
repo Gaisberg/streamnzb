@@ -60,6 +60,12 @@ It has to be, because the size of a single article is a poster's choice and vari
 
 Nothing is configurable here and nothing needs to be. If you see that pattern with modest article sizes, the bottleneck is the link or the providers rather than the window — check the connection speeds on the dashboard and the **Buffering behind Cloudflare Tunnel** note above.
 
+Pipelined read-ahead also releases its connection when a seek or an expired
+closed-reader window abandons an unfinished article. Any articles in that
+batch still needed by another reader retry through the ordinary fetch path;
+already completed articles remain available. This prevents an old, stalled
+batch from occupying the connections needed at the new playback position.
+
 ## A Dolby Vision release is reported as plain HDR10
 
 Dolby Vision hides in a different place per profile. Profile 5 announces itself in the codec tag (`dvhe`/`dvh1`), but profile 8 — what a "DV HDR" WEB-DL almost always is — rides on an ordinary HEVC stream with an HDR10 base layer, and the only evidence is the Dolby Vision configuration record in the stream's side data. Reading it requires **ffprobe 5.0 or newer**: 4.x rejects the side-data query outright, before it reads a byte of the file, so a release named DV reaches a player that asked for no DV.

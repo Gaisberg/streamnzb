@@ -163,9 +163,25 @@ func (f *File) fetchWidth() int {
 // to the ordinary per-segment path, which is where provider failover, retries
 // and the zero-fill policy live.
 func (f *File) runPipelinedReadAhead(ctx context.Context, batcher SegmentBatchFetcher, batch []claimedSegment) {
+	// A seek or expired closed-reader window cancels individual requests, not
+	// the file context. Any abandoned article must interrupt the shared socket:
+	// replies cannot be skipped in a pipeline. Still-wanted articles fall back
+	// below using their own live request contexts.
+	batchCtx, cancel := context.WithCancel(ctx)
+	stopCancellation := make([]func() bool, len(batch))
+	defer func() {
+		for _, stop := range stopCancellation {
+			stop()
+		}
+		cancel()
+	}()
 	segments := make([]*nzb.Segment, len(batch))
 	for i, c := range batch {
 		segments[i] = &f.segments[c.index].Segment
+		stopCancellation[i] = context.AfterFunc(c.req.ctx, cancel)
+		if c.req.ctx.Err() != nil {
+			cancel()
+		}
 	}
 
 	delivered := make([]bool, len(batch))
@@ -173,6 +189,9 @@ func (f *File) runPipelinedReadAhead(ctx context.Context, batcher SegmentBatchFe
 		if i < 0 || i >= len(batch) || delivered[i] {
 			return
 		}
+		// Completion also cancels the request context. Disarm this request's
+		// hook first so a success does not abort the remaining articles.
+		stopCancellation[i]()
 		delivered[i] = true
 		c := batch[i]
 		if name := strings.TrimSpace(data.FileName); name != "" {
@@ -183,9 +202,9 @@ func (f *File) runPipelinedReadAhead(ctx context.Context, batcher SegmentBatchFe
 	}
 	var results []pool.PipelinedResult
 	if incremental, ok := batcher.(IncrementalSegmentBatchFetcher); ok {
-		results = incremental.FetchSegmentsPipelinedIncremental(ctx, segments, f.nzbFile.Groups, publish)
+		results = incremental.FetchSegmentsPipelinedIncremental(batchCtx, segments, f.nzbFile.Groups, publish)
 	} else {
-		results = batcher.FetchSegmentsPipelined(ctx, segments, f.nzbFile.Groups)
+		results = batcher.FetchSegmentsPipelined(batchCtx, segments, f.nzbFile.Groups)
 	}
 	for i, c := range batch {
 		if i < len(results) && results[i].OK {
