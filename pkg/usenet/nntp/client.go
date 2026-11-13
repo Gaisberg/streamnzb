@@ -1,6 +1,7 @@
 package nntp
 
 import (
+	"bufio"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -15,6 +16,17 @@ import (
 )
 
 const dialTimeout = 30 * time.Second
+
+// TLS supplies at most one 16 KiB plaintext record per Read. Larger buffers
+// help plain TCP article reads, but do not coalesce TLS records. Keep the
+// per-connection cost bounded: 32 KiB for TCP and 16 KiB for TLS, versus the
+// textproto default of 4 KiB. See BenchmarkBodyDecodeReceiveBuffer.
+func receiveBufferSize(ssl bool) int {
+	if ssl {
+		return 16 << 10
+	}
+	return 32 << 10
+}
 
 // bodyReadIdleTimeout is a rolling deadline for article body reads: it is
 // refreshed on every Read, so it bounds how long a body read may sit without
@@ -98,6 +110,9 @@ func dialNNTP(address string, port int, ssl bool) (net.Conn, *textproto.Conn, er
 	logger.VerboseNNTP("nntp NewClient connection opened", "addr", fullAddr)
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	tp := textproto.NewConn(conn)
+	// Install before reading the greeting so no prefetched bytes are lost.
+	// Keep textproto's writer, pipeline and underlying Close implementation.
+	tp.R = bufio.NewReaderSize(conn, receiveBufferSize(ssl))
 	if err = readGreeting(tp); err != nil {
 		tp.Close()
 		return nil, nil, err
