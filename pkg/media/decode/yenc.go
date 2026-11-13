@@ -96,6 +96,17 @@ func DecodeToBytesSized(r io.Reader, sizeHint int64) (*Frame, error) {
 			// payload is a few bytes smaller; the decoded bytes are the true file
 			// content. Padding up to the declared size would splice phantom bytes
 			// at every segment boundary and corrupt the concatenated archive.
+			// rapidyenc checks size before CRC. Waive only the size check,
+			// then ask the completed decoder to validate the trailer again;
+			// otherwise a nominal size can hide damaged payload bytes.
+			// Restore the poster's geometry before constructing the frame.
+			meta := dec.Meta
+			dec.Meta.FileSize, dec.Meta.PartSize = int64(n), int64(n)
+			_, validationErr := dec.Read(nil)
+			dec.Meta = meta
+			if !errors.Is(validationErr, io.EOF) {
+				return nil, classify(validationErr)
+			}
 			return frameWithMeta(dec, buf, n), nil
 		}
 	}
