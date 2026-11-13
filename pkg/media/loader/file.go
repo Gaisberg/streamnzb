@@ -51,6 +51,13 @@ type SegmentBatchFetcher interface {
 	FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult
 }
 
+// IncrementalSegmentBatchFetcher optionally publishes successful batch results
+// as they arrive. Callbacks are synchronous, at most once per input index, and
+// finish before return. The returned results still describe the whole batch.
+type IncrementalSegmentBatchFetcher interface {
+	FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, pool.SegmentData)) []pool.PipelinedResult
+}
+
 // FetchConcurrencyHinter is optional: when implemented, the fetcher reports how
 // many segment fetches it can keep on the wire at once. Read-ahead needs it to
 // tell a spare connection from a contended one — see readAheadBatchSize.

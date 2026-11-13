@@ -92,7 +92,22 @@ func (p *Pool) pipelineDepthFor(providerID string) int {
 // and the fallback path is the one that asks. Successes are recorded here,
 // since nothing else will see them.
 func (p *Pool) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []PipelinedResult {
+	return p.FetchSegmentsPipelinedIncremental(ctx, segments, groups, nil)
+}
+
+// FetchSegmentsPipelinedIncremental also delivers each successful result before
+// reading the next article. publish is called synchronously, at most once per
+// input index, including cache hits, and never after this method returns. It
+// should return promptly so the connection can keep draining. The returned
+// slice retains the ordinary batch contract for fallback and compatibility.
+func (p *Pool) FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, SegmentData)) []PipelinedResult {
 	results := make([]PipelinedResult, len(segments))
+	deliver := func(index int, data SegmentData) {
+		results[index] = PipelinedResult{Data: data, OK: true}
+		if publish != nil {
+			publish(index, data)
+		}
+	}
 	if p == nil || p.PipelineDepth() < 2 {
 		return results
 	}
@@ -109,7 +124,7 @@ func (p *Pool) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segme
 			continue
 		}
 		if data, ok := p.cache.Get(messageID); ok {
-			results[i] = PipelinedResult{Data: data, OK: true}
+			deliver(i, data)
 			continue
 		}
 		pending = append(pending, i)
@@ -245,7 +260,7 @@ func (p *Pool) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segme
 		p.clearKnownMissing(reply.MessageID)
 		p.recordArticleResult(providerID, true)
 		p.recordSuccess(providerID)
-		results[idx] = PipelinedResult{Data: data, OK: true}
+		deliver(idx, data)
 		fetched++
 	}
 
