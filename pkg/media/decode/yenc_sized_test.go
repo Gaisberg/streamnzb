@@ -2,6 +2,7 @@ package decode
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 )
 
@@ -62,5 +63,44 @@ func TestDecodeFrameCarriesYencGeometry(t *testing.T) {
 	}
 	if frame2.FileSize != int64(len(payload))*2 {
 		t.Fatalf("FileSize = %d, want %d", frame2.FileSize, len(payload)*2)
+	}
+}
+
+func TestDecodeSizedChunkedWire(t *testing.T) {
+	payload, _ := benchCorpus(t)
+	wire := stuffAndTerminate(manualYencArticle(payload, 128), false)
+	for _, chunk := range []int{1, 127, 16 << 10, 32 << 10} {
+		for _, hint := range []int64{1, 511, 4096, int64(len(payload) - 1024), int64(len(payload))} {
+			t.Run(fmt.Sprintf("chunk=%d/hint=%d", chunk, hint), func(t *testing.T) {
+				frame, err := DecodeToBytesSized(benchmarkWireReader{bytes.NewReader(wire), chunk}, hint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(frame.Data, payload) {
+					t.Fatal("decoded content mismatch")
+				}
+				if frame.FileSize != int64(len(payload)) || frame.PartOffset != 0 {
+					t.Fatal("incorrect geometry")
+				}
+				// A subsequent decode must not reuse a returned frame's storage.
+				again, err := DecodeToBytesSized(bytes.NewReader(wire), hint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				again.Data[0] ^= 255
+				if !bytes.Equal(frame.Data, payload) {
+					t.Fatal("frame storage reused")
+				}
+			})
+		}
+	}
+	// A plausible part size only guides allocation; CRC checking still rejects
+	// corrupt output after the buffer has grown.
+	corrupt := bytes.Clone(wire)
+	start := bytes.Index(corrupt, []byte("=ypart"))
+	start += bytes.Index(corrupt[start:], []byte("\r\n")) + 2
+	corrupt[start+10] ^= 1
+	if _, err := DecodeToBytesSized(benchmarkWireReader{bytes.NewReader(corrupt), 16 << 10}, int64(len(payload))); err == nil {
+		t.Fatal("accepted corrupted payload")
 	}
 }

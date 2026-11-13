@@ -66,7 +66,14 @@ func DecodeToBytesSized(r io.Reader, sizeHint int64) (*Frame, error) {
 		// starving it below that stalls in-place decoding. Only a hint smaller
 		// than the actual article ever grows.
 		if len(buf)-n < 1024 {
-			grown := make([]byte, len(buf)*2)
+			nextSize := len(buf) * 2
+			// The parsed part size can avoid doubling a nearly-full frame
+			// only to copy it again in trimExact. Keep scratch space for raw
+			// bytes and never let untrusted metadata grow faster than doubling.
+			if target := dec.Meta.PartSize + 2048; target > int64(len(buf)) && target < int64(nextSize) {
+				nextSize = int(target)
+			}
+			grown := make([]byte, nextSize)
 			copy(grown, buf[:n])
 			buf = grown
 		}
