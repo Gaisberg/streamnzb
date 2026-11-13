@@ -1,5 +1,29 @@
 # Changelog
 
+## [6.4.1](https://github.com/Gaisberg/streamnzb/compare/v6.4.0...v6.4.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **decode:** validate CRC before accepting rounded yEnc sizes ([61fe3a3](https://github.com/Gaisberg/streamnzb/commit/61fe3a38fc0e164d8d024ce527daffe6b1b09d90))
+* **jellyfin:** persist audio/subtitle language preferences per stream ([#404](https://github.com/Gaisberg/streamnzb/issues/404)) ([7965410](https://github.com/Gaisberg/streamnzb/commit/79654102210d4ab4d702931845f632e1ce1d687f))
+* **loader:** release abandoned pipelined read-ahead connections ([7e3b4ca](https://github.com/Gaisberg/streamnzb/commit/7e3b4ca1787474d25778bd6bc084cd4fbb9d0f40))
+* **loader:** release abandoned prefetches before waiting for seek bytes ([541bfcc](https://github.com/Gaisberg/streamnzb/commit/541bfcc5971d4a2db477933ea337109f8a9f48bb))
+* **nntp-proxy:** close interrupted bodies without injecting status lines ([e863378](https://github.com/Gaisberg/streamnzb/commit/e8633784c099f7529a7ed8ff60012e9bec50bc76))
+* **nntp-proxy:** keep inconclusive article failures retryable ([dc6944b](https://github.com/Gaisberg/streamnzb/commit/dc6944bcb5c62d66c78d7be70dc4a761dfe010f5))
+* **nntp:** wake connection waiters when provider settings change ([bb76a5d](https://github.com/Gaisberg/streamnzb/commit/bb76a5dd4e57e66d51962456c8eb9089a18d87da))
+* **search:** validate anime episodes and keep their absolute number through playback ([#394](https://github.com/Gaisberg/streamnzb/issues/394)) ([845f550](https://github.com/Gaisberg/streamnzb/commit/845f5503efcb596c5c4885c820130ecf638a8f86))
+* **session:** bind playback accounting to the serving session, not its slot id ([#407](https://github.com/Gaisberg/streamnzb/issues/407)) ([4dfcadb](https://github.com/Gaisberg/streamnzb/commit/4dfcadb677d94915e3968b989dde613781b1e126))
+
+
+### Performance Improvements
+
+* **decode:** avoid oversized growth for near-sized yEnc hints ([6171e73](https://github.com/Gaisberg/streamnzb/commit/6171e73cb1098015813f6f848ec7e7dc78960a16))
+* **loader:** publish pipelined segments as they complete ([04f2062](https://github.com/Gaisberg/streamnzb/commit/04f20626cb97e6374623386bf9234fb406392ccf))
+* **loader:** return available playback bytes before fetching another article ([3cada7b](https://github.com/Gaisberg/streamnzb/commit/3cada7bf3c095a7cd9e477f9a130239c64166b01))
+* **nntp:** forward proxy article bodies in bulk ([aca1f1b](https://github.com/Gaisberg/streamnzb/commit/aca1f1bb7778dcbef6589094e509cd11903d48b4))
+* **nntp:** tune receive buffers for TCP and TLS decoding ([9af126f](https://github.com/Gaisberg/streamnzb/commit/9af126fbeb2388db72c32bbfddb675214fa4f380))
+
 ## [6.4.0](https://github.com/Gaisberg/streamnzb/compare/v6.3.0...v6.4.0) (2026-11-04)
 
 
