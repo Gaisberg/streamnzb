@@ -3,6 +3,7 @@ package loader
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -303,5 +304,146 @@ func TestReadAheadRangeWithoutBatchSupport(t *testing.T) {
 		if got := awaitSegment(t, f, i); !bytes.Equal(got, segmentPayload(i, segmentSize)) {
 			t.Fatalf("segment %d read back wrong", i)
 		}
+	}
+}
+
+// A successful callback must release its own waiters while later articles still
+// own their leadership. Returning the same success must not complete it twice.
+type incrementalBatchFetcher struct {
+	*batchingFetcher
+	first chan struct{}
+	gate  chan struct{}
+}
+
+func (f *incrementalBatchFetcher) FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, pool.SegmentData)) []pool.PipelinedResult {
+	results := make([]pool.PipelinedResult, len(segments))
+	results[0] = pool.PipelinedResult{OK: true, Data: pool.SegmentData{Body: segmentPayload(segments[0].Number-1, f.segmentSize)}}
+	publish(0, results[0].Data)
+	close(f.first)
+	select {
+	case <-f.gate:
+	case <-ctx.Done():
+	}
+	return results
+}
+
+func TestReadAheadIncrementalCompletionAndFallback(t *testing.T) {
+	for _, cancelBatch := range []bool{false, true} {
+		t.Run(fmt.Sprint("cancel=", cancelBatch), func(t *testing.T) {
+			fetcher := &incrementalBatchFetcher{batchingFetcher: newBatchingFetcher(256, 3, 1), first: make(chan struct{}), gate: make(chan struct{})}
+			f := NewFile(context.Background(), damagedNZBFile(6, 256), nil, fetcher)
+			if err := f.EnsureSegmentMap(); err != nil {
+				t.Fatal(err)
+			}
+			claims := make([]claimedSegment, 2)
+			base := []int{fetcher.fetchCount(2), fetcher.fetchCount(3)}
+			for i := range claims {
+				req, leader := f.startInflightDownload(i+2, false)
+				if !leader {
+					t.Fatal("not leader")
+				}
+				claims[i] = claimedSegment{index: i + 2, req: req}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan struct{})
+			go func() { f.runPipelinedReadAhead(ctx, fetcher, claims); close(done) }()
+			select {
+			case <-fetcher.first:
+			case <-time.After(time.Second):
+				t.Fatal("no callback")
+			}
+			select {
+			case <-claims[0].req.done:
+			default:
+				t.Fatal("first waiter not released")
+			}
+			select {
+			case <-claims[1].req.done:
+				t.Fatal("unfinished waiter released")
+			default:
+			}
+			if !bytes.Equal(claims[0].req.data, segmentPayload(2, 256)) {
+				t.Fatal("wrong early data")
+			}
+			if cancelBatch {
+				cancel()
+			} else {
+				close(fetcher.gate)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("batch stuck")
+			}
+			select {
+			case <-claims[1].req.done:
+			case <-time.After(time.Second):
+				t.Fatal("fallback stuck")
+			}
+			if fetcher.fetchCount(2) != base[0] || fetcher.fetchCount(3) != base[1]+1 {
+				t.Fatal("success refetched or fallback duplicated")
+			}
+		})
+	}
+}
+
+type latencyBatchFetcher struct{ *batchingFetcher }
+
+func (f *latencyBatchFetcher) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult {
+	return f.fetch(segments, nil)
+}
+func (f *latencyBatchFetcher) fetch(segments []*nzb.Segment, publish func(int, pool.SegmentData)) []pool.PipelinedResult {
+	results := make([]pool.PipelinedResult, len(segments))
+	for i, seg := range segments {
+		time.Sleep(5 * time.Millisecond)
+		results[i] = pool.PipelinedResult{OK: true, Data: pool.SegmentData{Body: segmentPayload(seg.Number-1, f.segmentSize)}}
+		if publish != nil {
+			publish(i, results[i].Data)
+		}
+	}
+	return results
+}
+
+type incrementalLatencyFetcher struct{ *latencyBatchFetcher }
+
+func (f *incrementalLatencyFetcher) FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, pool.SegmentData)) []pool.PipelinedResult {
+	return f.fetch(segments, publish)
+}
+
+// Exercise the loader's actual completion path with identical three-article
+// work, one worker and one batch in each mode. Only publication timing changes.
+func BenchmarkPipelineFirstSegmentLatency(b *testing.B) {
+	for _, incremental := range []bool{false, true} {
+		b.Run(fmt.Sprint("incremental=", incremental), func(b *testing.B) {
+			base := &latencyBatchFetcher{newBatchingFetcher(256, 3, 1)}
+			var batcher SegmentBatchFetcher = base
+			if incremental {
+				batcher = &incrementalLatencyFetcher{base}
+			}
+			f := NewFile(context.Background(), damagedNZBFile(6, 256), nil, base)
+			if err := f.EnsureSegmentMap(); err != nil {
+				b.Fatal(err)
+			}
+			var latency time.Duration
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				claims := make([]claimedSegment, 3)
+				for j := range claims {
+					req, leader := f.startInflightDownload(j+2, false)
+					if !leader {
+						b.Fatal("not leader")
+					}
+					claims[j] = claimedSegment{index: j + 2, req: req}
+				}
+				done := make(chan struct{})
+				start := time.Now()
+				go func() { f.runPipelinedReadAhead(context.Background(), batcher, claims); close(done) }()
+				<-claims[0].req.done
+				latency += time.Since(start)
+				<-done
+			}
+			b.ReportMetric(float64(latency.Nanoseconds())/float64(b.N), "first-ns/op")
+		})
 	}
 }

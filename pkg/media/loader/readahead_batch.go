@@ -6,6 +6,7 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/media/nzb"
+	"streamnzb/pkg/usenet/pool"
 )
 
 // Batched read-ahead.
@@ -167,14 +168,30 @@ func (f *File) runPipelinedReadAhead(ctx context.Context, batcher SegmentBatchFe
 		segments[i] = &f.segments[c.index].Segment
 	}
 
-	results := batcher.FetchSegmentsPipelined(ctx, segments, f.nzbFile.Groups)
+	delivered := make([]bool, len(batch))
+	publish := func(i int, data pool.SegmentData) {
+		if i < 0 || i >= len(batch) || delivered[i] {
+			return
+		}
+		delivered[i] = true
+		c := batch[i]
+		if name := strings.TrimSpace(data.FileName); name != "" {
+			f.yencName.Store(name)
+		}
+		f.recordYencGeometry(c.index, data)
+		f.completeInflightDownload(c.index, c.req, data.Body, nil)
+	}
+	var results []pool.PipelinedResult
+	if incremental, ok := batcher.(IncrementalSegmentBatchFetcher); ok {
+		results = incremental.FetchSegmentsPipelinedIncremental(ctx, segments, f.nzbFile.Groups, publish)
+	} else {
+		results = batcher.FetchSegmentsPipelined(ctx, segments, f.nzbFile.Groups)
+	}
 	for i, c := range batch {
 		if i < len(results) && results[i].OK {
-			if name := strings.TrimSpace(results[i].Data.FileName); name != "" {
-				f.yencName.Store(name)
-			}
-			f.recordYencGeometry(c.index, results[i].Data)
-			f.completeInflightDownload(c.index, c.req, results[i].Data.Body, nil)
+			publish(i, results[i].Data)
+		}
+		if delivered[i] {
 			continue
 		}
 		// Still the leader for this index, so the fallback owes its waiters a

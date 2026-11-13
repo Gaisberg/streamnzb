@@ -470,14 +470,34 @@ func (f *sessionTrackingFetcher) PipelineDepth() int {
 }
 
 func (f *sessionTrackingFetcher) FetchSegmentsPipelined(ctx context.Context, segments []*nzb.Segment, groups []string) []pool.PipelinedResult {
+	return f.FetchSegmentsPipelinedIncremental(ctx, segments, groups, nil)
+}
+
+func (f *sessionTrackingFetcher) FetchSegmentsPipelinedIncremental(ctx context.Context, segments []*nzb.Segment, groups []string, publish func(int, pool.SegmentData)) []pool.PipelinedResult {
 	batcher := f.batcher()
 	if batcher == nil {
 		return make([]pool.PipelinedResult, len(segments))
 	}
-	results := batcher.FetchSegmentsPipelined(ctx, segments, groups)
+	delivered := make([]bool, len(segments))
+	deliver := func(i int, data pool.SegmentData) {
+		if i < 0 || i >= len(delivered) || delivered[i] {
+			return
+		}
+		delivered[i] = true
+		f.record(data)
+		if publish != nil {
+			publish(i, data)
+		}
+	}
+	var results []pool.PipelinedResult
+	if incremental, ok := batcher.(loader.IncrementalSegmentBatchFetcher); ok {
+		results = incremental.FetchSegmentsPipelinedIncremental(ctx, segments, groups, deliver)
+	} else {
+		results = batcher.FetchSegmentsPipelined(ctx, segments, groups)
+	}
 	for i := range results {
 		if results[i].OK {
-			f.record(results[i].Data)
+			deliver(i, results[i].Data)
 		}
 	}
 	return results
