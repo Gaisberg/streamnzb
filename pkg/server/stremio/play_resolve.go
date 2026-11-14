@@ -327,8 +327,9 @@ func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Sessio
 		// already recorded, and the failed session is closed — the caller's
 		// slot-level path would report it again with nothing to report, and
 		// delete whatever a duplicate request has meanwhile built under this id.
-		s.sessionManager.ExhaustSlotCopies(sessionID)
-		s.sessionManager.SetSlotFailedDuringPlayback(sessionID)
+		if !s.sessionManager.GiveUpSlotUnlessReplaced(sess) {
+			logger.Debug("Next copy could not be built here, but another request built it; leaving the slot", "slot", sessionID)
+		}
 		return nil, copyRetryElsewhere
 	}
 

@@ -221,3 +221,55 @@ func TestFailSlotUnlessReplacedSparesAReplacement(t *testing.T) {
 		t.Fatal("a nil session has no slot to fail")
 	}
 }
+
+// Giving a slot up parks its cursor past the last copy and fails it, for the
+// session that gave up or an empty slot — never under a replacement, whose
+// slot and cursor are both left as they were.
+func TestGiveUpSlotUnlessReplacedSparesAReplacement(t *testing.T) {
+	const slot = "stream:s:movie:tt1:0"
+	for _, tc := range []string{"current", "empty", "replaced"} {
+		t.Run(tc, func(t *testing.T) {
+			m := NewManager(nil, time.Minute)
+			t.Cleanup(m.Shutdown)
+			create := func() *Session {
+				t.Helper()
+				sess, _, err := m.CreateDeferredSessionWithFetcherOutcome(slot, "https://a.invalid/0", &release.Release{Title: "Movie-GRP", Link: "https://a.invalid/0"},
+					nil, nil, "movie", "tt1", "Movie", "s", nil, nil)
+				if err != nil {
+					t.Fatalf("create session: %v", err)
+				}
+				return sess
+			}
+			m.NoteSlotCopies(slot, 3)
+			a := create()
+			var b *Session
+			switch tc {
+			case "empty":
+				m.DeleteSession(slot)
+			case "replaced":
+				m.DeleteSession(slot)
+				b = create()
+			}
+
+			gaveUp := m.GiveUpSlotUnlessReplaced(a)
+			if want := tc != "replaced"; gaveUp != want || m.GetSlotFailedDuringPlayback(slot) != want {
+				t.Fatalf("gave up=%v, slot failed=%v; want both %v", gaveUp, m.GetSlotFailedDuringPlayback(slot), want)
+			}
+			wantIndex := 3
+			if tc == "replaced" {
+				wantIndex = 0
+				if m.PeekSession(slot) != b {
+					t.Fatal("the replacement must keep its slot")
+				}
+			}
+			if got := m.SlotCopyIndex(slot); got != wantIndex {
+				t.Fatalf("cursor at %d, want %d", got, wantIndex)
+			}
+		})
+	}
+	m := NewManager(nil, time.Minute)
+	t.Cleanup(m.Shutdown)
+	if m.GiveUpSlotUnlessReplaced(nil) {
+		t.Fatal("a nil session has no slot to give up")
+	}
+}

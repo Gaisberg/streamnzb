@@ -450,7 +450,9 @@ func (s *Server) failSlotOnRepeatedPastEOFRanges(
 	}
 	logger.Warn("Player keeps requesting ranges past the served size; failing the slot over",
 		"session", resolved.sessionID, "range", effectiveRange, "size", resolved.size, "count", count)
-	s.sessionManager.SetSlotFailedDuringPlayback(resolved.sessionID)
+	// A stale verdict from a session the slot has replaced leaves the
+	// replacement alone; this request still ends.
+	s.sessionManager.FailSlotUnlessReplaced(sess)
 	closeStream("range past served size")
 	if streamFailoverEnabled(streamConfig) {
 		s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,

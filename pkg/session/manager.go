@@ -1694,6 +1694,25 @@ func (m *Manager) FailSlotUnlessReplaced(sess *Session) bool {
 	return true
 }
 
+// GiveUpSlotUnlessReplaced parks sess's slot past its last copy and marks it
+// failed, unless another session now holds it, and reports whether it did. It
+// is for a request that could not build the next copy: a duplicate that did
+// build it must keep both its slot and its cursor. Check and changes share the
+// manager lock, so no replacement can land between them.
+func (m *Manager) GiveUpSlotUnlessReplaced(sess *Session) bool {
+	if sess == nil || sess.ID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cur := m.sessions[sess.ID]; cur != nil && cur != sess {
+		return false
+	}
+	m.ExhaustSlotCopies(sess.ID)
+	m.SetSlotFailedDuringPlayback(sess.ID)
+	return true
+}
+
 // GetSlotFailedDuringPlayback returns true if this slot recently failed during playback (430).
 func (m *Manager) GetSlotFailedDuringPlayback(slotPath string) bool {
 	val, ok := m.slotFailedDuringPlayback.Load(slotPath)

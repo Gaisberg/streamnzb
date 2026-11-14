@@ -1649,8 +1649,10 @@ func (s *Server) purgeFailedRelease(sess *session.Session, reason string, durabl
 		})
 	}
 
-	// 3. Mark slot failed in session manager so failover redirects immediately
-	s.sessionManager.SetSlotFailedDuringPlayback(sess.ID)
+	// 3. Mark slot failed in session manager so failover redirects immediately —
+	// unless a replacement now holds it: a report can outlive the session it is
+	// about (the AvailNZB call above), and must not fail a healthy successor.
+	s.sessionManager.FailSlotUnlessReplaced(sess)
 }
 
 func (s *Server) applyReportedBadReleaseToCaches(sess *session.Session, outcome availnzb.ReportOutcome, durable, copyOnly bool) {
