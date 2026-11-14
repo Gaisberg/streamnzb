@@ -229,7 +229,10 @@ func (p *Service) Prepare(ctx context.Context, sess *session.Session) (Prepared,
 		openStart := time.Now()
 		stream, err := p.openExpectedSourceWithStartupTimeout(ctx, sess, preparedStream.Spec, p.startupTimeout())
 		if err != nil {
-			sess.ResetPlaybackStream()
+			// The snapshot and repair cache are left alone: another request may
+			// be using them. A failure that condemns the session closes it
+			// (session.Manager.SettleFailedStartup); Close drops the snapshot,
+			// and a closed session is never served again.
 			return Prepared{}, err
 		}
 		preparedStream.Stream = stream

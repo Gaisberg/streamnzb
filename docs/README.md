@@ -24,6 +24,7 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [Search requests](search-queries.md) — how indexer queries are built, executed and validated
 - [Obfuscated releases](obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [Integrations](integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
+- [Home Assistant & live stats](home-assistant.md) — polling active streams, titles and speed from Home Assistant or any script
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [Jellyfin endpoint](jellyfin.md) — serving your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid)

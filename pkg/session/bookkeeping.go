@@ -36,6 +36,28 @@ func (s *Session) Once(key OnceKey) bool {
 	return true
 }
 
+// OnceUnless claims key as Once does, unless other is already claimed: the
+// atomic form of two verdicts that exclude each other, so of concurrent
+// claimants on either key exactly one wins.
+func (s *Session) OnceUnless(key, other OnceKey) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, claimed := s.once[other]; claimed {
+		return false
+	}
+	if _, claimed := s.once[key]; claimed {
+		return false
+	}
+	if s.once == nil {
+		s.once = make(map[OnceKey]struct{}, 4)
+	}
+	s.once[key] = struct{}{}
+	return true
+}
+
 // OnceDone reports whether key has been claimed, without claiming it.
 func (s *Session) OnceDone(key OnceKey) bool {
 	if s == nil {
@@ -88,6 +110,26 @@ func (s *Session) CountEvent(key OnceKey) int {
 	}
 	s.counts[key]++
 	return s.counts[key]
+}
+
+// AttemptRow returns the id of this session's History row and the generation
+// of the database holding it, calling create the first time to make it.
+// Concurrent callers wait for that first create, so every request on the
+// session writes the same row. A row is per session, not per slot: a
+// replacement behind the same slot id is a new session and gets its own row,
+// so nothing written about one attempt can land on another. A create that
+// fails (id 0) is retried by the next caller. With create nil it only reports
+// them, an id of 0 when there is none.
+func (s *Session) AttemptRow(create func() (id, gen int64)) (id, gen int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.attemptRowMu.Lock()
+	defer s.attemptRowMu.Unlock()
+	if s.attemptRow == 0 && create != nil {
+		s.attemptRow, s.attemptRowGen = create()
+	}
+	return s.attemptRow, s.attemptRowGen
 }
 
 // BeginDeferred starts a deferred task on this session, superseding any earlier

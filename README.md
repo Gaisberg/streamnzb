@@ -139,6 +139,7 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [Custom result formats](docs/result-formatting.md) — per-stream result templates, helper reference, and the AIOStreams formatter import
 - [Profile & template API](docs/profile-api.md) — the machine-readable vocabulary and evaluation endpoints, for profile tooling
 - [Search requests](docs/search-queries.md) — how indexer queries are built, executed and validated
+- [Home Assistant & live stats](docs/home-assistant.md) — polling active streams, titles and speed from Home Assistant or any script
 - [Obfuscated releases](docs/obfuscated-releases.md) — how releases with random-hash filenames are identified and played
 - [Integrations](docs/integrations.md) — one configuration serving Stremio, Prowlarr/*arr and your download client
 - [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
