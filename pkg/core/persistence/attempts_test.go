@@ -44,13 +44,13 @@ func TestRecordPreloadAttemptUsesSharedWriteLock(t *testing.T) {
 
 func TestRecordAttemptUsesSharedWriteLock(t *testing.T) {
 	mgr := newTestStateManager(t)
-	mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-final", ReleaseTitle: "Preloaded release"})
+	id := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-final", ReleaseTitle: "Preloaded release"})
 
 	mgr.mu.Lock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		mgr.RecordAttempt(RecordAttemptParams{SlotPath: "slot-final", ReleaseTitle: "Preloaded release", Success: true})
+		mgr.RecordAttempt(RecordAttemptParams{ID: id.ID, Gen: id.Gen, SlotPath: "slot-final", ReleaseTitle: "Preloaded release", Success: true})
 	}()
 
 	select {
@@ -84,10 +84,12 @@ func TestRecordAttemptUsesSharedWriteLock(t *testing.T) {
 
 func TestRecordAttemptPersistsServedFile(t *testing.T) {
 	mgr := newTestStateManager(t)
-	mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pack", ReleaseTitle: "Season pack", MatchType: "season_pack"})
+	id := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pack", ReleaseTitle: "Season pack", MatchType: "season_pack"})
 
 	wantServedFile := "Altered.Carbon.S02E03.1080p.mkv"
 	mgr.RecordAttempt(RecordAttemptParams{
+		ID:           id.ID,
+		Gen:          id.Gen,
 		SlotPath:     "slot-pack",
 		ReleaseTitle: "Season pack",
 		ServedFile:   wantServedFile,
@@ -115,9 +117,11 @@ func TestRecordAttemptPersistsServedFile(t *testing.T) {
 
 func TestUpdatePendingAttemptKeepsPreloadAndAddsReason(t *testing.T) {
 	mgr := newTestStateManager(t)
-	mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pending", ReleaseTitle: "Early stop"})
+	id := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pending", ReleaseTitle: "Early stop"})
 
 	mgr.UpdatePendingAttempt(RecordAttemptParams{
+		ID:            id.ID,
+		Gen:           id.Gen,
 		SlotPath:      "slot-pending",
 		ProviderName:  "news.example.net",
 		ServedFile:    "Example.mkv",
@@ -159,9 +163,11 @@ func TestUpdatePendingAttemptKeepsPreloadAndAddsReason(t *testing.T) {
 
 func TestResolvePendingAttemptFinalizesWithoutInsertingFallbackRow(t *testing.T) {
 	mgr := newTestStateManager(t)
-	mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pending-finalize", ReleaseTitle: "Short play"})
+	id := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-pending-finalize", ReleaseTitle: "Short play"})
 
 	mgr.ResolvePendingAttempt(RecordAttemptParams{
+		ID:            id.ID,
+		Gen:           id.Gen,
 		SlotPath:      "slot-pending-finalize",
 		FailureReason: "Playback probe ended before the good threshold was reached.",
 		AvailStatus:   "skipped",
@@ -186,6 +192,8 @@ func TestResolvePendingAttemptFinalizesWithoutInsertingFallbackRow(t *testing.T)
 	}
 
 	mgr.ResolvePendingAttempt(RecordAttemptParams{
+		ID:            id.ID,
+		Gen:           id.Gen,
 		SlotPath:      "slot-pending-finalize",
 		FailureReason: "should not create another row",
 	})
@@ -282,5 +290,84 @@ func TestDeleteAttemptsScopesToStream(t *testing.T) {
 	}
 	if list, _ := mgr.ListAttempts(ListAttemptsOptions{Limit: 10}); len(list) != 0 {
 		t.Fatalf("expected empty history, got %d", len(list))
+	}
+}
+
+// Rows are selected by attempt id, never by slot path: a second attempt behind
+// the same slot gets its own row, a write about the first lands on the first,
+// and a finalized row keeps its first verdict.
+func TestAttemptRowsAreSelectedByIDNotSlot(t *testing.T) {
+	mgr := newTestStateManager(t)
+	oldID := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-x", ReleaseTitle: "Copy A"})
+	newID := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-x", ReleaseTitle: "Copy B"})
+	if oldID.ID <= 0 || newID.ID <= 0 || oldID.ID == newID.ID {
+		t.Fatalf("expected two distinct rows for two attempts on one slot, got %d and %d", oldID.ID, newID.ID)
+	}
+
+	// The replacement succeeds; the old attempt's delayed failure arrives after.
+	mgr.RecordAttempt(RecordAttemptParams{ID: newID.ID, Gen: newID.Gen, SlotPath: "slot-x", Success: true})
+	mgr.RecordAttempt(RecordAttemptParams{ID: oldID.ID, Gen: oldID.Gen, SlotPath: "slot-x", FailureReason: "old copy failed"})
+	// A stale failure or resolution about the replacement after its success,
+	// and a pending update on a finalized row: all no-ops. (One verdict per
+	// attempt is the caller's rule; a success is also guarded here.)
+	mgr.RecordAttempt(RecordAttemptParams{ID: newID.ID, Gen: newID.Gen, SlotPath: "slot-x", FailureReason: "late failure"})
+	mgr.ResolvePendingAttempt(RecordAttemptParams{ID: newID.ID, Gen: newID.Gen, SlotPath: "slot-x", FailureReason: "late resolve"})
+	mgr.UpdatePendingAttempt(RecordAttemptParams{ID: oldID.ID, Gen: oldID.Gen, SlotPath: "slot-x", FailureReason: "late pending"})
+
+	// A row settled without a verdict (a short play) still takes the attempt's
+	// real verdict when it comes.
+	shortID := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-short"})
+	mgr.ResolvePendingAttempt(RecordAttemptParams{ID: shortID.ID, Gen: shortID.Gen, FailureReason: "Playback probe ended before the good threshold was reached."})
+	mgr.RecordAttempt(RecordAttemptParams{ID: shortID.ID, Gen: shortID.Gen, SlotPath: "slot-short", Success: true})
+
+	list, err := mgr.ListAttempts(ListAttemptsOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAttempts: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected exactly the three attempt rows, got %d: %+v", len(list), list)
+	}
+	byID := map[int64]NZBAttempt{}
+	for _, a := range list {
+		byID[a.ID] = a
+	}
+	if a := byID[newID.ID]; a.Preload || !a.Success || a.FailureReason != "" {
+		t.Fatalf("replacement row = %+v, want its success to stand", a)
+	}
+	if a := byID[oldID.ID]; a.Preload || a.Success || a.FailureReason != "old copy failed" {
+		t.Fatalf("old row = %+v, want its own failure to stand", a)
+	}
+	if a := byID[shortID.ID]; a.Preload || !a.Success {
+		t.Fatalf("short-play row = %+v, want it to take the later success", a)
+	}
+}
+
+// A verdict for a row the user cleared mid-play is still recorded (a new row);
+// a pending row's existing reason survives its resolution.
+func TestAttemptRowClearedOrCarryingAReason(t *testing.T) {
+	mgr := newTestStateManager(t)
+	cleared := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-cleared"})
+	if _, err := mgr.DeleteAttempts(""); err != nil {
+		t.Fatalf("DeleteAttempts: %v", err)
+	}
+	mgr.RecordAttempt(RecordAttemptParams{ID: cleared.ID, Gen: cleared.Gen, SlotPath: "slot-cleared", Success: true})
+
+	early := mgr.RecordPreloadAttempt(RecordAttemptParams{SlotPath: "slot-early"})
+	mgr.UpdatePendingAttempt(RecordAttemptParams{ID: early.ID, Gen: early.Gen, FailureReason: "Playback ended too early."})
+	mgr.ResolvePendingAttempt(RecordAttemptParams{ID: early.ID, Gen: early.Gen, FailureReason: "generic"})
+
+	list, err := mgr.ListAttempts(ListAttemptsOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAttempts: %v", err)
+	}
+	got := map[string]NZBAttempt{}
+	for _, a := range list {
+		got[a.SlotPath] = a
+	}
+	if a, ok := got["slot-cleared"]; !ok || a.Preload || !a.Success {
+		t.Fatalf("cleared row's verdict = %+v, want a new success row", a)
+	}
+	if a := got["slot-early"]; a.Preload || a.FailureReason != "Playback ended too early." {
+		t.Fatalf("early-stop row = %+v, want its own reason kept", a)
 	}
 }

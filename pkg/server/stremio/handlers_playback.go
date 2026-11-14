@@ -1299,11 +1299,15 @@ func (s *Server) servePlaySlot(w http.ResponseWriter, r *http.Request, streamCon
 
 	resolved, ok := s.resolvePlaybackSlot(w, r, streamConfig, requestedSessionID)
 	if !ok {
-		// Already answered: a 404, a redirect to the slot that opened, or the
-		// error video once the candidates ran out.
+		// Already answered: a 404, a redirect to the slot that opened or to a
+		// fallback another request is playing, a 503 when another request
+		// holds the slot, or the error video once the candidates ran out.
 		return
 	}
 	defer resolved.cancel()
+	// The serve releases the startup once playing; this only covers a serve
+	// that ends before that (a panic), which would otherwise hold the session.
+	defer resolved.startup.Release()
 
 	s.servePlaybackStream(w, r, streamConfig, resolved, playStart)
 }
@@ -1670,7 +1674,14 @@ func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error,
 	rt := s.runtime()
 	availOutcome := availOutcomeForFailure(streamErr)
 	canReport := rt.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
-	if canReport {
+	if canReport && sess.OnceDone(onceSuccessRecorded) {
+		// The session already reported good; a failure arriving after that is
+		// late (a duplicate's startup, a stale read) and must not send a bad
+		// report behind it. Callers that claim the failure first make this
+		// final: once their claim is in, no success can follow.
+		canReport = false
+		availOutcome = availnzb.SkippedOutcome("This session was already reported good to AvailNZB.")
+	} else if canReport {
 		if shouldReportBadReleaseAllProviders(streamErr) {
 			availOutcome = rt.availReporter.ReportBadAllProviders(sess, streamErr.Error())
 		} else {
@@ -1945,10 +1956,41 @@ func (s *Server) recordPreloadAttempt(sess *session.Session) {
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
-	p := s.recordAttemptParamsForOutcome(sess, false)
-	s.attemptRecorder.RecordPreloadAttempt(p)
+	s.attemptRow(sess)
 	s.notifyAttemptRecorded()
 }
+
+// attemptRow returns the id of sess's own History row, inserting it as pending
+// the first time. Every History write about sess goes to this row only.
+//
+// A session can end without a verdict — a cancelled start nobody resumed, an
+// eviction, a stale startup whose slot moved on — and nothing else would then
+// settle its row, so it is settled when the session closes, as a short play
+// (no verdict on the release), keeping any reason already on the row. A
+// session with a verdict claimed is left to the verdict's writer, which may
+// still be reporting to AvailNZB; a verdict already on the row stands.
+// Best effort: a close at process exit may not get its write in.
+//
+// The row is named by id and database generation together, so after a
+// database switch no write about it can select an unrelated row.
+func (s *Server) attemptRow(sess *session.Session) (id, gen int64) {
+	return sess.AttemptRow(func() (int64, int64) {
+		ref := s.attemptRecorder.RecordPreloadAttempt(s.recordAttemptParamsForOutcome(sess, false))
+		if ref.ID > 0 {
+			context.AfterFunc(sess.Context(), func() {
+				if !sess.OnceDone(onceSuccessRecorded) && !sess.OnceDone(onceFailureRecorded) {
+					s.attemptRecorder.ResolvePendingAttempt(persistence.RecordAttemptParams{ID: ref.ID, Gen: ref.Gen, FailureReason: attemptEndedUnclassified})
+				}
+				s.notifyAttemptRecorded()
+			})
+		}
+		return ref.ID, ref.Gen
+	})
+}
+
+// attemptEndedUnclassified reads as a short play in History (see
+// pendingAttemptResolutionReason), not as a failure of the release.
+const attemptEndedUnclassified = "Playback probe ended before the good threshold was reached. The session closed before a verdict."
 
 // recordAttempt writes one NZB attempt to the persistence layer when attemptRecorder is set (or updates existing preload row).
 // notifyAttemptRecorded pokes the dashboard after an attempt row changes.
@@ -1967,6 +2009,7 @@ func (s *Server) recordAttempt(sess *session.Session, success bool, failureReaso
 	}
 	s.clearPendingAttemptResolution(sess)
 	p := s.recordAttemptParamsForOutcome(sess, success)
+	p.ID, p.Gen = s.attemptRow(sess)
 	p.Success = success
 	p.FailureReason = normalizeAttemptReason(failureReason)
 	p.AvailStatus = availOutcome.Status
@@ -2008,6 +2051,7 @@ func (s *Server) recordPendingAttempt(sess *session.Session, reason string, avai
 		return
 	}
 	p := s.recordAttemptParamsForOutcome(sess, true)
+	p.ID, p.Gen = s.attemptRow(sess)
 	p.FailureReason = normalizeAttemptReason(reason)
 	p.AvailStatus = availOutcome.Status
 	p.AvailReason = availOutcome.Reason
@@ -2055,6 +2099,7 @@ func (s *Server) schedulePendingAttemptResolution(sess *session.Session, reason 
 		sess.CancelDeferred()
 
 		p := s.recordAttemptParamsForOutcome(sess, false)
+		p.ID, p.Gen = sess.AttemptRow(nil)
 		p.Success = false
 		p.FailureReason = normalizeAttemptReason(finalReason)
 		p.AvailStatus = availOutcome.Status
@@ -2120,14 +2165,20 @@ func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session
 		s.scrobbleStart(stream, sess, rs)
 		return true
 	}
+	// Claimed before anything is reported, and only while no failure is
+	// recorded on the session: a sibling serve that qualifies after the copy
+	// was condemned must not report it good. failServedCopy claims the other
+	// way round, so the two verdicts exclude each other.
+	if !sess.OnceUnless(onceSuccessRecorded, onceFailureRecorded) {
+		if sess.OnceDone(onceSuccessRecorded) {
+			// Another serve committed first; this one still settles its start.
+			s.scrobbleStart(stream, sess, rs)
+		}
+		return true
+	}
 	availOutcome := availnzb.ReportOutcome{}
 	if rt.availReporter != nil {
 		availOutcome = rt.availReporter.ReportGood(sess, serveDuration)
-	}
-	if !sess.Once(onceSuccessRecorded) {
-		// Another serve committed first; this one still settles its start.
-		s.scrobbleStart(stream, sess, rs)
-		return true
 	}
 	s.recordAttempt(sess, true, "", availOutcome)
 	sess.ResetOnce(onceThresholdLogged)
@@ -2297,14 +2348,36 @@ func (s *Server) preloadSlots(cacheKey string, slotPaths []string, list *playlis
 			logger.Debug("Preload candidate failed, trying next failover candidate",
 				"attempt", attempts, "max_attempts", maxAttempts, "slot", sess.ID, "err", probeErr)
 			if s.preloadConfirmsBadRelease(probeErr) {
-				// Moving the slot on to another copy of the same release keeps
-				// the verdict on the NZB that failed. The real play then starts
-				// on a copy the probe never condemned.
-				copyOnly := s.sessionManager.AdvanceSlotCopy(sess.ID, stream.EffectiveVariantAttempts())
-				s.reportBadReleaseOutcome(sess, probeErr, false, copyOnly)
+				s.retirePreloadedCopy(sess, probeErr, stream)
 			}
 		}
 	}()
+}
+
+// retirePreloadedCopy applies a preload probe's confirmed bad-release verdict.
+// Moving the slot on to another copy of the same release keeps the verdict on
+// the NZB that failed. The real play then starts on a copy the probe never
+// condemned — which needs the condemned copy's session out of the slot: left in
+// place, the play request finds it by id and starts on the bad NZB again.
+func (s *Server) retirePreloadedCopy(sess *session.Session, probeErr error, stream *auth.Stream) {
+	switch s.sessionManager.RetireSlotCopy(sess, stream.EffectiveVariantAttempts(), true, func() {
+		s.reportBadReleaseOutcome(sess, probeErr, false, true)
+	}) {
+	case session.SlotCopyRetired, session.SlotCopyAlreadyRetired:
+		// Recorded, by this call or by the report that retired the copy first.
+	case session.SlotCopyLast:
+		s.reportBadReleaseOutcome(sess, probeErr, false, false)
+	case session.SlotCopyBusy:
+		// A play is starting on or serving the session. The slot is left to
+		// the play — closing the session would end that request with no
+		// response — but the verdict on this NZB still counts. Busy is only
+		// reported while another copy remains, so copy-scoped is right here.
+		s.reportBadReleaseOutcome(sess, probeErr, false, true)
+	case session.SlotCopyGone:
+		// The session left the slot some other way and has been closed, which
+		// drops the release a verdict would be recorded against.
+		logger.Debug("Preload verdict on a session that left its slot; nothing to record", "slot", sess.ID, "err", probeErr)
+	}
 }
 
 // libraryReleaseValidated reports whether rel is a library-sourced release

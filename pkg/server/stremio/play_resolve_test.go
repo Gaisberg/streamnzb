@@ -148,14 +148,16 @@ func TestNextFallbackSlotRespectsDisabledFailover(t *testing.T) {
 	}
 }
 
-func TestRecordFailedSlotReleasesTheSessionAndMarksTheSlot(t *testing.T) {
+func TestFailedStartupReleasesTheSessionAndMarksTheSlot(t *testing.T) {
 	logger.Init("ERROR")
 	manager := session.NewManager(nil, time.Minute)
 	defer manager.Shutdown()
 	s := &Server{sessionManager: manager}
 
 	sess := newLiveSession(t, manager, "slot-broken")
-	s.recordFailedSlot(sess, sess.ID, errors.New("archive is corrupt"))
+	if _, retry := s.retrySlotWithNextCopy(context.Background(), sess, sess.ID, &auth.Stream{}, errors.New("archive is corrupt")); retry != copyRetryNone {
+		t.Fatalf("a slot with no copy to walk to should be failed, got outcome %d", retry)
+	}
 
 	if !manager.GetSlotFailedDuringPlayback(sess.ID) {
 		t.Fatal("a failed slot must be marked so the walk does not come back to it")
@@ -172,14 +174,14 @@ func TestRecordFailedSlotReleasesTheSessionAndMarksTheSlot(t *testing.T) {
 // the session TTL, and conclusiveBadRelease excludes quota errors from the
 // durable bad-release verdict. Item 14 settled this; the guard that claimed
 // otherwise is gone.
-func TestRecordFailedSlotMarksThrottledSlotsToo(t *testing.T) {
+func TestFailedStartupMarksThrottledSlotsToo(t *testing.T) {
 	logger.Init("ERROR")
 	manager := session.NewManager(nil, time.Minute)
 	defer manager.Shutdown()
 	s := &Server{sessionManager: manager}
 
 	sess := newLiveSession(t, manager, "slot-throttled")
-	s.recordFailedSlot(sess, sess.ID, errors.New("indexer api limit reached"))
+	s.retrySlotWithNextCopy(context.Background(), sess, sess.ID, &auth.Stream{}, errors.New("indexer api limit reached"))
 
 	if !manager.GetSlotFailedDuringPlayback(sess.ID) {
 		t.Fatal("a failed slot must be marked so the walk does not retry it immediately")

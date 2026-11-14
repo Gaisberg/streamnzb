@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"streamnzb/pkg/core/logger"
@@ -75,7 +76,15 @@ type StateManager struct {
 	mu              sync.RWMutex
 	saveTimer       *time.Timer
 	saveMu          sync.Mutex
+	// gen names the database the write handle points at: unique in the
+	// process, replaced under mu by every Reopen. A row id means something
+	// only together with it (see AttemptRef).
+	gen int64
 }
+
+// dbGenerations hands out database generations, so no two opened databases —
+// across Reopens or managers — share one.
+var dbGenerations atomic.Int64
 
 var globalManager *StateManager
 var managerMu sync.Mutex
@@ -161,6 +170,7 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		badReleaseStore: NewBadReleaseStore(db, wdb),
 		metadataCache:   NewMetadataCacheStore(db, wdb),
 		jellyfinPlay:    NewJellyfinPlaystateStore(db, wdb),
+		gen:             dbGenerations.Add(1),
 	}
 	mgr.animeMappings = NewAnimeMappingStore(mgr, db, wdb)
 	return mgr, nil
@@ -246,6 +256,7 @@ func (m *StateManager) Reopen(s Settings, dataDir string) (closeOld func(), err 
 	m.mu.Lock()
 	oldRead := m.db.swap(readPool, d)
 	oldWrite := m.wdb.swap(writePool, d)
+	m.gen = dbGenerations.Add(1)
 	m.backend = backend
 	m.mu.Unlock()
 

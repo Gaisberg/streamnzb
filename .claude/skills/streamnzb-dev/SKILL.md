@@ -198,7 +198,7 @@ duplication that was deliberately removed:
 | An AvailNZB endpoint | `c.doJSON(ctx, requestOptions{...})`; `logAttrs` preserves per-call log context |
 | A new env override | one entry in `envFieldCopiers` (config) plus one `r.str` / `r.intVal` call (env) |
 | Indexer usage, limits, rate limiting | embed `indexer.ClientCore` |
-| Mutate a session under lock | `m.withSession(id, fn)`; host sets via `addHostsLocked` / `sortedHostSet` |
+| Mutate a session under lock | `withHeldSession(sess, fn)` on the session the caller holds, never a lookup by id; host sets via `addHostsLocked` / `sortedHostSet` |
 | Mutate a stream and persist | `dm.mutate(username, what, fn)`; convert via `streamFromEntry` / `streamToEntry` |
 | Proxy article command | `s.forEachProvider(verb, msgID, attempt)` |
 | Log a stream name | `streamLogName(stream)` |
