@@ -93,25 +93,37 @@ type RecordAttemptParams struct {
 	AvailReason   string
 	SlotPath      string
 	TTFFMS        int64
+	// ID and Gen name the attempt's row, as RecordPreloadAttempt returned them
+	// (an AttemptRef). Updates select by ID: the slot path is reused by the
+	// next session in the slot, so it cannot tell one attempt's row from
+	// another's. Gen confines them to the database the row was written in.
+	ID  int64
+	Gen int64
 }
 
-// RecordPreloadAttempt inserts a preload row for a slot (attempt started, result not yet known).
-// It is idempotent: if an unresolved preload row already exists for the same slot_path it is a no-op,
-// so Stremio's multiple automatic requests to the same play URL don't create duplicate rows.
+// AttemptRef names one attempt's row: its id in the database of generation
+// Gen. After a Reopen the same id can name an unrelated row in the new
+// database, so a write whose Gen is not the current one never selects by ID.
+type AttemptRef struct {
+	ID  int64
+	Gen int64
+}
+
+// RecordPreloadAttempt inserts a pending (preload) row for an attempt whose
+// result is not known yet, and returns its ref (zero when nothing was
+// written). It always inserts: the caller keeps one row per attempt, and a
+// pending row that another attempt left for the same slot is not this one's.
 // Safe to call with nil receiver (no-op).
-func (m *StateManager) RecordPreloadAttempt(p RecordAttemptParams) {
+func (m *StateManager) RecordPreloadAttempt(p RecordAttemptParams) AttemptRef {
 	if m == nil || m.db == nil || p.SlotPath == "" {
-		return
+		return AttemptRef{}
 	}
-	// INSERT only when no active (preload=1) row exists for this slot yet.
-	_ = m.withWriteLock(func(db *connRef) error {
-		// The CASTs are load-bearing: a bare SELECT ?, ?, ... gives Postgres no
-		// column context to infer parameter types from, so it refuses the query.
-		_, err := db.Exec(`INSERT INTO nzb_attempts (tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, preload)
-				SELECT CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
-				       CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT),
-				       0, '', '', '', CAST(? AS TEXT), 1
-			WHERE NOT EXISTS (SELECT 1 FROM nzb_attempts WHERE slot_path = ? AND preload = 1)`,
+	var ref AttemptRef
+	err := m.withWriteLock(func(db *connRef) error {
+		ref.Gen = m.gen
+		return db.QueryRow(`INSERT INTO nzb_attempts (tried_at, stream_name, provider_name, content_type, content_id, content_title, indexer_name, release_title, release_url, release_size, served_file, match_type, success, failure_reason, avail_status, avail_reason, slot_path, preload)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 1)
+			RETURNING id`,
 			time.Now().UnixMilli(),
 			p.StreamName,
 			p.ProviderName,
@@ -125,19 +137,31 @@ func (m *StateManager) RecordPreloadAttempt(p RecordAttemptParams) {
 			p.ServedFile,
 			p.MatchType,
 			p.SlotPath,
-			p.SlotPath, // for the NOT EXISTS sub-query
-		)
-		return err
+		).Scan(&ref.ID)
 	})
+	if err != nil {
+		return AttemptRef{}
+	}
+	return ref
 }
 
-// UpdatePendingAttempt refreshes the currently unresolved preload row for a slot while keeping it pending.
-// Used when playback ended too early to classify the release as good or bad.
+// ownsRow reports whether p's row is in the database now in use. Called
+// under the write lock, which Reopen holds while it switches databases.
+func (m *StateManager) ownsRow(p RecordAttemptParams) bool {
+	return p.ID > 0 && p.Gen == m.gen
+}
+
+// UpdatePendingAttempt refreshes the attempt's row (p.ID) while it is still
+// pending; a finalized row is left alone. Used when playback ended too early to
+// classify the release as good or bad.
 func (m *StateManager) UpdatePendingAttempt(p RecordAttemptParams) {
-	if m == nil || m.db == nil || p.SlotPath == "" {
+	if m == nil || m.db == nil {
 		return
 	}
 	_ = m.withWriteLock(func(db *connRef) error {
+		if !m.ownsRow(p) {
+			return nil
+		}
 		_, err := db.Exec(`UPDATE nzb_attempts
 			SET served_file = COALESCE(NULLIF(CAST(? AS TEXT), ''), served_file),
 				match_type = COALESCE(NULLIF(CAST(? AS TEXT), ''), match_type),
@@ -149,24 +173,28 @@ func (m *StateManager) UpdatePendingAttempt(p RecordAttemptParams) {
 				avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
 				avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
 				ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
-			WHERE slot_path = ? AND preload = 1`,
-			p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.FailureReason, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
+			WHERE id = ? AND preload = 1`,
+			p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.FailureReason, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.ID)
 		return err
 	})
 }
 
-// ResolvePendingAttempt finalizes the currently unresolved preload row for a slot without inserting
-// a new row when no pending preload exists anymore.
+// ResolvePendingAttempt finalizes the attempt's row (p.ID) if it is still
+// pending; a row that already has a verdict keeps it, and nothing is inserted.
+// A reason already on the row (an early stop's) is kept over p.FailureReason.
 func (m *StateManager) ResolvePendingAttempt(p RecordAttemptParams) {
-	if m == nil || m.db == nil || p.SlotPath == "" {
+	if m == nil || m.db == nil {
 		return
 	}
 	success := boolToInt(p.Success)
 	_ = m.withWriteLock(func(db *connRef) error {
+		if !m.ownsRow(p) {
+			return nil
+		}
 		_, err := db.Exec(`UPDATE nzb_attempts
 			SET preload = 0,
 				success = ?,
-				failure_reason = ?,
+				failure_reason = COALESCE(NULLIF(failure_reason, ''), CAST(? AS TEXT)),
 				served_file = COALESCE(NULLIF(CAST(? AS TEXT), ''), served_file),
 				match_type = COALESCE(NULLIF(CAST(? AS TEXT), ''), match_type),
 				indexer_name = COALESCE(NULLIF(CAST(? AS TEXT), ''), indexer_name),
@@ -176,22 +204,27 @@ func (m *StateManager) ResolvePendingAttempt(p RecordAttemptParams) {
 				avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
 				avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
 				ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
-			WHERE slot_path = ? AND preload = 1`,
-			success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
+			WHERE id = ? AND preload = 1`,
+			success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.ID)
 		return err
 	})
 }
 
-// RecordAttempt writes one NZB attempt row, or updates an existing preload row by slot_path. Safe to call with nil receiver (no-op).
+// RecordAttempt writes the verdict on the attempt's row (p.ID) while it is
+// pending or was settled without one (a short play, a close; success = 0). A
+// recorded success stands: a later verdict, such as a delayed failure, changes
+// nothing. The caller records at most one verdict per attempt. Without an id,
+// when the row is in a database since switched away from (Reopen), or when the
+// row no longer exists (History was cleared mid-play), it inserts a finalized
+// row.
+// Safe to call with nil receiver (no-op).
 func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 	if m == nil || m.db == nil {
 		return
 	}
 	success := boolToInt(p.Success)
 	err := m.withWriteLock(func(db *connRef) error {
-		if p.SlotPath != "" {
-			// Only update the currently-pending preload row (preload=1). Historical resolved rows
-			// for the same slot_path (previous plays) must not be mutated.
+		if m.ownsRow(p) {
 			res, err := db.Exec(`UPDATE nzb_attempts
 				SET preload = 0,
 					success = ?,
@@ -205,13 +238,17 @@ func (m *StateManager) RecordAttempt(p RecordAttemptParams) {
 					avail_status = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_status),
 					avail_reason = COALESCE(NULLIF(CAST(? AS TEXT), ''), avail_reason),
 					ttff_ms = CASE WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT) ELSE ttff_ms END
-				WHERE slot_path = ? AND preload = 1`,
-				success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.SlotPath)
-			if err == nil {
-				affected, _ := res.RowsAffected()
-				if affected > 0 {
-					return nil
-				}
+				WHERE id = ? AND (preload = 1 OR success = 0)`,
+				success, p.FailureReason, p.ServedFile, p.MatchType, p.IndexerName, p.StreamName, p.ProviderName, p.ContentTitle, p.AvailStatus, p.AvailReason, p.TTFFMS, p.TTFFMS, p.ID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				return nil
+			}
+			var exists int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM nzb_attempts WHERE id = ?`, p.ID).Scan(&exists); err != nil || exists > 0 {
+				return err // finalized already: its verdict stands
 			}
 		}
 
