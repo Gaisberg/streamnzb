@@ -1674,7 +1674,14 @@ func (s *Server) reportBadReleaseOutcome(sess *session.Session, streamErr error,
 	rt := s.runtime()
 	availOutcome := availOutcomeForFailure(streamErr)
 	canReport := rt.availReporter != nil && (!requireReportGate || s.shouldReportBadReleaseToAvailNZB(streamErr))
-	if canReport {
+	if canReport && sess.OnceDone(onceSuccessRecorded) {
+		// The session already reported good; a failure arriving after that is
+		// late (a duplicate's startup, a stale read) and must not send a bad
+		// report behind it. Callers that claim the failure first make this
+		// final: once their claim is in, no success can follow.
+		canReport = false
+		availOutcome = availnzb.SkippedOutcome("This session was already reported good to AvailNZB.")
+	} else if canReport {
 		if shouldReportBadReleaseAllProviders(streamErr) {
 			availOutcome = rt.availReporter.ReportBadAllProviders(sess, streamErr.Error())
 		} else {
