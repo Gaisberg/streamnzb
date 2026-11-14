@@ -254,11 +254,21 @@ func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Sessi
 	if !isFatalStreamErr(readErr) {
 		return false
 	}
+	// The failure is claimed before the copy can leave the slot, and so before
+	// any AvailNZB call: from here no sibling serve can claim success on it.
+	// Whichever outcome follows, a won claim is recorded — on this session's
+	// own row, so never on a replacement's.
+	claimed := served.OnceUnless(onceFailureRecorded, onceSuccessRecorded)
 	report := func(nextCopy bool) {
 		served.ResetPlaybackStream()
 		availOutcome := s.reportBadReleaseOutcome(served, readErr, true, nextCopy)
-		if !served.OnceDone(onceSuccessRecorded) && served.Once(onceFailureRecorded) {
+		if claimed {
 			s.recordFailureAttempt(served, readErr, availOutcome)
+		}
+	}
+	recordUnreported := func() {
+		if claimed {
+			s.recordFailureAttempt(served, readErr, availnzb.ReportOutcome{})
 		}
 	}
 	// Mid-stream the slot can still have an untried copy of the same
@@ -280,6 +290,9 @@ func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Sessi
 		// moved the slot on. This serve failed too, which keeps its
 		// bookkeeping from counting the condemned copy as good.
 		logger.Debug("Read error from a copy the slot has already left", "slot", served.ID, "err", readErr)
+		// The retiring request's report may not have claimed yet; this claim
+		// then took its place.
+		recordUnreported()
 		return true
 	case session.SlotCopyGone:
 		// The session left the slot without a copy verdict (evicted, or the
@@ -290,6 +303,7 @@ func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Sessi
 		if !s.sessionManager.FailSlotUnlessReplaced(served) {
 			logger.Debug("Read error from a session the slot has replaced", "slot", served.ID, "err", readErr)
 		}
+		recordUnreported()
 		return true
 	}
 	s.sessionManager.SetSlotFailedDuringPlayback(served.ID)
@@ -431,6 +445,7 @@ func (s *Server) recordTTFF(sess *session.Session, sessionID, streamMode string,
 	})
 	if s.attemptRecorder != nil && sess != nil {
 		p := s.recordAttemptParamsForOutcome(sess, true)
+		p.ID, p.Gen = s.attemptRow(sess)
 		p.TTFFMS = ttff.Milliseconds()
 		s.attemptRecorder.UpdatePendingAttempt(p)
 	}

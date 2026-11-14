@@ -1949,10 +1949,41 @@ func (s *Server) recordPreloadAttempt(sess *session.Session) {
 	if s.attemptRecorder == nil || sess == nil {
 		return
 	}
-	p := s.recordAttemptParamsForOutcome(sess, false)
-	s.attemptRecorder.RecordPreloadAttempt(p)
+	s.attemptRow(sess)
 	s.notifyAttemptRecorded()
 }
+
+// attemptRow returns the id of sess's own History row, inserting it as pending
+// the first time. Every History write about sess goes to this row only.
+//
+// A session can end without a verdict — a cancelled start nobody resumed, an
+// eviction, a stale startup whose slot moved on — and nothing else would then
+// settle its row, so it is settled when the session closes, as a short play
+// (no verdict on the release), keeping any reason already on the row. A
+// session with a verdict claimed is left to the verdict's writer, which may
+// still be reporting to AvailNZB; a verdict already on the row stands.
+// Best effort: a close at process exit may not get its write in.
+//
+// The row is named by id and database generation together, so after a
+// database switch no write about it can select an unrelated row.
+func (s *Server) attemptRow(sess *session.Session) (id, gen int64) {
+	return sess.AttemptRow(func() (int64, int64) {
+		ref := s.attemptRecorder.RecordPreloadAttempt(s.recordAttemptParamsForOutcome(sess, false))
+		if ref.ID > 0 {
+			context.AfterFunc(sess.Context(), func() {
+				if !sess.OnceDone(onceSuccessRecorded) && !sess.OnceDone(onceFailureRecorded) {
+					s.attemptRecorder.ResolvePendingAttempt(persistence.RecordAttemptParams{ID: ref.ID, Gen: ref.Gen, FailureReason: attemptEndedUnclassified})
+				}
+				s.notifyAttemptRecorded()
+			})
+		}
+		return ref.ID, ref.Gen
+	})
+}
+
+// attemptEndedUnclassified reads as a short play in History (see
+// pendingAttemptResolutionReason), not as a failure of the release.
+const attemptEndedUnclassified = "Playback probe ended before the good threshold was reached. The session closed before a verdict."
 
 // recordAttempt writes one NZB attempt to the persistence layer when attemptRecorder is set (or updates existing preload row).
 // notifyAttemptRecorded pokes the dashboard after an attempt row changes.
@@ -1971,6 +2002,7 @@ func (s *Server) recordAttempt(sess *session.Session, success bool, failureReaso
 	}
 	s.clearPendingAttemptResolution(sess)
 	p := s.recordAttemptParamsForOutcome(sess, success)
+	p.ID, p.Gen = s.attemptRow(sess)
 	p.Success = success
 	p.FailureReason = normalizeAttemptReason(failureReason)
 	p.AvailStatus = availOutcome.Status
@@ -2012,6 +2044,7 @@ func (s *Server) recordPendingAttempt(sess *session.Session, reason string, avai
 		return
 	}
 	p := s.recordAttemptParamsForOutcome(sess, true)
+	p.ID, p.Gen = s.attemptRow(sess)
 	p.FailureReason = normalizeAttemptReason(reason)
 	p.AvailStatus = availOutcome.Status
 	p.AvailReason = availOutcome.Reason
@@ -2059,6 +2092,7 @@ func (s *Server) schedulePendingAttemptResolution(sess *session.Session, reason 
 		sess.CancelDeferred()
 
 		p := s.recordAttemptParamsForOutcome(sess, false)
+		p.ID, p.Gen = sess.AttemptRow(nil)
 		p.Success = false
 		p.FailureReason = normalizeAttemptReason(finalReason)
 		p.AvailStatus = availOutcome.Status
@@ -2124,14 +2158,20 @@ func (s *Server) commitGoodAttemptIfQualified(stream *auth.Stream, sess *session
 		s.scrobbleStart(stream, sess, rs)
 		return true
 	}
+	// Claimed before anything is reported, and only while no failure is
+	// recorded on the session: a sibling serve that qualifies after the copy
+	// was condemned must not report it good. failServedCopy claims the other
+	// way round, so the two verdicts exclude each other.
+	if !sess.OnceUnless(onceSuccessRecorded, onceFailureRecorded) {
+		if sess.OnceDone(onceSuccessRecorded) {
+			// Another serve committed first; this one still settles its start.
+			s.scrobbleStart(stream, sess, rs)
+		}
+		return true
+	}
 	availOutcome := availnzb.ReportOutcome{}
 	if rt.availReporter != nil {
 		availOutcome = rt.availReporter.ReportGood(sess, serveDuration)
-	}
-	if !sess.Once(onceSuccessRecorded) {
-		// Another serve committed first; this one still settles its start.
-		s.scrobbleStart(stream, sess, rs)
-		return true
 	}
 	s.recordAttempt(sess, true, "", availOutcome)
 	sess.ResetOnce(onceThresholdLogged)

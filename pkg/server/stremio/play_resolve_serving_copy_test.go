@@ -279,8 +279,8 @@ func TestFallbackWalkAnswersASlotAnotherRequestHolds(t *testing.T) {
 
 // With copy walking off, a failure from a session the slot has since replaced
 // must not delete or fail the replacement — the request carries on with it —
-// and records no attempt: History rows are matched by slot, so a stale write
-// would land on the replacement's row (its own row stays pending; R3-6).
+// and records no verdict. Its own History row is settled separately
+// (TestStaleStartupSettlesItsOwnRowOnly).
 func TestStaleStartupFailureSparesTheReplacement(t *testing.T) {
 	f := newCopyRetireFixture(t, 1).withoutCopyWalking()
 	stale := f.resolve(t, "NZBGeek")

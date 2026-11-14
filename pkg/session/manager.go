@@ -148,6 +148,12 @@ type Session struct {
 	once          map[OnceKey]struct{}
 	counts        map[OnceKey]int
 	deferredToken int64
+
+	// attemptRowMu serializes the creation of attemptRow; held across a DB
+	// insert, so it is not mu. See AttemptRow.
+	attemptRowMu  sync.Mutex
+	attemptRow    int64
+	attemptRowGen int64
 }
 
 // MediaCapabilities holds client-relevant properties of the selected playback

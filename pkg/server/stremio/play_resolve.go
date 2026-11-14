@@ -229,10 +229,13 @@ func (s *Server) reportFailedStartup(sess *session.Session, prepareErr error, ne
 	if errors.Is(prepareErr, ErrPlaybackStartupTimeout) {
 		logger.Warn("Playback startup timed out", "session", sess.ID, "err", prepareErr)
 	}
-	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, nextCopy)
 	// Concurrent goroutines for the same session — Stremio re-requests a play
-	// URL on its own — must not each insert a Failure row. Only the first wins.
-	if sess.Once(onceFailureRecorded) {
+	// URL on its own — must not each insert a Failure row. Only the first wins,
+	// and only without a success claimed on the session. Claimed before the
+	// AvailNZB call, so no success can be claimed while it is in flight.
+	claimed := sess.OnceUnless(onceFailureRecorded, onceSuccessRecorded)
+	availOutcome := s.reportBadReleaseOutcome(sess, prepareErr, true, nextCopy)
+	if claimed {
 		s.recordFailureAttempt(sess, prepareErr, availOutcome)
 	}
 }
@@ -308,8 +311,9 @@ func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Sessio
 	// the slot reported the same copy first and moved the slot on, or the
 	// session went some other way. Whoever did that owns the slot's verdict;
 	// this request carries on with whatever the slot holds now, unless the slot
-	// was given up. Nothing is recorded here: History rows are matched by slot,
-	// so a write about the departed session could land on its replacement's.
+	// was given up. No verdict is recorded here; the departed session's own
+	// History row is settled when that session closes (see attemptRow), never
+	// the replacement's.
 	logger.Debug("Slot already moved on from this session", "slot", sessionID, "err", prepareErr)
 	if current, ok := s.sessionAfterSlotMoved(ctx, sessionID, streamConfig); ok {
 		return current, copyRetryNext
