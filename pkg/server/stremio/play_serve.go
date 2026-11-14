@@ -306,7 +306,11 @@ func (s *Server) failServedCopy(streamConfig *auth.Stream, served *session.Sessi
 		recordUnreported()
 		return true
 	}
-	s.sessionManager.SetSlotFailedDuringPlayback(served.ID)
+	// SlotCopyLast left the session in the slot, but m.mu is released by now: a
+	// replacement built since must not be failed by this stale read.
+	if !s.sessionManager.FailSlotUnlessReplaced(served) {
+		logger.Debug("Read error on the last copy after the slot was replaced", "slot", served.ID, "err", readErr)
+	}
 	report(false)
 	return true
 }

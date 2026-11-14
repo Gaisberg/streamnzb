@@ -20,8 +20,9 @@ import (
 )
 
 // servingCopy starts a real serve of sess and returns once it is reading, held
-// until the returned release is called; done closes when the client has the
-// whole body, and received then holds how much of it arrived.
+// until the returned release is called; done closes once the client has the
+// whole body and the serve handler has returned (so EndPlayback has run), and
+// received then holds how much of it arrived.
 func servingCopy(t *testing.T, f copyRetireFixture, sess *session.Session, size int64) (release func(), done <-chan struct{}, received *int64) {
 	t.Helper()
 	// The first byte would start a fallback prefetch that outlives the test.
@@ -48,6 +49,9 @@ func servingCopy(t *testing.T, f copyRetireFixture, sess *session.Session, size 
 	received = new(int64)
 	go func() {
 		defer close(clientDone)
+		// Runs after the body is closed: the handler has been reached, so
+		// serveDone will close.
+		defer func() { <-serveDone }()
 		resp, err := http.Get(srv.URL)
 		if err != nil {
 			return
@@ -159,7 +163,11 @@ func TestPrepareFailureLeavesASessionAnotherRequestServes(t *testing.T) {
 			}
 
 			release()
-			<-clientDone
+			select {
+			case <-clientDone:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the serve never finished")
+			}
 			if *received != size {
 				t.Fatalf("the serve delivered %d bytes, want the whole %d", *received, size)
 			}

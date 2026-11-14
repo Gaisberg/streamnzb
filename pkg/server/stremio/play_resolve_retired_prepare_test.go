@@ -216,6 +216,90 @@ func TestDashboardCloseDuringPrepareStillAborts(t *testing.T) {
 	}
 }
 
+// The same close landing after the request found the session but before it
+// registered its startup ends the request just the same: nothing is rebuilt,
+// downloaded or recorded. Shutdown is the same kind of close.
+func TestCloseBeforeStartupRegistersDoesNotRestartPlayback(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(copyRetireFixture)
+	}{
+		{"dashboard close", func(f copyRetireFixture) { f.manager.DeleteSession(f.slot) }},
+		{"shutdown", func(f copyRetireFixture) { f.manager.Shutdown() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, idx, mgr := newRetiredPrepareFixture(t)
+			a := f.resolve(t, "NZBGeek")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			rebuilt := make(chan *session.Session, 1)
+			f.server.beforeSessionStartup = func(s *session.Session) {
+				if s == a {
+					tc.close(f)
+					return
+				}
+				// A rebuild: record it and end the request so it cannot hang
+				// in the gated download.
+				select {
+				case rebuilt <- s:
+				default:
+				}
+				cancel()
+			}
+
+			rec, done := f.play(ctx)
+			waitDone(t, done)
+
+			select {
+			case <-rebuilt:
+				t.Fatal("a closed session's slot was rebuilt")
+			default:
+			}
+			if f.manager.PeekSession(f.slot) != nil {
+				t.Fatal("a new session took the closed slot")
+			}
+			if idx.callsFor(0) != 0 || idx.callsFor(1) != 0 {
+				t.Fatal("a download started after the session was closed")
+			}
+			if f.manager.SlotCopyIndex(f.slot) != 0 || f.manager.GetSlotFailedDuringPlayback(f.slot) {
+				t.Fatal("a deliberate close moved or failed the slot")
+			}
+			if rows := historyRows(t, mgr, f.slot); len(rows) != 0 {
+				t.Fatalf("a deliberate close recorded %d History rows", len(rows))
+			}
+			if rec.Code != http.StatusOK || rec.Body.Len() != 0 || rec.Header().Get("Location") != "" {
+				t.Fatalf("answered %d (%q, Location %q); want the empty response a close mid-prepare gives",
+					rec.Code, rec.Body.String(), rec.Header().Get("Location"))
+			}
+		})
+	}
+}
+
+// A copy retired in that same window is no deliberate close: the request
+// carries on with the next copy, as it does when retirement lands mid-prepare.
+func TestRetiredCopyBeforeStartupRegistersCarriesOn(t *testing.T) {
+	f, idx, _ := newRetiredPrepareFixture(t)
+	a := f.resolve(t, "NZBGeek")
+	f.server.beforeSessionStartup = func(s *session.Session) {
+		if s == a {
+			if got := f.manager.RetireSlotCopy(a, 2, false, nil); got != session.SlotCopyRetired {
+				t.Errorf("retire copy 0: got %v, want SlotCopyRetired", got)
+			}
+		}
+	}
+	rec, done := f.play(context.Background())
+	waitFor(t, idx.entered1, done, "the request carried on with copy 1")
+	close(idx.release1)
+	waitDone(t, done)
+
+	if idx.callsFor(0) != 0 || idx.callsFor(1) != 1 {
+		t.Fatalf("downloads copy0=%d copy1=%d, want only copy 1", idx.callsFor(0), idx.callsFor(1))
+	}
+	if !strings.Contains(rec.Header().Get("Location"), "/error/") {
+		t.Fatal("the connected client got an empty response")
+	}
+}
+
 // 4, 7. A client that leaves mid-prepare ends the request: no fallback, no
 // verdict, the slot and its session untouched, the startup hold released.
 func TestClientLeavingDuringPrepareTriggersNoFallback(t *testing.T) {

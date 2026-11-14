@@ -91,6 +91,10 @@ type Server struct {
 	// goroutines to stop.
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// beforeSessionStartup, when set (tests only), runs just before a play
+	// request registers its startup on sess.
+	beforeSessionStartup func(sess *session.Session)
 }
 
 // AvailIndexerStats stores per-indexer availability outcomes aggregated from

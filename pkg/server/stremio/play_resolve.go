@@ -82,9 +82,20 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		// now instead of starting on a closed session. It comes before the
 		// preload row, which would otherwise be left unresolved on a session
 		// this request then abandons.
+		if s.beforeSessionStartup != nil {
+			s.beforeSessionStartup(sess)
+		}
 		startup := s.sessionManager.BeginSessionStartup(sess)
 		if startup == nil {
 			cancel()
+			// Closed on purpose (the dashboard, shutdown), with nothing since
+			// replacing or failing the slot: the request ends, as a prepare
+			// cancelled by that close does, rather than rebuilding what was
+			// closed.
+			if !sess.CopyRetired() && !s.sessionManager.GetSlotFailedDuringPlayback(sessionID) && s.sessionManager.PeekSession(sessionID) == nil {
+				logger.Debug("play session closed before its startup; ending the request", "session", sessionID)
+				return nil, false
+			}
 			if sess, sessionID, ok = s.carryOnAfterSessionLeft(w, r, rt, streamConfig, sess, sessionID); !ok {
 				return nil, false
 			}
