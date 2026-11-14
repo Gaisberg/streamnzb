@@ -79,8 +79,12 @@ type Session struct {
 	clients             map[string]time.Time
 	mu                  sync.Mutex
 
-	// copyRetired is set by RetireSlotCopy when this session's copy failed and
-	// the slot moved on, so a later report about it is known to be stale.
+	// copyRetired is set by RetireSlotCopy and SettleFailedStartup when the
+	// session's copy failed and the slot moved on, always under m.mu and
+	// before the session is closed — RetireSlotCopy right after removing it
+	// from the slot, SettleFailedStartup just before. A later report about it
+	// is then known to be stale, and a request preparing or priming it carries
+	// on rather than aborting (CopyRetired).
 	copyRetired atomic.Bool
 
 	ctx    context.Context
@@ -176,6 +180,14 @@ func (s *Session) Done() <-chan struct{} {
 		return nil
 	}
 	return s.ctx.Done()
+}
+
+// CopyRetired reports whether the session left its slot because its copy was
+// retired (RetireSlotCopy, SettleFailedStartup), set before the session is
+// closed — as opposed to closed for another reason, such as the dashboard or
+// shutdown.
+func (s *Session) CopyRetired() bool {
+	return s != nil && s.copyRetired.Load()
 }
 
 func (s *Session) Context() context.Context {

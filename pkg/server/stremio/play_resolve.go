@@ -85,18 +85,9 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		startup := s.sessionManager.BeginSessionStartup(sess)
 		if startup == nil {
 			cancel()
-			if current, ok := s.sessionAfterSlotMoved(r.Context(), sessionID, streamConfig); ok {
-				logger.Debug("Slot moved on before playback started; continuing with the slot", "slot", sessionID)
-				sess = current
-				continue
-			}
-			// Given up, or not rebuildable: walk on (or end, with failover off).
-			nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
-			if nextID == "" {
-				failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
+			if sess, sessionID, ok = s.carryOnAfterSessionLeft(w, r, rt, streamConfig, sess, sessionID); !ok {
 				return nil, false
 			}
-			sess, sessionID = nextSess, nextID
 			continue
 		}
 
@@ -150,15 +141,38 @@ func (s *Server) resolvePlaybackSlot(w http.ResponseWriter, r *http.Request, str
 		}
 
 		cancel()
-		if isPlayPrepareCancellation(prepareErr) {
-			logger.Debug("play prepare canceled", "session", sessionID, "err", prepareErr)
+		// A client that left ends the request here, whatever the prepare
+		// returned: a failure it caused, or one seen only after it left, is no
+		// verdict, and nobody is waiting for a fallback.
+		if r.Context().Err() != nil {
+			logger.Debug("play prepare ended after the client left", "session", sessionID, "err", prepareErr)
 			return nil, false
+		}
+		if isPlayPrepareCancellation(prepareErr) {
+			// The prepare context ends with the client or with the session.
+			// A session closed on purpose (the dashboard, shutdown) ends the
+			// request too. A session whose copy another request retired says
+			// nothing about this client, still connected, which carries on
+			// with whatever the slot holds now.
+			if !sess.CopyRetired() {
+				logger.Debug("play prepare canceled", "session", sessionID, "err", prepareErr)
+				return nil, false
+			}
+			logger.Debug("Copy retired while this request was preparing it; continuing with the slot", "slot", sessionID)
+			if sess, sessionID, ok = s.carryOnAfterSessionLeft(w, r, rt, streamConfig, sess, sessionID); !ok {
+				return nil, false
+			}
+			continue
 		}
 
 		// Another indexer's copy of the same release comes before a different
 		// release: the user picked this one, and the copy that would not open
 		// is not evidence about the copy next to it.
 		copySess, retry := s.retrySlotWithNextCopy(r.Context(), sess, sessionID, streamConfig, prepareErr)
+		if r.Context().Err() != nil {
+			// The verdict stands; a client that left meanwhile is not walked on.
+			return nil, false
+		}
 		switch retry {
 		case copyRetryNext:
 			logger.Info("Trying another copy of the same release", "slot", sessionID, "err", prepareErr)
@@ -319,6 +333,36 @@ func (s *Server) retrySlotWithNextCopy(ctx context.Context, sess *session.Sessio
 		return current, copyRetryNext
 	}
 	return nil, copyRetryElsewhere
+}
+
+// carryOnAfterSessionLeft picks what a request does next once its session has
+// left the slot without a verdict from this request: the session the slot
+// holds now (rebuilt if need be), else the next fallback slot. With neither,
+// or once the client has left, it ends the request (answering a client still
+// there with the terminal failure) and reports false.
+func (s *Server) carryOnAfterSessionLeft(w http.ResponseWriter, r *http.Request, rt serverRuntime, streamConfig *auth.Stream, sess *session.Session, sessionID string) (*session.Session, string, bool) {
+	// A client that left wins over recovery: nothing is rebuilt, held or
+	// recorded for it. Checked again after the rebuild, which it can leave
+	// during and which then says nothing about the slot.
+	if r.Context().Err() != nil {
+		return nil, "", false
+	}
+	if current, ok := s.sessionAfterSlotMoved(r.Context(), sessionID, streamConfig); ok && r.Context().Err() == nil {
+		logger.Debug("Slot moved on from this request's session; continuing with the slot", "slot", sessionID)
+		return current, sessionID, true
+	}
+	if r.Context().Err() != nil {
+		return nil, "", false
+	}
+	// Given up, or not rebuildable here: walk on (or end, with failover off).
+	// The slot itself is left to the next request, which rebuilds it or gives
+	// it up on its own evidence; another request may be rebuilding it now.
+	nextSess, nextID := s.nextFallbackSlot(r.Context(), sess, streamConfig)
+	if nextID == "" {
+		failPlayback(w, r, sess, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
+		return nil, "", false
+	}
+	return nextSess, nextID, true
 }
 
 // sessionAfterSlotMoved returns the session to carry on with in a slot that

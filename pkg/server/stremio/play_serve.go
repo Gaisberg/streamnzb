@@ -337,20 +337,54 @@ func (s *Server) primeRangeOrFailover(
 	}
 
 	primeErr := primeRangeStart(resolved.stream, effectiveRange, resolved.size)
-	switch {
-	case isFatalStreamErr(primeErr):
+	if isFatalStreamErr(primeErr) {
 		logger.Warn("Refusing to advertise a range this release cannot deliver",
 			"session", resolved.sessionID, "range", effectiveRange, "size", resolved.size, "err", primeErr)
 		onReadError(resolved.sessionID, primeErr)
 		closeStream("range unavailable")
-		if streamFailoverEnabled(streamConfig) {
+		// A copy this read (or another request) retired leaves the slot on
+		// the next copy of the same release: answered below, keeping the
+		// client on its release. Otherwise the slot itself failed.
+		if !resolved.session.CopyRetired() {
+			if streamFailoverEnabled(streamConfig) {
+				s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,
+					"Redirecting to next fallback (requested range unavailable)")
+			} else {
+				failPlayback(w, r, resolved.session, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), primeErr)
+			}
+			return false
+		}
+	}
+	// Nothing is written yet. A client that left gets nothing more. A copy
+	// retired meanwhile closed this stream under the read: serving it would
+	// promise a response it cannot deliver. The client, still connected, is
+	// sent back to the slot when the slot holds or can rebuild the next copy,
+	// and otherwise walked on as for an undeliverable range. No verdict here
+	// beyond a fatal read's own: the retiring request recorded its.
+	if r.Context().Err() != nil {
+		closeStream("client gone before headers")
+		return false
+	}
+	if resolved.session.CopyRetired() {
+		closeStream("copy retired before headers")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		_, rebuilt := s.sessionAfterSlotMoved(r.Context(), resolved.sessionID, streamConfig)
+		if r.Context().Err() != nil {
+			return false // the client left during the rebuild
+		}
+		if rebuilt {
+			logger.Info("Copy retired before the response started; sending the client back to the slot", "slot", resolved.sessionID)
+			w.Header().Set("Location", s.slotLocation(r, streamConfig, resolved.sessionID))
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		} else if streamFailoverEnabled(streamConfig) {
 			s.redirectToNextSlotOrFail(w, r, resolved.sessionID, streamConfig,
-				"Redirecting to next fallback (requested range unavailable)")
+				"Redirecting to next fallback (copy retired and the slot cannot be rebuilt)")
 		} else {
-			failPlayback(w, r, resolved.session, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), primeErr)
+			failPlayback(w, r, resolved.session, rt.baseURL, streamConfig.IsErrorVideoMuted(rt.config), nil)
 		}
 		return false
-	case primeErr != nil:
+	}
+	if primeErr != nil {
 		// Timeouts, cancellations and other inconclusive failures are not a
 		// verdict about the release; serve and let the read surface a real one.
 		logger.Debug("Range prime read inconclusive, serving anyway",
