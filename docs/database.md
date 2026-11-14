@@ -11,11 +11,53 @@ without a restart.
 Equivalently, via environment variables:
 
 ```env
-DATABASE_DRIVER=postgres
-DATABASE_URL=postgres://user:password@db-host:5432/streamnzb?sslmode=disable
+STREAMNZB_DATABASE_DRIVER=postgres
+STREAMNZB_DATABASE_URL=postgres://user:password@db-host:5432/streamnzb?sslmode=disable
 ```
 
 or `database_driver` / `database_url` in `config.json`.
+
+## Passwords with special characters
+
+StreamNZB uses pgx to parse Postgres connection strings. In URL form, percent
+encode special characters in the username and password, such as `@` (`%40`),
+`:` (`%3A`), `/` (`%2F`), `?` (`%3F`), `#` (`%23`), and `%` (`%25`). Encode
+each credential separately, not the entire connection URL, and do not encode
+an already encoded value again.
+
+For example, the password `p@assword` becomes `p%40assword`. A raw `@` ends
+the credentials section, so using it in the password can cause a hostname
+lookup error mentioning part of the password.
+
+For Docker Compose, store the encoded password in `.env`:
+
+```env
+MY_PASSWORD_ENCODED=p%40assword
+```
+
+Then use it in your service's environment:
+
+```yaml
+services:
+  streamnzb:
+    environment:
+      STREAMNZB_DATABASE_DRIVER: postgres
+      STREAMNZB_DATABASE_URL: "postgres://me:${MY_PASSWORD_ENCODED}@postgres:5432/streamnzb?sslmode=disable"
+```
+
+Compose substitutes the value from `.env`; it does not URL encode it. The
+Postgres server must still be configured with the original password
+(`p@assword` in this example).
+
+Alternatively, `STREAMNZB_DATABASE_URL` also accepts a keyword connection
+string, which does not require URL encoding:
+
+```env
+STREAMNZB_DATABASE_URL="host=postgres port=5432 user=me password=p@assword dbname=streamnzb sslmode=disable"
+```
+
+In keyword form, enclose values containing spaces in single quotes; escape
+single quotes and backslashes inside values with a backslash.
 
 ## Switching backends
 

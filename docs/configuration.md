@@ -63,7 +63,7 @@ See [Database backends](database.md) for how switching and migration work.
 | Variable | Meaning |
 |---|---|
 | `STREAMNZB_DATABASE_DRIVER` (legacy `DATABASE_DRIVER`) | `sqlite` (default) or `postgres` |
-| `STREAMNZB_DATABASE_URL` (legacy `DATABASE_URL`) | Postgres connection string |
+| `STREAMNZB_DATABASE_URL` (legacy `DATABASE_URL`) | Postgres connection string; [percent encode URL credentials](database.md#passwords-with-special-characters) containing special characters |
 
 ### Metadata & AvailNZB
 
