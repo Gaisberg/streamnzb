@@ -2,6 +2,47 @@ package release
 
 import "testing"
 
+func TestIsPrivateReleaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"rfc1918 10/8", "http://10.0.0.5/details/abc", true},
+		{"rfc1918 172.16/12 with port", "http://172.18.0.2:9696/details/abc", true},
+		{"rfc1918 192.168/16", "http://192.168.1.10:9696/details/abc", true},
+		{"ipv4 loopback", "http://127.0.0.1/details/abc", true},
+		{"ipv6 loopback", "http://[::1]:5076/details/abc", true},
+		{"ipv6 unique local", "http://[fd00::5]/details/abc", true},
+		{"localhost", "http://localhost:5076/details/abc", true},
+		{"mdns .local", "http://nas.local/details/abc", true},
+		{"docker service name", "http://prowlarr:9696/details/abc", true},
+		{"docker service name 2", "http://nzbhydra2:5076/details/abc", true},
+		{"dotless without port", "https://intranet/details/abc", true},
+		{"ipv4 link-local metadata", "http://169.254.169.254/details/abc", true},
+		{"ipv6 link-local", "http://[fe80::1]:9696/details/abc", true},
+		{"ipv6 link-local with zone", "http://[fe80::1%25eth0]/details/abc", true},
+		{"ipv6 link-local with dotted zone", "http://[fe80::1%25eth0.100]:9696/details/abc", true},
+		{"cgnat / tailscale", "http://100.64.0.5:9696/details/abc", true},
+		{"ipv4 unspecified", "http://0.0.0.0:9696/details/abc", true},
+		{"ipv6 unspecified", "http://[::]/details/abc", true},
+		{"empty host", "/details/abc", true},
+		{"malformed url", "http://[::1", true},
+		{"public ipv4", "https://93.184.216.34/details/abc", false},
+		{"public ipv6", "https://[2606:2800:220:1:248:1893:25c8:1946]/details/abc", false},
+		{"public hostname", "https://nzbgeek.info/details/abc", false},
+		{"public hostname with port", "https://api.nzb.su:8443/details/abc", false},
+		{"reserved .invalid hostname", "https://example.invalid/details/123", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsPrivateReleaseURL(tt.url); got != tt.want {
+				t.Errorf("IsPrivateReleaseURL(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsFullDiscRelease(t *testing.T) {
 	tests := []struct {
 		title string
