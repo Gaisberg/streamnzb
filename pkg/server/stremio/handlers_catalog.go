@@ -340,7 +340,7 @@ func (s *Server) serveCatalog(ctx context.Context, def CatalogDef, req catalogRe
 		// built-in row.
 		s.enrichExternalCatalogPreviews(ctx, metas, def.Type, req.Profile.EffectiveLanguage())
 		if cap, capped := capForProfile(req.Profile); capped {
-			metas = s.filterPreviewsByCertification(ctx, cap, metas, def.Type)
+			metas = s.filterPreviewsByCertificationWith(ctx, cap, metas, def.Type, def.ExternalKind == "mdblist")
 		}
 	}
 	// External rows are explicitly chosen by the user as complete lists. Do
@@ -857,7 +857,13 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 		fresh := 0
 		for _, item := range items {
 			imdbID := strings.TrimSpace(item.IMDbID)
-			raw := fmt.Sprintf("%s:%d:%s", item.Type, item.ID, imdbID)
+			// A numeric TMDB id is the source identity: MDBList can serve the
+			// same title with and without an IMDb id on different pages.
+			rawIMDb := imdbID
+			if item.ID > 0 {
+				rawIMDb = ""
+			}
+			raw := fmt.Sprintf("%s:%d:%s", item.Type, item.ID, rawIMDb)
 			if _, repeated := fetched[raw]; repeated {
 				continue
 			}
@@ -876,7 +882,7 @@ func (s *Server) publicListCatalog(_ context.Context, def CatalogDef, req catalo
 				continue
 			}
 			seen[id] = struct{}{}
-			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name})
+			previews = append(previews, MetaPreview{ID: id, Type: def.Type, Name: name, tmdbID: max(item.ID, 0)})
 		}
 		// An empty page is terminal, and so is one that repeats rows already
 		// fetched: not every source answers a page past the end with an empty
@@ -2164,10 +2170,10 @@ func (s *Server) fillPreviewFromMetadata(ctx context.Context, preview *MetaPrevi
 		}
 		return
 	}
-	tmdbID := 0
+	tmdbID := preview.tmdbID // a source-supplied id spares the Find round trip
 	if raw, ok := strings.CutPrefix(preview.ID, "tmdb:"); ok {
 		tmdbID, _ = strconv.Atoi(raw)
-	} else if strings.HasPrefix(preview.ID, "tt") {
+	} else if strings.HasPrefix(preview.ID, "tt") && tmdbID <= 0 {
 		if find, err := rt.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				tmdbID = res.ID

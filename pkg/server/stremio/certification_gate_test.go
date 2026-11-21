@@ -212,3 +212,101 @@ func TestResolveSearchCertificationKitsuInline(t *testing.T) {
 		t.Error("no ids must resolve to unknown")
 	}
 }
+
+// A row that already knows its TMDB id is certified through the numeric
+// endpoints; Find (failing here) is neither needed nor sent. Unknown
+// certifications still fail closed, and IMDb-only rows still go through Find.
+func TestPreviewCertAgePrefersKnownTMDBID(t *testing.T) {
+	var finds atomic.Int32
+	var tvRatings atomic.Int32
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/movie/603/release_dates":
+			_, _ = w.Write([]byte(`{"results":[{"iso_3166_1":"US","release_dates":[{"certification":"PG-13"}]}]}`))
+		case "/movie/604/release_dates":
+			_, _ = w.Write([]byte(`{"results":[{"iso_3166_1":"US","release_dates":[{"certification":"R"}]}]}`))
+		case "/movie/605/release_dates":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/tv/1396/content_ratings":
+			tvRatings.Add(1)
+			_, _ = w.Write([]byte(`{"results":[{"iso_3166_1":"US","rating":"TV-14"}]}`))
+		case "/movie/700/release_dates":
+			_, _ = w.Write([]byte(`{"results":[{"iso_3166_1":"US","release_dates":[{"certification":"PG"}]}]}`))
+		default:
+			if strings.HasPrefix(r.URL.Path, "/find/") {
+				finds.Add(1)
+				if strings.HasSuffix(r.URL.Path, "tt0000700") {
+					_, _ = w.Write([]byte(`{"movie_results":[{"id":700}]}`))
+					return
+				}
+			}
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+		}
+	}, nil, nil)
+	cap, _ := capForProfile(&config.MetadataProfileConfig{MaxCertification: "13"})
+	names := func(ps []MetaPreview) []string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.Name)
+		}
+		return out
+	}
+	ctx := context.Background()
+
+	movies := srv.filterPreviewsByCertificationWith(ctx, cap, []MetaPreview{
+		{ID: "tt0000603", Name: "PG-13 known", tmdbID: 603},
+		{ID: "tt0000604", Name: "R known", tmdbID: 604},
+		{ID: "tt0000605", Name: "unrated known", tmdbID: 605},
+		{ID: "tmdb:603", Name: "tmdb only"},
+	}, "movie", true)
+	if got := names(movies); len(got) != 2 || got[0] != "PG-13 known" || got[1] != "tmdb only" {
+		t.Fatalf("movies kept = %v, want the PG-13 rows only (R blocked, unrated fails closed)", got)
+	}
+	if n := finds.Load(); n != 0 {
+		t.Fatalf("Find requests = %d, want 0 when the TMDB id is known", n)
+	}
+
+	// TV-14 is over a 13 cap; the numeric content-ratings endpoint decides.
+	if tv := srv.filterPreviewsByCertificationWith(ctx, cap, []MetaPreview{{ID: "tt0903747", Name: "TV-14", tmdbID: 1396}}, "series", true); len(tv) != 0 {
+		t.Fatalf("TV-14 series kept under a 13 cap: %v", names(tv))
+	}
+	if n := finds.Load(); n != 0 {
+		t.Fatalf("Find requests = %d for the series, want 0", n)
+	}
+	if n := tvRatings.Load(); n != 1 {
+		t.Fatalf("numeric TV content-ratings requests = %d, want 1", n)
+	}
+
+	// No known TMDB id: the IMDb id is resolved through Find as before.
+	if imdb := srv.filterPreviewsByCertificationWith(ctx, cap, []MetaPreview{{ID: "tt0000700", Name: "imdb only"}}, "movie", true); len(imdb) != 1 || finds.Load() != 1 {
+		t.Fatalf("imdb-only kept %v after %d Find requests, want it kept after one", names(imdb), finds.Load())
+	}
+}
+
+// TVDB search also volunteers a TMDB id, but its capped rows keep resolving
+// through the IMDb id exactly as before: a Find with no match is unknown, and
+// unknown fails closed even though the supplied numeric id would have passed.
+func TestTVDBSearchPreviewCertAgeIgnoresSuppliedTMDBID(t *testing.T) {
+	var finds, numeric atomic.Int32
+	srv := metaTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/find/"):
+			finds.Add(1)
+			_, _ = w.Write([]byte(`{}`))
+		case r.URL.Path == "/tv/1396/content_ratings":
+			numeric.Add(1)
+			_, _ = w.Write([]byte(`{"results":[{"iso_3166_1":"US","rating":"TV-G"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}, nil, nil)
+	cap, _ := capForProfile(&config.MetadataProfileConfig{MaxCertification: "13"})
+	kept := srv.filterPreviewsByCertification(context.Background(), cap,
+		[]MetaPreview{{ID: "tt0903747", Name: "TVDB row", tmdbID: 1396}}, "series")
+	if len(kept) != 0 {
+		t.Fatalf("kept %v, want the row dropped: Find found nothing, so it is unknown and fails closed", kept)
+	}
+	if finds.Load() != 1 || numeric.Load() != 0 {
+		t.Fatalf("Find = %d, numeric ratings = %d; want 1 and 0", finds.Load(), numeric.Load())
+	}
+}

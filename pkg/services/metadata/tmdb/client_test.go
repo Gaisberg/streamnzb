@@ -443,3 +443,125 @@ func TestGenreListAndListingGenreIDs(t *testing.T) {
 		t.Fatalf("listing rows must carry genre_ids: %+v", resp.Results)
 	}
 }
+
+// mdbCard renders one MDBList card. An empty tmdbLink or imdbLink omits that
+// anchor, as a card MDBList has no mapping for does.
+func mdbCard(mediaType, tmdbLink, imdbLink, title string) string {
+	return `<div class="card" data-media-id="x" data-mediatype="` + mediaType + `"><a href="` + tmdbLink + `">t</a>` +
+		imdbLink + `<div class="header movie-title" title="` + title + `">` + title + `</div></div>`
+}
+
+// mdbRating is MDBList's IMDb rating anchor, as served on the public pages.
+func mdbRating(href string) string {
+	return `<a class="card-rating" href="` + href + `" target="_blank" rel="noopener" title="IMDb · 1K votes">8.7</a>`
+}
+
+var (
+	mdbTMDBMovie = "https://www.themoviedb.org/movie/603"
+	mdbIMDbMovie = mdbRating("https://www.imdb.com/title/tt0133093")
+	mdbTMDBShow  = "https://www.themoviedb.org/tv/1396"
+	mdbIMDbShow  = mdbRating("https://www.imdb.com/title/tt0903747")
+)
+
+func TestParseMDBListItemsReadsIMDbIDFromSameCard(t *testing.T) {
+	body := mdbCard("movie", mdbTMDBMovie, mdbIMDbMovie, "The Matrix") +
+		mdbCard("show", mdbTMDBShow, mdbIMDbShow, "Breaking Bad") +
+		mdbCard("movie", "https://www.themoviedb.org/movie/604", "", "No IMDb")
+	got := parseMDBListItems(body)
+	want := []PublicListItem{
+		{ID: 603, IMDbID: "tt0133093", Type: "movie", Name: "The Matrix"},
+		{ID: 1396, IMDbID: "tt0903747", Type: "tv", Name: "Breaking Bad"},
+		{ID: 604, Type: "movie", Name: "No IMDb"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("items = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("item %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A card without a TMDB link must neither be merged with the next card nor
+// lend it its own IMDb id.
+func TestParseMDBListItemsDoesNotCrossCards(t *testing.T) {
+	body := mdbCard("movie", "", mdbIMDbMovie, "Orphan") +
+		mdbCard("show", mdbTMDBShow, "", "Breaking Bad")
+	got := parseMDBListItems(body)
+	if len(got) != 1 || got[0] != (PublicListItem{ID: 1396, Type: "tv", Name: "Breaking Bad"}) {
+		t.Fatalf("items = %+v, want only the second card, without the first card's IMDb id", got)
+	}
+}
+
+func TestParseMDBListItemsDedupesAndSkipsOtherMediaTypes(t *testing.T) {
+	body := mdbCard("movie", mdbTMDBMovie, mdbIMDbMovie, "The Matrix") +
+		mdbCard("person", mdbTMDBShow, mdbIMDbShow, "Not A Title") +
+		mdbCard("movie", mdbTMDBMovie, mdbIMDbMovie, "The Matrix")
+	got := parseMDBListItems(body)
+	if len(got) != 1 || got[0].IMDbID != "tt0133093" {
+		t.Fatalf("items = %+v, want the single movie", got)
+	}
+}
+
+// Only a qualifying rating anchor inside the card may supply the IMDb id;
+// anything else, or anything ambiguous, leaves the TMDB-only fallback.
+func TestParseMDBListItemsIMDbIDExtraction(t *testing.T) {
+	const imdb = "https://www.imdb.com/title/tt0133093"
+	card := func(inner string) string {
+		return `<div class="card" data-media-id="x" data-mediatype="movie"><a href="` + mdbTMDBMovie + `">t</a>` +
+			inner + `<div class="header movie-title" title="The Matrix">The Matrix</div></div>`
+	}
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"qualifying anchor", card(mdbRating(imdb)), "tt0133093"},
+		{"trailing slash", card(mdbRating(imdb + "/")), "tt0133093"},
+		{"bare host", card(mdbRating("https://imdb.com/title/tt0133093")), "tt0133093"},
+		{"repeated identical", card(mdbRating(imdb) + mdbRating(imdb)), "tt0133093"},
+		{"conflicting", card(mdbRating(imdb) + mdbRating("https://www.imdb.com/title/tt0903747")), ""},
+		{"conflicting after valid", card(mdbRating(imdb) + mdbRating("https://notimdb.com/title/tt0903747")), "tt0133093"},
+		{"link between cards", card("") + mdbRating(imdb) + card(""), ""},
+		{"link after final card", card("") + mdbRating(imdb), ""},
+		{"plain text", card(`<p>see imdb.com/title/tt0133093</p>`), ""},
+		{"misleading host", card(mdbRating("https://notimdb.com/title/tt0133093")), ""},
+		{"suffix host", card(mdbRating("https://www.imdb.com.evil.test/title/tt0133093")), ""},
+		{"not a rating anchor", card(`<a href="` + imdb + `">imdb</a>`), ""},
+		{"longer identifier", card(mdbRating("https://www.imdb.com/title/tt013309312345678")), ""},
+		{"malformed identifier", card(mdbRating("https://www.imdb.com/title/tt0133093x")), ""},
+		{"extra path segment", card(mdbRating(imdb + "/reviews")), ""},
+		{"too short identifier", card(mdbRating("https://www.imdb.com/title/tt1234")), ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseMDBListItems(tc.body)
+			if len(got) == 0 {
+				t.Fatal("no items parsed")
+			}
+			if got[0].IMDbID != tc.want {
+				t.Errorf("IMDbID = %q, want %q", got[0].IMDbID, tc.want)
+			}
+			if got[0].ID != 603 {
+				t.Errorf("TMDB ID = %d, want 603", got[0].ID)
+			}
+		})
+	}
+}
+
+// A nested card is its own item: it neither lends its identifiers to the
+// card around it nor is swallowed by it.
+func TestParseMDBListItemsNestedCardsOwnTheirIdentifiers(t *testing.T) {
+	inner := mdbCard("show", mdbTMDBShow, mdbIMDbShow, "Breaking Bad")
+	outer := `<div class="card" data-media-id="x" data-mediatype="movie"><a href="` + mdbTMDBMovie + `">t</a>` +
+		inner + `<div class="header movie-title" title="The Matrix">The Matrix</div></div>`
+	got := parseMDBListItems(outer)
+	want := []PublicListItem{
+		{ID: 603, Type: "movie", Name: "The Matrix"},
+		{ID: 1396, IMDbID: "tt0903747", Type: "tv", Name: "Breaking Bad"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("items = %+v, want %+v", got, want)
+	}
+}
