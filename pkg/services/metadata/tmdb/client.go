@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"streamnzb/pkg/core/httpx"
 	"streamnzb/pkg/core/logger"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	xhtml "golang.org/x/net/html"
 )
 
 // responseCacheTTL is the default response TTL. TMDB metadata is effectively
@@ -49,7 +52,10 @@ var publicListItemPattern = regexp.MustCompile(`(?is)<a[^>]*\btitle="([^"]+)"[^>
 
 var (
 	mdbListTitlePattern = regexp.MustCompile(`(?is)<title>\s*([^<]+?)\s*,?\s*(?:a list by .+?)?\s*-\s*mdblist\.com\s*</title>`)
-	mdbListItemPattern  = regexp.MustCompile(`(?is)<div\s+class="card"\s+data-media-id="[^"]+"\s+data-mediatype="(?:movie|show)"[^>]*>.*?https://www\.themoviedb\.org/(movie|tv)/(\d+).*?<div\s+class="header\s+movie-title"\s+title="([^"]+)"`)
+	mdbListTMDBPattern  = regexp.MustCompile(`^https://www\.themoviedb\.org/(movie|tv)/(\d+)`)
+	// The whole path must be the title id: a longer id or a further segment is
+	// a different resource, not a prefix to truncate.
+	mdbListIMDbPathPattern = regexp.MustCompile(`^/title/(tt\d{7,8})/?$`)
 )
 
 // Client is shared by every stream; display language is a per-call parameter
@@ -780,22 +786,113 @@ func FetchMDBListPage(ctx context.Context, rawURL string, pageNumber int) (Publi
 	if title := mdbListTitlePattern.FindStringSubmatch(string(body)); len(title) == 2 {
 		page.Name = strings.TrimSpace(html.UnescapeString(title[1]))
 	}
-	seen := make(map[string]struct{})
-	for _, match := range mdbListItemPattern.FindAllStringSubmatch(string(body), -1) {
-		id, err := strconv.Atoi(match[2])
-		name := strings.TrimSpace(html.UnescapeString(match[3]))
-		if err != nil || id <= 0 || name == "" {
-			continue
-		}
-		key := match[1] + ":" + strconv.Itoa(id)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		page.Items = append(page.Items, PublicListItem{ID: id, Type: match[1], Name: name})
-	}
+	page.Items = parseMDBListItems(string(body))
 	storePublicListPage(cacheKey, page)
 	return page, nil
+}
+
+// parseMDBListItems reads the cards of one MDBList page from its DOM, so a
+// card's TMDB link, title and IMDb rating anchor can only come from inside
+// that card element: a card with no TMDB link is skipped, and links between or
+// after cards are never read.
+func parseMDBListItems(body string) []PublicListItem {
+	items := make([]PublicListItem, 0)
+	root, err := xhtml.Parse(strings.NewReader(body))
+	if err != nil {
+		return items
+	}
+	seen := make(map[string]struct{})
+	var walk func(*xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if isMDBListCard(n) {
+			if mt := attrValue(n, "data-mediatype"); mt == "movie" || mt == "show" {
+				if item, ok := mdbListCardItem(n); ok {
+					key := item.Type + ":" + strconv.Itoa(item.ID)
+					if _, exists := seen[key]; !exists {
+						seen[key] = struct{}{}
+						items = append(items, item)
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(root)
+	return items
+}
+
+// mdbListCardItem reads one card's identifiers. The IMDb id is set only when
+// every qualifying rating anchor in the card names the same title; none, or a
+// conflict, leaves the TMDB-only item.
+func mdbListCardItem(card *xhtml.Node) (PublicListItem, bool) {
+	var item PublicListItem
+	var imdbID string
+	conflict := false
+	var walk func(*xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n != card && isMDBListCard(n) { // a nested card owns its own fields
+			return
+		}
+		if n.Type == xhtml.ElementNode {
+			switch {
+			case n.Data == "a":
+				href := attrValue(n, "href")
+				if m := mdbListTMDBPattern.FindStringSubmatch(href); m != nil && item.ID == 0 {
+					if id, err := strconv.Atoi(m[2]); err == nil && id > 0 {
+						item.ID, item.Type = id, m[1]
+					}
+				}
+				if id := mdbListRatingIMDbID(n, href); id != "" {
+					conflict = conflict || (imdbID != "" && imdbID != id)
+					imdbID = id
+				}
+			case n.Data == "div" && item.Name == "" && hasClass(n, "movie-title"):
+				item.Name = strings.TrimSpace(attrValue(n, "title"))
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(card)
+	if item.ID == 0 || item.Name == "" {
+		return PublicListItem{}, false
+	}
+	if !conflict {
+		item.IMDbID = imdbID
+	}
+	return item, true
+}
+
+// mdbListRatingIMDbID is the title id of an MDBList IMDb rating anchor, or ""
+// for any other link.
+func mdbListRatingIMDbID(a *xhtml.Node, href string) string {
+	if !hasClass(a, "card-rating") {
+		return ""
+	}
+	u, err := url.Parse(href)
+	if err != nil || u.Scheme != "https" || (u.Host != "www.imdb.com" && u.Host != "imdb.com") {
+		return ""
+	}
+	if m := mdbListIMDbPathPattern.FindStringSubmatch(u.Path); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func attrValue(n *xhtml.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+func hasClass(n *xhtml.Node, class string) bool {
+	return slices.Contains(strings.Fields(attrValue(n, "class")), class)
 }
 
 // FetchAllMDBListPages follows MDBList's public infinite-scroll pages until
@@ -1494,4 +1591,8 @@ func (c *Client) ResolveTVDBID(imdbID string) (string, error) {
 
 	logger.Debug("Resolved TVDB ID", "tvdb", extIDs.TVDBID)
 	return strconv.Itoa(extIDs.TVDBID), nil
+}
+
+func isMDBListCard(n *xhtml.Node) bool {
+	return n.Type == xhtml.ElementNode && n.Data == "div" && hasClass(n, "card") && attrValue(n, "data-media-id") != ""
 }
