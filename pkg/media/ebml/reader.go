@@ -83,8 +83,12 @@ type HoleFillReader struct {
 	container sync.Once
 	matroska  atomic.Bool
 
-	// Read is single-consumer, like any io.Reader. mu guards pos and held so a Seek
-	// cannot tear them, and is never held across a read of inner; work is Read's alone.
+	// Read and Seek must not overlap on one HoleFillReader: Read snapshots pos and
+	// held, drops mu across its reads of inner, and then overwrites both, so a Seek
+	// in that window would be undone. mu only keeps the fields consistent for
+	// readers of them (a position query, Seek's own update); it is never held
+	// across a read of inner. work is Read's alone. Close may be called from
+	// another goroutine to cancel a blocked Read.
 	mu   sync.Mutex
 	pos  int64  // stream offset of the next byte Read serves
 	held []byte // up to maxHeaderLen bytes already read from inner, starting at pos
@@ -144,6 +148,9 @@ func (h *HoleFillReader) Read(p []byte) (int, error) {
 		var m int
 		m, err = h.inner.Read(work[n:])
 		n += m
+		if m == 0 && err == nil {
+			err = io.ErrNoProgress // like bufio: an inner that returns (0, nil) would spin here
+		}
 	}
 
 	serve := max(n-maxHeaderLen, 0)

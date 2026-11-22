@@ -591,6 +591,20 @@ func (s *errWithData) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// stalledStream returns (0, nil) on every read, failing with errBoom once it has
+// been called enough times that a caller is plainly spinning.
+type stalledStream struct {
+	*fakeStream
+	calls int
+}
+
+func (s *stalledStream) Read(p []byte) (int, error) {
+	if s.calls++; s.calls > 100 {
+		return 0, errBoom
+	}
+	return 0, nil
+}
+
 func TestReaderHandlesTheReturnShapesAnInnerReaderMayUse(t *testing.T) {
 	holed, hole, want := holedHeaderFixture(t)
 	newInner := func() *lateStream {
@@ -637,6 +651,18 @@ func TestReaderHandlesTheReturnShapesAnInnerReaderMayUse(t *testing.T) {
 			}
 		})
 	}
+
+	// An inner stream that keeps returning (0, nil) must end the read, not spin it.
+	// It would otherwise loop forever, so the stub gives up after a bounded number
+	// of calls with its own error, which fails the assertions instead of hanging.
+	t.Run("inner reader makes no progress", func(t *testing.T) {
+		src := &stalledStream{fakeStream: &fakeStream{data: want}}
+		r := NewHoleFillReader(src, src, int64(len(want)), NewPatchCache(), "fixture.mkv")
+		n, err := r.Read(make([]byte, 16))
+		if n != 0 || !errors.Is(err, io.ErrNoProgress) || src.calls != 1 {
+			t.Fatalf("Read = %d, %v after %d inner reads; want 0, io.ErrNoProgress after 1", n, err, src.calls)
+		}
+	})
 
 	t.Run("empty read", func(t *testing.T) {
 		src := &fakeStream{data: want}
