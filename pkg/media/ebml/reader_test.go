@@ -184,6 +184,29 @@ func TestAVoidHeaderIsNeverSplitAcrossResponses(t *testing.T) {
 	}
 }
 
+// The repair's edits are not confined to the hole either: a Void header opened
+// on the hole's last byte — the end of the element the hole started inside —
+// runs a few bytes past the hole's end. A range request that starts inside
+// those bytes must serve them as repaired as the read that crosses the hole
+// does, or the same offsets change value with the request's start.
+func TestVoidHeaderRightEdge(t *testing.T) {
+	f := buildFixture(t, fixtureOpts{})
+	block := f.blockIn(1, 1)
+	// The hole ends one byte after the block does, so the Void header the
+	// repair opens at the block's end — a three-byte one for a span this size —
+	// covers the hole's last byte and the two after it.
+	hole := Range{Start: block.payloadStart + 4, End: block.end + 1}
+	holed := punch(f.data, hole)
+	holes := []Range{hole}
+	cache := NewPatchCache()
+
+	crossing := serve(t, holed, holes, cache, f.clusters[1].Start, int(hole.End+64-f.clusters[1].Start))
+	starting := serve(t, holed, holes, cache, hole.End, 64)
+	if got, want := crossing[hole.End-f.clusters[1].Start:], starting; !bytes.Equal(got, want) {
+		t.Fatalf("the 64 bytes after the hole differ by where the request started: % x != % x", got, want)
+	}
+}
+
 // lateStream is a stream that learns about a hole the way the loader does: when
 // a read first delivers a byte from inside it, and never before. Like the
 // loader it reads segment by segment, so no read crosses the start of a hole —

@@ -214,11 +214,13 @@ func (h *HoleFillReader) repair(buf []byte, window Range) {
 	}
 	for _, hole := range holes {
 		// The repair can write a Void header at the start of the element whose
-		// own header the hole ate, which is up to one header before the hole.
-		// A read that stops in there owes those bytes as much as the read that
-		// crosses the hole does — otherwise one response carries half a Void
-		// header and the next carries the rest.
-		reach := Range{Start: hole.Start - maxHeaderLen, End: hole.End}
+		// own header the hole ate, which is up to one header before the hole,
+		// and one at the end of the element the hole started inside, which can
+		// run past the hole's end by as much. A read that stops or starts in
+		// there owes those bytes as much as the read that crosses the hole
+		// does — otherwise one response carries half a Void header and the
+		// next carries the rest.
+		reach := Range{Start: hole.Start - maxHeaderLen, End: hole.End + maxHeaderLen}
 		if !reach.Overlaps(window) {
 			continue
 		}
