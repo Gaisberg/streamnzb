@@ -2,6 +2,7 @@ package jellyfin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -229,6 +230,11 @@ type fakePlaystate struct {
 	// counting it in favWrites.
 	favErr    error
 	favWrites int
+	// likesErr fails every SetLikes, counted in likesWrites, as favErr does.
+	likesErr    error
+	likesWrites int
+	// getErr fails every GetWithError, as a failed query or scan would.
+	getErr error
 	// playedErr fails every SetPlayed and SetPlayedMany, writing nothing, as
 	// a rolled-back transaction would.
 	playedErr error
@@ -249,9 +255,10 @@ func (p *fakePlaystate) Upsert(state persistence.JellyfinPlaystate) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.saves++
-	// Like the store, an upsert never writes the favourite flag.
+	// Like the store, an upsert never writes the favourite flag or the rating.
 	key := state.StreamName + "|" + state.ItemID
 	state.IsFavorite = p.rows[key].IsFavorite
+	state.Likes = p.rows[key].Likes
 	p.rows[key] = state
 	return nil
 }
@@ -262,6 +269,20 @@ func (p *fakePlaystate) Get(streamName, itemID string) (persistence.JellyfinPlay
 	p.gets++
 	st, ok := p.rows[streamName+"|"+itemID]
 	return st, ok
+}
+
+// GetWithError follows the store: a missing row is (zero, false, nil), and a
+// failed read, set by getErr, is an error. Get never reports one, as the
+// store's does not.
+func (p *fakePlaystate) GetWithError(streamName, itemID string) (persistence.JellyfinPlaystate, bool, error) {
+	p.mu.Lock()
+	err := p.getErr
+	p.mu.Unlock()
+	if err != nil {
+		return persistence.JellyfinPlaystate{}, false, err
+	}
+	st, ok := p.Get(streamName, itemID)
+	return st, ok, nil
 }
 
 // ListResume follows the store: newest first, then cut to limit.
@@ -402,6 +423,31 @@ func (p *fakePlaystate) SetFavorite(streamName, itemID, contentType, contentID s
 		st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: itemID, ContentType: contentType, ContentID: contentID}
 	}
 	st.IsFavorite = favorite
+	p.rows[key] = st
+	return nil
+}
+
+// SetLikes follows the store: setting writes the rating alone, creating a row
+// if there is none; clearing only updates an existing row.
+func (p *fakePlaystate) SetLikes(streamName, itemID, contentType, contentID string, likes *bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.likesWrites++
+	if p.likesErr != nil {
+		return p.likesErr
+	}
+	key := streamName + "|" + itemID
+	st, ok := p.rows[key]
+	if !ok {
+		if likes == nil {
+			return nil
+		}
+		st = persistence.JellyfinPlaystate{StreamName: streamName, ItemID: itemID, ContentType: contentType, ContentID: contentID}
+	}
+	st.Likes = sql.NullBool{}
+	if likes != nil {
+		st.Likes = sql.NullBool{Bool: *likes, Valid: true}
+	}
 	p.rows[key] = st
 	return nil
 }

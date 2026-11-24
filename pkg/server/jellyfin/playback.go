@@ -127,6 +127,9 @@ func (s *Server) servePlayback(w http.ResponseWriter, rq *request) bool {
 	case len(segs) == 2 && (segs[0] == "favoriteitems" || segs[0] == "userfavoriteitems"):
 		// /Users/{id}/FavoriteItems/{itemId} and /UserFavoriteItems/{itemId}
 		s.handleFavorite(w, rq, segs[1])
+	case len(segs) == 3 && (segs[0] == "useritems" || segs[0] == "items") && segs[2] == "rating":
+		// /UserItems/{id}/Rating and the legacy /Users/{id}/Items/{id}/Rating
+		s.handleRating(w, rq, segs[1])
 	case len(segs) == 3 && segs[0] == "useritems" && segs[2] == "userdata":
 		if rq.is(http.MethodPost) {
 			s.handleUserDataUpdate(w, rq, segs[1])
@@ -868,28 +871,136 @@ func (s *Server) handleFavorite(w http.ResponseWriter, rq *request, raw string) 
 func (s *Server) setFolderFavorite(w http.ResponseWriter, rq *request, id itemID, favorite *bool) {
 	ud := s.userData(rq, id)
 	change := favorite != nil && *favorite != ud.IsFavorite
+	s.setFolderMark(w, rq, id, ud, change, change && *favorite, writeFavoriteError, func() error {
+		if err := s.setFavorite(rq, id, *favorite); err != nil {
+			return err
+		}
+		ud.IsFavorite = *favorite
+		return nil
+	}, nil)
+}
+
+// setFolderMark is what a folder's favourite and rating share: ud is its
+// stored UserData, change whether the request alters it, and adding whether
+// the change sets something where it had nothing (an unlisted season may be
+// cleared but not given one). write applies the change to the store and ud.
+// current, when given, reads the state again for the answer, after the
+// metadata and the write, so what was saved meanwhile is in it; a failed read
+// is a 500, and a write before it is not undone. Without it the answer is ud.
+func (s *Server) setFolderMark(w http.ResponseWriter, rq *request, id itemID, ud *userData, change, adding bool, fail func(http.ResponseWriter), write func() error, current func() (*userData, error)) {
 	meta, _ := s.meta(rq.Context(), rq, id)
 	listed := meta == nil || folderListed(id, meta)
-	if !listed && (change && *favorite || !change && !s.storedRow(rq, id)) {
+	if !listed && (adding || !change && !s.storedRow(rq, id)) {
 		http.NotFound(w, rq.Request)
 		return
 	}
 	if change {
 		if rq.Context().Err() != nil {
-			writeFavoriteError(w)
+			fail(w)
 			return
 		}
-		if err := s.setFavorite(rq, id, *favorite); err != nil {
-			writeFavoriteError(w)
+		if err := write(); err != nil {
+			fail(w)
 			return
 		}
-		ud.IsFavorite = *favorite
+	}
+	if current != nil {
+		var err error
+		if ud, err = current(); err != nil {
+			writePlayStateError(w)
+			return
+		}
 	}
 	if !listed {
 		writeJSON(w, http.StatusOK, ud)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.renderedUserData(rq, id, meta, ud))
+}
+
+// handleRating serves POST and DELETE /UserItems/{id}/Rating and the legacy
+// /Users/{userId}/Items/{id}/Rating: the like or dislike of an item, which
+// Jellyfin keeps as the nullable Likes of its UserData, answered back. POST
+// sets it from likes=true|false and clears it when likes is absent or blank,
+// as Jellyfin's nullable bool does; any other value is refused and nothing is
+// written. DELETE clears it. The user id is ignored, as on every user route.
+func (s *Server) handleRating(w http.ResponseWriter, rq *request, raw string) {
+	id, ok := favoriteID(raw)
+	if !ok || !(rq.is(http.MethodPost) || rq.is(http.MethodDelete)) {
+		http.NotFound(w, rq.Request)
+		return
+	}
+	var likes *bool
+	if rq.is(http.MethodPost) {
+		var valid bool
+		if likes, valid = ratingLikes(rq.URL.RawQuery); !valid {
+			http.Error(w, "likes must be true or false, once", http.StatusBadRequest)
+			return
+		}
+	}
+	if isFolder(id) {
+		// A failed read is not an unrated folder: a clear, or an unchanged
+		// rating, decided from it would be a success that did nothing.
+		ud, err := s.userDataChecked(rq, id)
+		if err != nil {
+			writePlayStateError(w)
+			return
+		}
+		change := !sameLikes(likes, ud.Likes)
+		// ud decides whether to write; the answer is read again after the
+		// metadata, which a favourite saved meanwhile would be missing from.
+		s.setFolderMark(w, rq, id, ud, change, change && likes != nil, writeLikesError, func() error {
+			return s.setLikes(rq, id, likes)
+		}, func() (*userData, error) { return s.userDataChecked(rq, id) })
+		return
+	}
+	if err := s.setLikes(rq, id, likes); err != nil {
+		writeLikesError(w)
+		return
+	}
+	// The rating is stored by now. If it cannot be read back, that is an
+	// error, not an empty UserData; the write is not undone.
+	ud, err := s.userDataChecked(rq, id)
+	if err != nil {
+		writePlayStateError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, ud)
+}
+
+func sameLikes(a, b *bool) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+
+// ratingLikes reads likes from the raw query. The shared parser cannot be
+// asked: it drops what it cannot decode, so a damaged likes would read as an
+// absent one, which clears. valid is false for a query that does not parse
+// and for likes named more than once, in any case, whatever the values; nil
+// likes with valid set is an absent, empty or blank one.
+func ratingLikes(rawQuery string) (likes *bool, valid bool) {
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil, false
+	}
+	var values []string
+	for key, v := range query {
+		if strings.EqualFold(key, "likes") {
+			values = append(values, v...)
+		}
+	}
+	if len(values) > 1 {
+		return nil, false
+	}
+	if len(values) == 0 {
+		return nil, true
+	}
+	switch strings.ToLower(strings.TrimSpace(values[0])) {
+	case "":
+		return nil, true
+	case "true":
+		return boolPtr(true), true
+	case "false":
+		return boolPtr(false), true
+	}
+	return nil, false
 }
 
 // writeUserData answers GET /UserItems/{id}/UserData. A season's or series'

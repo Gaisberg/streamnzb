@@ -131,6 +131,7 @@ type userData struct {
 	PlaybackPositionTicks int64    `json:"PlaybackPositionTicks"`
 	PlayCount             int      `json:"PlayCount"`
 	IsFavorite            bool     `json:"IsFavorite"`
+	Likes                 *bool    `json:"Likes,omitempty"`
 	Played                bool     `json:"Played"`
 	Key                   string   `json:"Key"`
 	ItemID                string   `json:"ItemId"`
@@ -585,6 +586,9 @@ func userDataFor(itemID string, state persistence.JellyfinPlaystate, ok bool) *u
 	ud.PlayCount = state.PlayCount
 	ud.Played = state.Played
 	ud.IsFavorite = state.IsFavorite
+	if state.Likes.Valid {
+		ud.Likes = &state.Likes.Bool
+	}
 	if !state.LastPlayedAt.IsZero() {
 		ud.LastPlayedDate = jellyfinTime(state.LastPlayedAt)
 	}

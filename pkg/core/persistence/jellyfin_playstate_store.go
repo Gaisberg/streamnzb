@@ -24,6 +24,9 @@ type JellyfinPlaystate struct {
 	// IsFavorite is owned by SetFavorite: Upsert never writes it, so a
 	// progress report built from a stale read cannot undo a favourite.
 	IsFavorite bool
+	// Likes is the item's like (true) or dislike (false); invalid means
+	// unrated. It is owned by SetLikes, as IsFavorite is by SetFavorite.
+	Likes sql.NullBool
 }
 
 // JellyfinPlaystateStore persists playback progress reported by Jellyfin
@@ -74,26 +77,40 @@ func (ps *JellyfinPlaystateStore) Upsert(state JellyfinPlaystate) error {
 	return err
 }
 
-// Get returns the row for (stream, item), or false when none exists.
+// Get returns the row for (stream, item), or false when none exists. A read
+// that fails is also false; GetWithError tells the two apart.
 func (ps *JellyfinPlaystateStore) Get(streamName, itemID string) (JellyfinPlaystate, bool) {
-	if ps == nil || ps.db == nil {
+	state, ok, err := ps.GetWithError(streamName, itemID)
+	if err != nil {
 		return JellyfinPlaystate{}, false
+	}
+	return state, ok
+}
+
+// GetWithError is Get that reports a failed query or an unreadable row,
+// which a caller deciding what to write must not take for no row.
+func (ps *JellyfinPlaystateStore) GetWithError(streamName, itemID string) (JellyfinPlaystate, bool, error) {
+	if ps == nil || ps.db == nil {
+		return JellyfinPlaystate{}, false, nil
 	}
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	rows, err := ps.db.Query(`
-		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite, likes
 		FROM jellyfin_playstate WHERE stream_name = ? AND item_id = ?`,
 		strings.TrimSpace(streamName), strings.TrimSpace(itemID))
 	if err != nil {
-		return JellyfinPlaystate{}, false
+		return JellyfinPlaystate{}, false, err
 	}
 	defer rows.Close()
-	states := scanPlaystates(rows)
-	if len(states) == 0 {
-		return JellyfinPlaystate{}, false
+	if !rows.Next() {
+		return JellyfinPlaystate{}, false, rows.Err()
 	}
-	return states[0], true
+	state, err := scanPlaystate(rows)
+	if err != nil {
+		return JellyfinPlaystate{}, false, err
+	}
+	return state, true, nil
 }
 
 // ListResume returns in-progress rows (position recorded, not played) for a
@@ -105,7 +122,7 @@ func (ps *JellyfinPlaystateStore) ListResume(streamName string, limit int) []Jel
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	rows, err := ps.db.Query(`
-		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite, likes
 		FROM jellyfin_playstate
 		WHERE stream_name = ? AND played = 0 AND position_ticks > 0
 		ORDER BY last_played_at DESC LIMIT ?`,
@@ -126,7 +143,7 @@ func (ps *JellyfinPlaystateStore) ListForStream(streamName string) []JellyfinPla
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	rows, err := ps.db.Query(`
-		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite, likes
 		FROM jellyfin_playstate WHERE stream_name = ? ORDER BY last_played_at DESC`,
 		strings.TrimSpace(streamName))
 	if err != nil {
@@ -256,7 +273,7 @@ func (ps *JellyfinPlaystateStore) ListPrefix(streamName, prefix string) ([]Jelly
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	rows, err := ps.db.Query(`
-		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite, likes
 		FROM jellyfin_playstate WHERE stream_name = ? AND `+where,
 		append([]any{strings.TrimSpace(streamName)}, args...)...)
 	if err != nil {
@@ -329,6 +346,33 @@ func (ps *JellyfinPlaystateStore) SetFavorite(streamName, itemID, contentType, c
 	return err
 }
 
+// SetLikes sets an item's like (true) or dislike (false), or clears it (nil).
+// It writes likes alone, as SetFavorite writes is_favorite: progress,
+// last_played_at and the favourite are never touched. Setting creates a row
+// when there is none; clearing only updates, never creates or deletes one.
+func (ps *JellyfinPlaystateStore) SetLikes(streamName, itemID, contentType, contentID string, likes *bool) error {
+	if ps == nil || ps.db == nil {
+		return nil
+	}
+	streamName = strings.TrimSpace(streamName)
+	itemID = strings.TrimSpace(itemID)
+	if streamName == "" || itemID == "" {
+		return nil
+	}
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if likes == nil {
+		_, err := ps.wdb.Exec(`UPDATE jellyfin_playstate SET likes = NULL WHERE stream_name = ? AND item_id = ?`, streamName, itemID)
+		return err
+	}
+	_, err := ps.wdb.Exec(`
+		INSERT INTO jellyfin_playstate (stream_name, item_id, content_type, content_id, likes)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(stream_name, item_id) DO UPDATE SET likes = excluded.likes
+	`, streamName, itemID, contentType, contentID, boolToInt(*likes))
+	return err
+}
+
 // ListFavorites returns a stream's favourites in a stable order, so a client
 // paging through them sees each once.
 func (ps *JellyfinPlaystateStore) ListFavorites(streamName string) []JellyfinPlaystate {
@@ -338,7 +382,7 @@ func (ps *JellyfinPlaystateStore) ListFavorites(streamName string) []JellyfinPla
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	rows, err := ps.db.Query(`
-		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite
+		SELECT stream_name, item_id, content_type, content_id, position_ticks, runtime_ticks, played, play_count, last_played_at, is_favorite, likes
 		FROM jellyfin_playstate WHERE stream_name = ? AND is_favorite = 1 ORDER BY item_id`,
 		strings.TrimSpace(streamName))
 	if err != nil {
@@ -484,12 +528,14 @@ func scanPlaystate(rows interface{ Scan(dest ...any) error }) (JellyfinPlaystate
 	var st JellyfinPlaystate
 	var played, favorite int
 	var lastPlayed int64
+	var likes sql.NullInt64
 	if err := rows.Scan(&st.StreamName, &st.ItemID, &st.ContentType, &st.ContentID,
-		&st.PositionTicks, &st.RuntimeTicks, &played, &st.PlayCount, &lastPlayed, &favorite); err != nil {
+		&st.PositionTicks, &st.RuntimeTicks, &played, &st.PlayCount, &lastPlayed, &favorite, &likes); err != nil {
 		return JellyfinPlaystate{}, err
 	}
 	st.Played = played != 0
 	st.IsFavorite = favorite != 0
+	st.Likes = sql.NullBool{Bool: likes.Int64 != 0, Valid: likes.Valid}
 	// A favourite-only row was never played; 0 must read as zero time,
 	// not as 1970.
 	if lastPlayed > 0 {
