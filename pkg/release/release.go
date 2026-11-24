@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"streamnzb/pkg/core/httpx"
 )
 
 func IsPrivateReleaseURL(rawURL string) bool {
@@ -20,12 +22,15 @@ func IsPrivateReleaseURL(rawURL string) bool {
 	if err != nil {
 		host = u.Hostname()
 	}
-	ip := net.ParseIP(host)
-	if ip != nil {
-		return ip.IsPrivate() || ip.IsLoopback()
+	// net.ParseIP rejects an IPv6 zone ("fe80::1%eth0.100"), which would then
+	// read as a dotted hostname.
+	host, _, _ = strings.Cut(host, "%")
+	if ip := net.ParseIP(host); ip != nil {
+		return !httpx.IsPublicIP(ip)
 	}
 	lower := strings.ToLower(host)
-	return lower == "localhost" || strings.HasSuffix(lower, ".local")
+	// A dotless name (a compose service, a LAN host) never resolves publicly.
+	return lower == "localhost" || strings.HasSuffix(lower, ".local") || !strings.Contains(lower, ".")
 }
 
 type Release struct {
