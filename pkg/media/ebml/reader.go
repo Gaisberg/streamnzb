@@ -68,9 +68,11 @@ func (c *PatchCache) entryFor(hole Range) *patchEntry {
 }
 
 // HoleFillReader serves a Matroska stream with its zero-filled holes rewritten
-// into Void elements. It never changes how many bytes a read returns, and it
-// only ever touches bytes inside — or in the few header bytes at the edge of —
-// a hole the loader already made up.
+// into Void elements. It never changes the length of the stream, and it only
+// ever touches bytes inside — or in the few header bytes at the edge of — a hole
+// the loader already made up. Serving those edge bytes the same way on every
+// read takes a lookahead of up to maxHeaderLen bytes past what the caller asked
+// for, which Read explains.
 type HoleFillReader struct {
 	inner  io.ReadSeekCloser
 	source HoleSource
@@ -81,16 +83,27 @@ type HoleFillReader struct {
 	container sync.Once
 	matroska  atomic.Bool
 
-	mu  sync.Mutex
-	pos int64
+	// Read and Seek must not overlap on one HoleFillReader: Read snapshots pos and
+	// held, drops mu across its reads of inner, and then overwrites both, so a Seek
+	// in that window would be undone. mu only keeps the fields consistent for
+	// readers of them (a position query, Seek's own update); it is never held
+	// across a read of inner. work is Read's alone. Close may be called from
+	// another goroutine to cancel a blocked Read.
+	mu   sync.Mutex
+	pos  int64  // stream offset of the next byte Read serves
+	held []byte // up to maxHeaderLen bytes already read from inner, starting at pos
+	work []byte // Read's scratch, reused so a held tail costs a copy and not an allocation
 }
 
 var _ io.ReadSeekCloser = (*HoleFillReader)(nil)
 
 // NewHoleFillReader wraps stream so reads crossing a hole come back as valid
-// EBML. The wrapper costs nothing until a hole shows up: an intact release
-// never reaches the analysis, and never reads the container to decide whether
-// it could.
+// EBML. An intact release never reaches the analysis, and never reads the
+// container to decide whether it could; what the wrapper costs it is one copy
+// per read and the lookahead Read describes.
+//
+// stream must be at offset 0, as every stream handed to it is: the reader
+// tracks the position it has served itself, and Seek is how a caller moves it.
 //
 // The read that first reaches a hole pays for the analysis — it has to, since
 // the bytes cannot go out before the repair is known. That is bounded by the
@@ -104,25 +117,87 @@ func NewHoleFillReader(stream io.ReadSeekCloser, source HoleSource, size int64, 
 	return &HoleFillReader{inner: stream, source: source, size: size, cache: cache, name: name}
 }
 
+// Read never serves a byte until the inner stream has delivered maxHeaderLen
+// more after it. The repair can rewrite up to one element header *before* a
+// hole — a Void header where the hole ate the element's own — and a hole only
+// becomes known once the loader has read into it. Serving those bytes first
+// would send the unrepaired ones on a stream's first pass and the repaired ones
+// on every later pass. Holding the tail back is what makes every read of a
+// byte the same: by the time it goes out, the inner stream has read past any
+// hole that could still change it.
+//
+// The price is a lookahead of at most maxHeaderLen bytes beyond what was asked
+// for. The held tail is flushed at the end of the stream and only there: on any
+// other error it stays held, and Seek drops it.
 func (h *HoleFillReader) Read(p []byte) (int, error) {
-	n, err := h.inner.Read(p)
-
+	if len(p) == 0 {
+		return 0, nil
+	}
 	h.mu.Lock()
-	window := Range{Start: h.pos, End: h.pos + int64(n)}
-	h.pos = window.End
+	pos, held := h.pos, h.held
 	h.mu.Unlock()
 
-	if n > 0 {
-		h.repair(p[:n], window)
+	if need := maxHeaderLen + len(p); cap(h.work) < need {
+		h.work = make([]byte, need)
 	}
-	return n, err
+	work := h.work[:maxHeaderLen+len(p)]
+	n := copy(work, held)
+
+	var err error
+	for err == nil && n <= maxHeaderLen {
+		var m int
+		m, err = h.inner.Read(work[n:])
+		n += m
+		if m == 0 && err == nil {
+			err = io.ErrNoProgress // like bufio: an inner that returns (0, nil) would spin here
+		}
+	}
+
+	serve := max(n-maxHeaderLen, 0)
+	if err == io.EOF {
+		// The stream ended after every byte of it was read, so no hole can still
+		// change these. Any other error leaves the tail held: the bytes after it
+		// are unread, and a client that resumes from the last byte it received
+		// must get the same bytes a read that did not fail would have served.
+		serve = n
+		if serve > len(p) {
+			// More to flush than p holds: serve what fits and let the next call
+			// ask the inner stream again for the end it already reported.
+			serve, err = len(p), nil
+		}
+	}
+	window := Range{Start: pos, End: pos + int64(serve)}
+	if serve > 0 {
+		h.repair(work[:serve], window)
+		copy(p, work[:serve])
+	}
+
+	h.mu.Lock()
+	h.pos = window.End
+	h.held = append(h.held[:0], work[serve:n]...)
+	h.mu.Unlock()
+	return serve, err
 }
 
 func (h *HoleFillReader) Seek(offset int64, whence int) (int64, error) {
+	h.mu.Lock()
+	if whence == io.SeekCurrent {
+		if offset == 0 {
+			// A position query: answer from what was served, and leave the inner
+			// stream — and the read-ahead behind it — where it is.
+			pos := h.pos
+			h.mu.Unlock()
+			return pos, nil
+		}
+		// The inner stream is ahead of what was served by the held tail.
+		offset, whence = h.pos+offset, io.SeekStart
+	}
+	h.mu.Unlock()
+
 	pos, err := h.inner.Seek(offset, whence)
 	if err == nil {
 		h.mu.Lock()
-		h.pos = pos
+		h.pos, h.held = pos, h.held[:0]
 		h.mu.Unlock()
 	}
 	return pos, err
