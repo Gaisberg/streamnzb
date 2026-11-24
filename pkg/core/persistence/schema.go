@@ -326,6 +326,9 @@ var addedColumns = []addedColumn{
 	// stream through rename, delete and backend switches. Rows written
 	// before this are not favourites.
 	{"jellyfin_playstate", "is_favorite", "{INT} NOT NULL DEFAULT 0"},
+	// Jellyfin likes (1) and dislikes (0) on the same row; NULL is unrated, which
+	// is what every row written before this reads as.
+	{"jellyfin_playstate", "likes", "{INT}"},
 }
 
 // migratedIndexes are created after the column migrations, since several index

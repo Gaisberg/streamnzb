@@ -261,8 +261,9 @@ func (s *Server) handleItems(w http.ResponseWriter, rq *request) {
 	}
 	include := rq.listParam("includeItemTypes")
 	filters := rq.listParam("filters")
-	// There are no likes here, so the web client's combined filter is the
-	// favourites alone. It narrows every selector below, not just a listing.
+	// Likes are kept (SetLikes) but not filtered on, so the web client's
+	// combined filter is the favourites alone. It narrows every selector
+	// below, not just a listing.
 	wantFavorites := rq.boolParam("isFavorite") || slices.Contains(filters, "isfavorite") || slices.Contains(filters, "isfavoriteorlikes")
 
 	if ids := rq.listParam("ids"); len(ids) > 0 {

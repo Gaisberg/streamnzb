@@ -399,6 +399,40 @@ func (s *Server) setFavorite(rq *request, id itemID, favorite bool) error {
 	return err
 }
 
+// setLikes sets or, with nil, clears the like or dislike, returning the
+// store's error as setFavorite does.
+func (s *Server) setLikes(rq *request, id itemID, likes *bool) error {
+	if s.opts.Playstate == nil {
+		return nil
+	}
+	encoded := id.encode()
+	err := s.opts.Playstate.SetLikes(rq.streamName(), encoded, id.ContentType, id.playStremioID(), likes)
+	if err != nil {
+		logger.Warn("Jellyfin rating mark failed", "stream", rq.streamName(), "item", encoded, "err", err)
+	}
+	return err
+}
+
+// userDataChecked is userData that fails when the stored row cannot be read,
+// where userData shows it unrated: the rating decides what it writes and
+// answers from the row, so a failed read must not stand for none.
+func (s *Server) userDataChecked(rq *request, id itemID) (*userData, error) {
+	encoded := id.encode()
+	if s.opts.Playstate == nil {
+		return userDataFor(encoded, persistence.JellyfinPlaystate{}, false), nil
+	}
+	state, ok, err := s.opts.Playstate.GetWithError(rq.streamName(), encoded)
+	if err != nil {
+		logger.Warn("Jellyfin play state read failed", "stream", rq.streamName(), "item", encoded, "err", err)
+		return nil, err
+	}
+	return userDataFor(encoded, state, ok), nil
+}
+
+func writeLikesError(w http.ResponseWriter) {
+	http.Error(w, "Rating update failed", http.StatusInternalServerError)
+}
+
 func writeFavoriteError(w http.ResponseWriter) {
 	http.Error(w, "Favourite update failed", http.StatusInternalServerError)
 }

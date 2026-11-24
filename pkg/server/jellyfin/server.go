@@ -77,6 +77,7 @@ type Catalog interface {
 type Playstate interface {
 	Upsert(state persistence.JellyfinPlaystate) error
 	Get(streamName, itemID string) (persistence.JellyfinPlaystate, bool)
+	GetWithError(streamName, itemID string) (persistence.JellyfinPlaystate, bool, error)
 	ListResume(streamName string, limit int) []persistence.JellyfinPlaystate
 	ListForStream(streamName string) []persistence.JellyfinPlaystate
 	SetPlayed(streamName, itemID, contentType, contentID string, played bool) error
@@ -84,6 +85,7 @@ type Playstate interface {
 	ListPrefix(streamName, prefix string) ([]persistence.JellyfinPlaystate, error)
 	ClearPlayedPrefix(streamName, prefix string) (int64, error)
 	SetFavorite(streamName, itemID, contentType, contentID string, favorite bool) error
+	SetLikes(streamName, itemID, contentType, contentID string, likes *bool) error
 	ListFavorites(streamName string) []persistence.JellyfinPlaystate
 }
 

@@ -337,6 +337,28 @@ stream never sees another's.
   tiles do not carry a favourite flag, so a client that
   marks favourites on its grids shows them only on the title page and in the
   Favourites row.
+- **Likes and dislikes** — the thumbs up and down on a movie, series, season
+  or episode are kept per stream, server-side, on the same row as the play
+  state, so they follow the stream through a rename, and through a database
+  switch when the data is migrated (see [database.md](database.md)), and are
+  deleted with it. `POST /UserItems/{id}/Rating?likes=true` likes the item
+  and `likes=false` dislikes it; `DELETE`, or a `POST` with no `likes` (or a
+  blank one), clears it. Any other value, `likes` given more than once, or a
+  query string that cannot be decoded is refused (400) and nothing is
+  written. The legacy `/Users/{userId}/Items/{id}/Rating` form works too, and
+  the user id is ignored: the token names the stream. The answer is the
+  item's `UserData`, which reports `Likes` as `true` or `false` and leaves it
+  out when the item is unrated; it appears wherever `UserData` is already
+  returned, in the lists that include it and from
+  `/UserItems/{id}/UserData`. A season or series is rated as it is
+  favourited: a season the metadata does not list cannot be given a rating,
+  but one stored for it can be cleared, and a rating goes ahead when the
+  metadata cannot be reached. A rating never changes progress, watched state,
+  favourites or the episodes of a season or series, and it does not put a
+  title in Continue Watching, Next Up or Upcoming. Not supported: the numeric
+  personal `Rating`, and a `Likes` sent in the body of
+  `POST /UserItems/{id}/UserData`, which is ignored as it always was. Likes
+  are not filtered on: `Filters=IsFavoriteOrLikes` lists the favourites alone.
 - **Language preferences** — the preferred audio language, preferred subtitle
   language, subtitle mode and "play default audio track" set in a client's
   account or user settings are kept per stream, server-side, and returned in
