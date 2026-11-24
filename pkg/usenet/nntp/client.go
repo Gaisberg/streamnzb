@@ -139,6 +139,13 @@ func (c *Client) SetPool(p *ClientPool) {
 	c.pool = p
 }
 
+// Origin names the pool and dial-target generation this connection was dialed
+// for. Both are fixed at dial and survive Reconnect, so after a command it still
+// says which server answered, even if the pool has since been re-pointed.
+func (c *Client) Origin() (*ClientPool, uint64) {
+	return c.pool, c.generation
+}
+
 func (c *Client) Authenticate(user, pass string) error {
 	c.user = user
 	c.pass = pass

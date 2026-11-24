@@ -604,6 +604,18 @@ func (p *ClientPool) Host() string {
 	return p.target.host
 }
 
+// Generation counts how many times Reconfigure has moved the pool to a
+// different dial target. It lets a caller tell "the same provider ID" from "the
+// same server": evidence gathered at one generation says nothing about the next.
+func (p *ClientPool) Generation() uint64 {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.generation
+}
+
 func (p *ClientPool) MaxConn() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
