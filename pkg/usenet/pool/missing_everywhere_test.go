@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,29 +39,50 @@ func scriptedProvider(t *testing.T, id string, priority int, backup bool, bodyRe
 	return ProviderConfig{ID: id, Priority: priority, IsBackup: backup, ClientPool: cp}
 }
 
-// unreachableProvider points at a port nothing listens on.
-func unreachableProvider(t *testing.T, id string, priority int, backup bool) ProviderConfig {
+// droppingProvider accepts every TCP connection and closes it before any NNTP
+// greeting, so each connection attempt fails at the transport. accepts counts
+// the attempts, which makes "the pool tried this provider" observable. The
+// listener and its accept goroutine are torn down at cleanup, whichever way the
+// test ends.
+func droppingProvider(t *testing.T, id string, priority int, backup bool) (ProviderConfig, *atomic.Int32) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	accepts := &atomic.Int32{}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			_ = c.Close()
+		}
+	}()
 	addr := ln.Addr().(*net.TCPAddr)
-	_ = ln.Close()
 	cp := nntp.NewClientPool(addr.IP.String(), addr.Port, false, id, "pass", 1)
-	t.Cleanup(cp.Shutdown)
-	return ProviderConfig{ID: id, Priority: priority, IsBackup: backup, ClientPool: cp}
+	t.Cleanup(func() { cp.Shutdown(); _ = ln.Close(); wg.Wait() })
+	return ProviderConfig{ID: id, Priority: priority, IsBackup: backup, ClientPool: cp}, accepts
 }
 
 // bodyGate holds a gatedProvider's BODY reply until the test lets it go. The
 // test waits for the BODY to arrive with Wait, acts while the fetch is in
 // flight, then calls Open. Open is idempotent and also runs at test cleanup, so
 // the server's handler can always exit, whichever way the test ends.
+//
+// The same type holds a singleflight leader in the shared-flight tests, where
+// "the gate" is the leader's closure and Open lets it go.
 type bodyGate struct {
 	got     chan struct{}
 	release chan struct{}
 	once    sync.Once
 	bound   time.Duration
+	bodies  atomic.Int32 // BODY commands the provider behind this gate has received
 }
 
 func newBodyGate(t *testing.T) *bodyGate {
@@ -102,6 +124,39 @@ func (g *bodyGate) await(done <-chan error) error {
 	}
 }
 
+// flightWorkers runs the goroutines of a shared-flight test and joins them when
+// the test ends. Opening the gate at cleanup frees the leader but says nothing
+// about when the goroutines actually return, and a straggler is visible to the
+// process-wide stack scans in waitForGoroutines, so a later test could count it.
+//
+// The cleanup it registers releases the held leader, cancels the callers, and
+// only then waits for every worker. Nothing is held while waiting, and no
+// timeout abandons a worker: each ends once the flight does. Register it after
+// the providers (cleanup is last-in first-out) so they outlive the join.
+type flightWorkers struct{ wg sync.WaitGroup }
+
+func newFlightWorkers(t *testing.T, hold *bodyGate, cancel ...context.CancelFunc) *flightWorkers {
+	t.Helper()
+	w := &flightWorkers{}
+	t.Cleanup(func() {
+		hold.Open()
+		for _, c := range cancel {
+			c()
+		}
+		w.wg.Wait()
+	})
+	return w
+}
+
+// run counts the worker before it starts, so the join cannot miss it.
+func (w *flightWorkers) run(fn func()) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		fn()
+	}()
+}
+
 // gatedProvider answers BODY with bodyResponse only once g is opened, and
 // signals g when a BODY arrives, so a test can act while a fetch is in flight.
 // Commands are read as whole lines: a command split across TCP reads waits for
@@ -135,6 +190,7 @@ func gatedProvider(t *testing.T, id string, priority int, bodyResponse string, g
 					case strings.HasPrefix(cmd, "GROUP"):
 						_, _ = c.Write([]byte("211 group selected\r\n"))
 					case strings.HasPrefix(cmd, "BODY"):
+						g.bodies.Add(1)
 						select {
 						case g.got <- struct{}{}:
 						default:
@@ -275,38 +331,100 @@ func TestMixedProtocolAndTextOnly430IsNotDefinitive(t *testing.T) {
 	}
 }
 
+// countedProvider is a provider whose BODY answer is scripted and whose BODY
+// commands are counted (g.bodies). The gate is already open: it is here for the
+// counter, not for holding the reply.
+func countedProvider(t *testing.T, id string, priority int, backup bool, bodyResponse string) (ProviderConfig, *bodyGate) {
+	t.Helper()
+	g := newBodyGate(t)
+	g.Open()
+	cfg := gatedProvider(t, id, priority, bodyResponse, g)
+	cfg.IsBackup = backup
+	return cfg, g
+}
+
+// providerUnavailable is how many times the pool has recorded a 430 from the
+// provider; it moves only when a fetch got that answer, not on setup.
+func providerUnavailable(p *Pool, id string) int64 {
+	for _, s := range p.ProviderArticleStats() {
+		if s.ProviderID == id {
+			return s.UnavailableCount
+		}
+	}
+	return 0
+}
+
+// One provider gives a genuine 430 and another is inconclusive. Absence of the
+// marker only means something if both outcomes actually happened, so each case
+// also checks that "a" answered 430 and that the second provider took the path
+// the case is named for.
 func TestFetchIncompleteCoverageIsNotDefinitive(t *testing.T) {
 	cases := map[string]struct {
-		providers func(t *testing.T) []ProviderConfig
+		// providers returns the configuration, the first provider's gate, and how
+		// many times the second provider was contacted (BODY commands, or accepted
+		// connections for a provider that drops them).
+		providers func(t *testing.T) (cfgs []ProviderConfig, a *bodyGate, contacted func() int32)
 		timeout   time.Duration
+		second    func(t *testing.T, p *Pool, ctx context.Context, err error)
 	}{
-		"430 plus unreachable primary": {
-			providers: func(t *testing.T) []ProviderConfig {
-				return []ProviderConfig{scriptedProvider(t, "a", 0, false, body430), unreachableProvider(t, "dead", 1, false)}
+		"430 plus connection failure on a primary": {
+			providers: func(t *testing.T) ([]ProviderConfig, *bodyGate, func() int32) {
+				a, ga := countedProvider(t, "a", 0, false, body430)
+				dropper, accepts := droppingProvider(t, "dropper", 1, false)
+				return []ProviderConfig{a, dropper}, ga, accepts.Load
 			},
 			timeout: time.Second, // the dialer retries for ~45s; the deadline just bounds the test
+			second: func(t *testing.T, p *Pool, ctx context.Context, err error) {
+				// Its connections die before a greeting, so it can never have answered 430.
+				if providerUnavailable(p, "dropper") != 0 {
+					t.Fatal("a provider that never greets cannot have answered 430")
+				}
+			},
 		},
-		"430 plus unreachable backup": {
-			providers: func(t *testing.T) []ProviderConfig {
-				return []ProviderConfig{scriptedProvider(t, "a", 0, false, body430), unreachableProvider(t, "dead", 1, true)}
+		"430 plus connection failure on a backup": {
+			providers: func(t *testing.T) ([]ProviderConfig, *bodyGate, func() int32) {
+				a, ga := countedProvider(t, "a", 0, false, body430)
+				dropper, accepts := droppingProvider(t, "dropper", 1, true)
+				return []ProviderConfig{a, dropper}, ga, accepts.Load
 			},
 			timeout: time.Second,
+			second: func(t *testing.T, p *Pool, ctx context.Context, err error) {
+				if providerUnavailable(p, "dropper") != 0 {
+					t.Fatal("a backup that never greets cannot have answered 430")
+				}
+			},
 		},
 		"430 plus transient failure": {
-			providers: func(t *testing.T) []ProviderConfig {
-				return []ProviderConfig{scriptedProvider(t, "a", 0, false, body430), scriptedProvider(t, "b", 1, false, body502)}
+			providers: func(t *testing.T) ([]ProviderConfig, *bodyGate, func() int32) {
+				a, ga := countedProvider(t, "a", 0, false, body430)
+				b, gb := countedProvider(t, "b", 1, false, body502)
+				return []ProviderConfig{a, b}, ga, gb.bodies.Load
+			},
+			second: func(t *testing.T, p *Pool, ctx context.Context, err error) {
+				var tpErr *textproto.Error
+				if !errors.As(err, &tpErr) || tpErr.Code != 502 {
+					t.Fatalf("the second provider's 502 must be what the fetch reports, got %v", err)
+				}
 			},
 		},
 		"430 plus timeout": {
-			providers: func(t *testing.T) []ProviderConfig {
-				return []ProviderConfig{scriptedProvider(t, "a", 0, false, body430), scriptedProvider(t, "hang", 1, false, bodyHang)}
+			providers: func(t *testing.T) ([]ProviderConfig, *bodyGate, func() int32) {
+				a, ga := countedProvider(t, "a", 0, false, body430)
+				hang, gh := countedProvider(t, "hang", 1, false, bodyHang)
+				return []ProviderConfig{a, hang}, ga, gh.bodies.Load
 			},
 			timeout: 500 * time.Millisecond,
+			second: func(t *testing.T, p *Pool, ctx context.Context, err error) {
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					t.Fatalf("the hung provider should have run the caller out of time, ctx.Err() = %v", ctx.Err())
+				}
+			},
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			p := newTestPool(t, tc.providers(t)...)
+			cfgs, ga, contacted := tc.providers(t)
+			p := newTestPool(t, cfgs...)
 			ctx := context.Background()
 			if tc.timeout > 0 {
 				var cancel context.CancelFunc
@@ -323,6 +441,18 @@ func TestFetchIncompleteCoverageIsNotDefinitive(t *testing.T) {
 			if p.isKnownMissing("partial-1") {
 				t.Fatal("incomplete coverage must not be admitted to the negative cache")
 			}
+			if proofOf(p, "partial-1") != nil {
+				t.Fatal("incomplete coverage must not leave verified proof")
+			}
+
+			// The outcomes the case is about really happened.
+			if ga.bodies.Load() == 0 || providerUnavailable(p, "a") == 0 {
+				t.Fatalf("provider a never answered 430 (BODY commands %d, recorded 430s %d)", ga.bodies.Load(), providerUnavailable(p, "a"))
+			}
+			if contacted() == 0 {
+				t.Fatal("the second provider was never contacted, so its outcome was not exercised")
+			}
+			tc.second(t, p, ctx, err)
 		})
 	}
 }
@@ -499,27 +629,38 @@ func TestReloadBetweenCoverageCheckAndPublicationDoesNotVouch(t *testing.T) {
 func TestSharedFlightDoesNotVouchAcrossViews(t *testing.T) {
 	a := scriptedProvider(t, "a", 0, false, body430)
 	bHost, bPort, bGroups, stopB := startGroupScriptedNNTPServer(t, "211 group selected\r\n", bodyOK)
-	defer stopB()
+	// t.Cleanup, not defer: a deferred shutdown would run before the cleanup
+	// below that releases and joins the workers, which then fetch from a dead pool.
+	t.Cleanup(stopB)
 	bPool := nntp.NewClientPool(bHost, bPort, false, "b", "pass", 2)
-	defer bPool.Shutdown()
+	t.Cleanup(bPool.Shutdown)
 	root := newTestPool(t, a, ProviderConfig{ID: "b", Priority: 1, ClientPool: bPool})
 	viewA, viewAB := root.Subset([]string{"a"}), root.Subset([]string{"a", "b"})
 
-	started, release := make(chan struct{}), make(chan struct{})
+	// Registered after the providers (cleanup runs last-in first-out) and before
+	// either goroutine starts: if a check below calls t.Fatal, cleanup lets the
+	// leader go and joins both workers before the providers go away.
+	hold := newBodyGate(t)
+	// Every fetch in this test runs under ctx, so cleanup (release, then cancel,
+	// then join) can also end a fetch stalled on a provider instead of waiting
+	// out its socket deadline. It is canceled only there: attest reads it last.
+	ctx, cancel := context.WithCancel(context.Background())
+	workers := newFlightWorkers(t, hold, cancel)
+	started := make(chan struct{})
 	leader := make(chan error, 1)
-	go func() {
+	workers.run(func() {
 		_, err, _ := viewA.sf.Do("shared-1", func() (interface{}, error) {
 			close(started)
-			<-release
-			return viewA.fetchSegmentOnce(context.Background(), "shared-1", &nzb.Segment{ID: "shared-1"}, testGroupList)
+			<-hold.release
+			return viewA.fetchSegmentOnce(ctx, "shared-1", &nzb.Segment{ID: "shared-1"}, testGroupList)
 		})
-		leader <- viewA.attest(context.Background(), err)
-	}()
+		leader <- viewA.attest(ctx, err)
+	})
 	<-started
 	joiner := make(chan error, 1)
-	go func() { joiner <- fetchOnce(viewAB, context.Background(), "shared-1") }()
+	workers.run(func() { joiner <- fetchOnce(viewAB, ctx, "shared-1") })
 	waitForWaiters(t, 1)
-	close(release)
+	hold.Open()
 
 	if err := <-leader; !isDefinitive(err) {
 		t.Fatalf("the view that produced the evidence should keep the marker: %v", err)
@@ -563,23 +704,28 @@ func TestCanceledCallerWithWarmEntryGetsLegacyErrorWithoutMarker(t *testing.T) {
 func TestCanceledWaiterDoesNotReceiveMarkerFromSharedFlight(t *testing.T) {
 	p := newTestPool(t, scriptedProvider(t, "a", 0, false, body430))
 
-	started, release := make(chan struct{}), make(chan struct{})
-	go func() {
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	defer cancel() // on every exit path; the explicit cancel below is the one the test is about
+	// Same ordering as the cross-view test: release, cancel, join, then the
+	// provider registered above shuts down.
+	hold := newBodyGate(t)
+	workers := newFlightWorkers(t, hold, cancel)
+	started := make(chan struct{})
+	workers.run(func() {
 		_, _, _ = p.sf.Do("waiter-1", func() (interface{}, error) {
 			close(started)
-			<-release
+			<-hold.release
 			return p.fetchSegmentOnce(context.Background(), "waiter-1", &nzb.Segment{ID: "waiter-1"}, testGroupList)
 		})
-	}()
+	})
 	<-started
 
-	canceledCtx, cancel := context.WithCancel(context.Background())
 	canceled, live := make(chan error, 1), make(chan error, 1)
-	go func() { canceled <- fetchOnce(p, canceledCtx, "waiter-1") }()
-	go func() { live <- fetchOnce(p, context.Background(), "waiter-1") }()
+	workers.run(func() { canceled <- fetchOnce(p, canceledCtx, "waiter-1") })
+	workers.run(func() { live <- fetchOnce(p, context.Background(), "waiter-1") })
 	waitForWaiters(t, 2)
 	cancel()
-	close(release)
+	hold.Open()
 
 	cerr, lerr := <-canceled, <-live
 	if !nntp.IsArticleNotFound(cerr) || isDefinitive(cerr) {
@@ -792,14 +938,27 @@ func TestCancellationDuringAttestationStampWins(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			p.mu.Lock() // p.stamp, inside attest, now blocks on RLock
+			// The unlock below runs when the function scope exits, before cleanup;
+			// cleanup then cancels and joins the attest goroutine, so it cannot
+			// still be on its way out when the next test scans stacks.
+			var attester sync.WaitGroup
+			t.Cleanup(func() { cancel(); attester.Wait() })
 			res := make(chan error, 1)
-			go func() { res <- p.attest(ctx, legacy) }()
-			waitForGoroutines(t, 1, "(*Pool).stamp", "RWMutex")
-			if tc.cancel {
-				cancel()
-			}
-			p.mu.Unlock()
+			func() {
+				p.mu.Lock() // p.stamp, inside attest, now blocks on RLock
+				// Deferred, so a t.Fatal in the stack wait still unlocks and lets
+				// the attest goroutine run to its end.
+				defer p.mu.Unlock()
+				attester.Add(1)
+				go func() {
+					defer attester.Done()
+					res <- p.attest(ctx, legacy)
+				}()
+				waitForGoroutines(t, 1, "(*Pool).stamp", "RWMutex")
+				if tc.cancel {
+					cancel()
+				}
+			}()
 
 			err := <-res
 			if tc.cancel {
