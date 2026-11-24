@@ -83,7 +83,7 @@ func (s *Server) tmdbCertAge(mediaType string, tmdbID int) (age int, known bool)
 // previewCertAge resolves a catalog preview's certification from its id, via
 // whichever cached client the id scheme addresses. Used only by the local
 // catalogs — the provider catalogs filter from data they already fetched.
-func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, contentType string) (age int, known bool) {
+func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, contentType string, trustTMDBID bool) (age int, known bool) {
 	rt := s.runtime()
 	if kitsuID, ok := strings.CutPrefix(preview.ID, "kitsu:"); ok {
 		if s.kitsuClient == nil {
@@ -110,9 +110,12 @@ func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, conten
 		mediaType = "movie"
 	}
 	tmdbID := 0
+	if trustTMDBID {
+		tmdbID = preview.tmdbID // MDBList read it off the same card as the IMDb id: no Find needed
+	}
 	if raw, ok := strings.CutPrefix(preview.ID, "tmdb:"); ok {
 		tmdbID, _ = strconv.Atoi(raw)
-	} else if strings.HasPrefix(preview.ID, "tt") && rt.tmdbClient != nil {
+	} else if strings.HasPrefix(preview.ID, "tt") && tmdbID <= 0 && rt.tmdbClient != nil {
 		if find, err := rt.tmdbClient.Find(preview.ID, "imdb_id"); err == nil {
 			if res, ok := pickFindResult(find, contentType); ok {
 				tmdbID = res.ID
@@ -127,6 +130,13 @@ func (s *Server) previewCertAge(ctx context.Context, preview MetaPreview, conten
 // fan-out; every lookup lands in the response cache). Used by the local
 // catalogs, whose rows carry mixed id schemes.
 func (s *Server) filterPreviewsByCertification(ctx context.Context, cap certification.Cap, previews []MetaPreview, contentType string) []MetaPreview {
+	return s.filterPreviewsByCertificationWith(ctx, cap, previews, contentType, false)
+}
+
+// filterPreviewsByCertificationWith is filterPreviewsByCertification, optionally
+// trusting the TMDB id a row already carries (MDBList). Other sources that set
+// it, such as TVDB search, keep resolving through their own ids.
+func (s *Server) filterPreviewsByCertificationWith(ctx context.Context, cap certification.Cap, previews []MetaPreview, contentType string, trustTMDBID bool) []MetaPreview {
 	if len(previews) == 0 {
 		return previews
 	}
@@ -139,7 +149,7 @@ func (s *Server) filterPreviewsByCertification(ctx context.Context, cap certific
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			allowed[i] = cap.Allows(s.previewCertAge(ctx, previews[i], contentType))
+			allowed[i] = cap.Allows(s.previewCertAge(ctx, previews[i], contentType, trustTMDBID))
 		}(i)
 	}
 	wg.Wait()
