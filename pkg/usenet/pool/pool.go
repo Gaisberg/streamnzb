@@ -541,8 +541,15 @@ type ProviderArticleStats struct {
 // came from a fetch that verified genuine 430s across the whole provider
 // configuration; legacy and STAT-origin entries leave it nil and never back
 // ErrArticleMissingEverywhere.
+//
+// The cache key joins provider signature and message ID with "|", so different
+// (provider set, article) pairs can share a key when a provider ID contains
+// that character. proof therefore carries the normalized message ID it was
+// gathered for, and knownMissing hands the proof back only to a lookup for the
+// same article. id is set exactly when proof is.
 type missingEntry struct {
 	at    time.Time
+	id    string
 	proof evidenceStamp
 }
 
@@ -582,10 +589,10 @@ func (p *permanentMissingSegments) delete(key string) {
 	p.mu.Unlock()
 }
 
-func (p *permanentMissingSegments) add(key string, proof evidenceStamp) {
+func (p *permanentMissingSegments) add(key, id string, proof evidenceStamp) {
 	now := time.Now()
 	p.mu.Lock()
-	p.m[key] = missingEntry{at: now, proof: proof}
+	p.m[key] = missingEntry{at: now, id: id, proof: proof}
 	for len(p.m) > p.maxEntries {
 		var oldestKey string
 		var oldest time.Time
@@ -634,6 +641,11 @@ func (p *Pool) knownMissing(messageID string) (bool, evidenceStamp) {
 		return false, nil
 	}
 	e, ok := p.missing.get(p.missingKey(messageID))
+	if e.proof != nil && e.id != strings.TrimSpace(messageID) {
+		// Same key, different article: still a legacy cache hit, but the proof
+		// was gathered for another message ID and vouches for nothing here.
+		return ok, nil
+	}
 	return ok, e.proof
 }
 
@@ -645,12 +657,17 @@ func (p *Pool) markKnownMissing(messageID string) {
 // attaches proof for later attestation. The entry is keyed by the provider set
 // at publication time; the proof still names the configuration that was
 // actually queried, so a reload in between leaves a proof that no longer
-// matches rather than one that vouches for the new set.
+// matches rather than one that vouches for the new set. The entry also records
+// which article the proof is for; see missingEntry.
 func (p *Pool) markKnownMissingProof(messageID string, proof evidenceStamp) {
 	if p == nil || p.missing == nil {
 		return
 	}
-	p.missing.add(p.missingKey(messageID), proof)
+	id := ""
+	if proof != nil {
+		id = strings.TrimSpace(messageID)
+	}
+	p.missing.add(p.missingKey(messageID), id, proof)
 }
 
 func (p *Pool) clearKnownMissing(messageID string) {

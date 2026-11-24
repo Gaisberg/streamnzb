@@ -1,12 +1,15 @@
 package pool
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/textproto"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,9 +52,61 @@ func unreachableProvider(t *testing.T, id string, priority int, backup bool) Pro
 	return ProviderConfig{ID: id, Priority: priority, IsBackup: backup, ClientPool: cp}
 }
 
-// gatedProvider answers BODY with bodyResponse only once release is closed, and
-// signals got when a BODY arrives, so a test can act while a fetch is in flight.
-func gatedProvider(t *testing.T, id string, priority int, bodyResponse string, got chan<- struct{}, release <-chan struct{}) ProviderConfig {
+// bodyGate holds a gatedProvider's BODY reply until the test lets it go. The
+// test waits for the BODY to arrive with Wait, acts while the fetch is in
+// flight, then calls Open. Open is idempotent and also runs at test cleanup, so
+// the server's handler can always exit, whichever way the test ends.
+type bodyGate struct {
+	got     chan struct{}
+	release chan struct{}
+	once    sync.Once
+	bound   time.Duration
+}
+
+func newBodyGate(t *testing.T) *bodyGate {
+	t.Helper()
+	g := &bodyGate{got: make(chan struct{}, 1), release: make(chan struct{}), bound: 30 * time.Second}
+	t.Cleanup(g.Open)
+	return g
+}
+
+func (g *bodyGate) Open() { g.once.Do(func() { close(g.release) }) }
+
+// Wait returns once a BODY command has reached the gate and the fetch is still
+// running. A fetch that ends first is reported with its own result rather than
+// left to time the package out; the bound only covers a fetch that neither
+// reaches the gate nor ends.
+func (g *bodyGate) Wait(t *testing.T, done <-chan error) {
+	t.Helper()
+	if err := g.await(done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (g *bodyGate) await(done <-chan error) error {
+	select {
+	case <-g.got:
+		// The BODY notification is buffered, so it can be ready together with a
+		// fetch that has already finished; select picks either. The test is only
+		// about to act on a fetch that is still in flight, so look again.
+		select {
+		case err := <-done:
+			return fmt.Errorf("fetch had already ended when its BODY was observed: %v", err)
+		default:
+			return nil
+		}
+	case err := <-done:
+		return fmt.Errorf("fetch ended before a BODY reached the gate: %v", err)
+	case <-time.After(g.bound):
+		return errors.New("no BODY reached the gate and the fetch did not end")
+	}
+}
+
+// gatedProvider answers BODY with bodyResponse only once g is opened, and
+// signals g when a BODY arrives, so a test can act while a fetch is in flight.
+// Commands are read as whole lines: a command split across TCP reads waits for
+// its end, and several arriving in one read are answered one by one.
+func gatedProvider(t *testing.T, id string, priority int, bodyResponse string, g *bodyGate) ProviderConfig {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -66,13 +121,13 @@ func gatedProvider(t *testing.T, id string, priority int, bodyResponse string, g
 			go func(c net.Conn) {
 				defer c.Close()
 				_, _ = c.Write([]byte("200 Welcome\r\n"))
-				buf := make([]byte, 1024)
+				r := bufio.NewReader(c)
 				for {
-					n, err := c.Read(buf)
+					cmd, err := r.ReadString('\n')
 					if err != nil {
 						return
 					}
-					switch cmd := string(buf[:n]); {
+					switch {
 					case strings.HasPrefix(cmd, "AUTHINFO USER"):
 						_, _ = c.Write([]byte("381 PASS required\r\n"))
 					case strings.HasPrefix(cmd, "AUTHINFO PASS"):
@@ -81,10 +136,10 @@ func gatedProvider(t *testing.T, id string, priority int, bodyResponse string, g
 						_, _ = c.Write([]byte("211 group selected\r\n"))
 					case strings.HasPrefix(cmd, "BODY"):
 						select {
-						case got <- struct{}{}:
+						case g.got <- struct{}{}:
 						default:
 						}
-						<-release
+						<-g.release
 						_, _ = c.Write([]byte(bodyResponse))
 					default:
 						_, _ = c.Write([]byte("500 Unknown command\r\n"))
@@ -389,19 +444,18 @@ func TestSameIDEndpointReplacementInvalidatesWarmMarker(t *testing.T) {
 }
 
 func TestEndpointReplacementDuringFetchIsNotDefinitive(t *testing.T) {
-	got := make(chan struct{}, 1)
-	release := make(chan struct{})
-	a := gatedProvider(t, "a", 0, body430, got, release)
+	g := newBodyGate(t)
+	a := gatedProvider(t, "a", 0, body430, g)
 	hostB, portB, stopB := startScriptedNNTPServer(t, bodyOK)
 	defer stopB()
 	p := newTestPool(t, a)
 
 	done := make(chan error, 1)
 	go func() { done <- fetchOnce(p, context.Background(), "mid-1") }()
-	<-got // the old endpoint has the BODY command
+	g.Wait(t, done) // the old endpoint has the BODY command
 	a.ClientPool.Reconfigure(hostB, portB, false, "a", "pass", 2)
 	p.UpdateProviders([]ProviderConfig{a})
-	close(release)
+	g.Open()
 
 	err := <-done
 	if !nntp.IsArticleNotFound(err) {
@@ -416,8 +470,11 @@ func TestEndpointReplacementDuringFetchIsNotDefinitive(t *testing.T) {
 }
 
 // A reload that lands after coverage was checked but before the entry is
-// published stores proof for the old configuration under the new key. The proof
-// no longer matches, so the hit is unmarked.
+// published stores proof for the old configuration under the same key, because
+// providerSignature uses provider IDs only and this test keeps ID "a". The
+// client pool's generation no longer matches, so the hit is unmarked. Proof
+// filed under a different key is covered by
+// TestVerifiedProofIsBoundToItsArticle.
 func TestReloadBetweenCoverageCheckAndPublicationDoesNotVouch(t *testing.T) {
 	a := scriptedProvider(t, "a", 0, false, body430)
 	hostB, portB, stopB := startScriptedNNTPServer(t, bodyOK)
@@ -580,21 +637,20 @@ func TestPublishedProofNamesEveryAnsweringProvider(t *testing.T) {
 // ends. IDs, start and end configuration all look untouched, but the original
 // "b" was never asked.
 func TestPoolReplacedThenRestoredDuringFetchIsNotDefinitive(t *testing.T) {
-	gotA, relA := make(chan struct{}, 1), make(chan struct{})
-	gotB2, relB2 := make(chan struct{}, 1), make(chan struct{})
-	a := gatedProvider(t, "a", 0, body430, gotA, relA)
+	gA, gB2 := newBodyGate(t), newBodyGate(t)
+	a := gatedProvider(t, "a", 0, body430, gA)
 	b1 := scriptedProvider(t, "b", 1, false, body430)
-	b2 := gatedProvider(t, "b", 1, body430, gotB2, relB2)
+	b2 := gatedProvider(t, "b", 1, body430, gB2)
 	p := newTestPool(t, a, b1)
 
 	done := make(chan error, 1)
 	go func() { done <- fetchOnce(p, context.Background(), "restore-1") }()
-	<-gotA
+	gA.Wait(t, done)
 	p.UpdateProviders([]ProviderConfig{a, b2})
-	close(relA)
-	<-gotB2 // the replacement, not the original, holds the BODY
+	gA.Open()
+	gB2.Wait(t, done) // the replacement, not the original, holds the BODY
 	p.UpdateProviders([]ProviderConfig{a, b1})
-	close(relB2)
+	gB2.Open()
 
 	err := <-done
 	if !nntp.IsArticleNotFound(err) {
@@ -614,17 +670,17 @@ func TestPoolReplacedThenRestoredDuringFetchIsNotDefinitive(t *testing.T) {
 // The same replacement left in place did answer for the configuration that is
 // current at the end, so nothing is withheld.
 func TestReplacementThatAnsweredIsDefinitiveForCurrentView(t *testing.T) {
-	gotA, relA := make(chan struct{}, 1), make(chan struct{})
-	a := gatedProvider(t, "a", 0, body430, gotA, relA)
+	gA := newBodyGate(t)
+	a := gatedProvider(t, "a", 0, body430, gA)
 	b1 := scriptedProvider(t, "b", 1, false, body430)
 	b2 := scriptedProvider(t, "b", 1, false, body430)
 	p := newTestPool(t, a, b1)
 
 	done := make(chan error, 1)
 	go func() { done <- fetchOnce(p, context.Background(), "kept-1") }()
-	<-gotA
+	gA.Wait(t, done)
 	p.UpdateProviders([]ProviderConfig{a, b2})
-	close(relA)
+	gA.Open()
 
 	if err := <-done; !isDefinitive(err) {
 		t.Fatalf("every provider now configured answered a typed 430: %v", err)
@@ -650,16 +706,16 @@ func TestProviderAddedOrRemovedDuringFetchProofMatchesFinalView(t *testing.T) {
 			func(a, b ProviderConfig) []ProviderConfig { return []ProviderConfig{a} }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, rel := make(chan struct{}, 1), make(chan struct{})
-			a := gatedProvider(t, "a", 0, body430, got, rel)
+			g := newBodyGate(t)
+			a := gatedProvider(t, "a", 0, body430, g)
 			b := scriptedProvider(t, "b", 1, false, body430)
 			p := newTestPool(t, tc.start(a, b)...)
 
 			done := make(chan error, 1)
 			go func() { done <- fetchOnce(p, context.Background(), "churn-1") }()
-			<-got
+			g.Wait(t, done)
 			p.UpdateProviders(tc.end(a, b))
-			close(rel)
+			g.Open()
 
 			if err := <-done; !isDefinitive(err) {
 				t.Fatalf("the final configuration was fully answered: %v", err)
@@ -674,9 +730,9 @@ func TestProviderAddedOrRemovedDuringFetchProofMatchesFinalView(t *testing.T) {
 // A backup answering from a configuration that was re-pointed mid-command must
 // not be counted for the new one.
 func TestBackupReconfiguredDuringFetchIsNotDefinitive(t *testing.T) {
-	got, rel := make(chan struct{}, 1), make(chan struct{})
+	g := newBodyGate(t)
 	a := scriptedProvider(t, "a", 0, false, body430)
-	c := gatedProvider(t, "c", 1, body430, got, rel)
+	c := gatedProvider(t, "c", 1, body430, g)
 	c.IsBackup = true
 	hostN, portN, stopN := startScriptedNNTPServer(t, bodyOK)
 	defer stopN()
@@ -684,10 +740,10 @@ func TestBackupReconfiguredDuringFetchIsNotDefinitive(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- fetchOnce(p, context.Background(), "backup-1") }()
-	<-got
+	g.Wait(t, done)
 	c.ClientPool.Reconfigure(hostN, portN, false, "c", "pass", 2)
 	p.UpdateProviders([]ProviderConfig{a, c})
-	close(rel)
+	g.Open()
 
 	err := <-done
 	if !nntp.IsArticleNotFound(err) || isDefinitive(err) {
@@ -827,4 +883,162 @@ func TestAttestationLiveFetchAndVerifiedCacheAgree(t *testing.T) {
 	if len(AttemptedProviderHosts(live)) == 0 || !nntp.IsArticleNotFound(cached) {
 		t.Fatal("attempted hosts (live) and legacy classification (cached) must survive")
 	}
+}
+
+// ---- Cached proof is bound to its article ---------------------------------
+
+// The cache key is providerSignature + "|" + message ID, so with a provider named
+// "p|x" the pair (provider "p", article "x|y@host") and the pair (provider
+// "p|x", article "y@host") share one key. A proof filed under that key by a
+// reload that landed during publication names provider "p" for article
+// "y@host"; after "p" is restored, a lookup of "x|y@host" reaches it and the
+// stamps match. The proof must not travel to the other article.
+func TestVerifiedProofIsBoundToItsArticle(t *testing.T) {
+	provP, srvP := testProvider(t, "p", true)
+	provPX, srvPX := testProvider(t, "p|x", true)
+	p := newTestPool(t, provP)
+
+	// A real fetch: typed 430 from the only provider, verified entry under "p|y@host".
+	if err := fetchOnce(p, context.Background(), "y@host"); !isDefinitive(err) {
+		t.Fatalf("setup: expected a verified miss, got %v", err)
+	}
+	proof := proofOf(p, "y@host")
+	if proof == nil {
+		t.Fatal("setup: the fetch should have published a proof")
+	}
+
+	p.UpdateProviders([]ProviderConfig{provPX}) // the provider ID becomes "p|x"
+	p.markKnownMissingProof("y@host", proof)    // publication lands after the reload: key "p|x|y@host"
+	p.UpdateProviders([]ProviderConfig{provP})  // provider "p" restored: same pool, same generation
+	bodiesP, bodiesPX := srvP.bodies.Load(), srvPX.bodies.Load()
+
+	err := fetchOnce(p, context.Background(), "x|y@host") // key "p|x|y@host" again
+	if err == nil || !nntp.IsArticleNotFound(err) || !strings.Contains(err.Error(), "(cached)") {
+		t.Fatalf("the legacy cache hit must be returned unchanged, got %v", err)
+	}
+	if isDefinitive(err) {
+		t.Fatalf("proof gathered for y@host must not vouch for x|y@host: %v", err)
+	}
+	if srvP.bodies.Load() != bodiesP || srvPX.bodies.Load() != bodiesPX {
+		t.Fatal("a legacy cache hit must not send a BODY to anyone")
+	}
+
+	// The entry is still a legacy hit for both articles, but only one owns the proof.
+	if known, got := p.knownMissing("x|y@host"); !known || got != nil {
+		t.Fatalf("colliding lookup: want a legacy hit without proof, got known=%v proof=%v", known, got)
+	}
+	if known, got := p.knownMissing("y@host"); !known || !got.equal(proof) {
+		t.Fatalf("the original article keeps its proof, got known=%v proof=%v", known, got)
+	}
+	if err := fetchOnce(p, context.Background(), "y@host"); !isDefinitive(err) {
+		t.Fatalf("a verified hit for the original article keeps the marker: %v", err)
+	}
+}
+
+// The article an unrelated lookup asks about is fetched as before, and a proof
+// is recorded for the normalized ID whatever whitespace the caller passed.
+func TestVerifiedProofControls(t *testing.T) {
+	provP, srvP := testProvider(t, "p", true)
+	p := newTestPool(t, provP)
+
+	if err := fetchOnce(p, context.Background(), "y@host"); !isDefinitive(err) {
+		t.Fatalf("setup: %v", err)
+	}
+	before := srvP.bodies.Load()
+	err := fetchOnce(p, context.Background(), "other@host")
+	if !isDefinitive(err) || srvP.bodies.Load() != before+1 {
+		t.Fatalf("an unrelated article is queried and earns its own marker: marker=%v bodies=%d", isDefinitive(err), srvP.bodies.Load()-before)
+	}
+
+	p.markKnownMissingProof("  spaced@host ", p.stamp())
+	if _, got := p.knownMissing("spaced@host"); got == nil {
+		t.Fatal("the proof is bound to the normalized message ID, so surrounding whitespace must not lose it")
+	}
+	p.markKnownMissing("legacy@host") // pre-existing and STAT-origin entries carry no proof
+	if known, got := p.knownMissing("legacy@host"); !known || got != nil {
+		t.Fatalf("legacy entry must stay unverified, got known=%v proof=%v", known, got)
+	}
+}
+
+// ---- bodyGate itself --------------------------------------------------------
+
+func TestBodyGateAwait(t *testing.T) {
+	fetchEnded := func(err error) chan error {
+		done := make(chan error, 1)
+		done <- err
+		return done
+	}
+
+	// BODY notification and a finished fetch are both ready: the result of the
+	// fetch has to win, every time, not whichever case select happens to pick.
+	t.Run("finished fetch wins over a ready BODY", func(t *testing.T) {
+		for i := 0; i < 200; i++ {
+			g := newBodyGate(t)
+			g.got <- struct{}{}
+			err := g.await(fetchEnded(errors.New("fetch exploded")))
+			if err == nil || !strings.Contains(err.Error(), "fetch exploded") {
+				t.Fatalf("iteration %d: the completed fetch must be reported with its own error, got %v", i, err)
+			}
+		}
+	})
+
+	t.Run("BODY with the fetch still running", func(t *testing.T) {
+		g := newBodyGate(t)
+		g.got <- struct{}{}
+		if err := g.await(make(chan error)); err != nil {
+			t.Fatalf("a fetch in flight at the gate is the success case, got %v", err)
+		}
+	})
+
+	t.Run("fetch fails before any BODY", func(t *testing.T) {
+		g := newBodyGate(t)
+		err := g.await(fetchEnded(errors.New("dial failed")))
+		if err == nil || !strings.Contains(err.Error(), "dial failed") {
+			t.Fatalf("an early failure is reported at once with its error, got %v", err)
+		}
+	})
+
+	t.Run("bound", func(t *testing.T) {
+		g := newBodyGate(t)
+		g.bound = 10 * time.Millisecond
+		if err := g.await(make(chan error)); err == nil || !strings.Contains(err.Error(), "no BODY reached") {
+			t.Fatalf("a fetch that neither reaches the gate nor ends must hit the bound, got %v", err)
+		}
+	})
+
+	t.Run("Open is idempotent", func(t *testing.T) {
+		g := newBodyGate(t)
+		g.Open()
+		g.Open() // the cleanup opens it a third time
+		select {
+		case <-g.release:
+		default:
+			t.Fatal("Open did not release the gate")
+		}
+	})
+}
+
+// A test that ends while the server is holding a BODY must not leave the handler
+// behind: cleanup opens the gate.
+func TestBodyGateCleanupReleasesHandler(t *testing.T) {
+	t.Run("ends at the gate", func(t *testing.T) {
+		g := newBodyGate(t)
+		p := newTestPool(t, gatedProvider(t, "a", 0, body430, g))
+		done := make(chan error, 1)
+		go func() { done <- fetchOnce(p, context.Background(), "cleanup-1") }()
+		g.Wait(t, done) // returns with the handler parked on release; Open is never called
+	})
+	waitForNoGoroutines(t, "gatedProvider")
+}
+
+// waitForNoGoroutines polls until no goroutine stack mentions sub.
+func waitForNoGoroutines(t *testing.T, sub string) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if !strings.Contains(string(buf[:runtime.Stack(buf, true)]), sub) {
+			return
+		}
+	}
+	t.Fatalf("goroutines in %s are still running", sub)
 }
