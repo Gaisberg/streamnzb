@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/textproto"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +37,170 @@ func (c *countReader) Read(p []byte) (int, error) {
 var (
 	ErrNoProvidersConfigured = errors.New("usenet/pool: no providers configured")
 	ErrNoProvidersAvailable  = errors.New("usenet/pool: no providers available")
+
+	// ErrArticleMissingEverywhere marks a fetch error as definitive for the
+	// caller that received it: every provider in the caller's configuration
+	// answered a genuine NNTP 430 (in this fetch, or in the fetch that filled
+	// the known-missing cache entry), and the caller's context was still live.
+	// A bare 430 proves less — it can come from one provider while others were
+	// never asked, or from decoder text that merely contains "430". Test with
+	// errors.Is; the 430 stays in the chain, so nntp.IsArticleNotFound keeps
+	// matching.
+	//
+	// The claim is point-in-time. It holds for the configuration the caller's
+	// view had when attestation read it, a moment inside the call that returned
+	// the error. It does not say that configuration, or the article's
+	// availability, is unchanged afterwards: a reload can land at any time after
+	// the read, and a consumer must treat the marker as of that instant. When a
+	// change is seen while attestation runs, the marker is withheld instead.
+	ErrArticleMissingEverywhere = errors.New("usenet/pool: article missing on every provider")
 )
+
+// providerStamp names the exact provider configuration a fetch asked: the ID,
+// the client pool behind it, and that pool's dial-target generation. ID alone
+// misses a same-ID endpoint change (ClientPool.Reconfigure keeps the pointer
+// and bumps the generation); the pointer alone misses a replaced pool.
+type providerStamp struct {
+	id  string
+	cp  *nntp.ClientPool
+	gen uint64
+}
+
+type evidenceStamp []providerStamp
+
+// equal reports whether s and o hold the same provider entries, ignoring order.
+// A view's order is only its fetch preference; two views asking the same
+// providers in different orders can share one flight and are covered by the
+// same evidence. Entries match as whole (id, pool, generation) tuples and
+// multiplicity counts, so a changed, replaced, added or removed provider, or a
+// duplicated one, still differs.
+func (s evidenceStamp) equal(o evidenceStamp) bool {
+	if len(s) != len(o) {
+		return false
+	}
+	used := make([]bool, len(o))
+next:
+	for _, a := range s {
+		for j, b := range o {
+			if !used[j] && a == b {
+				used[j] = true
+				continue next
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// stamp snapshots this view's provider configuration: its membership, read in
+// one critical section under the view's lock, then each client pool's
+// generation. The two parts are not read atomically, so a stamp is only
+// meaningful compared against a proof. Equality with a proof still means the
+// configuration equalled it at the membership read, which the following hold
+// for:
+//   - provider slices are immutable once published (UpdateProviders, Subset
+//     and NewPool replace them wholesale, never edit elements), so the copy
+//     taken under the lock cannot change underneath the generation reads;
+//   - a ClientPool's generation only ever increases (Reconfigure is its sole
+//     writer) and does so in the same critical section that changes the dial
+//     target, so a generation equal to the proof's, read later, was equal at
+//     the membership read too;
+//   - a proof's generations come from the connections that answered, whose
+//     origin is fixed at dial (Client.Origin), and no pool's generation is
+//     ever below that of its own connections.
+//
+// No lock is held across the generation reads, and none across network I/O.
+func (p *Pool) stamp() evidenceStamp {
+	p.mu.RLock()
+	providers := p.providers
+	p.mu.RUnlock()
+	s := make(evidenceStamp, len(providers))
+	for i := range providers {
+		s[i] = providerStamp{id: providers[i].ID, cp: providers[i].ClientPool, gen: providers[i].ClientPool.Generation()}
+	}
+	return s
+}
+
+// isProtocol430 reports a typed NNTP 430 response. nntp.IsArticleNotFound also
+// matches error text, which is right for legacy handling but is not evidence:
+// a yEnc size mismatch on a served article reads "expected size 430 but got 431".
+func isProtocol430(err error) bool {
+	var tpErr *textproto.Error
+	return errors.As(err, &tpErr) && tpErr.Code == 430
+}
+
+// missingProof carries verified evidence through the shared fetch. It is not
+// ErrArticleMissingEverywhere: whether the evidence applies is decided per
+// caller by attest, because singleflight hands one result to callers whose
+// provider views and contexts differ.
+type missingProof struct {
+	err   error
+	stamp evidenceStamp
+}
+
+func (e *missingProof) Error() string { return e.err.Error() }
+func (e *missingProof) Unwrap() error { return e.err }
+
+// missingEverywhereError adds ErrArticleMissingEverywhere to an error chain
+// without altering its text or hiding what it wraps.
+type missingEverywhereError struct{ err error }
+
+func (e *missingEverywhereError) Error() string        { return e.err.Error() }
+func (e *missingEverywhereError) Unwrap() error        { return e.err }
+func (e *missingEverywhereError) Is(target error) bool { return target == ErrArticleMissingEverywhere }
+
+// attest adds ErrArticleMissingEverywhere to err when err carries verified
+// evidence for this caller's provider configuration and the caller's context
+// is still live; otherwise it returns err untouched.
+//
+// The configuration is read twice and both reads must equal the proof. That
+// does not make the pair an atomic snapshot, and a reload can still land right
+// after it; it only withholds the marker when a membership or configuration
+// change is visible during attestation. A mismatch is final: there is no retry,
+// so reloads in a loop can only suppress the marker, never delay the caller.
+// The context is read last: p.stamp takes locks and can block, and a
+// cancellation that lands meanwhile must still win.
+func (p *Pool) attest(ctx context.Context, err error) error {
+	var proof *missingProof
+	if err == nil || !errors.As(err, &proof) ||
+		!proof.stamp.equal(p.stamp()) || !proof.stamp.equal(p.stamp()) || ctx.Err() != nil {
+		return err
+	}
+	return &missingEverywhereError{err}
+}
+
+// answeredBy is the provider configuration one connection belongs to, read from
+// the connection itself: the pool's current generation says nothing about the
+// connection a command already ran on.
+func answeredBy(conn *nntp.Client, providerID string) providerStamp {
+	cp, gen := conn.Origin()
+	return providerStamp{id: providerID, cp: cp, gen: gen}
+}
+
+// coveredBy returns this view's current configuration when every provider in it
+// has a genuine 430 on record from exactly that configuration, nil otherwise.
+func (p *Pool) coveredBy(answered evidenceStamp) evidenceStamp {
+	cur := p.stamp()
+	if len(cur) == 0 {
+		return nil
+	}
+	for _, c := range cur {
+		if !slices.Contains(answered, c) {
+			return nil
+		}
+	}
+	return cur
+}
+
+// cachedMissingError is what a known-missing cache hit returns; proof is the
+// entry's, nil when it was not verified.
+func cachedMissingError(messageID string, proof evidenceStamp) error {
+	err := fmt.Errorf("fetch segment %s: 430 No Such Article (cached)", messageID)
+	if proof == nil {
+		return err
+	}
+	return &missingProof{err, proof}
+}
 
 // isArticleNotFound reports whether err indicates 430 No Such Article (article missing on server).
 func isArticleNotFound(err error) bool {
@@ -384,9 +549,35 @@ type ProviderArticleStats struct {
 	UnavailableCount int64
 }
 
+// missingEntry is one negative-cache record. proof is set only when the entry
+// came from a fetch that verified genuine 430s across the whole provider
+// configuration; legacy and STAT-origin entries leave it nil and never back
+// ErrArticleMissingEverywhere.
+//
+// The cache key joins provider signature and message ID with "|", so different
+// (provider set, article) pairs can share a key when a provider ID contains
+// that character. proof therefore carries the normalized message ID it was
+// gathered for, and knownMissing hands the proof back only to a lookup for the
+// same article. id is set exactly when proof is.
+//
+// proof is optional metadata and the cache is newest-write-wins: add replaces
+// the whole entry for a key. A later nil-proof write for the same key (a
+// StatSegment miss or any other legacy write) therefore drops proof a BODY
+// fetch published earlier, and later cache hits return only the legacy
+// article-not-found error, with no ErrArticleMissingEverywhere. Definitive
+// evidence is best-effort: nothing guarantees it survives a concurrent STAT.
+// A STAT miss is never itself evidence. Cached proof can survive a provider
+// reconfiguration. On each use, attest checks the proof against the caller's
+// current provider configuration.
+type missingEntry struct {
+	at    time.Time
+	id    string
+	proof evidenceStamp
+}
+
 type permanentMissingSegments struct {
 	mu         sync.RWMutex
-	m          map[string]time.Time
+	m          map[string]missingEntry
 	maxEntries int
 }
 
@@ -397,15 +588,20 @@ func newPermanentMissingSegments(maxEntries int) *permanentMissingSegments {
 		maxEntries = defaultPermanentMissingMaxEntries
 	}
 	return &permanentMissingSegments{
-		m:          make(map[string]time.Time),
+		m:          make(map[string]missingEntry),
 		maxEntries: maxEntries,
 	}
 }
 
-func (p *permanentMissingSegments) has(key string) bool {
+func (p *permanentMissingSegments) get(key string) (missingEntry, bool) {
 	p.mu.RLock()
-	_, ok := p.m[key]
+	e, ok := p.m[key]
 	p.mu.RUnlock()
+	return e, ok
+}
+
+func (p *permanentMissingSegments) has(key string) bool {
+	_, ok := p.get(key)
 	return ok
 }
 
@@ -415,17 +611,17 @@ func (p *permanentMissingSegments) delete(key string) {
 	p.mu.Unlock()
 }
 
-func (p *permanentMissingSegments) add(key string) {
+func (p *permanentMissingSegments) add(key, id string, proof evidenceStamp) {
 	now := time.Now()
 	p.mu.Lock()
-	p.m[key] = now
+	p.m[key] = missingEntry{at: now, id: id, proof: proof}
 	for len(p.m) > p.maxEntries {
 		var oldestKey string
 		var oldest time.Time
-		for k, insertedAt := range p.m {
-			if oldestKey == "" || insertedAt.Before(oldest) {
+		for k, e := range p.m {
+			if oldestKey == "" || e.at.Before(oldest) {
 				oldestKey = k
-				oldest = insertedAt
+				oldest = e.at
 			}
 		}
 		if oldestKey == "" {
@@ -457,19 +653,43 @@ func (p *Pool) missingKey(messageID string) string {
 }
 
 func (p *Pool) isKnownMissing(messageID string) bool {
+	known, _ := p.knownMissing(messageID)
+	return known
+}
+
+// knownMissing is isKnownMissing plus the entry's proof, nil when unverified.
+func (p *Pool) knownMissing(messageID string) (bool, evidenceStamp) {
 	if p == nil || p.missing == nil {
-		return false
+		return false, nil
 	}
-	key := p.missingKey(messageID)
-	return p.missing.has(key)
+	e, ok := p.missing.get(p.missingKey(messageID))
+	if e.proof != nil && e.id != strings.TrimSpace(messageID) {
+		// Same key, different article: still a legacy cache hit, but the proof
+		// was gathered for another message ID and vouches for nothing here.
+		return ok, nil
+	}
+	return ok, e.proof
 }
 
 func (p *Pool) markKnownMissing(messageID string) {
+	p.markKnownMissingProof(messageID, nil)
+}
+
+// markKnownMissingProof records the miss exactly as markKnownMissing does and
+// attaches proof for later attestation. The entry is keyed by the provider set
+// at publication time; the proof still names the configuration that was
+// actually queried, so a reload in between leaves a proof that no longer
+// matches rather than one that vouches for the new set. The entry also records
+// which article the proof is for; see missingEntry.
+func (p *Pool) markKnownMissingProof(messageID string, proof evidenceStamp) {
 	if p == nil || p.missing == nil {
 		return
 	}
-	key := p.missingKey(messageID)
-	p.missing.add(key)
+	id := ""
+	if proof != nil {
+		id = strings.TrimSpace(messageID)
+	}
+	p.missing.add(p.missingKey(messageID), id, proof)
 }
 
 func (p *Pool) clearKnownMissing(messageID string) {
@@ -981,7 +1201,9 @@ func (p *Pool) FetchSegment(ctx context.Context, segment *nzb.Segment, groups []
 		return p.fetchSegmentOnce(ctx, messageID, segment, groups)
 	})
 	if err != nil {
-		return SegmentData{}, err
+		// The flight may be shared with callers on other views or contexts, so
+		// the marker is decided here, per caller.
+		return SegmentData{}, p.attest(ctx, err)
 	}
 	return v.(SegmentData), nil
 }
@@ -1000,8 +1222,8 @@ func (p *Pool) FetchSegmentFirst(ctx context.Context, segment *nzb.Segment, grou
 	if messageID == "" {
 		return SegmentData{}, fmt.Errorf("empty segment message ID")
 	}
-	if p.isKnownMissing(messageID) {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: 430 No Such Article (cached)", messageID)
+	if known, proof := p.knownMissing(messageID); known {
+		return SegmentData{}, p.attest(ctx, cachedMissingError(messageID, proof))
 	}
 	if data, ok := p.cache.Get(messageID); ok {
 		logger.Trace("fetch segment cache hit", "message_id", messageID)
@@ -1241,6 +1463,11 @@ type tierResult struct {
 	notFoundErr error
 	lastErr     error
 	otherErr    bool
+	// textOnly430 is set when a backup's "not found" was only error text
+	// containing 430, not a typed NNTP response.
+	textOnly430 bool
+	// answered holds the typed 430s with the configuration that gave each.
+	answered evidenceStamp
 	// transientErr keeps the last non-430 failure so a mixed outcome can be
 	// reported as transient rather than as a proven hole.
 	transientErr error
@@ -1270,6 +1497,7 @@ func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []
 		host := p.Host(providerID)
 		tier.hosts = appendUniqueHosts(tier.hosts, host)
 		tier.providerIDs = appendUniqueHosts(tier.providerIDs, providerID)
+		origin := answeredBy(conn, providerID)
 		// Excluded whatever happens next: one turn per backup, no second lap.
 		exclude = append(exclude, providerID)
 
@@ -1303,6 +1531,11 @@ func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []
 			if tier.notFoundErr == nil {
 				tier.notFoundErr = err
 			}
+			if isProtocol430(err) {
+				tier.answered = append(tier.answered, origin)
+			} else {
+				tier.textOnly430 = true
+			}
 			continue
 		}
 		tier.otherErr = true
@@ -1311,8 +1544,11 @@ func (p *Pool) fetchFromBackups(ctx context.Context, messageID string, groups []
 }
 
 func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *nzb.Segment, groups []string) (SegmentData, error) {
-	if p.isKnownMissing(messageID) {
-		return SegmentData{}, fmt.Errorf("fetch segment %s: 430 No Such Article (cached)", messageID)
+	// The provider configuration this fetch starts under; see the proof check
+	// at the end. The cached result is returned unattested: this runs inside the
+	// shared flight, and FetchSegment attests per caller.
+	if known, proof := p.knownMissing(messageID); known {
+		return SegmentData{}, cachedMissingError(messageID, proof)
 	}
 	if data, ok := p.cache.Get(messageID); ok {
 		logger.Trace("fetch segment cache hit", "message_id", messageID)
@@ -1341,6 +1577,8 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 	var attemptedIDs []string
 	var articleNotFoundErr error
 	sawNonArticleNotFound := false
+	sawTextOnly430 := false
+	var answered evidenceStamp // typed 430s, each tagged with the connection's own configuration
 	maxAttempts := primaryCount
 	if maxAttempts < 3 {
 		maxAttempts = 3
@@ -1368,6 +1606,7 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 		host := p.Host(providerID)
 		attempted = appendUniqueHosts(attempted, host)
 		attemptedIDs = appendUniqueHosts(attemptedIDs, providerID)
+		origin := answeredBy(conn, providerID)
 
 		data, err := func() (SegmentData, error) {
 			// Interrupt pending body read if session is closed/cancelled.
@@ -1393,6 +1632,11 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 				p.record430Error(providerID)
 				if articleNotFoundErr == nil {
 					articleNotFoundErr = err
+				}
+				if isProtocol430(err) {
+					answered = append(answered, origin)
+				} else {
+					sawTextOnly430 = true
 				}
 			} else {
 				sawNonArticleNotFound = true
@@ -1431,17 +1675,33 @@ func (p *Pool) fetchSegmentOnce(ctx context.Context, messageID string, segment *
 			lastTransientErr = tier.transientErr
 		}
 	}
+	if tier.textOnly430 {
+		sawTextOnly430 = true
+	}
+	answered = append(answered, tier.answered...)
 	if tier.lastErr != nil {
 		lastErr = tier.lastErr
 	}
 
 	if articleNotFoundErr != nil && !sawNonArticleNotFound {
+		missErr := fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr)
 		if p.attemptedAllProviderIDs(attemptedIDs) {
-			p.markKnownMissing(messageID)
+			// Cache admission is the pre-existing rule. The proof is new: it
+			// exists only if every provider in the configuration current now
+			// answered a typed 430 from that very configuration (the connection's
+			// own pool and generation), so a pool swapped in, out or back during
+			// the fetch cannot lend its answer to another.
+			var proof evidenceStamp
+			if !sawTextOnly430 {
+				if proof = p.coveredBy(answered); proof != nil {
+					missErr = &missingProof{missErr, proof}
+				}
+			}
+			p.markKnownMissingProof(messageID, proof)
 		}
 		// One summary line per genuinely-missing segment, instead of one per provider attempt.
 		logger.Debug("fetch segment missing on all providers", "message_id", messageID, "providers", attempted)
-		return SegmentData{}, wrapAttemptedProviders(fmt.Errorf("fetch segment %s: %w", messageID, articleNotFoundErr), attempted)
+		return SegmentData{}, wrapAttemptedProviders(missErr, attempted)
 	}
 	if lastErr != nil {
 		// A mixed outcome — some providers said 430, another failed weaker —
