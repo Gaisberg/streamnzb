@@ -677,6 +677,186 @@ func TestSharedFlightDoesNotVouchAcrossViews(t *testing.T) {
 	}
 }
 
+// ---- Provider order is not part of the evidence ----------------------------
+
+func TestEvidenceStampEqualIgnoresOrderOnly(t *testing.T) {
+	a, b, c := scriptedProvider(t, "a", 0, false, body430), scriptedProvider(t, "b", 1, false, body430), scriptedProvider(t, "c", 2, false, body430)
+	a2 := scriptedProvider(t, "a", 0, false, body430) // same ID, another pool
+	st := func(p ProviderConfig) providerStamp {
+		return providerStamp{id: p.ID, cp: p.ClientPool, gen: p.ClientPool.Generation()}
+	}
+	sa, sb, sc, sa2 := st(a), st(b), st(c), st(a2)
+	bumped := sa
+	bumped.gen++
+
+	for _, tc := range []struct {
+		name string
+		x, y evidenceStamp
+		want bool
+	}{
+		{"identical", evidenceStamp{sa, sb}, evidenceStamp{sa, sb}, true},
+		{"reversed", evidenceStamp{sa, sb}, evidenceStamp{sb, sa}, true},
+		{"rotated", evidenceStamp{sa, sb, sc}, evidenceStamp{sb, sc, sa}, true},
+		{"duplicates reordered", evidenceStamp{sa, sb, sa}, evidenceStamp{sa, sa, sb}, true},
+		{"same ID on two pools, reordered", evidenceStamp{sa, sa2}, evidenceStamp{sa2, sa}, true},
+		{"both empty", evidenceStamp{}, evidenceStamp{}, true},
+		{"provider added", evidenceStamp{sa, sb}, evidenceStamp{sa, sb, sc}, false},
+		{"provider removed", evidenceStamp{sa, sb}, evidenceStamp{sa}, false},
+		{"different provider, same count", evidenceStamp{sa, sb}, evidenceStamp{sa, sc}, false},
+		{"pool replaced", evidenceStamp{sa, sb}, evidenceStamp{sa2, sb}, false},
+		{"pool replaced, reversed", evidenceStamp{sa, sb}, evidenceStamp{sb, sa2}, false},
+		{"generation changed", evidenceStamp{sa, sb}, evidenceStamp{bumped, sb}, false},
+		{"generation changed, reversed", evidenceStamp{sa, sb}, evidenceStamp{sb, bumped}, false},
+		{"pools swapped between IDs", evidenceStamp{sa, sb}, evidenceStamp{{id: "a", cp: sb.cp, gen: sb.gen}, {id: "b", cp: sa.cp, gen: sa.gen}}, false},
+		{"duplicate against single", evidenceStamp{sa, sa}, evidenceStamp{sa}, false},
+		{"duplicate against other pair", evidenceStamp{sa, sa}, evidenceStamp{sa, sb}, false},
+		{"multiplicity differs", evidenceStamp{sa, sa, sb}, evidenceStamp{sa, sb, sb}, false},
+		{"same ID, different pools, against duplicate", evidenceStamp{sa, sa2}, evidenceStamp{sa, sa}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.x.equal(tc.y); got != tc.want {
+				t.Fatalf("equal = %v, want %v", got, tc.want)
+			}
+			if got := tc.y.equal(tc.x); got != tc.want {
+				t.Fatalf("reversed operands: equal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// One leader fetches under lead's view; join's caller must be parked on that very
+// flight. Each provider's BODY count then proves the joiner shared the fetch:
+// one BODY per provider, none from the joiner. Both results go through the
+// production attest, so each caller is judged on its own view.
+func sharedFlightMarkers(t *testing.T, lead, join *Pool, id string, bodies ...*bodyGate) (leaderErr, joinerErr error) {
+	t.Helper()
+	if lead.sf != join.sf {
+		t.Fatal("the views do not share a singleflight group")
+	}
+	hold := newBodyGate(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	workers := newFlightWorkers(t, hold, cancel)
+	started := make(chan struct{})
+	leader := make(chan error, 1)
+	workers.run(func() {
+		_, err, _ := lead.sf.Do(id, func() (interface{}, error) {
+			close(started)
+			<-hold.release
+			return lead.fetchSegmentOnce(ctx, id, &nzb.Segment{ID: id}, testGroupList)
+		})
+		leader <- lead.attest(ctx, err)
+	})
+	<-started
+	joiner := make(chan error, 1)
+	workers.run(func() { joiner <- fetchOnce(join, ctx, id) })
+	waitForWaiters(t, 1)
+	hold.Open()
+	leaderErr, joinerErr = <-leader, <-joiner
+	for i, g := range bodies {
+		if n := g.bodies.Load(); n != 1 {
+			t.Fatalf("provider %d received %d BODY commands, want exactly 1 (the joiner must share the leader's fetch)", i, n)
+		}
+	}
+	return leaderErr, joinerErr
+}
+
+func TestSharedFlightMarkerIgnoresProviderOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		lead, join func(root *Pool) *Pool
+	}{
+		{"same order",
+			func(r *Pool) *Pool { return r.Subset([]string{"a", "b"}) },
+			func(r *Pool) *Pool { return r.Subset([]string{"a", "b"}) }},
+		{"leader [a,b], joiner [b,a]",
+			func(r *Pool) *Pool { return r.Subset([]string{"a", "b"}) },
+			func(r *Pool) *Pool { return r.Subset([]string{"b", "a"}) }},
+		{"leader [b,a], joiner [a,b]",
+			func(r *Pool) *Pool { return r.Subset([]string{"b", "a"}) },
+			func(r *Pool) *Pool { return r.Subset([]string{"a", "b"}) }},
+		{"root leader, reversed subset joiner",
+			func(r *Pool) *Pool { return r },
+			func(r *Pool) *Pool { return r.Subset([]string{"b", "a"}) }},
+		{"reversed subset leader, root joiner",
+			func(r *Pool) *Pool { return r.Subset([]string{"b", "a"}) },
+			func(r *Pool) *Pool { return r }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, ga := countedProvider(t, "a", 0, false, body430)
+			b, gb := countedProvider(t, "b", 1, false, body430)
+			root := newTestPool(t, a, b)
+			lead, join := tc.lead(root), tc.join(root)
+			ls, js := lead.stamp(), join.stamp()
+			if len(ls) != 2 || len(js) != 2 {
+				t.Fatalf("both views must hold both providers, got %d and %d", len(ls), len(js))
+			}
+
+			lerr, jerr := sharedFlightMarkers(t, lead, join, "order-1", ga, gb)
+			if !isDefinitive(lerr) || !isDefinitive(jerr) {
+				t.Fatalf("both callers hold the complete configuration: leader=%v joiner=%v", lerr, jerr)
+			}
+			if lerr.Error() != jerr.Error() || !nntp.IsArticleNotFound(jerr) {
+				t.Fatalf("text or legacy classification changed:\n%q\n%q", lerr, jerr)
+			}
+		})
+	}
+}
+
+// A proof gathered through one order is replayed through the other view; a
+// configuration change between the fetch and attestation still withholds it,
+// whichever way round the views are.
+func TestReversedViewAttestationStillRejectsChangedConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, root *Pool, a, b ProviderConfig)
+		want   bool
+	}{
+		{"stable", func(*testing.T, *Pool, ProviderConfig, ProviderConfig) {}, true},
+		{"generation change", func(t *testing.T, root *Pool, a, b ProviderConfig) {
+			host, port, stop := startScriptedNNTPServer(t, bodyOK)
+			t.Cleanup(stop)
+			b.ClientPool.Reconfigure(host, port, false, "b", "pass", 2)
+		}, false},
+		{"pool replaced", func(t *testing.T, root *Pool, a, b ProviderConfig) {
+			root.UpdateProviders([]ProviderConfig{scriptedProvider(t, "a", 0, false, body430), b})
+		}, false},
+		{"provider added outside the selected view", func(t *testing.T, root *Pool, a, b ProviderConfig) {
+			root.UpdateProviders([]ProviderConfig{a, b, scriptedProvider(t, "c", 2, false, body430)})
+		}, true}, // [b,a] still resolves to the same two providers
+		{"provider added to the whole-pool view", func(t *testing.T, root *Pool, a, b ProviderConfig) {
+			root.UpdateProviders([]ProviderConfig{a, b, scriptedProvider(t, "c", 2, false, body430)})
+		}, false},
+		{"provider removed", func(t *testing.T, root *Pool, a, b ProviderConfig) {
+			root.UpdateProviders([]ProviderConfig{a})
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := scriptedProvider(t, "a", 0, false, body430)
+			b := scriptedProvider(t, "b", 1, false, body430)
+			root := newTestPool(t, a, b)
+			ab, ba := root.Subset([]string{"a", "b"}), root.Subset([]string{"b", "a"})
+			view := ba
+			if strings.Contains(tc.name, "whole-pool") {
+				view = root // follows the root, so it sees the added provider
+			}
+			if err := fetchOnce(ab, context.Background(), "reload-1"); !isDefinitive(err) {
+				t.Fatalf("setup: %v", err)
+			}
+			legacy := cachedMissingError("reload-1", proofOf(ab, "reload-1"))
+
+			tc.change(t, root, a, b)
+
+			got := view.attest(context.Background(), legacy)
+			if isDefinitive(got) != tc.want {
+				t.Fatalf("attest: marker = %v, want %v (%v)", isDefinitive(got), tc.want, got)
+			}
+			if !tc.want && got != legacy {
+				t.Fatalf("the original error must come back untouched, got %v", got)
+			}
+		})
+	}
+}
+
 // ---- Finding 4: cancellation ----------------------------------------------
 
 func TestCanceledCallerWithWarmEntryGetsLegacyErrorWithoutMarker(t *testing.T) {
@@ -739,16 +919,34 @@ func TestCanceledWaiterDoesNotReceiveMarkerFromSharedFlight(t *testing.T) {
 	}
 }
 
+// The caller is canceled only once the provider holds the BODY, so the result is
+// about a read interrupted in flight and not about any earlier failure.
 func TestFetchCancellationIsNotDefinitive(t *testing.T) {
-	p := newTestPool(t, scriptedProvider(t, "hang", 0, false, bodyHang))
-
+	// Registered gate-first so cleanup (LIFO) releases and joins the worker
+	// before the provider shuts down.
+	g := newBodyGate(t)
+	p := newTestPool(t, gatedProvider(t, "hang", 0, bodyHang, g))
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
-	err := fetchOnce(p, ctx, "cancel-1")
-	if err == nil {
-		t.Fatal("expected the cancelled fetch to fail")
+	workers := newFlightWorkers(t, g, cancel)
+
+	done := make(chan error, 1)
+	workers.run(func() { done <- fetchOnce(p, ctx, "cancel-1") })
+	g.Wait(t, done) // fails at once if the fetch ends before a BODY arrives
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fetch did not return after its caller was canceled")
 	}
-	if isDefinitive(err) || p.isKnownMissing("cancel-1") {
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want the caller's cancellation, got %v", err)
+	}
+	if n := g.bodies.Load(); n != 1 {
+		t.Fatalf("BODY commands = %d, want the one the cancellation interrupted", n)
+	}
+	if isDefinitive(err) || p.isKnownMissing("cancel-1") || proofOf(p, "cancel-1") != nil {
 		t.Fatalf("cancellation must not read as missing: %v", err)
 	}
 }

@@ -68,14 +68,26 @@ type providerStamp struct {
 
 type evidenceStamp []providerStamp
 
+// equal reports whether s and o hold the same provider entries, ignoring order.
+// A view's order is only its fetch preference; two views asking the same
+// providers in different orders can share one flight and are covered by the
+// same evidence. Entries match as whole (id, pool, generation) tuples and
+// multiplicity counts, so a changed, replaced, added or removed provider, or a
+// duplicated one, still differs.
 func (s evidenceStamp) equal(o evidenceStamp) bool {
 	if len(s) != len(o) {
 		return false
 	}
-	for i := range s {
-		if s[i] != o[i] {
-			return false
+	used := make([]bool, len(o))
+next:
+	for _, a := range s {
+		for j, b := range o {
+			if !used[j] && a == b {
+				used[j] = true
+				continue next
+			}
 		}
+		return false
 	}
 	return true
 }
