@@ -559,6 +559,16 @@ type ProviderArticleStats struct {
 // that character. proof therefore carries the normalized message ID it was
 // gathered for, and knownMissing hands the proof back only to a lookup for the
 // same article. id is set exactly when proof is.
+//
+// proof is optional metadata and the cache is newest-write-wins: add replaces
+// the whole entry for a key. A later nil-proof write for the same key (a
+// StatSegment miss or any other legacy write) therefore drops proof a BODY
+// fetch published earlier, and later cache hits return only the legacy
+// article-not-found error, with no ErrArticleMissingEverywhere. Definitive
+// evidence is best-effort: nothing guarantees it survives a concurrent STAT.
+// A STAT miss is never itself evidence. Cached proof can survive a provider
+// reconfiguration. On each use, attest checks the proof against the caller's
+// current provider configuration.
 type missingEntry struct {
 	at    time.Time
 	id    string

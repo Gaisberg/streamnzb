@@ -321,13 +321,33 @@ func TestYencSizeMismatchMentioning430IsNotDefinitive(t *testing.T) {
 // One genuine 430 does not make up for a provider whose "430" is only text.
 func TestMixedProtocolAndTextOnly430IsNotDefinitive(t *testing.T) {
 	body := "222 Body follows\r\n=ybegin size=430 line=128 name=t\r\n" + strings.Repeat("A", 431) + "\r\n=yend size=430\r\n.\r\n"
-	p := newTestPool(t,
-		scriptedProvider(t, "a", 0, false, body430),
-		scriptedProvider(t, "b", 1, false, body))
+	a, ga := countedProvider(t, "a", 0, false, body430)
+	b, gb := countedProvider(t, "b", 1, false, body)
+	p := newTestPool(t, a, b)
 
 	_, err := p.FetchSegment(context.Background(), &nzb.Segment{ID: "mix-1", Bytes: 430}, testGroupList)
 	if err == nil || !nntp.IsArticleNotFound(err) || isDefinitive(err) {
 		t.Fatalf("want legacy 430 without the marker, got %v", err)
+	}
+
+	// The absence of the marker only means something if both outcomes happened.
+	// A provider that fails before BODY (refused, auth rejected, dropped) also
+	// leaves A's 430 as the result, so check each provider's own path. B's
+	// fixture never sends a 430 line, so a 430 recorded for B after it received
+	// a BODY can only come from decoding the yEnc body it was scripted to send.
+	if ga.bodies.Load() != 1 || providerUnavailable(p, "a") != 1 || !isProtocol430(err) {
+		t.Fatalf("provider a must answer one BODY with a typed 430 (BODY commands %d, recorded 430s %d, err %v)", ga.bodies.Load(), providerUnavailable(p, "a"), err)
+	}
+	if gb.bodies.Load() != 1 || providerUnavailable(p, "b") != 1 {
+		t.Fatalf("provider b must reach BODY and fail in the decoder (BODY commands %d, recorded 430s %d)", gb.bodies.Load(), providerUnavailable(p, "b"))
+	}
+	// Both providers were attempted, so the legacy cache admits the miss, but
+	// the text-only answer keeps it unverified.
+	if !p.isKnownMissing("mix-1") {
+		t.Fatal("legacy negative-cache admission must be unchanged")
+	}
+	if proofOf(p, "mix-1") != nil {
+		t.Fatal("a text-only 430 must not leave verified proof")
 	}
 }
 
@@ -1228,14 +1248,23 @@ func TestAttestWithholdsStaleProofAfterConfigurationChange(t *testing.T) {
 // it — hand the caller the same marker on a stable configuration, and attempted
 // providers survive on the live one.
 func TestAttestationLiveFetchAndVerifiedCacheAgree(t *testing.T) {
-	p := newTestPool(t,
-		scriptedProvider(t, "a", 0, false, body430),
-		scriptedProvider(t, "b", 1, false, body430))
+	a, ga := countedProvider(t, "a", 0, false, body430)
+	b, gb := countedProvider(t, "b", 1, false, body430)
+	p := newTestPool(t, a, b)
 
 	live := fetchOnce(p, context.Background(), "agree-1")
+	if !isDefinitive(live) || ga.bodies.Load() == 0 || gb.bodies.Load() == 0 {
+		t.Fatalf("setup: the live fetch must ask both providers and earn the marker: %v", live)
+	}
+	bodiesA, bodiesB := ga.bodies.Load(), gb.bodies.Load()
 	cached := fetchOnce(p, context.Background(), "agree-1")
-	if !isDefinitive(live) || !isDefinitive(cached) {
+	if !isDefinitive(cached) {
 		t.Fatalf("both paths must be definitive: live=%v cached=%v", live, cached)
+	}
+	// A second live fetch would earn the marker too; only the BODY counts tell a
+	// verified cache hit from that.
+	if ga.bodies.Load() != bodiesA || gb.bodies.Load() != bodiesB {
+		t.Fatalf("the second fetch must be answered from the verified cache entry without a BODY (a %d->%d, b %d->%d)", bodiesA, ga.bodies.Load(), bodiesB, gb.bodies.Load())
 	}
 	if len(AttemptedProviderHosts(live)) == 0 || !nntp.IsArticleNotFound(cached) {
 		t.Fatal("attempted hosts (live) and legacy classification (cached) must survive")
