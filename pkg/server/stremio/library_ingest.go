@@ -519,10 +519,9 @@ func (s *Server) ingestOne(ctx context.Context, stream *auth.Stream, sessionID s
 	defer s.sessionManager.DeleteSession(sessionID)
 
 	hold := s.sessionManager.BeginSessionStartup(sess)
-	// Header probe only: the client that imports this file analyses it
-	// itself, and a hole past the header shows up when it is played, as it
-	// would for any library row. Saves the forced decode's payload per file.
-	ok, err := s.playback.Preload(playback.WithHeaderOnlyProbe(ctx), sess)
+	// Download-client validation: every article of the file is asked for,
+	// and the probe stops at the header. "Completed" has to mean whole.
+	ok, err := s.playback.Preload(playback.WithIngestValidation(ctx), sess)
 	hold.Release()
 	if err != nil || !ok {
 		if err == nil {

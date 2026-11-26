@@ -729,20 +729,21 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	return stream, name, size, nil
 }
 
-type headerOnlyProbeKey struct{}
+type ingestValidationKey struct{}
 
-// WithHeaderOnlyProbe makes Preload stop ffprobe at the container header
-// instead of decoding frames. The forced decode exists to catch article holes
-// past the header before a release is offered for play; a library ingest from
-// a download client is imported, analysed and played later by something that
-// reports a bad file on its own, so it buys the header probe's answer (codecs,
-// title, duration) without the extra seconds of payload per file.
-func WithHeaderOnlyProbe(ctx context.Context) context.Context {
-	return context.WithValue(ctx, headerOnlyProbeKey{}, true)
+// WithIngestValidation makes Preload validate the way a download client
+// expects "completed" to mean: every article of the selected file is asked
+// for (VerifyAllArticles, fail-closed) in place of the sampled sweep, and
+// ffprobe stops at the container header instead of decoding frames. The
+// forced decode exists to catch holes a few megabytes in before a release is
+// offered for play; the census asks about every article, so the decode has
+// nothing left to find and its payload per file is not spent.
+func WithIngestValidation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ingestValidationKey{}, true)
 }
 
-func headerOnlyProbe(ctx context.Context) bool {
-	v, _ := ctx.Value(headerOnlyProbeKey{}).(bool)
+func ingestValidation(ctx context.Context) bool {
+	v, _ := ctx.Value(ingestValidationKey{}).(bool)
 	return v
 }
 
@@ -819,7 +820,15 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 	// every startup-window article plus spread samples across the volumes —
 	// or, when the operator opted in, a census that asks about every article
 	// in an order that keeps any prefix a uniform sample of the file.
-	if p.preloadArticleCensus() {
+	if ingestValidation(ctx) {
+		if err := VerifyAllArticles(ctx, bp, unpackFiles); err != nil {
+			logger.Warn("Ingest rejected release via article census", "slot", sess.ID, "file", name, "err", err)
+			if streamReader != nil {
+				streamReader.Close()
+			}
+			return false, fmt.Errorf("preloading rejected stream: %w", err)
+		}
+	} else if p.preloadArticleCensus() {
 		censusCtx, cancelCensus := censusPreloadCtx(ctx)
 		err := VerifySelectedFileArticles(censusCtx, bp)
 		cancelCensus()
@@ -840,7 +849,7 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 
 	logger.Info("Preloading executing FFprobe validation", "slot", sess.ID, "file", name)
 	probeRes, err := unpack.ValidateMediaStreamWithOptions(ctx, streamReader, name, p.ffprobePath(), unpack.ValidateOptions{
-		ForceDecode:   !headerOnlyProbe(ctx),
+		ForceDecode:   !ingestValidation(ctx),
 		StrictFFprobe: true,
 	})
 	if err != nil {

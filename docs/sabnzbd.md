@@ -93,7 +93,14 @@ The admin token is refused: it binds no providers.
    are validated side by side, as many at once as the stream's connection
    budget allows (about one per four connections, at most six), and the
    queue reports the job's progress as files validated out of files in the
-   release. When the index's names
+   release. Every file is checked in full: a census asks the providers for
+   every article of it, RAR volumes or a bare file alike, and the job fails
+   on the first article missing from all of them. A census that cannot
+   finish — a stalled provider, the job's time running out — fails the job
+   as well, since a client that is told a download completed will treat the
+   file as whole. The probe then reads the container header for codecs and
+   title; frames are not decoded, the census having already asked about
+   every byte's article. When the index's names
    are hashes as well, each file's own container title tag is tried next,
    since WEB-DL files usually carry the episode name there. A post that
    yields neither keeps its hash names and lands in the *arr's manual-import

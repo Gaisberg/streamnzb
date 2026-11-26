@@ -536,6 +536,19 @@ func (f *sessionTrackingFetcher) FetchConcurrency() int {
 	return hinter.FetchConcurrency()
 }
 
+// StatConcurrency forwards the pool's STAT budget; without it every census
+// through a session ran at the loader's default of four.
+func (f *sessionTrackingFetcher) StatConcurrency() int {
+	if f == nil || f.base == nil {
+		return 0
+	}
+	hinter, ok := f.base.(loader.StatConcurrencyHinter)
+	if !ok {
+		return 0
+	}
+	return hinter.StatConcurrency()
+}
+
 type sessionTrackingFetcherWithStat struct {
 	*sessionTrackingFetcher
 	statter loader.SegmentStatter

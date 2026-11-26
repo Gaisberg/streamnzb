@@ -2,6 +2,7 @@ package playback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/bits"
 	"sync"
@@ -44,6 +45,19 @@ const (
 	// censusDefaultWidth applies when no volume can say what its fetcher
 	// allows.
 	censusDefaultWidth = 4
+	// censusIngestBudget bounds the census of one file handed over by a
+	// download client. Nothing is waiting to play; the client wants to know
+	// the file is whole, and a few thousand STATs pipelined across the
+	// stream's connections take seconds, so the budget is generous and only
+	// stops a census that a provider has stalled.
+	censusIngestBudget = 10 * time.Minute
+	// An ingest census runs this many STATs wide at least, and at most: the
+	// stream's connection budget shared with the other sets validating at
+	// the same time (ingest runs up to six side by side), within bounds that
+	// keep one census from monopolising a small pool or a provider.
+	censusIngestMinWidth = 8
+	censusIngestMaxWidth = 32
+	censusIngestSharers  = 6
 )
 
 // statCapableFile (dense_stat.go) is the slice of loader.File the census
@@ -103,6 +117,23 @@ func censusPreloadCtx(ctx context.Context) (context.Context, context.CancelFunc)
 // volume that cannot STAT — both inconclusive, which the caller treats as a
 // pass, exactly as the sampled sweep does.
 func censusVolumes(bp unpack.Blueprint) []statCapableFile {
+	return censusVolumesFor(bp, nil)
+}
+
+// censusVolumesFor is censusVolumes with the session's files at hand, so a
+// bare file — a direct blueprint, which names its file by index into those
+// files — can be censused as a single volume.
+func censusVolumesFor(bp unpack.Blueprint, files []unpack.UnpackableFile) []statCapableFile {
+	if db, ok := bp.(*unpack.DirectBlueprint); ok && db != nil {
+		if db.FileIndex < 0 || db.FileIndex >= len(files) {
+			return nil
+		}
+		f, ok := files[db.FileIndex].(statCapableFile)
+		if !ok || f == nil {
+			return nil
+		}
+		return []statCapableFile{f}
+	}
 	ab, ok := bp.(*unpack.ArchiveBlueprint)
 	if !ok || ab == nil || len(ab.Parts) == 0 {
 		return nil
@@ -195,24 +226,57 @@ func censusWidth(vols []statCapableFile) int {
 	return censusDefaultWidth
 }
 
+// fetchWidthHinter is the fetch budget a file's fetcher reports.
+type fetchWidthHinter interface {
+	FetchConcurrency() int
+}
+
+// ingestCensusWidth is the STAT width an ingest census uses: a share of the
+// connection budget rather than the pool's small per-caller STAT allowance,
+// since no playback is competing for the connections.
+func ingestCensusWidth(vols []statCapableFile) int {
+	budget := 0
+	for _, v := range vols {
+		if h, ok := v.(fetchWidthHinter); ok {
+			if n := h.FetchConcurrency(); n > budget {
+				budget = n
+			}
+		}
+	}
+	width := budget / censusIngestSharers
+	if width < censusIngestMinWidth {
+		if w := censusWidth(vols); w > width {
+			width = w
+		}
+		if width < censusIngestMinWidth {
+			width = censusIngestMinWidth
+		}
+	}
+	if width > censusIngestMaxWidth {
+		width = censusIngestMaxWidth
+	}
+	return width
+}
+
 // runCensus asks about every point in order, width at a time, until the order
 // is exhausted, ctx ends, or the first definitive miss. Transient answers are
 // counted and skipped: never a verdict, and asking again would only re-spend
 // the budget.
-func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint, width int) (CensusReport, string) {
+func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint, width int) (CensusReport, string, []censusPoint) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	start := time.Now()
 	var (
-		mu        sync.Mutex
-		wg        sync.WaitGroup
-		cursor    int
-		unasked   int
-		checked   int
-		transient int
-		missing   int
-		firstMiss string
+		mu         sync.Mutex
+		wg         sync.WaitGroup
+		cursor     int
+		unasked    int
+		checked    int
+		transient  int
+		missing    int
+		firstMiss  string
+		transients []censusPoint
 	)
 	next := func() (censusPoint, bool) {
 		mu.Lock()
@@ -245,6 +309,7 @@ func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint,
 				case err != nil:
 					checked++
 					transient++
+					transients = append(transients, p)
 				case exists:
 					checked++
 				default:
@@ -271,7 +336,7 @@ func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint,
 		Complete:  missing > 0 || (cursor >= len(order) && unasked == 0),
 		Width:     width,
 		Duration:  time.Since(start),
-	}, firstMiss
+	}, firstMiss, transients
 }
 
 // VerifySelectedFileArticles censuses the selected file under ctx's budget
@@ -288,7 +353,7 @@ func VerifySelectedFileArticles(ctx context.Context, bp unpack.Blueprint) error 
 	if len(order) == 0 {
 		return nil
 	}
-	report, firstMiss := runCensus(ctx, vols, order, censusWidth(vols))
+	report, firstMiss, _ := runCensus(ctx, vols, order, censusWidth(vols))
 	rate := 0.0
 	if report.Duration > 0 {
 		rate = float64(report.Checked) / report.Duration.Seconds()
@@ -307,6 +372,79 @@ func VerifySelectedFileArticles(ctx context.Context, bp unpack.Blueprint) error 
 		// Wrap ErrFirstSegmentUnavailable so the bad-release classification
 		// (preloadConfirmsBadRelease → persistent verdict + AvailNZB report) fires.
 		return fmt.Errorf("article census: %s missing on all providers: %w", firstMiss, ErrFirstSegmentUnavailable)
+	}
+	return nil
+}
+
+// ErrArticlesUnverified reports an ingest census that could not ask about
+// every article: the budget ran out, a provider kept answering with errors,
+// or the blueprint is one no census can read. Not a verdict on the release —
+// nothing was found missing — but a file a download client is told is
+// complete must have been checked in full, so the ingest refuses it.
+var ErrArticlesUnverified = errors.New("articles could not all be verified")
+
+// VerifyAllArticles is the census a download-client ingest runs: every
+// article of the selected file, RAR volumes or a bare file alike, and the
+// verdict fails closed. A definitive miss rejects as a bad release; a census
+// that could not finish rejects as unverified. Transient answers are asked
+// once more before they count against the file.
+func VerifyAllArticles(ctx context.Context, bp unpack.Blueprint, files []unpack.UnpackableFile) error {
+	vols := censusVolumesFor(bp, files)
+	if len(vols) == 0 {
+		return fmt.Errorf("%w: the file's articles cannot be enumerated", ErrArticlesUnverified)
+	}
+	order := censusOrder(vols)
+	if len(order) == 0 {
+		return fmt.Errorf("%w: no articles to check", ErrArticlesUnverified)
+	}
+	budget := censusIngestBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline) - 30*time.Second; left < budget {
+			budget = left
+		}
+	}
+	if budget <= 0 {
+		return fmt.Errorf("%w: no time left in the job", ErrArticlesUnverified)
+	}
+	censusCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	width := ingestCensusWidth(vols)
+	report, firstMiss, transients := runCensus(censusCtx, vols, order, width)
+	if report.Missing == 0 && report.Complete && len(transients) > 0 {
+		// Ask the unanswered ones again; a provider hiccup is not a hole.
+		again, miss, left := runCensus(censusCtx, vols, transients, width)
+		report.Checked += again.Checked
+		report.Missing += again.Missing
+		report.Transient = len(left)
+		report.Complete = again.Complete
+		report.Duration += again.Duration
+		if miss != "" {
+			firstMiss = miss
+		}
+		transients = left
+	}
+	rate := 0.0
+	if report.Duration > 0 {
+		rate = float64(report.Checked) / report.Duration.Seconds()
+	}
+	logger.Info("Ingest article census finished",
+		"volumes", len(vols),
+		"planned", report.Planned,
+		"checked", report.Checked,
+		"transient", len(transients),
+		"missing", report.Missing,
+		"complete", report.Complete,
+		"width", report.Width,
+		"stats_per_s", int(rate),
+		"duration", report.Duration.Round(time.Millisecond))
+	switch {
+	case report.Missing > 0:
+		return fmt.Errorf("article census: %s missing on all providers: %w", firstMiss, ErrFirstSegmentUnavailable)
+	case !report.Complete:
+		return fmt.Errorf("%w: budget ended with %d of %d articles asked", ErrArticlesUnverified, report.Checked, report.Planned)
+	case len(transients) > 0:
+		return fmt.Errorf("%w: %d articles answered with errors twice", ErrArticlesUnverified, len(transients))
 	}
 	return nil
 }

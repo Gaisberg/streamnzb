@@ -609,6 +609,16 @@ func (f *File) StatConcurrency() int {
 	return defaultStatConcurrency
 }
 
+// FetchConcurrency is how many fetches the fetcher can keep on the wire for
+// this file, 0 when it does not say. The ingest census sizes itself by it:
+// with nothing waiting to play, STATs may use the connections reads would.
+func (f *File) FetchConcurrency() int {
+	if h, ok := f.fetcher.(FetchConcurrencyHinter); ok {
+		return h.FetchConcurrency()
+	}
+	return 0
+}
+
 func (f *File) SegmentMapDetected() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

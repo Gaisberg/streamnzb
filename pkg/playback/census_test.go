@@ -23,6 +23,8 @@ type censusVol struct {
 	delay    time.Duration // per-STAT latency
 	width    int           // what the fetcher allows; 0 = no hint
 	idless   map[int]bool  // NZB-declared holes: no message id to STAT
+	flaky    map[int]int   // segment index -> transient errors still to return
+	fetchW   int           // fetch budget the fetcher reports; 0 = none
 
 	mu       sync.Mutex
 	stats    []int
@@ -45,6 +47,7 @@ func (v *censusVol) OpenReaderAt(context.Context, int64) (io.ReadCloser, error) 
 func (v *censusVol) ReadAt([]byte, int64) (int, error)                          { return 0, nil }
 func (v *censusVol) SegmentCount() int                                          { return v.segments }
 func (v *censusVol) StatConcurrency() int                                       { return v.width }
+func (v *censusVol) FetchConcurrency() int                                      { return v.fetchW }
 func (v *censusVol) SegmentHasMessageID(index int) bool                         { return !v.idless[index] }
 func (v *censusVol) StatSegmentAt(ctx context.Context, index int) (bool, error) {
 	n := v.inflight.Add(1)
@@ -64,9 +67,16 @@ func (v *censusVol) StatSegmentAt(ctx context.Context, index int) (bool, error) 
 	}
 	v.mu.Lock()
 	v.stats = append(v.stats, index)
+	flaky := v.flaky != nil && v.flaky[index] > 0
+	if flaky {
+		v.flaky[index]--
+	}
 	v.mu.Unlock()
 	if v.statErr != nil {
 		return false, v.statErr
+	}
+	if flaky {
+		return false, errors.New("transient")
 	}
 	// The real loader answers (false, nil) for an id-less segment — the same
 	// shape as a unanimous 430 — which is exactly why the census must not ask.
@@ -252,5 +262,75 @@ func TestCensusPreloadCtxStaysInsideTheWindow(t *testing.T) {
 	d2, _ := ctx2.Deadline()
 	if left := time.Until(d2); left > censusPreloadBudget || left < censusPreloadBudget-100*time.Millisecond {
 		t.Fatalf("budget = %v, want %v", left, censusPreloadBudget)
+	}
+}
+
+func TestVerifyAllArticlesCensusesABareFile(t *testing.T) {
+	v := &censusVol{name: "movie.mkv", segments: 1200, missing: map[int]bool{777: true}, width: 8}
+	files := []unpack.UnpackableFile{&censusVol{name: "other.nfo", segments: 2}, v}
+	bp := &unpack.DirectBlueprint{FileName: "movie.mkv", FileIndex: 1}
+	err := VerifyAllArticles(context.Background(), bp, files)
+	if !errors.Is(err, ErrFirstSegmentUnavailable) {
+		t.Fatalf("a hole in a bare file must reject as a bad release, got %v", err)
+	}
+	clean := &censusVol{name: "movie.mkv", segments: 1200, width: 8}
+	if err := VerifyAllArticles(context.Background(), &unpack.DirectBlueprint{FileIndex: 0}, []unpack.UnpackableFile{clean}); err != nil {
+		t.Fatalf("clean bare file: %v", err)
+	}
+	if clean.statCount() != 1200 {
+		t.Fatalf("every article must be asked, got %d of 1200", clean.statCount())
+	}
+}
+
+func TestVerifyAllArticlesFailsClosed(t *testing.T) {
+	// Nothing to census: a blueprint type the census cannot read.
+	if err := VerifyAllArticles(context.Background(), &unpack.FailedBlueprint{}, nil); !errors.Is(err, ErrArticlesUnverified) {
+		t.Fatalf("unreadable blueprint must be unverified, got %v", err)
+	}
+	// Budget runs out before the census finishes.
+	slow := &censusVol{name: "v1.rar", segments: 400, delay: 20 * time.Millisecond, width: 2}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	// The ingest leaves a 30 s margin before the job deadline; a deadline
+	// this close means no budget at all, which is also unverified.
+	if err := VerifyAllArticles(ctx, censusBP(slow), nil); !errors.Is(err, ErrArticlesUnverified) {
+		t.Fatalf("exhausted budget must be unverified, got %v", err)
+	}
+}
+
+func TestVerifyAllArticlesRetriesTransientsOnce(t *testing.T) {
+	v := &censusVol{name: "v1.rar", segments: 300, width: 4, flaky: map[int]int{10: 1, 20: 1, 30: 1}}
+	if err := VerifyAllArticles(context.Background(), censusBP(v), nil); err != nil {
+		t.Fatalf("a transient answered on the second ask must pass: %v", err)
+	}
+	if v.statCount() != 303 {
+		t.Fatalf("expected 300 asks plus 3 retries, got %d", v.statCount())
+	}
+	stubborn := &censusVol{name: "v1.rar", segments: 300, width: 4, flaky: map[int]int{10: 5}}
+	if err := VerifyAllArticles(context.Background(), censusBP(stubborn), nil); !errors.Is(err, ErrArticlesUnverified) {
+		t.Fatalf("an article that errors twice must leave the file unverified, got %v", err)
+	}
+}
+
+func TestIngestCensusWidthComesFromTheFetchBudget(t *testing.T) {
+	cases := []struct{ fetch, stat, want int }{
+		{200, 6, 32}, // a share of 200 connections, capped
+		{96, 6, 16},  // 96 / 6 sharers
+		{0, 6, 8},    // no fetch hint: the STAT hint, raised to the floor
+		{0, 0, 8},    // no hints at all
+		{30, 2, 8},   // a small pool still gets the floor
+	}
+	for _, c := range cases {
+		v := &censusVol{name: "v", segments: 10, width: c.stat, fetchW: c.fetch}
+		if got := ingestCensusWidth([]statCapableFile{v}); got != c.want {
+			t.Errorf("fetch=%d stat=%d: width %d, want %d", c.fetch, c.stat, got, c.want)
+		}
+	}
+	v := &censusVol{name: "v", segments: 600, fetchW: 192, delay: 5 * time.Millisecond}
+	if err := VerifyAllArticles(context.Background(), censusBP(v), nil); err != nil {
+		t.Fatal(err)
+	}
+	if v.peak.Load() < 16 {
+		t.Fatalf("ingest census should run wide, peak in-flight %d", v.peak.Load())
 	}
 }
