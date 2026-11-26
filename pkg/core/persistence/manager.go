@@ -172,6 +172,7 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		jellyfinPlay:    NewJellyfinPlaystateStore(db, wdb),
 		gen:             dbGenerations.Add(1),
 	}
+	mgr.libraryStore.owner = mgr
 	mgr.animeMappings = NewAnimeMappingStore(mgr, db, wdb)
 	return mgr, nil
 }

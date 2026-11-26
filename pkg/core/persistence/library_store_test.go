@@ -402,3 +402,139 @@ func TestLibraryStorePosterAndUsenetDateRoundTrip(t *testing.T) {
 		t.Fatalf("bare item gained a pair: poster=%q usenet_date=%q", fetched.Poster, fetched.UsenetDate)
 	}
 }
+
+// snapshotFixture stores one item, ages its stamp past a 1h TTL, and returns the
+// snapshot StaleItems hands the sweeper.
+func snapshotFixture(t *testing.T, ls *LibraryStore, nzb string) *LibraryItem {
+	t.Helper()
+	if err := ls.StoreItem(&LibraryItem{ContentType: "movie", ContentID: "tt9", ReleaseTitle: "snap", NZBData: []byte(nzb), Status: LibraryStatusGood}); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	ls.MarkVerified(buildLibraryItemID("movie", "tt9", 0, 0, "snap"), time.Now().Add(-48*time.Hour))
+	items, err := ls.StaleItems(time.Now().Add(-time.Hour), 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("snapshot: err=%v n=%d", err, len(items))
+	}
+	return items[0]
+}
+
+func TestLibrarySnapshotWritebackAppliesWhenUnchanged(t *testing.T) {
+	ls := newTestLibraryStore(t)
+	snap := snapshotFixture(t, ls, "old")
+
+	if ok, err := ls.MarkVerifiedIfSnapshot(snap, time.Now()); !ok || err != nil {
+		t.Fatalf("verified refresh: applied=%v err=%v", ok, err)
+	}
+	if got, _ := ls.GetItem(snap.ID); time.Since(got.LastVerifiedAt) > time.Minute {
+		t.Fatalf("stamp not refreshed: %v", got.LastVerifiedAt)
+	}
+	// The refresh moved the stamp, so the same snapshot is now stale for a second writer.
+	if ok, err := ls.MarkBadIfSnapshot(snap, "x"); ok || err != nil {
+		t.Fatalf("second writer on a consumed snapshot: applied=%v err=%v", ok, err)
+	}
+
+	snap = snapshotFixture2(t, ls)
+	if ok, err := ls.MarkBadIfSnapshot(snap, "gone"); !ok || err != nil {
+		t.Fatalf("bad: applied=%v err=%v", ok, err)
+	}
+	if got, _ := ls.GetItem(snap.ID); got.Status != LibraryStatusBad || got.StatusReason != "gone" {
+		t.Fatalf("got %q/%q", got.Status, got.StatusReason)
+	}
+}
+
+// snapshotFixture2 re-ages the existing row and re-selects it.
+func snapshotFixture2(t *testing.T, ls *LibraryStore) *LibraryItem {
+	t.Helper()
+	ls.MarkVerified(buildLibraryItemID("movie", "tt9", 0, 0, "snap"), time.Now().Add(-48*time.Hour))
+	items, err := ls.StaleItems(time.Now().Add(-time.Hour), 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("snapshot: err=%v n=%d", err, len(items))
+	}
+	return items[0]
+}
+
+func TestLibrarySnapshotWritebackRejectsReplacementAndEligibilityChange(t *testing.T) {
+	change := map[string]func(ls *LibraryStore, snap *LibraryItem){
+		"replaced": func(ls *LibraryStore, snap *LibraryItem) {
+			if err := ls.StoreItem(&LibraryItem{ContentType: "movie", ContentID: "tt9", ReleaseTitle: "snap", NZBData: []byte("new"), Status: LibraryStatusGood}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"re-saved with the same nzb": func(ls *LibraryStore, snap *LibraryItem) {
+			if err := ls.StoreItem(&LibraryItem{ContentType: "movie", ContentID: "tt9", ReleaseTitle: "snap", NZBData: []byte("old")}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"deleted and recreated": func(ls *LibraryStore, snap *LibraryItem) {
+			_ = ls.DeleteItem(snap.ID)
+			if err := ls.StoreItem(&LibraryItem{ContentType: "movie", ContentID: "tt9", ReleaseTitle: "snap", NZBData: []byte("new")}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"verified elsewhere": func(ls *LibraryStore, snap *LibraryItem) { ls.MarkStatus(snap.ID, LibraryStatusGood, "played") },
+		"pinned":             func(ls *LibraryStore, snap *LibraryItem) { _ = ls.SetPinned(snap.ID, true) },
+		"marked bad":         func(ls *LibraryStore, snap *LibraryItem) { ls.MarkStatus(snap.ID, LibraryStatusBad, "other") },
+		"deleted":            func(ls *LibraryStore, snap *LibraryItem) { _ = ls.DeleteItem(snap.ID) },
+	}
+	for name, fn := range change {
+		t.Run(name, func(t *testing.T) {
+			ls := newTestLibraryStore(t)
+			snap := snapshotFixture(t, ls, "old")
+			fn(ls, snap)
+			before, _ := ls.GetItem(snap.ID)
+
+			for _, apply := range []func() (bool, error){
+				func() (bool, error) { return ls.MarkBadIfSnapshot(snap, "stale") },
+				func() (bool, error) { return ls.MarkVerifiedIfSnapshot(snap, time.Now()) },
+			} {
+				if ok, err := apply(); ok || err != nil {
+					t.Fatalf("stale writeback: applied=%v err=%v", ok, err)
+				}
+			}
+			after, _ := ls.GetItem(snap.ID)
+			if (before == nil) != (after == nil) || before != nil && (before.Status != after.Status || before.StatusReason != after.StatusReason || !before.LastVerifiedAt.Equal(after.LastVerifiedAt) || string(before.NZBData) != string(after.NZBData)) {
+				t.Fatalf("row changed by a stale writeback: %+v -> %+v", before, after)
+			}
+		})
+	}
+}
+
+// A replacement always carries its own save-time stamp, and StaleItems only
+// selects stamps at least a TTL old, so the replacement cannot share the
+// snapshot's stamp. Guards the premise of the stamp predicate.
+func TestLibraryReplacementStampDiffersFromSelectedSnapshot(t *testing.T) {
+	ls := newTestLibraryStore(t)
+	snap := snapshotFixture(t, ls, "old")
+	if err := ls.StoreItem(&LibraryItem{ContentType: "movie", ContentID: "tt9", ReleaseTitle: "snap", NZBData: []byte("new")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := ls.GetItem(snap.ID)
+	if !got.LastVerifiedAt.After(snap.LastVerifiedAt.Add(time.Hour)) {
+		t.Fatalf("replacement stamp %v not strictly after snapshot stamp %v", got.LastVerifiedAt, snap.LastVerifiedAt)
+	}
+}
+
+func TestLibrarySnapshotWritebackLegacyZeroStamp(t *testing.T) {
+	ls := newTestLibraryStore(t)
+	snap := snapshotFixture(t, ls, "old")
+	ls.MarkVerified(snap.ID, time.Unix(0, 0))
+	items, _ := ls.StaleItems(time.Now().Add(-time.Hour), 10)
+	if len(items) != 1 || !items[0].LastVerifiedAt.IsZero() {
+		t.Fatalf("want one zero-stamp snapshot, got %+v", items)
+	}
+	if ok, err := ls.MarkVerifiedIfSnapshot(items[0], time.Now()); !ok || err != nil {
+		t.Fatalf("zero stamp snapshot: applied=%v err=%v", ok, err)
+	}
+}
+
+func TestLibrarySnapshotWritebackSurfacesDatabaseErrors(t *testing.T) {
+	m := openTestManager(t)
+	ls := m.LibraryStore()
+	snap := snapshotFixture(t, ls, "old")
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ls.MarkBadIfSnapshot(snap, "x"); ok || err == nil {
+		t.Fatalf("closed database: applied=%v err=%v, want an error", ok, err)
+	}
+}

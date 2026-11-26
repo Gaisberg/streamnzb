@@ -108,11 +108,15 @@ func emptyAnimeLists(t *testing.T) *animelists.Store {
 // cleanup cannot remove.
 var testMappings *persistence.AnimeMappingStore
 
+// testDataDir is the directory of the database TestMain opened.
+var testDataDir string
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "stremio")
 	if err != nil {
 		panic(err)
 	}
+	testDataDir = dir
 	mgr, err := persistence.GetManager(dir)
 	if err != nil {
 		panic(err)

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"streamnzb/pkg/core/logger"
-	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/session"
 )
 
@@ -72,7 +71,7 @@ func (s *Server) sweepStaleLibraryItems(ttl time.Duration) {
 	for _, item := range items {
 		if len(item.NZBData) == 0 {
 			// Nothing to STAT against; bump the timestamp so it isn't rechecked forever.
-			libStore.MarkVerified(item.ID, time.Now())
+			applySweepVerdict(libStore.MarkVerifiedIfSnapshot(item, time.Now()))
 			continue
 		}
 		meta := &session.AvailReportMeta{
@@ -84,7 +83,11 @@ func (s *Server) sweepStaleLibraryItems(ttl time.Duration) {
 			Episode: item.Episode,
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), librarySweepVerifyTimout)
-		exists, verr := s.sessionManager.VerifyLibraryNZB(ctx, item.NZBData, meta)
+		verify := s.sessionManager.VerifyLibraryNZB
+		if s.libraryVerifier != nil {
+			verify = s.libraryVerifier
+		}
+		exists, verr := verify(ctx, item.NZBData, meta)
 		cancel()
 		if verr != nil {
 			// Transient (timeout / no providers) — leave it for the next sweep.
@@ -92,17 +95,30 @@ func (s *Server) sweepStaleLibraryItems(ttl time.Duration) {
 			continue
 		}
 		if exists {
-			libStore.MarkVerified(item.ID, time.Now())
-			verified++
+			if applySweepVerdict(libStore.MarkVerifiedIfSnapshot(item, time.Now())) {
+				verified++
+			}
 			continue
 		}
 		// Keep the row but mark it bad: visible/filterable in the Library UI and
 		// excluded from playback candidates.
-		libStore.MarkStatus(item.ID, persistence.LibraryStatusBad, "articles no longer available (freshness sweep)")
+		if !applySweepVerdict(libStore.MarkBadIfSnapshot(item, "articles no longer available (freshness sweep)")) {
+			continue
+		}
 		expired++
 		logger.Info("Library freshness sweep marked release bad (articles expired)", "id", item.ID, "title", item.ReleaseTitle)
 	}
 	if verified > 0 || expired > 0 {
 		logger.Info("Library freshness sweep completed", "checked", len(items), "verified", verified, "marked_bad", expired)
 	}
+}
+
+// applySweepVerdict reports whether a conditional writeback landed. A stale
+// result (row replaced or no longer eligible) is dropped quietly; the row is
+// re-examined on a later sweep if it is still stale.
+func applySweepVerdict(applied bool, err error) bool {
+	if err != nil {
+		logger.Warn("Library freshness sweep writeback failed", "err", err)
+	}
+	return applied
 }

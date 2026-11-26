@@ -67,6 +67,12 @@ type LibraryItem struct {
 	HDR         string `json:"hdr,omitempty"`
 	DolbyVision bool   `json:"dolby_vision,omitempty"`
 	AudioCodec  string `json:"audio_codec,omitempty"`
+
+	// StaleItems snapshot identity for conditional sweep writeback: the database
+	// generation the row was read in, and the stored last_verified_at exactly as
+	// read (LastVerifiedAt maps every value <= 0 to the zero time).
+	snapshotGen      int64
+	snapshotVerified int64
 }
 
 type LibraryStats struct {
@@ -84,6 +90,9 @@ type LibraryStore struct {
 	db  *connRef // shared read handle
 	wdb *connRef // write handle
 	mu  sync.RWMutex
+	// owner supplies the database generation and the connection-swap lock
+	// (StateManager.mu); nil for a store built without a manager.
+	owner *StateManager
 }
 
 func NewLibraryStore(db, wdb *connRef) *LibraryStore {
@@ -360,6 +369,7 @@ func scanCandidateRow(rows *sql.Rows) (*LibraryItem, error) {
 	if verifiedUnix > 0 {
 		item.LastVerifiedAt = time.Unix(verifiedUnix, 0)
 	}
+	item.snapshotVerified = verifiedUnix
 	item.Pinned = pinnedInt == 1
 	item.ImdbID = imdbID.String
 	item.TmdbID = tmdbID.String
@@ -464,6 +474,10 @@ func (ls *LibraryStore) StaleItems(before time.Time, limit int) ([]*LibraryItem,
 	}
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
+	// Held across the select so the generation names the database the rows came
+	// from; Reopen swaps the handles under the write side.
+	gen, unlock := ls.lockDB()
+	defer unlock()
 
 	query := candidatesSelectSQL + "n.pinned = 0 AND n.status != 'bad' AND n.last_verified_at < ? ORDER BY n.last_verified_at ASC LIMIT ?"
 	rows, err := ls.db.Query(query, before.Unix(), limit)
@@ -478,9 +492,19 @@ func (ls *LibraryStore) StaleItems(before time.Time, limit int) ([]*LibraryItem,
 		if err != nil {
 			return nil, err
 		}
+		item.snapshotGen = gen
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// lockDB pins the live database against Reopen and returns its generation.
+func (ls *LibraryStore) lockDB() (gen int64, unlock func()) {
+	if ls.owner == nil {
+		return 0, func() {}
+	}
+	ls.owner.mu.RLock()
+	return ls.owner.gen, ls.owner.mu.RUnlock
 }
 
 // MarkVerified refreshes an item's freshness timestamp after a successful re-STAT.
@@ -491,6 +515,48 @@ func (ls *LibraryStore) MarkVerified(id string, t time.Time) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET last_verified_at = ? WHERE id = ?`, t.Unix(), id)
+}
+
+// MarkVerifiedIfSnapshot refreshes the freshness timestamp only if the row still
+// is the snapshot StaleItems returned. applied=false with a nil error means the
+// row was replaced, refreshed, pinned, marked bad or deleted meanwhile, so the
+// caller's verdict is stale and was discarded.
+func (ls *LibraryStore) MarkVerifiedIfSnapshot(item *LibraryItem, t time.Time) (applied bool, err error) {
+	return ls.updateIfSnapshot(item, "last_verified_at = ?", t.Unix())
+}
+
+// MarkBadIfSnapshot is MarkVerifiedIfSnapshot for a confirmed-unavailable verdict.
+func (ls *LibraryStore) MarkBadIfSnapshot(item *LibraryItem, reason string) (applied bool, err error) {
+	return ls.updateIfSnapshot(item, "status = 'bad', status_reason = ?", reason)
+}
+
+// updateIfSnapshot is one atomic compare-and-update. Every write of nzb_data
+// (StoreItem) stamps last_verified_at with the save time, and StaleItems only
+// selects rows stamped at least the verify TTL (>= 1h) ago, so a replacement
+// saved after selection always carries a different stamp. shortcut: the stamp is
+// second-granular and not a content hash, so a wall clock stepped back by more
+// than the TTL, or a bulk import, could forge a match; upgrade to comparing the
+// stored blob if either must be covered.
+func (ls *LibraryStore) updateIfSnapshot(item *LibraryItem, set string, arg any) (bool, error) {
+	if ls == nil || ls.db == nil || item == nil || item.ID == "" {
+		return false, nil
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	// The generation check and the UPDATE share one hold of the swap lock, so
+	// Reopen cannot repoint the handles between them. Only the statement runs
+	// under it; verification happened earlier, with nothing held.
+	gen, unlock := ls.lockDB()
+	defer unlock()
+	if gen != item.snapshotGen {
+		return false, nil // the snapshot's database is no longer the live one
+	}
+	res, err := ls.wdb.Exec(`UPDATE library_nzbs SET `+set+` WHERE id = ? AND last_verified_at = ? AND pinned = 0 AND status != 'bad'`, arg, item.ID, item.snapshotVerified)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (ls *LibraryStore) TouchItem(id string) {

@@ -48,6 +48,7 @@ type Server struct {
 	queryCache           *indexer.QueryCache
 	validator            *validation.Checker
 	sessionManager       *session.Manager
+	libraryVerifier      func(ctx context.Context, nzb []byte, meta *session.AvailReportMeta) (bool, error) // library sweep seam; tests only
 	triageService        *triage.Service
 	rankingService       *ranking.Service
 	availClient          *availnzb.Client
