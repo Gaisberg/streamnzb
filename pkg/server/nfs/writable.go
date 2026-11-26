@@ -316,7 +316,10 @@ func (s *Server) PublishDownload(_ context.Context, jobName string, item *persis
 		logger.Warn("NFS export could not publish a download", "folder", folder, "file", fileName, "err", err)
 		return "", false
 	}
-	s.refreshTree()
+	// Dirty, not rebuilt: nobody is waiting on this call for attributes, and
+	// a pack publishes its files one after another. The next client call
+	// rebuilds once.
+	s.markDirty()
 	logger.Info("NFS export published download", "folder", folder, "file", fileName)
 	return "/" + persistence.ExportRootDownloads + "/" + folder, true
 }

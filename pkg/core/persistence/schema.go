@@ -363,6 +363,18 @@ var migratedIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_anime_mappings_mal ON anime_mappings(mal_id)`,
 }
 
+// libraryListingIndex covers every library_nzbs column the listing reads, so
+// a listing never touches the table row beyond its first page. It is for
+// SQLite alone: there a row is one record with nzb_data in the middle of it,
+// and reading any column stored after that blob — status, created_at, the
+// ids — walks the blob's overflow pages, megabytes per row, a full table
+// read per listing. Postgres keeps large values out of line and the index
+// would only risk its row-size limit on a long title or URL.
+const libraryListingIndex = `CREATE INDEX IF NOT EXISTS idx_library_nzbs_listing ON library_nzbs(
+	status, pinned, last_accessed_at, id, content_type, content_id, season, episode,
+	release_title, details_url, indexer_name, size_bytes, created_at, last_verified_at,
+	status_reason, imdb_id, tmdb_id, tvdb_id, kitsu_id)`
+
 // addColumn applies one ALTER TABLE ADD COLUMN, tolerating the column already
 // existing.
 func addColumn(c *connRef, col addedColumn) error {
@@ -426,6 +438,11 @@ func initSchema(c *connRef) error {
 	for _, stmt := range migratedIndexes {
 		if _, err := c.Exec(stmt); err != nil {
 			return fmt.Errorf("schema index: %w", err)
+		}
+	}
+	if d.Name() == BackendSQLite {
+		if _, err := c.Exec(libraryListingIndex); err != nil {
+			return fmt.Errorf("create library listing index: %w", err)
 		}
 	}
 	for _, stmt := range []string{nzbAttemptsIndexStream, nzbAttemptsIndexProvider, nzbAttemptsIndexIndexer} {

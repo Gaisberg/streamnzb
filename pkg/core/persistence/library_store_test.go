@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -449,5 +450,31 @@ func TestLibraryFilteredItemsCarryIDs(t *testing.T) {
 	}
 	if items[0].ImdbID != "tt11198330" || items[0].TmdbID != "94997" || items[0].TvdbID != "371572" {
 		t.Fatalf("listing must carry the ids: %+v", items[0])
+	}
+}
+
+func TestLibraryListingIsCoveredBySQLiteIndex(t *testing.T) {
+	m := openTestManager(t)
+	if m.Backend() != BackendSQLite {
+		t.Skip("SQLite-only index")
+	}
+	ls := m.LibraryStore()
+	_ = ls.StoreItem(&LibraryItem{ID: "movie:tt1:x", ContentType: "movie", ContentID: "tt1", ReleaseTitle: "X.2020-GRP", NZBData: []byte("<nzb/>"), Status: LibraryStatusGood})
+	rows, err := m.db.Query(`EXPLAIN QUERY PLAN SELECT n.id, n.created_at, n.status, COALESCE(length(n.nzb_data), 0) FROM library_nzbs n WHERE n.status = ? ORDER BY n.pinned DESC, n.last_accessed_at DESC LIMIT 200`, LibraryStatusGood)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var a, b, c int
+		var detail string
+		if err := rows.Scan(&a, &b, &c, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if len(plan) == 0 || !strings.Contains(plan[0], "idx_library_nzbs_listing") {
+		t.Fatalf("listing should be served by the covering index, plan: %v", plan)
 	}
 }

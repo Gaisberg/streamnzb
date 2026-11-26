@@ -322,6 +322,11 @@ func (s *Server) streamForKey(k streamKey) *auth.Stream {
 
 // --- tree --------------------------------------------------------------
 
+// slowRebuild is the rebuild time above which currentTree says what it spent
+// the time on; rebuilds are meant to be cheap and one that is not is a bug
+// worth seeing in the log.
+const slowRebuild = 250 * time.Millisecond
+
 func (s *Server) markDirty() {
 	s.treeMu.Lock()
 	s.dirty = true
@@ -333,6 +338,7 @@ func (s *Server) markDirty() {
 // library read, one export-store read and cached titles — so they happen
 // inline on the call that notices.
 func (s *Server) currentTree() *tree {
+	asked := time.Now()
 	s.treeMu.Lock()
 	defer s.treeMu.Unlock()
 	now := time.Now()
@@ -347,6 +353,7 @@ func (s *Server) currentTree() *tree {
 			}
 		}
 	}
+	loaded := time.Now()
 	var vfs []persistence.ExportNode
 	if s.opts.Export != nil {
 		if err := s.opts.Export.EnsureRoots(); err != nil {
@@ -358,9 +365,15 @@ func (s *Server) currentTree() *tree {
 			vfs = nodes
 		}
 	}
+	nodesRead := time.Now()
 	s.tree = buildTree(items, vfs, s.titles.cached, now)
 	s.dirty = false
 	s.titles.resolveMissing(s.ctx, items)
+	if total := time.Since(now); total > slowRebuild {
+		logger.Debug("NFS export rebuilt its tree slowly", "items", len(items), "nodes", len(vfs),
+			"library_ms", loaded.Sub(now).Milliseconds(), "export_ms", nodesRead.Sub(loaded).Milliseconds(),
+			"build_ms", time.Since(nodesRead).Milliseconds(), "waited_for_lock_ms", now.Sub(asked).Milliseconds())
+	}
 	return s.tree
 }
 
