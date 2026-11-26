@@ -11,6 +11,7 @@ import (
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/server/api"
+	"streamnzb/pkg/server/sabnzbd"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/session"
 )
@@ -42,6 +43,10 @@ func shutdownSignals() <-chan os.Signal {
 //     also gives scrobbles already decided a bounded drain (three seconds,
 //     inside Docker's ten with the HTTP grace) to reach MDBList and Simkl.
 //   - The NNTP proxy next, for the same reason.
+//   - The NFS export after it: closing it closes every file a client still
+//     has open, which ends those plays before the sessions go.
+//   - The download-client API next: a validation in flight is cancelled and
+//     recorded as failed, and the history written, before the database closes.
 //   - Sessions before provider pools: closing a session ends its playback
 //     stream, which hands the NNTP connections back instead of leaving them for
 //     a pool that is about to disappear underneath them.
@@ -57,6 +62,7 @@ func gracefulShutdown(
 	addonServer *rebindableServer,
 	stremioServer *stremio.Server,
 	apiServer *api.Server,
+	sabnzbdServer *sabnzbd.Server,
 	sessionManager *session.Manager,
 	application *app.App,
 	stateMgr *persistence.StateManager,
@@ -80,6 +86,17 @@ func gracefulShutdown(
 		if err := proxyServer.Stop(); err != nil {
 			logger.Warn("Failed to stop the NNTP proxy", "err", err)
 		}
+	}
+
+	// Read off the API server: a reload may have replaced the one main started.
+	if nfsServer := apiServer.NFSServer(); nfsServer != nil {
+		if err := nfsServer.Stop(); err != nil {
+			logger.Warn("Failed to stop the NFS export", "err", err)
+		}
+	}
+
+	if sabnzbdServer != nil {
+		sabnzbdServer.Stop()
 	}
 
 	sessionManager.Shutdown()

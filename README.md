@@ -145,6 +145,8 @@ Full reference documentation lives in the [docs](docs/README.md) folder:
 - [NNTP proxy](docs/nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](docs/newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [Jellyfin endpoint](docs/jellyfin.md) — serving your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid)
+- [NFS export](docs/nfs.md) — mounting the release library as files for Plex, with Radarr and Sonarr organising it
+- [Download client API](docs/sabnzbd.md) — Radarr and Sonarr filling the library through a SABnzbd-compatible endpoint
 - [AvailNZB](docs/availnzb.md) — community availability database integration
 - [Using with AIOStreams](docs/aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 - [Troubleshooting](docs/troubleshooting.md) — reporting problems, Cloudflare Tunnel buffering, admin password recovery

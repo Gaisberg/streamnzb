@@ -31,6 +31,11 @@ const (
 	NewznabAPIKeyEnv                   = "NEWZNAB_API_KEY"
 	JellyfinMaxPlaybackSourcesEnv      = "JELLYFIN_MAX_PLAYBACK_SOURCES"
 	JellyfinResolveOnOpenEnv           = "JELLYFIN_RESOLVE_ON_OPEN"
+	NFSEnabledEnv                      = "NFS_ENABLED"
+	NFSHostEnv                         = "NFS_HOST"
+	NFSPortEnv                         = "NFS_PORT"
+	SabnzbdEnabledEnv                  = "SABNZBD_ENABLED"
+	SabnzbdCompleteDirEnv              = "SABNZBD_COMPLETE_DIR"
 	TZVar                              = "TZ"
 	ProviderPrefix                     = "PROVIDER_"
 	IndexerPrefix                      = "INDEXER_"
@@ -72,6 +77,11 @@ const (
 	KeyNewznabAPIKey              = "newznab_api_key"
 	KeyJellyfinMaxPlaybackSources = "jellyfin_max_playback_sources"
 	KeyJellyfinResolveOnOpen      = "jellyfin_resolve_on_open"
+	KeyNFSEnabled                 = "nfs_enabled"
+	KeyNFSHost                    = "nfs_host"
+	KeyNFSPort                    = "nfs_port"
+	KeySabnzbdEnabled             = "sabnzbd_enabled"
+	KeySabnzbdCompleteDir         = "sabnzbd_complete_dir"
 	KeyProviders                  = "providers"
 	KeyIndexers                   = "indexers"
 	KeyAvailNZBURL                = "availnzb_url"
@@ -336,6 +346,8 @@ var booleanEnvNames = []string{
 	NNTPProxyEnabled,
 	NewznabEnabledEnv,
 	JellyfinResolveOnOpenEnv,
+	NFSEnabledEnv,
+	SabnzbdEnabledEnv,
 	AdminForcePasswordResetEnv,
 	EasynewsAdvancedSearchEnv,
 	StreamNZBEasynewsAdvancedSearchEnv,
@@ -426,6 +438,11 @@ type ConfigOverrides struct {
 	NewznabAPIKey              string
 	JellyfinMaxPlaybackSources int
 	JellyfinResolveOnOpen      bool
+	NFSEnabled                 bool
+	NFSHost                    string
+	NFSPort                    int
+	SabnzbdEnabled             bool
+	SabnzbdCompleteDir         string
 	AdminUsername              string
 	AdminMustChangePwd         bool
 	TrustedProxyAuthHeader     string
@@ -527,6 +544,17 @@ func ReadConfigOverrides() (ConfigOverrides, []string) {
 		o.JellyfinResolveOnOpen = getEnvBool(JellyfinResolveOnOpenEnv, true)
 		r.keys = append(r.keys, KeyJellyfinResolveOnOpen)
 	}
+	if v, ok := os.LookupEnv(NFSEnabledEnv); ok && v != "" {
+		o.NFSEnabled = getEnvBool(NFSEnabledEnv, true)
+		r.keys = append(r.keys, KeyNFSEnabled)
+	}
+	r.str(&o.NFSHost, KeyNFSHost, NFSHostEnv)
+	r.intVal(&o.NFSPort, KeyNFSPort, NFSPortEnv, func(n int) bool { return n >= 1 && n <= 65535 })
+	if v, ok := os.LookupEnv(SabnzbdEnabledEnv); ok && v != "" {
+		o.SabnzbdEnabled = getEnvBool(SabnzbdEnabledEnv, true)
+		r.keys = append(r.keys, KeySabnzbdEnabled)
+	}
+	r.str(&o.SabnzbdCompleteDir, KeySabnzbdCompleteDir, SabnzbdCompleteDirEnv)
 	r.str(&o.AdminUsername, KeyAdminUsername, AdminUsernameEnv)
 	r.str(&o.DatabaseDriver, KeyDatabaseDriver, StreamNZBDatabaseDriverEnv, DatabaseDriverEnv)
 	r.str(&o.DatabaseURL, KeyDatabaseURL, StreamNZBDatabaseURLEnv, DatabaseURLEnv)

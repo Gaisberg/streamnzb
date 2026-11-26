@@ -1166,6 +1166,9 @@ type AvailReportMeta struct {
 	// AirDate is the episode's air date (YYYY-MM-DD, "" when unknown), which
 	// lets selection pick a daily show's file named only by its date.
 	AirDate string
+	// File pins one file set of the release by a file name in it; see
+	// searchparser.EpisodeTarget.File.
+	File string
 }
 
 // EpisodeTarget is the episode the request is after, as file selection
@@ -1180,6 +1183,7 @@ func (m *AvailReportMeta) EpisodeTarget() searchparser.EpisodeTarget {
 		Episode:    m.Episode,
 		Absolute:   m.AbsoluteEpisode,
 		AirDate:    m.AirDate,
+		File:       m.File,
 	}
 }
 

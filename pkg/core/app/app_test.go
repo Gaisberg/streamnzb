@@ -69,6 +69,12 @@ func TestConfigChangedScopesAreIndependent(t *testing.T) {
 		t.Fatalf("proxy edit scope = %+v, want proxy only", scope)
 	}
 
+	nfsChanged := base()
+	nfsChanged.NFSEnabled = true
+	if scope := ConfigChanged(base(), nfsChanged); !scope.NFS || scope.Proxy || scope.Indexers || scope.Providers {
+		t.Fatalf("nfs edit scope = %+v, want nfs only", scope)
+	}
+
 	globalProxyChanged := base()
 	globalProxyChanged.IndexerProxyURL = "http://proxy:8888"
 	if scope := ConfigChanged(base(), globalProxyChanged); !scope.Indexers || scope.Providers || scope.Proxy {

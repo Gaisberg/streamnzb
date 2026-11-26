@@ -25,6 +25,11 @@ const INTEGRATIONS_TAB_FIELDS = [
   'proxy_auth_pass',
   'newznab_enabled',
   'newznab_api_key',
+  'nfs_enabled',
+  'nfs_host',
+  'nfs_port',
+  'sabnzbd_enabled',
+  'sabnzbd_complete_dir',
 ]
 
 const ADVANCED_TAB_FIELDS = [
@@ -236,6 +241,8 @@ export function useSettingsState({
     addon: 'Addon',
     proxy: 'NNTP Proxy Server',
     newznab: 'Newznab Endpoint',
+    nfs: 'NFS Export',
+    sabnzbd: 'Download Client API',
     useragent: 'User-Agent',
     database: 'Database',
     admin: 'Logs',

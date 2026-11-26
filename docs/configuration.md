@@ -100,6 +100,11 @@ The endpoint is always served; see [Jellyfin endpoint](jellyfin.md).
 |---|---|
 | `JELLYFIN_MAX_PLAYBACK_SOURCES` | Cap on media sources offered per play, 1-200 (default 20) |
 | `JELLYFIN_RESOLVE_ON_OPEN` | Search when a title page opens rather than waiting for play (default **on**) — set `false` to trade the version picker for fewer searches |
+| `NFS_ENABLED` | Serve the release library as a read-only NFSv3 export for Plex and other file-based media servers (default off) — see [NFS export](nfs.md) |
+| `NFS_HOST` | Listen address for the export (default all interfaces; a LAN or VPN address is the sensible choice) |
+| `NFS_PORT` | TCP port for the export (default 2049; Linux and macOS clients name it in the mount options, Windows asks port 111, which is answered alongside when it can be bound) |
+| `SABNZBD_ENABLED` | Serve a SABnzbd-compatible download-client API for Radarr and Sonarr (default off) — see [Download client API](sabnzbd.md) |
+| `SABNZBD_COMPLETE_DIR` | Where the *arr host has the NFS export mounted; completed downloads are reported under it (default `/mnt/streamnzb`) |
 
 ### Outbound User-Agent headers
 

@@ -179,6 +179,23 @@ const (
 		created_at {INT} NOT NULL
 	);`
 
+	// export_nodes is the writable half of the NFS export: a tree of names a
+	// client chose, whose files alias library rows by id.
+	// ids are assigned by the store, not the database, so the tree (which
+	// references itself by id) survives a backend migration intact.
+	exportNodesSchema = `CREATE TABLE IF NOT EXISTS export_nodes (
+		id {INT} PRIMARY KEY,
+		parent_id {INT} NOT NULL DEFAULT 0,
+		name {TEXT} NOT NULL,
+		kind {TEXT} NOT NULL,
+		item_id {TEXT},
+		data {BLOB},
+		created_at {INT} NOT NULL,
+		modified_at {INT} NOT NULL
+	);`
+	exportNodesIndexParentName = `CREATE UNIQUE INDEX IF NOT EXISTS idx_export_nodes_parent_name ON export_nodes(parent_id, name);`
+	exportNodesIndexItem       = `CREATE INDEX IF NOT EXISTS idx_export_nodes_item ON export_nodes(item_id);`
+
 	badReleasesSchema = `CREATE TABLE IF NOT EXISTS bad_releases (
 		details_url {TEXT} PRIMARY KEY,
 		release_title {TEXT},
@@ -266,6 +283,9 @@ type addedColumn struct {
 // addedColumns are applied in order on every startup. Order does not matter —
 // each is independent and idempotent — so new columns just get appended.
 var addedColumns = []addedColumn{
+	// Scratch-file content for the NFS export: small files a client wrote
+	// itself (an *arr's write test, .nfo and subtitle sidecars).
+	{"export_nodes", "data", "{BLOB}"},
 	{"library_blueprints", "media_caps_json", "{TEXT}"},
 	// Per-scheme content ids, so a cached release is findable regardless of
 	// which id scheme (imdb/tmdb/tvdb/kitsu) a later request carries. Rows
@@ -378,6 +398,9 @@ func initSchema(c *connRef) error {
 		libraryNZBsIndexContent,
 		libraryNZBsIndexAccessed,
 		libraryBlueprintsSchema,
+		exportNodesSchema,
+		exportNodesIndexParentName,
+		exportNodesIndexItem,
 		badReleasesSchema,
 		badReleasesIndexExpires,
 		searchDiagnosticsSchema,

@@ -71,6 +71,12 @@ type ffprobeSideData struct {
 // when the header does not state one (e.g. a moov-at-end MP4 on a pipe).
 type FFprobeFormat struct {
 	Duration string `json:"duration"`
+	// Tags carries the container-level title, which WEB-DL and scene
+	// Matroska files often set to the release or episode name — the one
+	// place an obfuscated post still says what it is.
+	Tags struct {
+		Title string `json:"title"`
+	} `json:"tags"`
 }
 
 type FFprobeOutput struct {
@@ -101,6 +107,8 @@ type FFprobeResult struct {
 	DolbyVision    bool
 	FramesDecoded  int // nb_read_frames of the chosen video stream (only when ForceDecode)
 
+	// Title is the container's title tag, "" when it has none.
+	Title string
 	// DurationSeconds is the container-reported duration, 0 when the header
 	// does not state one.
 	DurationSeconds float64
@@ -194,7 +202,8 @@ const showEntries = "stream=codec_type,codec_name,profile,width,height,pix_fmt,"
 	"stream_disposition=attached_pic:" +
 	"stream_tags=language:" +
 	"stream_side_data=side_data_type,dv_profile,dv_level:" +
-	"format=duration"
+	"format=duration:" +
+	"format_tags=title"
 
 // legacyShowEntries deliberately omits stream_side_data. FFmpeg 4.4, including
 // the ARM64 static binary this service installs, rejects that section before it
@@ -204,7 +213,8 @@ const legacyShowEntries = "stream=codec_type,codec_name,profile,width,height,pix
 	"color_transfer,color_primaries,codec_tag_string,bit_rate,bits_per_raw_sample,nb_read_frames:" +
 	"stream_disposition=attached_pic:" +
 	"stream_tags=language:" +
-	"format=duration"
+	"format=duration:" +
+	"format_tags=title"
 
 func needsLegacyShowEntries(stderr string) bool {
 	return strings.Contains(stderr, "No match for section 'stream_side_data'")
@@ -362,6 +372,7 @@ func ProbeStreamWithOptions(ctx context.Context, stream io.Reader, customPath st
 	}
 
 	res := summarizeStreams(output.Streams)
+	res.Title = strings.TrimSpace(output.Format.Tags.Title)
 	if seconds, err := strconv.ParseFloat(strings.TrimSpace(output.Format.Duration), 64); err == nil && seconds > 0 {
 		res.DurationSeconds = seconds
 	}

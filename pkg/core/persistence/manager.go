@@ -69,6 +69,7 @@ type StateManager struct {
 	wdb             *connRef // write handle; all writes go here
 	backend         string
 	libraryStore    *LibraryStore
+	exportStore     *ExportStore
 	badReleaseStore *BadReleaseStore
 	animeMappings   *AnimeMappingStore
 	metadataCache   *MetadataCacheStore
@@ -167,6 +168,7 @@ func newManager(s Settings, dataDir string) (*StateManager, error) {
 		wdb:             wdb,
 		backend:         backend,
 		libraryStore:    NewLibraryStore(db, wdb),
+		exportStore:     NewExportStore(db, wdb),
 		badReleaseStore: NewBadReleaseStore(db, wdb),
 		metadataCache:   NewMetadataCacheStore(db, wdb),
 		jellyfinPlay:    NewJellyfinPlaystateStore(db, wdb),
@@ -285,6 +287,14 @@ func (m *StateManager) LibraryStore() *LibraryStore {
 		return nil
 	}
 	return m.libraryStore
+}
+
+// ExportStore is the writable directory tree of the NFS export.
+func (m *StateManager) ExportStore() *ExportStore {
+	if m == nil {
+		return nil
+	}
+	return m.exportStore
 }
 
 func (m *StateManager) BadReleaseStore() *BadReleaseStore {

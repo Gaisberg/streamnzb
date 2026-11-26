@@ -1,0 +1,117 @@
+# A test stack for the NFS export and the download client API: StreamNZB,
+# Radarr and Sonarr, with the export mounted into both *arrs as an NFS volume
+# so the Linux client path is exercised by the Docker VM's own kernel.
+#
+# Two-step start, because the mount needs a stream token that only exists
+# once StreamNZB has been configured:
+#
+#   docker compose up -d streamnzb          # then configure it on :7000
+#   cp .env.example .env                    # fill in NFS_HOST and STREAM_TOKEN
+#   docker compose up -d                    # radarr and sonarr mount and start
+#
+# See README.md beside this file.
+
+services:
+  streamnzb:
+    image: ${STREAMNZB_IMAGE:-streamnzb:arr-test}
+    container_name: arr-streamnzb
+    environment:
+      NFS_ENABLED: "true"
+      SABNZBD_ENABLED: "true"
+      # Where the *arrs see the export mounted (below).
+      SABNZBD_COMPLETE_DIR: /mnt/streamnzb
+      ADDON_BASE_URL: http://${NFS_HOST:-localhost}:${WEB_PORT:-7001}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    ports:
+      # Host ports are configurable so the stack can run beside a StreamNZB
+      # already on this machine; inside the container they stay 7000/2049.
+      - "${WEB_PORT:-7001}:7000"
+      - "${NFS_PORT:-2050}:2049"
+      # Only Windows clients need 111. It is left unpublished here because a
+      # StreamNZB on the host usually holds it; add "111:111" and
+      # "111:111/udp" to mount from Windows.
+    volumes:
+      - ./data/streamnzb:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7000/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: arr-radarr
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Europe/Helsinki}
+    ports:
+      - "7878:7878"
+    volumes:
+      - ./data/radarr:/config
+      - streamnzb-export:/mnt/streamnzb
+    depends_on:
+      streamnzb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: arr-sonarr
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Europe/Helsinki}
+    ports:
+      - "8989:8989"
+    volumes:
+      - ./data/sonarr:/config
+      - streamnzb-export:/mnt/streamnzb
+    depends_on:
+      streamnzb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Silo: a media server that scans the export like a disk. It gets the same
+  # NFS volume read-only, so what the *arrs organise and what library/ lays
+  # out are what it sees. Onboard at :8090 and add libraries under /mnt/media.
+  silo:
+    image: ${SILO_IMAGE:-ghcr.io/silo-server/silo-server:latest}
+    container_name: arr-silo
+    stop_grace_period: 2m
+    cap_add: [NET_ADMIN]
+    environment:
+      PORT: "8080"
+      JF_PORT: "8096"
+      ABS_PORT: "13378"
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Europe/Helsinki}
+      SECRET_KEY: ${SILO_SECRET_KEY:?Set SILO_SECRET_KEY in .env}
+      ENABLE_REDIS: "true"
+      ENABLE_MEILISEARCH: "false"
+    ports:
+      - "${SILO_PORT:-8090}:8080"
+      - "${SILO_JF_PORT:-8096}:8096"
+    volumes:
+      - ./data/silo/config:/config
+      - ./data/silo/transcode:/tmp/silo-transcode
+      - ./data/silo/download-artifacts:/tmp/silo-download-artifacts
+      - streamnzb-export:/mnt/media:ro
+    depends_on:
+      streamnzb:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  # The export, mounted by the Docker host's kernel NFS client. The address is
+  # the host that publishes StreamNZB's 2049, not the service name: volumes
+  # are mounted by the daemon, outside the compose network. The stream token
+  # is the exported path.
+  streamnzb-export:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_HOST},vers=3,tcp,port=${NFS_PORT:-2050},mountport=${NFS_PORT:-2050},nolock,soft,timeo=600,retrans=3
+      device: ":/${STREAM_TOKEN}"

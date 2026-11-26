@@ -18,6 +18,7 @@ import (
 	"streamnzb/pkg/core/persistence"
 	"streamnzb/pkg/indexer"
 	"streamnzb/pkg/initialization"
+	"streamnzb/pkg/server/nfs"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/services/availnzb"
 	"streamnzb/pkg/session"
@@ -35,10 +36,15 @@ type Server struct {
 	sessionMgr     *session.Manager
 	strmServer     *stremio.Server
 	proxyServer    *proxy.Server
-	indexer        indexer.Indexer
-	indexerCaps    map[string]*indexer.Caps
-	streamManager  *auth.StreamManager
-	app            *app.App
+	// nfsServer is the running library export, nil when off. nfsFactory
+	// builds a fresh one when a reload changes its listener settings; the
+	// wiring (streams, library, opener) lives in main, so main supplies it.
+	nfsServer     *nfs.Server
+	nfsFactory    func(host string, port int) *nfs.Server
+	indexer       indexer.Indexer
+	indexerCaps   map[string]*indexer.Caps
+	streamManager *auth.StreamManager
+	app           *app.App
 
 	// loginThrottle backs off repeated failed admin logins per client address.
 	// Usable at its zero value, so it needs no wiring in the constructors.
@@ -281,6 +287,22 @@ func (s *Server) SetProxyServer(p *proxy.Server) {
 	s.proxyServer = p
 }
 
+// SetNFSExport installs the running export (nil when off) and the factory a
+// config reload uses to start a new one when its settings change.
+func (s *Server) SetNFSExport(current *nfs.Server, factory func(host string, port int) *nfs.Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nfsServer = current
+	s.nfsFactory = factory
+}
+
+// NFSServer returns the running library export, or nil when it is off.
+func (s *Server) NFSServer() *nfs.Server {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.nfsServer
+}
+
 // ProxyServer returns the NNTP proxy currently installed, or nil when it is
 // disabled. A config reload can replace it, so shutdown has to ask for the live
 // one rather than holding the instance it started with.
@@ -437,6 +459,39 @@ func (s *Server) ReloadFromComponents(comp *app.Components, scope app.ReloadScop
 			s.mu.Lock()
 			s.proxyServer = nil
 			s.mu.Unlock()
+		}
+	}
+	if scope.NFS {
+		s.mu.Lock()
+		oldNFS := s.nfsServer
+		factory := s.nfsFactory
+		s.nfsServer = nil
+		s.mu.Unlock()
+		if oldNFS != nil {
+			logger.Info("Stopping NFS export for reload...")
+			if err := oldNFS.Stop(); err != nil {
+				logger.Error("Failed to stop the NFS export", "err", err)
+			}
+		}
+		if comp.Config.NFSEnabled && factory != nil {
+			logger.Info("Starting NFS export...", "host", comp.Config.NFSHost, "port", comp.Config.NFSPort)
+			newNFS := factory(comp.Config.NFSHost, comp.Config.NFSPort)
+			// Installed before the bind so a failure is readable from the
+			// settings page, as with the proxy.
+			s.mu.Lock()
+			s.nfsServer = newNFS
+			s.mu.Unlock()
+			if err := newNFS.Listen(); err != nil {
+				logger.Warn("NFS export is not listening", "err", err)
+			} else {
+				go func(n *nfs.Server) {
+					if err := n.Serve(); err != nil {
+						logger.Error("NFS export stopped serving", "err", err)
+					}
+				}(newNFS)
+			}
+		} else if !comp.Config.NFSEnabled {
+			logger.Info("NFS export disabled by config")
 		}
 	}
 	if scope.Indexers {

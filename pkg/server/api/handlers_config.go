@@ -6,6 +6,7 @@ import (
 
 	"streamnzb/pkg/auth"
 	"streamnzb/pkg/core/config"
+	"streamnzb/pkg/server/nfs"
 	"streamnzb/pkg/usenet/nntp/proxy"
 )
 
@@ -16,6 +17,17 @@ type configPayload struct {
 	// carries whether the listener actually came up — an enabled proxy that
 	// failed to bind is otherwise indistinguishable from a working one.
 	ProxyStatus *proxy.Status `json:"proxy_status,omitempty"`
+	// NFSStatus likewise, for the library export.
+	NFSStatus *nfs.Status `json:"nfs_status,omitempty"`
+}
+
+func (s *Server) nfsStatus() *nfs.Status {
+	n := s.NFSServer()
+	if n == nil {
+		return nil
+	}
+	status := n.Status()
+	return &status
 }
 
 func (s *Server) proxyStatus() *proxy.Status {
@@ -72,7 +84,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.AdminUsername = s.adminUsername()
 	}
 	if stream != nil && stream.Username == s.adminUsername() {
-		writeJSON(w, http.StatusOK, configPayload{Config: cfg, EnvOverrides: config.GetEnvOverrideKeys(), ProxyStatus: s.proxyStatus()})
+		writeJSON(w, http.StatusOK, configPayload{Config: cfg, EnvOverrides: config.GetEnvOverrideKeys(), ProxyStatus: s.proxyStatus(), NFSStatus: s.nfsStatus()})
 	} else {
 		writeJSON(w, http.StatusOK, cfg)
 	}

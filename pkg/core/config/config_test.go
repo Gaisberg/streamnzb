@@ -871,6 +871,8 @@ func TestEnvFieldCopiersCoverEveryKey(t *testing.T) {
 		env.KeyProxyPort, env.KeyProxyHost, env.KeyProxyEnabled, env.KeyProxyAuthUser,
 		env.KeyProxyAuthPass, env.KeyNewznabEnabled, env.KeyNewznabAPIKey,
 		env.KeyJellyfinMaxPlaybackSources, env.KeyJellyfinResolveOnOpen,
+		env.KeyNFSEnabled, env.KeyNFSHost, env.KeyNFSPort,
+		env.KeySabnzbdEnabled, env.KeySabnzbdCompleteDir,
 		env.KeyProviders, env.KeyIndexers, env.KeyAvailNZBURL,
 		env.KeyAvailNZBAPIKey, env.KeyTMDBAPIKey, env.KeyTVDBAPIKey, env.KeySimklClientID,
 		env.KeyMDBListClientID,
