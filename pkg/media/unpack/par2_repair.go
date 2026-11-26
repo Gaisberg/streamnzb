@@ -51,16 +51,20 @@ func gf16MulRaw(a, b uint32) uint32 {
 	return res
 }
 
+func buildGF16Tables() {
+	var x uint32 = 1
+	for i := 0; i < gf16Mod; i++ {
+		gf16ALog[i] = uint16(x)
+		gf16Log[uint16(x)] = uint16(i)
+		x = gf16MulRaw(x, gf16Gen)
+	}
+	gf16ALog[gf16Mod] = gf16ALog[0]
+}
+
+// initGF16 stays tiny so the compiler inlines the already-done fast path into
+// the arithmetic helpers.
 func initGF16() {
-	gf16InitOnce.Do(func() {
-		var x uint32 = 1
-		for i := 0; i < gf16Mod; i++ {
-			gf16ALog[i] = uint16(x)
-			gf16Log[uint16(x)] = uint16(i)
-			x = gf16MulRaw(x, gf16Gen)
-		}
-		gf16ALog[gf16Mod] = gf16ALog[0]
-	})
+	gf16InitOnce.Do(buildGF16Tables)
 }
 
 func gf16Add(a, b uint16) uint16 {
@@ -71,7 +75,7 @@ func gf16Mul(a, b uint16) uint16 {
 	if a == 0 || b == 0 {
 		return 0
 	}
-	gf16InitOnce.Do(initGF16)
+	initGF16()
 	sum := int(gf16Log[a]) + int(gf16Log[b])
 	if sum >= gf16Mod {
 		sum -= gf16Mod
@@ -86,7 +90,7 @@ func gf16Div(a, b uint16) uint16 {
 	if b == 0 {
 		panic("gf16 divide by zero")
 	}
-	gf16InitOnce.Do(initGF16)
+	initGF16()
 	diff := int(gf16Log[a]) - int(gf16Log[b])
 	if diff < 0 {
 		diff += gf16Mod
@@ -101,7 +105,7 @@ func gf16Pow(base uint16, exp uint32) uint16 {
 	if base == 0 {
 		return 0
 	}
-	gf16InitOnce.Do(initGF16)
+	initGF16()
 	expMod := uint64(exp) % uint64(gf16Mod)
 	prod := (uint64(gf16Log[base]) * expMod) % uint64(gf16Mod)
 	return gf16ALog[prod]
