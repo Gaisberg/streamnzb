@@ -371,8 +371,9 @@ func inAnyHole(holes []Range, off int64) bool {
 // Every failure returns an error and no edits, and the caller then serves the
 // original bytes: the repair is only ever allowed to help.
 //
-// Every edit lands inside the hole, or within one element header of its start.
-// That bound is what lets a serve apply them without having read the whole
+// Every edit lands inside the hole, within one element header of its start, or
+// within one element header past its end. That bound is what lets a serve apply
+// them without having read the whole
 // file: a read window near the hole owes at most those few bytes. It also
 // rules out repairing a Cluster's CRC-32, which sits at the front of the
 // Cluster and is long gone by the time the hole is reached — a Cluster that

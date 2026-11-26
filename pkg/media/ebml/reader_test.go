@@ -207,6 +207,37 @@ func TestVoidHeaderRightEdge(t *testing.T) {
 	}
 }
 
+func TestVoidHeaderRightEdgeDiscoversAHoleBehindTheRequest(t *testing.T) {
+	f := buildFixture(t, fixtureOpts{})
+	block := f.blockIn(1, 1)
+	hole := Range{Start: block.payloadStart + 4, End: block.end + 1}
+	holed := punch(f.data, hole)
+	src := &lateStream{fakeStream: &fakeStream{data: append([]byte(nil), holed...), holes: []Range{hole}}}
+	r := NewHoleFillReader(src, src, int64(len(holed)), NewPatchCache(), "fixture.mkv")
+
+	if _, err := r.Seek(hole.End, io.SeekStart); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	starting := make([]byte, 64)
+	if _, err := io.ReadFull(r, starting); err != nil {
+		t.Fatalf("read from the hole end: %v", err)
+	}
+	if bytes.Equal(starting[:3], holed[hole.End:hole.End+3]) {
+		t.Fatalf("the bytes after the hole were not rewritten: % x", starting[:3])
+	}
+
+	if _, err := r.Seek(f.clusters[1].Start, io.SeekStart); err != nil {
+		t.Fatalf("seek before the hole: %v", err)
+	}
+	crossing := make([]byte, int(hole.End+64-f.clusters[1].Start))
+	if _, err := io.ReadFull(r, crossing); err != nil {
+		t.Fatalf("read across the hole: %v", err)
+	}
+	if got := crossing[hole.End-f.clusters[1].Start:]; !bytes.Equal(got, starting) {
+		t.Fatalf("the 64 bytes after the hole differ by read order: % x != % x", got, starting)
+	}
+}
+
 // lateStream is a stream that learns about a hole the way the loader does: when
 // a read first delivers a byte from inside it, and never before. Like the
 // loader it reads segment by segment, so no read crosses the start of a hole —
