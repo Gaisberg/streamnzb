@@ -89,7 +89,7 @@ function Settings({
 
   useEffect(() => {
     if (initialConfig) {
-      const { env_overrides: _envOverrides, proxy_status: _proxyStatus, admin_username: _au, admin_password: _ap, ...configForForm } = initialConfig
+      const { env_overrides: _envOverrides, proxy_status: _proxyStatus, nfs_status: _nfsStatus, admin_username: _au, admin_password: _ap, ...configForForm } = initialConfig
       const formattedData = {
         ...configForForm,
         addon_port: Number(initialConfig.addon_port),
@@ -97,6 +97,11 @@ function Settings({
         proxy_enabled: initialConfig.proxy_enabled !== false,
         newznab_enabled: initialConfig.newznab_enabled === true,
         newznab_api_key: initialConfig.newznab_api_key ?? '',
+        nfs_enabled: initialConfig.nfs_enabled === true,
+        nfs_host: initialConfig.nfs_host ?? '',
+        nfs_port: Number(initialConfig.nfs_port ?? 2049),
+        sabnzbd_enabled: initialConfig.sabnzbd_enabled === true,
+        sabnzbd_complete_dir: initialConfig.sabnzbd_complete_dir ?? '',
         availnzb_mode: normalizeAvailNZBMode(initialConfig.availnzb_mode),
         tmdb_api_key: initialConfig.tmdb_api_key ?? '',
         tvdb_api_key: initialConfig.tvdb_api_key ?? '',
@@ -294,6 +299,7 @@ function Settings({
           initialValues={integrationsInitialValues}
           envOverrides={envOverrides}
           proxyStatus={initialConfig?.proxy_status}
+          nfsStatus={initialConfig?.nfs_status}
           addonBaseURL={initialConfig?.addon_base_url}
           onPersist={handleIntegrationsPersist}
           saveStatus={saveStatus}

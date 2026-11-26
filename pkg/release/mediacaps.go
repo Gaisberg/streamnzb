@@ -29,6 +29,9 @@ type MediaCaps struct {
 	// DurationSeconds is the container-reported duration, 0 when the probe
 	// could not see one (and on library items saved before it was captured).
 	DurationSeconds float64
+	// Title is the container's own title tag, when it has one. An
+	// obfuscated post's files may say what they are only here.
+	Title string `json:",omitempty"`
 	// TracksProbed reports the track fields below were captured at all. It is
 	// what tells a library item probed before they existed — which has real
 	// codec and HDR measurements but nothing about its tracks — apart from a

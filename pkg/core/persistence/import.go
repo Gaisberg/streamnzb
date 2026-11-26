@@ -97,6 +97,14 @@ var importTables = []importTable{
 		),
 	},
 	{
+		name:     "export_nodes",
+		conflict: "id",
+		columns: cols(
+			num("id"), num("parent_id"), txt("name"), txt("kind"), txt("item_id"), blob("data"),
+			num("created_at"), num("modified_at"),
+		),
+	},
+	{
 		name:     "bad_releases",
 		conflict: "details_url",
 		columns: cols(

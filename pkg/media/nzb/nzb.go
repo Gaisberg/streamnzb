@@ -294,6 +294,13 @@ func (n *NZB) GetContentFilesForEpisode(season, episode int) []*FileInfo {
 // target episode, in whichever numbering the files carry.
 func (n *NZB) GetSessionContentFilesForEpisode(target searchparser.EpisodeTarget) []*FileInfo {
 	infos := n.GetFileInfo()
+	if target.File != "" {
+		if contentFiles := selectFileContentFiles(infos, target.File); len(contentFiles) > 0 {
+			logger.Debug("Session content selection pinned to a file set", "file", target.File, "files", len(contentFiles))
+			return contentFiles
+		}
+		logger.Debug("Session content selection: pinned file not in NZB, falling back", "file", target.File)
+	}
 	if contentFiles := selectEpisodeContentFiles(infos, target); len(contentFiles) > 0 {
 		logger.Debug("Session episode content selection matched targeted NZB group",
 			"target", target,
@@ -384,6 +391,49 @@ func selectEpisodeContentFiles(infos []*FileInfo, target searchparser.EpisodeTar
 	return contentFiles
 }
 
+// selectFileContentFiles returns the content set the named file belongs to: a
+// lone video is a set of one, a RAR volume brings the whole archive.
+func selectFileContentFiles(infos []*FileInfo, name string) []*FileInfo {
+	for _, info := range infos {
+		if info == nil || info.Filename != name {
+			continue
+		}
+		if !isContentCandidate(info) {
+			return nil
+		}
+		return collectPatternContentFiles(infos, info.getFilePattern())
+	}
+	return nil
+}
+
+// ContentSets groups the release's content files into the sets a player
+// would open as one thing: each lone media file, and each multi-volume
+// archive, is a set. Sets come in the order their first file appears; files
+// within a set are in volume order. Samples, extras and sidecars are not
+// content and are left out.
+func (n *NZB) ContentSets() [][]*FileInfo {
+	infos := n.GetFileInfo()
+	var order []string
+	groups := make(map[string][]*FileInfo)
+	for _, info := range infos {
+		if !isContentCandidate(info) {
+			continue
+		}
+		pattern := info.getFilePattern()
+		if _, seen := groups[pattern]; !seen {
+			order = append(order, pattern)
+		}
+		groups[pattern] = append(groups[pattern], info)
+	}
+	sets := make([][]*FileInfo, 0, len(order))
+	for _, pattern := range order {
+		set := groups[pattern]
+		sortContentFiles(set)
+		sets = append(sets, set)
+	}
+	return sets
+}
+
 func selectLargestContentFiles(infos []*FileInfo) []*FileInfo {
 	var mainPattern string
 	var maxSize int64
@@ -431,13 +481,17 @@ func selectAllContentFiles(infos []*FileInfo) []*FileInfo {
 	return contentFiles
 }
 
+// collectPatternContentFiles gathers the content files sharing a pattern —
+// the volumes of one archive, or a lone media file. Sidecars share the stem
+// (an .nfo or .srt beside the .mkv) but are not content: a STAT sweep that
+// counted them would fail a good release because its .nfo article is gone.
 func collectPatternContentFiles(infos []*FileInfo, pattern string) []*FileInfo {
 	if pattern == "" {
 		return nil
 	}
 	var contentFiles []*FileInfo
 	for _, info := range infos {
-		if info.getFilePattern() == pattern {
+		if info.getFilePattern() == pattern && isContentCandidate(info) {
 			contentFiles = append(contentFiles, info)
 		}
 	}

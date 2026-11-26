@@ -166,6 +166,10 @@ func reverse[T any](s []T) {
 // withTx runs fn inside a transaction, rolling back unless fn commits by
 // returning nil.
 func (m *StateManager) withTx(c *connRef, fn func(*txn) error) error {
+	return c.withTx(fn)
+}
+
+func (c *connRef) withTx(fn func(*txn) error) error {
 	tx, err := c.BeginTx(context.Background())
 	if err != nil {
 		return err

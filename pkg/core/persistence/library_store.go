@@ -493,6 +493,29 @@ func (ls *LibraryStore) MarkVerified(id string, t time.Time) {
 	_, _ = ls.wdb.Exec(`UPDATE library_nzbs SET last_verified_at = ? WHERE id = ?`, t.Unix(), id)
 }
 
+// SetMediaFile records the media file's name and exact size on a row that
+// was stored before they were known (rows saved before the columns existed
+// carry a size of 0). The export reports this size to clients, and a client
+// that is told the release size instead reads past the real end of the
+// file looking for a Matroska index that is not there.
+func (ls *LibraryStore) SetMediaFile(id, name string, size int64) error {
+	if ls == nil || ls.db == nil || id == "" || size <= 0 {
+		return nil
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	res, err := ls.wdb.Exec(`UPDATE library_blueprints SET media_file_name = ?, media_file_size = ? WHERE nzb_id = ?`, name, size, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// A row with no blueprint yet: keep the size somewhere a listing
+		// reads from, with an empty plan the replay path treats as absent.
+		_, err = ls.wdb.Exec(`INSERT INTO library_blueprints (nzb_id, blueprint_json, media_file_name, media_file_size, created_at) VALUES (?, '', ?, ?, ?)`, id, name, size, time.Now().Unix())
+	}
+	return err
+}
+
 func (ls *LibraryStore) TouchItem(id string) {
 	if ls == nil || ls.db == nil || id == "" {
 		return
@@ -559,7 +582,8 @@ func (ls *LibraryStore) GetFilteredItems(search, contentType string, pinnedOnly 
 		       n.details_url, n.indexer_name, n.size_bytes, COALESCE(length(n.nzb_data), 0), n.created_at,
 		       n.last_accessed_at, n.last_verified_at, n.pinned, n.status, n.status_reason,
 		       b.blueprint_json, b.media_file_name, b.media_file_size,
-		       b.video_codec, b.height, b.bit_depth, b.hdr, b.dolby_vision, b.audio_codec
+		       b.video_codec, b.height, b.bit_depth, b.hdr, b.dolby_vision, b.audio_codec,
+		       COALESCE(n.imdb_id, ''), COALESCE(n.tmdb_id, ''), COALESCE(n.tvdb_id, ''), COALESCE(n.kitsu_id, '')
 		FROM library_nzbs n
 		LEFT JOIN library_blueprints b ON n.id = b.nzb_id
 		WHERE ` + whereSQL + `
@@ -589,6 +613,7 @@ func (ls *LibraryStore) GetFilteredItems(search, contentType string, pinnedOnly 
 			&createdUnix, &accessedUnix, &verifiedUnix, &pinnedInt, &statusStr, &statusReason,
 			&bpJSON, &mediaName, &mediaSize,
 			&videoCodec, &height, &bitDepth, &hdr, &dolbyVision, &audioCodec,
+			&item.ImdbID, &item.TmdbID, &item.TvdbID, &item.KitsuID,
 		)
 		if err != nil {
 			return nil, 0, err

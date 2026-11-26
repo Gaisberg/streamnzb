@@ -6,7 +6,6 @@ import (
 
 	"streamnzb/pkg/core/logger"
 	"streamnzb/pkg/core/persistence"
-	"streamnzb/pkg/session"
 )
 
 const (
@@ -75,16 +74,8 @@ func (s *Server) sweepStaleLibraryItems(ttl time.Duration) {
 			libStore.MarkVerified(item.ID, time.Now())
 			continue
 		}
-		meta := &session.AvailReportMeta{
-			ImdbID:  item.ImdbID,
-			TmdbID:  item.TmdbID,
-			TvdbID:  item.TvdbID,
-			KitsuID: item.KitsuID,
-			Season:  item.Season,
-			Episode: item.Episode,
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), librarySweepVerifyTimout)
-		exists, verr := s.sessionManager.VerifyLibraryNZB(ctx, item.NZBData, meta)
+		exists, verr := s.sessionManager.VerifyLibraryNZB(ctx, item.NZBData, libraryItemReportMeta(item))
 		cancel()
 		if verr != nil {
 			// Transient (timeout / no providers) — leave it for the next sweep.

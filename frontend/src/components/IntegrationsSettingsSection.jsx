@@ -12,14 +12,19 @@ import { EnvOverrideIndicator } from "@/components/EnvOverrideIndicator"
 import { useFieldAutoSave } from '@/hooks/useFieldAutoSave'
 import { cn, copyToClipboard } from "@/lib/utils"
 
-// Both cards here hand StreamNZB's own resources to another application: the
+// Every card here hands StreamNZB's own resources to another application: the
 // proxy shares the provider pool with a download client, the Newznab endpoint
-// shares the indexer pool with any Newznab-compatible application. The
-// Jellyfin endpoint is not here: it is a per-stream login, so it lives with
-// the stream's manifest URL under Streams.
+// shares the indexer pool with any Newznab-compatible application, the NFS
+// export shares the release library with a media server as files, and the
+// download client API lets an *arr fill that library. The Jellyfin endpoint
+// is not here: it is a per-stream login, so it lives with the stream's
+// manifest URL under Streams — as do the per-stream mount line and API key
+// for the two library cards.
 const CARD_FIELDS = {
   proxy: ['proxy_enabled', 'proxy_host', 'proxy_port', 'proxy_auth_user', 'proxy_auth_pass'],
   newznab: ['newznab_enabled', 'newznab_api_key'],
+  nfs: ['nfs_enabled', 'nfs_host', 'nfs_port'],
+  sabnzbd: ['sabnzbd_enabled', 'sabnzbd_complete_dir'],
 }
 
 const FIELD_CARD = Object.fromEntries(
@@ -35,6 +40,11 @@ function pickInitialValues(values = {}) {
     proxy_auth_pass: values.proxy_auth_pass ?? '',
     newznab_enabled: values.newznab_enabled === true,
     newznab_api_key: values.newznab_api_key ?? '',
+    nfs_enabled: values.nfs_enabled === true,
+    nfs_host: values.nfs_host ?? '',
+    nfs_port: Number(values.nfs_port ?? 2049),
+    sabnzbd_enabled: values.sabnzbd_enabled === true,
+    sabnzbd_complete_dir: values.sabnzbd_complete_dir ?? '',
   }
 }
 
@@ -67,6 +77,7 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
   initialValues,
   envOverrides,
   proxyStatus,
+  nfsStatus,
   addonBaseURL,
   onPersist,
   saveStatus,
@@ -77,6 +88,8 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
   const form = useForm({ defaultValues: defaults })
   const { control, reset, setError, clearErrors } = form
   const proxyEnabled = useWatch({ control, name: 'proxy_enabled' }) !== false
+  const nfsEnabled = useWatch({ control, name: 'nfs_enabled' }) === true
+  const sabnzbdEnabled = useWatch({ control, name: 'sabnzbd_enabled' }) === true
   const { saveField, savingField } = useFieldAutoSave({
     form,
     savedValues: defaults,
@@ -96,6 +109,16 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
   const proxyAddress = `${proxyReachableHost}:${proxyPort || 1119}`
   const endpointBaseURL = (addonBaseURL || window.location.origin).replace(/\/$/, '')
   const newznabURL = `${endpointBaseURL}/newznab/api?apikey=${newznabKey || ''}`
+  const nfsHost = useWatch({ control, name: 'nfs_host' })
+  const nfsPort = useWatch({ control, name: 'nfs_port' }) || 2049
+  const nfsReachableHost = !nfsHost || nfsHost === '0.0.0.0' || nfsHost === '::'
+    ? window.location.hostname
+    : nfsHost
+  // The token is per stream, so the general form shows a placeholder; the
+  // filled-in line for each stream is on its card under Streams.
+  const nfsMountCommand = `mount -t nfs -o ro,vers=3,tcp,port=${nfsPort},mountport=${nfsPort},nolock,soft ${nfsReachableHost}:/<stream token> /mnt/streamnzb`
+  const windowsMountCommand = `mount -o anon,nolock,mtype=soft,timeout=20,proto=tcp,vers=3 \\\\${nfsReachableHost}\\<stream token> Z:`
+  const sabnzbdURL = `${endpointBaseURL}/sabnzbd`
 
   useEffect(() => {
     if (saveStatus?.type === 'error' && saveStatus.errors) {
@@ -292,6 +315,129 @@ export const IntegrationsSettingsSection = React.memo(function IntegrationsSetti
                       </FormControl>
                     </div>
                     <FormDescription className="mt-3">Optional password clients must provide when using the proxy.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
+                  <CardTitle>NFS Export</CardTitle>
+                  <CardDescription>Serve the release library as an NFS share. Radarr and Sonarr import into it by renaming; Plex, Emby or Kodi scan and play from it.</CardDescription>
+                </div>
+                <div className="shrink-0">{renderCardSpinner('nfs')}</div>
+              </div>
+              {(envOverrides.includes('nfs_enabled') || envOverrides.includes('nfs_host') || envOverrides.includes('nfs_port')) && (
+                <div className="mt-1">
+                  <EnvOverrideIndicator show message="Some settings are overwritten by environment variables (NFS_*) on restart." />
+                </div>
+              )}
+            </CardHeader>
+            <CardContent>
+              {nfsStatus && !nfsStatus.listening && (
+                <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  The export is enabled but not listening{nfsStatus.error ? `: ${nfsStatus.error}` : '.'}
+                </div>
+              )}
+              {/* Windows clients ask port 111 where the export lives; Linux and
+                  macOS are told in the mount options. A failed 111 bind is
+                  therefore a note, not an error. */}
+              {nfsStatus?.listening && nfsStatus.portmapper && !nfsStatus.portmapper.listening && (
+                <div className="mb-4 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                  Port 111 could not be bound{nfsStatus.portmapper.error ? ` (${nfsStatus.portmapper.error})` : ''}, so Windows clients cannot mount this export. Linux and macOS clients are unaffected. On Linux, port 111 needs root or CAP_NET_BIND_SERVICE; in Docker, publish 111/tcp and 111/udp.
+                </div>
+              )}
+              <EndpointAddress
+                label="Mount command (Linux, macOS)"
+                value={nfsMountCommand}
+                hint="Run on the Plex host, with a stream's token as the path — each stream card under Streams shows its own ready-made line. Keep the share on your LAN or VPN: the token is its only credential."
+              />
+              <EndpointAddress
+                label="Mount command (Windows)"
+                value={windowsMountCommand}
+                hint="Needs the Services for NFS feature (Windows Pro or Enterprise) and port 111 reachable on this host, because the Windows client cannot be told a port."
+              />
+              <div className="mb-4">
+                <FormField control={control} name="nfs_enabled" render={({ field }) => (
+                  <FormItem className="rounded-md border border-border/60 p-3">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={labelClass}>Enable NFS Export</FormLabel>
+                      <FormControl><Switch checked={field.value === true} onCheckedChange={(checked) => { field.onChange(checked); commitField('nfs_enabled') }} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">Opens a port of its own. Finished download-client jobs appear under downloads/, releases you played through Stremio under a read-only library/, and the rest of the share is whatever folders your *arr creates and organises. Reads go through the mounting stream's providers and connection caps.</FormDescription>
+                  </FormItem>
+                )} />
+              </div>
+              <div className="rounded-md border border-border/60">
+                <FormField control={control} name="nfs_host" render={({ field }) => (
+                  <FormItem className="rounded-none border-0 p-3">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Bind Host</FormLabel>
+                      <FormControl><Input placeholder="0.0.0.0" disabled={!nfsEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'nfs_host')} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">Which local address the export binds to. A LAN or VPN address is the sensible choice.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={control} name="nfs_port" render={({ field }) => (
+                  <FormItem className="relative rounded-none border-0 p-3">
+                    <div className="absolute left-3 right-3 top-0 border-t border-border/60" />
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Port</FormLabel>
+                      <FormControl><Input type="number" disabled={!nfsEnabled} className={`h-9 ${controlMediumClass}`} {...field} onChange={e => field.onChange(e.target.valueAsNumber)} onBlur={blurCommit(field, 'nfs_port')} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">TCP port for both the MOUNT and NFS programs. Linux and macOS clients are told it in the mount options; Windows asks port 111, which is answered alongside whenever it can be bound.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 max-w-104 space-y-0.5">
+                  <CardTitle>Download Client API</CardTitle>
+                  <CardDescription>Let Radarr and Sonarr hand their grabs to StreamNZB as if it were SABnzbd. Each release is validated, stored in the library and reported complete on the NFS export.</CardDescription>
+                </div>
+                <div className="shrink-0">{renderCardSpinner('sabnzbd')}</div>
+              </div>
+              {(envOverrides.includes('sabnzbd_enabled') || envOverrides.includes('sabnzbd_complete_dir')) && (
+                <div className="mt-1">
+                  <EnvOverrideIndicator show message="Some settings are overwritten by environment variables (SABNZBD_*) on restart." />
+                </div>
+              )}
+            </CardHeader>
+            <CardContent>
+              <EndpointAddress
+                label="Client settings"
+                value={sabnzbdURL}
+                hint="Add a SABnzbd download client with this host and port, /sabnzbd as the URL Base, and a stream's token as the API Key — each stream card under Streams has it. Nothing is downloaded to disk."
+              />
+              <div className="mb-4">
+                <FormField control={control} name="sabnzbd_enabled" render={({ field }) => (
+                  <FormItem className="rounded-md border border-border/60 p-3">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={labelClass}>Enable Download Client API</FormLabel>
+                      <FormControl><Switch checked={field.value === true} onCheckedChange={(checked) => { field.onChange(checked); commitField('sabnzbd_enabled') }} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">Rides on the addon port. While off, the endpoint answers nothing at all.</FormDescription>
+                  </FormItem>
+                )} />
+              </div>
+              <div className="rounded-md border border-border/60">
+                <FormField control={control} name="sabnzbd_complete_dir" render={({ field }) => (
+                  <FormItem className="rounded-none border-0 p-3">
+                    <div className={stackedFieldRowClass}>
+                      <FormLabel className={cn(labelClass, 'sm:flex-1')}>Complete Directory</FormLabel>
+                      <FormControl><Input placeholder="/mnt/streamnzb" disabled={!sabnzbdEnabled} className={`h-9 ${controlWideClass}`} {...field} onBlur={blurCommit(field, 'sabnzbd_complete_dir')} /></FormControl>
+                    </div>
+                    <FormDescription className="mt-3">Where the Radarr or Sonarr host has the NFS export mounted. Completed downloads are reported as paths under it.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )} />

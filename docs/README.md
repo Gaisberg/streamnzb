@@ -28,6 +28,8 @@ Reference documentation for StreamNZB. For an overview and quickstart, see the [
 - [NNTP proxy](nntp-proxy.md) — using StreamNZB as a local news server for SABnzbd/NZBGet
 - [Newznab endpoint](newznab.md) — serving your configured indexers to any Newznab-compatible application
 - [Jellyfin endpoint](jellyfin.md) — serving your catalogs and playback to Jellyfin clients (Swiftfin, Infuse, Findroid)
+- [NFS export](nfs.md) — mounting the release library as files for Plex, with Radarr and Sonarr organising it
+- [Download client API](sabnzbd.md) — Radarr and Sonarr filling the library through a SABnzbd-compatible endpoint
 - [AvailNZB](availnzb.md) — community availability database integration
 - [Using with AIOStreams](aiostreams.md) — what StreamNZB adds alongside it, and how to add it as a preset
 

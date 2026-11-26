@@ -729,6 +729,23 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 	return stream, name, size, nil
 }
 
+type headerOnlyProbeKey struct{}
+
+// WithHeaderOnlyProbe makes Preload stop ffprobe at the container header
+// instead of decoding frames. The forced decode exists to catch article holes
+// past the header before a release is offered for play; a library ingest from
+// a download client is imported, analysed and played later by something that
+// reports a bad file on its own, so it buys the header probe's answer (codecs,
+// title, duration) without the extra seconds of payload per file.
+func WithHeaderOnlyProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, headerOnlyProbeKey{}, true)
+}
+
+func headerOnlyProbe(ctx context.Context) bool {
+	v, _ := ctx.Value(headerOnlyProbeKey{}).(bool)
+	return v
+}
+
 // Preload speculatively downloads, maps and strictly validates a session's
 // media before any client asks for it: NZB fetch, volume STAT sampling, an
 // article check of the selected file (sampled, or a full census when opted
@@ -823,7 +840,7 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 
 	logger.Info("Preloading executing FFprobe validation", "slot", sess.ID, "file", name)
 	probeRes, err := unpack.ValidateMediaStreamWithOptions(ctx, streamReader, name, p.ffprobePath(), unpack.ValidateOptions{
-		ForceDecode:   true,
+		ForceDecode:   !headerOnlyProbe(ctx),
 		StrictFFprobe: true,
 	})
 	if err != nil {
@@ -869,6 +886,7 @@ func MediaCapabilitiesFromProbe(res *ffprobe.FFprobeResult) *session.MediaCapabi
 		ColorTransfer:   res.ColorTransfer,
 		CodecTag:        res.CodecTag,
 		DurationSeconds: res.DurationSeconds,
+		Title:           res.Title,
 
 		TracksProbed:      true,
 		AudioLanguages:    res.AudioLanguages,

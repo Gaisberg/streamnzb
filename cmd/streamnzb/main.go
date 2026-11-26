@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +23,8 @@ import (
 	"streamnzb/pkg/server/api"
 	"streamnzb/pkg/server/jellyfin"
 	"streamnzb/pkg/server/newznab"
+	"streamnzb/pkg/server/nfs"
+	"streamnzb/pkg/server/sabnzbd"
 	"streamnzb/pkg/server/stremio"
 	"streamnzb/pkg/server/web"
 	"streamnzb/pkg/services/availnzb"
@@ -373,6 +377,94 @@ func main() {
 	mux.Handle(jellyfin.Mount, jellyfinServer.Handler())
 	logger.Info("Jellyfin endpoint enabled", "path", jellyfin.Mount)
 
+	// The release library as a read-only NFSv3 export, for media servers
+	// that want files on a mount (Plex). It opens a port of its own and its
+	// only credential is the stream token in the mount path, so it stays off
+	// until the operator turns it on. See docs/nfs.md.
+	newNFSServer := func(host string, port int) *nfs.Server {
+		return nfs.New(nfs.Options{
+			Host:    host,
+			Port:    port,
+			Streams: streamManager,
+			Admin: func() (string, string) {
+				liveCfg := apiServer.Config()
+				if liveCfg == nil {
+					return "", ""
+				}
+				return liveCfg.GetAdminUsername(), liveCfg.AdminToken
+			},
+			Library: stateMgr.LibraryStore(),
+			Open: func(ctx context.Context, stream *auth.Stream, item *persistence.LibraryItem, clientAddr string) (io.ReadSeekCloser, int64, error) {
+				f, err := stremioServer.OpenLibraryFile(ctx, stream, item, clientAddr)
+				if err != nil {
+					return nil, 0, err
+				}
+				return f, f.Size, nil
+			},
+			Titles: stremioServer.LibraryTitle,
+			Export: stateMgr.ExportStore(),
+		})
+	}
+	var nfsServer *nfs.Server
+	if comp.Config.NFSEnabled {
+		nfsServer = newNFSServer(comp.Config.NFSHost, comp.Config.NFSPort)
+		// Kept even when the bind fails, so the settings page can read the
+		// reason off it: an optional feature, a non-fatal failure.
+		if err := nfsServer.Listen(); err != nil {
+			logger.Warn("NFS export is not listening", "err", err)
+		} else {
+			go func() {
+				if err := nfsServer.Serve(); err != nil {
+					logger.Error("NFS export stopped serving", "err", err)
+				}
+			}()
+		}
+	} else {
+		logger.Debug("NFS export disabled")
+	}
+	// The API owns it from here: a settings change stops, starts or rebinds it.
+	apiServer.SetNFSExport(nfsServer, newNFSServer)
+
+	// A SABnzbd-compatible download-client API: Radarr and Sonarr hand over
+	// the NZBs they grab, each is validated and stored in the library, and
+	// the "download" completes at the file's path on the NFS export. Rides
+	// on the addon listener; a stream token is the API key. See docs/sabnzbd.md.
+	// Always mounted; whether it answers is read off the live config per
+	// request, so the switch applies without a restart.
+	sabnzbdServer := sabnzbd.New(sabnzbd.Options{
+		Enabled: func() bool {
+			liveCfg := apiServer.Config()
+			return liveCfg != nil && liveCfg.SabnzbdEnabled
+		},
+		Streams: streamManager,
+		Admin: func() (string, string) {
+			liveCfg := apiServer.Config()
+			if liveCfg == nil {
+				return "", ""
+			}
+			return liveCfg.GetAdminUsername(), liveCfg.AdminToken
+		},
+		CompleteDir:   func() string { return apiServer.Config().EffectiveSabnzbdCompleteDir() },
+		Ingest:        stremioServer.IngestLibraryRelease,
+		ExportEnabled: func() bool { return apiServer.Config().NFSEnabled },
+		// Read live: the export can be switched on or rebound after startup.
+		Publish: func(ctx context.Context, jobName string, item *persistence.LibraryItem) (string, bool) {
+			if n := apiServer.NFSServer(); n != nil {
+				return n.PublishDownload(ctx, jobName, item)
+			}
+			return "", false
+		},
+		State:   stateMgr,
+		Version: Version,
+	})
+	sabnzbdServer.Start()
+	mux.Handle(sabnzbd.Mount, sabnzbdServer.Handler())
+	if comp.Config.SabnzbdEnabled {
+		logger.Info("SABnzbd-compatible download client API enabled", "path", sabnzbd.APIPath)
+	} else {
+		logger.Debug("SABnzbd-compatible download client API disabled")
+	}
+
 	{
 		if comp.Config.ProxyEnabled {
 			proxyServer := proxy.NewServer(comp.Config.ProxyHost, comp.Config.ProxyPort, comp.UsenetPool, comp.Config.ProxyAuthUser, comp.Config.ProxyAuthPass)
@@ -421,7 +513,7 @@ func main() {
 
 	// Runs on both paths. A listener that died still leaves sessions, provider
 	// connections and unflushed usage counters behind.
-	gracefulShutdown(addonServer, stremioServer, apiServer, sessionManager, application, stateMgr)
+	gracefulShutdown(addonServer, stremioServer, apiServer, sabnzbdServer, sessionManager, application, stateMgr)
 
 	if serveErr != nil {
 		initialization.WaitForInputAndExit(fmt.Errorf("server failed: %w", serveErr))

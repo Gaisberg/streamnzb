@@ -402,3 +402,52 @@ func TestLibraryStorePosterAndUsenetDateRoundTrip(t *testing.T) {
 		t.Fatalf("bare item gained a pair: poster=%q usenet_date=%q", fetched.Poster, fetched.UsenetDate)
 	}
 }
+
+func TestLibrarySetMediaFileFillsLegacyRow(t *testing.T) {
+	ls := openTestManager(t).LibraryStore()
+	item := &LibraryItem{ContentType: "movie", ContentID: "tt0371746", ImdbID: "tt0371746", ReleaseTitle: "Iron.Man.2008-GRP", SizeBytes: 59_721_547_771, NZBData: []byte("<nzb/>"), BlueprintJSON: `{"k":1}`, Status: LibraryStatusGood}
+	if err := ls.StoreItem(item); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := ls.GetCandidates("movie", "tt0371746", 0, 0)
+	if len(items) != 1 || items[0].MediaFileSize != 0 {
+		t.Fatalf("precondition: %+v", items)
+	}
+	if err := ls.SetMediaFile(items[0].ID, "Iron.Man.2008-GRP.mkv", 56_958_243_521); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = ls.GetCandidates("movie", "tt0371746", 0, 0)
+	if items[0].MediaFileSize != 56_958_243_521 || items[0].MediaFileName != "Iron.Man.2008-GRP.mkv" {
+		t.Fatalf("after SetMediaFile: size=%d name=%q", items[0].MediaFileSize, items[0].MediaFileName)
+	}
+	if items[0].BlueprintJSON != `{"k":1}` {
+		t.Fatal("blueprint must be untouched")
+	}
+	// A row with no blueprint row at all gets one carrying just the size.
+	bare := &LibraryItem{ContentType: "movie", ContentID: "tt0000001", ImdbID: "tt0000001", ReleaseTitle: "Bare-GRP", SizeBytes: 10, NZBData: []byte("<nzb/>"), Status: LibraryStatusGood}
+	if err := ls.StoreItem(bare); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = ls.GetCandidates("movie", "tt0000001", 0, 0)
+	if err := ls.SetMediaFile(items[0].ID, "bare.mkv", 7); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = ls.GetCandidates("movie", "tt0000001", 0, 0)
+	if items[0].MediaFileSize != 7 {
+		t.Fatalf("bare row size = %d", items[0].MediaFileSize)
+	}
+}
+
+func TestLibraryFilteredItemsCarryIDs(t *testing.T) {
+	ls := openTestManager(t).LibraryStore()
+	if err := ls.StoreItem(&LibraryItem{ContentType: "series", ContentID: "tt11198330", ImdbID: "tt11198330", TmdbID: "94997", TvdbID: "371572", Season: 1, Episode: 1, ReleaseTitle: "Show.S01E01-GRP", NZBData: []byte("<nzb/>"), Status: LibraryStatusGood}); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := ls.GetFilteredItems("", "all", false, LibraryStatusGood, 0, 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%v err=%v", items, err)
+	}
+	if items[0].ImdbID != "tt11198330" || items[0].TmdbID != "94997" || items[0].TvdbID != "371572" {
+		t.Fatalf("listing must carry the ids: %+v", items[0])
+	}
+}

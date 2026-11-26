@@ -40,7 +40,7 @@ import { SelectionSection } from "@/components/ui/selection-section"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { apiFetch } from "@/api"
 import { copyToClipboard } from "@/lib/utils"
-import { Check, ChevronDown, Clipboard, Copy, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X, Zap } from "lucide-react"
+import { Check, ChevronDown, Clipboard, Copy, DownloadCloud, HardDrive, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Server, Settings, Trash2, Tv, Type, X, Zap } from "lucide-react"
 
 const CACHE_CLEARED_SUFFIX = ' Search cache cleared.'
 
@@ -733,6 +733,9 @@ function StreamEndpoints({
   stream,
   manifestUrl,
   jellyfinUrl,
+  nfsMountCommand,
+  windowsMountCommand,
+  sabnzbdUrl,
   copiedKey,
   onCopy,
   busy,
@@ -823,6 +826,46 @@ function StreamEndpoints({
             ) : null}
           </EndpointRow>
         </EndpointPanel>
+
+        {nfsMountCommand ? (
+          <EndpointPanel title="NFS export" icon={HardDrive} hint="Run on the Plex host. Reads through this mount go through this stream's providers and caps, and show under its name.">
+            <EndpointRow label={windowsMountCommand ? 'Linux / macOS' : 'Mount'} value={nfsMountCommand}>
+              <CopyButton
+                copied={copiedKey === `nfs-mount-${stream.username}`}
+                onCopy={() => onCopy(`nfs-mount-${stream.username}`, nfsMountCommand)}
+                label="Copy mount command"
+              />
+            </EndpointRow>
+            {windowsMountCommand ? (
+              <EndpointRow label="Windows" value={windowsMountCommand}>
+                <CopyButton
+                  copied={copiedKey === `nfs-mount-win-${stream.username}`}
+                  onCopy={() => onCopy(`nfs-mount-win-${stream.username}`, windowsMountCommand)}
+                  label="Copy Windows mount command"
+                />
+              </EndpointRow>
+            ) : null}
+          </EndpointPanel>
+        ) : null}
+
+        {sabnzbdUrl ? (
+          <EndpointPanel title="Download client" icon={DownloadCloud} hint="In Radarr or Sonarr, add a SABnzbd client with this URL's host and port, /sabnzbd as the URL Base, and the token as the API Key.">
+            <EndpointRow label="Server" value={sabnzbdUrl}>
+              <CopyButton
+                copied={copiedKey === `sabnzbd-url-${stream.username}`}
+                onCopy={() => onCopy(`sabnzbd-url-${stream.username}`, sabnzbdUrl)}
+                label="Copy download client URL"
+              />
+            </EndpointRow>
+            <EndpointRow label="API Key" value={stream.token}>
+              <CopyButton
+                copied={copiedKey === `sabnzbd-key-${stream.username}`}
+                onCopy={() => onCopy(`sabnzbd-key-${stream.username}`, stream.token)}
+                label="Copy API key"
+              />
+            </EndpointRow>
+          </EndpointPanel>
+        ) : null}
       </div>
   )
 }
@@ -963,6 +1006,20 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
   // The Jellyfin endpoint is one URL for every stream; what differs per stream
   // is the login, which is the stream name and its password (or token).
   const jellyfinUrl = `${endpointBaseUrl}/jellyfin`
+  // The NFS export and the download client API are global switches on the
+  // Integrations tab; what is per stream is the token, which is the mount
+  // path for one and the API key for the other. Null hides the panel.
+  const nfsPort = globalConfig?.nfs_port || 2049
+  const nfsHost = !globalConfig?.nfs_host || globalConfig.nfs_host === '0.0.0.0' || globalConfig.nfs_host === '::'
+    ? window.location.hostname
+    : globalConfig.nfs_host
+  const nfsMountCommandFor = (token) => globalConfig?.nfs_enabled
+    ? `mount -t nfs -o ro,vers=3,tcp,port=${nfsPort},mountport=${nfsPort},nolock,soft ${nfsHost}:/${token} /mnt/streamnzb`
+    : null
+  const windowsMountCommandFor = (token) => globalConfig?.nfs_enabled
+    ? `mount -o anon,nolock,mtype=soft,timeout=20,proto=tcp,vers=3 \\\\${nfsHost}\\${token} Z:`
+    : null
+  const sabnzbdUrl = globalConfig?.sabnzbd_enabled ? `${endpointBaseUrl}/sabnzbd` : null
 
   const copyValue = (key, value) => {
     copyToClipboard(value).then(() => {
@@ -1376,6 +1433,9 @@ function StreamManagement({ globalConfig, movieSearchQueries = [], seriesSearchQ
                   stream={selectedStream}
                   manifestUrl={getManifestUrl(selectedStream.token)}
                   jellyfinUrl={jellyfinUrl}
+                  nfsMountCommand={nfsMountCommandFor(selectedStream.token)}
+                  windowsMountCommand={windowsMountCommandFor(selectedStream.token)}
+                  sabnzbdUrl={sabnzbdUrl}
                   copiedKey={copiedKey}
                   onCopy={copyValue}
                   busy={actionLoading !== null || loading}

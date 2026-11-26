@@ -240,12 +240,14 @@ type ReloadScope struct {
 	Indexers  bool
 	Providers bool
 	Proxy     bool
+	// NFS is the library export's listener: host, port or on/off changed.
+	NFS       bool
 	Database  bool
 	AddonPort bool
 }
 
 func (s ReloadScope) Any() bool {
-	return s.Indexers || s.Providers || s.Proxy || s.Database || s.AddonPort
+	return s.Indexers || s.Providers || s.Proxy || s.NFS || s.Database || s.AddonPort
 }
 
 // ReloadScopeFull marks every rebuildable subsystem changed — used when there
@@ -275,6 +277,9 @@ func ConfigChanged(old, new_ *config.Config) ReloadScope {
 			old.ProxyEnabled != new_.ProxyEnabled ||
 			old.ProxyAuthUser != new_.ProxyAuthUser ||
 			old.ProxyAuthPass != new_.ProxyAuthPass,
+		NFS: old.NFSEnabled != new_.NFSEnabled ||
+			old.NFSHost != new_.NFSHost ||
+			old.NFSPort != new_.NFSPort,
 		Database: old.DatabaseDriver != new_.DatabaseDriver ||
 			old.DatabaseURL != new_.DatabaseURL,
 		AddonPort: old.AddonPort != new_.AddonPort,

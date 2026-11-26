@@ -2468,7 +2468,9 @@ func (s *Server) saveSessionToLibrary(sess *session.Session, bp unpack.Blueprint
 	if s == nil || s.attemptRecorder == nil || sess == nil || rel == nil {
 		return
 	}
-	if rt.config != nil && !rt.config.EffectiveLibraryAutoSave() {
+	// Auto-save is the setting for plays; a release handed in to be stored
+	// (the download-client API) is saved regardless, that being the point.
+	if rt.config != nil && !rt.config.EffectiveLibraryAutoSave() && !isIngestSession(sess) {
 		return
 	}
 	libStore := s.attemptRecorder.LibraryStore()

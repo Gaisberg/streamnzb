@@ -224,6 +224,13 @@ type EpisodeTarget struct {
 	// daily show is released under it ("Show.2026.10.26") rather than under
 	// its season/episode.
 	AirDate string
+	// File pins one file set of the release by the name of a file in it, as
+	// the NZB subjects spell it. Set, it decides which files are the content
+	// outright, and the episode fields are only metadata about them. It is
+	// how a caller that has enumerated a release's files asks for one of
+	// them without reading an episode number off its name — the download
+	// client API publishing every file of a pack.
+	File string
 }
 
 // Valid reports whether the target can pick a file out of a release: a season

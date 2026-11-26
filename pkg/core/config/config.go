@@ -97,6 +97,27 @@ const (
 // that drops privileges. See issue #192.
 const DefaultProxyPort = 1119
 
+// DefaultNFSPort is the standard NFS port. It is above 1024, so unlike NNTP's
+// 119 it binds without root. A portmapper on 111 is attempted alongside for
+// clients that cannot be told a port; Linux and macOS name it in the mount
+// options and do not need it.
+const DefaultNFSPort = 2049
+
+// DefaultSabnzbdCompleteDir is where the docs tell an *arr host to mount the
+// NFS export; the download-client API reports completed paths under it.
+const DefaultSabnzbdCompleteDir = "/mnt/streamnzb"
+
+// EffectiveSabnzbdCompleteDir is the mount point reported to download
+// clients, without a trailing slash.
+func (c *Config) EffectiveSabnzbdCompleteDir() string {
+	if c != nil {
+		if dir := strings.TrimRight(strings.TrimSpace(c.SabnzbdCompleteDir), "/\\"); dir != "" {
+			return dir
+		}
+	}
+	return DefaultSabnzbdCompleteDir
+}
+
 type Provider struct {
 	Name        string `json:"name"`
 	Host        string `json:"host"`
@@ -840,6 +861,29 @@ type Config struct {
 	// would otherwise turn "off" back into the default.
 	JellyfinResolveOnOpen *bool `json:"jellyfin_resolve_on_open,omitempty"`
 
+	// NFSEnabled serves the release library as a read-only NFSv3 export, so a
+	// media server that wants files (Plex) can mount it. Off by default; set
+	// on the Integrations tab or by env. See docs/nfs.md.
+	NFSEnabled bool `json:"nfs_enabled,omitempty"`
+	// NFSHost is the address the export listens on. Empty means every
+	// interface; the export has no authentication beyond the stream token in
+	// the mount path, so a LAN or VPN address is the sensible setting.
+	NFSHost string `json:"nfs_host,omitempty"`
+	// NFSPort is the TCP port for both the MOUNT and NFS programs. Zero means
+	// DefaultNFSPort.
+	NFSPort int `json:"nfs_port,omitempty"`
+
+	// SabnzbdEnabled serves a SABnzbd-compatible download-client API, so
+	// Radarr and Sonarr can hand StreamNZB the NZBs they grab; each one is
+	// validated and stored in the library and reported complete at its path
+	// on the NFS export. A stream token is the API key. Off by default; set
+	// on the Integrations tab or by env. See docs/sabnzbd.md.
+	SabnzbdEnabled bool `json:"sabnzbd_enabled,omitempty"`
+	// SabnzbdCompleteDir is where the *arr sees the NFS export mounted; the
+	// completed path it is given is this directory plus the export path.
+	// Empty means DefaultSabnzbdCompleteDir.
+	SabnzbdCompleteDir string `json:"sabnzbd_complete_dir,omitempty"`
+
 	AvailNZBURL    string `json:"-"`
 	AvailNZBAPIKey string `json:"-"`
 
@@ -1512,6 +1556,9 @@ func LoadWithPath(explicitPath string) (*Config, error) {
 	if cfg.JellyfinMaxPlaybackSources <= 0 || cfg.JellyfinMaxPlaybackSources > 200 {
 		cfg.JellyfinMaxPlaybackSources = DefaultJellyfinMaxPlaybackSources
 	}
+	if cfg.NFSPort <= 0 || cfg.NFSPort > 65535 {
+		cfg.NFSPort = DefaultNFSPort
+	}
 	if cfg.AdminPasswordHash == "" {
 		cfg.AdminPasswordHash = defaultAdminPasswordHash
 		cfg.AdminMustChangePassword = true
@@ -1835,6 +1882,11 @@ var envFieldCopiers = map[string]func(dst, src *Config){
 	env.KeyNewznabAPIKey:              func(d, s *Config) { d.NewznabAPIKey = s.NewznabAPIKey },
 	env.KeyJellyfinMaxPlaybackSources: func(d, s *Config) { d.JellyfinMaxPlaybackSources = s.JellyfinMaxPlaybackSources },
 	env.KeyJellyfinResolveOnOpen:      func(d, s *Config) { d.JellyfinResolveOnOpen = s.JellyfinResolveOnOpen },
+	env.KeyNFSEnabled:                 func(d, s *Config) { d.NFSEnabled = s.NFSEnabled },
+	env.KeyNFSHost:                    func(d, s *Config) { d.NFSHost = s.NFSHost },
+	env.KeyNFSPort:                    func(d, s *Config) { d.NFSPort = s.NFSPort },
+	env.KeySabnzbdEnabled:             func(d, s *Config) { d.SabnzbdEnabled = s.SabnzbdEnabled },
+	env.KeySabnzbdCompleteDir:         func(d, s *Config) { d.SabnzbdCompleteDir = s.SabnzbdCompleteDir },
 	env.KeyAdminUsername:              func(d, s *Config) { d.AdminUsername = s.AdminUsername },
 	env.KeyAdminMustChangePwd:         func(d, s *Config) { d.AdminMustChangePassword = s.AdminMustChangePassword },
 	env.KeyTrustedProxyAuthHeader:     func(d, s *Config) { d.TrustedProxyAuthHeader = s.TrustedProxyAuthHeader },
@@ -1922,6 +1974,11 @@ func envOverridesAsConfig(o env.ConfigOverrides) *Config {
 		NewznabAPIKey:              o.NewznabAPIKey,
 		JellyfinMaxPlaybackSources: o.JellyfinMaxPlaybackSources,
 		JellyfinResolveOnOpen:      &o.JellyfinResolveOnOpen,
+		NFSEnabled:                 o.NFSEnabled,
+		NFSHost:                    o.NFSHost,
+		NFSPort:                    o.NFSPort,
+		SabnzbdEnabled:             o.SabnzbdEnabled,
+		SabnzbdCompleteDir:         o.SabnzbdCompleteDir,
 		AdminUsername:              o.AdminUsername,
 		AdminMustChangePassword:    o.AdminMustChangePwd,
 		TrustedProxyAuthHeader:     o.TrustedProxyAuthHeader,

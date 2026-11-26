@@ -6,6 +6,7 @@ Everything StreamNZB knows about Usenet — your providers, your indexers, your 
                       indexers ──┐               ┌── Stremio          (addon: catalogs + streams)
                                  ├── StreamNZB ──┼── Swiftfin / Infuse (Jellyfin API)
                      providers ──┘               ├── Prowlarr / *arr  (Newznab API)
+                                                 ├── Plex / Emby / Kodi (NFS export)
                                                  └── SABnzbd / NZBGet (NNTP)
 ```
 
@@ -49,6 +50,26 @@ Each stream is its own Jellyfin user, with its own libraries and its own server-
 
 Full reference: [Jellyfin endpoint](jellyfin.md).
 
+## Plex, Emby, Kodi
+
+The release library as an **NFS share**: finished download-client jobs appear under `downloads/`, and the rest of the share is whatever folders your Radarr and Sonarr create and organise, exactly as on a local disk — renames and deletes are database updates, nothing is copied. A media server mounts it and plays from it; each read is the playback stream the addon would serve, through the same providers and connection caps as the stream whose token mounted it.
+
+It opens its own port, so it is off by default; turn it on under **Integrations → NFS Export**. Mount it with the stream token as the path and the port named explicitly — there is no portmapper (each stream card shows the line ready to paste):
+
+```
+mount -t nfs -o ro,vers=3,tcp,port=2049,mountport=2049,nolock <host>:/<stream token> /mnt/streamnzb
+```
+
+Keep it on the LAN or VPN: NFS trusts whatever the client says about itself, and the token in the mount path is the only gate. Plex in particular needs its deep-analysis tasks turned off or a first scan downloads every file — see the reference page.
+
+Full reference, including the layout, Plex settings and what the export deliberately does not do: [NFS export](nfs.md).
+
+### Filling it from Radarr and Sonarr
+
+The export is filled by the **download client API**: add StreamNZB to Radarr or Sonarr as a **SABnzbd** download client (URL base `/sabnzbd`, a stream token as the API key), and every release they grab is handed to StreamNZB, validated the way preloading validates, stored in the library and published under `downloads/` on the export. The *arr imports it into its own folder on the share with its own naming; Plex sees the file on its next scan. Nothing was downloaded to disk anywhere.
+
+Turn it on under **Integrations → Download Client API**. Full reference, including the *arr settings that matter: [Download client API](sabnzbd.md).
+
 ## SABnzbd, NZBGet
 
 The download-client half. StreamNZB's NNTP proxy hands other apps **your whole provider pool**, with the same multi-provider failover the addon uses.
@@ -77,6 +98,6 @@ If you already run [AIOStreams](https://github.com/Viren070/AIOStreams), StreamN
 
 ## Putting it together
 
-The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the always-on authenticated Jellyfin endpoint is the addon itself wearing another client's clothes. Enable the optional endpoints and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, SABnzbd downloads through it, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
+The endpoints are complements: the Newznab endpoint is your indexers, the NNTP proxy is your providers, and the always-on authenticated Jellyfin endpoint is the addon itself wearing another client's clothes. Enable the optional endpoints and an *arr stack runs entirely off one StreamNZB — Prowlarr searches through it, Radarr and Sonarr "download" through it into the library, Plex scans that library off the NFS export, Stremio and Swiftfin stream through it, and the credentials for all of it live in one `config.json` on one host.
 
 The Newznab endpoint and the NNTP proxy are off by default and independent; turn on only what you need. The Jellyfin endpoint, like the Stremio manifest, is simply there — a stream's credentials are the only key to it.
