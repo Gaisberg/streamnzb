@@ -130,10 +130,12 @@ type job struct {
 	stream        *auth.Stream
 	cancel        context.CancelFunc
 	ctxForProcess context.Context
-	// setsDone and setsTotal are the validation's progress: file sets stored
-	// so far out of the sets the release has. Zero total until the ingest
-	// has parsed the NZB.
-	setsDone, setsTotal int
+	// setsDone and setsTotal are the validation's progress: file sets done
+	// so far, a set under way counting by the share of its articles the
+	// census has answered for, out of the sets the release has. Zero total
+	// until the ingest has parsed the NZB.
+	setsDone  float64
+	setsTotal int
 }
 
 // progress is the job's completed fraction in [0, 1). A job with no sets
@@ -143,9 +145,12 @@ func (j *job) progress() float64 {
 	if j == nil || j.Started.IsZero() || j.setsTotal <= 0 {
 		return 0
 	}
-	p := float64(j.setsDone) / float64(j.setsTotal)
+	p := j.setsDone / float64(j.setsTotal)
 	if p >= 1 {
 		return 0.99
+	}
+	if p < 0 {
+		return 0
 	}
 	return p
 }
@@ -722,7 +727,7 @@ func (s *Server) process(j *job) {
 			ContentType: contentType,
 			Source:      sourceForCategory(j.Category),
 			ClientAddr:  "download client",
-			Progress: func(done, total int) {
+			Progress: func(done float64, total int) {
 				s.mu.Lock()
 				j.setsDone, j.setsTotal = done, total
 				s.mu.Unlock()

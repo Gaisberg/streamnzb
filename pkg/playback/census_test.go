@@ -334,3 +334,28 @@ func TestIngestCensusWidthComesFromTheFetchBudget(t *testing.T) {
 		t.Fatalf("ingest census should run wide, peak in-flight %d", v.peak.Load())
 	}
 }
+
+func TestVerifyAllArticlesReportsProgress(t *testing.T) {
+	v := &censusVol{name: "movie.mkv", segments: 1000, fetchW: 48}
+	var reports []int
+	progress := func(checked, planned int) {
+		if planned != 1000 {
+			t.Fatalf("planned %d", planned)
+		}
+		reports = append(reports, checked)
+	}
+	if err := VerifyAllArticlesWithProgress(context.Background(), &unpack.DirectBlueprint{FileIndex: 0}, []unpack.UnpackableFile{v}, progress); err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) < 10 {
+		t.Fatalf("a thousand-article census should report along the way, got %d reports", len(reports))
+	}
+	for i := 1; i < len(reports); i++ {
+		if reports[i] < reports[i-1] {
+			t.Fatalf("progress went backwards: %v", reports)
+		}
+	}
+	if reports[len(reports)-1] != 1000 {
+		t.Fatalf("final report must say every article was asked: %v", reports[len(reports)-1])
+	}
+}

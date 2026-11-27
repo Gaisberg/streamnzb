@@ -263,6 +263,16 @@ func ingestCensusWidth(vols []statCapableFile) int {
 // counted and skipped: never a verdict, and asking again would only re-spend
 // the budget.
 func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint, width int) (CensusReport, string, []censusPoint) {
+	return runCensusWithProgress(ctx, vols, order, width, nil)
+}
+
+// censusProgressEvery is how many answers pass between progress reports.
+const censusProgressEvery = 64
+
+// runCensusWithProgress is runCensus telling progress how many points have
+// been answered out of those planned, every censusProgressEvery answers and
+// once at the end.
+func runCensusWithProgress(ctx context.Context, vols []statCapableFile, order []censusPoint, width int, progress func(checked, planned int)) (CensusReport, string, []censusPoint) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -300,6 +310,9 @@ func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint,
 				vol := vols[p.vol]
 				exists, err := vol.StatSegmentAt(runCtx, p.seg)
 				mu.Lock()
+				if progress != nil && err == nil && (checked+1)%censusProgressEvery == 0 {
+					progress(checked+1, len(order))
+				}
 				switch {
 				case err != nil && runCtx.Err() != nil:
 					// The budget ended under this STAT: unasked, not transient.
@@ -328,6 +341,9 @@ func runCensus(ctx context.Context, vols []statCapableFile, order []censusPoint,
 
 	mu.Lock()
 	defer mu.Unlock()
+	if progress != nil && missing == 0 {
+		progress(checked, len(order))
+	}
 	return CensusReport{
 		Planned:   len(order),
 		Checked:   checked,
@@ -389,6 +405,14 @@ var ErrArticlesUnverified = errors.New("articles could not all be verified")
 // that could not finish rejects as unverified. Transient answers are asked
 // once more before they count against the file.
 func VerifyAllArticles(ctx context.Context, bp unpack.Blueprint, files []unpack.UnpackableFile) error {
+	return VerifyAllArticlesWithProgress(ctx, bp, files, nil)
+}
+
+// VerifyAllArticlesWithProgress is VerifyAllArticles reporting how far the
+// census has come: articles answered out of articles planned, every few
+// dozen answers. The retry of transient answers is not reported; it is a
+// handful of points at the end.
+func VerifyAllArticlesWithProgress(ctx context.Context, bp unpack.Blueprint, files []unpack.UnpackableFile, progress func(checked, planned int)) error {
 	vols := censusVolumesFor(bp, files)
 	if len(vols) == 0 {
 		return fmt.Errorf("%w: the file's articles cannot be enumerated", ErrArticlesUnverified)
@@ -410,7 +434,7 @@ func VerifyAllArticles(ctx context.Context, bp unpack.Blueprint, files []unpack.
 	defer cancel()
 
 	width := ingestCensusWidth(vols)
-	report, firstMiss, transients := runCensus(censusCtx, vols, order, width)
+	report, firstMiss, transients := runCensusWithProgress(censusCtx, vols, order, width, progress)
 	if report.Missing == 0 && report.Complete && len(transients) > 0 {
 		// Ask the unanswered ones again; a provider hiccup is not a hole.
 		again, miss, left := runCensus(censusCtx, vols, transients, width)

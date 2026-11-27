@@ -44,10 +44,11 @@ type IngestRequest struct {
 	Source string
 	// ClientAddr names the client for the dashboard.
 	ClientAddr string
-	// Progress, when set, is told how many of the release's file sets have
-	// been validated so far, and how many there are, each time one finishes.
-	// Called from several goroutines, never after IngestLibraryRelease returns.
-	Progress func(done, total int)
+	// Progress, when set, is told how much of the release is validated: done
+	// is file sets completed, counting a set under way by the fraction of
+	// its articles the census has answered for, out of total sets. Called
+	// from several goroutines, never after IngestLibraryRelease returns.
+	Progress func(done float64, total int)
 }
 
 // ingestSetConnections is the connections one file set's validation is
@@ -153,11 +154,37 @@ func (s *Server) IngestLibraryRelease(ctx context.Context, stream *auth.Stream, 
 	results := make([]*persistence.LibraryItem, len(sets))
 	errs := make([]error, len(sets))
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		done int
-		sem  = make(chan struct{}, parallel)
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		fraction = make([]float64, len(sets))
+		lastPct  = -1
+		sem      = make(chan struct{}, parallel)
 	)
+	// report sums every set's fraction and tells the client when the whole
+	// number of percent changed, so a census moves the bar without a call
+	// per article.
+	report := func(i int, f float64, force bool) {
+		if req.Progress == nil {
+			return
+		}
+		mu.Lock()
+		if f > fraction[i] {
+			fraction[i] = f
+		}
+		sum := 0.0
+		for _, v := range fraction {
+			sum += v
+		}
+		pct := int(sum * 100 / float64(len(sets)))
+		changed := pct != lastPct
+		if changed {
+			lastPct = pct
+		}
+		mu.Unlock()
+		if changed || force {
+			req.Progress(sum, len(sets))
+		}
+	}
 	for i, set := range sets {
 		if ctx.Err() != nil {
 			break
@@ -184,18 +211,15 @@ func (s *Server) IngestLibraryRelease(ctx context.Context, stream *auth.Stream, 
 		go func(i int, setRel release.Release, meta *session.AvailReportMeta, sessionID, rowTitle, file string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			item, err := s.ingestOne(ctx, stream, sessionID, parsedNZB, req.NZBData, &setRel, meta, contentType, contentID, title, rowTitle)
+			item, err := s.ingestOne(ctx, stream, sessionID, parsedNZB, req.NZBData, &setRel, meta, contentType, contentID, title, rowTitle,
+				func(f float64) { report(i, f, false) })
 			if err != nil && ctx.Err() == nil {
 				logger.Warn("Library ingest rejected a file set", "title", name, "file", file, "err", err)
 			}
 			results[i], errs[i] = item, err
-			mu.Lock()
-			done++
-			n := done
-			mu.Unlock()
-			if req.Progress != nil && err == nil {
-				req.Progress(n, len(sets))
-			}
+			// A set counts as done whichever way it went: the job's work on
+			// it is over, and a rejected set must not hold the bar back.
+			report(i, 1, true)
 		}(i, setRel, meta, sessionID, rowTitle, lead.Filename)
 	}
 	wg.Wait()
@@ -502,7 +526,7 @@ func (b *bytesNZBSource) GetUsage() indexer.Usage                             { 
 
 // ingestOne validates and stores one file set (or the whole of a movie) and
 // returns its row.
-func (s *Server) ingestOne(ctx context.Context, stream *auth.Stream, sessionID string, parsedNZB *nzb.NZB, nzbData []byte, rel *release.Release, meta *session.AvailReportMeta, contentType, contentID, title, name string) (*persistence.LibraryItem, error) {
+func (s *Server) ingestOne(ctx context.Context, stream *auth.Stream, sessionID string, parsedNZB *nzb.NZB, nzbData []byte, rel *release.Release, meta *session.AvailReportMeta, contentType, contentID, title, name string, progress func(fraction float64)) (*persistence.LibraryItem, error) {
 	// A deferred session, not one built from the parsed NZB: a session that
 	// already holds its NZB counts as warm and preloading returns at once,
 	// validating nothing. The bytes are handed over for the lazy load to
@@ -521,7 +545,7 @@ func (s *Server) ingestOne(ctx context.Context, stream *auth.Stream, sessionID s
 	hold := s.sessionManager.BeginSessionStartup(sess)
 	// Download-client validation: every article of the file is asked for,
 	// and the probe stops at the header. "Completed" has to mean whole.
-	ok, err := s.playback.Preload(playback.WithIngestValidation(ctx), sess)
+	ok, err := s.playback.Preload(playback.WithIngestValidation(ctx, progress), sess)
 	hold.Release()
 	if err != nil || !ok {
 		if err == nil {

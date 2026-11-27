@@ -362,6 +362,8 @@ func TestQueueReportsSetProgress(t *testing.T) {
 		req.Progress(1, 4)
 		<-step
 		req.Progress(3, 4)
+		<-step
+		req.Progress(3.5, 4)
 		<-release
 		return []*persistence.LibraryItem{{ID: "x", ReleaseTitle: req.Name, MediaFileName: "a.mkv", MediaFileSize: 1 << 30, Status: "good"}}, nil
 	})
@@ -391,6 +393,19 @@ func TestQueueReportsSetProgress(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("progress never reached 75%%: %v", sl)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A set half way through its census counts for half a set.
+	step <- struct{}{}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		sl := slot()
+		if sl["percentage"] == "87" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fractional progress never reached 87%%: %v", sl)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

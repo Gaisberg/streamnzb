@@ -731,6 +731,18 @@ func (p *Service) OpenSource(ctx context.Context, sess *session.Session) (io.Rea
 
 type ingestValidationKey struct{}
 
+// ingestOptions is what WithIngestValidation stores: the mode, and where the
+// file's validation progress goes.
+type ingestOptions struct {
+	// report is told the fraction of this file's validation done so far, in
+	// [0, 1], as the census advances; nil when nobody is listening.
+	report func(fraction float64)
+}
+
+// censusShare is the part of a file's validation the census accounts for in
+// the progress it reports; the rest is the probe and the store at the end.
+const censusShare = 0.9
+
 // WithIngestValidation makes Preload validate the way a download client
 // expects "completed" to mean: every article of the selected file is asked
 // for (VerifyAllArticles, fail-closed) in place of the sampled sweep, and
@@ -738,13 +750,26 @@ type ingestValidationKey struct{}
 // forced decode exists to catch holes a few megabytes in before a release is
 // offered for play; the census asks about every article, so the decode has
 // nothing left to find and its payload per file is not spent.
-func WithIngestValidation(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ingestValidationKey{}, true)
+//
+// report, when not nil, is told the file's validation progress as a fraction
+// in [0, 1] while it runs, so a download client's queue can show a bar that
+// moves through a census instead of jumping when the file completes.
+func WithIngestValidation(ctx context.Context, report func(fraction float64)) context.Context {
+	return context.WithValue(ctx, ingestValidationKey{}, &ingestOptions{report: report})
 }
 
 func ingestValidation(ctx context.Context) bool {
-	v, _ := ctx.Value(ingestValidationKey{}).(bool)
-	return v
+	_, ok := ctx.Value(ingestValidationKey{}).(*ingestOptions)
+	return ok
+}
+
+// ingestProgress is the ingest's progress reporter, a no-op when there is
+// none.
+func ingestProgress(ctx context.Context) func(fraction float64) {
+	if o, ok := ctx.Value(ingestValidationKey{}).(*ingestOptions); ok && o != nil && o.report != nil {
+		return o.report
+	}
+	return func(float64) {}
 }
 
 // Preload speculatively downloads, maps and strictly validates a session's
@@ -821,7 +846,13 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 	// or, when the operator opted in, a census that asks about every article
 	// in an order that keeps any prefix a uniform sample of the file.
 	if ingestValidation(ctx) {
-		if err := VerifyAllArticles(ctx, bp, unpackFiles); err != nil {
+		report := ingestProgress(ctx)
+		onProgress := func(checked, planned int) {
+			if planned > 0 {
+				report(censusShare * float64(checked) / float64(planned))
+			}
+		}
+		if err := VerifyAllArticlesWithProgress(ctx, bp, unpackFiles, onProgress); err != nil {
 			logger.Warn("Ingest rejected release via article census", "slot", sess.ID, "file", name, "err", err)
 			if streamReader != nil {
 				streamReader.Close()
@@ -863,6 +894,9 @@ func (p *Service) Preload(ctx context.Context, sess *session.Session) (bool, err
 		sess.SetMediaCapabilities(MediaCapabilitiesFromProbe(probeRes))
 	}
 
+	if ingestValidation(ctx) {
+		ingestProgress(ctx)(1)
+	}
 	CacheReturnedBlueprint(sess, bp)
 	sess.SetSelectedPlaybackFile(name)
 	if p.SaveToLibrary != nil {
