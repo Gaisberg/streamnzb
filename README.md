@@ -16,6 +16,8 @@ It also watches what it is configured with: when a provider rejects your passwor
 |---|---|---|
 | **Stremio** | A complete addon: catalogs, search, title pages, air dates and streams. No Cinemeta, no companion addons | [Metadata & catalogs](docs/metadata.md) |
 | **Prowlarr, Sonarr, Radarr** | Every indexer you configured, as one Newznab API behind one key | [Newznab endpoint](docs/newznab.md) |
+| **Radarr, Sonarr** (as the download client) | A SABnzbd-compatible client that validates every article of a grab and reports it complete in seconds, with nothing written to disk | [Download client API](docs/sabnzbd.md) |
+| **Plex, Emby, Kodi** | The release library as an NFS share: folders of files that Radarr and Sonarr organise and the media server scans and plays | [NFS export](docs/nfs.md) |
 | **Swiftfin, Infuse, Findroid** | The same catalogs and playback, as a Jellyfin server — a stream signs in as its own user | [Jellyfin endpoint](docs/jellyfin.md) |
 | **SABnzbd, NZBGet** | Your whole provider pool, as one NNTP server | [NNTP proxy](docs/nntp-proxy.md) |
 | **AIOStreams** | StreamNZB as a preset, alongside what it already runs | [Using with AIOStreams](docs/aiostreams.md) |
@@ -32,6 +34,8 @@ One config, one IP, no extra containers — just your Usenet provider(s) and ind
 - **Newznab endpoint** — Every configured indexer re-served as a single Newznab API (off by default), so Prowlarr, Sonarr, Radarr or any Newznab client searches the whole set through one URL and one key. Your indexers' own API keys are never handed to the client.
 - **Jellyfin endpoint** — The same catalogs, metadata and playback re-served as an always-on, stream-authenticated Jellyfin server, so Swiftfin, Infuse, Findroid or any Jellyfin client browses and plays them without a Stremio client in between. A stream name and its password (or token) are the login; watch progress is kept per stream.
 - **NNTP proxy** — Standard NNTP (default port 1119, off by default) for SABnzbd or NZBGet. Shares the same provider pool as the addon.
+- **Download client API** — A SABnzbd-compatible endpoint (off by default) that Radarr and Sonarr use as their download client. A grab is not downloaded: every article of the file is checked against your providers, the container header is probed, and the release is stored in the library and reported complete, a season pack in about a minute. The *arr imports it from the NFS export like any finished download, and a release missing articles fails the grab so the *arr moves on to the next one.
+- **NFS export** — The release library served as an NFSv3 share (off by default), so Plex, Emby, Kodi or anything that scans a folder mounts it and plays from it. Radarr and Sonarr organise the share exactly as they would a disk; every read is the same stream a play request would get. Verified from Linux and Windows clients; the NFS export also answers the portmapper so the Windows client can mount it.
 - **AvailNZB** — Community availability database, opt-in. Bad releases are skipped; success/failure is reported on play so the shared DB stays current. Off by default, and nothing is sent until you enable it.
 - **Search history & diagnostics** — The **History** page shows every search with its play attempts nested under it: per-indexer API timings, what validation/dedup/filtering dropped and why, including searches that returned nothing. An optional **Search debug stream** toggle (under Advanced) prepends the same summary as a result row in Stremio — selecting it just plays the top real result.
 - **SQLite or Postgres** — A local file by default, or point it at an existing Postgres server. Switching migrates your data either way, without a restart.
@@ -73,7 +77,7 @@ Playing from an archive without downloading it first means seeking to an arbitra
 
 **Does not play:**
 
-- **Compressed RAR or 7z.** Not streamable by anyone, per the above. Such a release has to be downloaded and unpacked — point [SABnzbd or NZBGet at the NNTP proxy](docs/nntp-proxy.md) if you want that from the same provider pool.
+- **Compressed RAR or 7z.** Not streamable by anyone, per the above. Such a release has to be downloaded and unpacked — point [SABnzbd or NZBGet at the NNTP proxy](docs/nntp-proxy.md) if you want that from the same provider pool. The [download client API](docs/sabnzbd.md) rejects such a grab for the same reason, so Radarr or Sonarr try the next release.
 
 ### Why run the engine at all
 
