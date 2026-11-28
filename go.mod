@@ -17,17 +17,17 @@ require (
 	golang.org/x/text v0.44.0
 )
 
-require golang.org/x/net v0.62.0
+require golang.org/x/net v0.63.0
 
 require github.com/gorilla/websocket v1.5.3
 
 require (
 	github.com/dreulavelle/jhin v0.8.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/javi11/sevenzip v1.6.2-0.20251026160715-ca961b7f1239
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sync v0.25.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
