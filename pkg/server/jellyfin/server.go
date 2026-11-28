@@ -319,6 +319,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}()
 		w = rec
 	}
+	if serveCORS(w, r) {
+		return
+	}
 	if s.servePublic(w, rq) {
 		return
 	}
@@ -356,6 +359,32 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Debug("Jellyfin route not handled", "method", r.Method, "path", r.URL.Path, "agent", r.UserAgent())
 	http.NotFound(w, r)
+}
+
+// serveCORS lets a browser-hosted client talk to the layer. Credentials travel
+// in headers and the query, never in cookies, so any origin may be allowed
+// without opening anything a token does not already open. The origin header
+// goes on every response — errors included, or a browser reports a 401 as a
+// network failure — and a preflight, which carries no credentials by design,
+// is answered here before authentication. It reports whether it did.
+func serveCORS(w http.ResponseWriter, r *http.Request) bool {
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	// What an OPTIONS answer is depends on these request headers.
+	h.Add("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+	if r.Header.Get("Origin") == "" || r.Header.Get("Access-Control-Request-Method") == "" {
+		return false
+	}
+	h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
+	// Reflected, because the wildcard does not cover Authorization.
+	if requested := strings.Join(r.Header.Values("Access-Control-Request-Headers"), ", "); requested != "" {
+		h.Set("Access-Control-Allow-Headers", requested)
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // redactedQuery renders a query for the log with its credentials masked:
