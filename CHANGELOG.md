@@ -1,5 +1,30 @@
 # Changelog
 
+## [6.6.0](https://github.com/Gaisberg/streamnzb/compare/v6.5.0...v6.6.0) (2026-11-28)
+
+
+### Features
+
+* **jellyfin:** support user item ratings ([#425](https://github.com/Gaisberg/streamnzb/issues/425)) ([13e0906](https://github.com/Gaisberg/streamnzb/commit/13e0906a363dec1940c17345076b3ad7e2fec10b))
+* **nfs:** export the library and support SABnzbd-compatible imports ([035985d](https://github.com/Gaisberg/streamnzb/commit/035985da54e460a5862ed5271364be1c152c7a5b))
+* **sabnzbd:** census every article of an ingested file before calling it complete ([f3ddc7c](https://github.com/Gaisberg/streamnzb/commit/f3ddc7cc9633e6a1cec147905f927e4ef615b31a))
+* **sabnzbd:** report census progress to the download client as the bar ([137ed85](https://github.com/Gaisberg/streamnzb/commit/137ed85c1edc3dbe1064976d1fecd913d5d38553))
+
+
+### Bug Fixes
+
+* **ebml:** preserve first-pass consistency across repaired holes ([#412](https://github.com/Gaisberg/streamnzb/issues/412)) ([43b2def](https://github.com/Gaisberg/streamnzb/commit/43b2defc99b38b62200bc2af6d05c1248d8471c9)), closes [#411](https://github.com/Gaisberg/streamnzb/issues/411)
+* **jellyfin:** handle CORS preflight and cross-origin requests (Refs [#431](https://github.com/Gaisberg/streamnzb/issues/431)) ([#433](https://github.com/Gaisberg/streamnzb/issues/433)) ([3cda353](https://github.com/Gaisberg/streamnzb/commit/3cda35369d8fa85ac25d5364d6a45e403d83dff1))
+* **par2:** initialize GF16 once on cold reconstruction ([#429](https://github.com/Gaisberg/streamnzb/issues/429)) ([1574a4d](https://github.com/Gaisberg/streamnzb/commit/1574a4da3845e26ecca4d68075629a33a73ab135))
+* **release:** treat dotless and non-public hosts as private release URLs ([#415](https://github.com/Gaisberg/streamnzb/issues/415)) ([5186291](https://github.com/Gaisberg/streamnzb/commit/5186291df825c4e9e1f3e417b118352697d6bb58))
+* **stremio:** apply poster overlays to MDBList catalogs ([#416](https://github.com/Gaisberg/streamnzb/issues/416)) ([2f4bce4](https://github.com/Gaisberg/streamnzb/commit/2f4bce4feec886a94f1a02c19384a1aa6d43e71f)), closes [#414](https://github.com/Gaisberg/streamnzb/issues/414)
+* **usenet:** expose definitive article-missing evidence ([#428](https://github.com/Gaisberg/streamnzb/issues/428)) ([68dfc3c](https://github.com/Gaisberg/streamnzb/commit/68dfc3c25a61f6435dfd488ffb7209fba4bb0447)), closes [#411](https://github.com/Gaisberg/streamnzb/issues/411)
+
+
+### Performance Improvements
+
+* **library:** cover the listing with an index; publish without rebuilding the export tree ([96142c8](https://github.com/Gaisberg/streamnzb/commit/96142c892a4688214bd0d58e563cb7008de5b0f1))
+
 ## [6.5.0](https://github.com/Gaisberg/streamnzb/compare/v6.4.0...v6.5.0) (2026-11-14)
 
 
