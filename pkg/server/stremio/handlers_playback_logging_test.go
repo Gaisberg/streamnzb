@@ -119,21 +119,35 @@ func TestMediaContentTypeReturnsExpectedTypes(t *testing.T) {
 }
 
 func TestApplyMediaResponseHeadersSetsSharedMediaHeaders(t *testing.T) {
-	recorder := httptest.NewRecorder()
+	for _, tc := range []struct {
+		name   string
+		seeded bool
+	}{
+		{"fresh response", false},
+		// An origin header already on the response must be replaced, not stacked.
+		{"origin already set", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			if tc.seeded {
+				recorder.Header().Set("Access-Control-Allow-Origin", "*")
+			}
 
-	applyMediaResponseHeaders(recorder, `folder/Test.Movie.2026.mkv`)
+			applyMediaResponseHeaders(recorder, `folder/Test.Movie.2026.mkv`)
 
-	if got := recorder.Header().Get("Content-Type"); got != "video/x-matroska" {
-		t.Fatalf("Content-Type = %q, want %q", got, "video/x-matroska")
-	}
-	if got := recorder.Header().Get("Content-Disposition"); got != `inline; filename="Test.Movie.2026.mkv"` {
-		t.Fatalf("Content-Disposition = %q, want %q", got, `inline; filename="Test.Movie.2026.mkv"`)
-	}
-	if got := recorder.Header().Get("Accept-Ranges"); got != "bytes" {
-		t.Fatalf("Accept-Ranges = %q, want %q", got, "bytes")
-	}
-	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+			if got := recorder.Header().Get("Content-Type"); got != "video/x-matroska" {
+				t.Fatalf("Content-Type = %q, want %q", got, "video/x-matroska")
+			}
+			if got := recorder.Header().Get("Content-Disposition"); got != `inline; filename="Test.Movie.2026.mkv"` {
+				t.Fatalf("Content-Disposition = %q, want %q", got, `inline; filename="Test.Movie.2026.mkv"`)
+			}
+			if got := recorder.Header().Get("Accept-Ranges"); got != "bytes" {
+				t.Fatalf("Accept-Ranges = %q, want %q", got, "bytes")
+			}
+			if got := recorder.Header().Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "*" {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want exactly one wildcard value", got)
+			}
+		})
 	}
 }
 

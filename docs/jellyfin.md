@@ -427,6 +427,37 @@ client cannot reach, clients that play `Path` fail while clients that build
 their own URL keep working — which looks like "it works on my phone but not on
 the TV" rather than like a misconfiguration.
 
+## Browser and desktop clients
+
+A client built on web technology (a browser app, or an Electron or Tauri
+desktop app) runs on a different origin from StreamNZB, so the browser applies
+CORS. A request that sends a custom header such as `Authorization` first needs
+an unauthenticated `OPTIONS` preflight; a simple request does not. The
+endpoint answers a preflight with `204`, allowing any origin
+(`Access-Control-Allow-Origin: *`), the methods it serves and the request
+headers the client asked for. Every other response the Jellyfin handler
+produces carries the same origin header, errors included, so the client can
+read a `401`. The bare `/jellyfin` redirect that Go's mux issues is not
+produced by the handler and does not carry it; use the URL with a trailing
+slash or a path beneath it.
+
+The policy is a wildcard and is not configurable. That has consequences:
+
+- A script on any website can read the public responses of an instance it can
+  reach, such as the server name, version and id.
+- Protected routes still need a valid stream credential, and are refused with
+  `401` without one.
+- Requests made with credentials mode `include` cannot use a wildcard origin;
+  the browser rejects the response. Clients are expected to send the token in
+  a header or query parameter, as Jellyfin clients do.
+
+This has not been tested end to end against a specific browser or desktop
+client.
+
+If StreamNZB sits behind a reverse proxy, do not make the proxy add its own
+`Access-Control-Allow-Origin`. Two values on one response make a browser reject
+it; let StreamNZB's header through, or strip it at the proxy and set yours.
+
 ## Notes
 
 - **Changing the server id makes every client forget its login.** The id is
